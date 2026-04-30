@@ -102,9 +102,12 @@ fn execute_operator(
 ) -> GrammarResult<Effect> {
     let operator = require_operator(entry)?;
 
+    let motion_count = invocation.count_or_default();
     let target_range: ProtoRange = match (&invocation.range, &invocation.target) {
         (Some(grammar_range), _) => resolve_grammar_range(document, grammar_range, cursor)?,
-        (None, Some(target)) => resolve_target(registry, document, cursor, target)?,
+        (None, Some(target)) => {
+            resolve_target(registry, document, cursor, target, motion_count)?
+        }
         (None, None) => return Err(CommandError::MissingTarget),
     };
 
@@ -127,6 +130,7 @@ fn resolve_target(
     document: &Document,
     cursor: Position,
     target: &Target,
+    count: crate::command::Count,
 ) -> GrammarResult<ProtoRange> {
     match target {
         Target::Motion(motion_id, args) => {
@@ -137,7 +141,7 @@ fn resolve_target(
             let ctx = MotionContext {
                 buffer: document.buffer(),
                 from: cursor,
-                count: crate::command::Count::ONE,
+                count,
                 args: args.clone(),
             };
             let r = (motion.apply)(&ctx)?;
@@ -151,7 +155,7 @@ fn resolve_target(
             let ctx = TextObjectContext {
                 buffer: document.buffer(),
                 at: cursor,
-                count: crate::command::Count::ONE,
+                count,
                 args: args.clone(),
             };
             (tobj.apply)(&ctx)

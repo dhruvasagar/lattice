@@ -95,6 +95,8 @@ pub enum Action {
     SetPending(Pending),
     Undo,
     Redo,
+    /// Append a digit (0-9) to the in-progress count prefix.
+    PushDigit(u8),
 
     // ---- Command-line minibuffer (Phase 2: simple, single-line) ----
     /// Pressed `:` in Normal mode -- enter command modal with empty buffer.
@@ -199,6 +201,14 @@ pub struct App {
     /// Unnamed register -- destination of `y` / `d` / `c`, source of
     /// `p` / `P`. `None` until something has been yanked.
     pub unnamed_register: Option<UnnamedRegister>,
+    /// In-progress count prefix being typed (`3` of `3w`, `12` of `12dd`).
+    /// 0 means "no count typed". The next `Action::Invoke` consumes this
+    /// and resets it to 0.
+    pub pending_count: u32,
+    /// Count latched when an operator key was pressed (`2` of `2d3w`).
+    /// Multiplied with the motion's count (`3`) to give the final count
+    /// the operator dispatches with (`6`). 0 means "no operator count".
+    pub op_count: u32,
 }
 
 impl std::fmt::Debug for App {
@@ -246,6 +256,8 @@ impl App {
             last_search: None,
             current_match: None,
             unnamed_register: None,
+            pending_count: 0,
+            op_count: 0,
         }
     }
 
@@ -260,7 +272,18 @@ impl App {
             Action::EnterAppend => self.do_enter_append(),
             Action::OpenLineBelow => self.do_open_line_below(),
             Action::OpenLineAbove => self.do_open_line_above(),
-            Action::SetPending(p) => self.pending = p,
+            Action::SetPending(p) => {
+                // When entering operator-pending state, latch the in-progress
+                // count as `op_count` so the next motion's count multiplies
+                // with it (vim's `2d3w` -> d6w). Other pending transitions
+                // keep `pending_count` so a partially-typed `gg` count
+                // survives the chord.
+                if matches!(p, Pending::AfterOperator(_)) && self.pending_count > 0 {
+                    self.op_count = self.pending_count;
+                    self.pending_count = 0;
+                }
+                self.pending = p;
+            }
             Action::Undo => {
                 let _ = self.document.undo();
                 self.clamp_cursor_to_buffer();
@@ -304,6 +327,15 @@ impl App {
             }
             Action::Echo(message) => {
                 self.last_message = Some(message);
+            }
+
+            Action::PushDigit(d) => {
+                // Accumulate one decimal digit into the pending count.
+                // Saturating math prevents overflow on absurd inputs.
+                self.pending_count = self
+                    .pending_count
+                    .saturating_mul(10)
+                    .saturating_add(d.into());
             }
 
             Action::PasteAfter => self.do_paste(false),
@@ -579,10 +611,29 @@ impl App {
         }
     }
 
-    fn run_invocation(&mut self, inv: CommandInvocation) {
+    fn run_invocation(&mut self, mut inv: CommandInvocation) {
         // Pending state is consumed by the input layer that built `inv`; any
         // dispatch resets it.
         self.pending = Pending::None;
+        // Apply the count multiplication: the operator's count (latched at
+        // `op_count`) multiplies with the motion's count (the in-progress
+        // `pending_count`, or the invocation's own count default of 1).
+        // Vim semantics: `2d3w` -> d6w. Either alone replaces the default.
+        let motion_count = if self.pending_count > 0 {
+            self.pending_count
+        } else {
+            inv.count.map(|c| c.0).unwrap_or(1)
+        };
+        let final_count = if self.op_count > 0 {
+            self.op_count.saturating_mul(motion_count)
+        } else {
+            motion_count
+        };
+        if final_count > 1 {
+            inv = inv.with_count(lattice_grammar::command::Count(final_count));
+        }
+        self.pending_count = 0;
+        self.op_count = 0;
         match execute(&self.registry, &mut self.document, self.cursor, inv) {
             Ok(effect) => self.apply_effect(effect),
             Err(_) => {
@@ -1497,6 +1548,81 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- count prefix end-to-end ----
+
+    #[test]
+    fn push_digit_accumulates_pending_count() {
+        let mut a = app_with("abc", 10);
+        a.apply(Action::PushDigit(1));
+        a.apply(Action::PushDigit(2));
+        a.apply(Action::PushDigit(3));
+        assert_eq!(a.pending_count, 123);
+    }
+
+    #[test]
+    fn invoke_consumes_pending_count_into_motion() {
+        let mut a = app_with("one two three four five", 10);
+        a.apply(Action::PushDigit(3));
+        let id = a.builtins.word_forward;
+        a.apply(invoke_motion(id));
+        // 3w from origin: "one two three FOUR five" -> 'f' of "four" at byte 14.
+        assert_eq!(a.cursor, Position::new(0, 14));
+        // pending_count is reset after dispatch.
+        assert_eq!(a.pending_count, 0);
+    }
+
+    #[test]
+    fn count_with_line_motion_advances_count_lines() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 20);
+        a.apply(Action::PushDigit(5));
+        let id = a.builtins.line_down;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.cursor.line, 5);
+    }
+
+    #[test]
+    fn operator_then_motion_with_count_multiplies() {
+        // `2dw` -> delete 2 words from cursor.
+        let mut a = app_with("one two three four five", 10);
+        a.apply(Action::PushDigit(2));
+        // SetPending latches the count as op_count.
+        a.apply(Action::SetPending(Pending::AfterOperator(a.builtins.delete)));
+        assert_eq!(a.op_count, 2);
+        assert_eq!(a.pending_count, 0);
+        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        // 2dw: deletes "one two " leaving "three four five".
+        assert_eq!(a.document.text(), "three four five");
+        assert_eq!(a.op_count, 0);
+    }
+
+    #[test]
+    fn count_on_both_sides_multiplies_2d3w_equals_6w() {
+        // `2d3w`: op_count = 2, motion count = 3, final count = 6.
+        let mut a = app_with("a b c d e f g h i j", 10);
+        a.apply(Action::PushDigit(2));
+        a.apply(Action::SetPending(Pending::AfterOperator(a.builtins.delete)));
+        assert_eq!(a.op_count, 2);
+        a.apply(Action::PushDigit(3));
+        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        // 6 words deleted from "a b c d e f g h i j" leaves "g h i j".
+        assert_eq!(a.document.text(), "g h i j");
+    }
+
+    #[test]
+    fn count_zero_through_pending_count_is_ignored_by_motion() {
+        // pending_count remains 0 after no digit; motion uses default 1.
+        let mut a = app_with("hello world", 10);
+        let id = a.builtins.word_forward;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.cursor, Position::new(0, 6));
     }
 
     // ---- find / till motions end-to-end ----

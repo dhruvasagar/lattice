@@ -22,6 +22,10 @@ pub struct TranslateContext<'a> {
     pub modal: ModalState,
     pub pending: Pending,
     pub builtins: &'a Builtins,
+    /// In-progress count prefix; `0` means none. Translate uses this to
+    /// disambiguate the `0` key (line_start when no count in progress;
+    /// digit-zero appended to count otherwise).
+    pub pending_count: u32,
 }
 
 pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
@@ -34,7 +38,9 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
 
     match ctx.modal {
         ModalState::Insert => translate_insert(event),
-        ModalState::Normal => translate_normal(event, ctx.pending, ctx.builtins),
+        ModalState::Normal => {
+            translate_normal(event, ctx.pending, ctx.builtins, ctx.pending_count)
+        }
         ModalState::Command => translate_command(event),
         ModalState::Search(_) => translate_search(event),
         // The other modal states route to no-op until their respective
@@ -80,7 +86,12 @@ fn translate_insert(event: KeyEvent) -> Action {
     }
 }
 
-fn translate_normal(event: KeyEvent, pending: Pending, builtins: &Builtins) -> Action {
+fn translate_normal(
+    event: KeyEvent,
+    pending: Pending,
+    builtins: &Builtins,
+    pending_count: u32,
+) -> Action {
     // Resolve any pending state first.
     match pending {
         Pending::AfterG => return resolve_after_g(event, builtins),
@@ -98,6 +109,16 @@ fn translate_normal(event: KeyEvent, pending: Pending, builtins: &Builtins) -> A
             KeyCode::Char('r') => Action::Redo,
             _ => Action::None,
         };
+    }
+
+    // Numeric prefix: `1`-`9` always start (or extend) a count; `0` extends
+    // an in-progress count but otherwise is line_start. This is vim's
+    // standard count parsing, exactly.
+    if let KeyCode::Char(c) = event.code
+        && let Some(digit) = c.to_digit(10)
+        && (digit > 0 || pending_count > 0)
+    {
+        return Action::PushDigit(digit as u8);
     }
 
     match event.code {
@@ -320,7 +341,26 @@ mod tests {
     }
 
     fn ctx<'a>(modal: ModalState, pending: Pending, b: &'a Builtins) -> TranslateContext<'a> {
-        TranslateContext { modal, pending, builtins: b }
+        TranslateContext {
+            modal,
+            pending,
+            builtins: b,
+            pending_count: 0,
+        }
+    }
+
+    fn ctx_with_count<'a>(
+        modal: ModalState,
+        pending: Pending,
+        b: &'a Builtins,
+        pending_count: u32,
+    ) -> TranslateContext<'a> {
+        TranslateContext {
+            modal,
+            pending,
+            builtins: b,
+            pending_count,
+        }
     }
 
     fn invocation_command(action: &Action) -> Option<lattice_protocol::ids::CommandId> {
@@ -806,6 +846,64 @@ mod tests {
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
         ));
+    }
+
+    // ---- Count prefix (1-9, 0 with count in progress) ----
+
+    #[test]
+    fn digit_1_to_9_emits_push_digit_in_normal_mode() {
+        let (_, b) = fixture();
+        for digit in 1u8..=9 {
+            let c = char::from_digit(digit as u32, 10).unwrap();
+            let action = translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char(c)),
+            );
+            assert!(matches!(action, Action::PushDigit(d) if d == digit));
+        }
+    }
+
+    #[test]
+    fn zero_with_no_count_invokes_line_start() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('0')),
+        );
+        assert_eq!(invocation_command(&action), Some(b.line_start.0));
+    }
+
+    #[test]
+    fn zero_with_count_in_progress_extends_count() {
+        let (_, b) = fixture();
+        // pending_count == 1 -> '0' becomes a digit, not line_start.
+        let action = translate(
+            ctx_with_count(ModalState::Normal, Pending::None, &b, 1),
+            key(KeyCode::Char('0')),
+        );
+        assert!(matches!(action, Action::PushDigit(0)));
+    }
+
+    #[test]
+    fn digit_after_count_extends_count() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx_with_count(ModalState::Normal, Pending::None, &b, 12),
+            key(KeyCode::Char('3')),
+        );
+        // Translate just emits the digit; App accumulates 12 -> 123.
+        assert!(matches!(action, Action::PushDigit(3)));
+    }
+
+    #[test]
+    fn motion_after_count_dispatches_motion() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx_with_count(ModalState::Normal, Pending::None, &b, 3),
+            key(KeyCode::Char('w')),
+        );
+        // Translate doesn't attach the count -- App applies it on Invoke.
+        assert_eq!(invocation_command(&action), Some(b.word_forward.0));
     }
 
     // ---- Find-char / till-char (f, F, t, T) ----

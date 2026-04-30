@@ -66,6 +66,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         modal: app.modal,
                         pending: app.pending,
                         builtins: &app.builtins,
+                        pending_count: app.pending_count,
                     };
                     let action = translate(ctx, k);
                     app.apply(action);

@@ -10,13 +10,13 @@
 //! a registration here; no new dispatcher wiring needed.
 
 use lattice_protocol::edit::Edit;
-use lattice_protocol::position::Position;
+use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use crate::effect::{Effect, YankKind};
 use crate::error::CommandError;
 use crate::registry::{
     CommandRegistry, MotionContext, MotionResult, MotionSpec, OperatorContext, OperatorId,
-    OperatorSpec, MotionId,
+    OperatorSpec, MotionId, TextObjectContext, TextObjectId, TextObjectSpec,
 };
 
 /// Register all Phase 1 built-ins. Returns the ids needed by the keystroke
@@ -192,6 +192,105 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         },
     );
 
+    let inner_word = registry.register_text_object(
+        "text-object:inner-word",
+        "Inner word -- alphanum + underscore run containing the cursor (vim's `iw`).",
+        TextObjectSpec {
+            apply: Box::new(text_object_inner_word),
+        },
+    );
+    let around_word = registry.register_text_object(
+        "text-object:around-word",
+        "Around word -- inner_word plus trailing whitespace (vim's `aw`).",
+        TextObjectSpec {
+            apply: Box::new(text_object_around_word),
+        },
+    );
+    let inner_quote_double = registry.register_text_object(
+        "text-object:inner-quote-double",
+        "Inner double-quoted string -- text between the surrounding `\"` chars (vim's `i\"`).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_inner_quote(ctx, '"')),
+        },
+    );
+    let around_quote_double = registry.register_text_object(
+        "text-object:around-quote-double",
+        "Around double-quoted string -- includes the surrounding `\"` chars (vim's `a\"`).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_around_quote(ctx, '"')),
+        },
+    );
+    let inner_quote_single = registry.register_text_object(
+        "text-object:inner-quote-single",
+        "Inner single-quoted string (vim's `i'`).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_inner_quote(ctx, '\'')),
+        },
+    );
+    let around_quote_single = registry.register_text_object(
+        "text-object:around-quote-single",
+        "Around single-quoted string (vim's `a'`).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_around_quote(ctx, '\'')),
+        },
+    );
+    let inner_quote_backtick = registry.register_text_object(
+        "text-object:inner-quote-backtick",
+        "Inner backtick-quoted string (vim's ``i` ``).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_inner_quote(ctx, '`')),
+        },
+    );
+    let around_quote_backtick = registry.register_text_object(
+        "text-object:around-quote-backtick",
+        "Around backtick-quoted string (vim's ``a` ``).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_around_quote(ctx, '`')),
+        },
+    );
+    let inner_paren = registry.register_text_object(
+        "text-object:inner-paren",
+        "Inside the innermost enclosing `()` pair (vim's `i(`).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_inner_brackets(ctx, '(', ')')),
+        },
+    );
+    let around_paren = registry.register_text_object(
+        "text-object:around-paren",
+        "Around the innermost enclosing `()` pair, including the brackets (vim's `a(`).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_around_brackets(ctx, '(', ')')),
+        },
+    );
+    let inner_bracket = registry.register_text_object(
+        "text-object:inner-bracket",
+        "Inside the innermost enclosing `[]` pair (vim's `i[`).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_inner_brackets(ctx, '[', ']')),
+        },
+    );
+    let around_bracket = registry.register_text_object(
+        "text-object:around-bracket",
+        "Around the innermost enclosing `[]` pair, including the brackets (vim's `a[`).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_around_brackets(ctx, '[', ']')),
+        },
+    );
+    let inner_brace = registry.register_text_object(
+        "text-object:inner-brace",
+        "Inside the innermost enclosing `{}` pair (vim's `i{`).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_inner_brackets(ctx, '{', '}')),
+        },
+    );
+    let around_brace = registry.register_text_object(
+        "text-object:around-brace",
+        "Around the innermost enclosing `{}` pair, including the brackets (vim's `a{`).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_around_brackets(ctx, '{', '}')),
+        },
+    );
+
     Builtins {
         word_forward,
         word_backward,
@@ -212,6 +311,20 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         delete,
         change,
         yank,
+        inner_word,
+        around_word,
+        inner_quote_double,
+        around_quote_double,
+        inner_quote_single,
+        around_quote_single,
+        inner_quote_backtick,
+        around_quote_backtick,
+        inner_paren,
+        around_paren,
+        inner_bracket,
+        around_bracket,
+        inner_brace,
+        around_brace,
     }
 }
 
@@ -236,6 +349,20 @@ pub struct Builtins {
     pub delete: OperatorId,
     pub change: OperatorId,
     pub yank: OperatorId,
+    pub inner_word: TextObjectId,
+    pub around_word: TextObjectId,
+    pub inner_quote_double: TextObjectId,
+    pub around_quote_double: TextObjectId,
+    pub inner_quote_single: TextObjectId,
+    pub around_quote_single: TextObjectId,
+    pub inner_quote_backtick: TextObjectId,
+    pub around_quote_backtick: TextObjectId,
+    pub inner_paren: TextObjectId,
+    pub around_paren: TextObjectId,
+    pub inner_bracket: TextObjectId,
+    pub around_bracket: TextObjectId,
+    pub inner_brace: TextObjectId,
+    pub around_brace: TextObjectId,
 }
 
 // ---- Motion: word-forward ----
@@ -624,6 +751,259 @@ fn last_addressable_line(buffer: &lattice_core::Buffer) -> u32 {
     } else {
         lc.saturating_sub(1)
     }
+}
+
+// ---- Text objects ----
+//
+// Each text object computes a `ProtoRange` covering the relevant span
+// at the cursor. Vim's text objects are inclusive of their ends; the
+// dispatcher's [start, end) range is constructed to match by extending
+// `end` past the last byte we want included.
+
+fn text_object_inner_word(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let cursor = ctx
+        .buffer
+        .position_to_byte(ctx.at)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    if cursor >= bytes.len() || !is_word_byte(bytes[cursor]) {
+        // Not on a word -- range is the cursor position alone.
+        return Ok(ProtoRange::new(ctx.at, ctx.at));
+    }
+    let mut start = cursor;
+    while start > 0 && is_word_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = cursor;
+    while end + 1 < bytes.len() && is_word_byte(bytes[end + 1]) {
+        end += 1;
+    }
+    // [start, end] inclusive of word -> half-open is end + 1.
+    let start_pos = ctx
+        .buffer
+        .byte_to_position(start)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let end_pos = ctx
+        .buffer
+        .byte_to_position(end + 1)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(ProtoRange::new(start_pos, end_pos))
+}
+
+fn text_object_around_word(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    // Inner word + trailing whitespace (or leading if no trailing).
+    let inner = text_object_inner_word(ctx)?;
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let inner_end_byte = ctx
+        .buffer
+        .position_to_byte(inner.end)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let mut end = inner_end_byte;
+    while end < bytes.len() && (bytes[end] == b' ' || bytes[end] == b'\t') {
+        end += 1;
+    }
+    if end == inner_end_byte {
+        // No trailing whitespace -- try leading.
+        let inner_start_byte = ctx
+            .buffer
+            .position_to_byte(inner.start)
+            .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+        let mut start = inner_start_byte;
+        while start > 0 && (bytes[start - 1] == b' ' || bytes[start - 1] == b'\t') {
+            start -= 1;
+        }
+        let start_pos = ctx
+            .buffer
+            .byte_to_position(start)
+            .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+        Ok(ProtoRange::new(start_pos, inner.end))
+    } else {
+        let end_pos = ctx
+            .buffer
+            .byte_to_position(end)
+            .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+        Ok(ProtoRange::new(inner.start, end_pos))
+    }
+}
+
+fn find_quote_pair(bytes: &[u8], cursor: usize, q: u8) -> Option<(usize, usize)> {
+    // Restrict to the current line: walk back to start-of-line, then
+    // forward, collecting quote positions; pair them naively (no escape
+    // handling for v1).
+    let mut line_start = cursor;
+    while line_start > 0 && bytes[line_start - 1] != b'\n' {
+        line_start -= 1;
+    }
+    let mut line_end = cursor;
+    while line_end < bytes.len() && bytes[line_end] != b'\n' {
+        line_end += 1;
+    }
+    let mut quotes = Vec::new();
+    for (offset, &b) in bytes[line_start..line_end].iter().enumerate() {
+        if b == q {
+            quotes.push(line_start + offset);
+        }
+    }
+    // Find a pair where the cursor is inside (or on a quote).
+    let mut i = 0;
+    while i + 1 < quotes.len() {
+        let (l, r) = (quotes[i], quotes[i + 1]);
+        if cursor >= l && cursor <= r {
+            return Some((l, r));
+        }
+        i += 2;
+    }
+    None
+}
+
+fn text_object_inner_quote(ctx: &TextObjectContext, q: char) -> Result<ProtoRange, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let cursor = ctx
+        .buffer
+        .position_to_byte(ctx.at)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    if !q.is_ascii() {
+        return Err(CommandError::InvalidArgs("non-ASCII quote not supported"));
+    }
+    let q_byte = q as u8;
+    let Some((l, r)) = find_quote_pair(bytes, cursor, q_byte) else {
+        return Ok(ProtoRange::new(ctx.at, ctx.at));
+    };
+    // Inner: between the quotes, exclusive of both.
+    let start_pos = ctx
+        .buffer
+        .byte_to_position(l + 1)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let end_pos = ctx
+        .buffer
+        .byte_to_position(r)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(ProtoRange::new(start_pos, end_pos))
+}
+
+fn text_object_around_quote(ctx: &TextObjectContext, q: char) -> Result<ProtoRange, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let cursor = ctx
+        .buffer
+        .position_to_byte(ctx.at)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    if !q.is_ascii() {
+        return Err(CommandError::InvalidArgs("non-ASCII quote not supported"));
+    }
+    let q_byte = q as u8;
+    let Some((l, r)) = find_quote_pair(bytes, cursor, q_byte) else {
+        return Ok(ProtoRange::new(ctx.at, ctx.at));
+    };
+    let start_pos = ctx
+        .buffer
+        .byte_to_position(l)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let end_pos = ctx
+        .buffer
+        .byte_to_position(r + 1)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(ProtoRange::new(start_pos, end_pos))
+}
+
+fn find_bracket_pair(
+    bytes: &[u8],
+    cursor: usize,
+    open: u8,
+    close: u8,
+) -> Option<(usize, usize)> {
+    if bytes.is_empty() {
+        return None;
+    }
+    // Walk left to find the most recent unmatched `open`.
+    let mut depth = 0i32;
+    let mut i = cursor.min(bytes.len() - 1);
+    let open_pos = loop {
+        let b = bytes[i];
+        if b == close && i != cursor {
+            // Same-position cursor on a close-bracket counts as "inside",
+            // not as an additional level.
+            depth += 1;
+        } else if b == open {
+            if depth == 0 {
+                break i;
+            }
+            depth -= 1;
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    };
+    // Walk right from open_pos+1 to find the matching close.
+    let mut depth = 0i32;
+    let mut j = open_pos + 1;
+    while j < bytes.len() {
+        let b = bytes[j];
+        if b == open {
+            depth += 1;
+        } else if b == close {
+            if depth == 0 {
+                return Some((open_pos, j));
+            }
+            depth -= 1;
+        }
+        j += 1;
+    }
+    None
+}
+
+fn text_object_inner_brackets(
+    ctx: &TextObjectContext,
+    open: char,
+    close: char,
+) -> Result<ProtoRange, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let cursor = ctx
+        .buffer
+        .position_to_byte(ctx.at)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let Some((l, r)) = find_bracket_pair(bytes, cursor, open as u8, close as u8) else {
+        return Ok(ProtoRange::new(ctx.at, ctx.at));
+    };
+    let start_pos = ctx
+        .buffer
+        .byte_to_position(l + 1)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let end_pos = ctx
+        .buffer
+        .byte_to_position(r)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(ProtoRange::new(start_pos, end_pos))
+}
+
+fn text_object_around_brackets(
+    ctx: &TextObjectContext,
+    open: char,
+    close: char,
+) -> Result<ProtoRange, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let cursor = ctx
+        .buffer
+        .position_to_byte(ctx.at)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let Some((l, r)) = find_bracket_pair(bytes, cursor, open as u8, close as u8) else {
+        return Ok(ProtoRange::new(ctx.at, ctx.at));
+    };
+    let start_pos = ctx
+        .buffer
+        .byte_to_position(l)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let end_pos = ctx
+        .buffer
+        .byte_to_position(r + 1)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(ProtoRange::new(start_pos, end_pos))
 }
 
 // ---- Operator: delete ----
@@ -1180,6 +1560,150 @@ mod tests {
             .with_target(Target::Motion(b.word_backward, crate::args::Args::None));
         execute(&registry, &mut doc, Position::new(0, 11), inv).unwrap();
         assert_eq!(doc.text(), "hello ");
+    }
+
+    // ---- Text objects ----
+
+    fn invoke_textobj(op: crate::registry::OperatorId, tobj: crate::registry::TextObjectId) -> CommandInvocation {
+        CommandInvocation::of(op.0).with_target(Target::TextObject(tobj, crate::args::Args::None))
+    }
+
+    #[test]
+    fn iw_inner_word_covers_word_at_cursor() {
+        // d iw on "hello world" with cursor on 'l' (byte 2) deletes "hello".
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = invoke_textobj(b.delete, b.inner_word);
+        execute(&registry, &mut doc, Position::new(0, 2), inv).unwrap();
+        assert_eq!(doc.text(), " world");
+    }
+
+    #[test]
+    fn iw_at_start_of_word_works() {
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = invoke_textobj(b.delete, b.inner_word);
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        assert_eq!(doc.text(), " world");
+    }
+
+    #[test]
+    fn iw_on_whitespace_is_no_op() {
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = invoke_textobj(b.delete, b.inner_word);
+        // Cursor on space at byte 5 -- not on a word.
+        execute(&registry, &mut doc, Position::new(0, 5), inv).unwrap();
+        assert_eq!(doc.text(), "hello world");
+    }
+
+    #[test]
+    fn aw_around_word_includes_trailing_whitespace() {
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = invoke_textobj(b.delete, b.around_word);
+        execute(&registry, &mut doc, Position::new(0, 2), inv).unwrap();
+        // around_word: "hello" + trailing space deleted -> "world".
+        assert_eq!(doc.text(), "world");
+    }
+
+    #[test]
+    fn aw_on_last_word_takes_leading_whitespace() {
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = invoke_textobj(b.delete, b.around_word);
+        // Cursor on 'w' at byte 6 -- no trailing whitespace, so leading.
+        execute(&registry, &mut doc, Position::new(0, 6), inv).unwrap();
+        assert_eq!(doc.text(), "hello");
+    }
+
+    #[test]
+    fn i_double_quote_covers_quoted_content_only() {
+        let (registry, b, mut doc) = fixture(r#"foo "bar baz" qux"#);
+        let inv = invoke_textobj(b.delete, b.inner_quote_double);
+        // Cursor inside quotes (byte 6 = 'a' of "bar").
+        execute(&registry, &mut doc, Position::new(0, 6), inv).unwrap();
+        assert_eq!(doc.text(), r#"foo "" qux"#);
+    }
+
+    #[test]
+    fn a_double_quote_covers_quoted_content_and_quotes() {
+        let (registry, b, mut doc) = fixture(r#"foo "bar baz" qux"#);
+        let inv = invoke_textobj(b.delete, b.around_quote_double);
+        execute(&registry, &mut doc, Position::new(0, 6), inv).unwrap();
+        assert_eq!(doc.text(), "foo  qux");
+    }
+
+    #[test]
+    fn i_single_quote_works() {
+        let (registry, b, mut doc) = fixture("foo 'bar' baz");
+        let inv = invoke_textobj(b.delete, b.inner_quote_single);
+        execute(&registry, &mut doc, Position::new(0, 6), inv).unwrap();
+        assert_eq!(doc.text(), "foo '' baz");
+    }
+
+    #[test]
+    fn i_paren_covers_inside_outermost_parens() {
+        let (registry, b, mut doc) = fixture("call(arg1, arg2)");
+        let inv = invoke_textobj(b.delete, b.inner_paren);
+        // Cursor on 'a' of "arg2" at byte 11.
+        execute(&registry, &mut doc, Position::new(0, 11), inv).unwrap();
+        assert_eq!(doc.text(), "call()");
+    }
+
+    #[test]
+    fn a_paren_includes_brackets() {
+        let (registry, b, mut doc) = fixture("call(arg1, arg2)");
+        let inv = invoke_textobj(b.delete, b.around_paren);
+        execute(&registry, &mut doc, Position::new(0, 11), inv).unwrap();
+        assert_eq!(doc.text(), "call");
+    }
+
+    #[test]
+    fn nested_parens_picks_innermost() {
+        let (registry, b, mut doc) = fixture("a(b(c)d)e");
+        let inv = invoke_textobj(b.delete, b.inner_paren);
+        // Cursor at byte 4 ('c').
+        execute(&registry, &mut doc, Position::new(0, 4), inv).unwrap();
+        assert_eq!(doc.text(), "a(b()d)e");
+    }
+
+    #[test]
+    fn i_bracket_works_for_square_brackets() {
+        let (registry, b, mut doc) = fixture("arr[1, 2, 3]");
+        let inv = invoke_textobj(b.delete, b.inner_bracket);
+        execute(&registry, &mut doc, Position::new(0, 4), inv).unwrap();
+        assert_eq!(doc.text(), "arr[]");
+    }
+
+    #[test]
+    fn i_brace_works_for_curly_braces() {
+        let (registry, b, mut doc) = fixture("fn body { return 42; }");
+        let inv = invoke_textobj(b.delete, b.inner_brace);
+        // Cursor inside the braces.
+        execute(&registry, &mut doc, Position::new(0, 12), inv).unwrap();
+        assert_eq!(doc.text(), "fn body {}");
+    }
+
+    #[test]
+    fn unmatched_bracket_is_no_op() {
+        let (registry, b, mut doc) = fixture("no brackets here");
+        let inv = invoke_textobj(b.delete, b.inner_paren);
+        execute(&registry, &mut doc, Position::new(0, 5), inv).unwrap();
+        assert_eq!(doc.text(), "no brackets here");
+    }
+
+    #[test]
+    fn ciw_change_inner_word_enters_insert() {
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.change.0)
+            .with_target(Target::TextObject(b.inner_word, crate::args::Args::None));
+        let effect = execute(&registry, &mut doc, Position::new(0, 2), inv).unwrap();
+        match effect {
+            Effect::Many(parts) => {
+                assert!(matches!(
+                    parts[parts.len() - 1],
+                    Effect::EnterMode(crate::ModalState::Insert)
+                ));
+            }
+            other => panic!("expected Many, got {other:?}"),
+        }
+        assert_eq!(doc.text(), " world");
     }
 
     // ---- find-char / till-char (f, F, t, T) ----

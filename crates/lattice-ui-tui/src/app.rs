@@ -45,6 +45,12 @@ pub enum Pending {
         kind: FindKind,
         operator: Option<OperatorId>,
     },
+    /// `i` or `a` pressed in operator-pending state; awaiting the
+    /// text-object selector char (`w`, `"`, `(`, `[`, `{`, etc.).
+    AfterTextObject {
+        operator: OperatorId,
+        around: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

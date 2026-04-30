@@ -144,6 +144,9 @@ fn translate_normal(
         Pending::AfterFindChar { kind, operator } => {
             return resolve_after_find_char(event, builtins, kind, operator);
         }
+        Pending::AfterTextObject { operator, around } => {
+            return resolve_after_text_object(event, builtins, operator, around);
+        }
         Pending::None => {}
     }
 
@@ -327,9 +330,87 @@ fn resolve_after_operator(
                 operator: Some(op),
             });
         }
+        KeyCode::Char('i') => {
+            return Action::SetPending(Pending::AfterTextObject {
+                operator: op,
+                around: false,
+            });
+        }
+        KeyCode::Char('a') => {
+            return Action::SetPending(Pending::AfterTextObject {
+                operator: op,
+                around: true,
+            });
+        }
         _ => return Action::SetPending(Pending::None),
     };
     Action::Invoke(CommandInvocation::of(op.0).with_target(target))
+}
+
+fn resolve_after_text_object(
+    event: KeyEvent,
+    builtins: &Builtins,
+    operator: OperatorId,
+    around: bool,
+) -> Action {
+    if matches!(event.code, KeyCode::Esc) {
+        return Action::SetPending(Pending::None);
+    }
+    let tobj = match event.code {
+        KeyCode::Char('w') => {
+            if around {
+                builtins.around_word
+            } else {
+                builtins.inner_word
+            }
+        }
+        KeyCode::Char('"') => {
+            if around {
+                builtins.around_quote_double
+            } else {
+                builtins.inner_quote_double
+            }
+        }
+        KeyCode::Char('\'') => {
+            if around {
+                builtins.around_quote_single
+            } else {
+                builtins.inner_quote_single
+            }
+        }
+        KeyCode::Char('`') => {
+            if around {
+                builtins.around_quote_backtick
+            } else {
+                builtins.inner_quote_backtick
+            }
+        }
+        KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => {
+            if around {
+                builtins.around_paren
+            } else {
+                builtins.inner_paren
+            }
+        }
+        KeyCode::Char('[') | KeyCode::Char(']') => {
+            if around {
+                builtins.around_bracket
+            } else {
+                builtins.inner_bracket
+            }
+        }
+        KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => {
+            if around {
+                builtins.around_brace
+            } else {
+                builtins.inner_brace
+            }
+        }
+        _ => return Action::SetPending(Pending::None),
+    };
+    Action::Invoke(
+        CommandInvocation::of(operator.0).with_target(Target::TextObject(tobj, Args::None)),
+    )
 }
 
 fn resolve_after_find_char(
@@ -895,6 +976,119 @@ mod tests {
         assert!(matches!(
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
+        ));
+    }
+
+    // ---- Text object chord routing ----
+
+    #[test]
+    fn i_in_operator_pending_sets_text_object_pending_inner() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            key(KeyCode::Char('i')),
+        );
+        match action {
+            Action::SetPending(Pending::AfterTextObject { operator, around }) => {
+                assert_eq!(operator, b.delete);
+                assert!(!around);
+            }
+            other => panic!("expected SetPending(AfterTextObject inner), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_in_operator_pending_sets_text_object_pending_around() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            key(KeyCode::Char('a')),
+        );
+        match action {
+            Action::SetPending(Pending::AfterTextObject { operator, around }) => {
+                assert_eq!(operator, b.delete);
+                assert!(around);
+            }
+            other => panic!("expected SetPending(AfterTextObject around), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diw_resolves_to_delete_inner_word() {
+        let (_, b) = fixture();
+        let pending = Pending::AfterTextObject {
+            operator: b.delete,
+            around: false,
+        };
+        let action = translate(
+            ctx(ModalState::Normal, pending, &b),
+            key(KeyCode::Char('w')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                match inv.target {
+                    Some(Target::TextObject(id, _)) => assert_eq!(id, b.inner_word),
+                    other => panic!("expected text-object target, got {other:?}"),
+                }
+            }
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn da_quote_resolves_to_delete_around_double_quote() {
+        let (_, b) = fixture();
+        let pending = Pending::AfterTextObject {
+            operator: b.delete,
+            around: true,
+        };
+        let action = translate(
+            ctx(ModalState::Normal, pending, &b),
+            key(KeyCode::Char('"')),
+        );
+        match action {
+            Action::Invoke(inv) => match inv.target {
+                Some(Target::TextObject(id, _)) => assert_eq!(id, b.around_quote_double),
+                other => panic!("expected text-object target, got {other:?}"),
+            },
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn ci_paren_resolves_to_change_inner_paren() {
+        let (_, b) = fixture();
+        let pending = Pending::AfterTextObject {
+            operator: b.change,
+            around: false,
+        };
+        let action = translate(
+            ctx(ModalState::Normal, pending, &b),
+            key(KeyCode::Char('(')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.change.0);
+                match inv.target {
+                    Some(Target::TextObject(id, _)) => assert_eq!(id, b.inner_paren),
+                    other => panic!("expected text-object target, got {other:?}"),
+                }
+            }
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn esc_after_text_object_pending_clears() {
+        let (_, b) = fixture();
+        let pending = Pending::AfterTextObject {
+            operator: b.delete,
+            around: false,
+        };
+        assert!(matches!(
+            translate(ctx(ModalState::Normal, pending, &b), key(KeyCode::Esc)),
+            Action::SetPending(Pending::None)
         ));
     }
 

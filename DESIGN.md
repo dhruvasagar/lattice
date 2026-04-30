@@ -283,8 +283,25 @@ pub struct CommandInvocation {
 	pub args: Args,                  // typed per the command's signature
 }
 
-pub fn execute(inv: CommandInvocation) -> Result<Effect, CommandError>;
+/// Submit an invocation. Returns immediately with a typed handle; the
+/// invocation runs on the document actor that owns the target buffer.
+/// This is the seam every command flows through -- vim chord, `:` line,
+/// keymap, plugin, palette -- so it MUST NOT block the caller.
+pub fn execute(inv: CommandInvocation) -> Result<Pending, CommandError>;
+
+pub struct Pending {
+	pub id: InvocationId,
+	pub effect: oneshot::Receiver<Result<Effect, CommandError>>,
+}
 ```
+
+**Why async, not sync.** Commands may run synchronously on the document actor (`dw`, simple motions, single-buffer edits) or asynchronously (`:write` to a slow disk, `:!cmd`, plugin operators that fetch over LSP). The dispatcher cannot tell which without inspecting the registered body, and even sync-looking commands can fan out into hooks that must run before commit. Returning a `Pending` is uniform: callers that want to wait can `await` the receiver, callers that don't (the input loop, macro replay) hand it to a per-buffer queue.
+
+**Veto-class hooks are bounded-sync.** Hooks subscribed to pre-mutation events (`BeforeBufferWrite`, `BeforeApplyEdit`) run inline on the actor under a hard latency budget (target: 1 ms p99 per hook, total 5 ms p99); exceeding it is a logged warning, not a panic, and a repeat offender gets demoted to advisory-only. Observation-class hooks (`BufferChanged`, `ModeChanged`) are dispatched fire-and-forget after commit. This split is what keeps the UI's keystroke-to-glyph budget intact even with active plugins.
+
+**Atomicity scope.** A single `CommandInvocation` is atomic *within one document*: edits, selection updates, and the resulting `Effect` commit together or not at all. Cross-document and cross-pane invocations (`:bufdo`, `:windo`, plugin-orchestrated multi-buffer refactors) are a sequence of per-document atoms with explicit failure modes, not a global transaction -- the cost of distributed transactions over actor mailboxes is not worth the use cases.
+
+**Backpressure.** Each document actor has a bounded mailbox. When full, the dispatcher returns `CommandError::Busy` rather than blocking; the caller decides (input loop drops to a "buffer is busy" indicator; scripts retry with backoff). The event bus uses the same discipline: subscriber queues are bounded, and a slow subscriber gets dropped events with a counter, not backpressure on the publisher.
 
 The vim user experience is preserved exactly:
 
@@ -1986,6 +2003,20 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 15. **Grammar extension API surface for tree-sitter motions** (new in v0.4) -- exact shape of the host's tree-sitter query API exposed to plugins (one-shot vs. cursor-based query iterator; range scoping; query caching).
 16. **Plugin async-task host primitive** (new in v0.4) -- name and shape of the host function that lets a plugin schedule background async work (`spawn-task` vs. `with-cancellation` vs. structured-concurrency primitive).
 17. **WASM AOT cache invalidation** (new in v0.4) -- when do we invalidate cached compiled modules (wasmtime version, target triple, plugin checksum, all three).
+18. **Folds** (deferred) -- vim has manual / indent / syntax / expr folds; tree-sitter gives us syntax folds nearly free. Open: storage (rope-side metadata vs. computed view), interaction with motions (`zj`/`zk`/`[z`/`]z`) and operators that target folded ranges, persistence across sessions.
+19. **Replace mode (`R`) dispatch** (deferred) -- overstrike is a third edit mode beside Normal/Insert. Open: whether to model it as a flag on Insert or as its own modal state in the state machine, and how dot-repeat records overstrike spans.
+20. **Live evaluation / REPL parity** (deferred) -- emacs's `M-x ielm`, `eval-last-sexp`, scratch buffer. Open: do we expose a host-side scripting REPL (Lua via mlua), a per-plugin WASM eval surface, both, or neither for v1.
+21. **File watcher / auto-revert** (deferred) -- emacs's `auto-revert-mode` and external-change detection. Open: notify-based watcher per workspace, mtime poll fallback, conflict resolution UI when external + local edits diverge.
+22. **Bookmarks and cross-file marks** (deferred) -- vim's `'A`-`'Z` global marks and emacs's bookmark facility cover overlapping ground. Position history (§5.1.1) handles in-process navigation; bookmarks need persistence, naming, and a picker.
+23. **Function rebinding / advice** (deferred) -- emacs's `defadvice` / `advice-add`. The dispatcher already mediates every command, so wrapping is a registry-side concern. Open: advice ordering, removal semantics, interaction with WASM-defined commands, fuel accounting for advice chains.
+24. **Narrow-to-region** (deferred) -- emacs's `narrow-to-region` confines all operations to a sub-range. Open: model as a buffer-local view (cheap; commands see the narrowed range as `Whole`) vs. a transient overlay; interaction with multi-cursor and Visual.
+25. **Snippets and abbrev** (deferred) -- a built-in snippet engine vs. plugin-only. If built-in, integration with completion popups, with the rich minibuffer's parameter hints, and with LSP `textDocument/completion` snippet results.
+26. **Frames (multi-OS-window)** (deferred) -- emacs's frame concept. Decoupling is clean (each frame is a top-level window with its own pane tree); open question is workspace boundaries (one workspace per frame vs. shared) and how the position-history ring partitions across frames.
+27. **Session save / restore** (deferred) -- emacs `desktop.el`. What state is captured (open buffers, panes, layouts, registers, marks, position history, command history, ex-history, search history) and what is per-workspace vs. per-user-global.
+28. **DAP support** (deferred to post-1.0 plugin) -- LSP is in-host (§5.4) for latency reasons; DAP is similar shape. Open: in-host like LSP, or first reference plugin that exercises the WIT async/event surfaces under a real adversarial workload.
+29. **AI / completion-as-you-type integration** (deferred to post-1.0 plugin) -- Copilot / Codeium / Claude / local-LLM. The everything-is-a-buffer model gives chat / inline-suggestion surfaces for free; the question is whether the plugin host's WIT API has the right shape (streaming completions, ghost-text rendering hook, accept/reject arbitration with vim modal state).
+30. **Magit-class VCS integration** (deferred to post-1.0 plugin) -- a reference plugin will land in v1.0 (basic git status / diff / blame); the open question is whether the buffer protocol exposes enough for a plugin to reach Magit-equivalent fidelity (interactive rebase, hunk staging, log graph), or if specific hooks need adding.
+31. **EditorConfig / project-build awareness** (deferred) -- whether the host reads `.editorconfig` natively or via a reference plugin, and how project-detected build commands (cargo, npm, etc.) integrate with `:!` and the compilation-buffer (§B.4).
 
 ---
 

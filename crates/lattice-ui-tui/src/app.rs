@@ -29,6 +29,8 @@ use lattice_protocol::position::{Position, Range as ProtoRange};
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
 use lattice_syntax::{Lang, StyledSpan, Syntax};
 
+use std::collections::HashMap;
+
 use crate::excommand::{self, ExCommand};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +53,12 @@ pub enum Pending {
         operator: OperatorId,
         around: bool,
     },
+    /// `m` pressed; the next char is the mark to set.
+    AfterSetMark,
+    /// `'` pressed; the next char is the mark to jump to (linewise).
+    AfterJumpMarkLine,
+    /// `` ` `` pressed; the next char is the mark to jump to (exact).
+    AfterJumpMarkExact,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +124,13 @@ pub enum Action {
     /// Vim's `.` -- re-dispatch the last buffer-mutating invocation from
     /// the current cursor.
     RepeatLastChange,
+    /// `m<letter>` -- record the cursor at mark `<letter>`.
+    SetMark(char),
+    /// `'<letter>` -- jump to the line of mark `<letter>` (column = first
+    /// non-blank).
+    JumpToMarkLine(char),
+    /// `` `<letter> `` -- jump to the exact position of mark `<letter>`.
+    JumpToMarkExact(char),
 
     // ---- Command-line minibuffer (Phase 2: simple, single-line) ----
     /// Pressed `:` in Normal mode -- enter command modal with empty buffer.
@@ -241,6 +256,10 @@ pub struct App {
     /// Last Visual-mode selection extents, captured on exit so `gv` can
     /// re-enter Visual with the same anchor / head / kind.
     pub last_visual: Option<LastVisual>,
+    /// User-set marks. v1 stores them flat by name (a-z, A-Z, 0-9);
+    /// uppercase / numbered global marks treat all marks as buffer-local
+    /// since the v1 TUI runs against a single document.
+    pub marks: HashMap<char, Position>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -300,6 +319,7 @@ impl App {
             visual_anchor: None,
             last_change: None,
             last_visual: None,
+            marks: HashMap::new(),
         }
     }
 
@@ -383,6 +403,16 @@ impl App {
             Action::EnterVisual(kind) => self.do_enter_visual(kind),
             Action::ExitVisual => self.do_exit_visual(),
             Action::ReselectLastVisual => self.do_reselect_visual(),
+
+            Action::SetMark(name) => {
+                if is_valid_mark_name(name) {
+                    self.marks.insert(name, self.cursor);
+                } else {
+                    self.set_message(EchoLevel::Error, format!("invalid mark: {name}"));
+                }
+            }
+            Action::JumpToMarkLine(name) => self.do_jump_mark(name, false),
+            Action::JumpToMarkExact(name) => self.do_jump_mark(name, true),
 
             Action::RepeatLastChange => {
                 if let Some(inv) = self.last_change.clone() {
@@ -856,6 +886,38 @@ impl App {
             .set_selections(SelectionSet::single(Selection::cursor(self.cursor)));
     }
 
+    /// Jump to a recorded mark. `exact = true` puts the cursor at the
+    /// stored byte; `exact = false` jumps to the line and column = first
+    /// non-blank (vim's `'<letter>` semantics).
+    fn do_jump_mark(&mut self, name: char, exact: bool) {
+        if !is_valid_mark_name(name) {
+            self.set_message(EchoLevel::Error, format!("invalid mark: {name}"));
+            return;
+        }
+        let Some(&pos) = self.marks.get(&name) else {
+            self.set_message(EchoLevel::Error, format!("mark not set: {name}"));
+            return;
+        };
+        if exact {
+            self.cursor = pos;
+        } else {
+            // Line-only jump: snap byte to first non-blank on that line.
+            let text = self.document.text();
+            let line_text = text
+                .split_inclusive('\n')
+                .nth(pos.line as usize)
+                .map(|l| l.trim_end_matches('\n'))
+                .unwrap_or("");
+            let bytes = line_text.as_bytes();
+            let mut col = 0usize;
+            while col < bytes.len() && (bytes[col] == b' ' || bytes[col] == b'\t') {
+                col += 1;
+            }
+            self.cursor = Position::new(pos.line, col as u32);
+        }
+        self.clamp_cursor_to_buffer();
+    }
+
     fn do_reselect_visual(&mut self) {
         let Some(last) = self.last_visual else {
             self.set_message(
@@ -1018,6 +1080,10 @@ pub(crate) fn last_addressable_line(doc: &Document) -> u32 {
     } else {
         lc.saturating_sub(1)
     }
+}
+
+fn is_valid_mark_name(c: char) -> bool {
+    c.is_ascii_alphabetic() || c.is_ascii_digit()
 }
 
 fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
@@ -1729,6 +1795,88 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- Marks ----
+
+    #[test]
+    fn set_mark_records_cursor_position() {
+        let mut a = app_with("hello\nworld", 10);
+        a.cursor = Position::new(1, 2);
+        a.apply(Action::SetMark('a'));
+        assert_eq!(a.marks.get(&'a'), Some(&Position::new(1, 2)));
+    }
+
+    #[test]
+    fn invalid_mark_name_emits_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::SetMark(' '));
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(a.marks.is_empty());
+    }
+
+    #[test]
+    fn jump_mark_exact_restores_cursor_position() {
+        let mut a = app_with("hello\nworld\nfoo", 10);
+        a.cursor = Position::new(0, 3);
+        a.apply(Action::SetMark('m'));
+        a.cursor = Position::new(2, 0);
+        a.apply(Action::JumpToMarkExact('m'));
+        assert_eq!(a.cursor, Position::new(0, 3));
+    }
+
+    #[test]
+    fn jump_mark_line_lands_on_first_non_blank() {
+        let mut a = app_with("hello\n    indented\nfoo", 10);
+        a.cursor = Position::new(1, 8); // mid-word on the indented line
+        a.apply(Action::SetMark('a'));
+        a.cursor = Position::ZERO;
+        a.apply(Action::JumpToMarkLine('a'));
+        // Line 1, byte 4 = 'i' (after 4 leading spaces).
+        assert_eq!(a.cursor, Position::new(1, 4));
+    }
+
+    #[test]
+    fn jump_to_unset_mark_emits_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::JumpToMarkExact('z'));
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn marks_are_keyed_by_name() {
+        let mut a = app_with("hello\nworld", 10);
+        a.cursor = Position::new(0, 1);
+        a.apply(Action::SetMark('a'));
+        a.cursor = Position::new(1, 3);
+        a.apply(Action::SetMark('b'));
+        a.cursor = Position::ZERO;
+        a.apply(Action::JumpToMarkExact('a'));
+        assert_eq!(a.cursor, Position::new(0, 1));
+        a.apply(Action::JumpToMarkExact('b'));
+        assert_eq!(a.cursor, Position::new(1, 3));
+    }
+
+    #[test]
+    fn uppercase_mark_works_same_as_lowercase_in_v1() {
+        // v1 makes no distinction between buffer-local (a-z) and global
+        // (A-Z) marks since the TUI runs against a single document.
+        let mut a = app_with("hello\nworld", 10);
+        a.cursor = Position::new(1, 2);
+        a.apply(Action::SetMark('A'));
+        a.cursor = Position::ZERO;
+        a.apply(Action::JumpToMarkExact('A'));
+        assert_eq!(a.cursor, Position::new(1, 2));
+    }
+
+    #[test]
+    fn jumping_to_mark_with_invalid_name_is_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::JumpToMarkExact(' '));
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
     }
 
     // ---- gv reselect ----

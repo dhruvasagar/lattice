@@ -147,6 +147,9 @@ fn translate_normal(
         Pending::AfterTextObject { operator, around } => {
             return resolve_after_text_object(event, builtins, operator, around);
         }
+        Pending::AfterSetMark => return resolve_after_set_mark(event),
+        Pending::AfterJumpMarkLine => return resolve_after_jump_mark(event, false),
+        Pending::AfterJumpMarkExact => return resolve_after_jump_mark(event, true),
         Pending::None => {}
     }
 
@@ -248,6 +251,11 @@ fn translate_normal(
 
         // Dot-repeat
         KeyCode::Char('.') => Action::RepeatLastChange,
+
+        // Marks
+        KeyCode::Char('m') => Action::SetPending(Pending::AfterSetMark),
+        KeyCode::Char('\'') => Action::SetPending(Pending::AfterJumpMarkLine),
+        KeyCode::Char('`') => Action::SetPending(Pending::AfterJumpMarkExact),
 
         // Paging
         KeyCode::PageDown => invoke_with_count(builtins.line_down, 10),
@@ -381,6 +389,32 @@ fn resolve_after_operator(
         _ => return Action::SetPending(Pending::None),
     };
     Action::Invoke(CommandInvocation::of(op.0).with_target(target))
+}
+
+fn resolve_after_set_mark(event: KeyEvent) -> Action {
+    if matches!(event.code, KeyCode::Esc) {
+        return Action::SetPending(Pending::None);
+    }
+    match event.code {
+        KeyCode::Char(c) if c.is_ascii_alphanumeric() => Action::SetMark(c),
+        _ => Action::SetPending(Pending::None),
+    }
+}
+
+fn resolve_after_jump_mark(event: KeyEvent, exact: bool) -> Action {
+    if matches!(event.code, KeyCode::Esc) {
+        return Action::SetPending(Pending::None);
+    }
+    match event.code {
+        KeyCode::Char(c) if c.is_ascii_alphanumeric() => {
+            if exact {
+                Action::JumpToMarkExact(c)
+            } else {
+                Action::JumpToMarkLine(c)
+            }
+        }
+        _ => Action::SetPending(Pending::None),
+    }
 }
 
 fn resolve_after_text_object(
@@ -1012,6 +1046,110 @@ mod tests {
         assert!(matches!(
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
+        ));
+    }
+
+    // ---- Marks ----
+
+    #[test]
+    fn m_in_normal_sets_pending_after_set_mark() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('m')),
+        );
+        assert!(matches!(
+            action,
+            Action::SetPending(Pending::AfterSetMark)
+        ));
+    }
+
+    #[test]
+    fn apostrophe_in_normal_sets_pending_after_jump_mark_line() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('\'')),
+        );
+        assert!(matches!(
+            action,
+            Action::SetPending(Pending::AfterJumpMarkLine)
+        ));
+    }
+
+    #[test]
+    fn backtick_in_normal_sets_pending_after_jump_mark_exact() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('`')),
+        );
+        assert!(matches!(
+            action,
+            Action::SetPending(Pending::AfterJumpMarkExact)
+        ));
+    }
+
+    #[test]
+    fn ma_after_m_emits_set_mark() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterSetMark, &b),
+            key(KeyCode::Char('a')),
+        );
+        match action {
+            Action::SetMark(c) => assert_eq!(c, 'a'),
+            other => panic!("expected SetMark('a'), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jump_mark_line_routes_correctly() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterJumpMarkLine, &b),
+            key(KeyCode::Char('z')),
+        );
+        match action {
+            Action::JumpToMarkLine(c) => assert_eq!(c, 'z'),
+            other => panic!("expected JumpToMarkLine('z'), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jump_mark_exact_routes_correctly() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterJumpMarkExact, &b),
+            key(KeyCode::Char('A')),
+        );
+        match action {
+            Action::JumpToMarkExact(c) => assert_eq!(c, 'A'),
+            other => panic!("expected JumpToMarkExact('A'), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn esc_cancels_set_mark_pending() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterSetMark, &b),
+                key(KeyCode::Esc)
+            ),
+            Action::SetPending(Pending::None)
+        ));
+    }
+
+    #[test]
+    fn non_alpha_after_set_mark_clears_pending() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterSetMark, &b),
+                key(KeyCode::Char(' '))
+            ),
+            Action::SetPending(Pending::None)
         ));
     }
 

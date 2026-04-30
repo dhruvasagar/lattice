@@ -124,6 +124,9 @@ pub enum Action {
     /// Vim's `.` -- re-dispatch the last buffer-mutating invocation from
     /// the current cursor.
     RepeatLastChange,
+    /// Replace mode: overwrite the char at the cursor with `c` and advance.
+    /// Beyond end-of-line, falls back to insert (vim behavior).
+    OverwriteChar(char),
     /// `m<letter>` -- record the cursor at mark `<letter>`.
     SetMark(char),
     /// `'<letter>` -- jump to the line of mark `<letter>` (column = first
@@ -403,6 +406,8 @@ impl App {
             Action::EnterVisual(kind) => self.do_enter_visual(kind),
             Action::ExitVisual => self.do_exit_visual(),
             Action::ReselectLastVisual => self.do_reselect_visual(),
+
+            Action::OverwriteChar(c) => self.do_overwrite_char(c),
 
             Action::SetMark(name) => {
                 if is_valid_mark_name(name) {
@@ -797,6 +802,30 @@ impl App {
         // (which is now the position of whatever followed). Vim's behavior.
         if let Some(first) = edits.first() {
             self.cursor = first.original_range.start;
+        }
+    }
+
+    /// Overstrike one char at the cursor: if the cursor is mid-line,
+    /// replace `[cursor, cursor+1)` with `c`; if past EOL, just insert
+    /// (vim's R extends the line). Either way the cursor advances by
+    /// one byte. v1 does not record the overwritten char for
+    /// backspace-restore; that's a §15 follow-up.
+    fn do_overwrite_char(&mut self, c: char) {
+        let len = line_byte_len(&self.document, self.cursor.line);
+        let s = c.to_string();
+        if self.cursor.byte < len {
+            let r = ProtoRange::new(
+                self.cursor,
+                Position::new(self.cursor.line, self.cursor.byte + 1),
+            );
+            if let Ok(applied) = self.document.apply_edit(Edit::replace(r, &s)) {
+                self.cursor = applied.inserted_range.end;
+            }
+        } else {
+            // Past end of line: extend.
+            if let Ok(applied) = self.document.apply_edit(Edit::insert(self.cursor, &s)) {
+                self.cursor = applied.inserted_range.end;
+            }
         }
     }
 
@@ -1795,6 +1824,57 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- Replace mode ----
+
+    #[test]
+    fn enter_replace_sets_modal() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterMode(ModalState::Replace));
+        assert_eq!(a.modal, ModalState::Replace);
+    }
+
+    #[test]
+    fn overwrite_char_replaces_byte_at_cursor() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterMode(ModalState::Replace));
+        a.apply(Action::OverwriteChar('H'));
+        assert_eq!(a.document.text(), "Hello");
+        assert_eq!(a.cursor, Position::new(0, 1));
+    }
+
+    #[test]
+    fn overwrite_chain_replaces_consecutively() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterMode(ModalState::Replace));
+        for c in "WORL".chars() {
+            a.apply(Action::OverwriteChar(c));
+        }
+        assert_eq!(a.document.text(), "WORLo");
+        assert_eq!(a.cursor, Position::new(0, 4));
+    }
+
+    #[test]
+    fn overwrite_at_eol_extends_line() {
+        let mut a = app_with("hi", 10);
+        a.cursor = Position::new(0, 2);
+        a.apply(Action::EnterMode(ModalState::Replace));
+        a.apply(Action::OverwriteChar('!'));
+        assert_eq!(a.document.text(), "hi!");
+        assert_eq!(a.cursor, Position::new(0, 3));
+    }
+
+    #[test]
+    fn esc_exits_replace_to_normal_and_pulls_cursor_back() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterMode(ModalState::Replace));
+        a.apply(Action::OverwriteChar('H'));
+        // Cursor at (0,1) after one overwrite.
+        a.apply(Action::EnterMode(ModalState::Normal));
+        // enter_mode pulls cursor back one byte on Normal entry.
+        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.cursor, Position::new(0, 0));
     }
 
     // ---- Marks ----

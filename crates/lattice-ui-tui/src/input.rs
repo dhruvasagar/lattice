@@ -45,7 +45,22 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         ModalState::Command => translate_command(event),
         ModalState::Search(_) => translate_search(event),
         ModalState::Visual(_) => translate_visual(event, ctx.builtins),
-        // Replace + OperatorPending route to no-op until their layers land.
+        ModalState::Replace => translate_replace(event),
+        // OperatorPending routes to no-op (it's a transient resolution
+        // state inside translate_normal, not a top-level reachable state).
+        _ => Action::None,
+    }
+}
+
+fn translate_replace(event: KeyEvent) -> Action {
+    if event.modifiers.contains(KeyModifiers::CONTROL) {
+        return Action::None;
+    }
+    match event.code {
+        KeyCode::Esc => Action::EnterMode(ModalState::Normal),
+        KeyCode::Backspace => Action::DeleteCharBackward,
+        KeyCode::Enter => Action::Insert("\n".into()),
+        KeyCode::Char(c) => Action::OverwriteChar(c),
         _ => Action::None,
     }
 }
@@ -221,6 +236,7 @@ fn translate_normal(
         KeyCode::Char(':') => Action::EnterCommandLine,
         KeyCode::Char('v') => Action::EnterVisual(VisualKind::Charwise),
         KeyCode::Char('V') => Action::EnterVisual(VisualKind::Linewise),
+        KeyCode::Char('R') => Action::EnterMode(ModalState::Replace),
 
         // Search
         KeyCode::Char('/') => Action::EnterSearch(SearchDirection::Forward),
@@ -1047,6 +1063,68 @@ mod tests {
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
         ));
+    }
+
+    // ---- Replace mode ----
+
+    #[test]
+    fn capital_r_enters_replace_mode() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('R'))
+            ),
+            Action::EnterMode(ModalState::Replace)
+        ));
+    }
+
+    #[test]
+    fn char_in_replace_emits_overwrite() {
+        let (_, b) = fixture();
+        match translate(
+            ctx(ModalState::Replace, Pending::None, &b),
+            key(KeyCode::Char('z')),
+        ) {
+            Action::OverwriteChar(c) => assert_eq!(c, 'z'),
+            other => panic!("expected OverwriteChar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn esc_in_replace_returns_to_normal() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Replace, Pending::None, &b),
+                key(KeyCode::Esc)
+            ),
+            Action::EnterMode(ModalState::Normal)
+        ));
+    }
+
+    #[test]
+    fn backspace_in_replace_deletes_char_backward() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Replace, Pending::None, &b),
+                key(KeyCode::Backspace)
+            ),
+            Action::DeleteCharBackward
+        ));
+    }
+
+    #[test]
+    fn enter_in_replace_inserts_newline() {
+        let (_, b) = fixture();
+        match translate(
+            ctx(ModalState::Replace, Pending::None, &b),
+            key(KeyCode::Enter),
+        ) {
+            Action::Insert(s) => assert_eq!(s, "\n"),
+            other => panic!("expected Insert, got {other:?}"),
+        }
     }
 
     // ---- Marks ----

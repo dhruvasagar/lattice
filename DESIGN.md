@@ -107,6 +107,8 @@ The four paramount goals -- in priority order when they conflict -- are **perfor
 - **Multi-cursor as the primary editing model.** The selection data type is a set so multi-cursor is a clean post-1.0 extension; v1 invariants assume a single selection with vim's visual extents.
 - **Pluggable editing paradigms in v1.** No emacs/readline-style alternative to vim modal editing in v1. The command API is paradigm-agnostic so an alternative can be added post-1.0 without redesign.
 - **Fixed dock layout.** No left/right sidebar or bottom-panel as a first-class concept. Panels-as-buffers compose via the pane tree.
+- **In-process scripting language / sub-keystroke REPL.** No Lua, no embedded Scheme, no `M-x ielm`. WASM (Rust today; any component-model language tomorrow) is the single extension substrate. Live evaluation is the `*scratch:rust*` plugin-authoring workflow described in §10, with 1-3 s compile latency, not a sub-keystroke evaluator. A community-shipped plugin can offer the latter as an extension; the host does not.
+- **Backwards-compatible config syntax** beyond TOML. Lua / vimscript / elisp config files are not supported; config is TOML, extensions are WASM.
 
 ---
 
@@ -173,7 +175,7 @@ The editor is structured as **three strictly separated layers** communicating ex
 | Text shaping | **`cosmic-text`** or **`parley`** | Full Unicode when needed; bypassed on monospace fast path. |
 | Plugin runtime | **`wasmtime`** + Component Model + WASI | Sandboxing, fuel limits, async host. |
 | Serialization | **`serde`** + MessagePack (`rmp-serde`); WIT for plugin interfaces | Zero-cost in-process; Component Model for plugins. |
-| Config | **TOML** + **Lua** (via `mlua`) for tier-2 | TOML 90% case; Lua for power users. |
+| Config | **TOML** | Single config tier. Anything beyond config is a WASM plugin (§10). |
 | CLI | **`clap`** | Standard. |
 | Logging | **`tracing`** + `tracing-subscriber` | Structured logs, span timing. |
 | Build | **`cargo`** workspace | Crate boundaries enforce architecture. |
@@ -459,6 +461,69 @@ Every registration returns an id usable in keymaps, in `:` invocations, in scrip
 
 **Multi-cursor (post-1.0).** The selection set already permits it. Adding multi-cursor later requires per-feature semantic spec (which operators broadcast, how registers behave, how dot-repeat interacts) but no fundamental rework of the grammar, the dispatcher, or the command API.
 
+#### 5.2.5 Latency classes (the keystroke contract)
+
+Every command's `CommandSpec` declares a **latency class** that pins how the runtime schedules its work and what budget the CI test harness enforces:
+
+```rust
+pub enum LatencyClass {
+	Reflex,      // sync Effect must commit within keystroke budget (<2ms p99)
+	Display,     // sync Effect within "feel responsive" budget (~10ms p99)
+	Background,  // no user-perceived sync budget; throughput-only
+}
+```
+
+**Reflex.** Single-stroke editing primitives: cursor motion, char insert, mode entry, dot-repeat, simple delete, scroll. Their evaluator must commit a sync `Effect` within the keystroke budget. The input loop awaits the `Pending::effect` receiver on the keystroke path; if it's not ready by the deadline, the dispatcher cancels (see below) and the keystroke completes without a commit.
+
+**Display.** UI affordances that must *appear* immediately even when the data behind them is incomplete: open completion popup, open picker, open hover, post status segment, render last-cached search highlights. Their sync prelude commits a "shell" `Effect` (popup with placeholder, picker with no items yet, status segment with a spinner); the actual content arrives later via events.
+
+**Background.** No user-perceived sync work. File-watcher tick, indexer pass, plugin housekeeping, LSP `didChange` debounce. Fire-and-forget; effects flow into snapshots whenever they're ready.
+
+##### Events over invocation
+
+When a Display or Background command needs work it cannot complete sync-fast, **it MUST publish an event rather than synchronously invoke a follow-up command.** Subscribers (other commands, plugins, UI surfaces, providers) consume the event and produce their own events as additional work completes. This composes:
+
+- Multiple subscribers can react to the same event in parallel; no single command holds a chain of awaiting work.
+- Adding a new participant means subscribing to an existing event, not rewriting the originating command.
+- Late arrivals join the next snapshot's commit cycle without disturbing earlier ones.
+- Sorting, ranking, deduplication, filtering are themselves subscribers -- they consume raw events and emit refined events. No central coordinator orders the pipeline.
+
+Concrete shape for completion:
+
+1. User types `.`. The Reflex command "insert char" commits its sync `Effect` -- the period is in the buffer.
+2. A minor mode subscribed to `BufferEdit` recognises a completion-trigger char and **publishes** `Event::CompletionRequested { document, position, version }`.
+3. The Display command "open completion popup" runs its sync prelude -- popup appears with a spinner. Kept short so the popup itself is sync-fast.
+4. The LSP client subscribes to `CompletionRequested`; on receipt it issues `textDocument/completion` asynchronously and **publishes** `Event::CompletionCandidatesArrived { document, version, items, source }` when the response lands.
+5. Plugin completion providers (snippet sources, dictionary sources, AI providers) subscribe to the same `CompletionRequested` event and emit their own `CompletionCandidatesArrived` events as they finish -- possibly out of order.
+6. A ranking subscriber consumes raw `CompletionCandidatesArrived`, applies sorting / scoring / deduplication, and emits `Event::CompletionRanked { document, version, ordered_items }`.
+7. The completion popup view subscribes to `CompletionRanked`; each arrival updates the popup content. Each update is a sync `Effect` committed to the next snapshot. The user sees the spinner replaced by candidates the moment they arrive, and the list refining as more sources finish.
+
+The dispatcher and the event bus (§5.10) are the only coordination primitives. Plugin authors compose new behavior by subscribing -- never by direct cross-command calls.
+
+##### Cancellation contract for Reflex
+
+Every Reflex evaluator runs against a `CancellationToken`. The dispatcher sets a deadline timer based on the command's class budget; on expiry, the token is flipped. The evaluator must observe the flip and return promptly:
+
+- Target: < 100us from token flip to evaluator return.
+- Concrete pattern: poll `token.is_cancelled()` once per loop iteration over a buffer scan, and after every host call from a WASM evaluator. The CI test harness verifies budget compliance under cancellation by injecting flips at adversarial times.
+
+The same token is flipped by **user-initiated cancellation** -- pressing Esc during a long motion, or interrupting a regex motion hitting a pathological backtrack. The runtime treats both sources uniformly: a flipped token means "stop now." The user's Esc and the deadline timer are equivalent at the evaluator's level; the surface behavior (a flash "search interrupted" echo vs. silent abort) is differentiated at the input loop, not at the evaluator.
+
+**On cancellation, no `Effect` is committed.** The document actor sees `CommandError::Cancelled` and skips the snapshot publish step. The atomicity property of §5.2.1 holds: edits, selection updates, and decoration changes are committed *together* or not at all. A cancelled Reflex leaves the document at the version the keystroke arrived at; the user perceives the keystroke as having had no effect -- the correct framing, since they cancelled it.
+
+Display and Background commands cancel via the same token mechanism, but their deadline is class-appropriate (~10ms / no deadline), and their async tails carry independent cancellation tokens that are flipped when a newer same-event request supersedes them (a newer `CompletionRequested` cancels the in-flight LSP request from the prior one).
+
+##### CI enforcement
+
+Every registered command is benchmarked under criterion against a representative buffer corpus. The harness asserts:
+
+- Reflex commands meet their < 2ms p99 budget on normal-size buffers (1k-10k lines) and degrade gracefully (cancel, not blow) on adversarial inputs (100MB log, regex with backtracking).
+- Display commands' sync prelude is < 10ms p99.
+- Reflex evaluators correctly observe injected token flips within 100us p99.
+- Background commands have throughput targets but no latency assertions.
+
+A command that fails its class's budget is a CI regression on the same gate that catches §8.2 commitments.
+
 ### 5.3 Syntax: Tree-Sitter Integration
 
 Tree-sitter is responsible for **all** structural code understanding.
@@ -722,6 +787,89 @@ Plugins ship their own sprites. The `git-gutter` plugin registers `git-gutter:ad
 
 Sprites fit in line height. They participate in the existing decoration + gutter + status + picker pipelines. They share the GPU pipeline with glyphs. They do not change line layout. Path 4 (inline blocks) is for *non-line-height* media that affects the cumulative-height index and requires per-block layout work -- a strictly more complex problem deferred to post-1.0.
 
+#### 5.6.8 Render-snapshot coherence (the core / renderer contract)
+
+Every frame the renderer reads a coherent view of `(buffer text, syntax tree, decorations, selections, layout cache)`. These pieces live on different actors -- text and selections on the document actor, syntax trees on `spawn_blocking` workers, decorations from any source publishing into the document's decoration layer, layout cache on rayon workers (shaped buffers only). The renderer cannot acquire a lock the document actor holds, and it cannot afford a synchronous "give me a snapshot" round-trip into the actor: that round-trip would put the keystroke-to-glyph budget at the mercy of the actor's mailbox depth.
+
+The contract between core and renderer is therefore **publish-versioned, copy-on-write snapshots**: the document actor publishes immutable snapshots; the renderer reads the latest published snapshot with one atomic load per visible document at frame start, and uses *that snapshot* for the entire frame.
+
+```rust
+pub struct DocumentSnapshot {
+	pub document_id: DocumentId,
+	pub version: u64,                              // monotonic per document
+	pub text: Arc<RopeSnapshot>,                   // O(1) clone of ropey
+	pub selections: Arc<SelectionSet>,             // transformed against AppliedEdit
+	pub syntax: Option<Arc<SyntaxSnapshot>>,       // None for plain-text
+	pub decorations: Arc<DecorationLayer>,         // immutable; one layer per snapshot
+	pub layout: Option<Arc<LayoutCacheSnapshot>>,  // shaped buffers only
+}
+
+/// One atomic-load-published-pointer per document. arc-swap is the
+/// canonical primitive; `Cache::load()` is wait-free and ~2ns.
+pub struct PublishedSnapshot(arc_swap::ArcSwap<DocumentSnapshot>);
+```
+
+##### Publish discipline (actor side)
+
+The document actor holds the writable state. On every committed `Effect`, it constructs a new `DocumentSnapshot`:
+
+1. Fields not affected by the commit are `Arc::clone`d (one word each).
+2. Fields affected by the commit are rebuilt from the new state -- but most rebuilds are cheap: `RopeSnapshot` and `SelectionSet` are `Arc`-cloned plus a small mutation; `DecorationLayer` is rebuilt with the structural-sharing trick (a persistent map / `im::OrdMap`) so unchanged decorations are not copied.
+3. The actor does an atomic `store_release` on the published pointer.
+
+Snapshot construction p99 budget: **< 10 us** for buffers up to 100MB. No syscalls, no allocations beyond the changed fragments.
+
+Late arrivals from other actors -- tree-sitter completing a parse on a `spawn_blocking` worker, a plugin publishing decorations, rayon finishing a line shape -- submit their result to the document actor as an event. The actor folds the result into the *next* snapshot it publishes. Workers never publish snapshots themselves.
+
+##### Renderer discipline (read side)
+
+At frame start, each renderer instance does *one* `arc_swap::Cache::load` per visible document. The returned `Arc<DocumentSnapshot>` lives for the duration of the frame. All subsequent reads -- line text, span styles, decoration ranges, selection extents, shaped glyphs -- go through that snapshot. There are no additional loads, no actor round-trips, no per-line locks, no lifetime ambiguity.
+
+At end-of-frame the `Arc` drops; if the actor has since published newer snapshots and no other reader holds the old one, it's reclaimed. Lock-free reclamation is `arc-swap`'s job.
+
+##### Coherence guarantees within a snapshot
+
+- **Text + selections + decorations are always coherent with each other**, because they all commit through the actor's single publish step. A selection at byte 100 corresponds exactly to that byte in this snapshot's rope, even if the actor has since committed an edit that would shift it.
+- **Syntax may lag the text by one snapshot**: if the actor publishes snapshot N before the parse for N has landed, snapshot N carries the tree from version N-1. The renderer treats this as "highlights are one snapshot stale," consistent with §5.6.2's existing claim that one-frame-stale highlights are accepted.
+- **Layout cache may lag similarly** for shaped buffers; the renderer falls back to the prior `LayoutCacheSnapshot` for one frame when shaping isn't done.
+
+##### Cross-pane: same document, different snapshots
+
+Two panes rendering the same document at the same vsync may capture *different* snapshots if their frame work straddles a publish. This is intentional. Forcing same-version across panes would require a global frame fence that holds back the leading pane's render until the trailing one is ready -- the wrong tradeoff against latency. Visually, pane B may render one snapshot behind pane A; this is below human perception at >= 60Hz.
+
+##### Multi-pane selection transformation under remote edits
+
+When the actor commits an edit, the resulting `AppliedEdit` is **applied to all open selections on that document** (including selections owned by panes other than the one that issued the edit) before the next snapshot is published. The transformed selections become part of the new snapshot's `Arc<SelectionSet>`. Panes whose next frame uses that snapshot see selections at correct positions; panes using an older snapshot continue to see selections at the older positions -- which are still internally coherent with that older snapshot's text. There is no "selection points at byte 100 but the text shifted" torn state, ever.
+
+This is the property emacs's marker objects provide and that vim doesn't need (vim never edits-and-renders concurrently). It pins §15:12 (multi-window state synchronization).
+
+##### Why `arc-swap` specifically
+
+`arc-swap` is an RCU-flavored primitive: lock-free read, atomic publish, refcount-based reclamation on last drop. We name it explicitly so the implementation is not free to swap to a flavor with different visibility rules (full-fence atomics across an unrelated mutex, per-thread epoch tables) that would change the renderer's correctness model. The required semantics are:
+
+- **Renderer reads a published snapshot with `load-acquire` ordering** -- the read sees all writes the publisher ordered before its `store-release`.
+- **Actor publishes with `store-release`** -- prior writes to the snapshot's interior are visible to any reader observing the new pointer.
+- **Reclamation is by refcount drop, not by epoch fence** -- the renderer's `Arc<DocumentSnapshot>` keeps the snapshot alive for as long as it needs it, regardless of how many newer snapshots the actor publishes in the meantime.
+
+##### Memory cost
+
+A `DocumentSnapshot` is approximately: six `Arc` words (~48 bytes on 64-bit) plus the changed-fragment costs of the underlying immutable structures. Per-document overhead with one snapshot in flight + one being constructed: ~200 bytes regardless of file size, because `Arc` clones do not copy underlying B-trees. Even a 100MB buffer is one shared rope tree.
+
+Snapshot retention: the actor keeps **one** published snapshot live; older ones are dropped when no reader holds them. Renderers naturally release at end-of-frame. A frozen renderer (e.g. a debugger has stopped the UI thread) would pin one old snapshot, but this is bounded -- the actor keeps publishing newer ones; old snapshots are released when the renderer thaws.
+
+##### Performance contract
+
+| Operation | Target (p99) |
+|---|---|
+| Snapshot publish (actor side) | < 10us |
+| Snapshot load (renderer side, `arc_swap::Cache::load`) | < 5ns |
+| Whole-frame: locks held by renderer | 0 |
+| Whole-frame: actor round-trips by renderer | 0 |
+
+The renderer's frame budget (§8.2) treats snapshot acquisition as a fixed cost in the single-digit-nanoseconds range, freeing the rest of the budget for actual rendering work.
+
+This is the load-bearing async invariant of the editor. Every other piece of the architecture -- actor mailboxes, dispatcher async returns, plugin async ABI, event bus -- assumes the renderer has a frozen, coherent view to work against. That assumption is what this section pins.
+
 ### 5.7 Async Runtime and Threading
 
 | Component | Runs on |
@@ -761,7 +909,7 @@ Activation: auto-activate per major mode, user toggle (`:enable`/`:disable`), pr
 
 #### 5.8.3 Implementation as plugins
 
-Major and minor modes are implemented as WASM plugins (or tier-2 Lua scripts). No privileged built-in path. Built-in modes ship as bundled plugins.
+Major and minor modes are implemented as WASM plugins. No privileged built-in path. Built-in modes ship as bundled plugins (§9.7).
 
 ### 5.9 UI Components
 
@@ -1420,7 +1568,6 @@ A built-in command (`:customize`, or the `customize` major mode) opens a buffer 
 - `:describe-option <name>` (introspection).
 - The customize buffer.
 - A plugin's WIT call (`config.set` / `config.get`).
-- Programmatic Lua / TOML bindings.
 
 All four entry points produce or consume the same typed `Value` against the same `OptionSpec`.
 
@@ -1808,7 +1955,11 @@ The reference plugins exercise every primitive: pickers, popups, buffer-backed v
 
 ## 10. Configuration and Extension Tiers
 
-Three tiers: TOML, Lua, WASM. (Unchanged from v0.2.) Same logical extension expressible at any tier.
+**Two tiers: TOML and WASM.** TOML covers configuration -- options, keymaps, layouts, theme, default minor-modes per major-mode. WASM (Component Model + WIT) is the single substrate for everything else: extensions, custom motions/operators/text-objects, plugin-provided modes, and live evaluation.
+
+**Live evaluation in lattice means plugin authoring without restart**, not REPL-style sub-keystroke evaluation. A built-in `*scratch:rust*` buffer accepts Rust source; on `:eval` (or whatever the user binds), the host writes the source to a temp directory, invokes the system `rustc --target wasm32-wasip2`, dynamically loads the resulting component, and instantiates it against the same plugin host substrate shipped plugins use. The new commands / motions / decorations / event subscriptions become available immediately. Compile latency is 1-3 s -- explicitly *not* an emacs `M-x ielm` experience. Users wanting a sub-keystroke REPL install a community-shipped plugin that exposes a typed S-expression evaluator over the `CommandRegistry`; it is not a host concern.
+
+**Why no in-process scripting language.** A second runtime (Lua via mlua, embedded Scheme, Rhai) doubles the API surface plugin authors must learn, doubles the binding maintenance, and divides the ecosystem between "plugin-shaped" and "scripting-shaped" extensions that should be the same shape. The Rust-WASM-only choice keeps every extension on one substrate with one set of tooling. The cost is the live-eval-experience tradeoff above; we accept it.
 
 ```toml
 [editor]
@@ -1857,7 +2008,6 @@ lattice/
 |   |-- lattice-lsp/                   # LSP client
 |   |-- lattice-plugin-host/           # wasmtime + Component Model + WIT bindings
 |   |-- lattice-modes/                 # major / minor mode registry
-|   |-- lattice-script/                # Lua tier-2 config bridge
 |   |-- lattice-protocol/              # Command / Event enums; serde + msgpack
 |   |-- lattice-config/                # TOML config parsing
 |   |-- lattice-render/                # Renderer trait, atlas, frame, fonts
@@ -1953,7 +2103,7 @@ Diagnostics, completion, hover, definition, references; cancellation; version tr
 Shaped path in `lattice-render-editor`. Per-line layout cache + Fenwick index. `markdown-mode`. Style mappings system. **Exit:** edit markdown with variable headings; latency indistinguishable from code.
 
 ### Phase 10: Polish and v1.0 (weeks 29-32)
-Lua tier-2. Accessibility. Cross-platform packaging. Crash reporter. Documentation. Themes. **Exit:** 1.0 release.
+Live-eval (`*scratch:rust*` -> `rustc` -> dynamic plugin load). Accessibility. Cross-platform packaging. Crash reporter. Documentation. Themes. **Exit:** 1.0 release.
 
 ### Post-1.0
 Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH. Collaborative editing. Multi-cursor as first-class editing model. Pluggable editing paradigms (e.g., emacs / readline-style alternative). `tree-sitter-motions` plugin promoted to a bundled extension. PTY-backed `terminal` buffer view.
@@ -1997,7 +2147,7 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 9. Live-reload of plugin-defined modes -- without restart?
 10. Style mapping override layering -- formal precedence: theme vs. mode vs. user vs. plugin.
 11. Picker keymap defaults -- Tab vs. Enter vs. Ctrl-N for next item; align with which existing tool.
-12. Multi-window state synchronization -- when the same document is open in two windows, how do scroll / selection / focus events propagate.
+12. ~~Multi-window state synchronization -- when the same document is open in two windows, how do scroll / selection / focus events propagate.~~ Resolved in §5.6.8: selections are transformed against `AppliedEdit` and published as part of the next `DocumentSnapshot`; per-pane scroll / focus is pane-local state.
 13. Notification persistence -- should errors persist across sessions until acknowledged.
 14. **Default layouts** (new in v0.4) -- which named layouts ship in default config so the everything-is-a-buffer model has good zero-config defaults.
 15. **Grammar extension API surface for tree-sitter motions** (new in v0.4) -- exact shape of the host's tree-sitter query API exposed to plugins (one-shot vs. cursor-based query iterator; range scoping; query caching).
@@ -2005,7 +2155,7 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 17. **WASM AOT cache invalidation** (new in v0.4) -- when do we invalidate cached compiled modules (wasmtime version, target triple, plugin checksum, all three).
 18. **Folds** (deferred) -- vim has manual / indent / syntax / expr folds; tree-sitter gives us syntax folds nearly free. Open: storage (rope-side metadata vs. computed view), interaction with motions (`zj`/`zk`/`[z`/`]z`) and operators that target folded ranges, persistence across sessions.
 19. **Replace mode (`R`) dispatch** (deferred) -- overstrike is a third edit mode beside Normal/Insert. Open: whether to model it as a flag on Insert or as its own modal state in the state machine, and how dot-repeat records overstrike spans.
-20. **Live evaluation / REPL parity** (deferred) -- emacs's `M-x ielm`, `eval-last-sexp`, scratch buffer. Open: do we expose a host-side scripting REPL (Lua via mlua), a per-plugin WASM eval surface, both, or neither for v1.
+20. ~~**Live evaluation / REPL parity** -- emacs's `M-x ielm`, `eval-last-sexp`, scratch buffer.~~ Resolved per §10 / §2.2: live evaluation in lattice means *plugin authoring without restart* via `*scratch:rust*` -> `rustc` -> dynamic plugin load, sharing the WASM plugin host substrate. In-process REPL with sub-keystroke evaluation is an explicit non-goal; users wanting it install a community-shipped plugin.
 21. **File watcher / auto-revert** (deferred) -- emacs's `auto-revert-mode` and external-change detection. Open: notify-based watcher per workspace, mtime poll fallback, conflict resolution UI when external + local edits diverge.
 22. **Bookmarks and cross-file marks** (deferred) -- vim's `'A`-`'Z` global marks and emacs's bookmark facility cover overlapping ground. Position history (§5.1.1) handles in-process navigation; bookmarks need persistence, naming, and a picker.
 23. **Function rebinding / advice** (deferred) -- emacs's `defadvice` / `advice-add`. The dispatcher already mediates every command, so wrapping is a registry-side concern. Open: advice ordering, removal semantics, interaction with WASM-defined commands, fuel accounting for advice chains.

@@ -192,6 +192,8 @@ fn translate_normal(
         KeyCode::Char('d') => Action::SetPending(Pending::AfterOperator(builtins.delete)),
         KeyCode::Char('c') => Action::SetPending(Pending::AfterOperator(builtins.change)),
         KeyCode::Char('y') => Action::SetPending(Pending::AfterOperator(builtins.yank)),
+        KeyCode::Char('>') => Action::SetPending(Pending::AfterOperator(builtins.indent_right)),
+        KeyCode::Char('<') => Action::SetPending(Pending::AfterOperator(builtins.indent_left)),
 
         // Paste
         KeyCode::Char('p') => Action::PasteAfter,
@@ -256,9 +258,16 @@ fn translate_normal(
 }
 
 fn resolve_after_g(event: KeyEvent, builtins: &Builtins) -> Action {
-    // `gg`: jump to first line. Anything else cancels the pending state.
     match event.code {
+        // `gg`: jump to first line.
         KeyCode::Char('g') => invoke(builtins.goto_first_line),
+        // Case operators: `gU`/`gu`/`g~` enter operator-pending state with
+        // the corresponding operator latched; the next key supplies the
+        // motion or text-object target. `gUU`/`guu`/`g~~` operate on the
+        // current line.
+        KeyCode::Char('U') => Action::SetPending(Pending::AfterOperator(builtins.upper)),
+        KeyCode::Char('u') => Action::SetPending(Pending::AfterOperator(builtins.lower)),
+        KeyCode::Char('~') => Action::SetPending(Pending::AfterOperator(builtins.toggle_case)),
         _ => Action::SetPending(Pending::None),
     }
 }
@@ -302,6 +311,31 @@ fn resolve_after_operator(
         }
         KeyCode::Char('y') if op == builtins.yank => {
             // `yy` -- yank current line into the unnamed register (linewise).
+            return Action::Invoke(
+                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
+            );
+        }
+        KeyCode::Char('>') if op == builtins.indent_right => {
+            return Action::Invoke(
+                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
+            );
+        }
+        KeyCode::Char('<') if op == builtins.indent_left => {
+            return Action::Invoke(
+                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
+            );
+        }
+        KeyCode::Char('U') if op == builtins.upper => {
+            return Action::Invoke(
+                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
+            );
+        }
+        KeyCode::Char('u') if op == builtins.lower => {
+            return Action::Invoke(
+                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
+            );
+        }
+        KeyCode::Char('~') if op == builtins.toggle_case => {
             return Action::Invoke(
                 CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
             );
@@ -977,6 +1011,130 @@ mod tests {
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
         ));
+    }
+
+    // ---- Indent and case operators ----
+
+    #[test]
+    fn gt_sets_pending_indent_right() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('>')),
+        );
+        match action {
+            Action::SetPending(Pending::AfterOperator(op)) => {
+                assert_eq!(op, b.indent_right);
+            }
+            other => panic!("expected SetPending(AfterOperator(indent_right)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lt_sets_pending_indent_left() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('<')),
+        );
+        match action {
+            Action::SetPending(Pending::AfterOperator(op)) => {
+                assert_eq!(op, b.indent_left);
+            }
+            other => panic!("expected SetPending(AfterOperator(indent_left)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn double_gt_resolves_to_indent_right_current_line() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.indent_right), &b),
+            key(KeyCode::Char('>')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.indent_right.0);
+                assert_eq!(inv.range, Some(lattice_grammar::Range::CurrentLine));
+            }
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn gu_after_g_sets_pending_lower() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterG, &b),
+            key(KeyCode::Char('u')),
+        );
+        match action {
+            Action::SetPending(Pending::AfterOperator(op)) => assert_eq!(op, b.lower),
+            other => panic!("expected SetPending(AfterOperator(lower)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capital_g_then_capital_u_sets_pending_upper() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterG, &b),
+            key(KeyCode::Char('U')),
+        );
+        match action {
+            Action::SetPending(Pending::AfterOperator(op)) => assert_eq!(op, b.upper),
+            other => panic!("expected SetPending(AfterOperator(upper)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g_tilde_after_g_sets_pending_toggle_case() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterG, &b),
+            key(KeyCode::Char('~')),
+        );
+        match action {
+            Action::SetPending(Pending::AfterOperator(op)) => assert_eq!(op, b.toggle_case),
+            other => panic!("expected SetPending(AfterOperator(toggle_case)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn guu_resolves_to_lower_current_line() {
+        let (_, b) = fixture();
+        // After `gu`, pending = AfterOperator(lower). Pressing `u` doubles.
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.lower), &b),
+            key(KeyCode::Char('u')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.lower.0);
+                assert_eq!(inv.range, Some(lattice_grammar::Range::CurrentLine));
+            }
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn g_capital_u_w_resolves_to_upper_word_forward() {
+        let (_, b) = fixture();
+        // After `gU`, pending = AfterOperator(upper). Pressing `w` is the motion.
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.upper), &b),
+            key(KeyCode::Char('w')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.upper.0);
+                match inv.target {
+                    Some(Target::Motion(id, _)) => assert_eq!(id, b.word_forward),
+                    other => panic!("expected motion target, got {other:?}"),
+                }
+            }
+            _ => panic!("expected Invoke"),
+        }
     }
 
     // ---- Text object chord routing ----

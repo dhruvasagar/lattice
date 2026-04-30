@@ -191,6 +191,46 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Box::new(operator_yank),
         },
     );
+    let indent_left = registry.register_operator(
+        "operator:indent-left",
+        "Strip leading indentation (4 spaces or one tab) from each line in the range (vim's `<`).",
+        OperatorSpec {
+            repeatable: true,
+            apply: Box::new(operator_indent_left),
+        },
+    );
+    let indent_right = registry.register_operator(
+        "operator:indent-right",
+        "Prepend 4 spaces to each line in the range (vim's `>`).",
+        OperatorSpec {
+            repeatable: true,
+            apply: Box::new(operator_indent_right),
+        },
+    );
+    let upper = registry.register_operator(
+        "operator:upper",
+        "Uppercase ASCII letters in the range (vim's `gU`).",
+        OperatorSpec {
+            repeatable: true,
+            apply: Box::new(operator_upper),
+        },
+    );
+    let lower = registry.register_operator(
+        "operator:lower",
+        "Lowercase ASCII letters in the range (vim's `gu`).",
+        OperatorSpec {
+            repeatable: true,
+            apply: Box::new(operator_lower),
+        },
+    );
+    let toggle_case = registry.register_operator(
+        "operator:toggle-case",
+        "Toggle case of ASCII letters in the range (vim's `g~`).",
+        OperatorSpec {
+            repeatable: true,
+            apply: Box::new(operator_toggle_case),
+        },
+    );
 
     let inner_word = registry.register_text_object(
         "text-object:inner-word",
@@ -311,6 +351,11 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         delete,
         change,
         yank,
+        indent_left,
+        indent_right,
+        upper,
+        lower,
+        toggle_case,
         inner_word,
         around_word,
         inner_quote_double,
@@ -349,6 +394,11 @@ pub struct Builtins {
     pub delete: OperatorId,
     pub change: OperatorId,
     pub yank: OperatorId,
+    pub indent_left: OperatorId,
+    pub indent_right: OperatorId,
+    pub upper: OperatorId,
+    pub lower: OperatorId,
+    pub toggle_case: OperatorId,
     pub inner_word: TextObjectId,
     pub around_word: TextObjectId,
     pub inner_quote_double: TextObjectId,
@@ -1089,6 +1139,111 @@ fn operator_yank(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     })
 }
 
+// ---- Indent operators (>, <) ----
+
+const INDENT_UNIT: &str = "    ";
+
+/// Vim's `>` -- prepend INDENT_UNIT to each line in the range.
+fn operator_indent_right(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    if ctx.range.is_empty() {
+        return Ok(Effect::None);
+    }
+    let first_line = ctx.range.start.line;
+    let last_line = ctx.range.end.line;
+    let mut applied = Vec::new();
+    // Walk lines bottom-up so earlier inserts don't shift later positions.
+    for line in (first_line..=last_line).rev() {
+        let pos = Position::new(line, 0);
+        let edit = Edit::insert(pos, INDENT_UNIT);
+        applied.insert(0, ctx.document.apply_edit(edit)?);
+    }
+    Ok(Effect::Edits(applied))
+}
+
+/// Vim's `<` -- strip up to INDENT_UNIT bytes of leading whitespace from
+/// each line in the range. A leading tab also counts as one indent unit
+/// for v1.
+fn operator_indent_left(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    if ctx.range.is_empty() {
+        return Ok(Effect::None);
+    }
+    let first_line = ctx.range.start.line;
+    let last_line = ctx.range.end.line;
+    let mut applied = Vec::new();
+    for line in (first_line..=last_line).rev() {
+        // Inspect the leading bytes: take up to INDENT_UNIT.len() spaces, OR
+        // a single leading tab, whichever applies.
+        let buffer_text = ctx.document.text();
+        let line_text = buffer_text
+            .split_inclusive('\n')
+            .nth(line as usize)
+            .map(|l| l.trim_end_matches('\n'))
+            .unwrap_or("");
+        let bytes = line_text.as_bytes();
+        let mut strip = 0usize;
+        if !bytes.is_empty() && bytes[0] == b'\t' {
+            strip = 1;
+        } else {
+            while strip < INDENT_UNIT.len() && strip < bytes.len() && bytes[strip] == b' ' {
+                strip += 1;
+            }
+        }
+        if strip == 0 {
+            continue;
+        }
+        let range = lattice_protocol::position::Range::new(
+            Position::new(line, 0),
+            Position::new(line, strip as u32),
+        );
+        let edit = Edit::delete(range);
+        applied.insert(0, ctx.document.apply_edit(edit)?);
+    }
+    if applied.is_empty() {
+        Ok(Effect::None)
+    } else {
+        Ok(Effect::Edits(applied))
+    }
+}
+
+// ---- Case operators (gU, gu, g~) ----
+
+fn case_transform_in_range<F: Fn(u8) -> u8>(
+    ctx: &mut OperatorContext,
+    map: F,
+) -> Result<Effect, CommandError> {
+    if ctx.range.is_empty() {
+        return Ok(Effect::None);
+    }
+    let original = ctx.document.buffer().slice(ctx.range)?;
+    let transformed: String = original
+        .as_bytes()
+        .iter()
+        .map(|&b| map(b) as char)
+        .collect();
+    if transformed == original {
+        return Ok(Effect::None);
+    }
+    let edit = Edit::replace(ctx.range, &transformed);
+    let applied = ctx.document.apply_edit(edit)?;
+    Ok(Effect::Edits(vec![applied]))
+}
+
+fn operator_upper(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    case_transform_in_range(ctx, |b| b.to_ascii_uppercase())
+}
+
+fn operator_lower(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    case_transform_in_range(ctx, |b| b.to_ascii_lowercase())
+}
+
+fn operator_toggle_case(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    case_transform_in_range(ctx, |b| match b {
+        b'a'..=b'z' => b - 32,
+        b'A'..=b'Z' => b + 32,
+        other => other,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
@@ -1560,6 +1715,119 @@ mod tests {
             .with_target(Target::Motion(b.word_backward, crate::args::Args::None));
         execute(&registry, &mut doc, Position::new(0, 11), inv).unwrap();
         assert_eq!(doc.text(), "hello ");
+    }
+
+    // ---- Indent operators (>, <) ----
+
+    #[test]
+    fn indent_right_current_line_prepends_four_spaces() {
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = CommandInvocation::of(b.indent_right.0)
+            .with_range(crate::range::Range::CurrentLine);
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        assert_eq!(doc.text(), "    hello");
+    }
+
+    #[test]
+    fn indent_left_current_line_strips_four_spaces() {
+        let (registry, b, mut doc) = fixture("    hello");
+        let inv = CommandInvocation::of(b.indent_left.0)
+            .with_range(crate::range::Range::CurrentLine);
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        assert_eq!(doc.text(), "hello");
+    }
+
+    #[test]
+    fn indent_left_strips_partial_indent() {
+        let (registry, b, mut doc) = fixture("  hello");
+        let inv = CommandInvocation::of(b.indent_left.0)
+            .with_range(crate::range::Range::CurrentLine);
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        // Only 2 spaces present; strips both.
+        assert_eq!(doc.text(), "hello");
+    }
+
+    #[test]
+    fn indent_left_strips_leading_tab() {
+        let (registry, b, mut doc) = fixture("\thello");
+        let inv = CommandInvocation::of(b.indent_left.0)
+            .with_range(crate::range::Range::CurrentLine);
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        assert_eq!(doc.text(), "hello");
+    }
+
+    #[test]
+    fn indent_left_no_indent_is_no_op() {
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = CommandInvocation::of(b.indent_left.0)
+            .with_range(crate::range::Range::CurrentLine);
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        assert_eq!(doc.text(), "hello");
+    }
+
+    #[test]
+    fn indent_right_with_whole_range_indents_every_line() {
+        let (registry, b, mut doc) = fixture("a\nb\nc");
+        let inv = CommandInvocation::of(b.indent_right.0)
+            .with_range(crate::range::Range::Whole);
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        assert_eq!(doc.text(), "    a\n    b\n    c");
+    }
+
+    #[test]
+    fn indent_left_with_whole_range_dedents_every_line() {
+        let (registry, b, mut doc) = fixture("    a\n    b\n    c");
+        let inv = CommandInvocation::of(b.indent_left.0)
+            .with_range(crate::range::Range::Whole);
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        assert_eq!(doc.text(), "a\nb\nc");
+    }
+
+    // ---- Case operators (gU, gu, g~) ----
+
+    #[test]
+    fn upper_uppercases_word_target() {
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.upper.0)
+            .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        // word_forward from 0 lands at byte 6 -> [0, 6) = "hello " -> "HELLO ".
+        assert_eq!(doc.text(), "HELLO world");
+    }
+
+    #[test]
+    fn lower_lowercases_range() {
+        let (registry, b, mut doc) = fixture("HELLO WORLD");
+        let inv = CommandInvocation::of(b.lower.0).with_range(crate::range::Range::Whole);
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        assert_eq!(doc.text(), "hello world");
+    }
+
+    #[test]
+    fn toggle_case_inverts_each_letter() {
+        let (registry, b, mut doc) = fixture("Hello World");
+        let inv = CommandInvocation::of(b.toggle_case.0).with_range(crate::range::Range::Whole);
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        assert_eq!(doc.text(), "hELLO wORLD");
+    }
+
+    #[test]
+    fn upper_with_no_letters_is_no_op() {
+        let (registry, b, mut doc) = fixture("123 !@# 456");
+        let inv = CommandInvocation::of(b.upper.0).with_range(crate::range::Range::Whole);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        // No transformation needed -> Effect::None.
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(doc.text(), "123 !@# 456");
+    }
+
+    #[test]
+    fn case_operators_preserve_non_letter_bytes() {
+        let (registry, b, mut doc) = fixture("foo_bar.baz");
+        let inv = CommandInvocation::of(b.upper.0).with_range(crate::range::Range::Whole);
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        // Underscore and dot pass through unchanged.
+        assert_eq!(doc.text(), "FOO_BAR.BAZ");
     }
 
     // ---- Text objects ----

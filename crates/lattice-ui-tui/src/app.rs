@@ -36,6 +36,25 @@ pub enum Pending {
     AfterG,
     /// Operator key pressed; awaiting motion or text-object.
     AfterOperator(OperatorId),
+    /// `f` / `F` / `t` / `T` pressed; awaiting the target character.
+    /// If the user pressed an operator first (like `df`), the operator is
+    /// stashed here so we can compose `df<char>` into a single Invoke.
+    AfterFindChar {
+        kind: FindKind,
+        operator: Option<OperatorId>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindKind {
+    /// `f` -- move to next occurrence of the char on the current line.
+    Forward,
+    /// `F` -- move to previous occurrence of the char on the current line.
+    Backward,
+    /// `t` -- move to one byte before the next occurrence (inclusive of arg).
+    TillForward,
+    /// `T` -- move to one byte after the previous occurrence.
+    TillBackward,
 }
 
 /// A transient one-line message rendered in the echo area below the mode line
@@ -1478,6 +1497,77 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- find / till motions end-to-end ----
+
+    #[test]
+    fn fz_jumps_to_z_on_current_line() {
+        let mut a = app_with("hello, world", 10);
+        let inv = CommandInvocation::of(a.builtins.find_char_forward.0)
+            .with_args(lattice_grammar::Args::Char('w'));
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.cursor, Position::new(0, 7));
+    }
+
+    #[test]
+    fn capital_f_jumps_backward() {
+        let mut a = app_with("hello, world", 10);
+        a.cursor = Position::new(0, 11); // on 'd'
+        let inv = CommandInvocation::of(a.builtins.find_char_backward.0)
+            .with_args(lattice_grammar::Args::Char('h'));
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn t_lands_one_byte_before_target() {
+        let mut a = app_with("hello, world", 10);
+        let inv = CommandInvocation::of(a.builtins.till_char_forward.0)
+            .with_args(lattice_grammar::Args::Char('w'));
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.cursor, Position::new(0, 6));
+    }
+
+    #[test]
+    fn df_deletes_through_target_char() {
+        // From "hello, world" with cursor at 0, `df,` deletes "hello," and
+        // leaves " world".
+        let mut a = app_with("hello, world", 10);
+        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(
+                a.builtins.find_char_forward,
+                lattice_grammar::Args::Char(','),
+            ),
+        );
+        a.apply(Action::Invoke(inv));
+        // dispatcher uses [start, end) range; find_char_forward returns the
+        // position of the comma (byte 5), so [0, 5) = "hello" is deleted.
+        // The trailing comma stays in place.
+        assert_eq!(a.document.text(), ", world");
+    }
+
+    #[test]
+    fn ct_with_change_enters_insert_mode() {
+        let mut a = app_with("hello, world", 10);
+        let inv = CommandInvocation::of(a.builtins.change.0).with_target(
+            lattice_grammar::Target::Motion(
+                a.builtins.till_char_forward,
+                lattice_grammar::Args::Char(','),
+            ),
+        );
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    #[test]
+    fn find_no_match_keeps_cursor() {
+        let mut a = app_with("hello", 10);
+        a.cursor = Position::new(0, 1);
+        let inv = CommandInvocation::of(a.builtins.find_char_forward.0)
+            .with_args(lattice_grammar::Args::Char('z'));
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.cursor, Position::new(0, 1));
     }
 
     // ---- yank + paste end-to-end ----

@@ -16,7 +16,7 @@ use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::registry::{MotionId, OperatorId};
 
-use crate::app::{Action, Pending};
+use crate::app::{Action, FindKind, Pending};
 
 pub struct TranslateContext<'a> {
     pub modal: ModalState,
@@ -85,6 +85,9 @@ fn translate_normal(event: KeyEvent, pending: Pending, builtins: &Builtins) -> A
     match pending {
         Pending::AfterG => return resolve_after_g(event, builtins),
         Pending::AfterOperator(op) => return resolve_after_operator(event, builtins, op),
+        Pending::AfterFindChar { kind, operator } => {
+            return resolve_after_find_char(event, builtins, kind, operator);
+        }
         Pending::None => {}
     }
 
@@ -149,6 +152,24 @@ fn translate_normal(event: KeyEvent, pending: Pending, builtins: &Builtins) -> A
         KeyCode::Char('n') => Action::SearchNext,
         KeyCode::Char('N') => Action::SearchPrevious,
 
+        // Find-char on the current line
+        KeyCode::Char('f') => Action::SetPending(Pending::AfterFindChar {
+            kind: FindKind::Forward,
+            operator: None,
+        }),
+        KeyCode::Char('F') => Action::SetPending(Pending::AfterFindChar {
+            kind: FindKind::Backward,
+            operator: None,
+        }),
+        KeyCode::Char('t') => Action::SetPending(Pending::AfterFindChar {
+            kind: FindKind::TillForward,
+            operator: None,
+        }),
+        KeyCode::Char('T') => Action::SetPending(Pending::AfterFindChar {
+            kind: FindKind::TillBackward,
+            operator: None,
+        }),
+
         // Undo
         KeyCode::Char('u') => Action::Undo,
 
@@ -211,9 +232,60 @@ fn resolve_after_operator(
                 CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
             );
         }
+        KeyCode::Char('f') => {
+            return Action::SetPending(Pending::AfterFindChar {
+                kind: FindKind::Forward,
+                operator: Some(op),
+            });
+        }
+        KeyCode::Char('F') => {
+            return Action::SetPending(Pending::AfterFindChar {
+                kind: FindKind::Backward,
+                operator: Some(op),
+            });
+        }
+        KeyCode::Char('t') => {
+            return Action::SetPending(Pending::AfterFindChar {
+                kind: FindKind::TillForward,
+                operator: Some(op),
+            });
+        }
+        KeyCode::Char('T') => {
+            return Action::SetPending(Pending::AfterFindChar {
+                kind: FindKind::TillBackward,
+                operator: Some(op),
+            });
+        }
         _ => return Action::SetPending(Pending::None),
     };
     Action::Invoke(CommandInvocation::of(op.0).with_target(target))
+}
+
+fn resolve_after_find_char(
+    event: KeyEvent,
+    builtins: &Builtins,
+    kind: FindKind,
+    operator: Option<OperatorId>,
+) -> Action {
+    if matches!(event.code, KeyCode::Esc) {
+        return Action::SetPending(Pending::None);
+    }
+    let needle = match event.code {
+        KeyCode::Char(c) => c,
+        _ => return Action::SetPending(Pending::None),
+    };
+    let motion_id = match kind {
+        FindKind::Forward => builtins.find_char_forward,
+        FindKind::Backward => builtins.find_char_backward,
+        FindKind::TillForward => builtins.till_char_forward,
+        FindKind::TillBackward => builtins.till_char_backward,
+    };
+    match operator {
+        None => Action::Invoke(CommandInvocation::of(motion_id.0).with_args(Args::Char(needle))),
+        Some(op) => Action::Invoke(
+            CommandInvocation::of(op.0).with_target(Target::Motion(motion_id, Args::Char(needle))),
+        ),
+    }
 }
 
 fn invoke(motion: MotionId) -> Action {
@@ -734,6 +806,141 @@ mod tests {
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
         ));
+    }
+
+    // ---- Find-char / till-char (f, F, t, T) ----
+
+    #[test]
+    fn f_sets_pending_find_forward() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('f')),
+        );
+        match action {
+            Action::SetPending(Pending::AfterFindChar { kind, operator }) => {
+                assert_eq!(kind, FindKind::Forward);
+                assert!(operator.is_none());
+            }
+            other => panic!("expected SetPending(AfterFindChar Forward), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capital_f_sets_pending_find_backward() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('F')),
+        );
+        match action {
+            Action::SetPending(Pending::AfterFindChar { kind, .. }) => {
+                assert_eq!(kind, FindKind::Backward);
+            }
+            other => panic!("expected SetPending(AfterFindChar Backward), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn t_sets_pending_till_forward() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('t')),
+        );
+        match action {
+            Action::SetPending(Pending::AfterFindChar { kind, .. }) => {
+                assert_eq!(kind, FindKind::TillForward);
+            }
+            other => panic!("expected SetPending(AfterFindChar TillForward), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capital_t_sets_pending_till_backward() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('T')),
+        );
+        match action {
+            Action::SetPending(Pending::AfterFindChar { kind, .. }) => {
+                assert_eq!(kind, FindKind::TillBackward);
+            }
+            other => panic!("expected SetPending(AfterFindChar TillBackward), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn f_then_char_resolves_to_motion_with_args_char() {
+        let (_, b) = fixture();
+        let pending = Pending::AfterFindChar {
+            kind: FindKind::Forward,
+            operator: None,
+        };
+        let action = translate(
+            ctx(ModalState::Normal, pending, &b),
+            key(KeyCode::Char('z')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.find_char_forward.0);
+                assert_eq!(inv.args, lattice_grammar::Args::Char('z'));
+            }
+            other => panic!("expected Invoke(find_char_forward), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn df_then_char_composes_delete_with_find_target() {
+        let (_, b) = fixture();
+        // First press: `d` in Normal -> AfterOperator(delete).
+        let after_d = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('d')),
+        );
+        let op = match after_d {
+            Action::SetPending(Pending::AfterOperator(op)) => op,
+            other => panic!("expected SetPending(AfterOperator), got {other:?}"),
+        };
+        // Second press: `f` in operator-pending -> AfterFindChar with stashed op.
+        let after_df = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(op), &b),
+            key(KeyCode::Char('f')),
+        );
+        let pending = match after_df {
+            Action::SetPending(p) => p,
+            other => panic!("expected SetPending, got {other:?}"),
+        };
+        // Third press: `x` -> Invoke delete with find_char_forward target.
+        let after_dfx = translate(
+            ctx(ModalState::Normal, pending, &b),
+            key(KeyCode::Char('x')),
+        );
+        match after_dfx {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                match inv.target {
+                    Some(Target::Motion(id, args)) => {
+                        assert_eq!(id, b.find_char_forward);
+                        assert_eq!(args, lattice_grammar::Args::Char('x'));
+                    }
+                    other => panic!("expected motion target, got {other:?}"),
+                }
+            }
+            other => panic!("expected Invoke(delete, find_target), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn esc_after_find_pending_clears_pending() {
+        let (_, b) = fixture();
+        let pending = Pending::AfterFindChar {
+            kind: FindKind::Forward,
+            operator: None,
+        };
+        let action = translate(ctx(ModalState::Normal, pending, &b), key(KeyCode::Esc));
+        assert!(matches!(action, Action::SetPending(Pending::None)));
     }
 
     // ---- New motions: b, e, ^ ----

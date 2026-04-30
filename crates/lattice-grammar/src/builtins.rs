@@ -58,6 +58,42 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Box::new(motion_first_non_blank),
         },
     );
+    let find_char_forward = registry.register_motion(
+        "motion:find-char-forward",
+        "Move to the next occurrence of `args.char` on the current line (vim's `f`).",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            apply: Box::new(motion_find_char_forward),
+        },
+    );
+    let find_char_backward = registry.register_motion(
+        "motion:find-char-backward",
+        "Move to the previous occurrence of `args.char` on the current line (vim's `F`).",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            apply: Box::new(motion_find_char_backward),
+        },
+    );
+    let till_char_forward = registry.register_motion(
+        "motion:till-char-forward",
+        "Move to one byte before the next occurrence of `args.char` (vim's `t`).",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            apply: Box::new(motion_till_char_forward),
+        },
+    );
+    let till_char_backward = registry.register_motion(
+        "motion:till-char-backward",
+        "Move to one byte after the previous occurrence of `args.char` (vim's `T`).",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            apply: Box::new(motion_till_char_backward),
+        },
+    );
     let char_left = registry.register_motion(
         "motion:char-left",
         "Move one byte to the left within the current line.",
@@ -161,6 +197,10 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         word_backward,
         word_end,
         first_non_blank,
+        find_char_forward,
+        find_char_backward,
+        till_char_forward,
+        till_char_backward,
         char_left,
         char_right,
         line_up,
@@ -181,6 +221,10 @@ pub struct Builtins {
     pub word_backward: MotionId,
     pub word_end: MotionId,
     pub first_non_blank: MotionId,
+    pub find_char_forward: MotionId,
+    pub find_char_backward: MotionId,
+    pub till_char_forward: MotionId,
+    pub till_char_backward: MotionId,
     pub char_left: MotionId,
     pub char_right: MotionId,
     pub line_up: MotionId,
@@ -341,6 +385,115 @@ fn motion_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
     Ok(MotionResult { target, linewise: false })
+}
+
+// ---- Motion: find-char / till-char (vim's f, F, t, T) ----
+//
+// Each takes `Args::Char(c)` and searches the current line. v1 ignores
+// `count` (most users press `;` / `,` for repeat); count support lands
+// later. Forward variants return the cursor's original line if the char
+// is not found (matching vim's no-op behavior).
+
+fn args_to_char(args: &crate::args::Args) -> Result<char, CommandError> {
+    match args {
+        crate::args::Args::Char(c) => Ok(*c),
+        _ => Err(CommandError::InvalidArgs("f/F/t/T require Args::Char")),
+    }
+}
+
+fn line_text(text: &str, line: u32) -> &str {
+    text.split_inclusive('\n')
+        .nth(line as usize)
+        .map(|l| l.trim_end_matches('\n'))
+        .unwrap_or("")
+}
+
+fn motion_find_char_forward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let needle = args_to_char(&ctx.args)?;
+    let text = ctx.buffer.as_string();
+    let line = line_text(&text, ctx.from.line);
+    let bytes = line.as_bytes();
+    let start = (ctx.from.byte as usize).saturating_add(1);
+    let mut buf = [0u8; 4];
+    let needle_bytes = needle.encode_utf8(&mut buf).as_bytes();
+    let nlen = needle_bytes.len();
+    let mut idx = start;
+    while idx + nlen <= bytes.len() {
+        if &bytes[idx..idx + nlen] == needle_bytes {
+            return Ok(MotionResult {
+                target: Position::new(ctx.from.line, idx as u32),
+                linewise: false,
+            });
+        }
+        idx += 1;
+    }
+    // No match -- vim no-ops.
+    Ok(MotionResult {
+        target: ctx.from,
+        linewise: false,
+    })
+}
+
+fn motion_find_char_backward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let needle = args_to_char(&ctx.args)?;
+    let text = ctx.buffer.as_string();
+    let line = line_text(&text, ctx.from.line);
+    let bytes = line.as_bytes();
+    let mut buf = [0u8; 4];
+    let needle_bytes = needle.encode_utf8(&mut buf).as_bytes();
+    let nlen = needle_bytes.len();
+    if (ctx.from.byte as usize) < nlen {
+        return Ok(MotionResult {
+            target: ctx.from,
+            linewise: false,
+        });
+    }
+    let mut idx = (ctx.from.byte as usize) - nlen;
+    loop {
+        if idx + nlen <= bytes.len() && &bytes[idx..idx + nlen] == needle_bytes {
+            return Ok(MotionResult {
+                target: Position::new(ctx.from.line, idx as u32),
+                linewise: false,
+            });
+        }
+        if idx == 0 {
+            break;
+        }
+        idx -= 1;
+    }
+    Ok(MotionResult {
+        target: ctx.from,
+        linewise: false,
+    })
+}
+
+fn motion_till_char_forward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    // `t<c>`: identical to `f<c>` but the target is one byte before the match.
+    let result = motion_find_char_forward(ctx)?;
+    if result.target == ctx.from {
+        return Ok(result);
+    }
+    let target_byte = result.target.byte.saturating_sub(1);
+    Ok(MotionResult {
+        target: Position::new(result.target.line, target_byte),
+        linewise: false,
+    })
+}
+
+fn motion_till_char_backward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    // `T<c>`: identical to `F<c>` but the target is one byte after the match.
+    let result = motion_find_char_backward(ctx)?;
+    if result.target == ctx.from {
+        return Ok(result);
+    }
+    let line_len = result
+        .target
+        .byte
+        .saturating_add(args_to_char(&ctx.args)?.len_utf8() as u32);
+    Ok(MotionResult {
+        target: Position::new(result.target.line, line_len),
+        linewise: false,
+    })
 }
 
 // ---- Motion: first-non-blank (vim's `^`) ----
@@ -1027,6 +1180,127 @@ mod tests {
             .with_target(Target::Motion(b.word_backward, crate::args::Args::None));
         execute(&registry, &mut doc, Position::new(0, 11), inv).unwrap();
         assert_eq!(doc.text(), "hello ");
+    }
+
+    // ---- find-char / till-char (f, F, t, T) ----
+
+    fn invoke_with_char(id: crate::registry::MotionId, c: char) -> CommandInvocation {
+        CommandInvocation::of(id.0).with_args(crate::args::Args::Char(c))
+    }
+
+    #[test]
+    fn find_char_forward_lands_on_next_occurrence_on_line() {
+        let (registry, b, mut doc) = fixture("hello world");
+        // From byte 0 ('h') `fo` -> 'o' of "hello" at byte 4.
+        let inv = invoke_with_char(b.find_char_forward, 'o');
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_char_forward_skips_current_byte_so_it_advances() {
+        let (registry, b, mut doc) = fixture("oxox");
+        // From 'o' at byte 0, `fo` -> next 'o' at byte 2.
+        let inv = invoke_with_char(b.find_char_forward, 'o');
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 2)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_char_forward_no_match_is_no_op() {
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = invoke_with_char(b.find_char_forward, 'z');
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_char_forward_does_not_cross_newlines() {
+        let (registry, b, mut doc) = fixture("hello\nworld");
+        // From byte 0, `fw` should NOT find 'w' on line 1.
+        let inv = invoke_with_char(b.find_char_forward, 'w');
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_char_backward_lands_on_previous_occurrence() {
+        let (registry, b, mut doc) = fixture("hello world");
+        // From byte 8 ('r' of "world") `Fo` -> 'o' of "world" at byte 7.
+        let inv = invoke_with_char(b.find_char_backward, 'o');
+        let effect = execute(&registry, &mut doc, Position::new(0, 8), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 7)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_char_backward_no_match_is_no_op() {
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = invoke_with_char(b.find_char_backward, 'z');
+        let effect = execute(&registry, &mut doc, Position::new(0, 4), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn till_char_forward_lands_one_byte_before_match() {
+        let (registry, b, mut doc) = fixture("hello world");
+        // `tw` from byte 0 -> byte 5 (space, one before 'w' at byte 6).
+        let inv = invoke_with_char(b.till_char_forward, 'w');
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 5)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn till_char_backward_lands_one_byte_after_match() {
+        let (registry, b, mut doc) = fixture("hello world");
+        // `Th` from byte 8 -> byte 1 (one after 'h' at byte 0).
+        let inv = invoke_with_char(b.till_char_backward, 'h');
+        let effect = execute(&registry, &mut doc, Position::new(0, 8), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 1)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_char_with_no_args_errors() {
+        let (registry, b, mut doc) = fixture("hello");
+        // No Args::Char supplied -> InvalidArgs.
+        let inv = CommandInvocation::of(b.find_char_forward.0);
+        let err = execute(&registry, &mut doc, Position::ZERO, inv).unwrap_err();
+        assert!(matches!(err, CommandError::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn find_char_forward_handles_unicode_target() {
+        let (registry, b, mut doc) = fixture("café au lait");
+        // `fé` from byte 0 -> byte 3 ('é' starts at byte 3 in "café").
+        let inv = invoke_with_char(b.find_char_forward, 'é');
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 3)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
     }
 
     // ---- change operator (c) ----

@@ -137,6 +137,25 @@ fn motion_word_forward_with_count(c: &mut Criterion) {
     g.finish();
 }
 
+fn motion_find_char_forward(c: &mut Criterion) {
+    let mut g = c.benchmark_group("motion::find_char_forward");
+    let mut registry = CommandRegistry::new();
+    let b = populate(&mut registry);
+
+    // f<char> only scans the current line, so a "wide" line is the worst case.
+    let line = "the quick brown fox jumps over the lazy dog: ".repeat(20);
+    let text = format!("{line}\n");
+    g.bench_function("wide_line_900_chars", |bencher| {
+        let mut doc = Document::from_text(&text);
+        let inv = CommandInvocation::of(b.find_char_forward.0)
+            .with_args(lattice_grammar::Args::Char('z'));
+        bencher.iter(|| {
+            let _ = execute(&registry, &mut doc, black_box(Position::ZERO), inv.clone()).unwrap();
+        });
+    });
+    g.finish();
+}
+
 criterion_group!(
     benches,
     motion_word_forward,
@@ -144,5 +163,6 @@ criterion_group!(
     motion_word_end,
     motion_first_non_blank,
     motion_word_forward_with_count,
+    motion_find_char_forward,
 );
 criterion_main!(benches);

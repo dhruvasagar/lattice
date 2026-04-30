@@ -17,6 +17,7 @@ use lattice_core::search::{self, SearchHit};
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::ModalState;
 use lattice_grammar::SearchDirection;
+use lattice_grammar::VisualKind;
 use lattice_grammar::YankKind;
 use lattice_grammar::builtins::{Builtins, populate};
 use lattice_grammar::command::CommandInvocation;
@@ -25,6 +26,7 @@ use lattice_grammar::effect::Effect;
 use lattice_grammar::registry::OperatorId;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
+use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
 use lattice_syntax::{Lang, StyledSpan, Syntax};
 
 use crate::excommand::{self, ExCommand};
@@ -97,6 +99,11 @@ pub enum Action {
     Redo,
     /// Append a digit (0-9) to the in-progress count prefix.
     PushDigit(u8),
+    /// Enter Visual modal state (`v` Charwise, `V` Linewise) anchored at
+    /// the current cursor.
+    EnterVisual(VisualKind),
+    /// Exit Visual to Normal, collapsing the selection.
+    ExitVisual,
 
     // ---- Command-line minibuffer (Phase 2: simple, single-line) ----
     /// Pressed `:` in Normal mode -- enter command modal with empty buffer.
@@ -209,6 +216,11 @@ pub struct App {
     /// Multiplied with the motion's count (`3`) to give the final count
     /// the operator dispatches with (`6`). 0 means "no operator count".
     pub op_count: u32,
+    /// Anchor position when Visual mode was entered. `None` outside
+    /// Visual; restored on Esc. The `head` of the selection follows the
+    /// cursor; the `anchor` stays put so the selection extends or
+    /// contracts as the user moves.
+    pub visual_anchor: Option<Position>,
 }
 
 impl std::fmt::Debug for App {
@@ -258,6 +270,7 @@ impl App {
             unnamed_register: None,
             pending_count: 0,
             op_count: 0,
+            visual_anchor: None,
         }
     }
 
@@ -337,6 +350,9 @@ impl App {
                     .saturating_mul(10)
                     .saturating_add(d.into());
             }
+
+            Action::EnterVisual(kind) => self.do_enter_visual(kind),
+            Action::ExitVisual => self.do_exit_visual(),
 
             Action::PasteAfter => self.do_paste(false),
             Action::PasteBefore => self.do_paste(true),
@@ -634,12 +650,27 @@ impl App {
         }
         self.pending_count = 0;
         self.op_count = 0;
+        let was_visual = matches!(self.modal, ModalState::Visual(_));
+        let mut effect_was_operator = false;
         match execute(&self.registry, &mut self.document, self.cursor, inv) {
-            Ok(effect) => self.apply_effect(effect),
+            Ok(effect) => {
+                effect_was_operator = effect_mutates_or_yanks(&effect);
+                self.apply_effect(effect);
+            }
             Err(_) => {
                 // TODO(error-surface): publish to a notification once that
                 // subsystem lands.
             }
+        }
+        // After a Visual-mode OPERATOR (d/y/c on selection), vim returns
+        // to Normal. Pure motion in Visual extends the selection -- keep
+        // Visual. The `c` operator already flipped to Insert via
+        // Effect::EnterMode; the post-check would be a no-op there.
+        if was_visual
+            && effect_was_operator
+            && matches!(self.modal, ModalState::Visual(_))
+        {
+            self.do_exit_visual();
         }
         self.clamp_cursor_to_buffer();
     }
@@ -649,7 +680,20 @@ impl App {
             Effect::None => {}
             Effect::Edits(edits) => self.handle_edits(&edits),
             Effect::SelectionChange(set) => {
-                self.cursor = set.primary().head;
+                let new_head = set.primary().head;
+                self.cursor = new_head;
+                // In Visual mode the head moves but the anchor is preserved
+                // -- the dispatcher's `replace_primary(Selection::cursor(...))`
+                // would otherwise collapse the selection. Refresh the
+                // document's selection to reflect the extension.
+                if let ModalState::Visual(kind) = self.modal {
+                    let sel = Selection {
+                        anchor: self.visual_anchor.unwrap_or(new_head),
+                        head: new_head,
+                        visual: Some(visual_kind_to_mode(kind)),
+                    };
+                    self.document.set_selections(SelectionSet::single(sel));
+                }
             }
             Effect::Yank { content, kind, .. } => {
                 self.unnamed_register = Some(UnnamedRegister { content, kind });
@@ -728,6 +772,29 @@ impl App {
         }
         self.modal = ModalState::Insert;
         self.pending = Pending::None;
+    }
+
+    fn do_enter_visual(&mut self, kind: VisualKind) {
+        self.modal = ModalState::Visual(kind);
+        self.pending = Pending::None;
+        self.visual_anchor = Some(self.cursor);
+        // Seed document.selections so Range::Selection picks up the
+        // anchor=head=cursor selection immediately.
+        let sel = Selection {
+            anchor: self.cursor,
+            head: self.cursor,
+            visual: Some(visual_kind_to_mode(kind)),
+        };
+        self.document.set_selections(SelectionSet::single(sel));
+    }
+
+    fn do_exit_visual(&mut self) {
+        self.modal = ModalState::Normal;
+        self.pending = Pending::None;
+        self.visual_anchor = None;
+        // Collapse selection to a cursor at the current head.
+        self.document
+            .set_selections(SelectionSet::single(Selection::cursor(self.cursor)));
     }
 
     /// Paste from the unnamed register. `before = true` for `P` (paste
@@ -869,6 +936,26 @@ pub(crate) fn last_addressable_line(doc: &Document) -> u32 {
         lc.saturating_sub(2)
     } else {
         lc.saturating_sub(1)
+    }
+}
+
+fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
+    match kind {
+        VisualKind::Charwise => VisualMode::Charwise,
+        VisualKind::Linewise => VisualMode::Linewise,
+        VisualKind::Blockwise => VisualMode::Blockwise,
+    }
+}
+
+/// True if the Effect indicates an operator-class action (the buffer
+/// changed or content was yanked). Used by Visual mode to decide whether
+/// to auto-exit after the dispatch -- motions in Visual should not exit;
+/// d / y / c should.
+fn effect_mutates_or_yanks(effect: &Effect) -> bool {
+    match effect {
+        Effect::Edits(_) | Effect::Yank { .. } => true,
+        Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
+        Effect::None | Effect::SelectionChange(_) | Effect::EnterMode(_) => false,
     }
 }
 
@@ -1548,6 +1635,128 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- Visual mode end-to-end ----
+
+    #[test]
+    fn enter_visual_charwise_sets_modal_and_anchor() {
+        let mut a = app_with("hello", 10);
+        a.cursor = Position::new(0, 1);
+        a.apply(Action::EnterVisual(VisualKind::Charwise));
+        assert_eq!(a.modal, ModalState::Visual(VisualKind::Charwise));
+        assert_eq!(a.visual_anchor, Some(Position::new(0, 1)));
+        let sel = a.document.selections().primary();
+        assert_eq!(sel.anchor, Position::new(0, 1));
+        assert_eq!(sel.head, Position::new(0, 1));
+        assert_eq!(sel.visual, Some(VisualMode::Charwise));
+    }
+
+    #[test]
+    fn motion_in_visual_extends_head_keeps_anchor() {
+        let mut a = app_with("hello world", 10);
+        a.apply(Action::EnterVisual(VisualKind::Charwise));
+        a.apply(invoke_motion(a.builtins.word_forward));
+        let sel = a.document.selections().primary();
+        assert_eq!(sel.anchor, Position::ZERO);
+        assert_eq!(sel.head, Position::new(0, 6));
+        assert_eq!(a.cursor, Position::new(0, 6));
+    }
+
+    #[test]
+    fn esc_in_visual_collapses_selection_and_returns_to_normal() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterVisual(VisualKind::Charwise));
+        a.apply(invoke_motion(a.builtins.char_right));
+        a.apply(Action::ExitVisual);
+        assert_eq!(a.modal, ModalState::Normal);
+        assert!(a.visual_anchor.is_none());
+        assert!(a.document.selections().primary().is_cursor());
+    }
+
+    #[test]
+    fn delete_in_visual_removes_selection_and_returns_to_normal() {
+        let mut a = app_with("hello world", 10);
+        a.apply(Action::EnterVisual(VisualKind::Charwise));
+        a.apply(invoke_motion(a.builtins.char_right));
+        a.apply(invoke_motion(a.builtins.char_right));
+        a.apply(invoke_motion(a.builtins.char_right));
+        // Selection now covers bytes 0..3 of "hello world" charwise (vim
+        // INCLUSIVE -> visual range covers 0..=3 = 4 bytes "hell").
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "o world");
+        assert_eq!(a.modal, ModalState::Normal);
+    }
+
+    #[test]
+    fn yank_in_visual_populates_register_charwise() {
+        let mut a = app_with("hello world", 10);
+        a.apply(Action::EnterVisual(VisualKind::Charwise));
+        a.apply(invoke_motion(a.builtins.word_forward));
+        let inv = CommandInvocation::of(a.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        let reg = a.unnamed_register.as_ref().unwrap();
+        assert_eq!(reg.kind, YankKind::Charwise);
+        // Document text untouched.
+        assert_eq!(a.document.text(), "hello world");
+        // Visual mode exited.
+        assert_eq!(a.modal, ModalState::Normal);
+    }
+
+    #[test]
+    fn change_in_visual_enters_insert_mode() {
+        let mut a = app_with("hello world", 10);
+        a.apply(Action::EnterVisual(VisualKind::Charwise));
+        a.apply(invoke_motion(a.builtins.word_forward));
+        let inv = CommandInvocation::of(a.builtins.change.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        // Change in Visual deletes selection AND drops into Insert.
+        assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    #[test]
+    fn linewise_visual_yank_captures_full_lines() {
+        let mut a = app_with("aaa\nBBB\nccc", 10);
+        a.cursor = Position::new(1, 1); // mid-line on "BBB"
+        a.apply(Action::EnterVisual(VisualKind::Linewise));
+        // Selection is single line; yank captures the whole line
+        // regardless of byte offsets.
+        let inv = CommandInvocation::of(a.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        let reg = a.unnamed_register.as_ref().unwrap();
+        assert_eq!(reg.kind, YankKind::Linewise);
+        assert_eq!(reg.content, "BBB");
+    }
+
+    #[test]
+    fn linewise_visual_extends_to_multiple_lines() {
+        let mut a = app_with("aaa\nbbb\nccc\nddd", 10);
+        a.apply(Action::EnterVisual(VisualKind::Linewise));
+        a.apply(invoke_motion(a.builtins.line_down));
+        let inv = CommandInvocation::of(a.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        let reg = a.unnamed_register.as_ref().unwrap();
+        assert_eq!(reg.kind, YankKind::Linewise);
+        // Lines 0 and 1 -> "aaa\nbbb".
+        assert_eq!(reg.content, "aaa\nbbb");
+    }
+
+    #[test]
+    fn visual_anchor_persists_across_count_motion() {
+        let mut a = app_with("one two three four five", 10);
+        a.apply(Action::EnterVisual(VisualKind::Charwise));
+        a.apply(Action::PushDigit(2));
+        a.apply(invoke_motion(a.builtins.word_forward));
+        let sel = a.document.selections().primary();
+        assert_eq!(sel.anchor, Position::ZERO);
+        // 2w from origin advances 2 word starts: "ONE two THREE" -> byte 8.
+        assert_eq!(sel.head, Position::new(0, 8));
     }
 
     // ---- count prefix end-to-end ----

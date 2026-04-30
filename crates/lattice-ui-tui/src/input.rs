@@ -11,6 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use lattice_grammar::ModalState;
 use lattice_grammar::SearchDirection;
 use lattice_grammar::Target;
+use lattice_grammar::VisualKind;
 use lattice_grammar::args::Args;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
@@ -43,8 +44,52 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         }
         ModalState::Command => translate_command(event),
         ModalState::Search(_) => translate_search(event),
-        // The other modal states route to no-op until their respective
-        // phases land.
+        ModalState::Visual(_) => translate_visual(event, ctx.builtins),
+        // Replace + OperatorPending route to no-op until their layers land.
+        _ => Action::None,
+    }
+}
+
+fn translate_visual(event: KeyEvent, builtins: &Builtins) -> Action {
+    if event.modifiers.contains(KeyModifiers::CONTROL) {
+        return Action::None;
+    }
+    match event.code {
+        KeyCode::Esc => Action::ExitVisual,
+        // Toggle: pressing `v` while in Visual exits.
+        KeyCode::Char('v') => Action::ExitVisual,
+        KeyCode::Char('V') => Action::ExitVisual,
+
+        // Motions extend the selection. Reuse the same builtins; the
+        // App layer rewrites the resulting SelectionChange so the anchor
+        // is preserved.
+        KeyCode::Char('h') | KeyCode::Left => invoke(builtins.char_left),
+        KeyCode::Char('j') | KeyCode::Down => invoke(builtins.line_down),
+        KeyCode::Char('k') | KeyCode::Up => invoke(builtins.line_up),
+        KeyCode::Char('l') | KeyCode::Right => invoke(builtins.char_right),
+        KeyCode::Char('0') | KeyCode::Home => invoke(builtins.line_start),
+        KeyCode::Char('$') | KeyCode::End => invoke(builtins.line_end),
+        KeyCode::Char('^') => invoke(builtins.first_non_blank),
+        KeyCode::Char('w') => invoke(builtins.word_forward),
+        KeyCode::Char('b') => invoke(builtins.word_backward),
+        KeyCode::Char('e') => invoke(builtins.word_end),
+        KeyCode::Char('G') => invoke(builtins.goto_last_line),
+
+        // Operators on the selection. `Range::Selection` resolves to the
+        // current document.selections().primary() in the dispatcher.
+        KeyCode::Char('d') | KeyCode::Char('x') => Action::Invoke(
+            CommandInvocation::of(builtins.delete.0)
+                .with_range(lattice_grammar::Range::Selection),
+        ),
+        KeyCode::Char('c') | KeyCode::Char('s') => Action::Invoke(
+            CommandInvocation::of(builtins.change.0)
+                .with_range(lattice_grammar::Range::Selection),
+        ),
+        KeyCode::Char('y') => Action::Invoke(
+            CommandInvocation::of(builtins.yank.0)
+                .with_range(lattice_grammar::Range::Selection),
+        ),
+
         _ => Action::None,
     }
 }
@@ -166,6 +211,8 @@ fn translate_normal(
         KeyCode::Char('o') => Action::OpenLineBelow,
         KeyCode::Char('O') => Action::OpenLineAbove,
         KeyCode::Char(':') => Action::EnterCommandLine,
+        KeyCode::Char('v') => Action::EnterVisual(VisualKind::Charwise),
+        KeyCode::Char('V') => Action::EnterVisual(VisualKind::Linewise),
 
         // Search
         KeyCode::Char('/') => Action::EnterSearch(SearchDirection::Forward),
@@ -846,6 +893,106 @@ mod tests {
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
         ));
+    }
+
+    // ---- Visual mode entry / exit ----
+
+    #[test]
+    fn v_in_normal_enters_charwise_visual() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('v')),
+        );
+        assert!(matches!(action, Action::EnterVisual(VisualKind::Charwise)));
+    }
+
+    #[test]
+    fn capital_v_in_normal_enters_linewise_visual() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('V')),
+        );
+        assert!(matches!(action, Action::EnterVisual(VisualKind::Linewise)));
+    }
+
+    #[test]
+    fn esc_in_visual_exits_to_normal() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Visual(VisualKind::Charwise), Pending::None, &b),
+            key(KeyCode::Esc),
+        );
+        assert!(matches!(action, Action::ExitVisual));
+    }
+
+    #[test]
+    fn v_in_visual_toggles_off() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Visual(VisualKind::Charwise), Pending::None, &b),
+            key(KeyCode::Char('v')),
+        );
+        assert!(matches!(action, Action::ExitVisual));
+    }
+
+    #[test]
+    fn motion_in_visual_returns_invocation() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Visual(VisualKind::Charwise), Pending::None, &b),
+            key(KeyCode::Char('w')),
+        );
+        assert_eq!(invocation_command(&action), Some(b.word_forward.0));
+    }
+
+    #[test]
+    fn d_in_visual_invokes_delete_with_selection_range() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Visual(VisualKind::Charwise), Pending::None, &b),
+            key(KeyCode::Char('d')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                assert_eq!(inv.range, Some(lattice_grammar::Range::Selection));
+            }
+            other => panic!("expected Invoke(delete, Selection), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn y_in_visual_invokes_yank_with_selection_range() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Visual(VisualKind::Charwise), Pending::None, &b),
+            key(KeyCode::Char('y')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.yank.0);
+                assert_eq!(inv.range, Some(lattice_grammar::Range::Selection));
+            }
+            other => panic!("expected Invoke(yank, Selection), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn c_in_visual_invokes_change_with_selection_range() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Visual(VisualKind::Charwise), Pending::None, &b),
+            key(KeyCode::Char('c')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.change.0);
+                assert_eq!(inv.range, Some(lattice_grammar::Range::Selection));
+            }
+            other => panic!("expected Invoke(change, Selection), got {other:?}"),
+        }
     }
 
     // ---- Count prefix (1-9, 0 with count in progress) ----

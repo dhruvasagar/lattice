@@ -111,13 +111,20 @@ fn execute_operator(
         (None, None) => return Err(CommandError::MissingTarget),
     };
 
+    let visual_linewise = matches!(
+        invocation.range,
+        Some(Range::Selection)
+    ) && matches!(
+        document.selections().primary().visual,
+        Some(lattice_protocol::selection::VisualMode::Linewise)
+    );
     let mut ctx = OperatorContext {
         document,
         range: target_range,
         linewise: matches!(
             invocation.range,
             Some(Range::CurrentLine) | Some(Range::Whole)
-        ),
+        ) || visual_linewise,
         register: invocation.register_or_default(),
         count: invocation.count_or_default(),
         args: invocation.args.clone(),
@@ -188,7 +195,30 @@ fn resolve_grammar_range(
         Range::Selection => {
             let sel = document.selections().primary();
             let (a, b) = ordered(sel.anchor, sel.head);
-            Ok(ProtoRange::new(a, b))
+            match sel.visual {
+                Some(lattice_protocol::selection::VisualMode::Linewise) => {
+                    // Linewise visual covers complete lines from anchor's
+                    // line to head's line, regardless of byte offsets.
+                    let buffer = document.buffer();
+                    let start = Position::new(a.line, 0);
+                    let end = Position::new(b.line, line_byte_len(buffer, b.line));
+                    Ok(ProtoRange::new(start, end))
+                }
+                Some(lattice_protocol::selection::VisualMode::Charwise) | None => {
+                    // Charwise visual: half-open `[a, b)` -- but vim treats
+                    // visual ranges as INCLUSIVE of the head, so we extend
+                    // the end by one byte (clamped to line length).
+                    let buffer = document.buffer();
+                    let line_len = line_byte_len(buffer, b.line);
+                    let extended_end = Position::new(b.line, (b.byte + 1).min(line_len));
+                    Ok(ProtoRange::new(a, extended_end))
+                }
+                Some(lattice_protocol::selection::VisualMode::Blockwise) => {
+                    // Blockwise visual is a post-1.0 feature; v1 falls back
+                    // to charwise semantics.
+                    Ok(ProtoRange::new(a, b))
+                }
+            }
         }
         Range::Span { .. } | Range::Custom(_) => Err(CommandError::InvalidArgs(
             "Span and Custom ranges are not yet resolved in Phase 1",

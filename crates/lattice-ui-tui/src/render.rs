@@ -19,6 +19,7 @@ use ratatui::widgets::Paragraph;
 
 use lattice_grammar::{ModalState, SearchDirection};
 use lattice_protocol::position::Range as ProtoRange;
+use lattice_protocol::selection::VisualMode;
 use lattice_syntax::{Lang, Style, StyledSpan};
 
 use crate::app::{App, EchoLevel};
@@ -145,6 +146,9 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
     let gutter_w = gutter_width(total_lines);
     let buffer_w = width.saturating_sub(gutter_w);
 
+    // Compute visual selection range once (instead of per line).
+    let visual_range = visual_selection_range(app);
+
     let mut out = Vec::with_capacity(height as usize);
     for i in 0..height {
         let line_idx = app.scroll + i;
@@ -156,6 +160,15 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         let gutter = render_gutter(line_idx, gutter_w);
         let spans = app.highlights_for_viewport_row(i);
         let mut body = render_styled_line(line_text, spans, buffer_w);
+        // Visual selection overlay first, then search match overlay on top.
+        // Search match wins a priority tie because it's transient (you
+        // typed `/` *now*); visual is the user's edit context.
+        if let Some(range) = visual_range
+            && let Some((overlay_start, overlay_end)) =
+                match_overlay_range(range, line_idx, line_text.len())
+        {
+            body = apply_match_overlay(body, overlay_start, overlay_end, visual_style());
+        }
         if let Some(range) = app.current_match
             && let Some((overlay_start, overlay_end)) =
                 match_overlay_range(range, line_idx, line_text.len())
@@ -165,6 +178,55 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         out.push(combine(gutter, body));
     }
     out
+}
+
+/// Compute the rendered range of the visual selection. Returns `None` if
+/// not in Visual mode. For Linewise visual the byte extents on the first
+/// and last lines are normalized to cover the full lines (mirrored from
+/// the dispatcher's `Range::Selection` resolution).
+fn visual_selection_range(app: &App) -> Option<ProtoRange> {
+    if !matches!(app.modal, ModalState::Visual(_)) {
+        return None;
+    }
+    let sel = app.document.selections().primary();
+    let (a, b) = if sel.anchor <= sel.head {
+        (sel.anchor, sel.head)
+    } else {
+        (sel.head, sel.anchor)
+    };
+    match sel.visual {
+        Some(VisualMode::Linewise) => {
+            // Cover full lines from a.line to b.line. Use a large byte
+            // index for `end.byte`; match_overlay_range clamps to line_len.
+            Some(ProtoRange::new(
+                lattice_protocol::position::Position::new(a.line, 0),
+                lattice_protocol::position::Position::new(b.line, u32::MAX),
+            ))
+        }
+        Some(VisualMode::Charwise) | None => {
+            // Charwise: include the head byte (vim semantics).
+            Some(ProtoRange::new(
+                a,
+                lattice_protocol::position::Position::new(b.line, b.byte.saturating_add(1)),
+            ))
+        }
+        Some(VisualMode::Blockwise) => {
+            // Stub: render as charwise for v1.
+            Some(ProtoRange::new(
+                a,
+                lattice_protocol::position::Position::new(b.line, b.byte.saturating_add(1)),
+            ))
+        }
+    }
+}
+
+fn visual_style() -> TuiStyle {
+    // Distinct from the search-match style. Reverse video reads as
+    // "selected" in vim's terminal default.
+    TuiStyle::default()
+        .bg(Color::Blue)
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD)
 }
 
 /// If `range` covers any bytes on `line_idx`, return the within-line
@@ -560,5 +622,83 @@ mod tests {
         // Spans should be split so "world" is its own span; we look for the
         // match style's signature in the debug dump.
         assert!(dump.contains("world"), "rendered: {dump}");
+    }
+
+    // ---- Visual selection rendering ----
+
+    use lattice_grammar::VisualKind;
+    use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+
+    #[test]
+    fn visual_selection_range_is_none_when_not_in_visual() {
+        let app = app_with("hello", 5);
+        assert!(visual_selection_range(&app).is_none());
+    }
+
+    #[test]
+    fn visual_selection_range_charwise_includes_head_byte() {
+        let mut app = app_with("hello", 5);
+        app.apply(crate::app::Action::EnterVisual(VisualKind::Charwise));
+        // Move cursor to byte 2 -- selection extends from 0 to 2 inclusive.
+        let sel = Selection {
+            anchor: pos(0, 0),
+            head: pos(0, 2),
+            visual: Some(VisualMode::Charwise),
+        };
+        app.document.set_selections(SelectionSet::single(sel));
+        let r = visual_selection_range(&app).expect("range");
+        assert_eq!(r.start, pos(0, 0));
+        // Charwise includes head: end byte = head.byte + 1.
+        assert_eq!(r.end, pos(0, 3));
+    }
+
+    #[test]
+    fn visual_selection_range_linewise_covers_full_lines() {
+        let mut app = app_with("aaa\nbbb\nccc", 5);
+        app.apply(crate::app::Action::EnterVisual(VisualKind::Linewise));
+        let sel = Selection {
+            anchor: pos(0, 1),
+            head: pos(2, 1),
+            visual: Some(VisualMode::Linewise),
+        };
+        app.document.set_selections(SelectionSet::single(sel));
+        let r = visual_selection_range(&app).expect("range");
+        assert_eq!(r.start, pos(0, 0));
+        // Linewise end byte is u32::MAX so per-line clamping picks line_len.
+        assert_eq!(r.end.line, 2);
+    }
+
+    #[test]
+    fn visual_selection_range_normalises_reversed_anchor_head() {
+        let mut app = app_with("hello", 5);
+        app.apply(crate::app::Action::EnterVisual(VisualKind::Charwise));
+        // anchor > head (the user moved leftward in Visual).
+        let sel = Selection {
+            anchor: pos(0, 4),
+            head: pos(0, 1),
+            visual: Some(VisualMode::Charwise),
+        };
+        app.document.set_selections(SelectionSet::single(sel));
+        let r = visual_selection_range(&app).expect("range");
+        assert_eq!(r.start, pos(0, 1));
+        assert_eq!(r.end, pos(0, 5));
+    }
+
+    #[test]
+    fn compose_visible_lines_overlays_visual_selection() {
+        let mut app = app_with("hello world", 1);
+        app.apply(crate::app::Action::EnterVisual(VisualKind::Charwise));
+        let sel = Selection {
+            anchor: pos(0, 0),
+            head: pos(0, 4),
+            visual: Some(VisualMode::Charwise),
+        };
+        app.document.set_selections(SelectionSet::single(sel));
+        let lines = compose_visible_lines(&app, 1, 80);
+        let dump = format!("{:?}", lines[0]);
+        // The selected "hello" should appear as its own span(s); we just
+        // verify the line still contains the original text after overlay.
+        assert!(dump.contains("hello"));
+        assert!(dump.contains("world"));
     }
 }

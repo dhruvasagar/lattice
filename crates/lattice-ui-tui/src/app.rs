@@ -1,0 +1,976 @@
+//! Pure application state and transitions.
+//!
+//! The state machine is intentionally separated from the IO loop so it can be
+//! unit-tested without spinning up a terminal. Each input keystroke becomes
+//! an `Action`; `App::apply` consumes the action, dispatching motion / edit
+//! work through `lattice_grammar::execute()` where appropriate.
+//!
+//! Phase 2 wiring: motions and the `delete` operator flow through the
+//! grammar engine; the modal-mode primitives (`i`, `a`, `o`, `<Esc>`) live
+//! locally on `App` because they're inherently a state-machine concern, not
+//! a buffer command. Phase 3+ migrates more of these to the grammar layer.
+
+use lattice_core::CoreError;
+use lattice_core::Document;
+use lattice_core::buffer::AppliedEdit;
+use lattice_grammar::CommandRegistry;
+use lattice_grammar::ModalState;
+use lattice_grammar::builtins::{Builtins, populate};
+use lattice_grammar::command::CommandInvocation;
+use lattice_grammar::dispatcher::execute;
+use lattice_grammar::effect::Effect;
+use lattice_grammar::registry::OperatorId;
+use lattice_protocol::edit::Edit;
+use lattice_protocol::position::{Position, Range as ProtoRange};
+use lattice_syntax::{Lang, StyledSpan, Syntax};
+
+use crate::excommand::{self, ExCommand};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pending {
+    None,
+    /// First `g` of a `gg`-style two-key sequence.
+    AfterG,
+    /// Operator key pressed; awaiting motion or text-object.
+    AfterOperator(OperatorId),
+}
+
+/// A transient one-line message rendered in the echo area below the mode line
+/// (DESIGN.md §5.9.10). Phase 2 wiring: replaced by the next call to
+/// `App::set_message` (no timeout-based fade yet).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EchoMessage {
+    pub text: String,
+    pub level: EchoLevel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EchoLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub enum Action {
+    None,
+    Quit,
+    /// Run a CommandInvocation through `lattice_grammar::execute()`.
+    Invoke(CommandInvocation),
+    /// Insert a string at the cursor (used by Insert mode).
+    Insert(String),
+    /// Delete the byte before the cursor (Insert-mode backspace).
+    DeleteCharBackward,
+    /// Move into a different modal state (Insert, Normal, ...).
+    EnterMode(ModalState),
+    /// Vim's `a`: move cursor one byte right (clamped) and enter Insert.
+    EnterAppend,
+    /// Vim's `o`: open a new line below the current line and enter Insert.
+    OpenLineBelow,
+    /// Vim's `O`: open a new line above the current line and enter Insert.
+    OpenLineAbove,
+    /// Set the pending-key state (e.g., we just saw `g`).
+    SetPending(Pending),
+    Undo,
+    Redo,
+
+    // ---- Command-line minibuffer (Phase 2: simple, single-line) ----
+    /// Pressed `:` in Normal mode -- enter command modal with empty buffer.
+    EnterCommandLine,
+    /// Append a character to the in-progress command line.
+    CommandLineAppend(char),
+    /// Delete the last character. If the buffer is empty, leave Command mode.
+    CommandLineBackspace,
+    /// Submit the current command line: parse + execute, then leave Command.
+    CommandLineSubmit,
+    /// Drop the current command line and leave Command modal.
+    CommandLineCancel,
+    /// Replace the echo area with a typed message.
+    Echo(EchoMessage),
+}
+
+pub struct App {
+    pub document: Document,
+    pub cursor: Position,
+    /// First visible line in the viewport (0-based).
+    pub scroll: u32,
+    pub should_quit: bool,
+    /// Last height we were drawn at; used by motion clamping and viewport
+    /// scrolling. Updated by the renderer before each frame.
+    pub viewport_height: u32,
+    pub modal: ModalState,
+    pub pending: Pending,
+    pub registry: CommandRegistry,
+    pub builtins: Builtins,
+    /// In-progress text in the `:` minibuffer. Populated only while
+    /// `modal == ModalState::Command`.
+    pub command_line: String,
+    /// Most recent transient status / error message, displayed in the echo
+    /// area until replaced.
+    pub last_message: Option<EchoMessage>,
+    /// Per-document tree-sitter state. `None` when the document's language
+    /// is `Plain` (no grammar bundled).
+    pub syntax: Option<Syntax>,
+    /// `text_version` last fed to `syntax.parse(...)`. Used to skip reparse
+    /// when no text mutation has happened since the previous frame.
+    last_parsed_text_version: u64,
+    /// Per-line `StyledSpan`s for the currently visible viewport, indexed
+    /// from `[scroll, scroll + viewport_height)`. Recomputed each frame by
+    /// `refresh_highlights` (called from the runtime before drawing).
+    pub visible_highlights: Vec<Vec<StyledSpan>>,
+}
+
+impl std::fmt::Debug for App {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("App")
+            .field("cursor", &self.cursor)
+            .field("scroll", &self.scroll)
+            .field("should_quit", &self.should_quit)
+            .field("viewport_height", &self.viewport_height)
+            .field("modal", &self.modal)
+            .field("pending", &self.pending)
+            .field("command_line", &self.command_line)
+            .field("last_message", &self.last_message)
+            .field("dirty", &self.document.dirty())
+            .finish()
+    }
+}
+
+impl App {
+    pub fn new(document: Document) -> Self {
+        let mut registry = CommandRegistry::new();
+        let builtins = populate(&mut registry);
+        let lang = Lang::detect_from_path(document.path());
+        let mut syntax = Syntax::for_language(lang).ok().flatten();
+        if let Some(s) = syntax.as_mut() {
+            s.parse(&document.text());
+        }
+        let last_parsed_text_version = document.text_version();
+        Self {
+            document,
+            cursor: Position::ZERO,
+            scroll: 0,
+            should_quit: false,
+            viewport_height: 1,
+            modal: ModalState::Normal,
+            pending: Pending::None,
+            registry,
+            builtins,
+            command_line: String::new(),
+            last_message: None,
+            syntax,
+            last_parsed_text_version,
+            visible_highlights: Vec::new(),
+        }
+    }
+
+    pub fn apply(&mut self, action: Action) {
+        match action {
+            Action::None => {}
+            Action::Quit => self.should_quit = true,
+            Action::Invoke(inv) => self.run_invocation(inv),
+            Action::Insert(s) => self.do_insert_text(&s),
+            Action::DeleteCharBackward => self.do_delete_char_backward(),
+            Action::EnterMode(state) => self.enter_mode(state),
+            Action::EnterAppend => self.do_enter_append(),
+            Action::OpenLineBelow => self.do_open_line_below(),
+            Action::OpenLineAbove => self.do_open_line_above(),
+            Action::SetPending(p) => self.pending = p,
+            Action::Undo => {
+                let _ = self.document.undo();
+                self.clamp_cursor_to_buffer();
+            }
+            Action::Redo => {
+                let _ = self.document.redo();
+                self.clamp_cursor_to_buffer();
+            }
+
+            Action::EnterCommandLine => {
+                self.command_line.clear();
+                self.modal = ModalState::Command;
+                self.pending = Pending::None;
+                self.last_message = None;
+            }
+            Action::CommandLineAppend(c) => {
+                if matches!(self.modal, ModalState::Command) {
+                    self.command_line.push(c);
+                }
+            }
+            Action::CommandLineBackspace => {
+                if matches!(self.modal, ModalState::Command) && self.command_line.pop().is_none() {
+                    // Empty buffer + backspace -> exit Command modal.
+                    self.modal = ModalState::Normal;
+                }
+            }
+            Action::CommandLineSubmit => {
+                if matches!(self.modal, ModalState::Command) {
+                    let line = std::mem::take(&mut self.command_line);
+                    self.modal = ModalState::Normal;
+                    self.pending = Pending::None;
+                    self.execute_ex_line(&line);
+                }
+            }
+            Action::CommandLineCancel => {
+                if matches!(self.modal, ModalState::Command) {
+                    self.command_line.clear();
+                    self.modal = ModalState::Normal;
+                    self.pending = Pending::None;
+                }
+            }
+            Action::Echo(message) => {
+                self.last_message = Some(message);
+            }
+        }
+        self.ensure_cursor_visible();
+        self.maybe_reparse_syntax();
+    }
+
+    /// Reparse syntax if the document's text has changed since the last
+    /// parse. Idempotent and cheap when nothing changed.
+    fn maybe_reparse_syntax(&mut self) {
+        let tv = self.document.text_version();
+        if tv == self.last_parsed_text_version {
+            return;
+        }
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.parse(&self.document.text());
+        }
+        self.last_parsed_text_version = tv;
+    }
+
+    /// Recompute the per-line styled spans for the current viewport.
+    /// Called by the runtime before each `terminal.draw`.
+    pub fn refresh_highlights(&mut self) {
+        let height = self.viewport_height;
+        let start = self.scroll;
+        let end = start.saturating_add(height);
+        self.visible_highlights = match self.syntax.as_mut() {
+            Some(syntax) => syntax.highlight_lines(start, end).unwrap_or_default(),
+            None => Vec::new(),
+        };
+    }
+
+    /// Spans for the line at `viewport_row` (0-based, relative to the top of
+    /// the viewport). Empty slice if no syntax or the row is past EOF.
+    pub fn highlights_for_viewport_row(&self, viewport_row: u32) -> &[StyledSpan] {
+        self.visible_highlights
+            .get(viewport_row as usize)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn set_message(&mut self, level: EchoLevel, text: impl Into<String>) {
+        self.last_message = Some(EchoMessage {
+            text: text.into(),
+            level,
+        });
+    }
+
+    fn execute_ex_line(&mut self, line: &str) {
+        match excommand::parse(line) {
+            Ok(cmd) => self.execute_ex(cmd),
+            Err(err) => {
+                self.set_message(EchoLevel::Error, err.to_string());
+            }
+        }
+    }
+
+    fn execute_ex(&mut self, cmd: ExCommand) {
+        match cmd {
+            ExCommand::Write { path } => self.do_write(path),
+            ExCommand::Quit { force } => self.do_quit(force),
+            ExCommand::WriteQuit { force } => self.do_write_quit(force),
+        }
+    }
+
+    fn do_write(&mut self, path: Option<std::path::PathBuf>) {
+        let result = match path {
+            Some(p) => self.document.save_as(&p).map(|()| p.display().to_string()),
+            None => self
+                .document
+                .save()
+                .map(|p| p.display().to_string()),
+        };
+        match result {
+            Ok(displayed) => self.set_message(EchoLevel::Info, format!("\"{displayed}\" written")),
+            Err(CoreError::NoPath) => {
+                self.set_message(EchoLevel::Error, "no file name (use :w <path>)".to_string());
+            }
+            Err(e) => self.set_message(EchoLevel::Error, format!("write error: {e}")),
+        }
+    }
+
+    fn do_quit(&mut self, force: bool) {
+        if !force && self.document.dirty() {
+            self.set_message(
+                EchoLevel::Error,
+                "no write since last change (add ! to override)".to_string(),
+            );
+            return;
+        }
+        self.should_quit = true;
+    }
+
+    fn do_write_quit(&mut self, force: bool) {
+        match self.document.save() {
+            Ok(_) => {
+                self.should_quit = true;
+            }
+            Err(CoreError::NoPath) => {
+                self.set_message(EchoLevel::Error, "no file name (use :w <path>)".to_string());
+                if force {
+                    self.should_quit = true;
+                }
+            }
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("write error: {e}"));
+                if force {
+                    self.should_quit = true;
+                }
+            }
+        }
+    }
+
+    fn run_invocation(&mut self, inv: CommandInvocation) {
+        // Pending state is consumed by the input layer that built `inv`; any
+        // dispatch resets it.
+        self.pending = Pending::None;
+        match execute(&self.registry, &mut self.document, self.cursor, inv) {
+            Ok(effect) => self.apply_effect(effect),
+            Err(_) => {
+                // TODO(error-surface): publish to a notification once that
+                // subsystem lands.
+            }
+        }
+        self.clamp_cursor_to_buffer();
+    }
+
+    fn apply_effect(&mut self, effect: Effect) {
+        match effect {
+            Effect::None => {}
+            Effect::Edits(edits) => self.handle_edits(&edits),
+            Effect::SelectionChange(set) => {
+                self.cursor = set.primary().head;
+            }
+            Effect::Yank { .. } => {
+                // Phase 2 stub: register storage lands later in Phase 1.
+            }
+            Effect::Many(many) => {
+                for e in many {
+                    self.apply_effect(e);
+                }
+            }
+        }
+    }
+
+    fn handle_edits(&mut self, edits: &[AppliedEdit]) {
+        // After a delete, the cursor sits at the start of the deleted range
+        // (which is now the position of whatever followed). Vim's behavior.
+        if let Some(first) = edits.first() {
+            self.cursor = first.original_range.start;
+        }
+    }
+
+    fn do_insert_text(&mut self, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        if let Ok(applied) = self.document.apply_edit(Edit::insert(self.cursor, s)) {
+            self.cursor = applied.inserted_range.end;
+        }
+    }
+
+    fn do_delete_char_backward(&mut self) {
+        let prev = previous_position(&self.document, self.cursor);
+        if prev == self.cursor {
+            return;
+        }
+        let range = ProtoRange::new(prev, self.cursor);
+        if self.document.apply_edit(Edit::delete(range)).is_ok() {
+            self.cursor = prev;
+        }
+    }
+
+    fn enter_mode(&mut self, state: ModalState) {
+        self.modal = state;
+        self.pending = Pending::None;
+        if matches!(state, ModalState::Normal) {
+            // Vim's behavior: leaving Insert mode pulls the cursor back one
+            // byte if it's not already at the start of the line, so the
+            // cursor sits on the last inserted char rather than past it.
+            if self.cursor.byte > 0 {
+                self.cursor.byte -= 1;
+            }
+        }
+    }
+
+    fn do_enter_append(&mut self) {
+        let len = line_byte_len(&self.document, self.cursor.line);
+        if self.cursor.byte < len {
+            self.cursor.byte += 1;
+        }
+        self.modal = ModalState::Insert;
+        self.pending = Pending::None;
+    }
+
+    fn do_open_line_below(&mut self) {
+        let len = line_byte_len(&self.document, self.cursor.line);
+        let eol = Position::new(self.cursor.line, len);
+        if self.document.apply_edit(Edit::insert(eol, "\n")).is_ok() {
+            self.cursor = Position::new(self.cursor.line + 1, 0);
+        }
+        self.modal = ModalState::Insert;
+        self.pending = Pending::None;
+    }
+
+    fn do_open_line_above(&mut self) {
+        let bol = Position::new(self.cursor.line, 0);
+        if self.document.apply_edit(Edit::insert(bol, "\n")).is_ok() {
+            self.cursor = bol;
+        }
+        self.modal = ModalState::Insert;
+        self.pending = Pending::None;
+    }
+
+    fn clamp_cursor_to_buffer(&mut self) {
+        let last_line = last_addressable_line(&self.document);
+        if self.cursor.line > last_line {
+            self.cursor.line = last_line;
+        }
+        let len = line_byte_len(&self.document, self.cursor.line);
+        if self.cursor.byte > len {
+            self.cursor.byte = len;
+        }
+    }
+
+    pub fn ensure_cursor_visible(&mut self) {
+        if self.viewport_height == 0 {
+            return;
+        }
+        if self.cursor.line < self.scroll {
+            self.scroll = self.cursor.line;
+        }
+        let bottom = self.scroll + self.viewport_height - 1;
+        if self.cursor.line > bottom {
+            self.scroll = self.cursor.line + 1 - self.viewport_height;
+        }
+    }
+
+    pub fn set_viewport_height(&mut self, height: u32) {
+        self.viewport_height = height.max(1);
+        self.ensure_cursor_visible();
+    }
+
+    pub fn modal_label(&self) -> &'static str {
+        match self.modal {
+            ModalState::Normal => "NORMAL",
+            ModalState::Insert => "INSERT",
+            ModalState::Visual(_) => "VISUAL",
+            ModalState::OperatorPending => "O-PEND",
+            ModalState::Command => "CMD",
+            ModalState::Search(_) => "SEARCH",
+            ModalState::Replace => "REPLACE",
+        }
+    }
+}
+
+pub(crate) fn line_byte_len(doc: &Document, line: u32) -> u32 {
+    let s = doc.text();
+    s.split_inclusive('\n')
+        .nth(line as usize)
+        .map(|l| l.trim_end_matches('\n').len() as u32)
+        .unwrap_or(0)
+}
+
+pub(crate) fn last_addressable_line(doc: &Document) -> u32 {
+    let lc = doc.buffer().line_count();
+    let s = doc.text();
+    if lc == 0 {
+        0
+    } else if s.ends_with('\n') {
+        lc.saturating_sub(2)
+    } else {
+        lc.saturating_sub(1)
+    }
+}
+
+fn previous_position(doc: &Document, p: Position) -> Position {
+    if p.byte > 0 {
+        Position::new(p.line, p.byte - 1)
+    } else if p.line > 0 {
+        let prev_line = p.line - 1;
+        Position::new(prev_line, line_byte_len(doc, prev_line))
+    } else {
+        p
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+
+    fn app_with(text: &str, viewport: u32) -> App {
+        let mut a = App::new(Document::from_text(text));
+        a.set_viewport_height(viewport);
+        a
+    }
+
+    fn invoke_motion(id: lattice_grammar::registry::MotionId) -> Action {
+        Action::Invoke(CommandInvocation::of(id.0))
+    }
+
+    // ---- Initial state ----
+
+    #[test]
+    fn new_app_starts_at_origin_in_normal_mode() {
+        let a = app_with("abc", 10);
+        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.scroll, 0);
+        assert!(!a.should_quit);
+        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.pending, Pending::None);
+    }
+
+    #[test]
+    fn modal_label_reports_state() {
+        let mut a = app_with("", 10);
+        assert_eq!(a.modal_label(), "NORMAL");
+        a.apply(Action::EnterMode(ModalState::Insert));
+        assert_eq!(a.modal_label(), "INSERT");
+    }
+
+    #[test]
+    fn quit_sets_flag() {
+        let mut a = app_with("abc", 10);
+        a.apply(Action::Quit);
+        assert!(a.should_quit);
+    }
+
+    // ---- Motion via grammar engine ----
+
+    #[test]
+    fn invoke_char_right_advances_cursor() {
+        let mut a = app_with("abc", 10);
+        let id = a.builtins.char_right;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.cursor, Position::new(0, 1));
+    }
+
+    #[test]
+    fn invoke_char_left_at_origin_does_not_underflow() {
+        let mut a = app_with("abc", 10);
+        let id = a.builtins.char_left;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn invoke_line_down_then_line_up() {
+        let mut a = app_with("hello\nworld", 10);
+        let down = a.builtins.line_down;
+        let up = a.builtins.line_up;
+        a.apply(invoke_motion(down));
+        assert_eq!(a.cursor.line, 1);
+        a.apply(invoke_motion(up));
+        assert_eq!(a.cursor.line, 0);
+    }
+
+    #[test]
+    fn invoke_goto_last_line_jumps_to_last_line() {
+        let mut a = app_with("a\nb\nc", 10);
+        let id = a.builtins.goto_last_line;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.cursor.line, 2);
+    }
+
+    #[test]
+    fn invoke_goto_first_line_returns_to_origin() {
+        let mut a = app_with("a\nb\nc", 10);
+        let last = a.builtins.goto_last_line;
+        let first = a.builtins.goto_first_line;
+        a.apply(invoke_motion(last));
+        a.apply(invoke_motion(first));
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn invoke_line_end_moves_to_eol() {
+        let mut a = app_with("hello world", 10);
+        let id = a.builtins.line_end;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.cursor, Position::new(0, 11));
+    }
+
+    #[test]
+    fn invocation_resets_pending() {
+        let mut a = app_with("abc", 10);
+        a.apply(Action::SetPending(Pending::AfterG));
+        assert_eq!(a.pending, Pending::AfterG);
+        let id = a.builtins.char_right;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.pending, Pending::None);
+    }
+
+    // ---- Insert mode ----
+
+    #[test]
+    fn entering_insert_mode_does_not_move_cursor() {
+        let mut a = app_with("abc", 10);
+        let before = a.cursor;
+        a.apply(Action::EnterMode(ModalState::Insert));
+        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.cursor, before);
+    }
+
+    #[test]
+    fn insert_mode_inserts_text_and_advances_cursor() {
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("h".into()));
+        a.apply(Action::Insert("i".into()));
+        assert_eq!(a.document.text(), "hi");
+        assert_eq!(a.cursor, Position::new(0, 2));
+    }
+
+    #[test]
+    fn insert_then_normal_pulls_cursor_back_one() {
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("hi".into()));
+        assert_eq!(a.cursor, Position::new(0, 2));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.cursor, Position::new(0, 1));
+    }
+
+    #[test]
+    fn backspace_deletes_char_before_cursor_in_insert() {
+        let mut a = app_with("hi", 10);
+        a.cursor.byte = 2;
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::DeleteCharBackward);
+        assert_eq!(a.document.text(), "h");
+        assert_eq!(a.cursor, Position::new(0, 1));
+    }
+
+    #[test]
+    fn backspace_at_origin_is_a_no_op() {
+        let mut a = app_with("hi", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::DeleteCharBackward);
+        assert_eq!(a.document.text(), "hi");
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn backspace_across_line_boundary_joins_lines() {
+        let mut a = app_with("a\nb", 10);
+        a.cursor = Position::new(1, 0);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::DeleteCharBackward);
+        assert_eq!(a.document.text(), "ab");
+        assert_eq!(a.cursor, Position::new(0, 1));
+    }
+
+    #[test]
+    fn enter_append_advances_cursor_one_byte_then_inserts() {
+        let mut a = app_with("ab", 10);
+        a.apply(Action::EnterAppend);
+        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.cursor, Position::new(0, 1));
+    }
+
+    #[test]
+    fn open_line_below_creates_new_line_and_drops_cursor_to_it() {
+        let mut a = app_with("first", 10);
+        a.apply(Action::OpenLineBelow);
+        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.document.text(), "first\n");
+        assert_eq!(a.cursor, Position::new(1, 0));
+    }
+
+    #[test]
+    fn open_line_above_creates_new_line_above() {
+        let mut a = app_with("second", 10);
+        a.apply(Action::OpenLineAbove);
+        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.document.text(), "\nsecond");
+        assert_eq!(a.cursor, Position::new(0, 0));
+    }
+
+    // ---- Operator + motion composition ----
+
+    #[test]
+    fn delete_with_word_forward_target_dw_in_app() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "world");
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn delete_char_under_cursor_x_in_app() {
+        let mut a = app_with("abc", 10);
+        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.char_right, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "bc");
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    // ---- Undo / Redo ----
+
+    #[test]
+    fn undo_after_insert_restores_buffer() {
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("hi".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.document.text(), "hi");
+        a.apply(Action::Undo);
+        assert_eq!(a.document.text(), "");
+    }
+
+    #[test]
+    fn redo_replays_undone_edit() {
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("hi".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        a.apply(Action::Undo);
+        a.apply(Action::Redo);
+        assert_eq!(a.document.text(), "hi");
+    }
+
+    // ---- Viewport scrolling ----
+
+    #[test]
+    fn ensure_visible_scrolls_when_cursor_goes_off_bottom() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 3);
+        let id = a.builtins.goto_last_line;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.cursor.line, 9);
+        assert_eq!(a.scroll, 9 - 3 + 1);
+    }
+
+    #[test]
+    fn ensure_visible_scrolls_back_to_top_on_goto_first() {
+        let mut a = app_with("0\n1\n2\n3\n4", 2);
+        let last = a.builtins.goto_last_line;
+        let first = a.builtins.goto_first_line;
+        a.apply(invoke_motion(last));
+        a.apply(invoke_motion(first));
+        assert_eq!(a.scroll, 0);
+    }
+
+    // ---- Command-line minibuffer ----
+
+    fn unique_tempdir() -> std::path::PathBuf {
+        let base = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = base.join(format!("lattice-tui-test-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn enter_command_line_clears_buffer_and_sets_modal() {
+        let mut a = app_with("abc", 10);
+        a.command_line = "stale".into();
+        a.last_message = Some(EchoMessage {
+            text: "stale".into(),
+            level: EchoLevel::Info,
+        });
+        a.apply(Action::EnterCommandLine);
+        assert_eq!(a.modal, ModalState::Command);
+        assert_eq!(a.command_line, "");
+        assert!(a.last_message.is_none());
+    }
+
+    #[test]
+    fn command_line_append_pushes_chars() {
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineAppend('w'));
+        a.apply(Action::CommandLineAppend('q'));
+        assert_eq!(a.command_line, "wq");
+    }
+
+    #[test]
+    fn command_line_backspace_pops_chars() {
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineAppend('w'));
+        a.apply(Action::CommandLineAppend('q'));
+        a.apply(Action::CommandLineBackspace);
+        assert_eq!(a.command_line, "w");
+    }
+
+    #[test]
+    fn command_line_backspace_on_empty_exits_command_modal() {
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineBackspace);
+        assert_eq!(a.modal, ModalState::Normal);
+    }
+
+    #[test]
+    fn command_line_cancel_clears_and_returns_to_normal() {
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineAppend('w'));
+        a.apply(Action::CommandLineCancel);
+        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.command_line, "");
+    }
+
+    #[test]
+    fn submit_q_on_clean_buffer_quits() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterCommandLine);
+        for c in "q".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.should_quit);
+        assert_eq!(a.modal, ModalState::Normal);
+    }
+
+    #[test]
+    fn submit_q_on_dirty_buffer_refuses() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert!(a.document.dirty());
+
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineAppend('q'));
+        a.apply(Action::CommandLineSubmit);
+        assert!(!a.should_quit);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("no write since last change"));
+    }
+
+    #[test]
+    fn submit_q_bang_quits_even_when_dirty() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        a.apply(Action::EnterCommandLine);
+        for c in "q!".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.should_quit);
+    }
+
+    #[test]
+    fn submit_w_without_path_errors() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineAppend('w'));
+        a.apply(Action::CommandLineSubmit);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("no file name"));
+    }
+
+    #[test]
+    fn submit_w_with_path_writes_and_clears_dirty() {
+        let dir = unique_tempdir();
+        let path = dir.join("out.txt");
+        let mut a = App::new(Document::from_text("hello"));
+        a.set_viewport_height(10);
+        // Move to end of line, then enter insert and append "!".
+        a.apply(invoke_motion(a.builtins.line_end));
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("!".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert!(a.document.dirty());
+
+        a.apply(Action::EnterCommandLine);
+        for c in format!("w {}", path.display()).chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        a.apply(Action::CommandLineSubmit);
+
+        assert!(!a.document.dirty());
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(msg.text.contains("written"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello!");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn submit_wq_writes_then_quits() {
+        let dir = unique_tempdir();
+        let path = dir.join("out.txt");
+        std::fs::write(&path, "first").unwrap();
+
+        let mut a = App::new(Document::open(&path).unwrap());
+        a.set_viewport_height(10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+
+        a.apply(Action::EnterCommandLine);
+        for c in "wq".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        a.apply(Action::CommandLineSubmit);
+
+        assert!(a.should_quit);
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(on_disk.starts_with("X"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn submit_unknown_command_surfaces_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterCommandLine);
+        for c in "frobnicate".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        a.apply(Action::CommandLineSubmit);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("frobnicate"));
+    }
+
+    #[test]
+    fn submitting_returns_to_normal_modal() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineAppend('q'));
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.modal, ModalState::Normal);
+    }
+
+    #[test]
+    fn echo_action_replaces_last_message() {
+        let mut a = app_with("", 10);
+        a.apply(Action::Echo(EchoMessage {
+            text: "hi".into(),
+            level: EchoLevel::Info,
+        }));
+        assert_eq!(a.last_message.as_ref().unwrap().text, "hi");
+        a.apply(Action::Echo(EchoMessage {
+            text: "bye".into(),
+            level: EchoLevel::Warn,
+        }));
+        assert_eq!(a.last_message.as_ref().unwrap().text, "bye");
+        assert_eq!(a.last_message.as_ref().unwrap().level, EchoLevel::Warn);
+    }
+}

@@ -1,0 +1,19 @@
+[package]
+name = "lattice-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lattice"
+path = "src/main.rs"
+
+[dependencies]
+lattice-core = { path = "../lattice-core" }
+lattice-ui-tui = { path = "../lattice-ui-tui" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

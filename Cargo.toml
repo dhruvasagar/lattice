@@ -4,6 +4,9 @@ members = [
 	"crates/lattice-protocol",
 	"crates/lattice-core",
 	"crates/lattice-grammar",
+	"crates/lattice-syntax",
+	"crates/lattice-ui-tui",
+	"crates/lattice-cli",
 ]
 
 [workspace.package]
@@ -29,6 +32,20 @@ serde = { version = "1.0", features = ["derive"] }
 # Logging
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Terminal UI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Syntax (tree-sitter)
+tree-sitter = "0.24"
+tree-sitter-highlight = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-javascript = "0.23"
 
 # Testing
 insta = "1.43"

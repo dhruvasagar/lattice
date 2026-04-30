@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+	"crates/lattice-protocol",
+	"crates/lattice-core",
+	"crates/lattice-grammar",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dhruvasagar/lattice"
+
+[workspace.dependencies]
+# Core
+ropey = "1.6"
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Async (will be wired in later phases)
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] }
+futures = "0.3"
+
+# Serialization (Phase 0 just uses serde for protocol type derives)
+serde = { version = "1.0", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Testing
+insta = "1.43"
+proptest = "1.7"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+panic = "warn"
+todo = "warn"

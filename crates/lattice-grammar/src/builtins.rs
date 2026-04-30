@@ -1,0 +1,592 @@
+//! Built-in motions, text objects, and operators that ship native (off the
+//! WASM boundary; per DESIGN.md §5.5.2 "built-ins stay native").
+//!
+//! Phase 1 implements the minimum necessary to demonstrate end-to-end
+//! dispatch:
+//! - `motion::word_forward` (next word start)
+//! - `operator::delete`
+//!
+//! Subsequent revisions populate the full vim catalog. Each new built-in is
+//! a registration here; no new dispatcher wiring needed.
+
+use lattice_core::buffer::AppliedEdit;
+use lattice_protocol::edit::Edit;
+use lattice_protocol::position::{Position, Range as ProtoRange};
+
+use crate::error::CommandError;
+use crate::registry::{
+    CommandRegistry, MotionContext, MotionResult, MotionSpec, OperatorContext, OperatorId,
+    OperatorSpec, MotionId,
+};
+
+/// Register all Phase 1 built-ins. Returns the ids needed by the keystroke
+/// parser / tests.
+pub fn populate(registry: &mut CommandRegistry) -> Builtins {
+    let word_forward = registry.register_motion(
+        "motion:word-forward",
+        "Move to the start of the next word.",
+        MotionSpec {
+            jump: false,
+            exclusive: true,
+            apply: Box::new(motion_word_forward),
+        },
+    );
+    let char_left = registry.register_motion(
+        "motion:char-left",
+        "Move one byte to the left within the current line.",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            apply: Box::new(motion_char_left),
+        },
+    );
+    let char_right = registry.register_motion(
+        "motion:char-right",
+        "Move one byte to the right within the current line.",
+        MotionSpec {
+            jump: false,
+            exclusive: true,
+            apply: Box::new(motion_char_right),
+        },
+    );
+    let line_up = registry.register_motion(
+        "motion:line-up",
+        "Move one line up.",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            apply: Box::new(motion_line_up),
+        },
+    );
+    let line_down = registry.register_motion(
+        "motion:line-down",
+        "Move one line down.",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            apply: Box::new(motion_line_down),
+        },
+    );
+    let line_start = registry.register_motion(
+        "motion:line-start",
+        "Move to the first byte of the current line.",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            apply: Box::new(motion_line_start),
+        },
+    );
+    let line_end = registry.register_motion(
+        "motion:line-end",
+        "Move to the last byte of the current line.",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            apply: Box::new(motion_line_end),
+        },
+    );
+    let goto_first_line = registry.register_motion(
+        "motion:goto-first-line",
+        "Jump to the first line of the buffer (vim's `gg`).",
+        MotionSpec {
+            jump: true,
+            exclusive: false,
+            apply: Box::new(motion_goto_first_line),
+        },
+    );
+    let goto_last_line = registry.register_motion(
+        "motion:goto-last-line",
+        "Jump to the last line of the buffer (vim's `G`).",
+        MotionSpec {
+            jump: true,
+            exclusive: false,
+            apply: Box::new(motion_goto_last_line),
+        },
+    );
+
+    let delete = registry.register_operator(
+        "operator:delete",
+        "Delete the bytes covered by the target range; yank to the unnamed register.",
+        OperatorSpec {
+            repeatable: true,
+            apply: Box::new(operator_delete),
+        },
+    );
+
+    Builtins {
+        word_forward,
+        char_left,
+        char_right,
+        line_up,
+        line_down,
+        line_start,
+        line_end,
+        goto_first_line,
+        goto_last_line,
+        delete,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Builtins {
+    pub word_forward: MotionId,
+    pub char_left: MotionId,
+    pub char_right: MotionId,
+    pub line_up: MotionId,
+    pub line_down: MotionId,
+    pub line_start: MotionId,
+    pub line_end: MotionId,
+    pub goto_first_line: MotionId,
+    pub goto_last_line: MotionId,
+    pub delete: OperatorId,
+}
+
+// ---- Motion: word-forward ----
+
+fn motion_word_forward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    // Advance `count` words. A word boundary here is the conventional vim
+    // "word" (alphanumeric + underscore) -- not "WORD" (whitespace-delimited).
+    // Phase 1 keeps the implementation simple: walk byte-wise over UTF-8
+    // characters in the current line and the next ones until we've crossed
+    // `count` word boundaries forward.
+    let text = ctx.buffer.as_string();
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+
+    let mut line = ctx.from.line as usize;
+    let mut byte = ctx.from.byte as usize;
+    let count = ctx.count.get().max(1);
+
+    for _ in 0..count {
+        // Skip the current word's remaining word chars.
+        while line < lines.len() {
+            let l = lines[line];
+            let bytes = l.as_bytes();
+            if byte < bytes.len() && is_word_byte(bytes[byte]) {
+                byte += 1;
+            } else {
+                break;
+            }
+            if byte >= bytes.len() {
+                line += 1;
+                byte = 0;
+                break;
+            }
+        }
+        // Skip non-word characters (whitespace, punctuation) until we hit the
+        // next word start, or run out of buffer.
+        loop {
+            if line >= lines.len() {
+                break;
+            }
+            let l = lines[line];
+            let bytes = l.as_bytes();
+            if byte >= bytes.len() {
+                line += 1;
+                byte = 0;
+                continue;
+            }
+            if is_word_byte(bytes[byte]) {
+                break;
+            }
+            byte += 1;
+        }
+    }
+
+    // Clamp to last position if we walked off the end.
+    let target = if line >= lines.len() {
+        let last_line = lines.len().saturating_sub(1);
+        let last_len = lines
+            .get(last_line)
+            .map(|l| l.trim_end_matches('\n').len())
+            .unwrap_or(0);
+        Position::new(last_line as u32, last_len as u32)
+    } else {
+        Position::new(line as u32, byte as u32)
+    };
+
+    Ok(MotionResult {
+        target,
+        linewise: false,
+    })
+}
+
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+// ---- Motion: char-left ----
+
+fn motion_char_left(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let count = ctx.count.get().max(1);
+    let mut pos = ctx.from;
+    for _ in 0..count {
+        if pos.byte == 0 {
+            break;
+        }
+        pos.byte -= 1;
+    }
+    Ok(MotionResult { target: pos, linewise: false })
+}
+
+// ---- Motion: char-right ----
+
+fn motion_char_right(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let count = ctx.count.get().max(1);
+    let mut pos = ctx.from;
+    let line_len = line_byte_len(ctx.buffer, pos.line);
+    for _ in 0..count {
+        if pos.byte >= line_len {
+            break;
+        }
+        pos.byte += 1;
+    }
+    Ok(MotionResult { target: pos, linewise: false })
+}
+
+// ---- Motion: line-up / line-down ----
+
+fn motion_line_up(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let count = ctx.count.get().max(1);
+    let line = ctx.from.line.saturating_sub(count);
+    let max_byte = line_byte_len(ctx.buffer, line);
+    let byte = ctx.from.byte.min(max_byte);
+    Ok(MotionResult {
+        target: Position::new(line, byte),
+        linewise: false,
+    })
+}
+
+fn motion_line_down(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let count = ctx.count.get().max(1);
+    let last = last_addressable_line(ctx.buffer);
+    let line = ctx.from.line.saturating_add(count).min(last);
+    let max_byte = line_byte_len(ctx.buffer, line);
+    let byte = ctx.from.byte.min(max_byte);
+    Ok(MotionResult {
+        target: Position::new(line, byte),
+        linewise: false,
+    })
+}
+
+// ---- Motion: line-start / line-end ----
+
+fn motion_line_start(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    Ok(MotionResult {
+        target: Position::new(ctx.from.line, 0),
+        linewise: false,
+    })
+}
+
+fn motion_line_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let len = line_byte_len(ctx.buffer, ctx.from.line);
+    Ok(MotionResult {
+        target: Position::new(ctx.from.line, len),
+        linewise: false,
+    })
+}
+
+// ---- Motion: goto-first-line / goto-last-line ----
+
+fn motion_goto_first_line(_ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    Ok(MotionResult {
+        target: Position::ZERO,
+        linewise: true,
+    })
+}
+
+fn motion_goto_last_line(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let last = last_addressable_line(ctx.buffer);
+    Ok(MotionResult {
+        target: Position::new(last, 0),
+        linewise: true,
+    })
+}
+
+// ---- Helpers ----
+
+fn line_byte_len(buffer: &lattice_core::Buffer, line: u32) -> u32 {
+    let s = buffer.as_string();
+    s.split_inclusive('\n')
+        .nth(line as usize)
+        .map(|l| l.trim_end_matches('\n').len() as u32)
+        .unwrap_or(0)
+}
+
+fn last_addressable_line(buffer: &lattice_core::Buffer) -> u32 {
+    let lc = buffer.line_count();
+    let s = buffer.as_string();
+    if lc == 0 {
+        0
+    } else if s.ends_with('\n') {
+        lc.saturating_sub(2)
+    } else {
+        lc.saturating_sub(1)
+    }
+}
+
+// ---- Operator: delete ----
+
+fn operator_delete(ctx: &mut OperatorContext) -> Result<Vec<AppliedEdit>, CommandError> {
+    if ctx.range.is_empty() {
+        return Ok(vec![]);
+    }
+    // TODO(register): once the register store lands, push the deleted text
+    // onto the unnamed register (and the system clipboard if the user's
+    // clipboard option is set).
+    let _ = ctx.register; // unused for now
+    let edit = Edit::delete(empty_to_empty(ctx.range));
+    let applied = ctx.document.apply_edit(edit)?;
+    Ok(vec![applied])
+}
+
+fn empty_to_empty(r: ProtoRange) -> ProtoRange {
+    r
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use crate::command::{CommandInvocation, Count};
+    use crate::dispatcher::execute;
+    use crate::effect::Effect;
+    use crate::target::Target;
+    use lattice_core::Document;
+
+    fn fixture(text: &str) -> (CommandRegistry, Builtins, Document) {
+        let mut r = CommandRegistry::new();
+        let b = populate(&mut r);
+        let d = Document::from_text(text);
+        (r, b, d)
+    }
+
+    #[test]
+    fn populate_registers_known_builtins_by_name() {
+        let mut r = CommandRegistry::new();
+        let _ = populate(&mut r);
+        assert!(r.lookup_by_name("motion:word-forward").is_some());
+        assert!(r.lookup_by_name("operator:delete").is_some());
+    }
+
+    #[test]
+    fn word_forward_advances_to_next_word_start() {
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.word_forward.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => {
+                assert_eq!(s.primary().head, Position::new(0, 6));
+            }
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_forward_with_count_advances_by_count() {
+        let (registry, b, mut doc) = fixture("one two three four");
+        let inv = CommandInvocation::of(b.word_forward.0).with_count(Count(2));
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => {
+                // "one two THREE four" -- two words forward from origin lands
+                // at the start of "three" (byte 8).
+                assert_eq!(s.primary().head, Position::new(0, 8));
+            }
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_forward_across_newline() {
+        let (registry, b, mut doc) = fixture("hello\nworld");
+        let inv = CommandInvocation::of(b.word_forward.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => {
+                assert_eq!(s.primary().head, Position::new(1, 0));
+            }
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delete_with_word_forward_target_dw_semantics() {
+        // The classic `dw`: from origin, delete to next word start.
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::Edits(applied) => {
+                assert_eq!(applied.len(), 1);
+                assert_eq!(applied[0].replaced_text, "hello ");
+            }
+            other => panic!("expected Edits, got {other:?}"),
+        }
+        assert_eq!(doc.text(), "world");
+    }
+
+    #[test]
+    fn delete_with_explicit_whole_range_deletes_buffer() {
+        let (registry, b, mut doc) = fixture("a\nb\nc");
+        let inv = CommandInvocation::of(b.delete.0).with_range(crate::range::Range::Whole);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        assert!(matches!(effect, Effect::Edits(_)));
+        assert_eq!(doc.text(), "");
+    }
+
+    #[test]
+    fn delete_with_current_line_range_clears_just_that_line() {
+        let (registry, b, mut doc) = fixture("aaa\nBBB\nccc");
+        let cursor = Position::new(1, 0);
+        let inv = CommandInvocation::of(b.delete.0).with_range(crate::range::Range::CurrentLine);
+        execute(&registry, &mut doc, cursor, inv).unwrap();
+        // `CurrentLine` covers the line content but not its trailing newline
+        // -- BBB is removed; the surrounding newlines stay.
+        assert_eq!(doc.text(), "aaa\n\nccc");
+    }
+
+    #[test]
+    fn unknown_command_id_errors() {
+        let (registry, _, mut doc) = fixture("abc");
+        let bogus = lattice_protocol::ids::CommandId::new(99_999);
+        let inv = CommandInvocation::of(bogus);
+        assert!(matches!(
+            execute(&registry, &mut doc, Position::ZERO, inv),
+            Err(CommandError::UnknownCommand)
+        ));
+    }
+
+    #[test]
+    fn operator_without_target_or_range_errors() {
+        let (registry, b, mut doc) = fixture("abc");
+        let inv = CommandInvocation::of(b.delete.0);
+        assert!(matches!(
+            execute(&registry, &mut doc, Position::ZERO, inv),
+            Err(CommandError::MissingTarget)
+        ));
+    }
+
+    #[test]
+    fn char_left_at_origin_stays_put() {
+        let (registry, b, mut doc) = fixture("abc");
+        let inv = CommandInvocation::of(b.char_left.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn char_right_advances_one_byte() {
+        let (registry, b, mut doc) = fixture("abc");
+        let inv = CommandInvocation::of(b.char_right.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 1)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn char_right_at_end_of_line_stays_put() {
+        let (registry, b, mut doc) = fixture("ab");
+        let inv = CommandInvocation::of(b.char_right.0);
+        let effect = execute(&registry, &mut doc, Position::new(0, 2), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 2)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn line_down_moves_one_line_and_clamps_byte() {
+        let (registry, b, mut doc) = fixture("hello\nhi");
+        let inv = CommandInvocation::of(b.line_down.0);
+        let effect = execute(&registry, &mut doc, Position::new(0, 5), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(1, 2)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn line_up_at_top_stays_put() {
+        let (registry, b, mut doc) = fixture("a\nb");
+        let inv = CommandInvocation::of(b.line_up.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn line_start_resets_byte_to_zero() {
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.line_start.0);
+        let effect = execute(&registry, &mut doc, Position::new(0, 7), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 0)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn line_end_jumps_to_line_byte_length() {
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.line_end.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 11)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn goto_first_line_returns_to_origin() {
+        let (registry, b, mut doc) = fixture("a\nb\nc");
+        let inv = CommandInvocation::of(b.goto_first_line.0);
+        let effect = execute(&registry, &mut doc, Position::new(2, 0), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn goto_last_line_jumps_to_last_addressable_line() {
+        let (registry, b, mut doc) = fixture("a\nb\nc");
+        let inv = CommandInvocation::of(b.goto_last_line.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(2, 0)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn x_semantics_via_delete_with_char_right_target() {
+        // Vim's `x`: delete the char under the cursor.
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::Motion(b.char_right, crate::args::Args::None));
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        assert!(matches!(effect, Effect::Edits(_)));
+        assert_eq!(doc.text(), "ello");
+    }
+
+    #[test]
+    fn delete_with_motion_target_for_motion_id_kind_mismatch_is_caught() {
+        // Constructing a Target::Motion from a *non-motion* command id should
+        // surface a kind mismatch, not silently succeed.
+        let (registry, b, mut doc) = fixture("abc");
+        // Use `delete` (an operator) as if it were a motion. Should fail.
+        let bogus = MotionId(b.delete.0);
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::Motion(bogus, crate::args::Args::None));
+        let err = execute(&registry, &mut doc, Position::ZERO, inv).unwrap_err();
+        assert!(matches!(err, CommandError::KindMismatch { .. }));
+    }
+}

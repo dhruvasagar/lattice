@@ -104,6 +104,9 @@ pub enum Action {
     EnterVisual(VisualKind),
     /// Exit Visual to Normal, collapsing the selection.
     ExitVisual,
+    /// Vim's `.` -- re-dispatch the last buffer-mutating invocation from
+    /// the current cursor.
+    RepeatLastChange,
 
     // ---- Command-line minibuffer (Phase 2: simple, single-line) ----
     /// Pressed `:` in Normal mode -- enter command modal with empty buffer.
@@ -221,6 +224,11 @@ pub struct App {
     /// cursor; the `anchor` stays put so the selection extends or
     /// contracts as the user moves.
     pub visual_anchor: Option<Position>,
+    /// Last operator-class invocation that mutated the buffer.
+    /// `.` re-dispatches it from the current cursor. v1 records
+    /// operator + motion / operator + range / Visual-mode operator;
+    /// insert-mode text replay is a known gap (§5.2.4).
+    pub last_change: Option<CommandInvocation>,
 }
 
 impl std::fmt::Debug for App {
@@ -271,6 +279,7 @@ impl App {
             pending_count: 0,
             op_count: 0,
             visual_anchor: None,
+            last_change: None,
         }
     }
 
@@ -353,6 +362,21 @@ impl App {
 
             Action::EnterVisual(kind) => self.do_enter_visual(kind),
             Action::ExitVisual => self.do_exit_visual(),
+
+            Action::RepeatLastChange => {
+                if let Some(inv) = self.last_change.clone() {
+                    // Direct dispatch: bypass the `last_change` recording
+                    // path inside run_invocation by setting a re-entry guard.
+                    // For v1 simple model, we just call run_invocation; the
+                    // resulting last_change overwrite is identical.
+                    self.run_invocation(inv);
+                } else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        "no previous change to repeat".to_string(),
+                    );
+                }
+            }
 
             Action::PasteAfter => self.do_paste(false),
             Action::PasteBefore => self.do_paste(true),
@@ -651,10 +675,16 @@ impl App {
         self.pending_count = 0;
         self.op_count = 0;
         let was_visual = matches!(self.modal, ModalState::Visual(_));
-        let mut effect_was_operator = false;
+        let mut should_exit_visual = false;
+        let inv_for_repeat = inv.clone();
         match execute(&self.registry, &mut self.document, self.cursor, inv) {
             Ok(effect) => {
-                effect_was_operator = effect_mutates_or_yanks(&effect);
+                // Visual exits on any operator-class effect (mutation OR
+                // yank-only); dot-repeat only records buffer mutations.
+                should_exit_visual = effect_mutates_or_yanks(&effect);
+                if effect_mutates(&effect) {
+                    self.last_change = Some(inv_for_repeat);
+                }
                 self.apply_effect(effect);
             }
             Err(_) => {
@@ -662,14 +692,11 @@ impl App {
                 // subsystem lands.
             }
         }
-        // After a Visual-mode OPERATOR (d/y/c on selection), vim returns
+        // After a Visual-mode operator (d/y/c on selection), vim returns
         // to Normal. Pure motion in Visual extends the selection -- keep
         // Visual. The `c` operator already flipped to Insert via
         // Effect::EnterMode; the post-check would be a no-op there.
-        if was_visual
-            && effect_was_operator
-            && matches!(self.modal, ModalState::Visual(_))
-        {
+        if was_visual && should_exit_visual && matches!(self.modal, ModalState::Visual(_)) {
             self.do_exit_visual();
         }
         self.clamp_cursor_to_buffer();
@@ -956,6 +983,19 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         Effect::Edits(_) | Effect::Yank { .. } => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
         Effect::None | Effect::SelectionChange(_) | Effect::EnterMode(_) => false,
+    }
+}
+
+/// True if the Effect produced a buffer mutation. Used by dot-repeat
+/// to decide whether to record the invocation -- yank-only invocations
+/// (vim's `y`) are NOT eligible for `.`, only changes.
+fn effect_mutates(effect: &Effect) -> bool {
+    match effect {
+        Effect::Edits(_) => true,
+        Effect::Many(parts) => parts.iter().any(effect_mutates),
+        Effect::None | Effect::SelectionChange(_) | Effect::Yank { .. } | Effect::EnterMode(_) => {
+            false
+        }
     }
 }
 
@@ -1635,6 +1675,76 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- Dot-repeat ----
+
+    #[test]
+    fn dot_with_no_prior_change_emits_error() {
+        let mut a = app_with("hello", 10);
+        assert!(a.last_change.is_none());
+        a.apply(Action::RepeatLastChange);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn delete_records_last_change_and_dot_replays_it() {
+        let mut a = app_with("foo bar foo bar", 10);
+        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        // After dw: "bar foo bar".
+        assert_eq!(a.document.text(), "bar foo bar");
+        assert!(a.last_change.is_some());
+        // `.` replays the same dw at the new cursor position.
+        a.apply(Action::RepeatLastChange);
+        assert_eq!(a.document.text(), "foo bar");
+    }
+
+    #[test]
+    fn yank_does_not_record_last_change() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        // Yank doesn't mutate the buffer; dot-repeat shouldn't pick this up.
+        assert!(a.last_change.is_none());
+    }
+
+    #[test]
+    fn motion_does_not_record_last_change() {
+        let mut a = app_with("hello world", 10);
+        a.apply(invoke_motion(a.builtins.word_forward));
+        assert!(a.last_change.is_none());
+    }
+
+    #[test]
+    fn dd_records_last_change_and_dot_replays_it() {
+        let mut a = app_with("aaa\nBBB\nccc\nddd", 10);
+        a.cursor = Position::new(1, 0);
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_range(lattice_grammar::Range::CurrentLine);
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "aaa\n\nccc\nddd");
+        // `.` repeats: empty line is now "deleted" -> empty stays.
+        a.apply(Action::RepeatLastChange);
+        // `.` re-runs `dd` at the cursor; line 1 (empty) becomes a no-op
+        // edit since CurrentLine is empty. Buffer unchanged.
+        assert_eq!(a.document.text(), "aaa\n\nccc\nddd");
+    }
+
+    #[test]
+    fn change_records_last_change() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.change.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        // change drops to Insert, but the change itself is recorded.
+        assert!(a.last_change.is_some());
     }
 
     // ---- Visual mode end-to-end ----

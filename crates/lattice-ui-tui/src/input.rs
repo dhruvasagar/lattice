@@ -241,6 +241,9 @@ fn translate_normal(
         // Undo
         KeyCode::Char('u') => Action::Undo,
 
+        // Dot-repeat
+        KeyCode::Char('.') => Action::RepeatLastChange,
+
         // Paging
         KeyCode::PageDown => invoke_with_count(builtins.line_down, 10),
         KeyCode::PageUp => invoke_with_count(builtins.line_up, 10),
@@ -892,6 +895,20 @@ mod tests {
         assert!(matches!(
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
+        ));
+    }
+
+    // ---- Dot-repeat ----
+
+    #[test]
+    fn dot_in_normal_emits_repeat_last_change() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('.'))
+            ),
+            Action::RepeatLastChange
         ));
     }
 

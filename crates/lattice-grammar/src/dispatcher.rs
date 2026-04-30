@@ -111,12 +111,15 @@ fn execute_operator(
     let mut ctx = OperatorContext {
         document,
         range: target_range,
+        linewise: matches!(
+            invocation.range,
+            Some(Range::CurrentLine) | Some(Range::Whole)
+        ),
         register: invocation.register_or_default(),
         count: invocation.count_or_default(),
         args: invocation.args.clone(),
     };
-    let edits = (operator.apply)(&mut ctx)?;
-    Ok(Effect::Edits(edits))
+    (operator.apply)(&mut ctx)
 }
 
 fn resolve_target(

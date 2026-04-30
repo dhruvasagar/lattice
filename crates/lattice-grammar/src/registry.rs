@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 use lattice_core::Buffer;
-use lattice_core::buffer::AppliedEdit;
 use lattice_core::Document;
 use lattice_protocol::ids::CommandId;
 use lattice_protocol::position::{Position, Range as ProtoRange};
@@ -89,13 +88,23 @@ impl std::fmt::Debug for MotionSpec {
 pub struct OperatorContext<'a> {
     pub document: &'a mut Document,
     pub range: ProtoRange,
+    /// Whether the range was produced by a linewise source (vim's
+    /// `Range::CurrentLine` / `Range::Whole`, or a linewise visual
+    /// selection). Yank uses this to tag the unnamed register so paste
+    /// can do the right thing.
+    pub linewise: bool,
     pub register: Register,
     pub count: Count,
     pub args: Args,
 }
 
+/// An operator's evaluator returns the full `Effect` it produced. Most
+/// operators return `Effect::Edits(...)`; `change` adds a mode transition
+/// via `Effect::Many(...)`; `yank` returns `Effect::Yank { ... }`. The
+/// dispatcher passes the result through unchanged -- composition is
+/// expressed in the Effect, not via flags on the spec.
 type OperatorFn =
-    Box<dyn Fn(&mut OperatorContext) -> GrammarResult<Vec<AppliedEdit>> + Send + Sync>;
+    Box<dyn Fn(&mut OperatorContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
 
 pub struct OperatorSpec {
     pub repeatable: bool,

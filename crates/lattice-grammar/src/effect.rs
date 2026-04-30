@@ -9,7 +9,17 @@
 use lattice_core::buffer::AppliedEdit;
 use lattice_protocol::selection::SelectionSet;
 
+use crate::modal::ModalState;
 use crate::register::Register;
+
+/// How a yank captured its content. Drives paste behavior:
+/// charwise yanks land at the cursor, linewise yanks land on the next
+/// line below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum YankKind {
+    Charwise,
+    Linewise,
+}
 
 #[derive(Debug, Clone)]
 pub enum Effect {
@@ -19,7 +29,12 @@ pub enum Effect {
     Yank {
         register: Register,
         content: String,
+        kind: YankKind,
     },
+    /// Transition the modal state machine. Used by operators that change
+    /// modes after committing edits (vim's `c` -> Insert, future `s`,
+    /// `gv` reselect Visual, etc.).
+    EnterMode(ModalState),
     Many(Vec<Effect>),
 }
 
@@ -44,13 +59,23 @@ mod tests {
         let e = Effect::Yank {
             register: Register::Unnamed,
             content: "hello".into(),
+            kind: YankKind::Charwise,
         };
         match e {
-            Effect::Yank { register, content } => {
+            Effect::Yank { register, content, kind } => {
                 assert_eq!(register, Register::Unnamed);
                 assert_eq!(content, "hello");
+                assert_eq!(kind, YankKind::Charwise);
             }
             _ => panic!("expected Yank"),
         }
+    }
+
+    #[test]
+    fn yank_kind_serializes() {
+        let charwise = serde_json::to_string(&YankKind::Charwise).unwrap();
+        let linewise = serde_json::to_string(&YankKind::Linewise).unwrap();
+        assert!(charwise.contains("Charwise"));
+        assert!(linewise.contains("Linewise"));
     }
 }

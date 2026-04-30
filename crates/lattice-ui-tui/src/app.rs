@@ -17,6 +17,7 @@ use lattice_core::search::{self, SearchHit};
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::ModalState;
 use lattice_grammar::SearchDirection;
+use lattice_grammar::YankKind;
 use lattice_grammar::builtins::{Builtins, populate};
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::dispatcher::execute;
@@ -90,6 +91,13 @@ pub enum Action {
     /// Replace the echo area with a typed message.
     Echo(EchoMessage),
 
+    // ---- Paste (`p`, `P`) ----
+    /// Vim's `p` -- paste the unnamed register after the cursor (charwise)
+    /// or below the current line (linewise).
+    PasteAfter,
+    /// Vim's `P` -- paste before cursor / above current line.
+    PasteBefore,
+
     // ---- Search (`/`, `?`, `n`, `N`) ----
     /// Pressed `/` (Forward) or `?` (Backward) -- enter Search modal with
     /// empty pattern, remembering origin so cancel restores cursor.
@@ -122,6 +130,14 @@ pub struct SearchLine {
 pub struct LastSearch {
     pub pattern: String,
     pub direction: SearchDirection,
+}
+
+/// The unnamed register's payload. v1 uses a single global slot; the
+/// full vim register zoo (`"a-z`, `"+`, `"*`, etc.) lands later.
+#[derive(Debug, Clone)]
+pub struct UnnamedRegister {
+    pub content: String,
+    pub kind: YankKind,
 }
 
 pub struct App {
@@ -161,6 +177,9 @@ pub struct App {
     /// Range of the most recent search match, used to draw the highlight
     /// in the buffer view. Cleared on Esc and on cursor motion.
     pub current_match: Option<ProtoRange>,
+    /// Unnamed register -- destination of `y` / `d` / `c`, source of
+    /// `p` / `P`. `None` until something has been yanked.
+    pub unnamed_register: Option<UnnamedRegister>,
 }
 
 impl std::fmt::Debug for App {
@@ -207,6 +226,7 @@ impl App {
             search_line: None,
             last_search: None,
             current_match: None,
+            unnamed_register: None,
         }
     }
 
@@ -266,6 +286,9 @@ impl App {
             Action::Echo(message) => {
                 self.last_message = Some(message);
             }
+
+            Action::PasteAfter => self.do_paste(false),
+            Action::PasteBefore => self.do_paste(true),
 
             Action::EnterSearch(direction) => {
                 self.search_line = Some(SearchLine {
@@ -558,8 +581,16 @@ impl App {
             Effect::SelectionChange(set) => {
                 self.cursor = set.primary().head;
             }
-            Effect::Yank { .. } => {
-                // Phase 2 stub: register storage lands later in Phase 1.
+            Effect::Yank { content, kind, .. } => {
+                self.unnamed_register = Some(UnnamedRegister { content, kind });
+            }
+            Effect::EnterMode(mode) => {
+                // Operators that flip mode (`c` -> Insert) come through here.
+                // We bypass `enter_mode`'s "pull cursor back one byte" guard
+                // because the operator already placed the cursor at the
+                // correct insertion point.
+                self.modal = mode;
+                self.pending = Pending::None;
             }
             Effect::Many(many) => {
                 for e in many {
@@ -627,6 +658,77 @@ impl App {
         }
         self.modal = ModalState::Insert;
         self.pending = Pending::None;
+    }
+
+    /// Paste from the unnamed register. `before = true` for `P` (paste
+    /// before cursor / above current line), `false` for `p` (paste after
+    /// cursor / below current line). Linewise yanks insert on a new line;
+    /// charwise yanks splice at the cursor.
+    fn do_paste(&mut self, before: bool) {
+        let Some(reg) = self.unnamed_register.clone() else {
+            self.set_message(EchoLevel::Error, "register empty".to_string());
+            return;
+        };
+        match reg.kind {
+            YankKind::Charwise => {
+                // `p` inserts after the cursor's byte; `P` at the cursor.
+                let line_len = line_byte_len(&self.document, self.cursor.line);
+                let insert_at = if before {
+                    self.cursor
+                } else if self.cursor.byte < line_len {
+                    Position::new(self.cursor.line, self.cursor.byte + 1)
+                } else {
+                    self.cursor
+                };
+                if let Ok(applied) = self
+                    .document
+                    .apply_edit(Edit::insert(insert_at, &reg.content))
+                {
+                    // Vim leaves the cursor on the last char of the pasted text.
+                    let end = applied.inserted_range.end;
+                    self.cursor = if end.byte > 0 {
+                        Position::new(end.line, end.byte - 1)
+                    } else {
+                        end
+                    };
+                }
+            }
+            YankKind::Linewise => {
+                // Linewise content is inserted as a whole new line. We
+                // normalise by ensuring exactly one trailing newline on the
+                // payload before splicing at the appropriate line boundary.
+                let mut payload = reg.content.clone();
+                if !payload.ends_with('\n') {
+                    payload.push('\n');
+                }
+                let insert_at = if before {
+                    Position::new(self.cursor.line, 0)
+                } else {
+                    let len = line_byte_len(&self.document, self.cursor.line);
+                    // Insert at end of current line then a newline -- but
+                    // vim's `p` puts the line BELOW. So insert at start of
+                    // the next line. If we're on the last line and there's
+                    // no trailing newline, insert "\n<payload-without-tail>".
+                    if self.cursor.line + 1 < self.document.buffer().line_count() {
+                        Position::new(self.cursor.line + 1, 0)
+                    } else {
+                        // Append at EOL of last line; payload starts with \n
+                        // implicit in being on a "new" line.
+                        let _ = self
+                            .document
+                            .apply_edit(Edit::insert(Position::new(self.cursor.line, len), "\n"));
+                        Position::new(self.cursor.line + 1, 0)
+                    }
+                };
+                if let Ok(applied) = self
+                    .document
+                    .apply_edit(Edit::insert(insert_at, &payload))
+                {
+                    // Cursor lands at the start of the pasted block.
+                    self.cursor = applied.inserted_range.start;
+                }
+            }
+        }
     }
 
     fn do_open_line_above(&mut self) {
@@ -1351,6 +1453,177 @@ mod tests {
         type_pattern(&mut a, "alpha");
         a.apply(Action::SearchSubmit);
         assert_eq!(a.cursor, Position::new(0, 17));
+    }
+
+    // ---- change operator end-to-end ----
+
+    #[test]
+    fn cw_deletes_word_and_enters_insert_mode() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.change.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "world");
+        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn cc_clears_current_line_and_enters_insert_mode() {
+        let mut a = app_with("aaa\nBBB\nccc", 10);
+        a.cursor = Position::new(1, 0);
+        let inv = CommandInvocation::of(a.builtins.change.0)
+            .with_range(lattice_grammar::Range::CurrentLine);
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "aaa\n\nccc");
+        assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- yank + paste end-to-end ----
+
+    #[test]
+    fn yw_populates_unnamed_register_charwise() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        let reg = a.unnamed_register.as_ref().unwrap();
+        assert_eq!(reg.content, "hello ");
+        assert_eq!(reg.kind, YankKind::Charwise);
+        // Buffer untouched by yank.
+        assert_eq!(a.document.text(), "hello world");
+    }
+
+    #[test]
+    fn yy_populates_register_linewise() {
+        let mut a = app_with("aaa\nBBB\nccc", 10);
+        a.cursor = Position::new(1, 0);
+        let inv = CommandInvocation::of(a.builtins.yank.0)
+            .with_range(lattice_grammar::Range::CurrentLine);
+        a.apply(Action::Invoke(inv));
+        let reg = a.unnamed_register.as_ref().unwrap();
+        assert_eq!(reg.content, "BBB");
+        assert_eq!(reg.kind, YankKind::Linewise);
+        assert_eq!(a.document.text(), "aaa\nBBB\nccc");
+    }
+
+    #[test]
+    fn dd_populates_register_linewise_via_delete() {
+        // delete also yanks; register kind is linewise for dd.
+        let mut a = app_with("aaa\nBBB\nccc", 10);
+        a.cursor = Position::new(1, 0);
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_range(lattice_grammar::Range::CurrentLine);
+        a.apply(Action::Invoke(inv));
+        let reg = a.unnamed_register.as_ref().unwrap();
+        assert_eq!(reg.kind, YankKind::Linewise);
+        assert_eq!(reg.content, "BBB");
+    }
+
+    #[test]
+    fn paste_after_charwise_inserts_after_cursor() {
+        let mut a = app_with("hello", 10);
+        a.unnamed_register = Some(UnnamedRegister {
+            content: "X".into(),
+            kind: YankKind::Charwise,
+        });
+        a.cursor = Position::new(0, 0); // on 'h'
+        a.apply(Action::PasteAfter);
+        assert_eq!(a.document.text(), "hXello");
+        // Cursor lands on the last char of the pasted text (still 'X').
+        assert_eq!(a.cursor, Position::new(0, 1));
+    }
+
+    #[test]
+    fn paste_before_charwise_inserts_at_cursor() {
+        let mut a = app_with("hello", 10);
+        a.unnamed_register = Some(UnnamedRegister {
+            content: "X".into(),
+            kind: YankKind::Charwise,
+        });
+        a.cursor = Position::new(0, 2); // on 'l'
+        a.apply(Action::PasteBefore);
+        assert_eq!(a.document.text(), "heXllo");
+        assert_eq!(a.cursor, Position::new(0, 2));
+    }
+
+    #[test]
+    fn paste_after_linewise_inserts_below_current_line() {
+        let mut a = app_with("aaa\nBBB\nccc", 10);
+        a.unnamed_register = Some(UnnamedRegister {
+            content: "XXX\n".into(),
+            kind: YankKind::Linewise,
+        });
+        a.cursor = Position::new(1, 0); // on 'B' line
+        a.apply(Action::PasteAfter);
+        assert_eq!(a.document.text(), "aaa\nBBB\nXXX\nccc");
+        assert_eq!(a.cursor, Position::new(2, 0));
+    }
+
+    #[test]
+    fn paste_before_linewise_inserts_above_current_line() {
+        let mut a = app_with("aaa\nBBB\nccc", 10);
+        a.unnamed_register = Some(UnnamedRegister {
+            content: "XXX\n".into(),
+            kind: YankKind::Linewise,
+        });
+        a.cursor = Position::new(1, 0);
+        a.apply(Action::PasteBefore);
+        assert_eq!(a.document.text(), "aaa\nXXX\nBBB\nccc");
+        assert_eq!(a.cursor, Position::new(1, 0));
+    }
+
+    #[test]
+    fn paste_with_empty_register_emits_error_message() {
+        let mut a = app_with("hello", 10);
+        assert!(a.unnamed_register.is_none());
+        a.apply(Action::PasteAfter);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert_eq!(a.document.text(), "hello");
+    }
+
+    #[test]
+    fn yank_then_paste_round_trips_word() {
+        let mut a = app_with("hello world", 10);
+        let yank = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(yank));
+        // Move cursor to end of buffer.
+        a.cursor = Position::new(0, 11);
+        a.apply(Action::PasteAfter);
+        assert_eq!(a.document.text(), "hello worldhello ");
+    }
+
+    #[test]
+    fn delete_then_paste_after_emulates_xp_swap() {
+        // Vim trick: cursor on 'a' of "abc"; `xp` swaps 'a' and 'b' -> "bac".
+        let mut a = app_with("abc", 10);
+        a.cursor = Position::ZERO;
+        // x: delete char-right
+        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.char_right, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "bc");
+        // p: paste after cursor (cursor at 0 on 'b'; paste after -> "bac").
+        a.apply(Action::PasteAfter);
+        assert_eq!(a.document.text(), "bac");
+    }
+
+    #[test]
+    fn after_change_user_can_type_and_replacement_lands() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.change.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.modal, ModalState::Insert);
+        a.apply(Action::Insert("HEY ".into()));
+        assert_eq!(a.document.text(), "HEY world");
     }
 
     #[test]

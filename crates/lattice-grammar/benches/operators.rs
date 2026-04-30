@@ -107,5 +107,54 @@ fn operator_d_whole(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, operator_dw, operator_dd, operator_d_whole);
+fn operator_yw(c: &mut Criterion) {
+    let mut g = c.benchmark_group("operator::yw");
+    let mut registry = CommandRegistry::new();
+    let b = populate(&mut registry);
+
+    for size in [10usize, 1_000, 50_000] {
+        let text = build_buffer(size);
+        g.bench_with_input(BenchmarkId::from_parameter(size), &text, |bencher, t| {
+            bencher.iter_with_setup(
+                || Document::from_text(t),
+                |mut doc| {
+                    let inv = CommandInvocation::of(b.yank.0)
+                        .with_target(Target::Motion(b.word_forward, Args::None));
+                    let _ = execute(&registry, &mut doc, black_box(Position::ZERO), inv).unwrap();
+                },
+            );
+        });
+    }
+    g.finish();
+}
+
+fn operator_cw(c: &mut Criterion) {
+    let mut g = c.benchmark_group("operator::cw");
+    let mut registry = CommandRegistry::new();
+    let b = populate(&mut registry);
+
+    for size in [10usize, 1_000, 50_000] {
+        let text = build_buffer(size);
+        g.bench_with_input(BenchmarkId::from_parameter(size), &text, |bencher, t| {
+            bencher.iter_with_setup(
+                || Document::from_text(t),
+                |mut doc| {
+                    let inv = CommandInvocation::of(b.change.0)
+                        .with_target(Target::Motion(b.word_forward, Args::None));
+                    let _ = execute(&registry, &mut doc, black_box(Position::ZERO), inv).unwrap();
+                },
+            );
+        });
+    }
+    g.finish();
+}
+
+criterion_group!(
+    benches,
+    operator_dw,
+    operator_dd,
+    operator_d_whole,
+    operator_yw,
+    operator_cw,
+);
 criterion_main!(benches);

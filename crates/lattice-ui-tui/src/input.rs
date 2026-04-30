@@ -118,6 +118,17 @@ fn translate_normal(event: KeyEvent, pending: Pending, builtins: &Builtins) -> A
 
         // Operator-leading keys
         KeyCode::Char('d') => Action::SetPending(Pending::AfterOperator(builtins.delete)),
+        KeyCode::Char('c') => Action::SetPending(Pending::AfterOperator(builtins.change)),
+        KeyCode::Char('y') => Action::SetPending(Pending::AfterOperator(builtins.yank)),
+
+        // Paste
+        KeyCode::Char('p') => Action::PasteAfter,
+        KeyCode::Char('P') => Action::PasteBefore,
+
+        // Linewise yank shortcut: `Y` is equivalent to `yy` in vim's defaults.
+        KeyCode::Char('Y') => Action::Invoke(
+            CommandInvocation::of(builtins.yank.0).with_range(lattice_grammar::Range::CurrentLine),
+        ),
 
         // Vim's `x` -- delete one char to the right.
         KeyCode::Char('x') => Action::Invoke(
@@ -183,6 +194,19 @@ fn resolve_after_operator(
             // covers the line content; the trailing newline is a known
             // limitation tracked in DESIGN.md §14 for proper linewise vim
             // semantics.
+            return Action::Invoke(
+                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
+            );
+        }
+        KeyCode::Char('c') if op == builtins.change => {
+            // `cc` -- change current line: clear the line content and enter
+            // Insert (the `change` operator handles the mode transition).
+            return Action::Invoke(
+                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
+            );
+        }
+        KeyCode::Char('y') if op == builtins.yank => {
+            // `yy` -- yank current line into the unnamed register (linewise).
             return Action::Invoke(
                 CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
             );
@@ -777,6 +801,154 @@ mod tests {
             },
             _ => panic!("expected Invoke"),
         }
+    }
+
+    // ---- change operator: c, cw, cc ----
+
+    #[test]
+    fn c_sets_pending_operator_change() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('c')),
+        );
+        match action {
+            Action::SetPending(Pending::AfterOperator(op)) => assert_eq!(op, b.change),
+            other => panic!("expected SetPending(AfterOperator(change)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cw_resolves_to_change_with_word_forward_target() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.change), &b),
+            key(KeyCode::Char('w')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.change.0);
+                match inv.target {
+                    Some(Target::Motion(id, _)) => assert_eq!(id, b.word_forward),
+                    other => panic!("expected motion target, got {other:?}"),
+                }
+            }
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn cc_resolves_to_change_with_current_line_range() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.change), &b),
+            key(KeyCode::Char('c')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.change.0);
+                assert_eq!(inv.range, Some(lattice_grammar::Range::CurrentLine));
+            }
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    // ---- yank operator + paste ----
+
+    #[test]
+    fn y_sets_pending_operator_yank() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('y')),
+        );
+        match action {
+            Action::SetPending(Pending::AfterOperator(op)) => assert_eq!(op, b.yank),
+            other => panic!("expected SetPending(AfterOperator(yank)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn yw_resolves_to_yank_word_forward() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.yank), &b),
+            key(KeyCode::Char('w')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.yank.0);
+                match inv.target {
+                    Some(Target::Motion(id, _)) => assert_eq!(id, b.word_forward),
+                    other => panic!("expected motion target, got {other:?}"),
+                }
+            }
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn yy_resolves_to_yank_current_line() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.yank), &b),
+            key(KeyCode::Char('y')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.yank.0);
+                assert_eq!(inv.range, Some(lattice_grammar::Range::CurrentLine));
+            }
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn capital_y_aliases_to_yank_current_line() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('Y')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.yank.0);
+                assert_eq!(inv.range, Some(lattice_grammar::Range::CurrentLine));
+            }
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn p_lowercase_is_paste_after() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('p')),
+        );
+        assert!(matches!(action, Action::PasteAfter));
+    }
+
+    #[test]
+    fn p_uppercase_is_paste_before() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('P')),
+        );
+        assert!(matches!(action, Action::PasteBefore));
+    }
+
+    #[test]
+    fn dd_is_not_treated_as_change_current_line() {
+        // Regression check: the `cc` arm should only fire for op == change.
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            key(KeyCode::Char('c')),
+        );
+        // Delete operator + 'c' key: no specific motion, fallback clears pending.
+        assert!(matches!(action, Action::SetPending(Pending::None)));
     }
 
     #[test]

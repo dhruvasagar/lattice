@@ -36,7 +36,7 @@ pub mod target;
 pub use crate::args::Args;
 pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count};
 pub use crate::dispatcher::execute;
-pub use crate::effect::Effect;
+pub use crate::effect::{Effect, YankKind};
 pub use crate::error::{CommandError, GrammarResult};
 pub use crate::modal::{ModalState, SearchDirection, VisualKind};
 pub use crate::range::{Range, RangeBound};

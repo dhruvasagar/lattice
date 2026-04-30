@@ -9,10 +9,10 @@
 //! Subsequent revisions populate the full vim catalog. Each new built-in is
 //! a registration here; no new dispatcher wiring needed.
 
-use lattice_core::buffer::AppliedEdit;
 use lattice_protocol::edit::Edit;
-use lattice_protocol::position::{Position, Range as ProtoRange};
+use lattice_protocol::position::Position;
 
+use crate::effect::{Effect, YankKind};
 use crate::error::CommandError;
 use crate::registry::{
     CommandRegistry, MotionContext, MotionResult, MotionSpec, OperatorContext, OperatorId,
@@ -139,6 +139,22 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Box::new(operator_delete),
         },
     );
+    let change = registry.register_operator(
+        "operator:change",
+        "Delete the bytes covered by the target range and enter Insert mode (vim's `c`).",
+        OperatorSpec {
+            repeatable: true,
+            apply: Box::new(operator_change),
+        },
+    );
+    let yank = registry.register_operator(
+        "operator:yank",
+        "Copy the bytes covered by the target range into the named register without modifying the buffer (vim's `y`).",
+        OperatorSpec {
+            repeatable: true,
+            apply: Box::new(operator_yank),
+        },
+    );
 
     Builtins {
         word_forward,
@@ -154,6 +170,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         goto_first_line,
         goto_last_line,
         delete,
+        change,
+        yank,
     }
 }
 
@@ -172,6 +190,8 @@ pub struct Builtins {
     pub goto_first_line: MotionId,
     pub goto_last_line: MotionId,
     pub delete: OperatorId,
+    pub change: OperatorId,
+    pub yank: OperatorId,
 }
 
 // ---- Motion: word-forward ----
@@ -454,22 +474,86 @@ fn last_addressable_line(buffer: &lattice_core::Buffer) -> u32 {
 }
 
 // ---- Operator: delete ----
+//
+// Vim's `d` -- delete the bytes covered by the target range. Also yanks
+// the deleted content into the unnamed register (vim's behavior). The
+// returned Effect is a `Many` so callers see both the buffer mutation
+// and the yank in a single dispatched commit.
 
-fn operator_delete(ctx: &mut OperatorContext) -> Result<Vec<AppliedEdit>, CommandError> {
+fn operator_delete(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     if ctx.range.is_empty() {
-        return Ok(vec![]);
+        return Ok(Effect::None);
     }
-    // TODO(register): once the register store lands, push the deleted text
-    // onto the unnamed register (and the system clipboard if the user's
-    // clipboard option is set).
-    let _ = ctx.register; // unused for now
-    let edit = Edit::delete(empty_to_empty(ctx.range));
+    let _ = ctx.register; // explicit register selection lands later
+    let yanked = ctx.document.buffer().slice(ctx.range)?;
+    let edit = Edit::delete(ctx.range);
     let applied = ctx.document.apply_edit(edit)?;
-    Ok(vec![applied])
+    let yank_kind = if ctx.linewise {
+        YankKind::Linewise
+    } else {
+        YankKind::Charwise
+    };
+    Ok(Effect::Many(vec![
+        Effect::Edits(vec![applied]),
+        Effect::Yank {
+            register: crate::register::Register::Unnamed,
+            content: yanked,
+            kind: yank_kind,
+        },
+    ]))
 }
 
-fn empty_to_empty(r: ProtoRange) -> ProtoRange {
-    r
+// ---- Operator: change ----
+//
+// Vim's `c` -- delete the target range, yank it (matching delete's
+// behavior), and enter Insert mode at the deleted position. Composition
+// expressed in the Effect, not a flag on the spec.
+
+fn operator_change(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    if ctx.range.is_empty() {
+        // No-op change still drops into Insert (vim does this for `cw` on
+        // an empty buffer / past EOF).
+        return Ok(Effect::EnterMode(crate::modal::ModalState::Insert));
+    }
+    let yanked = ctx.document.buffer().slice(ctx.range)?;
+    let edit = Edit::delete(ctx.range);
+    let applied = ctx.document.apply_edit(edit)?;
+    let yank_kind = if ctx.linewise {
+        YankKind::Linewise
+    } else {
+        YankKind::Charwise
+    };
+    Ok(Effect::Many(vec![
+        Effect::Edits(vec![applied]),
+        Effect::Yank {
+            register: crate::register::Register::Unnamed,
+            content: yanked,
+            kind: yank_kind,
+        },
+        Effect::EnterMode(crate::modal::ModalState::Insert),
+    ]))
+}
+
+// ---- Operator: yank ----
+//
+// Vim's `y` -- copy the target range into the unnamed register without
+// touching the buffer.
+
+fn operator_yank(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    if ctx.range.is_empty() {
+        return Ok(Effect::None);
+    }
+    let content = ctx.document.buffer().slice(ctx.range)?;
+    let kind = if ctx.linewise {
+        YankKind::Linewise
+    } else {
+        YankKind::Charwise
+    };
+    Ok(Effect::Yank {
+        register: crate::register::Register::Unnamed,
+        content,
+        kind,
+    })
 }
 
 #[cfg(test)]
@@ -541,26 +625,50 @@ mod tests {
     #[test]
     fn delete_with_word_forward_target_dw_semantics() {
         // The classic `dw`: from origin, delete to next word start.
+        // Delete now also yanks the deleted content into the unnamed
+        // register, so the Effect is `Many([Edits, Yank])`.
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
         let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
         match effect {
-            Effect::Edits(applied) => {
-                assert_eq!(applied.len(), 1);
-                assert_eq!(applied[0].replaced_text, "hello ");
+            Effect::Many(parts) => {
+                assert_eq!(parts.len(), 2);
+                match &parts[0] {
+                    Effect::Edits(applied) => {
+                        assert_eq!(applied.len(), 1);
+                        assert_eq!(applied[0].replaced_text, "hello ");
+                    }
+                    other => panic!("expected Edits at [0], got {other:?}"),
+                }
+                match &parts[1] {
+                    Effect::Yank { content, kind, .. } => {
+                        assert_eq!(content, "hello ");
+                        assert_eq!(*kind, YankKind::Charwise);
+                    }
+                    other => panic!("expected Yank at [1], got {other:?}"),
+                }
             }
-            other => panic!("expected Edits, got {other:?}"),
+            other => panic!("expected Many, got {other:?}"),
         }
         assert_eq!(doc.text(), "world");
     }
 
     #[test]
-    fn delete_with_explicit_whole_range_deletes_buffer() {
+    fn delete_with_explicit_whole_range_deletes_buffer_and_yanks_linewise() {
         let (registry, b, mut doc) = fixture("a\nb\nc");
         let inv = CommandInvocation::of(b.delete.0).with_range(crate::range::Range::Whole);
         let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
-        assert!(matches!(effect, Effect::Edits(_)));
+        match effect {
+            Effect::Many(parts) => {
+                assert!(matches!(parts[0], Effect::Edits(_)));
+                match &parts[1] {
+                    Effect::Yank { kind, .. } => assert_eq!(*kind, YankKind::Linewise),
+                    other => panic!("expected Yank at [1], got {other:?}"),
+                }
+            }
+            other => panic!("expected Many, got {other:?}"),
+        }
         assert_eq!(doc.text(), "");
     }
 
@@ -697,12 +805,18 @@ mod tests {
 
     #[test]
     fn x_semantics_via_delete_with_char_right_target() {
-        // Vim's `x`: delete the char under the cursor.
+        // Vim's `x`: delete the char under the cursor (and yank it).
         let (registry, b, mut doc) = fixture("hello");
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::Motion(b.char_right, crate::args::Args::None));
         let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
-        assert!(matches!(effect, Effect::Edits(_)));
+        match effect {
+            Effect::Many(parts) => {
+                assert!(matches!(parts[0], Effect::Edits(_)));
+                assert!(matches!(parts[1], Effect::Yank { .. }));
+            }
+            other => panic!("expected Many, got {other:?}"),
+        }
         assert_eq!(doc.text(), "ello");
     }
 
@@ -913,6 +1027,193 @@ mod tests {
             .with_target(Target::Motion(b.word_backward, crate::args::Args::None));
         execute(&registry, &mut doc, Position::new(0, 11), inv).unwrap();
         assert_eq!(doc.text(), "hello ");
+    }
+
+    // ---- change operator (c) ----
+
+    #[test]
+    fn change_with_word_forward_emits_edits_yank_and_enter_insert() {
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.change.0)
+            .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        // Effect::Many([Edits, Yank, EnterMode(Insert)]).
+        match effect {
+            Effect::Many(parts) => {
+                assert_eq!(parts.len(), 3);
+                assert!(matches!(parts[0], Effect::Edits(_)));
+                assert!(matches!(parts[1], Effect::Yank { .. }));
+                assert!(matches!(
+                    parts[2],
+                    Effect::EnterMode(crate::ModalState::Insert)
+                ));
+            }
+            other => panic!("expected Effect::Many, got {other:?}"),
+        }
+        assert_eq!(doc.text(), "world");
+    }
+
+    #[test]
+    fn change_current_line_clears_line_and_enters_insert() {
+        let (registry, b, mut doc) = fixture("aaa\nBBB\nccc");
+        let cursor = Position::new(1, 0);
+        let inv = CommandInvocation::of(b.change.0).with_range(crate::range::Range::CurrentLine);
+        let effect = execute(&registry, &mut doc, cursor, inv).unwrap();
+        match effect {
+            Effect::Many(parts) => {
+                assert_eq!(parts.len(), 3);
+                // CurrentLine -> linewise yank.
+                match &parts[1] {
+                    Effect::Yank { kind, .. } => assert_eq!(*kind, YankKind::Linewise),
+                    other => panic!("expected Yank at [1], got {other:?}"),
+                }
+                assert!(matches!(
+                    parts[2],
+                    Effect::EnterMode(crate::ModalState::Insert)
+                ));
+            }
+            other => panic!("expected Effect::Many, got {other:?}"),
+        }
+        assert_eq!(doc.text(), "aaa\n\nccc");
+    }
+
+    #[test]
+    fn change_with_line_end_target_truncates_line_and_enters_insert() {
+        // `c$` from byte 5 of "hello world" leaves "hello" and enters Insert.
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.change.0)
+            .with_target(Target::Motion(b.line_end, crate::args::Args::None));
+        let effect = execute(&registry, &mut doc, Position::new(0, 5), inv).unwrap();
+        match effect {
+            Effect::Many(parts) => {
+                assert_eq!(parts.len(), 3);
+                assert!(matches!(
+                    parts[2],
+                    Effect::EnterMode(crate::ModalState::Insert)
+                ));
+            }
+            other => panic!("expected Effect::Many, got {other:?}"),
+        }
+        assert_eq!(doc.text(), "hello");
+    }
+
+    // ---- yank operator (y) ----
+
+    #[test]
+    fn yank_with_word_forward_emits_charwise_yank() {
+        let (registry, b, mut doc) = fixture("hello world");
+        let original_text = doc.text();
+        let inv = CommandInvocation::of(b.yank.0)
+            .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        // Yank does NOT touch the buffer.
+        assert_eq!(doc.text(), original_text);
+        match effect {
+            Effect::Yank { content, kind, register } => {
+                assert_eq!(content, "hello ");
+                assert_eq!(kind, YankKind::Charwise);
+                assert_eq!(register, crate::register::Register::Unnamed);
+            }
+            other => panic!("expected Yank, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn yank_with_current_line_range_emits_linewise_yank() {
+        let (registry, b, mut doc) = fixture("aaa\nBBB\nccc");
+        let inv = CommandInvocation::of(b.yank.0).with_range(crate::range::Range::CurrentLine);
+        let effect = execute(&registry, &mut doc, Position::new(1, 0), inv).unwrap();
+        // No buffer mutation.
+        assert_eq!(doc.text(), "aaa\nBBB\nccc");
+        match effect {
+            Effect::Yank { content, kind, .. } => {
+                assert_eq!(content, "BBB");
+                assert_eq!(kind, YankKind::Linewise);
+            }
+            other => panic!("expected Yank, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn yank_with_whole_range_emits_linewise_full_buffer() {
+        let (registry, b, mut doc) = fixture("hello\nworld");
+        let inv = CommandInvocation::of(b.yank.0).with_range(crate::range::Range::Whole);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::Yank { content, kind, .. } => {
+                assert_eq!(content, "hello\nworld");
+                assert_eq!(kind, YankKind::Linewise);
+            }
+            other => panic!("expected Yank, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn yank_does_not_modify_buffer() {
+        let (registry, b, mut doc) = fixture("immutable text");
+        let original = doc.text();
+        let inv = CommandInvocation::of(b.yank.0).with_range(crate::range::Range::Whole);
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        assert_eq!(doc.text(), original);
+    }
+
+    #[test]
+    fn yank_empty_range_returns_none() {
+        let (registry, b, mut doc) = fixture("");
+        let inv = CommandInvocation::of(b.yank.0).with_range(crate::range::Range::Whole);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        // Empty buffer / empty range -> Effect::None.
+        assert!(matches!(effect, Effect::None));
+    }
+
+    // ---- delete-yanks-into-register (composite verification) ----
+
+    #[test]
+    fn delete_charwise_yanks_charwise() {
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::Many(parts) => match &parts[1] {
+                Effect::Yank { kind, content, .. } => {
+                    assert_eq!(*kind, YankKind::Charwise);
+                    assert_eq!(content, "hello ");
+                }
+                other => panic!("expected Yank, got {other:?}"),
+            },
+            other => panic!("expected Many, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delete_linewise_yanks_linewise() {
+        let (registry, b, mut doc) = fixture("aaa\nBBB\nccc");
+        let inv = CommandInvocation::of(b.delete.0).with_range(crate::range::Range::CurrentLine);
+        let effect = execute(&registry, &mut doc, Position::new(1, 0), inv).unwrap();
+        match effect {
+            Effect::Many(parts) => match &parts[1] {
+                Effect::Yank { kind, .. } => assert_eq!(*kind, YankKind::Linewise),
+                other => panic!("expected Yank, got {other:?}"),
+            },
+            other => panic!("expected Many, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delete_emits_many_with_edits_and_yank_only() {
+        // Sanity: delete emits Many([Edits, Yank]) -- never EnterMode.
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::Many(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert!(!parts.iter().any(|e| matches!(e, Effect::EnterMode(_))));
+            }
+            other => panic!("expected Many, got {other:?}"),
+        }
     }
 
     #[test]

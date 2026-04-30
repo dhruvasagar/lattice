@@ -13,6 +13,15 @@ serde = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "search"
+harness = false
+
+[[bench]]
+name = "buffer"
+harness = false
 
 [lints]
 workspace = true

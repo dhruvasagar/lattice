@@ -107,7 +107,10 @@ fn translate_normal(event: KeyEvent, pending: Pending, builtins: &Builtins) -> A
         KeyCode::Char('l') | KeyCode::Right => invoke(builtins.char_right),
         KeyCode::Char('0') | KeyCode::Home => invoke(builtins.line_start),
         KeyCode::Char('$') | KeyCode::End => invoke(builtins.line_end),
+        KeyCode::Char('^') => invoke(builtins.first_non_blank),
         KeyCode::Char('w') => invoke(builtins.word_forward),
+        KeyCode::Char('b') => invoke(builtins.word_backward),
+        KeyCode::Char('e') => invoke(builtins.word_end),
         KeyCode::Char('G') => invoke(builtins.goto_last_line),
 
         // Pending key sequences
@@ -166,12 +169,15 @@ fn resolve_after_operator(
     // operator (e.g., `dd`) is a special case that maps to `Range::CurrentLine`.
     let target = match event.code {
         KeyCode::Char('w') => Target::Motion(builtins.word_forward, Args::None),
+        KeyCode::Char('b') => Target::Motion(builtins.word_backward, Args::None),
+        KeyCode::Char('e') => Target::Motion(builtins.word_end, Args::None),
         KeyCode::Char('h') | KeyCode::Left => Target::Motion(builtins.char_left, Args::None),
         KeyCode::Char('l') | KeyCode::Right => Target::Motion(builtins.char_right, Args::None),
         KeyCode::Char('j') | KeyCode::Down => Target::Motion(builtins.line_down, Args::None),
         KeyCode::Char('k') | KeyCode::Up => Target::Motion(builtins.line_up, Args::None),
         KeyCode::Char('0') | KeyCode::Home => Target::Motion(builtins.line_start, Args::None),
         KeyCode::Char('$') | KeyCode::End => Target::Motion(builtins.line_end, Args::None),
+        KeyCode::Char('^') => Target::Motion(builtins.first_non_blank, Args::None),
         KeyCode::Char('d') if op == builtins.delete => {
             // `dd` -- delete current line. The dispatcher's CurrentLine range
             // covers the line content; the trailing newline is a known
@@ -704,5 +710,88 @@ mod tests {
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
         ));
+    }
+
+    // ---- New motions: b, e, ^ ----
+
+    #[test]
+    fn b_invokes_word_backward() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('b')),
+        );
+        assert_eq!(invocation_command(&action), Some(b.word_backward.0));
+    }
+
+    #[test]
+    fn e_invokes_word_end() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('e')),
+        );
+        assert_eq!(invocation_command(&action), Some(b.word_end.0));
+    }
+
+    #[test]
+    fn caret_invokes_first_non_blank() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('^')),
+        );
+        assert_eq!(invocation_command(&action), Some(b.first_non_blank.0));
+    }
+
+    #[test]
+    fn db_resolves_to_delete_word_backward() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            key(KeyCode::Char('b')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                match inv.target {
+                    Some(Target::Motion(id, _)) => assert_eq!(id, b.word_backward),
+                    other => panic!("expected motion target, got {other:?}"),
+                }
+            }
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn de_resolves_to_delete_word_end() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            key(KeyCode::Char('e')),
+        );
+        match action {
+            Action::Invoke(inv) => match inv.target {
+                Some(Target::Motion(id, _)) => assert_eq!(id, b.word_end),
+                other => panic!("expected motion target, got {other:?}"),
+            },
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn d_caret_resolves_to_delete_first_non_blank() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            key(KeyCode::Char('^')),
+        );
+        match action {
+            Action::Invoke(inv) => match inv.target {
+                Some(Target::Motion(id, _)) => assert_eq!(id, b.first_non_blank),
+                other => panic!("expected motion target, got {other:?}"),
+            },
+            _ => panic!("expected Invoke"),
+        }
     }
 }

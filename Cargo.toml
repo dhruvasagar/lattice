@@ -50,6 +50,7 @@ tree-sitter-javascript = "0.23"
 # Testing
 insta = "1.43"
 proptest = "1.7"
+criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

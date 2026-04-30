@@ -31,6 +31,33 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Box::new(motion_word_forward),
         },
     );
+    let word_backward = registry.register_motion(
+        "motion:word-backward",
+        "Move to the start of the previous word (vim's `b`).",
+        MotionSpec {
+            jump: false,
+            exclusive: true,
+            apply: Box::new(motion_word_backward),
+        },
+    );
+    let word_end = registry.register_motion(
+        "motion:word-end",
+        "Move to the last byte of the current or next word (vim's `e`). Inclusive.",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            apply: Box::new(motion_word_end),
+        },
+    );
+    let first_non_blank = registry.register_motion(
+        "motion:first-non-blank",
+        "Move to the first non-whitespace byte of the current line (vim's `^`).",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            apply: Box::new(motion_first_non_blank),
+        },
+    );
     let char_left = registry.register_motion(
         "motion:char-left",
         "Move one byte to the left within the current line.",
@@ -115,6 +142,9 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
 
     Builtins {
         word_forward,
+        word_backward,
+        word_end,
+        first_non_blank,
         char_left,
         char_right,
         line_up,
@@ -130,6 +160,9 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
 #[derive(Debug, Clone, Copy)]
 pub struct Builtins {
     pub word_forward: MotionId,
+    pub word_backward: MotionId,
+    pub word_end: MotionId,
+    pub first_non_blank: MotionId,
     pub char_left: MotionId,
     pub char_right: MotionId,
     pub line_up: MotionId,
@@ -212,6 +245,102 @@ fn motion_word_forward(ctx: &MotionContext) -> Result<MotionResult, CommandError
 
 fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn is_blank_byte(b: u8) -> bool {
+    b == b' ' || b == b'\t'
+}
+
+// ---- Motion: word-backward (vim's `b`) ----
+
+fn motion_word_backward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let count = ctx.count.get().max(1);
+    let mut idx = ctx
+        .buffer
+        .position_to_byte(ctx.from)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+
+    for _ in 0..count {
+        if idx == 0 {
+            break;
+        }
+        // Step one byte back, then skip non-word bytes (whitespace, newlines,
+        // punctuation), then walk back through the word's body to its start.
+        idx -= 1;
+        while idx > 0 && !is_word_byte(bytes[idx]) {
+            idx -= 1;
+        }
+        while idx > 0 && is_word_byte(bytes[idx - 1]) {
+            idx -= 1;
+        }
+    }
+
+    let target = ctx
+        .buffer
+        .byte_to_position(idx)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(MotionResult { target, linewise: false })
+}
+
+// ---- Motion: word-end (vim's `e`) ----
+
+fn motion_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let total = bytes.len();
+    let count = ctx.count.get().max(1);
+    let mut idx = ctx
+        .buffer
+        .position_to_byte(ctx.from)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+
+    for _ in 0..count {
+        if idx >= total.saturating_sub(1) {
+            break;
+        }
+        // Step one byte forward, skip non-word bytes, then advance to the
+        // last byte of the current word (the position where the next byte
+        // would be non-word or past EOF).
+        idx += 1;
+        while idx < total && !is_word_byte(bytes[idx]) {
+            idx += 1;
+        }
+        if idx >= total {
+            idx = total.saturating_sub(1);
+            break;
+        }
+        while idx + 1 < total && is_word_byte(bytes[idx + 1]) {
+            idx += 1;
+        }
+    }
+
+    let target = ctx
+        .buffer
+        .byte_to_position(idx)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(MotionResult { target, linewise: false })
+}
+
+// ---- Motion: first-non-blank (vim's `^`) ----
+
+fn motion_first_non_blank(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let text = ctx.buffer.as_string();
+    let line_text = text
+        .split_inclusive('\n')
+        .nth(ctx.from.line as usize)
+        .map(|l| l.trim_end_matches('\n'))
+        .unwrap_or("");
+    let bytes = line_text.as_bytes();
+    let mut col = 0usize;
+    while col < bytes.len() && is_blank_byte(bytes[col]) {
+        col += 1;
+    }
+    Ok(MotionResult {
+        target: Position::new(ctx.from.line, col as u32),
+        linewise: false,
+    })
 }
 
 // ---- Motion: char-left ----
@@ -575,6 +704,231 @@ mod tests {
         let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
         assert!(matches!(effect, Effect::Edits(_)));
         assert_eq!(doc.text(), "ello");
+    }
+
+    // ---- word-backward (b) ----
+
+    #[test]
+    fn word_backward_from_mid_word_lands_at_start_of_word() {
+        let (registry, b, mut doc) = fixture("hello world");
+        // Cursor on 'r' of "world" (byte 8) -- vim's `b` lands on 'w' (byte 6).
+        let inv = CommandInvocation::of(b.word_backward.0);
+        let effect = execute(&registry, &mut doc, Position::new(0, 8), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 6)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_backward_from_start_of_word_lands_at_start_of_previous_word() {
+        let (registry, b, mut doc) = fixture("one two three");
+        // Cursor on 't' of "three" (byte 8). `b` -> 't' of "two" (byte 4).
+        let inv = CommandInvocation::of(b.word_backward.0);
+        let effect = execute(&registry, &mut doc, Position::new(0, 8), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_backward_at_origin_stays_put() {
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = CommandInvocation::of(b.word_backward.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_backward_crosses_newlines() {
+        let (registry, b, mut doc) = fixture("foo\nbar");
+        // Cursor on 'b' (line 1 byte 0). `b` -> 'f' (line 0 byte 0).
+        let inv = CommandInvocation::of(b.word_backward.0);
+        let effect = execute(&registry, &mut doc, Position::new(1, 0), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_backward_with_count_jumps_count_words() {
+        let (registry, b, mut doc) = fixture("one two three four");
+        // Cursor on 'f' of "four" (byte 14). `2b` -> 't' of "two" (byte 4).
+        let inv = CommandInvocation::of(b.word_backward.0).with_count(Count(2));
+        let effect = execute(&registry, &mut doc, Position::new(0, 14), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_backward_skips_punctuation_as_non_word() {
+        let (registry, b, mut doc) = fixture("alpha, beta");
+        // Cursor on 'b' of "beta" (byte 7). `b` -> 'a' of "alpha" (byte 0).
+        let inv = CommandInvocation::of(b.word_backward.0);
+        let effect = execute(&registry, &mut doc, Position::new(0, 7), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    // ---- word-end (e) ----
+
+    #[test]
+    fn word_end_from_start_of_word_lands_at_last_byte_of_word() {
+        let (registry, b, mut doc) = fixture("hello world");
+        // From 'h' (byte 0) `e` -> 'o' of "hello" (byte 4).
+        let inv = CommandInvocation::of(b.word_end.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_end_from_end_of_word_lands_at_end_of_next_word() {
+        let (registry, b, mut doc) = fixture("hello world");
+        // From 'o' of "hello" (byte 4) `e` -> 'd' of "world" (byte 10).
+        let inv = CommandInvocation::of(b.word_end.0);
+        let effect = execute(&registry, &mut doc, Position::new(0, 4), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 10)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_end_at_buffer_end_stays_put() {
+        let (registry, b, mut doc) = fixture("hi");
+        // From 'i' (byte 1) `e` -> stays at byte 1 (no further word).
+        let inv = CommandInvocation::of(b.word_end.0);
+        let effect = execute(&registry, &mut doc, Position::new(0, 1), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 1)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_end_crosses_newlines() {
+        let (registry, b, mut doc) = fixture("foo\nbar");
+        // From 'o' of "foo" (line 0 byte 2) `e` -> 'r' of "bar" (line 1 byte 2).
+        let inv = CommandInvocation::of(b.word_end.0);
+        let effect = execute(&registry, &mut doc, Position::new(0, 2), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(1, 2)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_end_with_count_advances_by_count() {
+        let (registry, b, mut doc) = fixture("one two three four");
+        // From 'o' (byte 0) `2e` -> end of "two" = 'o' of "two" (byte 6).
+        let inv = CommandInvocation::of(b.word_end.0).with_count(Count(2));
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 6)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    // ---- first-non-blank (^) ----
+
+    #[test]
+    fn first_non_blank_skips_leading_spaces() {
+        let (registry, b, mut doc) = fixture("    hello");
+        let inv = CommandInvocation::of(b.first_non_blank.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn first_non_blank_skips_leading_tabs() {
+        let (registry, b, mut doc) = fixture("\t\thello");
+        let inv = CommandInvocation::of(b.first_non_blank.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 2)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn first_non_blank_on_already_non_blank_line_returns_zero() {
+        let (registry, b, mut doc) = fixture("hello");
+        let inv = CommandInvocation::of(b.first_non_blank.0);
+        let effect = execute(&registry, &mut doc, Position::new(0, 3), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn first_non_blank_on_blank_only_line_returns_end() {
+        let (registry, b, mut doc) = fixture("    ");
+        let inv = CommandInvocation::of(b.first_non_blank.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => {
+                // No non-blank chars; cursor lands at end of line (byte 4).
+                assert_eq!(s.primary().head, Position::new(0, 4));
+            }
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn first_non_blank_respects_current_line() {
+        let (registry, b, mut doc) = fixture("a\n  bc");
+        // Cursor on line 1; first non-blank is at byte 2 of line 1.
+        let inv = CommandInvocation::of(b.first_non_blank.0);
+        let effect = execute(&registry, &mut doc, Position::new(1, 4), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(1, 2)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    // ---- delete + new motions composition ----
+
+    #[test]
+    fn delete_with_word_backward_target_db_semantics() {
+        // `db` from past-EOL deletes the last word: word_backward from byte 11
+        // lands at byte 6 (start of "world"); the [6, 11) range covers "world".
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::Motion(b.word_backward, crate::args::Args::None));
+        execute(&registry, &mut doc, Position::new(0, 11), inv).unwrap();
+        assert_eq!(doc.text(), "hello ");
+    }
+
+    #[test]
+    fn delete_with_word_end_target_de_semantics() {
+        // `de` from start of "hello world" deletes "hello" (word_end is
+        // inclusive, so range covers [0, 5)).
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::Motion(b.word_end, crate::args::Args::None));
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        // word_end lands at byte 4 ('o' of "hello"). Our dispatcher uses
+        // [start, end) ranges so the resulting deletion covers [0, 4) = "hell".
+        // (This documents current dispatcher behavior; vim's inclusive
+        // semantics for `de` would delete "hello", a refinement tracked in
+        // §15:N.)
+        assert_eq!(doc.text(), "o world");
     }
 
     #[test]

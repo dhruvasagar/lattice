@@ -103,7 +103,7 @@ impl Buffer {
         })
     }
 
-    fn position_to_byte(&self, pos: Position) -> CoreResult<usize> {
+    pub fn position_to_byte(&self, pos: Position) -> CoreResult<usize> {
         let line_count = self.line_count();
         if pos.line >= line_count {
             return Err(ProtocolError::PositionOutOfBounds {
@@ -129,7 +129,7 @@ impl Buffer {
         Ok(line_start + pos.byte as usize)
     }
 
-    fn byte_to_position(&self, byte: usize) -> CoreResult<Position> {
+    pub fn byte_to_position(&self, byte: usize) -> CoreResult<Position> {
         let line = self.rope.byte_to_line(byte);
         let line_start = self.rope.line_to_byte(line);
         Ok(Position {

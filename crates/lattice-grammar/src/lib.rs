@@ -38,7 +38,7 @@ pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count};
 pub use crate::dispatcher::execute;
 pub use crate::effect::Effect;
 pub use crate::error::{CommandError, GrammarResult};
-pub use crate::modal::{ModalState, VisualKind};
+pub use crate::modal::{ModalState, SearchDirection, VisualKind};
 pub use crate::range::{Range, RangeBound};
 pub use crate::register::Register;
 pub use crate::registry::{

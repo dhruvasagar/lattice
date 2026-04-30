@@ -17,7 +17,8 @@ use ratatui::style::{Color, Modifier, Style as TuiStyle};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use lattice_grammar::ModalState;
+use lattice_grammar::{ModalState, SearchDirection};
+use lattice_protocol::position::Range as ProtoRange;
 use lattice_syntax::{Lang, Style, StyledSpan};
 
 use crate::app::{App, EchoLevel};
@@ -41,10 +42,11 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App) {
     let lines = compose_visible_lines(app, area.height as u32, area.width as u32);
     frame.render_widget(Paragraph::new(lines), area);
 
-    // Place the buffer-area cursor only when not in Command modal: while
-    // typing a `:` command the cursor lives in the echo / command-line row
-    // (handled by draw_command_or_echo).
-    if !matches!(app.modal, ModalState::Command)
+    // Place the buffer-area cursor only when the prompt isn't claiming it.
+    // In Command (`:`) and Search (`/`, `?`) modal states the cursor lives
+    // in the bottom prompt row -- handled by `draw_command_or_echo`.
+    let prompt_owns_cursor = matches!(app.modal, ModalState::Command | ModalState::Search(_));
+    if !prompt_owns_cursor
         && let Some((screen_x, screen_y)) = cursor_screen_position(app, area)
     {
         frame.set_cursor_position((screen_x, screen_y));
@@ -55,6 +57,26 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     if matches!(app.modal, ModalState::Command) {
         // ":<typed>" with the cursor sitting at the end of the typed text.
         let prompt = format!(":{}", app.command_line);
+        let para = Paragraph::new(Line::from(prompt.clone()));
+        frame.render_widget(para, area);
+        let col = area
+            .x
+            .saturating_add(prompt.len().min(area.width as usize) as u16);
+        frame.set_cursor_position((col, area.y));
+        return;
+    }
+
+    if let ModalState::Search(direction) = app.modal {
+        let lead = match direction {
+            SearchDirection::Forward => '/',
+            SearchDirection::Backward => '?',
+        };
+        let pattern = app
+            .search_line
+            .as_ref()
+            .map(|s| s.pattern.as_str())
+            .unwrap_or("");
+        let prompt = format!("{lead}{pattern}");
         let para = Paragraph::new(Line::from(prompt.clone()));
         frame.render_widget(para, area);
         let col = area
@@ -133,10 +155,84 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         let line_text = &raw_lines[line_idx as usize];
         let gutter = render_gutter(line_idx, gutter_w);
         let spans = app.highlights_for_viewport_row(i);
-        let body = render_styled_line(line_text, spans, buffer_w);
+        let mut body = render_styled_line(line_text, spans, buffer_w);
+        if let Some(range) = app.current_match
+            && let Some((overlay_start, overlay_end)) =
+                match_overlay_range(range, line_idx, line_text.len())
+        {
+            body = apply_match_overlay(body, overlay_start, overlay_end, match_style());
+        }
         out.push(combine(gutter, body));
     }
     out
+}
+
+/// If `range` covers any bytes on `line_idx`, return the within-line
+/// half-open byte interval `[start, end)`. `line_len` is the line's
+/// content length excluding the trailing newline.
+fn match_overlay_range(
+    range: ProtoRange,
+    line_idx: u32,
+    line_len: usize,
+) -> Option<(usize, usize)> {
+    if line_idx < range.start.line || line_idx > range.end.line {
+        return None;
+    }
+    let start = if line_idx == range.start.line {
+        range.start.byte as usize
+    } else {
+        0
+    };
+    let end = if line_idx == range.end.line {
+        range.end.byte as usize
+    } else {
+        line_len
+    };
+    if start >= end || start >= line_len {
+        return None;
+    }
+    Some((start, end.min(line_len)))
+}
+
+fn apply_match_overlay(
+    spans: Vec<Span<'static>>,
+    overlay_start: usize,
+    overlay_end: usize,
+    overlay_style: TuiStyle,
+) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 2);
+    let mut cursor = 0usize;
+    for span in spans {
+        let s = span.content.as_ref().to_string();
+        let span_start = cursor;
+        let span_end = cursor + s.len();
+        let overlap_start = span_start.max(overlay_start);
+        let overlap_end = span_end.min(overlay_end);
+        if overlap_start >= overlap_end {
+            out.push(Span::styled(s, span.style));
+        } else {
+            if overlap_start > span_start {
+                let pre = s[..overlap_start - span_start].to_string();
+                out.push(Span::styled(pre, span.style));
+            }
+            let mid =
+                s[overlap_start - span_start..overlap_end - span_start].to_string();
+            out.push(Span::styled(mid, overlay_style));
+            if overlap_end < span_end {
+                let post = s[overlap_end - span_start..].to_string();
+                out.push(Span::styled(post, span.style));
+            }
+        }
+        cursor = span_end;
+    }
+    out
+}
+
+fn match_style() -> TuiStyle {
+    TuiStyle::default()
+        .bg(Color::Yellow)
+        .fg(Color::Black)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn gutter_width(line_count: u32) -> u32 {
@@ -381,5 +477,88 @@ mod tests {
         let spans = render_styled_line("this is a long line of text", &[], 6);
         let total: usize = spans.iter().map(|s| s.content.len()).sum();
         assert!(total <= 6, "rendered length {total} exceeded max width 6");
+    }
+
+    // ---- Match overlay ----
+
+    use lattice_protocol::position::{Position, Range as ProtoRange};
+
+    fn pos(l: u32, b: u32) -> Position {
+        Position::new(l, b)
+    }
+
+    #[test]
+    fn match_overlay_range_returns_within_line_interval_when_match_is_local() {
+        // Match: (0,4)-(0,7) on a 11-char line.
+        let r = ProtoRange::new(pos(0, 4), pos(0, 7));
+        assert_eq!(match_overlay_range(r, 0, 11), Some((4, 7)));
+    }
+
+    #[test]
+    fn match_overlay_range_returns_none_when_line_outside_match_band() {
+        let r = ProtoRange::new(pos(1, 0), pos(1, 3));
+        assert_eq!(match_overlay_range(r, 0, 10), None);
+        assert_eq!(match_overlay_range(r, 2, 10), None);
+    }
+
+    #[test]
+    fn match_overlay_range_extends_to_eol_for_first_line_of_multiline_match() {
+        // Match starts on line 0 byte 5 and ends on line 1 byte 2.
+        let r = ProtoRange::new(pos(0, 5), pos(1, 2));
+        assert_eq!(match_overlay_range(r, 0, 10), Some((5, 10)));
+        assert_eq!(match_overlay_range(r, 1, 8), Some((0, 2)));
+    }
+
+    #[test]
+    fn match_overlay_range_returns_none_when_match_starts_past_line_end() {
+        let r = ProtoRange::new(pos(0, 12), pos(0, 15));
+        // Line is shorter than the match's start byte -- nothing to overlay.
+        assert_eq!(match_overlay_range(r, 0, 10), None);
+    }
+
+    #[test]
+    fn apply_match_overlay_splits_a_single_span() {
+        let spans = vec![Span::raw("hello world".to_string())];
+        let style = TuiStyle::default().bg(Color::Yellow);
+        let out = apply_match_overlay(spans, 6, 11, style);
+        // Expect three spans: "hello ", "world", and (none after, since 11 == len).
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].content.as_ref(), "hello ");
+        assert_eq!(out[1].content.as_ref(), "world");
+        assert_eq!(out[1].style, style);
+    }
+
+    #[test]
+    fn apply_match_overlay_clips_when_match_partially_overlaps_styled_span() {
+        // "fn main" with "fn" already styled as keyword; overlay covers "n m".
+        let spans = vec![
+            Span::styled("fn".to_string(), TuiStyle::default().fg(Color::Magenta)),
+            Span::raw(" main".to_string()),
+        ];
+        let style = TuiStyle::default().bg(Color::Yellow);
+        let out = apply_match_overlay(spans, 1, 4, style);
+        // Pieces: "f" (kw), "n" (overlay), " m" (overlay), "ain" (raw)
+        let texts: Vec<&str> = out.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, vec!["f", "n", " m", "ain"]);
+    }
+
+    #[test]
+    fn apply_match_overlay_passes_through_when_no_overlap() {
+        let spans = vec![Span::raw("untouched".to_string())];
+        let style = TuiStyle::default().bg(Color::Yellow);
+        let out = apply_match_overlay(spans, 100, 110, style);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].content.as_ref(), "untouched");
+    }
+
+    #[test]
+    fn compose_visible_lines_applies_match_overlay() {
+        let mut app = app_with("hello world", 1);
+        app.current_match = Some(ProtoRange::new(pos(0, 6), pos(0, 11)));
+        let lines = compose_visible_lines(&app, 1, 80);
+        let dump = format!("{:?}", lines[0]);
+        // Spans should be split so "world" is its own span; we look for the
+        // match style's signature in the debug dump.
+        assert!(dump.contains("world"), "rendered: {dump}");
     }
 }

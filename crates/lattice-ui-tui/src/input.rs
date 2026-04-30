@@ -9,6 +9,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use lattice_grammar::ModalState;
+use lattice_grammar::SearchDirection;
 use lattice_grammar::Target;
 use lattice_grammar::args::Args;
 use lattice_grammar::builtins::Builtins;
@@ -35,8 +36,21 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         ModalState::Insert => translate_insert(event),
         ModalState::Normal => translate_normal(event, ctx.pending, ctx.builtins),
         ModalState::Command => translate_command(event),
+        ModalState::Search(_) => translate_search(event),
         // The other modal states route to no-op until their respective
         // phases land.
+        _ => Action::None,
+    }
+}
+
+fn translate_search(event: KeyEvent) -> Action {
+    match event.code {
+        KeyCode::Esc => Action::SearchCancel,
+        KeyCode::Enter => Action::SearchSubmit,
+        KeyCode::Backspace => Action::SearchBackspace,
+        KeyCode::Char(c) if !event.modifiers.contains(KeyModifiers::CONTROL) => {
+            Action::SearchAppend(c)
+        }
         _ => Action::None,
     }
 }
@@ -114,6 +128,12 @@ fn translate_normal(event: KeyEvent, pending: Pending, builtins: &Builtins) -> A
         KeyCode::Char('o') => Action::OpenLineBelow,
         KeyCode::Char('O') => Action::OpenLineAbove,
         KeyCode::Char(':') => Action::EnterCommandLine,
+
+        // Search
+        KeyCode::Char('/') => Action::EnterSearch(SearchDirection::Forward),
+        KeyCode::Char('?') => Action::EnterSearch(SearchDirection::Backward),
+        KeyCode::Char('n') => Action::SearchNext,
+        KeyCode::Char('N') => Action::SearchPrevious,
 
         // Undo
         KeyCode::Char('u') => Action::Undo,
@@ -582,6 +602,106 @@ mod tests {
                 ctx(ModalState::Command, Pending::None, &b),
                 ctrl(KeyCode::Char('c'))
             ),
+            Action::Quit
+        ));
+    }
+
+    // ---- Search modal ----
+
+    #[test]
+    fn slash_in_normal_enters_forward_search() {
+        let (_, b) = fixture();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('/')),
+        ) {
+            Action::EnterSearch(SearchDirection::Forward) => {}
+            other => panic!("expected EnterSearch(Forward), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn question_in_normal_enters_backward_search() {
+        let (_, b) = fixture();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('?')),
+        ) {
+            Action::EnterSearch(SearchDirection::Backward) => {}
+            other => panic!("expected EnterSearch(Backward), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn n_in_normal_repeats_search_forward() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('n'))
+            ),
+            Action::SearchNext
+        ));
+    }
+
+    #[test]
+    fn capital_n_in_normal_repeats_search_reverse() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('N'))
+            ),
+            Action::SearchPrevious
+        ));
+    }
+
+    #[test]
+    fn printable_char_in_search_appends_to_pattern() {
+        let (_, b) = fixture();
+        let modal = ModalState::Search(SearchDirection::Forward);
+        match translate(ctx(modal, Pending::None, &b), key(KeyCode::Char('f'))) {
+            Action::SearchAppend(c) => assert_eq!(c, 'f'),
+            other => panic!("expected SearchAppend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_in_search_submits() {
+        let (_, b) = fixture();
+        let modal = ModalState::Search(SearchDirection::Forward);
+        assert!(matches!(
+            translate(ctx(modal, Pending::None, &b), key(KeyCode::Enter)),
+            Action::SearchSubmit
+        ));
+    }
+
+    #[test]
+    fn esc_in_search_cancels() {
+        let (_, b) = fixture();
+        let modal = ModalState::Search(SearchDirection::Backward);
+        assert!(matches!(
+            translate(ctx(modal, Pending::None, &b), key(KeyCode::Esc)),
+            Action::SearchCancel
+        ));
+    }
+
+    #[test]
+    fn backspace_in_search_pops_pattern() {
+        let (_, b) = fixture();
+        let modal = ModalState::Search(SearchDirection::Forward);
+        assert!(matches!(
+            translate(ctx(modal, Pending::None, &b), key(KeyCode::Backspace)),
+            Action::SearchBackspace
+        ));
+    }
+
+    #[test]
+    fn ctrl_c_in_search_quits_immediately() {
+        let (_, b) = fixture();
+        let modal = ModalState::Search(SearchDirection::Forward);
+        assert!(matches!(
+            translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
         ));
     }

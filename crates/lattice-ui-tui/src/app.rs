@@ -13,8 +13,10 @@
 use lattice_core::CoreError;
 use lattice_core::Document;
 use lattice_core::buffer::AppliedEdit;
+use lattice_core::search::{self, SearchHit};
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::ModalState;
+use lattice_grammar::SearchDirection;
 use lattice_grammar::builtins::{Builtins, populate};
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::dispatcher::execute;
@@ -87,6 +89,39 @@ pub enum Action {
     CommandLineCancel,
     /// Replace the echo area with a typed message.
     Echo(EchoMessage),
+
+    // ---- Search (`/`, `?`, `n`, `N`) ----
+    /// Pressed `/` (Forward) or `?` (Backward) -- enter Search modal with
+    /// empty pattern, remembering origin so cancel restores cursor.
+    EnterSearch(SearchDirection),
+    SearchAppend(char),
+    /// Delete one char from the pattern. If pattern is empty, leave Search.
+    SearchBackspace,
+    /// Confirm the pattern: jump to current match (if any) and store it
+    /// as `last_search` for `n`/`N` repeat.
+    SearchSubmit,
+    /// Drop the in-progress pattern, restore cursor, leave Search.
+    SearchCancel,
+    /// Repeat the last search in its original direction.
+    SearchNext,
+    /// Repeat the last search in the opposite direction.
+    SearchPrevious,
+}
+
+/// In-progress `/` or `?` state. The cursor at entry is preserved so
+/// Esc can restore it.
+#[derive(Debug, Clone)]
+pub struct SearchLine {
+    pub direction: SearchDirection,
+    pub pattern: String,
+    pub origin: Position,
+}
+
+/// Last completed search -- consulted by `n` and `N`.
+#[derive(Debug, Clone)]
+pub struct LastSearch {
+    pub pattern: String,
+    pub direction: SearchDirection,
 }
 
 pub struct App {
@@ -118,6 +153,14 @@ pub struct App {
     /// from `[scroll, scroll + viewport_height)`. Recomputed each frame by
     /// `refresh_highlights` (called from the runtime before drawing).
     pub visible_highlights: Vec<Vec<StyledSpan>>,
+    /// In-progress `/` or `?` search. `Some` only while
+    /// `modal == ModalState::Search(_)`.
+    pub search_line: Option<SearchLine>,
+    /// Most recent submitted search; consulted by `n` / `N`.
+    pub last_search: Option<LastSearch>,
+    /// Range of the most recent search match, used to draw the highlight
+    /// in the buffer view. Cleared on Esc and on cursor motion.
+    pub current_match: Option<ProtoRange>,
 }
 
 impl std::fmt::Debug for App {
@@ -161,6 +204,9 @@ impl App {
             syntax,
             last_parsed_text_version,
             visible_highlights: Vec::new(),
+            search_line: None,
+            last_search: None,
+            current_match: None,
         }
     }
 
@@ -220,6 +266,44 @@ impl App {
             Action::Echo(message) => {
                 self.last_message = Some(message);
             }
+
+            Action::EnterSearch(direction) => {
+                self.search_line = Some(SearchLine {
+                    direction,
+                    pattern: String::new(),
+                    origin: self.cursor,
+                });
+                self.modal = ModalState::Search(direction);
+                self.pending = Pending::None;
+                self.last_message = None;
+                self.current_match = None;
+            }
+            Action::SearchAppend(c) => {
+                if let Some(line) = self.search_line.as_mut() {
+                    line.pattern.push(c);
+                    self.preview_search();
+                }
+            }
+            Action::SearchBackspace => {
+                let leave = match self.search_line.as_mut() {
+                    Some(line) => {
+                        if line.pattern.pop().is_none() {
+                            true
+                        } else {
+                            self.preview_search();
+                            false
+                        }
+                    }
+                    None => false,
+                };
+                if leave {
+                    self.cancel_search();
+                }
+            }
+            Action::SearchSubmit => self.submit_search(),
+            Action::SearchCancel => self.cancel_search(),
+            Action::SearchNext => self.repeat_search(false),
+            Action::SearchPrevious => self.repeat_search(true),
         }
         self.ensure_cursor_visible();
         self.maybe_reparse_syntax();
@@ -264,6 +348,128 @@ impl App {
             text: text.into(),
             level,
         });
+    }
+
+    /// Run the in-progress pattern from origin. Used to highlight the
+    /// current match while typing in `/` or `?`. Does not move cursor;
+    /// the cursor jumps only on `SearchSubmit`.
+    fn preview_search(&mut self) {
+        let Some(line) = self.search_line.as_ref() else {
+            return;
+        };
+        if line.pattern.is_empty() {
+            self.current_match = None;
+            return;
+        }
+        let dir = match line.direction {
+            SearchDirection::Forward => search::Direction::Forward,
+            SearchDirection::Backward => search::Direction::Backward,
+        };
+        match search::find(self.document.buffer(), &line.pattern, line.origin, dir) {
+            Ok(Some(SearchHit { range, .. })) => self.current_match = Some(range),
+            _ => self.current_match = None,
+        }
+    }
+
+    fn submit_search(&mut self) {
+        let Some(line) = self.search_line.take() else {
+            return;
+        };
+        self.modal = ModalState::Normal;
+        self.pending = Pending::None;
+        if line.pattern.is_empty() {
+            // Empty submit: re-run last_search if any (vim behavior).
+            if self.last_search.is_some() {
+                self.repeat_search(false);
+            }
+            return;
+        }
+        let dir = match line.direction {
+            SearchDirection::Forward => search::Direction::Forward,
+            SearchDirection::Backward => search::Direction::Backward,
+        };
+        match search::find(self.document.buffer(), &line.pattern, line.origin, dir) {
+            Ok(Some(hit)) => {
+                self.cursor = hit.range.start;
+                self.current_match = Some(hit.range);
+                if hit.wrapped {
+                    let level = EchoLevel::Warn;
+                    let text = match line.direction {
+                        SearchDirection::Forward => "search hit BOTTOM, continuing at TOP",
+                        SearchDirection::Backward => "search hit TOP, continuing at BOTTOM",
+                    };
+                    self.set_message(level, text.to_string());
+                }
+                self.last_search = Some(LastSearch {
+                    pattern: line.pattern,
+                    direction: line.direction,
+                });
+            }
+            Ok(None) => {
+                self.current_match = None;
+                self.set_message(EchoLevel::Error, format!("E486: Pattern not found: {}", line.pattern));
+                // Vim still records the pattern so `n`/`N` can retry later.
+                self.last_search = Some(LastSearch {
+                    pattern: line.pattern,
+                    direction: line.direction,
+                });
+            }
+            Err(_) => {
+                self.current_match = None;
+            }
+        }
+    }
+
+    fn cancel_search(&mut self) {
+        if let Some(line) = self.search_line.take() {
+            self.cursor = line.origin;
+        }
+        self.current_match = None;
+        self.modal = ModalState::Normal;
+        self.pending = Pending::None;
+    }
+
+    /// Repeat last search. `reverse=false` keeps the original direction
+    /// (`n`); `reverse=true` flips it (`N`).
+    fn repeat_search(&mut self, reverse: bool) {
+        let Some(last) = self.last_search.clone() else {
+            self.set_message(EchoLevel::Error, "E35: no previous regular expression".to_string());
+            return;
+        };
+        let direction = match (last.direction, reverse) {
+            (SearchDirection::Forward, false) | (SearchDirection::Backward, true) => {
+                SearchDirection::Forward
+            }
+            (SearchDirection::Backward, false) | (SearchDirection::Forward, true) => {
+                SearchDirection::Backward
+            }
+        };
+        let dir = match direction {
+            SearchDirection::Forward => search::Direction::Forward,
+            SearchDirection::Backward => search::Direction::Backward,
+        };
+        // Skip current match: advance one byte in the chosen direction.
+        let from = step_byte(&self.document, self.cursor, direction);
+        match search::find(self.document.buffer(), &last.pattern, from, dir) {
+            Ok(Some(hit)) => {
+                self.cursor = hit.range.start;
+                self.current_match = Some(hit.range);
+                if hit.wrapped {
+                    let text = match direction {
+                        SearchDirection::Forward => "search hit BOTTOM, continuing at TOP",
+                        SearchDirection::Backward => "search hit TOP, continuing at BOTTOM",
+                    };
+                    self.set_message(EchoLevel::Warn, text.to_string());
+                }
+            }
+            Ok(None) => {
+                self.current_match = None;
+                self.set_message(EchoLevel::Error, format!("E486: Pattern not found: {}", last.pattern));
+            }
+            Err(_) => {
+                self.current_match = None;
+            }
+        }
     }
 
     fn execute_ex_line(&mut self, line: &str) {
@@ -502,6 +708,29 @@ fn previous_position(doc: &Document, p: Position) -> Position {
         Position::new(prev_line, line_byte_len(doc, prev_line))
     } else {
         p
+    }
+}
+
+/// One byte forward or backward, wrapping across newlines. Caller for
+/// search-repeat: skip the current match by advancing one byte before
+/// calling the engine. At buffer extremes we return the original
+/// position; the engine then handles wrap.
+fn step_byte(doc: &Document, p: Position, dir: SearchDirection) -> Position {
+    match dir {
+        SearchDirection::Forward => {
+            let len = line_byte_len(doc, p.line);
+            if p.byte < len {
+                Position::new(p.line, p.byte + 1)
+            } else {
+                let last = last_addressable_line(doc);
+                if p.line < last {
+                    Position::new(p.line + 1, 0)
+                } else {
+                    p
+                }
+            }
+        }
+        SearchDirection::Backward => previous_position(doc, p),
     }
 }
 
@@ -972,5 +1201,166 @@ mod tests {
         }));
         assert_eq!(a.last_message.as_ref().unwrap().text, "bye");
         assert_eq!(a.last_message.as_ref().unwrap().level, EchoLevel::Warn);
+    }
+
+    // ---- Search ----
+
+    fn type_pattern(a: &mut App, pattern: &str) {
+        for c in pattern.chars() {
+            a.apply(Action::SearchAppend(c));
+        }
+    }
+
+    #[test]
+    fn enter_search_seeds_state() {
+        let mut a = app_with("hello world", 10);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        assert_eq!(a.modal, ModalState::Search(SearchDirection::Forward));
+        let line = a.search_line.as_ref().expect("search_line populated");
+        assert_eq!(line.pattern, "");
+        assert_eq!(line.origin, Position::ZERO);
+    }
+
+    #[test]
+    fn search_append_grows_pattern_and_previews_match() {
+        let mut a = app_with("foo bar foo", 10);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        type_pattern(&mut a, "bar");
+        let line = a.search_line.as_ref().unwrap();
+        assert_eq!(line.pattern, "bar");
+        // Preview should highlight the first match without moving cursor.
+        let m = a.current_match.expect("match previewed");
+        assert_eq!(m.start, Position::new(0, 4));
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn search_backspace_shrinks_pattern_and_re_previews() {
+        let mut a = app_with("foo bar baz", 10);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        type_pattern(&mut a, "baz");
+        a.apply(Action::SearchBackspace);
+        assert_eq!(a.search_line.as_ref().unwrap().pattern, "ba");
+        let m = a.current_match.expect("preview after backspace");
+        assert_eq!(m.start, Position::new(0, 4));
+    }
+
+    #[test]
+    fn search_backspace_on_empty_pattern_exits_search() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        a.apply(Action::SearchBackspace);
+        assert_eq!(a.modal, ModalState::Normal);
+        assert!(a.search_line.is_none());
+    }
+
+    #[test]
+    fn search_submit_jumps_cursor_to_match_and_records_last_search() {
+        let mut a = app_with("foo bar foo", 10);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        type_pattern(&mut a, "bar");
+        a.apply(Action::SearchSubmit);
+        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.cursor, Position::new(0, 4));
+        assert!(a.search_line.is_none());
+        let last = a.last_search.as_ref().unwrap();
+        assert_eq!(last.pattern, "bar");
+        assert_eq!(last.direction, SearchDirection::Forward);
+    }
+
+    #[test]
+    fn search_submit_with_no_match_records_pattern_and_warns() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        type_pattern(&mut a, "xyz");
+        a.apply(Action::SearchSubmit);
+        assert!(a.current_match.is_none());
+        assert_eq!(a.last_search.as_ref().unwrap().pattern, "xyz");
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("Pattern not found"));
+    }
+
+    #[test]
+    fn search_cancel_restores_cursor_to_origin() {
+        let mut a = app_with("foo bar foo", 10);
+        a.cursor = Position::new(0, 5);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        type_pattern(&mut a, "foo");
+        // Preview should have set current_match to "foo" at byte 8.
+        assert_eq!(a.current_match.unwrap().start, Position::new(0, 8));
+        a.apply(Action::SearchCancel);
+        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.cursor, Position::new(0, 5));
+        assert!(a.current_match.is_none());
+    }
+
+    #[test]
+    fn n_after_forward_search_advances_to_next_match() {
+        let mut a = app_with("foo bar foo bar", 10);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        type_pattern(&mut a, "foo");
+        a.apply(Action::SearchSubmit);
+        assert_eq!(a.cursor, Position::new(0, 0));
+        a.apply(Action::SearchNext);
+        assert_eq!(a.cursor, Position::new(0, 8));
+    }
+
+    #[test]
+    fn capital_n_reverses_direction() {
+        let mut a = app_with("foo bar foo bar", 10);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        type_pattern(&mut a, "foo");
+        a.apply(Action::SearchSubmit);
+        a.apply(Action::SearchNext);
+        assert_eq!(a.cursor, Position::new(0, 8));
+        a.apply(Action::SearchPrevious);
+        assert_eq!(a.cursor, Position::new(0, 0));
+    }
+
+    #[test]
+    fn n_with_no_last_search_emits_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::SearchNext);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("no previous"));
+    }
+
+    #[test]
+    fn search_forward_wraps_and_warns() {
+        let mut a = app_with("alpha beta gamma alpha", 10);
+        a.cursor = Position::new(0, 17); // past the second "alpha"... actually at it
+        // Move past it for clarity.
+        a.cursor = Position::new(0, 18);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        type_pattern(&mut a, "alpha");
+        a.apply(Action::SearchSubmit);
+        // First "alpha" is at byte 0; we wrapped from byte 18.
+        assert_eq!(a.cursor, Position::new(0, 0));
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Warn);
+        assert!(msg.text.contains("BOTTOM"));
+    }
+
+    #[test]
+    fn search_backward_finds_previous_match() {
+        let mut a = app_with("alpha beta gamma alpha", 10);
+        a.cursor = Position::new(0, 22);
+        a.apply(Action::EnterSearch(SearchDirection::Backward));
+        type_pattern(&mut a, "alpha");
+        a.apply(Action::SearchSubmit);
+        assert_eq!(a.cursor, Position::new(0, 17));
+    }
+
+    #[test]
+    fn search_works_across_lines() {
+        let mut a = app_with("foo\nbar\nfoo\nbaz", 10);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        type_pattern(&mut a, "foo");
+        a.apply(Action::SearchSubmit);
+        assert_eq!(a.cursor, Position::new(0, 0));
+        a.apply(Action::SearchNext);
+        assert_eq!(a.cursor, Position::new(2, 0));
     }
 }

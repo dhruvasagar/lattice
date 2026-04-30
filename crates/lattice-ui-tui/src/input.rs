@@ -268,6 +268,8 @@ fn resolve_after_g(event: KeyEvent, builtins: &Builtins) -> Action {
         KeyCode::Char('U') => Action::SetPending(Pending::AfterOperator(builtins.upper)),
         KeyCode::Char('u') => Action::SetPending(Pending::AfterOperator(builtins.lower)),
         KeyCode::Char('~') => Action::SetPending(Pending::AfterOperator(builtins.toggle_case)),
+        // `gv`: reselect the last Visual selection.
+        KeyCode::Char('v') => Action::ReselectLastVisual,
         _ => Action::SetPending(Pending::None),
     }
 }
@@ -1011,6 +1013,18 @@ mod tests {
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
         ));
+    }
+
+    // ---- gv reselect ----
+
+    #[test]
+    fn gv_after_g_emits_reselect_visual() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterG, &b),
+            key(KeyCode::Char('v')),
+        );
+        assert!(matches!(action, Action::ReselectLastVisual));
     }
 
     // ---- Indent and case operators ----

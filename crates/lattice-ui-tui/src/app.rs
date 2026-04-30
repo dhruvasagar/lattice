@@ -110,6 +110,9 @@ pub enum Action {
     EnterVisual(VisualKind),
     /// Exit Visual to Normal, collapsing the selection.
     ExitVisual,
+    /// Vim's `gv` -- re-enter Visual with the same anchor / head / kind
+    /// as the most recently exited Visual selection.
+    ReselectLastVisual,
     /// Vim's `.` -- re-dispatch the last buffer-mutating invocation from
     /// the current cursor.
     RepeatLastChange,
@@ -235,6 +238,16 @@ pub struct App {
     /// operator + motion / operator + range / Visual-mode operator;
     /// insert-mode text replay is a known gap (§5.2.4).
     pub last_change: Option<CommandInvocation>,
+    /// Last Visual-mode selection extents, captured on exit so `gv` can
+    /// re-enter Visual with the same anchor / head / kind.
+    pub last_visual: Option<LastVisual>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LastVisual {
+    pub anchor: Position,
+    pub head: Position,
+    pub kind: VisualKind,
 }
 
 impl std::fmt::Debug for App {
@@ -286,6 +299,7 @@ impl App {
             op_count: 0,
             visual_anchor: None,
             last_change: None,
+            last_visual: None,
         }
     }
 
@@ -368,6 +382,7 @@ impl App {
 
             Action::EnterVisual(kind) => self.do_enter_visual(kind),
             Action::ExitVisual => self.do_exit_visual(),
+            Action::ReselectLastVisual => self.do_reselect_visual(),
 
             Action::RepeatLastChange => {
                 if let Some(inv) = self.last_change.clone() {
@@ -822,12 +837,45 @@ impl App {
     }
 
     fn do_exit_visual(&mut self) {
+        // Capture the selection extents BEFORE collapsing, so `gv` can
+        // restore them. We want the kind from `self.modal` (Visual carries
+        // it) and the anchor / head from the document selection.
+        if let ModalState::Visual(kind) = self.modal {
+            let sel = self.document.selections().primary();
+            self.last_visual = Some(LastVisual {
+                anchor: sel.anchor,
+                head: sel.head,
+                kind,
+            });
+        }
         self.modal = ModalState::Normal;
         self.pending = Pending::None;
         self.visual_anchor = None;
         // Collapse selection to a cursor at the current head.
         self.document
             .set_selections(SelectionSet::single(Selection::cursor(self.cursor)));
+    }
+
+    fn do_reselect_visual(&mut self) {
+        let Some(last) = self.last_visual else {
+            self.set_message(
+                EchoLevel::Error,
+                "no previous visual selection".to_string(),
+            );
+            return;
+        };
+        // Restore the selection: cursor lands at `head`, anchor at `anchor`,
+        // visual mode is the saved kind.
+        self.modal = ModalState::Visual(last.kind);
+        self.pending = Pending::None;
+        self.visual_anchor = Some(last.anchor);
+        self.cursor = last.head;
+        let sel = Selection {
+            anchor: last.anchor,
+            head: last.head,
+            visual: Some(visual_kind_to_mode(last.kind)),
+        };
+        self.document.set_selections(SelectionSet::single(sel));
     }
 
     /// Paste from the unnamed register. `before = true` for `P` (paste
@@ -1681,6 +1729,75 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- gv reselect ----
+
+    #[test]
+    fn exit_visual_captures_last_visual() {
+        let mut a = app_with("hello world", 10);
+        a.apply(Action::EnterVisual(VisualKind::Charwise));
+        a.apply(invoke_motion(a.builtins.word_forward));
+        // Now selection is anchor=ZERO, head=(0,6).
+        a.apply(Action::ExitVisual);
+        let last = a.last_visual.expect("last_visual captured");
+        assert_eq!(last.anchor, Position::ZERO);
+        assert_eq!(last.head, Position::new(0, 6));
+        assert_eq!(last.kind, VisualKind::Charwise);
+    }
+
+    #[test]
+    fn gv_with_no_prior_visual_emits_error() {
+        let mut a = app_with("hello", 10);
+        assert!(a.last_visual.is_none());
+        a.apply(Action::ReselectLastVisual);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert_eq!(a.modal, ModalState::Normal);
+    }
+
+    #[test]
+    fn gv_restores_anchor_head_and_kind() {
+        let mut a = app_with("hello world", 10);
+        a.apply(Action::EnterVisual(VisualKind::Charwise));
+        a.apply(invoke_motion(a.builtins.word_forward));
+        a.apply(Action::ExitVisual);
+        // Cursor now collapsed; modal Normal.
+        assert_eq!(a.modal, ModalState::Normal);
+        // gv:
+        a.apply(Action::ReselectLastVisual);
+        assert_eq!(a.modal, ModalState::Visual(VisualKind::Charwise));
+        let sel = a.document.selections().primary();
+        assert_eq!(sel.anchor, Position::ZERO);
+        assert_eq!(sel.head, Position::new(0, 6));
+        assert_eq!(a.cursor, Position::new(0, 6));
+    }
+
+    #[test]
+    fn gv_after_yank_in_visual_restores_pre_yank_selection() {
+        // Real-world test: select, yank (which auto-exits Visual), `gv`
+        // should bring back the same selection so you can re-operate.
+        let mut a = app_with("hello world", 10);
+        a.apply(Action::EnterVisual(VisualKind::Charwise));
+        a.apply(invoke_motion(a.builtins.word_forward));
+        let inv = CommandInvocation::of(a.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.modal, ModalState::Normal);
+        a.apply(Action::ReselectLastVisual);
+        assert_eq!(a.modal, ModalState::Visual(VisualKind::Charwise));
+        let sel = a.document.selections().primary();
+        assert_eq!(sel.head, Position::new(0, 6));
+    }
+
+    #[test]
+    fn gv_preserves_linewise_kind() {
+        let mut a = app_with("aaa\nbbb\nccc", 10);
+        a.apply(Action::EnterVisual(VisualKind::Linewise));
+        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(Action::ExitVisual);
+        a.apply(Action::ReselectLastVisual);
+        assert_eq!(a.modal, ModalState::Visual(VisualKind::Linewise));
     }
 
     // ---- Dot-repeat ----

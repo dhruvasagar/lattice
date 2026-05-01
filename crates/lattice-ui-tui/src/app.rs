@@ -154,6 +154,10 @@ pub enum Action {
     /// `"<reg>` prefix -- stash the named register for the next operator
     /// / paste invocation.
     SelectRegister(Register),
+    /// Vim's `Ctrl-O` -- step backward in the position history.
+    JumpHistoryBack,
+    /// Vim's `Ctrl-I` (Tab) -- step forward.
+    JumpHistoryForward,
     /// Vim's `.` -- re-dispatch the last buffer-mutating invocation from
     /// the current cursor.
     RepeatLastChange,
@@ -327,7 +331,15 @@ pub struct App {
     /// Consumed-and-cleared by `run_invocation` (operators) and
     /// `do_paste` (paste). `None` means use unnamed.
     pub pending_register: Option<Register>,
+    /// Position-history ring for `Ctrl-O` / `Ctrl-I` navigation
+    /// (§5.1.1). Pushed before "big jumps" (gg, G, search submit,
+    /// n / N, *, #, %, mark jumps). The cursor sits at one past the
+    /// last navigated entry; Ctrl-O moves backward, Ctrl-I forward.
+    pub position_history: Vec<Position>,
+    pub position_history_cursor: usize,
 }
+
+const POSITION_HISTORY_CAP: usize = 100;
 
 #[derive(Debug, Clone)]
 pub struct ReplaceEntry {
@@ -396,6 +408,8 @@ impl App {
             replace_history: Vec::new(),
             registers: HashMap::new(),
             pending_register: None,
+            position_history: Vec::new(),
+            position_history_cursor: 0,
         }
     }
 
@@ -487,6 +501,8 @@ impl App {
             Action::SelectRegister(reg) => {
                 self.pending_register = Some(reg);
             }
+            Action::JumpHistoryBack => self.do_jump_history(-1),
+            Action::JumpHistoryForward => self.do_jump_history(1),
 
             Action::OverwriteChar(c) => self.do_overwrite_char(c),
             Action::ReplaceUndoLast => self.do_replace_undo_last(),
@@ -643,6 +659,9 @@ impl App {
             }
             return;
         }
+        // Save the pre-search position so Ctrl-O returns.
+        let from_pos = line.origin;
+        self.push_position_history(from_pos);
         let dir = match line.direction {
             SearchDirection::Forward => search::Direction::Forward,
             SearchDirection::Backward => search::Direction::Backward,
@@ -695,6 +714,9 @@ impl App {
             self.set_message(EchoLevel::Error, "E35: no previous regular expression".to_string());
             return;
         };
+        // Push pre-jump position so Ctrl-O can return.
+        let cur = self.cursor;
+        self.push_position_history(cur);
         let direction = match (last.direction, reverse) {
             (SearchDirection::Forward, false) | (SearchDirection::Backward, true) => {
                 SearchDirection::Forward
@@ -806,6 +828,14 @@ impl App {
             && inv.register.is_none()
         {
             inv = inv.with_register(reg);
+        }
+        // Jump-class motions (gg, G) push history before dispatch so
+        // Ctrl-O can return.
+        if inv.command == self.builtins.goto_first_line.0
+            || inv.command == self.builtins.goto_last_line.0
+        {
+            let cur = self.cursor;
+            self.push_position_history(cur);
         }
         // Apply the count multiplication: the operator's count (latched at
         // `op_count`) multiplies with the motion's count (the in-progress
@@ -1123,6 +1153,64 @@ impl App {
             .set_selections(SelectionSet::single(Selection::cursor(self.cursor)));
     }
 
+    /// Push a position onto the history ring. If the history-cursor is
+    /// not at the end (the user has been walking back), truncate forward
+    /// entries before pushing -- standard "modify-from-middle" undo-tree
+    /// semantics. Capped at POSITION_HISTORY_CAP entries; oldest dropped.
+    pub fn push_position_history(&mut self, pos: Position) {
+        // Don't record duplicates.
+        if let Some(last) = self.position_history.last()
+            && *last == pos
+        {
+            return;
+        }
+        if self.position_history_cursor < self.position_history.len() {
+            self.position_history
+                .truncate(self.position_history_cursor);
+        }
+        self.position_history.push(pos);
+        if self.position_history.len() > POSITION_HISTORY_CAP {
+            self.position_history.remove(0);
+        }
+        self.position_history_cursor = self.position_history.len();
+    }
+
+    /// Step through the position history. `delta = -1` for Ctrl-O,
+    /// `+1` for Ctrl-I. The cursor pointer represents "where the next
+    /// push would land," so going back from `len()` lands at `len() - 1`.
+    fn do_jump_history(&mut self, delta: i32) {
+        if self.position_history.is_empty() {
+            self.set_message(EchoLevel::Error, "no jumps".to_string());
+            return;
+        }
+        if delta < 0 {
+            // Ctrl-O: on the first step back, also push the current
+            // position onto the ring so Ctrl-I can return to it. Then
+            // step the cursor back by one.
+            if self.position_history_cursor == self.position_history.len() {
+                self.position_history.push(self.cursor);
+                if self.position_history.len() > POSITION_HISTORY_CAP {
+                    self.position_history.remove(0);
+                }
+                self.position_history_cursor =
+                    self.position_history.len().saturating_sub(2);
+            } else if self.position_history_cursor == 0 {
+                self.set_message(EchoLevel::Error, "at start of jump list".to_string());
+                return;
+            } else {
+                self.position_history_cursor -= 1;
+            }
+        } else if self.position_history_cursor + 1 >= self.position_history.len() {
+            self.set_message(EchoLevel::Error, "at end of jump list".to_string());
+            return;
+        } else {
+            self.position_history_cursor += 1;
+        }
+        let target = self.position_history[self.position_history_cursor];
+        self.cursor = target;
+        self.clamp_cursor_to_buffer();
+    }
+
     /// Store a yank into the appropriate register slot. Vim's behavior:
     ///
     /// - `Register::BlackHole` -> drop on the floor, no storage.
@@ -1205,6 +1293,7 @@ impl App {
     /// Skips the current match by stepping one byte beyond it before
     /// invoking the search engine.
     fn do_search_word_under_cursor(&mut self, direction: SearchDirection) {
+        let pre_jump = self.cursor;
         let text = self.document.text();
         let bytes = text.as_bytes();
         let cursor_byte = match self.document.buffer().position_to_byte(self.cursor) {
@@ -1249,6 +1338,7 @@ impl App {
         };
         match lattice_core::search::find(self.document.buffer(), &word, from, dir) {
             Ok(Some(hit)) => {
+                self.push_position_history(pre_jump);
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
                 if hit.wrapped {
@@ -1310,6 +1400,7 @@ impl App {
             b'}' => (b'{', b'}', false),
             _ => return,
         };
+        let pre_jump = self.cursor;
         let target = if forward {
             scan_forward_for_match(bytes, start, open, close)
         } else {
@@ -1318,6 +1409,7 @@ impl App {
         match target {
             Some(t) => {
                 if let Ok(pos) = self.document.buffer().byte_to_position(t) {
+                    self.push_position_history(pre_jump);
                     self.cursor = pos;
                 }
             }
@@ -1339,6 +1431,9 @@ impl App {
             self.set_message(EchoLevel::Error, format!("mark not set: {name}"));
             return;
         };
+        // Push pre-jump position so Ctrl-O can return.
+        let cur = self.cursor;
+        self.push_position_history(cur);
         if exact {
             self.cursor = pos;
         } else {
@@ -2282,6 +2377,104 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- Position history (Ctrl-O / Ctrl-I) ----
+
+    #[test]
+    fn jump_history_with_no_jumps_emits_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::JumpHistoryBack);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn gg_pushes_jump_history_and_ctrl_o_returns() {
+        let mut a = app_with("a\nb\nc\nd\ne", 10);
+        a.cursor = Position::new(3, 0); // line 3 ('d')
+        a.apply(invoke_motion(a.builtins.goto_first_line));
+        assert_eq!(a.cursor, Position::ZERO);
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.cursor, Position::new(3, 0));
+    }
+
+    #[test]
+    fn ctrl_o_then_ctrl_i_round_trips() {
+        let mut a = app_with("a\nb\nc\nd\ne", 10);
+        a.cursor = Position::new(2, 0);
+        a.apply(invoke_motion(a.builtins.goto_first_line));
+        // Now at line 0; jump list has [(2,0)] cursor at end.
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.cursor, Position::new(2, 0));
+        a.apply(Action::JumpHistoryForward);
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn search_submit_pushes_position_history() {
+        let mut a = app_with("foo bar baz foo", 10);
+        a.cursor = Position::new(0, 8); // on 'b' of "baz"
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        for c in "foo".chars() {
+            a.apply(Action::SearchAppend(c));
+        }
+        a.apply(Action::SearchSubmit);
+        // Cursor jumped to second "foo" at byte 12.
+        assert_eq!(a.cursor, Position::new(0, 12));
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.cursor, Position::new(0, 8));
+    }
+
+    #[test]
+    fn star_pushes_position_history() {
+        let mut a = app_with("foo bar foo", 10);
+        a.cursor = Position::new(0, 1); // on 'o' of first "foo"
+        a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
+        // Cursor now on second "foo" at byte 8.
+        assert_eq!(a.cursor, Position::new(0, 8));
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.cursor, Position::new(0, 1));
+    }
+
+    #[test]
+    fn percent_pushes_position_history() {
+        let mut a = app_with("call(arg)", 10);
+        a.cursor = Position::new(0, 4); // on '('
+        a.apply(Action::MatchBracket);
+        assert_eq!(a.cursor, Position::new(0, 8)); // ')'
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.cursor, Position::new(0, 4));
+    }
+
+    #[test]
+    fn mark_jump_pushes_position_history() {
+        let mut a = app_with("hello\nworld", 10);
+        a.cursor = Position::new(1, 2);
+        a.apply(Action::SetMark('a'));
+        a.cursor = Position::ZERO;
+        a.apply(Action::JumpToMarkExact('a'));
+        assert_eq!(a.cursor, Position::new(1, 2));
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn position_history_dedups_consecutive_same() {
+        let mut a = app_with("a\nb\nc", 10);
+        a.push_position_history(Position::new(2, 0));
+        a.push_position_history(Position::new(2, 0));
+        // Pushing the same position twice in a row -> single entry.
+        assert_eq!(a.position_history.len(), 1);
+    }
+
+    #[test]
+    fn position_history_capped_at_max() {
+        let mut a = app_with("a\nb\nc", 10);
+        for i in 0..200 {
+            a.push_position_history(Position::new(i % 3, 0));
+        }
+        assert!(a.position_history.len() <= 100);
     }
 
     // ---- Multiple registers ----

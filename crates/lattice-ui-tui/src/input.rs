@@ -180,8 +180,15 @@ fn translate_normal(
             KeyCode::Char('e') => Action::ScrollLineDown,
             KeyCode::Char('y') => Action::ScrollLineUp,
             KeyCode::Char('r') => Action::Redo,
+            KeyCode::Char('o') => Action::JumpHistoryBack,
+            KeyCode::Char('i') => Action::JumpHistoryForward,
             _ => Action::None,
         };
+    }
+    // `Tab` (without Ctrl) is conventionally Ctrl-I in vim's jump-list,
+    // since terminals encode Tab as Ctrl-I. Bind both.
+    if matches!(event.code, KeyCode::Tab) && event.modifiers.is_empty() {
+        return Action::JumpHistoryForward;
     }
 
     // Numeric prefix: `1`-`9` always start (or extend) a count; `0` extends
@@ -1116,6 +1123,44 @@ mod tests {
         assert!(matches!(
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
+        ));
+    }
+
+    // ---- Position history ----
+
+    #[test]
+    fn ctrl_o_emits_jump_history_back() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                ctrl(KeyCode::Char('o'))
+            ),
+            Action::JumpHistoryBack
+        ));
+    }
+
+    #[test]
+    fn ctrl_i_emits_jump_history_forward() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                ctrl(KeyCode::Char('i'))
+            ),
+            Action::JumpHistoryForward
+        ));
+    }
+
+    #[test]
+    fn tab_in_normal_emits_jump_history_forward() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Tab)
+            ),
+            Action::JumpHistoryForward
         ));
     }
 

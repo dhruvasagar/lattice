@@ -139,6 +139,24 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Box::new(motion_paragraph_backward),
         },
     );
+    let sentence_forward = registry.register_motion(
+        "motion:sentence-forward",
+        "Move to the start of the next sentence (vim's `)`).",
+        MotionSpec {
+            jump: true,
+            exclusive: false,
+            apply: Box::new(motion_sentence_forward),
+        },
+    );
+    let sentence_backward = registry.register_motion(
+        "motion:sentence-backward",
+        "Move to the start of the previous sentence (vim's `(`).",
+        MotionSpec {
+            jump: true,
+            exclusive: false,
+            apply: Box::new(motion_sentence_backward),
+        },
+    );
     let char_left = registry.register_motion(
         "motion:char-left",
         "Move one byte to the left within the current line.",
@@ -277,6 +295,21 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         },
     );
 
+    let inner_sentence = registry.register_text_object(
+        "text-object:inner-sentence",
+        "Inner sentence -- text up to the next .!? that ends a sentence (vim's `is`).",
+        TextObjectSpec {
+            apply: Box::new(text_object_inner_sentence),
+        },
+    );
+    let around_sentence = registry.register_text_object(
+        "text-object:around-sentence",
+        "Around sentence -- inner_sentence plus trailing whitespace (vim's `as`).",
+        TextObjectSpec {
+            apply: Box::new(text_object_around_sentence),
+        },
+    );
+
     let inner_paragraph = registry.register_text_object(
         "text-object:inner-paragraph",
         "Inner paragraph -- the run of non-blank lines containing the cursor (vim's `ip`).",
@@ -405,6 +438,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         big_word_end,
         paragraph_forward,
         paragraph_backward,
+        sentence_forward,
+        sentence_backward,
         char_left,
         char_right,
         line_up,
@@ -423,6 +458,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         toggle_case,
         inner_paragraph,
         around_paragraph,
+        inner_sentence,
+        around_sentence,
         inner_word,
         around_word,
         inner_quote_double,
@@ -455,6 +492,8 @@ pub struct Builtins {
     pub big_word_end: MotionId,
     pub paragraph_forward: MotionId,
     pub paragraph_backward: MotionId,
+    pub sentence_forward: MotionId,
+    pub sentence_backward: MotionId,
     pub char_left: MotionId,
     pub char_right: MotionId,
     pub line_up: MotionId,
@@ -473,6 +512,8 @@ pub struct Builtins {
     pub toggle_case: OperatorId,
     pub inner_paragraph: TextObjectId,
     pub around_paragraph: TextObjectId,
+    pub inner_sentence: TextObjectId,
+    pub around_sentence: TextObjectId,
     pub inner_word: TextObjectId,
     pub around_word: TextObjectId,
     pub inner_quote_double: TextObjectId,
@@ -711,6 +752,160 @@ fn motion_paragraph_backward(ctx: &MotionContext) -> Result<MotionResult, Comman
         target: Position::new(line, 0),
         linewise: false,
     })
+}
+
+// ---- Sentence motions and text objects (vim's `)`, `(`, `is`, `as`) ----
+//
+// A sentence ends with `.`, `!`, or `?` followed by whitespace (or
+// EOL). v1 doesn't honor vim's nuance around closing brackets / quotes
+// after the punctuation; just the simple form.
+
+fn is_sentence_end(b: u8) -> bool {
+    matches!(b, b'.' | b'!' | b'?')
+}
+
+/// Find the byte offset of the start of the next sentence at or after
+/// `from`. Returns the index of the first non-whitespace byte AFTER a
+/// sentence-ending punctuation followed by whitespace (or the end of
+/// the buffer).
+fn next_sentence_start(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut i = from;
+    while i + 1 < bytes.len() {
+        if is_sentence_end(bytes[i]) && bytes[i + 1].is_ascii_whitespace() {
+            // Skip the punctuation + whitespace.
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() {
+                return Some(j);
+            }
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Find the byte offset of the start of the previous sentence (the
+/// non-whitespace byte after a previous sentence end). Returns 0 if
+/// there's no earlier sentence boundary.
+fn prev_sentence_start(bytes: &[u8], from: usize) -> usize {
+    if from == 0 {
+        return 0;
+    }
+    // Walk back to find a sentence-end + whitespace pattern.
+    let mut i = from.saturating_sub(1);
+    while i > 0 {
+        if is_sentence_end(bytes[i]) && i + 1 < bytes.len() && bytes[i + 1].is_ascii_whitespace() {
+            // Skip whitespace following the punctuation.
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < from {
+                return j;
+            }
+        }
+        i -= 1;
+    }
+    0
+}
+
+fn motion_sentence_forward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let count = ctx.count.get().max(1);
+    let mut idx = ctx
+        .buffer
+        .position_to_byte(ctx.from)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    for _ in 0..count {
+        match next_sentence_start(bytes, idx) {
+            Some(next) => idx = next,
+            None => {
+                idx = bytes.len().saturating_sub(1);
+                break;
+            }
+        }
+    }
+    let target = ctx
+        .buffer
+        .byte_to_position(idx)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(MotionResult { target, linewise: false })
+}
+
+fn motion_sentence_backward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let count = ctx.count.get().max(1);
+    let mut idx = ctx
+        .buffer
+        .position_to_byte(ctx.from)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    for _ in 0..count {
+        let next = prev_sentence_start(bytes, idx);
+        if next == idx {
+            break;
+        }
+        idx = next;
+    }
+    let target = ctx
+        .buffer
+        .byte_to_position(idx)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(MotionResult { target, linewise: false })
+}
+
+fn text_object_inner_sentence(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let cursor = ctx
+        .buffer
+        .position_to_byte(ctx.at)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let start_byte = prev_sentence_start(bytes, cursor.saturating_add(1));
+    let mut end_byte = cursor;
+    while end_byte < bytes.len() {
+        if is_sentence_end(bytes[end_byte]) {
+            // Inner stops at the punctuation (exclusive).
+            break;
+        }
+        end_byte += 1;
+    }
+    let start_pos = ctx
+        .buffer
+        .byte_to_position(start_byte)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let end_pos = ctx
+        .buffer
+        .byte_to_position(end_byte)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(ProtoRange::new(start_pos, end_pos))
+}
+
+fn text_object_around_sentence(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    let inner = text_object_inner_sentence(ctx)?;
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let inner_end_byte = ctx
+        .buffer
+        .position_to_byte(inner.end)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    // Around: include the trailing punctuation + whitespace.
+    let mut end = inner_end_byte;
+    if end < bytes.len() && is_sentence_end(bytes[end]) {
+        end += 1;
+    }
+    while end < bytes.len() && bytes[end].is_ascii_whitespace() {
+        end += 1;
+    }
+    let end_pos = ctx
+        .buffer
+        .byte_to_position(end)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(ProtoRange::new(inner.start, end_pos))
 }
 
 // ---- WORD motions (vim's W, B, E) ----
@@ -2272,6 +2467,45 @@ mod tests {
             other => panic!("expected Many, got {other:?}"),
         }
         assert_eq!(doc.text(), " world");
+    }
+
+    // ---- Sentence motions and text objects ----
+
+    #[test]
+    fn sentence_forward_advances_after_period_space() {
+        let (registry, b, mut doc) = fixture("First sentence. Second sentence. Third.");
+        let inv = CommandInvocation::of(b.sentence_forward.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => {
+                // After "First sentence. " -> 'S' of "Second" at byte 16.
+                assert_eq!(s.primary().head, Position::new(0, 16));
+            }
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sentence_backward_returns_to_previous_start() {
+        let (registry, b, mut doc) = fixture("First. Second.");
+        // Cursor on 'S' of "Second" at byte 7.
+        let inv = CommandInvocation::of(b.sentence_backward.0);
+        let effect = execute(&registry, &mut doc, Position::new(0, 7), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dis_deletes_inner_sentence() {
+        let (registry, b, mut doc) = fixture("First sentence. Second sentence.");
+        // Cursor on byte 5 (inside "First sentence").
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::TextObject(b.inner_sentence, crate::args::Args::None));
+        execute(&registry, &mut doc, Position::new(0, 5), inv).unwrap();
+        // Inner stops before the period; period stays.
+        assert!(doc.text().starts_with('.'));
     }
 
     // ---- Paragraph motions and text objects ----

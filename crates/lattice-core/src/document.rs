@@ -30,7 +30,13 @@ pub struct Document {
     text_version: u64,
     selections: SelectionSet,
     undo: UndoStack,
-    dirty: bool,
+    /// Undo-stack depth at which the buffer last matched its on-disk state
+    /// (or its initial-load state, for a fresh `open` / `from_text`). The
+    /// document is dirty iff the current `undo.undo_depth()` differs from
+    /// this. `None` means no clean state is reachable -- typically because
+    /// an `apply_edit` cleared a redo entry that contained the saved state,
+    /// so we can no longer undo back to disk parity.
+    clean_position: Option<usize>,
 }
 
 #[derive(Debug, Default)]
@@ -63,7 +69,10 @@ impl DocumentBuilder {
             text_version: 0,
             selections: SelectionSet::default(),
             undo: UndoStack::new(),
-            dirty: false,
+            // A freshly built document is "clean" at undo depth 0 -- the
+            // initial buffer (whether empty, from_text, or just-loaded
+            // from disk) is by definition the saved state.
+            clean_position: Some(0),
         }
     }
 }
@@ -108,7 +117,12 @@ impl Document {
     }
 
     pub fn dirty(&self) -> bool {
-        self.dirty
+        match self.clean_position {
+            Some(k) => k != self.undo.undo_depth(),
+            // No reachable clean state -- the saved depth was lost when
+            // an apply_edit cleared the redo stack. Document is dirty.
+            None => true,
+        }
     }
 
     pub fn buffer(&self) -> &Buffer {
@@ -128,19 +142,20 @@ impl Document {
         self.buffer.as_string()
     }
 
-    /// Apply an edit, push its inverse onto the undo stack, bump the version,
-    /// mark the document dirty. Returns a structural description of what
-    /// changed (suitable for `Event::DocumentChanged`).
+    /// Apply an edit, push its inverse onto the undo stack, bump the version.
+    /// Returns a structural description of what changed (suitable for
+    /// `Event::DocumentChanged`).
     pub fn apply_edit(&mut self, edit: Edit) -> CoreResult<AppliedEdit> {
         let applied = self.buffer.apply_edit(&edit)?;
         let inverse = inverse_edit(&applied);
+        let pre_push_depth = self.undo.undo_depth();
         self.undo.push(UndoEntry {
             inverse_edits: vec![inverse],
             label: String::new(),
         });
+        self.invalidate_clean_if_lost(pre_push_depth);
         self.version += 1;
         self.text_version += 1;
-        self.dirty = true;
         Ok(applied)
     }
 
@@ -156,13 +171,14 @@ impl Document {
         }
         // Inverses replay in reverse order during undo.
         inverses.reverse();
+        let pre_push_depth = self.undo.undo_depth();
         self.undo.push(UndoEntry {
             inverse_edits: inverses,
             label: String::new(),
         });
+        self.invalidate_clean_if_lost(pre_push_depth);
         self.version += 1;
         self.text_version += 1;
-        self.dirty = true;
         Ok(applied_set)
     }
 
@@ -182,7 +198,6 @@ impl Document {
         });
         self.version += 1;
         self.text_version += 1;
-        self.dirty = true;
         Ok(applied)
     }
 
@@ -202,7 +217,6 @@ impl Document {
         });
         self.version += 1;
         self.text_version += 1;
-        self.dirty = true;
         Ok(applied)
     }
 
@@ -210,7 +224,7 @@ impl Document {
     pub fn save(&mut self) -> CoreResult<&Path> {
         let path = self.path.clone().ok_or(CoreError::NoPath)?;
         std::fs::write(&path, self.buffer.as_string())?;
-        self.dirty = false;
+        self.clean_position = Some(self.undo.undo_depth());
         // path is set; dereference safely via the stored option.
         Ok(self.path.as_deref().expect("path set above"))
     }
@@ -219,8 +233,21 @@ impl Document {
         let path = path.into();
         std::fs::write(&path, self.buffer.as_string())?;
         self.path = Some(path);
-        self.dirty = false;
+        self.clean_position = Some(self.undo.undo_depth());
         Ok(())
+    }
+
+    /// Called after an `apply_edit` that just pushed a new undo entry
+    /// (and cleared the redo stack as a side effect). If the saved-clean
+    /// depth lived past `pre_push_depth`, it was reachable only via the
+    /// just-cleared redo entries, so we drop it -- the document can no
+    /// longer reach disk-parity through undo/redo alone.
+    fn invalidate_clean_if_lost(&mut self, pre_push_depth: usize) {
+        if let Some(k) = self.clean_position
+            && k > pre_push_depth
+        {
+            self.clean_position = None;
+        }
     }
 }
 
@@ -475,6 +502,110 @@ mod tests {
         let dir = tempdir();
         let path = dir.join("nope.txt");
         assert!(Document::open(&path).is_err());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn undo_back_to_initial_state_clears_dirty() {
+        let mut d = Document::from_text("hi");
+        assert!(!d.dirty());
+        d.apply_edit(Edit::insert(Position::new(0, 2), "!")).unwrap();
+        assert!(d.dirty());
+        d.undo().unwrap();
+        assert_eq!(d.text(), "hi");
+        assert!(!d.dirty(), "undo back to initial should be clean");
+    }
+
+    #[test]
+    fn redoing_back_to_initial_state_keeps_dirty() {
+        // Initial -> edit -> undo (clean) -> redo (dirty again).
+        let mut d = Document::from_text("hi");
+        d.apply_edit(Edit::insert(Position::new(0, 2), "!")).unwrap();
+        d.undo().unwrap();
+        assert!(!d.dirty());
+        d.redo().unwrap();
+        assert!(d.dirty(), "redoing past clean point makes it dirty again");
+    }
+
+    #[test]
+    fn undo_back_to_saved_state_clears_dirty() {
+        let dir = tempdir();
+        let path = dir.join("u.txt");
+        let mut d = Document::from_text("alpha");
+        d.save_as(&path).unwrap();
+        assert!(!d.dirty());
+        d.apply_edit(Edit::insert(Position::new(0, 5), "!")).unwrap();
+        assert!(d.dirty());
+        d.undo().unwrap();
+        assert_eq!(d.text(), "alpha");
+        assert!(!d.dirty(), "undo back to saved state should clear dirty");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn save_after_edits_then_undo_back_to_save_clears_dirty() {
+        // Common workflow: edit, edit, save, edit, undo. Should be clean
+        // (the undo returned to saved state).
+        let dir = tempdir();
+        let path = dir.join("v.txt");
+        let mut d = Document::from_text("a");
+        d.apply_edit(Edit::insert(Position::new(0, 1), "b")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 2), "c")).unwrap();
+        d.save_as(&path).unwrap();
+        assert!(!d.dirty());
+        d.apply_edit(Edit::insert(Position::new(0, 3), "d")).unwrap();
+        assert!(d.dirty());
+        d.undo().unwrap();
+        assert_eq!(d.text(), "abc");
+        assert!(!d.dirty());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn new_edit_destroying_redo_path_to_clean_makes_clean_unreachable() {
+        // Edit (depth=1, clean at 1), undo to depth=0 (dirty - clean was
+        // at 1), apply new edit which clears the redo stack. The redo
+        // entry that would have led back to clean is gone.
+        let dir = tempdir();
+        let path = dir.join("w.txt");
+        let mut d = Document::from_text("x");
+        d.apply_edit(Edit::insert(Position::new(0, 1), "y")).unwrap();
+        d.save_as(&path).unwrap();
+        assert!(!d.dirty());
+        d.undo().unwrap();
+        assert_eq!(d.text(), "x");
+        assert!(d.dirty());
+        // Apply a new edit that clears the redo entry containing clean.
+        d.apply_edit(Edit::insert(Position::new(0, 1), "z")).unwrap();
+        // Now we're at depth=1 again, but the buffer is "xz", not the
+        // saved "xy". We can't reach clean by any undo/redo.
+        assert!(d.dirty());
+        d.undo().unwrap();
+        assert!(d.dirty(), "previous saved state is no longer reachable");
+        d.redo().unwrap();
+        assert!(d.dirty());
+    }
+
+    #[test]
+    fn empty_document_starts_clean() {
+        // Even an empty document is "clean" relative to its initial state.
+        // This matches vim/emacs: an unmodified scratch buffer is not dirty.
+        let d = Document::empty();
+        assert!(!d.dirty());
+    }
+
+    #[test]
+    fn save_resets_clean_position_to_current_depth() {
+        let dir = tempdir();
+        let path = dir.join("s.txt");
+        let mut d = Document::from_text("a");
+        d.apply_edit(Edit::insert(Position::new(0, 1), "b")).unwrap();
+        d.save_as(&path).unwrap();
+        // After save, dirty=false. Undo should now go past clean.
+        d.undo().unwrap();
+        assert!(d.dirty(), "undoing past saved state is dirty");
+        d.redo().unwrap();
+        assert!(!d.dirty(), "redoing back to saved state is clean");
         cleanup(&dir);
     }
 

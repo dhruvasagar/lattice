@@ -82,13 +82,13 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | word_forward                      | w              | ✅     | §5.2.2                            |
 | word_backward                     | b              | ✅     | §5.2.2                            |
 | word_end                          | e              | ✅     | §5.2.2                            |
-| WORD_forward / backward / end     | W, B, E        | ⛔     | Whitespace-delimited variants     |
+| WORD_forward / backward / end     | W, B, E        | ✅     | Whitespace-delimited variants     |
 | paragraph_forward / backward      | }, {           | ⛔     | §5.2.2                            |
 | sentence_forward / backward       | ), (           | ⛔     |                                   |
 | goto_first_line / goto_last_line  | gg, G          | ✅     | §5.2.2                            |
 | find_char_forward / backward      | f, F           | ✅     | §5.2.2                            |
 | till_char_forward / backward      | t, T           | ✅     | §5.2.2                            |
-| find_repeat / find_repeat_reverse | ;, ,           | ⛔     |                                   |
+| find_repeat / find_repeat_reverse | ;, ,           | ✅     |                                   |
 | viewport_top / middle / bottom    | H, M, L        | ✅     | App-level (needs viewport_height) |
 | word_search_forward / backward    | *, #           | ✅     | §B.3 informally                   |
 | match_bracket                     | %              | ✅     | App-level                         |
@@ -102,8 +102,8 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 
 | Operator     | Key      | Status           | Anchor                                     |
 |--------------|----------|------------------|--------------------------------------------|
-| delete       | d, dd, D | ✅ (D not bound) | §5.2.2                                     |
-| change       | c, cc, C | ✅ (C not bound) | §5.2.2                                     |
+| delete       | d, dd, D | ✅               | §5.2.2                                     |
+| change       | c, cc, C | ✅               | §5.2.2                                     |
 | yank         | y, yy, Y | ✅               | §5.2.2                                     |
 | indent_left  | <        | ✅               | §5.2.2                                     |
 | indent_right | >        | ✅               | §5.2.2                                     |
@@ -112,7 +112,7 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | toggle_case  | g~       | ✅               | §5.2.2                                     |
 | filter       | !        | ⛔               | Subprocess pipe; depends on `:!cmd` (§B.6) |
 | format       | gq       | ⛔               | Depends on plugin / formatter              |
-| join_lines   | J, gJ    | ⛔               |                                            |
+| join_lines   | J, gJ    | ✅               | App-level (not a grammar operator)         |
 
 ### Text objects
 
@@ -236,18 +236,14 @@ Update this section when picking up the in-flight item.
    §15:18.
 3. **`:s/foo/bar/[g]`** — substitution. Worked example in §5.2.1; integrates
    with the rich minibuffer (§5.9.10) for live preview.
-4. **Auto-populate `"0`** — yank stores into both unnamed and `"0`. Small,
-   matches vim semantics.
-5. **WORD motions** (W, B, E) — whitespace-delimited word variants.
-6. **Paragraph / sentence motions** (`}` `{` `)` `(`).
-7. **Find-repeat** (`;`, `,`).
-8. **`D` / `C` / `S`** — operate-to-EOL / operate-line shortcuts.
-9. **`J` / `gJ`** — line join.
-10. **`:set option=value`** + the typed-options system. §5.12.
-11. **`:describe-command` / `:describe-key` / `:apropos`** — introspection
-    (§5.11).
-12. **Async dispatcher** — replace `execute(...) -> Effect` with `execute
-    -> Pending<Effect>` per §5.2.1.
+4. **Paragraph / sentence motions** (`}` `{` `)` `(`).
+5. **Inner / around paragraph & sentence text objects** (`ip`, `ap`, `is`, `as`).
+6. **Tag text object** (`it`, `at`) — XML/HTML tags.
+7. **`:set option=value`** + the typed-options system. §5.12.
+8. **`:describe-command` / `:describe-key` / `:apropos`** — introspection
+   (§5.11).
+9. **Async dispatcher** — replace `execute(...) -> Effect` with `execute
+   -> Pending<Effect>` per §5.2.1.
 
 ---
 
@@ -271,15 +267,15 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-582 tests across the workspace as of the last commit. Coverage by crate:
+598 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
 | lattice-protocol                 | 30    |
 | lattice-core (incl. integration) | 70    |
-| lattice-grammar                  | 111   |
+| lattice-grammar                  | 114   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 348   |
+| lattice-ui-tui                   | 361   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

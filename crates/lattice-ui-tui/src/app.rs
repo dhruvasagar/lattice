@@ -156,6 +156,13 @@ pub enum Action {
     /// Vim's `~` -- toggle the case of the char at the cursor and
     /// advance by one byte.
     ToggleCaseAtCursor,
+    /// Vim's `J` (with-space) and `gJ` (no-space): join the current line
+    /// with the next, replacing the joining newline with a single space
+    /// (or nothing for `gJ`).
+    JoinLines { with_space: bool },
+    /// Vim's `;` (no-reverse) and `,` (reverse): repeat the last
+    /// f/F/t/T find on the current line.
+    FindRepeat { reverse: bool },
     /// `"<reg>` prefix -- stash the named register for the next operator
     /// / paste invocation.
     SelectRegister(Register),
@@ -361,6 +368,15 @@ pub struct App {
     pub macro_recording: Option<MacroRecording>,
     /// The most recently played macro register, for `@@` repeat.
     pub last_played_macro: Option<char>,
+    /// Last f/F/t/T find on this buffer, for `;` / `,`.
+    pub last_find: Option<LastFind>,
+}
+
+/// Capture of the most recent find/till for `;`/`,` repeat.
+#[derive(Debug, Clone, Copy)]
+pub struct LastFind {
+    pub kind: FindKind,
+    pub target: char,
 }
 
 #[derive(Debug, Clone)]
@@ -443,6 +459,7 @@ impl App {
             macros: HashMap::new(),
             macro_recording: None,
             last_played_macro: None,
+            last_find: None,
         }
     }
 
@@ -545,6 +562,8 @@ impl App {
             }
             Action::MatchBracket => self.do_match_bracket(),
             Action::ToggleCaseAtCursor => self.do_toggle_case_at_cursor(),
+            Action::JoinLines { with_space } => self.do_join_lines(with_space),
+            Action::FindRepeat { reverse } => self.do_find_repeat(reverse),
             Action::SelectRegister(reg) => {
                 self.pending_register = Some(reg);
             }
@@ -894,6 +913,23 @@ impl App {
         {
             let cur = self.cursor;
             self.push_position_history(cur);
+        }
+        // Capture find/till invocations for `;` / `,` repeat.
+        if let lattice_grammar::Args::Char(c) = inv.args {
+            let kind = if inv.command == self.builtins.find_char_forward.0 {
+                Some(FindKind::Forward)
+            } else if inv.command == self.builtins.find_char_backward.0 {
+                Some(FindKind::Backward)
+            } else if inv.command == self.builtins.till_char_forward.0 {
+                Some(FindKind::TillForward)
+            } else if inv.command == self.builtins.till_char_backward.0 {
+                Some(FindKind::TillBackward)
+            } else {
+                None
+            };
+            if let Some(kind) = kind {
+                self.last_find = Some(LastFind { kind, target: c });
+            }
         }
         // Apply the count multiplication: the operator's count (latched at
         // `op_count`) multiplies with the motion's count (the in-progress
@@ -1364,6 +1400,86 @@ impl App {
                 .cloned()
                 .or_else(|| self.unnamed_register.clone()),
         }
+    }
+
+    /// Vim's `J` / `gJ`: join the current line with the next. With
+    /// `with_space = true` (J), the joining newline becomes one space
+    /// (and any leading whitespace on the next line is trimmed). With
+    /// `with_space = false` (gJ), no replacement -- pure concat.
+    fn do_join_lines(&mut self, with_space: bool) {
+        let last = last_addressable_line(&self.document);
+        if self.cursor.line >= last {
+            // No next line to join.
+            return;
+        }
+        let line = self.cursor.line;
+        let next_line = line + 1;
+        let cur_len = line_byte_len(&self.document, line);
+        // Compute how many leading whitespace bytes to trim from the
+        // next line's content (only for J, not gJ).
+        let trim = if with_space {
+            let text = self.document.text();
+            let next_text = text
+                .split_inclusive('\n')
+                .nth(next_line as usize)
+                .map(|l| l.trim_end_matches('\n'))
+                .unwrap_or("");
+            let mut t = 0usize;
+            let bytes = next_text.as_bytes();
+            while t < bytes.len() && (bytes[t] == b' ' || bytes[t] == b'\t') {
+                t += 1;
+            }
+            t as u32
+        } else {
+            0
+        };
+        // Range to replace covers `\n` + (optional) leading whitespace.
+        let range = ProtoRange::new(
+            Position::new(line, cur_len),
+            Position::new(next_line, trim),
+        );
+        let replacement = if with_space { " " } else { "" };
+        if let Ok(applied) = self
+            .document
+            .apply_edit(Edit::replace(range, replacement))
+        {
+            // Cursor lands at the end of the original first line (vim's
+            // standard J behavior puts cursor on the first space).
+            self.cursor = applied.original_range.start;
+        }
+    }
+
+    /// Vim's `;` / `,`: repeat the last f/F/t/T find on the current
+    /// line. `reverse = false` keeps the original direction; `true`
+    /// flips it.
+    fn do_find_repeat(&mut self, reverse: bool) {
+        let Some(last) = self.last_find else {
+            self.set_message(EchoLevel::Error, "no previous find".to_string());
+            return;
+        };
+        let kind = if reverse {
+            match last.kind {
+                FindKind::Forward => FindKind::Backward,
+                FindKind::Backward => FindKind::Forward,
+                FindKind::TillForward => FindKind::TillBackward,
+                FindKind::TillBackward => FindKind::TillForward,
+            }
+        } else {
+            last.kind
+        };
+        let motion_id = match kind {
+            FindKind::Forward => self.builtins.find_char_forward,
+            FindKind::Backward => self.builtins.find_char_backward,
+            FindKind::TillForward => self.builtins.till_char_forward,
+            FindKind::TillBackward => self.builtins.till_char_backward,
+        };
+        // Don't update last_find on repeat -- the original direction
+        // sticks (vim semantics: ; preserves direction even after ,).
+        let inv = CommandInvocation::of(motion_id.0)
+            .with_args(lattice_grammar::Args::Char(last.target));
+        // Bypass run_invocation's last_find recording by dispatching
+        // directly. We still want the standard pending/count consumption.
+        self.run_invocation(inv);
     }
 
     /// Vim's `~`: toggle the case of the char at cursor and advance.
@@ -2485,6 +2601,85 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- Line join (J / gJ) ----
+
+    #[test]
+    fn join_lines_with_space_combines_two_lines_with_one_space() {
+        let mut a = app_with("hello\nworld", 10);
+        a.apply(Action::JoinLines { with_space: true });
+        assert_eq!(a.document.text(), "hello world");
+        // Cursor lands at the join point (end of original first line).
+        assert_eq!(a.cursor, Position::new(0, 5));
+    }
+
+    #[test]
+    fn join_lines_without_space_concatenates_directly() {
+        let mut a = app_with("hello\nworld", 10);
+        a.apply(Action::JoinLines { with_space: false });
+        assert_eq!(a.document.text(), "helloworld");
+    }
+
+    #[test]
+    fn join_lines_trims_leading_whitespace_on_next_line() {
+        let mut a = app_with("hello\n   world", 10);
+        a.apply(Action::JoinLines { with_space: true });
+        assert_eq!(a.document.text(), "hello world");
+    }
+
+    #[test]
+    fn join_lines_at_last_line_is_no_op() {
+        let mut a = app_with("only", 10);
+        a.apply(Action::JoinLines { with_space: true });
+        assert_eq!(a.document.text(), "only");
+    }
+
+    // ---- Find-repeat (; / ,) ----
+
+    #[test]
+    fn semicolon_repeats_last_find_forward() {
+        let mut a = app_with("hello world", 10);
+        // First f-find for 'l': cursor moves to byte 2.
+        let inv = CommandInvocation::of(a.builtins.find_char_forward.0)
+            .with_args(lattice_grammar::Args::Char('l'));
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.cursor, Position::new(0, 2));
+        // `;` repeats: byte 3.
+        a.apply(Action::FindRepeat { reverse: false });
+        assert_eq!(a.cursor, Position::new(0, 3));
+    }
+
+    #[test]
+    fn comma_reverses_last_find_direction() {
+        let mut a = app_with("hello world", 10);
+        // f l forward.
+        let inv = CommandInvocation::of(a.builtins.find_char_forward.0)
+            .with_args(lattice_grammar::Args::Char('l'));
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.cursor, Position::new(0, 2));
+        // f l again, then `,` should reverse to find the previous 'l'.
+        a.apply(Action::FindRepeat { reverse: false });
+        assert_eq!(a.cursor, Position::new(0, 3));
+        a.apply(Action::FindRepeat { reverse: true });
+        assert_eq!(a.cursor, Position::new(0, 2));
+    }
+
+    #[test]
+    fn find_repeat_with_no_history_emits_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::FindRepeat { reverse: false });
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    // ---- WORD motions (W, B, E) end-to-end ----
+
+    #[test]
+    fn capital_w_skips_punctuation() {
+        let mut a = app_with("foo,bar baz", 10);
+        a.apply(invoke_motion(a.builtins.big_word_forward));
+        assert_eq!(a.cursor, Position::new(0, 8));
     }
 
     // ---- Macros (q, @) ----

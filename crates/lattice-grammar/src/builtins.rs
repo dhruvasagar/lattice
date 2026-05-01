@@ -94,6 +94,33 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Box::new(motion_till_char_backward),
         },
     );
+    let big_word_forward = registry.register_motion(
+        "motion:big-word-forward",
+        "Move to the start of the next WORD (vim's `W` -- whitespace-delimited).",
+        MotionSpec {
+            jump: false,
+            exclusive: true,
+            apply: Box::new(motion_big_word_forward),
+        },
+    );
+    let big_word_backward = registry.register_motion(
+        "motion:big-word-backward",
+        "Move to the start of the previous WORD (vim's `B`).",
+        MotionSpec {
+            jump: false,
+            exclusive: true,
+            apply: Box::new(motion_big_word_backward),
+        },
+    );
+    let big_word_end = registry.register_motion(
+        "motion:big-word-end",
+        "Move to the last byte of the current or next WORD (vim's `E`).",
+        MotionSpec {
+            jump: false,
+            exclusive: false,
+            apply: Box::new(motion_big_word_end),
+        },
+    );
     let char_left = registry.register_motion(
         "motion:char-left",
         "Move one byte to the left within the current line.",
@@ -340,6 +367,9 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         find_char_backward,
         till_char_forward,
         till_char_backward,
+        big_word_forward,
+        big_word_backward,
+        big_word_end,
         char_left,
         char_right,
         line_up,
@@ -383,6 +413,9 @@ pub struct Builtins {
     pub find_char_backward: MotionId,
     pub till_char_forward: MotionId,
     pub till_char_backward: MotionId,
+    pub big_word_forward: MotionId,
+    pub big_word_backward: MotionId,
+    pub big_word_end: MotionId,
     pub char_left: MotionId,
     pub char_right: MotionId,
     pub line_up: MotionId,
@@ -492,6 +525,12 @@ fn is_blank_byte(b: u8) -> bool {
     b == b' ' || b == b'\t'
 }
 
+/// "WORD" boundary in vim: any non-whitespace run is a WORD; whitespace
+/// (incl. newline) separates WORDs.
+fn is_big_word_byte(b: u8) -> bool {
+    !b.is_ascii_whitespace()
+}
+
 // ---- Motion: word-backward (vim's `b`) ----
 
 fn motion_word_backward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
@@ -557,6 +596,102 @@ fn motion_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
         }
     }
 
+    let target = ctx
+        .buffer
+        .byte_to_position(idx)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(MotionResult { target, linewise: false })
+}
+
+// ---- WORD motions (vim's W, B, E) ----
+
+fn motion_big_word_forward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let total = bytes.len();
+    let count = ctx.count.get().max(1);
+    let mut idx = ctx
+        .buffer
+        .position_to_byte(ctx.from)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+
+    for _ in 0..count {
+        if idx >= total {
+            break;
+        }
+        // Skip the current WORD's remaining non-whitespace bytes.
+        while idx < total && is_big_word_byte(bytes[idx]) {
+            idx += 1;
+        }
+        // Skip whitespace until the next WORD start.
+        while idx < total && !is_big_word_byte(bytes[idx]) {
+            idx += 1;
+        }
+    }
+    if idx >= total {
+        idx = total.saturating_sub(1);
+    }
+    let target = ctx
+        .buffer
+        .byte_to_position(idx)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(MotionResult { target, linewise: false })
+}
+
+fn motion_big_word_backward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let count = ctx.count.get().max(1);
+    let mut idx = ctx
+        .buffer
+        .position_to_byte(ctx.from)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+
+    for _ in 0..count {
+        if idx == 0 {
+            break;
+        }
+        idx -= 1;
+        while idx > 0 && !is_big_word_byte(bytes[idx]) {
+            idx -= 1;
+        }
+        while idx > 0 && is_big_word_byte(bytes[idx - 1]) {
+            idx -= 1;
+        }
+    }
+    let target = ctx
+        .buffer
+        .byte_to_position(idx)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(MotionResult { target, linewise: false })
+}
+
+fn motion_big_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let total = bytes.len();
+    let count = ctx.count.get().max(1);
+    let mut idx = ctx
+        .buffer
+        .position_to_byte(ctx.from)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+
+    for _ in 0..count {
+        if idx >= total.saturating_sub(1) {
+            break;
+        }
+        idx += 1;
+        while idx < total && !is_big_word_byte(bytes[idx]) {
+            idx += 1;
+        }
+        if idx >= total {
+            idx = total.saturating_sub(1);
+            break;
+        }
+        while idx + 1 < total && is_big_word_byte(bytes[idx + 1]) {
+            idx += 1;
+        }
+    }
     let target = ctx
         .buffer
         .byte_to_position(idx)
@@ -1981,6 +2116,49 @@ mod tests {
             other => panic!("expected Many, got {other:?}"),
         }
         assert_eq!(doc.text(), " world");
+    }
+
+    // ---- WORD motions (W, B, E) ----
+
+    #[test]
+    fn big_word_forward_treats_punctuation_as_part_of_word() {
+        // word_forward stops at punctuation; big_word_forward doesn't.
+        let (registry, b, mut doc) = fixture("foo,bar baz");
+        let inv = CommandInvocation::of(b.big_word_forward.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => {
+                // From byte 0, "foo,bar" is one WORD; next WORD is "baz" at byte 8.
+                assert_eq!(s.primary().head, Position::new(0, 8));
+            }
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn big_word_backward_skips_to_word_start() {
+        let (registry, b, mut doc) = fixture("foo,bar baz");
+        // From byte 8 ('b' of "baz") `B` -> byte 0 ('f' of "foo,bar").
+        let inv = CommandInvocation::of(b.big_word_backward.0);
+        let effect = execute(&registry, &mut doc, Position::new(0, 8), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn big_word_end_lands_at_last_byte_of_big_word() {
+        let (registry, b, mut doc) = fixture("foo,bar baz");
+        let inv = CommandInvocation::of(b.big_word_end.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => {
+                // End of "foo,bar" is byte 6 (the 'r').
+                assert_eq!(s.primary().head, Position::new(0, 6));
+            }
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
     }
 
     // ---- find-char / till-char (f, F, t, T) ----

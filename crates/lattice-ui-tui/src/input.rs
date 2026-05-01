@@ -97,6 +97,9 @@ fn translate_visual(event: KeyEvent, builtins: &Builtins) -> Action {
         KeyCode::Char('w') => invoke(builtins.word_forward),
         KeyCode::Char('b') => invoke(builtins.word_backward),
         KeyCode::Char('e') => invoke(builtins.word_end),
+        KeyCode::Char('W') => invoke(builtins.big_word_forward),
+        KeyCode::Char('B') => invoke(builtins.big_word_backward),
+        KeyCode::Char('E') => invoke(builtins.big_word_end),
         KeyCode::Char('G') => invoke(builtins.goto_last_line),
 
         // Operators on the selection. `Range::Selection` resolves to the
@@ -232,6 +235,9 @@ fn translate_normal(
         KeyCode::Char('w') => invoke(builtins.word_forward),
         KeyCode::Char('b') => invoke(builtins.word_backward),
         KeyCode::Char('e') => invoke(builtins.word_end),
+        KeyCode::Char('W') => invoke(builtins.big_word_forward),
+        KeyCode::Char('B') => invoke(builtins.big_word_backward),
+        KeyCode::Char('E') => invoke(builtins.big_word_end),
         KeyCode::Char('G') => invoke(builtins.goto_last_line),
 
         // Viewport jumps
@@ -264,6 +270,26 @@ fn translate_normal(
             CommandInvocation::of(builtins.delete.0)
                 .with_target(Target::Motion(builtins.char_right, Args::None)),
         ),
+
+        // `D` = `d$`, `C` = `c$`, `S` = `cc` (substitute line).
+        KeyCode::Char('D') => Action::Invoke(
+            CommandInvocation::of(builtins.delete.0)
+                .with_target(Target::Motion(builtins.line_end, Args::None)),
+        ),
+        KeyCode::Char('C') => Action::Invoke(
+            CommandInvocation::of(builtins.change.0)
+                .with_target(Target::Motion(builtins.line_end, Args::None)),
+        ),
+        KeyCode::Char('S') => Action::Invoke(
+            CommandInvocation::of(builtins.change.0).with_range(lattice_grammar::Range::CurrentLine),
+        ),
+
+        // Line join.
+        KeyCode::Char('J') => Action::JoinLines { with_space: true },
+
+        // Find-repeat (`;` keeps direction; `,` reverses).
+        KeyCode::Char(';') => Action::FindRepeat { reverse: false },
+        KeyCode::Char(',') => Action::FindRepeat { reverse: true },
 
         // Mode entry
         KeyCode::Char('i') => Action::EnterMode(ModalState::Insert),
@@ -341,6 +367,8 @@ fn resolve_after_g(event: KeyEvent, builtins: &Builtins) -> Action {
         KeyCode::Char('~') => Action::SetPending(Pending::AfterOperator(builtins.toggle_case)),
         // `gv`: reselect the last Visual selection.
         KeyCode::Char('v') => Action::ReselectLastVisual,
+        // `gJ`: join lines without inserting a space.
+        KeyCode::Char('J') => Action::JoinLines { with_space: false },
         _ => Action::SetPending(Pending::None),
     }
 }
@@ -359,6 +387,9 @@ fn resolve_after_operator(
         KeyCode::Char('w') => Target::Motion(builtins.word_forward, Args::None),
         KeyCode::Char('b') => Target::Motion(builtins.word_backward, Args::None),
         KeyCode::Char('e') => Target::Motion(builtins.word_end, Args::None),
+        KeyCode::Char('W') => Target::Motion(builtins.big_word_forward, Args::None),
+        KeyCode::Char('B') => Target::Motion(builtins.big_word_backward, Args::None),
+        KeyCode::Char('E') => Target::Motion(builtins.big_word_end, Args::None),
         KeyCode::Char('h') | KeyCode::Left => Target::Motion(builtins.char_left, Args::None),
         KeyCode::Char('l') | KeyCode::Right => Target::Motion(builtins.char_right, Args::None),
         KeyCode::Char('j') | KeyCode::Down => Target::Motion(builtins.line_down, Args::None),
@@ -1178,6 +1209,156 @@ mod tests {
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
         ));
+    }
+
+    // ---- WORD motions / D/C/S / J / ;/, ----
+
+    #[test]
+    fn capital_w_invokes_big_word_forward() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('W')),
+        );
+        assert_eq!(invocation_command(&action), Some(b.big_word_forward.0));
+    }
+
+    #[test]
+    fn capital_b_invokes_big_word_backward() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('B')),
+        );
+        assert_eq!(invocation_command(&action), Some(b.big_word_backward.0));
+    }
+
+    #[test]
+    fn capital_e_invokes_big_word_end() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('E')),
+        );
+        assert_eq!(invocation_command(&action), Some(b.big_word_end.0));
+    }
+
+    #[test]
+    fn capital_d_invokes_delete_to_line_end() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('D')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                match inv.target {
+                    Some(Target::Motion(id, _)) => assert_eq!(id, b.line_end),
+                    other => panic!("expected line_end target, got {other:?}"),
+                }
+            }
+            other => panic!("expected Invoke, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capital_c_invokes_change_to_line_end() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('C')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.change.0);
+                match inv.target {
+                    Some(Target::Motion(id, _)) => assert_eq!(id, b.line_end),
+                    other => panic!("expected line_end target, got {other:?}"),
+                }
+            }
+            other => panic!("expected Invoke, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capital_s_invokes_change_current_line() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('S')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.change.0);
+                assert_eq!(inv.range, Some(lattice_grammar::Range::CurrentLine));
+            }
+            other => panic!("expected Invoke, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capital_j_emits_join_with_space() {
+        let (_, b) = fixture();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('J')),
+        ) {
+            Action::JoinLines { with_space } => assert!(with_space),
+            other => panic!("expected JoinLines(with_space=true), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gj_after_g_emits_join_without_space() {
+        let (_, b) = fixture();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterG, &b),
+            key(KeyCode::Char('J')),
+        ) {
+            Action::JoinLines { with_space } => assert!(!with_space),
+            other => panic!("expected JoinLines(with_space=false), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn semicolon_emits_find_repeat_no_reverse() {
+        let (_, b) = fixture();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char(';')),
+        ) {
+            Action::FindRepeat { reverse } => assert!(!reverse),
+            other => panic!("expected FindRepeat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn comma_emits_find_repeat_reverse() {
+        let (_, b) = fixture();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char(',')),
+        ) {
+            Action::FindRepeat { reverse } => assert!(reverse),
+            other => panic!("expected FindRepeat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn d_capital_w_resolves_to_delete_big_word_forward() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            key(KeyCode::Char('W')),
+        );
+        match action {
+            Action::Invoke(inv) => match inv.target {
+                Some(Target::Motion(id, _)) => assert_eq!(id, b.big_word_forward),
+                other => panic!("expected motion target, got {other:?}"),
+            },
+            _ => panic!("expected Invoke"),
+        }
     }
 
     // ---- Macros: q, @ ----

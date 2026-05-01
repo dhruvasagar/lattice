@@ -127,6 +127,10 @@ pub enum Action {
     /// Replace mode: overwrite the char at the cursor with `c` and advance.
     /// Beyond end-of-line, falls back to insert (vim behavior).
     OverwriteChar(char),
+    /// Backspace within Replace -- pop the latest entry from
+    /// `replace_history` and restore the original byte (or delete if the
+    /// overwrite was a line extension).
+    ReplaceUndoLast,
     /// `m<letter>` -- record the cursor at mark `<letter>`.
     SetMark(char),
     /// `'<letter>` -- jump to the line of mark `<letter>` (column = first
@@ -263,6 +267,19 @@ pub struct App {
     /// uppercase / numbered global marks treat all marks as buffer-local
     /// since the v1 TUI runs against a single document.
     pub marks: HashMap<char, Position>,
+    /// Per-Replace-session log of overwritten bytes so backspace can
+    /// restore the original (rather than deleting). Cleared on entry,
+    /// pushed on each `OverwriteChar`, popped on `ReplaceUndoLast`.
+    /// `original` is `None` when the cursor was past EOL and the
+    /// overwrite extended the line -- backspace deletes that byte rather
+    /// than restoring it.
+    pub replace_history: Vec<ReplaceEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReplaceEntry {
+    pub at: Position,
+    pub original: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -323,6 +340,7 @@ impl App {
             last_change: None,
             last_visual: None,
             marks: HashMap::new(),
+            replace_history: Vec::new(),
         }
     }
 
@@ -408,6 +426,7 @@ impl App {
             Action::ReselectLastVisual => self.do_reselect_visual(),
 
             Action::OverwriteChar(c) => self.do_overwrite_char(c),
+            Action::ReplaceUndoLast => self.do_replace_undo_last(),
 
             Action::SetMark(name) => {
                 if is_valid_mark_name(name) {
@@ -808,25 +827,58 @@ impl App {
     /// Overstrike one char at the cursor: if the cursor is mid-line,
     /// replace `[cursor, cursor+1)` with `c`; if past EOL, just insert
     /// (vim's R extends the line). Either way the cursor advances by
-    /// one byte. v1 does not record the overwritten char for
-    /// backspace-restore; that's a §15 follow-up.
+    /// one byte. The original byte (or `None` if past EOL) is pushed
+    /// onto `replace_history` so backspace can restore it.
     fn do_overwrite_char(&mut self, c: char) {
         let len = line_byte_len(&self.document, self.cursor.line);
         let s = c.to_string();
+        let entry_pos = self.cursor;
         if self.cursor.byte < len {
             let r = ProtoRange::new(
                 self.cursor,
                 Position::new(self.cursor.line, self.cursor.byte + 1),
             );
+            // Capture the original byte before the replace lands.
+            let original = self.document.buffer().slice(r).ok();
             if let Ok(applied) = self.document.apply_edit(Edit::replace(r, &s)) {
                 self.cursor = applied.inserted_range.end;
+                self.replace_history.push(ReplaceEntry {
+                    at: entry_pos,
+                    original,
+                });
             }
         } else {
-            // Past end of line: extend.
+            // Past end of line: extend. Original is None.
             if let Ok(applied) = self.document.apply_edit(Edit::insert(self.cursor, &s)) {
                 self.cursor = applied.inserted_range.end;
+                self.replace_history.push(ReplaceEntry {
+                    at: entry_pos,
+                    original: None,
+                });
             }
         }
+    }
+
+    /// Pop the latest replace_history entry and restore. If the entry
+    /// recorded an original byte, replace the byte at the entry's
+    /// position with it. If it didn't (line-extension case), delete
+    /// the byte. Either way the cursor moves back to the entry's
+    /// position.
+    fn do_replace_undo_last(&mut self) {
+        let Some(entry) = self.replace_history.pop() else {
+            return;
+        };
+        let after = Position::new(entry.at.line, entry.at.byte + 1);
+        let r = ProtoRange::new(entry.at, after);
+        match entry.original {
+            Some(orig) => {
+                let _ = self.document.apply_edit(Edit::replace(r, &orig));
+            }
+            None => {
+                let _ = self.document.apply_edit(Edit::delete(r));
+            }
+        }
+        self.cursor = entry.at;
     }
 
     fn do_insert_text(&mut self, s: &str) {
@@ -850,6 +902,11 @@ impl App {
     }
 
     fn enter_mode(&mut self, state: ModalState) {
+        // Reset Replace's history every time we enter (or re-enter) Replace
+        // so backspace-restore is bounded to the current `R` session.
+        if matches!(state, ModalState::Replace) {
+            self.replace_history.clear();
+        }
         self.modal = state;
         self.pending = Pending::None;
         if matches!(state, ModalState::Normal) {
@@ -1863,6 +1920,67 @@ mod tests {
         a.apply(Action::OverwriteChar('!'));
         assert_eq!(a.document.text(), "hi!");
         assert_eq!(a.cursor, Position::new(0, 3));
+    }
+
+    #[test]
+    fn replace_undo_last_restores_overwritten_char() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterMode(ModalState::Replace));
+        a.apply(Action::OverwriteChar('H'));
+        assert_eq!(a.document.text(), "Hello");
+        assert_eq!(a.cursor, Position::new(0, 1));
+        // Backspace: should restore 'h' and step cursor back.
+        a.apply(Action::ReplaceUndoLast);
+        assert_eq!(a.document.text(), "hello");
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn replace_undo_after_eol_extension_deletes_extension() {
+        let mut a = app_with("hi", 10);
+        a.cursor = Position::new(0, 2);
+        a.apply(Action::EnterMode(ModalState::Replace));
+        a.apply(Action::OverwriteChar('!'));
+        assert_eq!(a.document.text(), "hi!");
+        a.apply(Action::ReplaceUndoLast);
+        assert_eq!(a.document.text(), "hi");
+        assert_eq!(a.cursor, Position::new(0, 2));
+    }
+
+    #[test]
+    fn replace_undo_with_empty_history_is_no_op() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterMode(ModalState::Replace));
+        a.apply(Action::ReplaceUndoLast);
+        assert_eq!(a.document.text(), "hello");
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn replace_undo_chain_restores_in_reverse_order() {
+        let mut a = app_with("abcde", 10);
+        a.apply(Action::EnterMode(ModalState::Replace));
+        a.apply(Action::OverwriteChar('A'));
+        a.apply(Action::OverwriteChar('B'));
+        a.apply(Action::OverwriteChar('C'));
+        assert_eq!(a.document.text(), "ABCde");
+        a.apply(Action::ReplaceUndoLast);
+        assert_eq!(a.document.text(), "ABcde");
+        a.apply(Action::ReplaceUndoLast);
+        assert_eq!(a.document.text(), "Abcde");
+        a.apply(Action::ReplaceUndoLast);
+        assert_eq!(a.document.text(), "abcde");
+    }
+
+    #[test]
+    fn enter_replace_clears_replace_history() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterMode(ModalState::Replace));
+        a.apply(Action::OverwriteChar('H'));
+        assert_eq!(a.replace_history.len(), 1);
+        a.apply(Action::EnterMode(ModalState::Normal));
+        a.apply(Action::EnterMode(ModalState::Replace));
+        assert!(a.replace_history.is_empty());
     }
 
     #[test]

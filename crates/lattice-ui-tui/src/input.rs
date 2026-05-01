@@ -58,7 +58,7 @@ fn translate_replace(event: KeyEvent) -> Action {
     }
     match event.code {
         KeyCode::Esc => Action::EnterMode(ModalState::Normal),
-        KeyCode::Backspace => Action::DeleteCharBackward,
+        KeyCode::Backspace => Action::ReplaceUndoLast,
         KeyCode::Enter => Action::Insert("\n".into()),
         KeyCode::Char(c) => Action::OverwriteChar(c),
         _ => Action::None,
@@ -1104,14 +1104,14 @@ mod tests {
     }
 
     #[test]
-    fn backspace_in_replace_deletes_char_backward() {
+    fn backspace_in_replace_emits_replace_undo_last() {
         let (_, b) = fixture();
         assert!(matches!(
             translate(
                 ctx(ModalState::Replace, Pending::None, &b),
                 key(KeyCode::Backspace)
             ),
-            Action::DeleteCharBackward
+            Action::ReplaceUndoLast
         ));
     }
 

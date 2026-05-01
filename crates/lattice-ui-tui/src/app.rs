@@ -402,6 +402,12 @@ pub struct App {
     /// Text being captured during the *current* Insert session.
     /// Promoted into `last_insert` when leaving Insert.
     pub recording_insert: Option<String>,
+    /// `:set number` / `:set nonumber`. Default true.
+    pub show_line_numbers: bool,
+    /// `:set relativenumber` / `:set norelativenumber`. Default false.
+    /// When true, the gutter shows distance from the cursor on each
+    /// line; the cursor's line shows its absolute number.
+    pub relative_line_numbers: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -503,6 +509,8 @@ impl App {
             folds: Vec::new(),
             last_insert: None,
             recording_insert: None,
+            show_line_numbers: true,
+            relative_line_numbers: false,
         }
     }
 
@@ -933,6 +941,25 @@ impl App {
             }
             ExCommand::ListRegisters => self.do_list_registers(),
             ExCommand::ListMarks => self.do_list_marks(),
+            ExCommand::Set { option } => self.do_set(&option),
+        }
+    }
+
+    /// Vim's `:set <option>`. v1 honors a tiny fixed set; everything
+    /// else surfaces as an error rather than silently no-op'ing so the
+    /// user gets clear feedback.
+    fn do_set(&mut self, option: &str) {
+        match option {
+            "number" | "nu" => self.show_line_numbers = true,
+            "nonumber" | "nonu" => self.show_line_numbers = false,
+            "relativenumber" | "rnu" => {
+                self.show_line_numbers = true;
+                self.relative_line_numbers = true;
+            }
+            "norelativenumber" | "nornu" => self.relative_line_numbers = false,
+            other => {
+                self.set_message(EchoLevel::Error, format!("unknown option: {other}"));
+            }
         }
     }
 
@@ -3205,6 +3232,36 @@ mod tests {
             a.apply(Action::CommandLineAppend(c));
         }
         a.apply(Action::CommandLineSubmit);
+    }
+
+    #[test]
+    fn set_number_and_nonumber_toggle_show_line_numbers() {
+        let mut a = app_with("hello", 10);
+        assert!(a.show_line_numbers);
+        submit_ex(&mut a, "set nonumber");
+        assert!(!a.show_line_numbers);
+        submit_ex(&mut a, "set number");
+        assert!(a.show_line_numbers);
+    }
+
+    #[test]
+    fn set_relativenumber_toggles_flag() {
+        let mut a = app_with("hello\nworld", 10);
+        assert!(!a.relative_line_numbers);
+        submit_ex(&mut a, "set relativenumber");
+        assert!(a.relative_line_numbers);
+        assert!(a.show_line_numbers);
+        submit_ex(&mut a, "set norelativenumber");
+        assert!(!a.relative_line_numbers);
+    }
+
+    #[test]
+    fn set_unknown_option_emits_error() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "set frobnicate");
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("frobnicate"));
     }
 
     #[test]

@@ -45,6 +45,10 @@ pub enum ExCommand {
     ListRegisters,
     /// Vim's `:marks` -- show all set marks.
     ListMarks,
+    /// Vim's `:set <option>` -- v1 only handles a small fixed set:
+    /// number / nonumber / nu / nonu, relativenumber / norelativenumber /
+    /// rnu / nornu.
+    Set { option: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +114,14 @@ pub fn parse(line: &str) -> Result<ExCommand, ExCommandError> {
         "marks" => no_args(rest)?
             .then_some(ExCommand::ListMarks)
             .ok_or(ExCommandError::TrailingArgs),
+        "set" => {
+            if rest.is_empty() {
+                return Err(ExCommandError::Unknown("set requires an option".into()));
+            }
+            Ok(ExCommand::Set {
+                option: rest.to_string(),
+            })
+        }
         other => Err(ExCommandError::Unknown(other.to_string())),
     }
 }
@@ -437,6 +449,27 @@ mod tests {
     fn registers_aliases() {
         assert_eq!(parse("reg"), Ok(ExCommand::ListRegisters));
         assert_eq!(parse("registers"), Ok(ExCommand::ListRegisters));
+    }
+
+    #[test]
+    fn set_with_option_parses() {
+        assert_eq!(
+            parse("set number"),
+            Ok(ExCommand::Set {
+                option: "number".into()
+            })
+        );
+        assert_eq!(
+            parse("set nu"),
+            Ok(ExCommand::Set {
+                option: "nu".into()
+            })
+        );
+    }
+
+    #[test]
+    fn set_without_option_errors() {
+        assert!(matches!(parse("set"), Err(ExCommandError::Unknown(_))));
     }
 
     #[test]

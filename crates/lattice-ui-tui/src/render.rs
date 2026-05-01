@@ -143,7 +143,14 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         .map(|l| l.trim_end_matches('\n').to_string())
         .collect();
     let total_lines = raw_lines.len() as u32;
-    let gutter_w = gutter_width(total_lines);
+    let gutter_w = if app.show_line_numbers {
+        gutter_width(total_lines)
+    } else {
+        // Keep one cell of left padding for the empty-marker `~` line
+        // and to mirror vim's `:set nonumber` (no gutter, but content
+        // still has a one-cell margin from the edge).
+        2
+    };
     let buffer_w = width.saturating_sub(gutter_w);
 
     // Compute visual selection range once (instead of per line).
@@ -179,7 +186,7 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
             }
         };
         let line_text = &raw_lines[line_idx as usize];
-        let gutter = render_gutter(line_idx, gutter_w);
+        let gutter = render_gutter_for(app, line_idx, gutter_w);
         // Fold summary: show "+--- N lines ---" instead of the line body.
         if let Some(fold) = app.fold_start_at(line_idx) {
             let n = fold.end_line - fold.start_line + 1;
@@ -394,6 +401,21 @@ fn render_gutter(line_idx: u32, width: u32) -> Span<'static> {
     Span::styled(s, TuiStyle::default().fg(Color::DarkGray))
 }
 
+fn render_gutter_for(app: &App, line_idx: u32, width: u32) -> Span<'static> {
+    if !app.show_line_numbers {
+        // Pure padding so the buffer doesn't run flush against the edge.
+        return Span::raw(" ".repeat(width as usize));
+    }
+    if !app.relative_line_numbers || line_idx == app.cursor.line {
+        return render_gutter(line_idx, width);
+    }
+    let dist = line_idx.abs_diff(app.cursor.line);
+    let n = dist.to_string();
+    let pad = (width as usize).saturating_sub(n.len() + 1);
+    let s = format!("{:pad$}{n} ", "", pad = pad);
+    Span::styled(s, TuiStyle::default().fg(Color::DarkGray))
+}
+
 fn render_styled_line(line: &str, spans: &[StyledSpan], max_width: u32) -> Vec<Span<'static>> {
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut cursor = 0usize;
@@ -484,7 +506,11 @@ fn cursor_screen_position(app: &App, area: Rect) -> Option<(u16, u16)> {
         .split_inclusive('\n')
         .count()
         .max(1) as u32;
-    let gutter_w = gutter_width(total_lines);
+    let gutter_w = if app.show_line_numbers {
+        gutter_width(total_lines)
+    } else {
+        2
+    };
     let col = gutter_w + app.cursor.byte;
     Some((
         area.x.saturating_add(col.try_into().unwrap_or(u16::MAX)),

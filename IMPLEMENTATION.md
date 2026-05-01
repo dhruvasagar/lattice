@@ -175,7 +175,7 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | :noh / :nohlsearch      | ✅     |        |
 | :reg / :registers       | ✅     |        |
 | :marks                  | ✅     |        |
-| :set option=value       | ⛔     | §5.12  |
+| :set option=value       | ⚠️     | §5.12. v1 only honors number/relativenumber toggles; the full typed-options system is post-1.0. |
 | :describe-command, etc. | ⛔     | §5.11  |
 | :history-*              | ⛔     | §B.3   |
 | :customize              | ⛔     | §5.12  |
@@ -277,7 +277,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-673 tests across the workspace as of the last commit. Coverage by crate:
+678 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
@@ -285,7 +285,7 @@ are crossed out there. Items that influence active tasks:
 | lattice-core (incl. integration) | 75    |
 | lattice-grammar                  | 125   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 420   |
+| lattice-ui-tui                   | 425   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

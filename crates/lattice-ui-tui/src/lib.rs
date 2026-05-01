@@ -23,7 +23,7 @@ pub mod render;
 pub mod runtime;
 
 pub use app::{Action, App, EchoLevel, EchoMessage, Pending};
-pub use excommand::{ExCommand, ExCommandError};
+pub use excommand::ExCommandError;
 pub use input::{TranslateContext, translate};
 pub use lattice_syntax::{Lang, Style, StyledSpan, Syntax};
 pub use runtime::run;

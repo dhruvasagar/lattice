@@ -131,6 +131,13 @@ pub struct CommandSpec {
     pub name: String,
     pub kind: CommandKind,
     pub doc: String,
+    /// Per-positional-argument metadata (DESIGN.md §B.1). Lifted from
+    /// the per-kind spec (`MotionSpec.args_schema`,
+    /// `ExCommandSpec.args_schema`, ...) at registration time so callers
+    /// can introspect arg shape without knowing the registration kind.
+    /// Used by `:describe-command`, palette form rendering, and missing-
+    /// arg prompts.
+    pub args_schema: Vec<crate::args::ArgSpec>,
 }
 
 #[cfg(test)]

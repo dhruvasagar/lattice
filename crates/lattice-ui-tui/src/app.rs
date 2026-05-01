@@ -32,7 +32,7 @@ use lattice_syntax::{Lang, StyledSpan, Syntax};
 
 use std::collections::HashMap;
 
-use crate::excommand::{self, ExCommand, Parsed as ParsedEx};
+use crate::excommand;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pending {
@@ -126,19 +126,6 @@ fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
     }
 }
 
-/// Convert the legacy `excommand::SubstituteScope` to the unified
-/// `lattice_grammar::SubstituteScope` while the legacy enum-based path
-/// still exists. Removed once `excommand::ExCommand` is gone.
-fn excommand_scope_to_grammar(
-    scope: crate::excommand::SubstituteScope,
-) -> lattice_grammar::SubstituteScope {
-    match scope {
-        crate::excommand::SubstituteScope::CurrentLine => {
-            lattice_grammar::SubstituteScope::CurrentLine
-        }
-        crate::excommand::SubstituteScope::Whole => lattice_grammar::SubstituteScope::Whole,
-    }
-}
 
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -1052,44 +1039,13 @@ impl App {
 
     fn execute_ex_line(&mut self, line: &str) {
         match excommand::parse(line, &self.registry) {
-            Ok(ParsedEx::Invocation(inv)) => {
-                // Registry path: dispatch through the unified
-                // grammar::execute() like every other vim chord.
-                match execute(&self.registry, &mut self.document, self.cursor, inv) {
-                    Ok(eff) => self.apply_effect(eff),
-                    Err(e) => self.set_message(EchoLevel::Error, e.to_string()),
-                }
-            }
-            Ok(ParsedEx::Legacy(cmd)) => self.execute_ex(cmd),
+            Ok(inv) => match execute(&self.registry, &mut self.document, self.cursor, inv) {
+                Ok(eff) => self.apply_effect(eff),
+                Err(e) => self.set_message(EchoLevel::Error, e.to_string()),
+            },
             Err(err) => {
                 self.set_message(EchoLevel::Error, err.to_string());
             }
-        }
-    }
-
-    /// Execute the still-legacy ex-commands (`:s/.../.../`,
-    /// `:%s/.../.../`, `:g/.../...`, `:v/.../...`). Once those land in
-    /// the registry with structured args, this match shrinks to
-    /// nothing and the function goes away. See excommand.rs for the
-    /// migration plan.
-    fn execute_ex(&mut self, cmd: ExCommand) {
-        match cmd {
-            ExCommand::Substitute {
-                scope,
-                pattern,
-                replacement,
-                global,
-            } => self.do_substitute(
-                excommand_scope_to_grammar(scope),
-                &pattern,
-                &replacement,
-                global,
-            ),
-            ExCommand::Global {
-                pattern,
-                inverted,
-                body,
-            } => self.do_global(&pattern, inverted, &body),
         }
     }
 
@@ -1323,24 +1279,21 @@ impl App {
             return;
         }
         // Run bottom-up so deletions and edits on later lines don't
-        // shift the line numbers we plan to operate on.
+        // shift the line numbers we plan to operate on. Re-parse the
+        // body per match -- the parse is cheap and lets the body
+        // observe per-line cursor state. (Promoting body to a
+        // pre-parsed CommandInvocation is a follow-up; today's
+        // `Args::Raw(body_string)` is the simpler path.)
         for &line in targets.iter().rev() {
             self.cursor = Position::new(line, 0);
-            // Recursively parse + execute the body. If parsing fails,
-            // we surface the error and abort. The body can itself be
-            // either a registry-bound command (`d`, `noh`, ...) or a
-            // delimiter-syntax legacy one (`s/.../.../`).
             match crate::excommand::parse(body, &self.registry) {
-                Ok(ParsedEx::Invocation(inv)) => {
-                    match execute(&self.registry, &mut self.document, self.cursor, inv) {
-                        Ok(eff) => self.apply_effect(eff),
-                        Err(e) => {
-                            self.set_message(EchoLevel::Error, format!("g: {e}"));
-                            return;
-                        }
+                Ok(inv) => match execute(&self.registry, &mut self.document, self.cursor, inv) {
+                    Ok(eff) => self.apply_effect(eff),
+                    Err(e) => {
+                        self.set_message(EchoLevel::Error, format!("g: {e}"));
+                        return;
                     }
-                }
-                Ok(ParsedEx::Legacy(cmd)) => self.execute_ex(cmd),
+                },
                 Err(err) => {
                     self.set_message(EchoLevel::Error, format!("g: {err}"));
                     return;

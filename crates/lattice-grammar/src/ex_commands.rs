@@ -7,14 +7,15 @@
 //! area, document swap, ...) -- this keeps the closures static-state-free
 //! so they can later be loaded from a WASM plugin without redesign.
 //!
-//! Migration status (Phase 2->3 transition):
-//! - Registered here: `:w[rite]`, `:q[uit]`, `:wq`/`:x`, `:noh[lsearch]`,
+//! Coverage:
+//! - Keyword form: `:w[rite]`, `:q[uit]`, `:wq`/`:x`, `:noh[lsearch]`,
 //!   `:reg[isters]`, `:marks`, `:d[elete]`, `:set`, `:e[dit]`.
-//! - Not yet registered (delimiter-syntax): `:s/...`, `:%s/...`,
-//!   `:g/...`, `:v/...`. The parser front-end falls back to the legacy
-//!   enum path for these until we settle on the structured-args encoding
-//!   (see DESIGN.md §5.2.2 / §9 -- WIT-typed args replace the v1 byte
-//!   form when WASM lands).
+//! - Delimiter-syntax form (Appendix B.2): `:s/.../.../[g]`,
+//!   `:%s/.../.../[g]`, `:g/.../.../`, `:v/.../.../`. These use
+//!   `Args::List` to carry pattern / replacement / flags / body /
+//!   inverted as positional `ArgValue`s; the parser front-end strips
+//!   the delimiter prefix and dispatches through the same
+//!   `grammar::execute()` as everything else.
 //!
 //! Aliases (`:w` for `:write`, `:q` for `:quit`, `:e` for `:edit`, ...)
 //! are NOT separate registry entries -- they would inflate the
@@ -22,9 +23,10 @@
 //! resolution is the parser front-end's job (`expand_alias` in
 //! `lattice-ui-tui::excommand`).
 
-use crate::args::Args;
-use crate::effect::Effect;
+use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
+use crate::effect::{Effect, SubstituteScope};
 use crate::error::{CommandError, GrammarResult};
+use crate::range::Range;
 use crate::registry::{CommandRegistry, ExCommandContext, ExCommandId, ExCommandSpec};
 
 /// Set of registered ex-command ids; mirrors the `Builtins` shape for
@@ -40,6 +42,8 @@ pub struct ExBuiltins {
     pub delete_line: ExCommandId,
     pub set_option: ExCommandId,
     pub edit: ExCommandId,
+    pub substitute: ExCommandId,
+    pub global: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -51,6 +55,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_optional_path),
             apply: Box::new(apply_write),
+            args_schema: vec![],
         },
     );
     let quit = registry.register_ex_command(
@@ -61,6 +66,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
             apply: Box::new(apply_quit),
+            args_schema: vec![],
         },
     );
     let write_quit = registry.register_ex_command(
@@ -71,6 +77,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
             apply: Box::new(apply_write_quit),
+            args_schema: vec![],
         },
     );
     let no_hlsearch = registry.register_ex_command(
@@ -81,6 +88,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::ClearSearchHighlight)),
+            args_schema: vec![],
         },
     );
     let list_registers = registry.register_ex_command(
@@ -91,6 +99,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::EchoRegisters)),
+            args_schema: vec![],
         },
     );
     let list_marks = registry.register_ex_command(
@@ -101,6 +110,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::EchoMarks)),
+            args_schema: vec![],
         },
     );
     let delete_line = registry.register_ex_command(
@@ -111,6 +121,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::DeleteCurrentLine)),
+            args_schema: vec![],
         },
     );
     let set_option = registry.register_ex_command(
@@ -121,6 +132,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_required_string),
             apply: Box::new(apply_set),
+            args_schema: vec![],
         },
     );
     let edit = registry.register_ex_command(
@@ -131,6 +143,73 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_optional_path),
             apply: Box::new(apply_edit),
+            args_schema: vec![],
+        },
+    );
+    let substitute = registry.register_ex_command(
+        "ex:substitute",
+        "Replace pattern with replacement on the current line or `%` whole buffer (`:s/pat/rep/[g]`).",
+        ExCommandSpec {
+            accepts_bang: false,
+            // `accepts_range: true` even though v1 only honours
+            // CurrentLine and Whole; the parser front-end provides the
+            // range from the `s/` vs `%s/` prefix.
+            accepts_range: true,
+            // The substitute call enters via the parser front-end's
+            // delimiter detection, not the keyword form -- parse_args
+            // is unreachable for normal `:`-line input. We keep a
+            // stub that errors on direct use to prevent surprise from
+            // a script invocation.
+            parse_args: Box::new(parse_substitute_args_unreachable),
+            apply: Box::new(apply_substitute),
+            args_schema: vec![
+                ArgSpec::required(
+                    "pattern",
+                    ArgKind::Pattern,
+                    "Search pattern (literal in v1; regex post-1.0)",
+                ),
+                ArgSpec::required(
+                    "replacement",
+                    ArgKind::String,
+                    "Replacement text (empty deletes matches)",
+                ),
+                ArgSpec {
+                    name: "flags",
+                    kind: ArgKind::String,
+                    doc: "Flags string (currently `g` honoured; others ignored)",
+                    prompt: "",
+                    default: ArgDefault::Literal(ArgValue::String(String::new())),
+                },
+            ],
+        },
+    );
+    let global = registry.register_ex_command(
+        "ex:global",
+        "Run a command on every line matching (`:g`) or NOT matching (`:v`) a pattern.",
+        ExCommandSpec {
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_global_args_unreachable),
+            apply: Box::new(apply_global),
+            args_schema: vec![
+                ArgSpec::required(
+                    "pattern",
+                    ArgKind::Pattern,
+                    "Match pattern (literal in v1)",
+                ),
+                ArgSpec {
+                    name: "inverted",
+                    kind: ArgKind::Bool,
+                    doc: "True for `:v` form -- match lines NOT matching the pattern.",
+                    prompt: "",
+                    default: ArgDefault::Literal(ArgValue::Bool(false)),
+                },
+                ArgSpec::required(
+                    "body",
+                    ArgKind::Raw,
+                    "Ex-command to run on each matching line (re-parsed per match)",
+                ),
+            ],
         },
     );
     ExBuiltins {
@@ -143,6 +222,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         delete_line,
         set_option,
         edit,
+        substitute,
+        global,
     }
 }
 
@@ -174,6 +255,23 @@ fn parse_required_string(rest: &str, _bang: bool) -> GrammarResult<Args> {
     } else {
         Ok(Args::String(trimmed.to_string()))
     }
+}
+
+/// `:substitute` and `:global` enter through the `:`-line parser's
+/// delimiter detection, not through the generic keyword path -- their
+/// args come pre-parsed as `Args::List`. These stubs guard against a
+/// caller that registers a keyword alias `:substitute foo`: the parse
+/// path errors instead of producing malformed Args::List.
+fn parse_substitute_args_unreachable(_rest: &str, _bang: bool) -> GrammarResult<Args> {
+    Err(CommandError::BadArgs(
+        "use the delimiter form: `:s/pattern/replacement/[flags]`".into(),
+    ))
+}
+
+fn parse_global_args_unreachable(_rest: &str, _bang: bool) -> GrammarResult<Args> {
+    Err(CommandError::BadArgs(
+        "use the delimiter form: `:g/pattern/body` (or `:v/...` for inverted)".into(),
+    ))
 }
 
 // ---- apply closures ----
@@ -226,6 +324,71 @@ fn apply_edit(ctx: &ExCommandContext) -> GrammarResult<Effect> {
     Ok(Effect::OpenBuffer {
         path,
         force: ctx.bang,
+    })
+}
+
+fn apply_substitute(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    let list = ctx
+        .args
+        .as_list()
+        .ok_or_else(|| CommandError::BadArgs("expected Args::List for :substitute".into()))?;
+    if list.len() != 3 {
+        return Err(CommandError::BadArgs(
+            "expected 3 args: pattern, replacement, flags".into(),
+        ));
+    }
+    let pattern = list[0]
+        .as_str()
+        .ok_or_else(|| CommandError::BadArgs("arg 0 (pattern) must be string-shaped".into()))?
+        .to_string();
+    let replacement = list[1]
+        .as_str()
+        .ok_or_else(|| CommandError::BadArgs("arg 1 (replacement) must be string-shaped".into()))?
+        .to_string();
+    let flags = list[2]
+        .as_str()
+        .ok_or_else(|| CommandError::BadArgs("arg 2 (flags) must be string-shaped".into()))?;
+    let global = flags.contains('g');
+    // Scope falls out of the invocation's range: `s/...` -> CurrentLine,
+    // `%s/...` -> Whole. The parser front-end set this from the
+    // delimiter prefix.
+    let scope = match ctx.range {
+        Some(Range::Whole) => SubstituteScope::Whole,
+        _ => SubstituteScope::CurrentLine,
+    };
+    Ok(Effect::Substitute {
+        scope,
+        pattern,
+        replacement,
+        global,
+    })
+}
+
+fn apply_global(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    let list = ctx
+        .args
+        .as_list()
+        .ok_or_else(|| CommandError::BadArgs("expected Args::List for :global".into()))?;
+    if list.len() != 3 {
+        return Err(CommandError::BadArgs(
+            "expected 3 args: pattern, inverted, body".into(),
+        ));
+    }
+    let pattern = list[0]
+        .as_str()
+        .ok_or_else(|| CommandError::BadArgs("arg 0 (pattern) must be string-shaped".into()))?
+        .to_string();
+    let inverted = list[1]
+        .as_bool()
+        .ok_or_else(|| CommandError::BadArgs("arg 1 (inverted) must be bool".into()))?;
+    let body = list[2]
+        .as_str()
+        .ok_or_else(|| CommandError::BadArgs("arg 2 (body) must be string-shaped".into()))?
+        .to_string();
+    Ok(Effect::Global {
+        pattern,
+        inverted,
+        body,
     })
 }
 

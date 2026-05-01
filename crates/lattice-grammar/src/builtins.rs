@@ -29,6 +29,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: true,
             apply: Box::new(motion_word_forward),
+            args_schema: vec![],
         },
     );
     let word_backward = registry.register_motion(
@@ -38,6 +39,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: true,
             apply: Box::new(motion_word_backward),
+            args_schema: vec![],
         },
     );
     let word_end = registry.register_motion(
@@ -47,6 +49,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: false,
             apply: Box::new(motion_word_end),
+            args_schema: vec![],
         },
     );
     let first_non_blank = registry.register_motion(
@@ -56,6 +59,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: false,
             apply: Box::new(motion_first_non_blank),
+            args_schema: vec![],
         },
     );
     let find_char_forward = registry.register_motion(
@@ -65,6 +69,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: false,
             apply: Box::new(motion_find_char_forward),
+            args_schema: vec![],
         },
     );
     let find_char_backward = registry.register_motion(
@@ -74,6 +79,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: false,
             apply: Box::new(motion_find_char_backward),
+            args_schema: vec![],
         },
     );
     let till_char_forward = registry.register_motion(
@@ -83,6 +89,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: false,
             apply: Box::new(motion_till_char_forward),
+            args_schema: vec![],
         },
     );
     let till_char_backward = registry.register_motion(
@@ -92,6 +99,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: false,
             apply: Box::new(motion_till_char_backward),
+            args_schema: vec![],
         },
     );
     let big_word_forward = registry.register_motion(
@@ -101,6 +109,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: true,
             apply: Box::new(motion_big_word_forward),
+            args_schema: vec![],
         },
     );
     let big_word_backward = registry.register_motion(
@@ -110,6 +119,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: true,
             apply: Box::new(motion_big_word_backward),
+            args_schema: vec![],
         },
     );
     let big_word_end = registry.register_motion(
@@ -119,6 +129,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: false,
             apply: Box::new(motion_big_word_end),
+            args_schema: vec![],
         },
     );
     let paragraph_forward = registry.register_motion(
@@ -128,6 +139,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: true,
             exclusive: false,
             apply: Box::new(motion_paragraph_forward),
+            args_schema: vec![],
         },
     );
     let paragraph_backward = registry.register_motion(
@@ -137,6 +149,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: true,
             exclusive: false,
             apply: Box::new(motion_paragraph_backward),
+            args_schema: vec![],
         },
     );
     let sentence_forward = registry.register_motion(
@@ -146,6 +159,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: true,
             exclusive: false,
             apply: Box::new(motion_sentence_forward),
+            args_schema: vec![],
         },
     );
     let sentence_backward = registry.register_motion(
@@ -155,6 +169,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: true,
             exclusive: false,
             apply: Box::new(motion_sentence_backward),
+            args_schema: vec![],
         },
     );
     let char_left = registry.register_motion(
@@ -164,6 +179,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: false,
             apply: Box::new(motion_char_left),
+            args_schema: vec![],
         },
     );
     let char_right = registry.register_motion(
@@ -173,6 +189,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: true,
             apply: Box::new(motion_char_right),
+            args_schema: vec![],
         },
     );
     let line_up = registry.register_motion(
@@ -182,6 +199,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: false,
             apply: Box::new(motion_line_up),
+            args_schema: vec![],
         },
     );
     let line_down = registry.register_motion(
@@ -191,6 +209,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: false,
             apply: Box::new(motion_line_down),
+            args_schema: vec![],
         },
     );
     let line_start = registry.register_motion(
@@ -200,6 +219,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: false,
             apply: Box::new(motion_line_start),
+            args_schema: vec![],
         },
     );
     let line_end = registry.register_motion(
@@ -209,6 +229,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             exclusive: false,
             apply: Box::new(motion_line_end),
+            args_schema: vec![],
         },
     );
     let goto_first_line = registry.register_motion(
@@ -218,6 +239,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: true,
             exclusive: false,
             apply: Box::new(motion_goto_first_line),
+            args_schema: vec![],
         },
     );
     let goto_last_line = registry.register_motion(
@@ -227,6 +249,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: true,
             exclusive: false,
             apply: Box::new(motion_goto_last_line),
+            args_schema: vec![],
         },
     );
 
@@ -236,6 +259,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         OperatorSpec {
             repeatable: true,
             apply: Box::new(operator_delete),
+            args_schema: vec![],
         },
     );
     let change = registry.register_operator(
@@ -244,6 +268,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         OperatorSpec {
             repeatable: true,
             apply: Box::new(operator_change),
+            args_schema: vec![],
         },
     );
     let yank = registry.register_operator(
@@ -252,6 +277,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         OperatorSpec {
             repeatable: true,
             apply: Box::new(operator_yank),
+            args_schema: vec![],
         },
     );
     let indent_left = registry.register_operator(
@@ -260,6 +286,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         OperatorSpec {
             repeatable: true,
             apply: Box::new(operator_indent_left),
+            args_schema: vec![],
         },
     );
     let indent_right = registry.register_operator(
@@ -268,6 +295,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         OperatorSpec {
             repeatable: true,
             apply: Box::new(operator_indent_right),
+            args_schema: vec![],
         },
     );
     let upper = registry.register_operator(
@@ -276,6 +304,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         OperatorSpec {
             repeatable: true,
             apply: Box::new(operator_upper),
+            args_schema: vec![],
         },
     );
     let lower = registry.register_operator(
@@ -284,6 +313,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         OperatorSpec {
             repeatable: true,
             apply: Box::new(operator_lower),
+            args_schema: vec![],
         },
     );
     let toggle_case = registry.register_operator(
@@ -292,6 +322,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         OperatorSpec {
             repeatable: true,
             apply: Box::new(operator_toggle_case),
+            args_schema: vec![],
         },
     );
 
@@ -300,6 +331,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Inner sentence -- text up to the next .!? that ends a sentence (vim's `is`).",
         TextObjectSpec {
             apply: Box::new(text_object_inner_sentence),
+            args_schema: vec![],
         },
     );
     let around_sentence = registry.register_text_object(
@@ -307,6 +339,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Around sentence -- inner_sentence plus trailing whitespace (vim's `as`).",
         TextObjectSpec {
             apply: Box::new(text_object_around_sentence),
+            args_schema: vec![],
         },
     );
 
@@ -315,6 +348,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Inner paragraph -- the run of non-blank lines containing the cursor (vim's `ip`).",
         TextObjectSpec {
             apply: Box::new(text_object_inner_paragraph),
+            args_schema: vec![],
         },
     );
     let around_paragraph = registry.register_text_object(
@@ -322,6 +356,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Around paragraph -- inner_paragraph plus trailing blank lines (vim's `ap`).",
         TextObjectSpec {
             apply: Box::new(text_object_around_paragraph),
+            args_schema: vec![],
         },
     );
 
@@ -330,6 +365,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Inner word -- alphanum + underscore run containing the cursor (vim's `iw`).",
         TextObjectSpec {
             apply: Box::new(text_object_inner_word),
+            args_schema: vec![],
         },
     );
     let around_word = registry.register_text_object(
@@ -337,6 +373,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Around word -- inner_word plus trailing whitespace (vim's `aw`).",
         TextObjectSpec {
             apply: Box::new(text_object_around_word),
+            args_schema: vec![],
         },
     );
     let inner_quote_double = registry.register_text_object(
@@ -344,6 +381,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Inner double-quoted string -- text between the surrounding `\"` chars (vim's `i\"`).",
         TextObjectSpec {
             apply: Box::new(|ctx| text_object_inner_quote(ctx, '"')),
+            args_schema: vec![],
         },
     );
     let around_quote_double = registry.register_text_object(
@@ -351,6 +389,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Around double-quoted string -- includes the surrounding `\"` chars (vim's `a\"`).",
         TextObjectSpec {
             apply: Box::new(|ctx| text_object_around_quote(ctx, '"')),
+            args_schema: vec![],
         },
     );
     let inner_quote_single = registry.register_text_object(
@@ -358,6 +397,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Inner single-quoted string (vim's `i'`).",
         TextObjectSpec {
             apply: Box::new(|ctx| text_object_inner_quote(ctx, '\'')),
+            args_schema: vec![],
         },
     );
     let around_quote_single = registry.register_text_object(
@@ -365,6 +405,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Around single-quoted string (vim's `a'`).",
         TextObjectSpec {
             apply: Box::new(|ctx| text_object_around_quote(ctx, '\'')),
+            args_schema: vec![],
         },
     );
     let inner_quote_backtick = registry.register_text_object(
@@ -372,6 +413,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Inner backtick-quoted string (vim's ``i` ``).",
         TextObjectSpec {
             apply: Box::new(|ctx| text_object_inner_quote(ctx, '`')),
+            args_schema: vec![],
         },
     );
     let around_quote_backtick = registry.register_text_object(
@@ -379,6 +421,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Around backtick-quoted string (vim's ``a` ``).",
         TextObjectSpec {
             apply: Box::new(|ctx| text_object_around_quote(ctx, '`')),
+            args_schema: vec![],
         },
     );
     let inner_paren = registry.register_text_object(
@@ -386,6 +429,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Inside the innermost enclosing `()` pair (vim's `i(`).",
         TextObjectSpec {
             apply: Box::new(|ctx| text_object_inner_brackets(ctx, '(', ')')),
+            args_schema: vec![],
         },
     );
     let around_paren = registry.register_text_object(
@@ -393,6 +437,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Around the innermost enclosing `()` pair, including the brackets (vim's `a(`).",
         TextObjectSpec {
             apply: Box::new(|ctx| text_object_around_brackets(ctx, '(', ')')),
+            args_schema: vec![],
         },
     );
     let inner_bracket = registry.register_text_object(
@@ -400,6 +445,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Inside the innermost enclosing `[]` pair (vim's `i[`).",
         TextObjectSpec {
             apply: Box::new(|ctx| text_object_inner_brackets(ctx, '[', ']')),
+            args_schema: vec![],
         },
     );
     let around_bracket = registry.register_text_object(
@@ -407,6 +453,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Around the innermost enclosing `[]` pair, including the brackets (vim's `a[`).",
         TextObjectSpec {
             apply: Box::new(|ctx| text_object_around_brackets(ctx, '[', ']')),
+            args_schema: vec![],
         },
     );
     let inner_tag = registry.register_text_object(
@@ -414,6 +461,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Inside the innermost enclosing XML/HTML tag pair (vim's `it`).",
         TextObjectSpec {
             apply: Box::new(text_object_inner_tag),
+            args_schema: vec![],
         },
     );
     let around_tag = registry.register_text_object(
@@ -421,6 +469,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Around the innermost enclosing XML/HTML tag pair, including the tags (vim's `at`).",
         TextObjectSpec {
             apply: Box::new(text_object_around_tag),
+            args_schema: vec![],
         },
     );
 
@@ -429,6 +478,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Inside the innermost enclosing `{}` pair (vim's `i{`).",
         TextObjectSpec {
             apply: Box::new(|ctx| text_object_inner_brackets(ctx, '{', '}')),
+            args_schema: vec![],
         },
     );
     let around_brace = registry.register_text_object(
@@ -436,6 +486,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Around the innermost enclosing `{}` pair, including the brackets (vim's `a{`).",
         TextObjectSpec {
             apply: Box::new(|ctx| text_object_around_brackets(ctx, '{', '}')),
+            args_schema: vec![],
         },
     );
 

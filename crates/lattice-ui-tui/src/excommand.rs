@@ -1,61 +1,27 @@
 //! Phase 2->3 ex-command parser.
 //!
-//! Parses `:` lines into one of two shapes (DESIGN.md §5.2.1):
+//! Every `:`-line input becomes a [`CommandInvocation`] dispatched
+//! through `lattice_grammar::execute()` (DESIGN.md §5.2.1). Two parse
+//! shapes feed the same dispatcher:
 //!
-//! - [`Parsed::Invocation`]: a unified [`CommandInvocation`] that flows
-//!   through `lattice_grammar::execute()` like every other vim chord.
-//!   Used for every ex-command registered as an `ExCommandSpec` in the
-//!   `CommandRegistry` (`:w`, `:q`, `:wq`, `:noh`, `:marks`, `:reg`,
-//!   `:d`, `:set`, `:e`, ...).
-//! - [`Parsed::Legacy`]: the v1 typed enum, retained only for
-//!   `:s/.../.../` and `:g/.../...` (and `:v/.../...`) until those land
-//!   on a structured args encoding. The host runs them through the
-//!   pre-unification path (`App::execute_ex`).
-//!
-//! The split is the migration knob: as commands move into the registry
-//! their `Parsed::Legacy` variants disappear. The legacy path is *only*
-//! for delimiter-syntax commands today; every keyword command goes
-//! through the registry.
+//! - **Keyword form** (`:w foo.txt`, `:q!`, `:set number`): split off
+//!   the command word + optional bang, look up by alias in the
+//!   registry, call the spec's `parse_args(rest, bang)` to get typed
+//!   `Args`, build a `CommandInvocation`.
+//! - **Delimiter form** (`:s/.../.../`, `:%s/.../.../`, `:g/.../.../`,
+//!   `:v/.../.../`): the delimiter syntax doesn't fit the keyword
+//!   parse, so the front-end parses the body itself and produces an
+//!   `Args::List([pattern, replacement, flags])` for `:substitute` or
+//!   `Args::List([pattern, inverted, body])` for `:global` (DESIGN.md
+//!   §B.1, §B.2). The same dispatcher then resolves the registered
+//!   command id and runs the matching apply closure.
 
 use std::collections::HashMap;
 
 use thiserror::Error;
 
 use lattice_grammar::registry::CommandRegistry;
-use lattice_grammar::CommandInvocation;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Parsed {
-    Invocation(CommandInvocation),
-    Legacy(ExCommand),
-}
-
-/// Legacy enum retained only for `:s/.../.../`, `:%s/.../.../`, and
-/// `:g/.../.../`/`:v/.../.../` -- the delimiter-syntax commands that
-/// haven't yet been moved to structured args in the registry. Every
-/// other ex-command is a registered `ExCommandSpec` and never produces
-/// this enum.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExCommand {
-    Substitute {
-        scope: SubstituteScope,
-        pattern: String,
-        replacement: String,
-        global: bool,
-    },
-    /// `:g/pat/cmd` (and `:v/pat/cmd` with `inverted = true`).
-    Global {
-        pattern: String,
-        inverted: bool,
-        body: String,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubstituteScope {
-    CurrentLine,
-    Whole,
-}
+use lattice_grammar::{ArgValue, Args, CommandInvocation, Range};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ExCommandError {
@@ -73,26 +39,24 @@ pub enum ExCommandError {
     BangNotAllowed(String),
 }
 
-/// Parse a `:` line into either a [`CommandInvocation`] (registry path)
-/// or a legacy [`ExCommand`] (delimiter-syntax path). The caller picks
-/// the dispatcher based on the variant.
-pub fn parse(line: &str, registry: &CommandRegistry) -> Result<Parsed, ExCommandError> {
+/// Parse a `:` line into a [`CommandInvocation`] dispatchable through
+/// the unified `grammar::execute()`.
+pub fn parse(line: &str, registry: &CommandRegistry) -> Result<CommandInvocation, ExCommandError> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return Err(ExCommandError::Empty);
     }
 
-    // Delimiter-syntax commands (`:s/...`, `:%s/...`, `:g/...`,
-    // `:v/...`) -- these don't fit the keyword-then-args shape, so they
-    // bypass the registry path until structured args land.
-    if let Some(sub) = parse_substitute(trimmed)? {
-        return Ok(Parsed::Legacy(sub));
+    // Delimiter-syntax routes through the registry too -- the front-end
+    // parses the body into Args::List.
+    if let Some(inv) = try_parse_substitute(trimmed, registry)? {
+        return Ok(inv);
     }
-    if let Some(g) = parse_global(trimmed)? {
-        return Ok(Parsed::Legacy(g));
+    if let Some(inv) = try_parse_global(trimmed, registry)? {
+        return Ok(inv);
     }
 
-    parse_invocation(trimmed, registry).map(Parsed::Invocation)
+    parse_invocation(trimmed, registry)
 }
 
 /// Parse the keyword form (`:cmd[!] [args]`) into a registry-bound
@@ -210,8 +174,13 @@ pub fn aliases() -> HashMap<&'static str, &'static str> {
     m
 }
 
-/// Parse vim's :g and :v: `g/pattern/body` and `v/pattern/body`.
-fn parse_global(input: &str) -> Result<Option<ExCommand>, ExCommandError> {
+/// `:g/pattern/body` and `:v/pattern/body`. Produces a registered-
+/// invocation pointing at `ex:global` with `Args::List([pattern,
+/// inverted, body])`.
+fn try_parse_global(
+    input: &str,
+    registry: &CommandRegistry,
+) -> Result<Option<CommandInvocation>, ExCommandError> {
     let (inverted, rest) = if let Some(rest) = input.strip_prefix("g/") {
         (false, rest)
     } else if let Some(rest) = input.strip_prefix("v/") {
@@ -245,23 +214,30 @@ fn parse_global(input: &str) -> Result<Option<ExCommand>, ExCommandError> {
         return Err(ExCommandError::BadSubstitute("empty pattern"));
     }
     let body: String = chars.collect();
-    Ok(Some(ExCommand::Global {
-        pattern,
-        inverted,
-        body,
-    }))
+    let id = registry
+        .id_by_name("ex:global")
+        .ok_or_else(|| ExCommandError::Unknown("ex:global".into()))?;
+    Ok(Some(
+        CommandInvocation::of(id).with_args(Args::List(vec![
+            ArgValue::Pattern(pattern),
+            ArgValue::Bool(inverted),
+            ArgValue::Raw(body),
+        ])),
+    ))
 }
 
-/// Parse vim's substitute syntax: `[%]s/pattern/replacement/[flags]`.
-/// Returns `Ok(Some)` on a successful s-form match, `Ok(None)` if the
-/// input doesn't look like substitute at all, `Err(BadSubstitute)` on a
-/// malformed s-form.
-fn parse_substitute(input: &str) -> Result<Option<ExCommand>, ExCommandError> {
-    // Detect `%s/.../.../...` and `s/.../.../...`.
-    let (scope, body) = if let Some(rest) = input.strip_prefix("%s/") {
-        (SubstituteScope::Whole, rest)
+/// Vim's `[%]s/pattern/replacement/[flags]`. Produces a
+/// registered-invocation pointing at `ex:substitute` with the scope
+/// expressed via `Range::CurrentLine` / `Range::Whole` and
+/// `Args::List([pattern, replacement, flags])`.
+fn try_parse_substitute(
+    input: &str,
+    registry: &CommandRegistry,
+) -> Result<Option<CommandInvocation>, ExCommandError> {
+    let (range, body) = if let Some(rest) = input.strip_prefix("%s/") {
+        (Range::Whole, rest)
     } else if let Some(rest) = input.strip_prefix("s/") {
-        (SubstituteScope::CurrentLine, rest)
+        (Range::CurrentLine, rest)
     } else {
         return Ok(None);
     };
@@ -305,22 +281,25 @@ fn parse_substitute(input: &str) -> Result<Option<ExCommand>, ExCommandError> {
     if pattern.is_empty() {
         return Err(ExCommandError::BadSubstitute("empty pattern"));
     }
-    // 'g' is the only flag honored in v1; 'i', 'c', etc. are accepted
-    // but ignored.
-    let global = flags.contains('g');
-    Ok(Some(ExCommand::Substitute {
-        scope,
-        pattern,
-        replacement,
-        global,
-    }))
+    let id = registry
+        .id_by_name("ex:substitute")
+        .ok_or_else(|| ExCommandError::Unknown("ex:substitute".into()))?;
+    Ok(Some(
+        CommandInvocation::of(id)
+            .with_range(range)
+            .with_args(Args::List(vec![
+                ArgValue::Pattern(pattern),
+                ArgValue::String(replacement),
+                ArgValue::String(flags),
+            ])),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-    use lattice_grammar::{Args, CommandKind};
+    use lattice_grammar::CommandKind;
 
     fn fixture() -> CommandRegistry {
         let mut registry = CommandRegistry::new();
@@ -333,64 +312,49 @@ mod tests {
         inv: &'a CommandInvocation,
         registry: &'a CommandRegistry,
     ) -> &'a str {
-        registry.lookup(inv.command).map(|s| s.name.as_str()).unwrap_or("?")
+        registry
+            .lookup(inv.command)
+            .map(|s| s.name.as_str())
+            .unwrap_or("?")
     }
 
     #[test]
     fn empty_input_is_empty_error() {
         let r = fixture();
-        assert_eq!(parse("", &r), Err(ExCommandError::Empty));
-        assert_eq!(parse("   ", &r), Err(ExCommandError::Empty));
+        assert_eq!(parse("", &r).unwrap_err(), ExCommandError::Empty);
+        assert_eq!(parse("   ", &r).unwrap_err(), ExCommandError::Empty);
     }
 
     #[test]
     fn write_short_form_routes_to_registry() {
         let r = fixture();
-        let p = parse("w", &r).unwrap();
-        match p {
-            Parsed::Invocation(inv) => {
-                assert_eq!(invocation_name(&inv, &r), "ex:write");
-                assert!(!inv.bang);
-                assert_eq!(inv.args, Args::None);
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        let inv = parse("w", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:write");
+        assert!(!inv.bang);
+        assert_eq!(inv.args, Args::None);
     }
 
     #[test]
     fn write_with_path_carries_string_arg() {
         let r = fixture();
-        let p = parse("w foo.txt", &r).unwrap();
-        match p {
-            Parsed::Invocation(inv) => {
-                assert_eq!(invocation_name(&inv, &r), "ex:write");
-                assert_eq!(inv.args, Args::String("foo.txt".into()));
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        let inv = parse("w foo.txt", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:write");
+        assert_eq!(inv.args, Args::String("foo.txt".into()));
     }
 
     #[test]
     fn quit_bang_sets_bang_field() {
         let r = fixture();
-        let p = parse("q!", &r).unwrap();
-        match p {
-            Parsed::Invocation(inv) => {
-                assert_eq!(invocation_name(&inv, &r), "ex:quit");
-                assert!(inv.bang);
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        let inv = parse("q!", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:quit");
+        assert!(inv.bang);
     }
 
     #[test]
     fn quit_long_form_alias_resolves() {
         let r = fixture();
-        let p = parse("quit", &r).unwrap();
-        match p {
-            Parsed::Invocation(inv) => assert_eq!(invocation_name(&inv, &r), "ex:quit"),
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        let inv = parse("quit", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:quit");
     }
 
     #[test]
@@ -398,34 +362,24 @@ mod tests {
         let r = fixture();
         let wq = parse("wq", &r).unwrap();
         let x = parse("x", &r).unwrap();
-        match (wq, x) {
-            (Parsed::Invocation(a), Parsed::Invocation(b)) => {
-                assert_eq!(a.command, b.command);
-                assert_eq!(invocation_name(&a, &r), "ex:write-quit");
-            }
-            other => panic!("expected matching invocations, got {other:?}"),
-        }
+        assert_eq!(wq.command, x.command);
+        assert_eq!(invocation_name(&wq, &r), "ex:write-quit");
     }
 
     #[test]
     fn writequit_bang_propagates() {
         let r = fixture();
-        let p = parse("wq!", &r).unwrap();
-        match p {
-            Parsed::Invocation(inv) => {
-                assert!(inv.bang);
-                assert_eq!(invocation_name(&inv, &r), "ex:write-quit");
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        let inv = parse("wq!", &r).unwrap();
+        assert!(inv.bang);
+        assert_eq!(invocation_name(&inv, &r), "ex:write-quit");
     }
 
     #[test]
     fn unknown_command_reports_name() {
         let r = fixture();
         assert_eq!(
-            parse("frobnicate", &r),
-            Err(ExCommandError::Unknown("frobnicate".into()))
+            parse("frobnicate", &r).unwrap_err(),
+            ExCommandError::Unknown("frobnicate".into())
         );
     }
 
@@ -434,8 +388,8 @@ mod tests {
         let r = fixture();
         // `:set!` is not valid -- accepts_bang = false.
         assert_eq!(
-            parse("set!", &r),
-            Err(ExCommandError::BangNotAllowed("set!".into()))
+            parse("set!", &r).unwrap_err(),
+            ExCommandError::BangNotAllowed("set!".into())
         );
     }
 
@@ -455,51 +409,37 @@ mod tests {
         assert!(matches!(err, ExCommandError::BadArgs(_)));
     }
 
+    // ---- Substitute / global: registry-routed delimiter form ----
+
     #[test]
-    fn substitute_remains_legacy_path() {
+    fn substitute_current_line_produces_invocation_with_args_list() {
         let r = fixture();
-        match parse("s/foo/bar/", &r).unwrap() {
-            Parsed::Legacy(ExCommand::Substitute {
-                scope,
-                pattern,
-                replacement,
-                global,
-            }) => {
-                assert!(matches!(scope, SubstituteScope::CurrentLine));
-                assert_eq!(pattern, "foo");
-                assert_eq!(replacement, "bar");
-                assert!(!global);
-            }
-            other => panic!("expected legacy Substitute, got {other:?}"),
-        }
+        let inv = parse("s/foo/bar/", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:substitute");
+        assert_eq!(inv.range, Some(Range::CurrentLine));
+        let list = inv.args.as_list().expect("expected Args::List");
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0], ArgValue::Pattern("foo".into()));
+        assert_eq!(list[1], ArgValue::String("bar".into()));
+        assert_eq!(list[2], ArgValue::String(String::new()));
     }
 
     #[test]
-    fn substitute_whole_buffer_remains_legacy_path() {
+    fn substitute_whole_buffer_sets_range_whole() {
         let r = fixture();
-        match parse("%s/foo/bar/g", &r).unwrap() {
-            Parsed::Legacy(ExCommand::Substitute {
-                scope,
-                pattern,
-                replacement,
-                global,
-            }) => {
-                assert!(matches!(scope, SubstituteScope::Whole));
-                assert_eq!(pattern, "foo");
-                assert_eq!(replacement, "bar");
-                assert!(global);
-            }
-            other => panic!("expected legacy Substitute, got {other:?}"),
-        }
+        let inv = parse("%s/foo/bar/g", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:substitute");
+        assert_eq!(inv.range, Some(Range::Whole));
+        let list = inv.args.as_list().unwrap();
+        assert_eq!(list[2], ArgValue::String("g".into()));
     }
 
     #[test]
     fn substitute_with_escaped_slash_in_pattern() {
         let r = fixture();
-        match parse("s/a\\/b/c/", &r).unwrap() {
-            Parsed::Legacy(ExCommand::Substitute { pattern, .. }) => assert_eq!(pattern, "a/b"),
-            other => panic!("expected legacy Substitute, got {other:?}"),
-        }
+        let inv = parse("s/a\\/b/c/", &r).unwrap();
+        let list = inv.args.as_list().unwrap();
+        assert_eq!(list[0], ArgValue::Pattern("a/b".into()));
     }
 
     #[test]
@@ -512,50 +452,54 @@ mod tests {
     }
 
     #[test]
-    fn substitute_unknown_flag_is_ignored() {
+    fn substitute_flags_string_carries_through() {
         let r = fixture();
-        match parse("s/foo/bar/gi", &r).unwrap() {
-            Parsed::Legacy(ExCommand::Substitute { global, .. }) => assert!(global),
-            other => panic!("expected legacy Substitute, got {other:?}"),
-        }
+        let inv = parse("s/foo/bar/gi", &r).unwrap();
+        let list = inv.args.as_list().unwrap();
+        // Apply closure interprets the flag string; the parser just
+        // hands it through verbatim.
+        assert_eq!(list[2], ArgValue::String("gi".into()));
     }
 
     #[test]
     fn global_basic_match_with_delete_body() {
         let r = fixture();
-        match parse("g/foo/d", &r).unwrap() {
-            Parsed::Legacy(ExCommand::Global {
-                pattern,
-                inverted,
-                body,
-            }) => {
-                assert_eq!(pattern, "foo");
-                assert!(!inverted);
-                assert_eq!(body, "d");
-            }
-            other => panic!("expected legacy Global, got {other:?}"),
-        }
+        let inv = parse("g/foo/d", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:global");
+        let list = inv.args.as_list().unwrap();
+        assert_eq!(list[0], ArgValue::Pattern("foo".into()));
+        assert_eq!(list[1], ArgValue::Bool(false));
+        assert_eq!(list[2], ArgValue::Raw("d".into()));
     }
 
     #[test]
     fn vglobal_inverts_match() {
         let r = fixture();
-        match parse("v/foo/d", &r).unwrap() {
-            Parsed::Legacy(ExCommand::Global { inverted, .. }) => assert!(inverted),
-            other => panic!("expected legacy Global, got {other:?}"),
-        }
+        let inv = parse("v/foo/d", &r).unwrap();
+        let list = inv.args.as_list().unwrap();
+        assert_eq!(list[1], ArgValue::Bool(true));
+    }
+
+    #[test]
+    fn global_body_can_be_substitute() {
+        // The body of `:g` is a raw string parsed per match by the
+        // host; nesting another delimiter command is fine.
+        let r = fixture();
+        let inv = parse("g/foo/s/a/b/g", &r).unwrap();
+        let list = inv.args.as_list().unwrap();
+        assert_eq!(list[2], ArgValue::Raw("s/a/b/g".into()));
     }
 
     #[test]
     fn nohlsearch_aliases_route_to_one_command() {
         let r = fixture();
         for s in ["noh", "nohl", "nohlsearch"] {
-            match parse(s, &r).unwrap() {
-                Parsed::Invocation(inv) => {
-                    assert_eq!(invocation_name(&inv, &r), "ex:nohlsearch");
-                }
-                other => panic!("expected Invocation for {s}, got {other:?}"),
-            }
+            let inv = parse(s, &r).unwrap();
+            assert_eq!(
+                invocation_name(&inv, &r),
+                "ex:nohlsearch",
+                "alias `{s}`"
+            );
         }
     }
 
@@ -563,116 +507,76 @@ mod tests {
     fn registers_aliases_route_to_one_command() {
         let r = fixture();
         for s in ["reg", "registers"] {
-            match parse(s, &r).unwrap() {
-                Parsed::Invocation(inv) => {
-                    assert_eq!(invocation_name(&inv, &r), "ex:registers");
-                }
-                other => panic!("expected Invocation for {s}, got {other:?}"),
-            }
+            let inv = parse(s, &r).unwrap();
+            assert_eq!(invocation_name(&inv, &r), "ex:registers");
         }
     }
 
     #[test]
     fn edit_with_path() {
         let r = fixture();
-        match parse("e foo.txt", &r).unwrap() {
-            Parsed::Invocation(inv) => {
-                assert_eq!(invocation_name(&inv, &r), "ex:edit");
-                assert_eq!(inv.args, Args::String("foo.txt".into()));
-                assert!(!inv.bang);
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        let inv = parse("e foo.txt", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:edit");
+        assert_eq!(inv.args, Args::String("foo.txt".into()));
+        assert!(!inv.bang);
     }
 
     #[test]
     fn edit_force_with_bang() {
         let r = fixture();
-        match parse("e! /tmp/x", &r).unwrap() {
-            Parsed::Invocation(inv) => {
-                assert_eq!(invocation_name(&inv, &r), "ex:edit");
-                assert!(inv.bang);
-                assert_eq!(inv.args, Args::String("/tmp/x".into()));
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        let inv = parse("e! /tmp/x", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:edit");
+        assert!(inv.bang);
+        assert_eq!(inv.args, Args::String("/tmp/x".into()));
     }
 
     #[test]
     fn edit_without_path_is_reload() {
         let r = fixture();
-        match parse("e", &r).unwrap() {
-            Parsed::Invocation(inv) => {
-                assert_eq!(invocation_name(&inv, &r), "ex:edit");
-                assert_eq!(inv.args, Args::None);
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        let inv = parse("e", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:edit");
+        assert_eq!(inv.args, Args::None);
     }
 
     #[test]
     fn set_with_option_parses() {
         let r = fixture();
-        match parse("set number", &r).unwrap() {
-            Parsed::Invocation(inv) => {
-                assert_eq!(invocation_name(&inv, &r), "ex:set");
-                assert_eq!(inv.args, Args::String("number".into()));
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        let inv = parse("set number", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:set");
+        assert_eq!(inv.args, Args::String("number".into()));
     }
 
     #[test]
     fn set_short_alias_with_value() {
         let r = fixture();
-        match parse("set nu", &r).unwrap() {
-            Parsed::Invocation(inv) => {
-                assert_eq!(inv.args, Args::String("nu".into()));
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        let inv = parse("set nu", &r).unwrap();
+        assert_eq!(inv.args, Args::String("nu".into()));
     }
 
     #[test]
     fn marks_routes_to_registry() {
         let r = fixture();
-        match parse("marks", &r).unwrap() {
-            Parsed::Invocation(inv) => {
-                assert_eq!(invocation_name(&inv, &r), "ex:marks");
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        let inv = parse("marks", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:marks");
     }
 
     #[test]
     fn delete_short_form_routes_to_registry() {
         let r = fixture();
         for s in ["d", "delete"] {
-            match parse(s, &r).unwrap() {
-                Parsed::Invocation(inv) => {
-                    assert_eq!(invocation_name(&inv, &r), "ex:delete");
-                }
-                other => panic!("expected Invocation for {s}, got {other:?}"),
-            }
+            let inv = parse(s, &r).unwrap();
+            assert_eq!(invocation_name(&inv, &r), "ex:delete");
         }
     }
 
     #[test]
     fn whitespace_around_command_is_tolerated() {
         let r = fixture();
-        match parse("  w  ", &r).unwrap() {
-            Parsed::Invocation(inv) => {
-                assert_eq!(invocation_name(&inv, &r), "ex:write");
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
-        match parse("\t w foo.rs \t", &r).unwrap() {
-            Parsed::Invocation(inv) => {
-                assert_eq!(invocation_name(&inv, &r), "ex:write");
-                assert_eq!(inv.args, Args::String("foo.rs".into()));
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        let inv = parse("  w  ", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:write");
+        let inv = parse("\t w foo.rs \t", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:write");
+        assert_eq!(inv.args, Args::String("foo.rs".into()));
     }
 
     #[test]
@@ -697,5 +601,26 @@ mod tests {
                 "alias `{short}` -> `{canonical}` not registered"
             );
         }
+    }
+
+    #[test]
+    fn substitute_and_global_register_with_args_schema() {
+        // §B.1: ex:substitute and ex:global advertise their structured
+        // shape via args_schema. A future :describe-command consumes
+        // this; in v1 it's used by tests as a smoke check.
+        let r = fixture();
+        let sub_id = r.id_by_name("ex:substitute").unwrap();
+        let sub = r.lookup(sub_id).unwrap();
+        assert_eq!(sub.args_schema.len(), 3);
+        assert_eq!(sub.args_schema[0].name, "pattern");
+        assert_eq!(sub.args_schema[1].name, "replacement");
+        assert_eq!(sub.args_schema[2].name, "flags");
+
+        let global_id = r.id_by_name("ex:global").unwrap();
+        let global = r.lookup(global_id).unwrap();
+        assert_eq!(global.args_schema.len(), 3);
+        assert_eq!(global.args_schema[0].name, "pattern");
+        assert_eq!(global.args_schema[1].name, "inverted");
+        assert_eq!(global.args_schema[2].name, "body");
     }
 }

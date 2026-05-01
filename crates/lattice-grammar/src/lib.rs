@@ -34,7 +34,7 @@ pub mod register;
 pub mod registry;
 pub mod target;
 
-pub use crate::args::Args;
+pub use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count};
 pub use crate::dispatcher::execute;
 pub use crate::effect::{EchoLevel, Effect, SubstituteScope, YankKind};

@@ -17,7 +17,7 @@ use lattice_core::Document;
 use lattice_protocol::ids::CommandId;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
-use crate::args::Args;
+use crate::args::{Args, ArgSpec};
 use crate::command::{CommandKind, CommandSpec, Count};
 use crate::error::{CommandError, GrammarResult};
 use crate::register::Register;
@@ -73,6 +73,9 @@ pub struct MotionSpec {
     pub jump: bool,
     pub exclusive: bool,
     pub apply: MotionFn,
+    /// Per-positional-argument metadata (DESIGN.md §B.1). Empty for
+    /// motions without args (the common case).
+    pub args_schema: Vec<ArgSpec>,
 }
 
 impl std::fmt::Debug for MotionSpec {
@@ -109,6 +112,9 @@ type OperatorFn =
 pub struct OperatorSpec {
     pub repeatable: bool,
     pub apply: OperatorFn,
+    /// Per-positional-argument metadata (DESIGN.md §B.1). Empty for
+    /// operators without args (the common case).
+    pub args_schema: Vec<ArgSpec>,
 }
 
 impl std::fmt::Debug for OperatorSpec {
@@ -131,6 +137,9 @@ type TextObjectFn = Box<dyn Fn(&TextObjectContext) -> GrammarResult<ProtoRange> 
 
 pub struct TextObjectSpec {
     pub apply: TextObjectFn,
+    /// Per-positional-argument metadata (DESIGN.md §B.1). Empty for
+    /// text objects without args (the common case).
+    pub args_schema: Vec<ArgSpec>,
 }
 
 impl std::fmt::Debug for TextObjectSpec {
@@ -170,6 +179,11 @@ pub struct ExCommandSpec {
     pub accepts_range: bool,
     pub parse_args: ExParseFn,
     pub apply: ExApplyFn,
+    /// Per-positional-argument metadata (DESIGN.md §B.1). Drives palette
+    /// forms, missing-arg prompts, completion, validation, and
+    /// `:describe-command` output. Empty for commands taking no
+    /// structured args (`:q`, `:noh`).
+    pub args_schema: Vec<ArgSpec>,
 }
 
 impl std::fmt::Debug for ExCommandSpec {
@@ -230,12 +244,14 @@ impl CommandRegistry {
 
     pub fn register_motion(&mut self, name: &str, doc: &str, spec: MotionSpec) -> MotionId {
         let id = next_command_id();
+        let args_schema = spec.args_schema.clone();
         self.insert(CommandEntry {
             spec: CommandSpec {
                 id,
                 name: name.to_string(),
                 kind: CommandKind::Motion,
                 doc: doc.to_string(),
+                args_schema,
             },
             registration: CommandRegistration::Motion(spec),
         });
@@ -244,12 +260,14 @@ impl CommandRegistry {
 
     pub fn register_operator(&mut self, name: &str, doc: &str, spec: OperatorSpec) -> OperatorId {
         let id = next_command_id();
+        let args_schema = spec.args_schema.clone();
         self.insert(CommandEntry {
             spec: CommandSpec {
                 id,
                 name: name.to_string(),
                 kind: CommandKind::Operator,
                 doc: doc.to_string(),
+                args_schema,
             },
             registration: CommandRegistration::Operator(spec),
         });
@@ -263,12 +281,14 @@ impl CommandRegistry {
         spec: TextObjectSpec,
     ) -> TextObjectId {
         let id = next_command_id();
+        let args_schema = spec.args_schema.clone();
         self.insert(CommandEntry {
             spec: CommandSpec {
                 id,
                 name: name.to_string(),
                 kind: CommandKind::TextObject,
                 doc: doc.to_string(),
+                args_schema,
             },
             registration: CommandRegistration::TextObject(spec),
         });
@@ -282,12 +302,14 @@ impl CommandRegistry {
         spec: ExCommandSpec,
     ) -> ExCommandId {
         let id = next_command_id();
+        let args_schema = spec.args_schema.clone();
         self.insert(CommandEntry {
             spec: CommandSpec {
                 id,
                 name: name.to_string(),
                 kind: CommandKind::ExCommand,
                 doc: doc.to_string(),
+                args_schema,
             },
             registration: CommandRegistration::ExCommand(spec),
         });
@@ -404,6 +426,7 @@ mod tests {
                     linewise: false,
                 })
             }),
+            args_schema: vec![],
         }
     }
 

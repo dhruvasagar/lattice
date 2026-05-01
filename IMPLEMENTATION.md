@@ -167,15 +167,15 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 
 ### Ex commands
 
-Unification status (DESIGN.md §5.2.1): each keyword ex-command is now a
+Unification status (DESIGN.md §5.2.1, §B.2): every ex-command is now a
 registered `ExCommandSpec` peer of motions / operators / text objects.
 The `:` parser front-end resolves aliases, looks up by name, calls the
-spec's `parse_args`, and dispatches through the unified
-`grammar::execute()`. Apply closures emit `Effect` variants
-(`SaveBuffer`, `QuitEditor`, `OpenBuffer`, `SetOption`, `Echo`, ...);
-`App::apply_effect` owns the side effects. Two delimiter-syntax cases
-(`:s/.../.../`, `:g/.../...`/`:v/.../...`) still flow through the
-legacy enum path until structured args land in `Args` (msgpack/WIT).
+spec's `parse_args` (or builds an `Args::List` directly for the
+delimiter-syntax forms `:s/.../`, `:%s/.../`, `:g/.../`, `:v/.../`),
+and dispatches through the unified `grammar::execute()`. Apply closures
+emit `Effect` variants (`SaveBuffer`, `QuitEditor`, `OpenBuffer`,
+`SetOption`, `Substitute`, `Global`, `Echo`, ...); `App::apply_effect`
+owns the side effects.
 
 | Command                 | Status | Anchor |
 |-------------------------|--------|--------|
@@ -188,9 +188,9 @@ legacy enum path until structured args land in `Args` (msgpack/WIT).
 | :reg / :registers       | ✅ registry | §5.2.1 |
 | :marks                  | ✅ registry | §5.2.1 |
 | :set option=value       | ✅ registry; ⚠️ option set | §5.12. v1 only honors number/relativenumber toggles; full typed-options post-1.0. |
-| :s/.../.../[g]          | 🟡 legacy enum (literal substring) | §5.2.1 worked example. Migration blocked on structured `Args` encoding. |
-| :g/pattern/cmd          | 🟡 legacy enum | §B.2. Same. |
-| :v/pattern/cmd          | 🟡 legacy enum | §B.2. Same. |
+| :s/.../.../[g]          | ✅ registry (literal substring) | §5.2.1 / §B.2; `Args::List([pattern, replacement, flags])`, scope via Range::CurrentLine/Whole. Regex deferred. |
+| :g/pattern/cmd          | ✅ registry | §B.2; `Args::List([pattern, false, body])`. Body re-parsed per match. |
+| :v/pattern/cmd          | ✅ registry | §B.2; `Args::List([pattern, true, body])` -- same command as `:g`, inverted flag set. |
 | :describe-command, etc. | ⛔     | §5.11  |
 | Command-line history (Up/Down)  | ✅     | §B.3 |
 | :history-*              | ⛔     | §B.3 (picker UI; Up/Down already works) |
@@ -250,34 +250,34 @@ Update this section when picking up the in-flight item.
 
 ## Up next (priority order)
 
-1. **Migrate `:s`, `:g`, `:v` into the registry** — the architectural seam
-   is in (every other ex-command is a registered `ExCommandSpec` peer of
-   motions / operators / text objects, dispatched through
-   `grammar::execute()`); these three need a structured-args encoding
-   (`pattern`, `replacement`, flags / `body`, `inverted`) before they can
-   move off the legacy enum path. DESIGN.md §9 calls for msgpack via
-   `Args::Bytes` until WIT lands. Once they migrate, `App::execute_ex`
-   and `crate::excommand::ExCommand` go away.
-2. **Blockwise visual operators** (delete-block, yank-block, change-block) —
+1. **Blockwise visual operators** (delete-block, yank-block, change-block) —
    currently the rectangle is highlighted but operators still cover a single
    contiguous range. Proper per-line dispatch needs the multi-range plumbing
    in `Range::Selection` resolution.
-3. **Computed folds** (syntax-driven, indent-based) — manual folds via
+2. **Computed folds** (syntax-driven, indent-based) — manual folds via
    zf/zo/zc/za/zR/zM/zd are done; computed folds need tree-sitter integration
    and an indent-based fall-back.
-4. **`:set option=value` + typed options** — `:set` is now a registered
+3. **`:set option=value` + typed options** — `:set` is now a registered
    ex-command (`Effect::SetOption { spec }`), but the host still only
    understands the `number` / `relativenumber` toggles; full §5.12 typed
    options are post-1.0.
-5. **`:describe-command` / `:describe-key` / `:apropos`** — introspection
-   needs a key→action registry first (§5.11). Note: every ex-command now
-   carries a `doc` string in its `CommandSpec`, so `:describe-command` is
-   one query away.
-6. **Substitute live preview** — decorations on the target buffer while
+4. **`:describe-command` / `:describe-key` / `:apropos`** — introspection
+   needs a key→action registry first (§5.11). Every command now carries a
+   `doc` string AND `args_schema: Vec<ArgSpec>` (§B.1), so the
+   describe surface is mostly a query + render away.
+5. **Substitute live preview** — decorations on the target buffer while
    the user types `:s/foo/bar/...`. The hlsearch now lights up matches
    when the search minibuffer is open; substitute should do the same.
-7. **Tag text object** (`it`, `at`) — XML/HTML tags.
-8. **Async dispatcher** — replace `execute(...) -> Effect` with `execute
+6. **Tag text object** (`it`, `at`) — XML/HTML tags.
+7. **Promote `:g` body to a parsed CommandInvocation** — currently the
+   body is `ArgValue::Raw(String)` and re-parsed per match. Parsing once
+   would be faster and lets the body's own args propagate cleanly. Small
+   follow-up to the §B.2 migration.
+8. **Interactive arg-prompts via `args_schema`** (§B.1 phase 2) — when a
+   command has a missing required arg, drop the user into the minibuffer
+   with the schema's prompt text + completion source. Needs a
+   minibuffer-popup UI primitive we don't have yet.
+9. **Async dispatcher** — replace `execute(...) -> Effect` with `execute
    -> Pending<Effect>` per §5.2.1.
 
 ---
@@ -302,15 +302,15 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-743 tests across the workspace as of the last commit. Coverage by crate:
+752 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
 | lattice-protocol                 | 30    |
 | lattice-core (incl. integration) | 78    |
-| lattice-grammar                  | 140   |
+| lattice-grammar                  | 147   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 468   |
+| lattice-ui-tui                   | 470   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

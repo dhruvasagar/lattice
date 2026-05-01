@@ -15,8 +15,9 @@
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use crate::command::{CommandInvocation, CommandKind};
-use crate::effect::Effect;
+use crate::effect::{Effect, YankKind};
 use crate::error::{CommandError, GrammarResult};
+use crate::modal::ModalState;
 use crate::range::Range;
 use crate::registry::{
     CommandEntry, CommandRegistry, ExCommandContext, MotionContext, OperatorContext,
@@ -118,6 +119,20 @@ fn execute_operator(
 ) -> GrammarResult<Effect> {
     let operator = require_operator(entry)?;
 
+    // Blockwise visual is dispatched per-row: each row's column slice
+    // gets its own ProtoRange, the operator's apply runs once per row,
+    // and the returned per-row Effects are merged into a single
+    // Effect::Many with edits concatenated and yanks collapsed into a
+    // single Blockwise yank carrying the row contents joined by '\n'.
+    if let Some(Range::Selection) = invocation.range
+        && matches!(
+            document.selections().primary().visual,
+            Some(lattice_protocol::selection::VisualMode::Blockwise)
+        )
+    {
+        return execute_operator_blockwise(operator, document, invocation);
+    }
+
     let motion_count = invocation.count_or_default();
     let target_range: ProtoRange = match (&invocation.range, &invocation.target) {
         (Some(grammar_range), _) => resolve_grammar_range(document, grammar_range, cursor)?,
@@ -146,6 +161,163 @@ fn execute_operator(
         args: invocation.args.clone(),
     };
     (operator.apply)(&mut ctx)
+}
+
+/// Per-row dispatch for blockwise visual operators. Vim's `Ctrl-V`
+/// selection is a rectangle; `d` / `y` / `c` operate on each row's
+/// column slice independently, then the results are committed
+/// together. We:
+///
+/// 1. Compute each row's [`ProtoRange`] from the visual selection
+///    (clamped to that row's length -- short rows get an empty range).
+/// 2. Snapshot each row's text top-down (for the merged Yank's content).
+/// 3. Run `operator.apply` per row, **bottom-up** so deletions on a
+///    row don't shift positions on rows above. For non-mutating
+///    operators (yank), order doesn't matter; bottom-up is safe.
+/// 4. Flatten the per-row Effects, merge yanks into one Blockwise
+///    yank, concatenate Edits, deduplicate `EnterMode`.
+fn execute_operator_blockwise(
+    operator: &crate::registry::OperatorSpec,
+    document: &mut Document,
+    invocation: &CommandInvocation,
+) -> GrammarResult<Effect> {
+    let sel = document.selections().primary();
+    let (top_line, bottom_line) = (sel.anchor.line.min(sel.head.line), sel.anchor.line.max(sel.head.line));
+    let (left_col, right_col) = (
+        sel.anchor.byte.min(sel.head.byte),
+        sel.anchor.byte.max(sel.head.byte),
+    );
+
+    // Per-row ranges, top-down. Each range covers `[left_col,
+    // right_col + 1)` clamped to the row's actual length. The +1 is
+    // vim's inclusive-end convention for visual selections.
+    let mut row_ranges: Vec<ProtoRange> = Vec::with_capacity((bottom_line - top_line + 1) as usize);
+    for line in top_line..=bottom_line {
+        let line_len = line_byte_len(document.buffer(), line);
+        let start = left_col.min(line_len);
+        let end = (right_col + 1).min(line_len);
+        row_ranges.push(ProtoRange::new(
+            Position::new(line, start),
+            Position::new(line, end),
+        ));
+    }
+
+    // Snapshot row contents top-down before any mutation. Each row is
+    // either the column slice (if non-empty) or an empty string; the
+    // joined-by-newlines result is the Blockwise yank's content.
+    let mut row_contents: Vec<String> = Vec::with_capacity(row_ranges.len());
+    for r in &row_ranges {
+        if r.is_empty() {
+            row_contents.push(String::new());
+        } else {
+            row_contents.push(document.buffer().slice(*r)?);
+        }
+    }
+
+    // Run apply per row, bottom-up. Collect every produced Effect.
+    let register = invocation.register_or_default();
+    let count = invocation.count_or_default();
+    let args = invocation.args.clone();
+    let mut per_row_effects: Vec<Effect> = Vec::with_capacity(row_ranges.len());
+    for r in row_ranges.iter().rev() {
+        let mut ctx = OperatorContext {
+            document,
+            range: *r,
+            linewise: false,
+            register,
+            count,
+            args: args.clone(),
+        };
+        let eff = (operator.apply)(&mut ctx)?;
+        per_row_effects.push(eff);
+    }
+    // Restore top-down order so the merged effect ordering tracks the
+    // original row order (matters for some downstream consumers, even
+    // though Edits / Yanks themselves don't carry an order beyond
+    // their internal vec).
+    per_row_effects.reverse();
+
+    Ok(merge_blockwise_effects(
+        per_row_effects,
+        row_contents,
+        register,
+    ))
+}
+
+/// Flatten the per-row Effects and merge:
+/// - all `Effect::Edits` -> one combined `Effect::Edits`
+/// - per-row `Effect::Yank` -> one `Effect::Yank` per distinct
+///   register, with `kind = Blockwise` and content = `row_contents`
+///   joined by `\n`. Per-row yank content is discarded; the joined
+///   row snapshot is the source of truth.
+/// - `Effect::EnterMode` deduplicated (keep one if any).
+fn merge_blockwise_effects(
+    per_row_effects: Vec<Effect>,
+    row_contents: Vec<String>,
+    primary_register: crate::register::Register,
+) -> Effect {
+    let mut flat: Vec<Effect> = Vec::new();
+    for e in per_row_effects {
+        flatten_effect(e, &mut flat);
+    }
+
+    let mut combined_edits: Vec<lattice_core::buffer::AppliedEdit> = Vec::new();
+    let mut yank_registers: Vec<crate::register::Register> = Vec::new();
+    let mut enter_mode: Option<ModalState> = None;
+    for e in flat {
+        match e {
+            Effect::Edits(edits) => combined_edits.extend(edits),
+            Effect::Yank { register, .. } => {
+                if !yank_registers.contains(&register) {
+                    yank_registers.push(register);
+                }
+            }
+            Effect::EnterMode(m) => enter_mode = Some(m),
+            // Other effects shouldn't surface from operator dispatch;
+            // drop them defensively.
+            _ => {}
+        }
+    }
+
+    let joined = row_contents.join("\n");
+    let mut out: Vec<Effect> = Vec::new();
+    if !combined_edits.is_empty() {
+        out.push(Effect::Edits(combined_edits));
+    }
+    // Vim's blockwise paste reads the unnamed register; the operator
+    // closures emitted yanks to `primary_register` and possibly to a
+    // numbered register (`"0` for yank). Preserve that fan-out, but
+    // collapse content to one Blockwise blob.
+    if !yank_registers.is_empty() {
+        for reg in yank_registers {
+            out.push(Effect::Yank {
+                register: reg,
+                content: joined.clone(),
+                kind: YankKind::Blockwise,
+            });
+        }
+    } else if !joined.is_empty() {
+        // Defensive: if no yank surfaced (e.g. operator that doesn't
+        // yank) but we have content, do nothing.
+        let _ = primary_register;
+    }
+    if let Some(m) = enter_mode {
+        out.push(Effect::EnterMode(m));
+    }
+
+    Effect::Many(out)
+}
+
+fn flatten_effect(e: Effect, out: &mut Vec<Effect>) {
+    match e {
+        Effect::Many(parts) => {
+            for p in parts {
+                flatten_effect(p, out);
+            }
+        }
+        Effect::None => {}
+        other => out.push(other),
+    }
 }
 
 fn resolve_target(
@@ -230,8 +402,13 @@ fn resolve_grammar_range(
                     Ok(ProtoRange::new(a, extended_end))
                 }
                 Some(lattice_protocol::selection::VisualMode::Blockwise) => {
-                    // Blockwise visual is a post-1.0 feature; v1 falls back
-                    // to charwise semantics.
+                    // Reached when a non-operator path resolves a
+                    // grammar Range::Selection while Visual is
+                    // Blockwise (e.g. a future motion that takes a
+                    // range arg). Operators bypass this branch via
+                    // `execute_operator_blockwise`. Fall back to a
+                    // single contiguous range here -- no per-row
+                    // semantics for non-operators in v1.
                     Ok(ProtoRange::new(a, b))
                 }
             }

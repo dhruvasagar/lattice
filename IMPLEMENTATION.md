@@ -36,7 +36,7 @@ rendering, and v1.0 polish.
 | Phase | Title                                 | Status                                                            | Notes                                                                                         |
 |-------|---------------------------------------|-------------------------------------------------------------------|-----------------------------------------------------------------------------------------------|
 | 0     | Foundation                            | ✅ done                                                           | Workspace, lattice-core, document/buffer/undo, file I/O, protocol enums                       |
-| 1     | Modal Editing                         | ✅ done                                                           | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch) / folds / ex-commands (registered as `ExCommandSpec` peers, dispatched through unified `grammar::execute()` per §5.2.1; `:s` / `:g` / `:v` still on the legacy enum path until structured args land). Blockwise visual highlights but operators don't dispatch per-line yet (§15). |
+| 1     | Modal Editing                         | ✅ done                                                           | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch) / folds / ex-commands (every command -- including `:s` / `:g` / `:v` via `Args::List` -- registered as `ExCommandSpec` peers, dispatched through unified `grammar::execute()` per §5.2.1, §B.2). Blockwise visual: per-row dispatch for `d` / `y` / `c` plus blockwise paste; `I` / `A` / `>` / `<` block forms still fall back to charwise. |
 | 2     | Terminal UI Bootstrap                 | ✅ done                                                           | crossterm + ratatui; modal cursor; mode line; gutter                                          |
 | 3     | Tree-Sitter                           | ✅ done (Rust/Python/JS)                                          | Highlights wired; grammar extension API used by builtins, not yet by plugins                  |
 | 4     | LSP                                   | ⛔ not started                                                    | Phase 4 still waiting; depends on async-actor work and the Pending->Effect plumbing in §5.2.1 |
@@ -68,7 +68,7 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | Insert             | ✅     | §5.2      | Plus bar cursor                                             |
 | Visual (Charwise)  | ✅     | §5.2, B.1 | Selection extends, operators on Range::Selection            |
 | Visual (Linewise)  | ✅     | §5.2      |                                                             |
-| Visual (Blockwise) | ⚠️     | §15:18    | Ctrl-V enters; render highlights the rectangle. Operators fall back to charwise (proper per-line block dispatch is post-1.0). |
+| Visual (Blockwise) | ✅ d/y/c + paste | §15:18 | Ctrl-V (or Ctrl-Q on terminals that hijack Ctrl-V) enters; render highlights the rectangle; `d` / `y` / `c` dispatch per-row in the dispatcher with merged Edits + one Blockwise yank. `YankKind::Blockwise` paste replays each row at the same column. `I` / `A` / `>` / `<` block forms still post-1.0. |
 | Operator-Pending   | ✅     | §5.2      | Resolved through translate_normal pending state             |
 | Command (`:`)      | ✅     | §5.9.10   | Rich minibuffer scope is partial; full spec is post-Phase-1 |
 | Search (`/`, `?`)  | ✅     | §5.9.10   | Live preview decoration not yet wired                       |
@@ -250,10 +250,10 @@ Update this section when picking up the in-flight item.
 
 ## Up next (priority order)
 
-1. **Blockwise visual operators** (delete-block, yank-block, change-block) —
-   currently the rectangle is highlighted but operators still cover a single
-   contiguous range. Proper per-line dispatch needs the multi-range plumbing
-   in `Range::Selection` resolution.
+1. **Block-visual `I` / `A` / `>` / `<`** — extend the per-row block
+   dispatch with the remaining vim affordances: insert-at-block-start,
+   append-at-block-end, indent-block-right/left. The `d`/`y`/`c` /
+   paste path is in; these reuse the same row-iteration pattern.
 2. **Computed folds** (syntax-driven, indent-based) — manual folds via
    zf/zo/zc/za/zR/zM/zd are done; computed folds need tree-sitter integration
    and an indent-based fall-back.
@@ -302,7 +302,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-752 tests across the workspace as of the last commit. Coverage by crate:
+759 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
@@ -310,7 +310,7 @@ are crossed out there. Items that influence active tasks:
 | lattice-core (incl. integration) | 78    |
 | lattice-grammar                  | 147   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 470   |
+| lattice-ui-tui                   | 477   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

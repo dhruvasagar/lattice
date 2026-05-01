@@ -24,11 +24,14 @@ use crate::register::Register;
 
 /// How a yank captured its content. Drives paste behavior:
 /// charwise yanks land at the cursor, linewise yanks land on the next
-/// line below.
+/// line below, blockwise yanks paste each '\n'-separated row at the
+/// same column on consecutive lines (vim's `Ctrl-V` selection then
+/// `y`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum YankKind {
     Charwise,
     Linewise,
+    Blockwise,
 }
 
 /// Severity tier for `Effect::Echo`. The host's echo-area renderer maps

@@ -2515,7 +2515,54 @@ impl App {
                     self.cursor = applied.inserted_range.start;
                 }
             }
+            YankKind::Blockwise => self.do_paste_blockwise(&reg.content, before),
         }
+    }
+
+    /// Vim's blockwise paste: each `\n`-separated row is inserted on
+    /// consecutive lines starting at the same column. `p` (after)
+    /// inserts at `cursor.byte + 1`, `P` (before) at `cursor.byte`.
+    /// Rows wider than a target line's existing length are appended
+    /// after end-of-line; missing rows below the buffer extend it
+    /// with new lines. Cursor lands at the top-left of the pasted
+    /// block.
+    fn do_paste_blockwise(&mut self, content: &str, before: bool) {
+        if content.is_empty() {
+            return;
+        }
+        let rows: Vec<&str> = content.split('\n').collect();
+        let start_line = self.cursor.line;
+        let line_len = line_byte_len(&self.document, start_line);
+        let start_col = if before {
+            self.cursor.byte
+        } else if self.cursor.byte < line_len {
+            self.cursor.byte + 1
+        } else {
+            self.cursor.byte
+        };
+
+        for (i, row) in rows.iter().enumerate() {
+            let target_line = start_line + i as u32;
+            let total_lines = self.document.buffer().line_count();
+            if target_line >= total_lines {
+                // Need a new line at the bottom of the buffer. Append
+                // a newline at the end of the current last line.
+                let last = total_lines.saturating_sub(1);
+                let last_len = line_byte_len(&self.document, last);
+                let _ = self
+                    .document
+                    .apply_edit(Edit::insert(Position::new(last, last_len), "\n"));
+            }
+            let target_len = line_byte_len(&self.document, target_line);
+            let insert_col = start_col.min(target_len);
+            let pos = Position::new(target_line, insert_col);
+            // Pad with spaces if the target line is shorter than the
+            // start column (vim's behaviour: don't extend the rectangle
+            // to the left). With `target_len <= start_col`, append at
+            // end-of-line instead.
+            let _ = self.document.apply_edit(Edit::insert(pos, *row));
+        }
+        self.cursor = Position::new(start_line, start_col);
     }
 
     fn do_open_line_above(&mut self) {
@@ -5521,6 +5568,152 @@ mod tests {
         a.apply(Action::PasteText("\nb\nc".into()));
         assert_eq!(a.document.text(), "a\nb\nc");
         assert_eq!(a.cursor, Position::new(2, 1));
+    }
+
+    // ---- Blockwise visual operators (DESIGN.md §15:18) ----
+
+    /// Drive into Blockwise visual at `anchor`, then move the cursor to
+    /// `head` so the rectangle is `[anchor, head]`. Returns the App
+    /// ready for an operator dispatch.
+    fn enter_block_visual(text: &str, anchor: Position, head: Position) -> App {
+        let mut a = app_with(text, 10);
+        a.cursor = anchor;
+        a.apply(Action::EnterVisual(VisualKind::Blockwise));
+        a.cursor = head;
+        a.visual_anchor = Some(anchor);
+        let sel = Selection {
+            anchor,
+            head,
+            visual: Some(VisualMode::Blockwise),
+        };
+        a.document.set_selections(SelectionSet::single(sel));
+        a
+    }
+
+    #[test]
+    fn block_delete_removes_each_rows_column_slice() {
+        // Three rows, columns 1..=2 deleted from each.
+        // Initial:    "abcd\n1234\nWXYZ"
+        // After d :   "ad\n14\nWZ"
+        let mut a = enter_block_visual(
+            "abcd\n1234\nWXYZ",
+            Position::new(0, 1),
+            Position::new(2, 2),
+        );
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "ad\n14\nWZ");
+    }
+
+    #[test]
+    fn block_yank_stores_blockwise_content_in_unnamed_register() {
+        // Yank a 3x2 rectangle: cols 1..=2 across three rows of "abcd\n1234\nWXYZ".
+        let mut a = enter_block_visual(
+            "abcd\n1234\nWXYZ",
+            Position::new(0, 1),
+            Position::new(2, 2),
+        );
+        let inv = CommandInvocation::of(a.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        // Document untouched.
+        assert_eq!(a.document.text(), "abcd\n1234\nWXYZ");
+        // Unnamed register has the 3 column slices joined by newline,
+        // tagged Blockwise.
+        let reg = a.unnamed_register.as_ref().expect("yank stored");
+        assert_eq!(reg.content, "bc\n23\nXY");
+        assert_eq!(reg.kind, YankKind::Blockwise);
+    }
+
+    #[test]
+    fn block_yank_clamps_short_rows_to_intersection() {
+        // Middle row "12" partially overlaps the rectangle: cols 1..=2,
+        // line len 2, intersection is `[1, 2)` = "2".
+        let mut a = enter_block_visual(
+            "abcd\n12\nWXYZ",
+            Position::new(0, 1),
+            Position::new(2, 2),
+        );
+        let inv = CommandInvocation::of(a.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        let reg = a.unnamed_register.as_ref().unwrap();
+        assert_eq!(reg.content, "bc\n2\nXY");
+        assert_eq!(reg.kind, YankKind::Blockwise);
+    }
+
+    #[test]
+    fn block_yank_with_row_entirely_left_of_rectangle_yields_empty_slice() {
+        // Middle row is "" (empty). Visual cols 1..=2 fully outside;
+        // intersection is empty.
+        let mut a = enter_block_visual(
+            "abcd\n\nWXYZ",
+            Position::new(0, 1),
+            Position::new(2, 2),
+        );
+        let inv = CommandInvocation::of(a.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        let reg = a.unnamed_register.as_ref().unwrap();
+        assert_eq!(reg.content, "bc\n\nXY");
+        assert_eq!(reg.kind, YankKind::Blockwise);
+    }
+
+    #[test]
+    fn block_change_deletes_rectangle_and_enters_insert() {
+        let mut a = enter_block_visual(
+            "abcd\n1234\nWXYZ",
+            Position::new(0, 1),
+            Position::new(2, 2),
+        );
+        let inv = CommandInvocation::of(a.builtins.change.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "ad\n14\nWZ");
+        assert!(matches!(a.modal, ModalState::Insert));
+    }
+
+    #[test]
+    fn block_paste_after_replays_rectangle_on_consecutive_lines() {
+        // Yank a 2x2 rectangle from the top, paste it at column 0 of
+        // line 2. Each row of the yanked content lands on a successive
+        // line at the paste column.
+        let mut a = enter_block_visual(
+            "abcd\n1234\nWXYZ\n----",
+            Position::new(0, 1),
+            Position::new(1, 2),
+        );
+        let yank = CommandInvocation::of(a.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(yank));
+        // Exit visual and move to a fresh paste site.
+        a.apply(Action::ExitVisual);
+        a.cursor = Position::new(2, 0);
+        // `p` (after-cursor) -> insert at col 1 on line 2 and line 3.
+        a.apply(Action::PasteAfter);
+        // Line 2: "WXYZ" -> "WbcXYZ"; Line 3: "----" -> "-23---"
+        assert_eq!(a.document.text(), "abcd\n1234\nWbcXYZ\n-23---");
+    }
+
+    #[test]
+    fn block_paste_extends_buffer_when_below_eof() {
+        // Yank 2 rows then paste at the bottom -- the missing row is
+        // appended as a fresh line.
+        let mut a = enter_block_visual(
+            "abcd\n1234",
+            Position::new(0, 1),
+            Position::new(1, 2),
+        );
+        let yank = CommandInvocation::of(a.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(yank));
+        a.apply(Action::ExitVisual);
+        // Move to last line and paste with `P` (before-cursor) at col 0.
+        a.cursor = Position::new(1, 0);
+        a.apply(Action::PasteBefore);
+        // Line 1 becomes "bc1234"; new line 2 holds "23".
+        assert_eq!(a.document.text(), "abcd\nbc1234\n23");
     }
 
     #[test]

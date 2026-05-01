@@ -249,6 +249,9 @@ fn translate_normal(
         KeyCode::Char('V') => Action::EnterVisual(VisualKind::Linewise),
         KeyCode::Char('R') => Action::EnterMode(ModalState::Replace),
 
+        // Toggle case at cursor
+        KeyCode::Char('~') => Action::ToggleCaseAtCursor,
+
         // Search
         KeyCode::Char('/') => Action::EnterSearch(SearchDirection::Forward),
         KeyCode::Char('?') => Action::EnterSearch(SearchDirection::Backward),
@@ -1088,6 +1091,20 @@ mod tests {
         assert!(matches!(
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
+        ));
+    }
+
+    // ---- ~ toggle case at cursor ----
+
+    #[test]
+    fn tilde_emits_toggle_case_at_cursor() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('~'))
+            ),
+            Action::ToggleCaseAtCursor
         ));
     }
 

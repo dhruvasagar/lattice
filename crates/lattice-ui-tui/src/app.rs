@@ -144,6 +144,9 @@ pub enum Action {
     /// cursor on the current line for the first `()[]{}` and seeks its
     /// pair using a depth-tracking scan.
     MatchBracket,
+    /// Vim's `~` -- toggle the case of the char at the cursor and
+    /// advance by one byte.
+    ToggleCaseAtCursor,
     /// Vim's `.` -- re-dispatch the last buffer-mutating invocation from
     /// the current cursor.
     RepeatLastChange,
@@ -463,6 +466,7 @@ impl App {
                 self.do_search_word_under_cursor(direction)
             }
             Action::MatchBracket => self.do_match_bracket(),
+            Action::ToggleCaseAtCursor => self.do_toggle_case_at_cursor(),
 
             Action::OverwriteChar(c) => self.do_overwrite_char(c),
             Action::ReplaceUndoLast => self.do_replace_undo_last(),
@@ -1088,6 +1092,36 @@ impl App {
         // Collapse selection to a cursor at the current head.
         self.document
             .set_selections(SelectionSet::single(Selection::cursor(self.cursor)));
+    }
+
+    /// Vim's `~`: toggle the case of the char at cursor and advance.
+    /// Non-letter chars are unchanged; cursor still advances. At EOL
+    /// the cursor stops (no wrap).
+    fn do_toggle_case_at_cursor(&mut self) {
+        let line_len = line_byte_len(&self.document, self.cursor.line);
+        if self.cursor.byte >= line_len {
+            return;
+        }
+        let r = ProtoRange::new(
+            self.cursor,
+            Position::new(self.cursor.line, self.cursor.byte + 1),
+        );
+        let original = match self.document.buffer().slice(r) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let toggled: String = original
+            .as_bytes()
+            .iter()
+            .map(|&b| match b {
+                b'a'..=b'z' => (b - 32) as char,
+                b'A'..=b'Z' => (b + 32) as char,
+                other => other as char,
+            })
+            .collect();
+        if let Ok(applied) = self.document.apply_edit(Edit::replace(r, &toggled)) {
+            self.cursor = applied.inserted_range.end;
+        }
     }
 
     /// Vim's `*` / `#`: extract the word at the cursor, store it as
@@ -2170,6 +2204,36 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- ~ toggle case at cursor ----
+
+    #[test]
+    fn toggle_case_at_cursor_inverts_letter_and_advances() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::ToggleCaseAtCursor);
+        assert_eq!(a.document.text(), "Hello");
+        assert_eq!(a.cursor, Position::new(0, 1));
+    }
+
+    #[test]
+    fn toggle_case_advances_through_non_letters() {
+        let mut a = app_with("a 1 b", 10);
+        a.apply(Action::ToggleCaseAtCursor);
+        assert_eq!(a.document.text(), "A 1 b");
+        a.apply(Action::ToggleCaseAtCursor);
+        // Space at byte 1 -> unchanged but cursor advances.
+        assert_eq!(a.document.text(), "A 1 b");
+        assert_eq!(a.cursor, Position::new(0, 2));
+    }
+
+    #[test]
+    fn toggle_case_at_eol_is_no_op() {
+        let mut a = app_with("hi", 10);
+        a.cursor = Position::new(0, 2);
+        a.apply(Action::ToggleCaseAtCursor);
+        assert_eq!(a.document.text(), "hi");
+        assert_eq!(a.cursor, Position::new(0, 2));
     }
 
     // ---- Word-search (* / #) and matching-bracket (%) ----

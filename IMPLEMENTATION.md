@@ -127,7 +127,7 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | inner_bracket / around   | i[ / a[   | ✅     |                 |
 | inner_brace / around     | i{ / a{   | ✅     |                 |
 | inner_angle / around     | i< / a<   | ⛔     |                 |
-| inner_tag / around       | it / at   | ⛔     | XML/HTML tags   |
+| inner_tag / around       | it / at   | ✅     | XML/HTML tags   |
 | inner_paragraph / around | ip / ap   | ✅     |                 |
 | inner_sentence / around  | is / as   | ✅     |                 |
 
@@ -237,7 +237,9 @@ Update this section when picking up the in-flight item.
 2. **Computed folds** (syntax-driven, indent-based) — manual folds via
    zf/zo/zc/za/zR/zM/zd are done; computed folds need tree-sitter integration
    and an indent-based fall-back.
-3. **Fold navigation** (zj / zk) — go-to-next / -previous fold.
+3. **Live preview decoration in search** — incremental match highlight as
+   the user types in the `/` minibuffer, plus substitute preview decorations
+   (§5.9.10).
 3. **Tag text object** (`it`, `at`) — XML/HTML tags.
 7. **`:set option=value`** + the typed-options system. §5.12.
 8. **`:describe-command` / `:describe-key` / `:apropos`** — introspection
@@ -267,15 +269,15 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-639 tests across the workspace as of the last commit. Coverage by crate:
+645 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
 | lattice-protocol                 | 30    |
 | lattice-core (incl. integration) | 70    |
-| lattice-grammar                  | 122   |
+| lattice-grammar                  | 125   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 394   |
+| lattice-ui-tui                   | 397   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

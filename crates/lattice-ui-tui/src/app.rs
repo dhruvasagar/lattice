@@ -177,6 +177,10 @@ pub enum Action {
     CloseAllFolds,
     /// Vim's `zd` -- delete the fold containing the cursor.
     DeleteFoldAtCursor,
+    /// Vim's `zj` -- move cursor to the start of the next fold.
+    GotoNextFold,
+    /// Vim's `zk` -- move cursor to the end of the previous fold.
+    GotoPrevFold,
     /// `"<reg>` prefix -- stash the named register for the next operator
     /// / paste invocation.
     SelectRegister(Register),
@@ -597,6 +601,8 @@ impl App {
             Action::OpenAllFolds => self.do_set_all_folds(false),
             Action::CloseAllFolds => self.do_set_all_folds(true),
             Action::DeleteFoldAtCursor => self.do_delete_fold_at_cursor(),
+            Action::GotoNextFold => self.do_goto_fold(true),
+            Action::GotoPrevFold => self.do_goto_fold(false),
             Action::SelectRegister(reg) => {
                 self.pending_register = Some(reg);
             }
@@ -1562,6 +1568,28 @@ impl App {
     fn do_set_all_folds(&mut self, closed: bool) {
         for fold in self.folds.iter_mut() {
             fold.closed = closed;
+        }
+    }
+
+    fn do_goto_fold(&mut self, forward: bool) {
+        let line = self.cursor.line;
+        let target = if forward {
+            self.folds
+                .iter()
+                .filter(|f| f.start_line > line)
+                .map(|f| f.start_line)
+                .min()
+        } else {
+            self.folds
+                .iter()
+                .filter(|f| f.end_line < line)
+                .map(|f| f.end_line)
+                .max()
+        };
+        if let Some(t) = target {
+            self.cursor = Position::new(t, 0);
+        } else {
+            self.set_message(EchoLevel::Error, "no more folds".to_string());
         }
     }
 
@@ -2899,6 +2927,45 @@ mod tests {
         a.cursor = Position::new(1, 0);
         a.apply(Action::DeleteFoldAtCursor);
         assert!(a.folds.is_empty());
+    }
+
+    #[test]
+    fn zj_jumps_to_next_fold_start() {
+        let mut a = app_with("a\nb\nc\nd\ne\nf", 10);
+        a.folds.push(Fold {
+            start_line: 2,
+            end_line: 3,
+            closed: false,
+        });
+        a.folds.push(Fold {
+            start_line: 5,
+            end_line: 5,
+            closed: false,
+        });
+        a.cursor = Position::ZERO;
+        a.apply(Action::GotoNextFold);
+        assert_eq!(a.cursor.line, 2);
+    }
+
+    #[test]
+    fn zk_jumps_to_previous_fold_end() {
+        let mut a = app_with("a\nb\nc\nd\ne\nf", 10);
+        a.folds.push(Fold {
+            start_line: 1,
+            end_line: 2,
+            closed: false,
+        });
+        a.cursor = Position::new(5, 0);
+        a.apply(Action::GotoPrevFold);
+        assert_eq!(a.cursor.line, 2);
+    }
+
+    #[test]
+    fn zj_with_no_more_folds_emits_error() {
+        let mut a = app_with("a\nb\nc", 10);
+        a.apply(Action::GotoNextFold);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
     }
 
     #[test]

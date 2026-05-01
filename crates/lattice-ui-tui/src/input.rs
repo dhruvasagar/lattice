@@ -554,6 +554,8 @@ fn resolve_after_z(event: KeyEvent) -> Action {
         KeyCode::Char('R') => Action::OpenAllFolds,
         KeyCode::Char('M') => Action::CloseAllFolds,
         KeyCode::Char('d') => Action::DeleteFoldAtCursor,
+        KeyCode::Char('j') => Action::GotoNextFold,
+        KeyCode::Char('k') => Action::GotoPrevFold,
         _ => Action::SetPending(Pending::None),
     }
 }
@@ -613,6 +615,13 @@ fn resolve_after_text_object(
                 builtins.around_sentence
             } else {
                 builtins.inner_sentence
+            }
+        }
+        KeyCode::Char('t') => {
+            if around {
+                builtins.around_tag
+            } else {
+                builtins.inner_tag
             }
         }
         KeyCode::Char('"') => {

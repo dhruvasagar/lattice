@@ -409,6 +409,21 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Box::new(|ctx| text_object_around_brackets(ctx, '[', ']')),
         },
     );
+    let inner_tag = registry.register_text_object(
+        "text-object:inner-tag",
+        "Inside the innermost enclosing XML/HTML tag pair (vim's `it`).",
+        TextObjectSpec {
+            apply: Box::new(text_object_inner_tag),
+        },
+    );
+    let around_tag = registry.register_text_object(
+        "text-object:around-tag",
+        "Around the innermost enclosing XML/HTML tag pair, including the tags (vim's `at`).",
+        TextObjectSpec {
+            apply: Box::new(text_object_around_tag),
+        },
+    );
+
     let inner_brace = registry.register_text_object(
         "text-object:inner-brace",
         "Inside the innermost enclosing `{}` pair (vim's `i{`).",
@@ -474,6 +489,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         around_bracket,
         inner_brace,
         around_brace,
+        inner_tag,
+        around_tag,
     }
 }
 
@@ -528,6 +545,8 @@ pub struct Builtins {
     pub around_bracket: TextObjectId,
     pub inner_brace: TextObjectId,
     pub around_brace: TextObjectId,
+    pub inner_tag: TextObjectId,
+    pub around_tag: TextObjectId,
 }
 
 // ---- Motion: word-forward ----
@@ -1517,6 +1536,120 @@ fn text_object_inner_brackets(
     Ok(ProtoRange::new(start_pos, end_pos))
 }
 
+/// Find the nearest XML/HTML tag pair enclosing the cursor. Returns
+/// `(open_start, open_end, close_start, close_end)` byte offsets where
+/// `open_*` covers `<tag...>` and `close_*` covers `</tag>`. v1 only
+/// supports same-line tag pairs and ignores attributes.
+fn find_enclosing_tag(bytes: &[u8], cursor: usize) -> Option<(usize, usize, usize, usize)> {
+    // Walk back to the nearest unmatched '<...>' open tag.
+    let mut i = cursor.min(bytes.len().saturating_sub(1));
+    let mut depth = 0i32;
+    let open_start;
+    loop {
+        if bytes[i] == b'>' && i > 0 && bytes[i - 1] != b'/' {
+            // a `>` closing some tag (open or self-close)
+            // We want to track whether it's a close-tag or open-tag.
+            // For simplicity we just look back at the matching `<`.
+            // Skip for now; the depth tracking happens at `<`.
+        }
+        if bytes[i] == b'<' {
+            // Look ahead to determine if this is open or close tag.
+            if i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                depth += 1;
+            } else if depth == 0 {
+                open_start = i;
+                break;
+            } else {
+                depth -= 1;
+            }
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    }
+    // Find the end of the open tag.
+    let mut open_end = open_start + 1;
+    while open_end < bytes.len() && bytes[open_end] != b'>' {
+        open_end += 1;
+    }
+    if open_end >= bytes.len() {
+        return None;
+    }
+    // Extract tag name.
+    let mut name_end = open_start + 1;
+    while name_end < open_end
+        && bytes[name_end] != b' '
+        && bytes[name_end] != b'>'
+        && bytes[name_end] != b'/'
+    {
+        name_end += 1;
+    }
+    let name = &bytes[open_start + 1..name_end];
+    if name.is_empty() {
+        return None;
+    }
+    // Walk forward from `open_end + 1` to find matching `</name>`.
+    let close_marker: Vec<u8> = {
+        let mut v = Vec::with_capacity(name.len() + 3);
+        v.push(b'<');
+        v.push(b'/');
+        v.extend_from_slice(name);
+        v.push(b'>');
+        v
+    };
+    let mut j = open_end + 1;
+    while j + close_marker.len() <= bytes.len() {
+        if &bytes[j..j + close_marker.len()] == close_marker.as_slice() {
+            return Some((open_start, open_end + 1, j, j + close_marker.len()));
+        }
+        j += 1;
+    }
+    None
+}
+
+fn text_object_inner_tag(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let cursor = ctx
+        .buffer
+        .position_to_byte(ctx.at)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let Some((_, open_end, close_start, _)) = find_enclosing_tag(bytes, cursor) else {
+        return Ok(ProtoRange::new(ctx.at, ctx.at));
+    };
+    let start_pos = ctx
+        .buffer
+        .byte_to_position(open_end)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let end_pos = ctx
+        .buffer
+        .byte_to_position(close_start)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(ProtoRange::new(start_pos, end_pos))
+}
+
+fn text_object_around_tag(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    let text = ctx.buffer.as_string();
+    let bytes = text.as_bytes();
+    let cursor = ctx
+        .buffer
+        .position_to_byte(ctx.at)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let Some((open_start, _, _, close_end)) = find_enclosing_tag(bytes, cursor) else {
+        return Ok(ProtoRange::new(ctx.at, ctx.at));
+    };
+    let start_pos = ctx
+        .buffer
+        .byte_to_position(open_start)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    let end_pos = ctx
+        .buffer
+        .byte_to_position(close_end)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
+    Ok(ProtoRange::new(start_pos, end_pos))
+}
+
 fn text_object_around_brackets(
     ctx: &TextObjectContext,
     open: char,
@@ -2467,6 +2600,36 @@ mod tests {
             other => panic!("expected Many, got {other:?}"),
         }
         assert_eq!(doc.text(), " world");
+    }
+
+    // ---- Tag text objects (it / at) ----
+
+    #[test]
+    fn it_selects_inside_tag() {
+        let (registry, b, mut doc) = fixture("<p>hello world</p>");
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::TextObject(b.inner_tag, crate::args::Args::None));
+        // Cursor inside <p>: byte 5 ('e' of "hello").
+        execute(&registry, &mut doc, Position::new(0, 5), inv).unwrap();
+        assert_eq!(doc.text(), "<p></p>");
+    }
+
+    #[test]
+    fn at_selects_around_tag() {
+        let (registry, b, mut doc) = fixture("<p>hello world</p>");
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::TextObject(b.around_tag, crate::args::Args::None));
+        execute(&registry, &mut doc, Position::new(0, 5), inv).unwrap();
+        assert_eq!(doc.text(), "");
+    }
+
+    #[test]
+    fn it_with_no_enclosing_tag_is_no_op() {
+        let (registry, b, mut doc) = fixture("plain text");
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::TextObject(b.inner_tag, crate::args::Args::None));
+        execute(&registry, &mut doc, Position::new(0, 4), inv).unwrap();
+        assert_eq!(doc.text(), "plain text");
     }
 
     // ---- Sentence motions and text objects ----

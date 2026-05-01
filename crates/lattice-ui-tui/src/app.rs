@@ -59,6 +59,11 @@ pub enum Pending {
     /// `"` pressed; the next char selects the register for the upcoming
     /// operator or paste.
     AfterRegister,
+    /// `q` pressed (when not already recording); next char is the macro
+    /// register name.
+    AfterMacroStart,
+    /// `@` pressed; next char is the macro register name to play.
+    AfterMacroPlay,
     /// `m` pressed; the next char is the mark to set.
     AfterSetMark,
     /// `'` pressed; the next char is the mark to jump to (linewise).
@@ -158,6 +163,14 @@ pub enum Action {
     JumpHistoryBack,
     /// Vim's `Ctrl-I` (Tab) -- step forward.
     JumpHistoryForward,
+    /// Vim's `q<reg>` to start recording into a register; `q` while
+    /// recording stops. App handles routing internally.
+    StartMacroRecord(char),
+    StopMacroRecord,
+    /// Vim's `@<reg>` to play. Replays the recorded Action stream.
+    PlayMacro(char),
+    /// Vim's `@@` to repeat the most recently played macro.
+    PlayLastMacro,
     /// Vim's `.` -- re-dispatch the last buffer-mutating invocation from
     /// the current cursor.
     RepeatLastChange,
@@ -337,6 +350,23 @@ pub struct App {
     /// last navigated entry; Ctrl-O moves backward, Ctrl-I forward.
     pub position_history: Vec<Position>,
     pub position_history_cursor: usize,
+    /// Macros: completed recordings keyed by register name. Replays go
+    /// through `do_play_macro`. v1 records `Action` streams; insert-mode
+    /// keystrokes ARE captured (every Action::Insert is recorded), but
+    /// dot-repeat-style replay of insert content from `c`/`i`/`a`
+    /// remains a §15 follow-up.
+    pub macros: HashMap<char, Vec<Action>>,
+    /// In-flight macro recording. `Some` while between `q<reg>` start
+    /// and the matching `q` stop; pushed Actions append to `actions`.
+    pub macro_recording: Option<MacroRecording>,
+    /// The most recently played macro register, for `@@` repeat.
+    pub last_played_macro: Option<char>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MacroRecording {
+    pub register: char,
+    pub actions: Vec<Action>,
 }
 
 const POSITION_HISTORY_CAP: usize = 100;
@@ -410,10 +440,27 @@ impl App {
             pending_register: None,
             position_history: Vec::new(),
             position_history_cursor: 0,
+            macros: HashMap::new(),
+            macro_recording: None,
+            last_played_macro: None,
         }
     }
 
     pub fn apply(&mut self, action: Action) {
+        // While a macro recording is in flight, capture every Action
+        // EXCEPT the recording-management ones themselves (otherwise the
+        // recording would include "stop recording" or recurse on play).
+        if let Some(rec) = self.macro_recording.as_mut()
+            && !matches!(
+                action,
+                Action::StartMacroRecord(_)
+                    | Action::StopMacroRecord
+                    | Action::PlayMacro(_)
+                    | Action::PlayLastMacro
+            )
+        {
+            rec.actions.push(action.clone());
+        }
         match action {
             Action::None => {}
             Action::Quit => self.should_quit = true,
@@ -503,6 +550,17 @@ impl App {
             }
             Action::JumpHistoryBack => self.do_jump_history(-1),
             Action::JumpHistoryForward => self.do_jump_history(1),
+
+            Action::StartMacroRecord(reg) => self.do_start_macro_record(reg),
+            Action::StopMacroRecord => self.do_stop_macro_record(),
+            Action::PlayMacro(reg) => self.do_play_macro(reg),
+            Action::PlayLastMacro => {
+                if let Some(reg) = self.last_played_macro {
+                    self.do_play_macro(reg);
+                } else {
+                    self.set_message(EchoLevel::Error, "no previous macro".to_string());
+                }
+            }
 
             Action::OverwriteChar(c) => self.do_overwrite_char(c),
             Action::ReplaceUndoLast => self.do_replace_undo_last(),
@@ -1151,6 +1209,56 @@ impl App {
         // Collapse selection to a cursor at the current head.
         self.document
             .set_selections(SelectionSet::single(Selection::cursor(self.cursor)));
+    }
+
+    fn do_start_macro_record(&mut self, register: char) {
+        if !is_valid_mark_name(register) {
+            self.set_message(EchoLevel::Error, format!("invalid macro register: {register}"));
+            return;
+        }
+        if self.macro_recording.is_some() {
+            // Already recording -- ignore (vim treats this as a no-op).
+            return;
+        }
+        self.macro_recording = Some(MacroRecording {
+            register,
+            actions: Vec::new(),
+        });
+        self.set_message(EchoLevel::Info, format!("recording @{register}"));
+    }
+
+    fn do_stop_macro_record(&mut self) {
+        let Some(rec) = self.macro_recording.take() else {
+            return;
+        };
+        let label = rec.register;
+        self.macros.insert(rec.register, rec.actions);
+        self.set_message(EchoLevel::Info, format!("recorded @{label}"));
+    }
+
+    fn do_play_macro(&mut self, register: char) {
+        if !is_valid_mark_name(register) {
+            self.set_message(EchoLevel::Error, format!("invalid macro register: {register}"));
+            return;
+        }
+        let Some(actions) = self.macros.get(&register).cloned() else {
+            self.set_message(EchoLevel::Error, format!("no macro in register {register}"));
+            return;
+        };
+        // Suppress recording-into-current-macro while replaying. (We don't
+        // want a `q` started before play to capture the playback's actions
+        // -- vim explicitly drops play actions from the recording.)
+        let mut paused = self.macro_recording.take();
+        for action in actions {
+            self.apply(action);
+            if self.should_quit {
+                break;
+            }
+        }
+        if let Some(rec) = paused.take() {
+            self.macro_recording = Some(rec);
+        }
+        self.last_played_macro = Some(register);
     }
 
     /// Push a position onto the history ring. If the history-cursor is
@@ -2377,6 +2485,122 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- Macros (q, @) ----
+
+    #[test]
+    fn start_macro_record_seeds_recording_state() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::StartMacroRecord('a'));
+        assert!(a.macro_recording.is_some());
+        assert_eq!(a.macro_recording.as_ref().unwrap().register, 'a');
+    }
+
+    #[test]
+    fn invalid_macro_register_emits_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::StartMacroRecord(' '));
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(a.macro_recording.is_none());
+    }
+
+    #[test]
+    fn second_q_during_recording_does_not_double_start() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::StartMacroRecord('a'));
+        a.apply(Action::StartMacroRecord('b'));
+        // Still recording into 'a'.
+        assert_eq!(a.macro_recording.as_ref().unwrap().register, 'a');
+    }
+
+    #[test]
+    fn stop_macro_record_persists_actions_and_clears_recording() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::StartMacroRecord('a'));
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        a.apply(Action::StopMacroRecord);
+        assert!(a.macro_recording.is_none());
+        let actions = a.macros.get(&'a').unwrap();
+        assert!(!actions.is_empty());
+    }
+
+    #[test]
+    fn play_macro_replays_recorded_actions() {
+        let mut a = app_with("foo bar", 10);
+        a.apply(Action::StartMacroRecord('a'));
+        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        a.apply(Action::StopMacroRecord);
+        // After dw: "bar".
+        assert_eq!(a.document.text(), "bar");
+        // Replay -> deletes another word.
+        a.apply(Action::PlayMacro('a'));
+        assert_eq!(a.document.text(), "");
+    }
+
+    #[test]
+    fn play_unrecorded_macro_emits_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::PlayMacro('z'));
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn at_at_replays_last_macro() {
+        let mut a = app_with("foo bar baz qux", 10);
+        a.apply(Action::StartMacroRecord('a'));
+        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        a.apply(Action::StopMacroRecord);
+        // First play.
+        a.apply(Action::PlayMacro('a'));
+        // @@ now repeats.
+        a.apply(Action::PlayLastMacro);
+        // After three dws total: "qux".
+        assert_eq!(a.document.text(), "qux");
+    }
+
+    #[test]
+    fn play_last_macro_with_no_history_emits_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::PlayLastMacro);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn macro_does_not_record_management_actions() {
+        // StartMacroRecord, StopMacroRecord, PlayMacro, PlayLastMacro
+        // must NOT appear inside the recorded action stream (otherwise
+        // playback would recurse / break).
+        let mut a = app_with("hello", 10);
+        a.apply(Action::StartMacroRecord('a'));
+        // Replay another (unrecorded) macro -- the play action must not
+        // be captured.
+        a.apply(Action::PlayLastMacro); // errors but is not recorded
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("z".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        a.apply(Action::StopMacroRecord);
+        let actions = a.macros.get(&'a').unwrap();
+        for action in actions {
+            assert!(!matches!(
+                action,
+                Action::StartMacroRecord(_)
+                    | Action::StopMacroRecord
+                    | Action::PlayMacro(_)
+                    | Action::PlayLastMacro
+            ));
+        }
     }
 
     // ---- Position history (Ctrl-O / Ctrl-I) ----

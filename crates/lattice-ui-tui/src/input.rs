@@ -28,6 +28,10 @@ pub struct TranslateContext<'a> {
     /// disambiguate the `0` key (line_start when no count in progress;
     /// digit-zero appended to count otherwise).
     pub pending_count: u32,
+    /// True when a macro is currently being recorded. Translate uses
+    /// this so `q` while recording stops, while `q` otherwise starts a
+    /// new recording.
+    pub recording_macro: bool,
 }
 
 pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
@@ -40,9 +44,13 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
 
     match ctx.modal {
         ModalState::Insert => translate_insert(event),
-        ModalState::Normal => {
-            translate_normal(event, ctx.pending, ctx.builtins, ctx.pending_count)
-        }
+        ModalState::Normal => translate_normal(
+            event,
+            ctx.pending,
+            ctx.builtins,
+            ctx.pending_count,
+            ctx.recording_macro,
+        ),
         ModalState::Command => translate_command(event),
         ModalState::Search(_) => translate_search(event),
         ModalState::Visual(_) => translate_visual(event, ctx.builtins),
@@ -152,6 +160,7 @@ fn translate_normal(
     pending: Pending,
     builtins: &Builtins,
     pending_count: u32,
+    recording_macro: bool,
 ) -> Action {
     // Resolve any pending state first.
     match pending {
@@ -168,6 +177,8 @@ fn translate_normal(
         Pending::AfterJumpMarkLine => return resolve_after_jump_mark(event, false),
         Pending::AfterJumpMarkExact => return resolve_after_jump_mark(event, true),
         Pending::AfterRegister => return resolve_after_register(event),
+        Pending::AfterMacroStart => return resolve_after_macro_start(event),
+        Pending::AfterMacroPlay => return resolve_after_macro_play(event),
         Pending::None => {}
     }
 
@@ -202,7 +213,13 @@ fn translate_normal(
     }
 
     match event.code {
-        KeyCode::Char('q') => Action::Quit,
+        // Macro record control. `q` while recording stops; otherwise it
+        // pends for a register-name char.
+        KeyCode::Char('q') if recording_macro => Action::StopMacroRecord,
+        KeyCode::Char('q') => Action::SetPending(Pending::AfterMacroStart),
+        // Macro play. `@@` is "repeat last"; everything else needs a
+        // register-name follow-up.
+        KeyCode::Char('@') => Action::SetPending(Pending::AfterMacroPlay),
 
         // Motions
         KeyCode::Char('h') | KeyCode::Left => invoke(builtins.char_left),
@@ -437,6 +454,27 @@ fn resolve_after_operator(
     Action::Invoke(CommandInvocation::of(op.0).with_target(target))
 }
 
+fn resolve_after_macro_start(event: KeyEvent) -> Action {
+    if matches!(event.code, KeyCode::Esc) {
+        return Action::SetPending(Pending::None);
+    }
+    match event.code {
+        KeyCode::Char(c) if c.is_ascii_alphanumeric() => Action::StartMacroRecord(c),
+        _ => Action::SetPending(Pending::None),
+    }
+}
+
+fn resolve_after_macro_play(event: KeyEvent) -> Action {
+    if matches!(event.code, KeyCode::Esc) {
+        return Action::SetPending(Pending::None);
+    }
+    match event.code {
+        KeyCode::Char('@') => Action::PlayLastMacro,
+        KeyCode::Char(c) if c.is_ascii_alphanumeric() => Action::PlayMacro(c),
+        _ => Action::SetPending(Pending::None),
+    }
+}
+
 fn resolve_after_register(event: KeyEvent) -> Action {
     if matches!(event.code, KeyCode::Esc) {
         return Action::SetPending(Pending::None);
@@ -624,6 +662,7 @@ mod tests {
             pending,
             builtins: b,
             pending_count: 0,
+            recording_macro: false,
         }
     }
 
@@ -638,6 +677,21 @@ mod tests {
             pending,
             builtins: b,
             pending_count,
+            recording_macro: false,
+        }
+    }
+
+    fn ctx_recording<'a>(
+        modal: ModalState,
+        pending: Pending,
+        b: &'a Builtins,
+    ) -> TranslateContext<'a> {
+        TranslateContext {
+            modal,
+            pending,
+            builtins: b,
+            pending_count: 0,
+            recording_macro: true,
         }
     }
 
@@ -1123,6 +1177,99 @@ mod tests {
         assert!(matches!(
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
+        ));
+    }
+
+    // ---- Macros: q, @ ----
+
+    #[test]
+    fn q_in_normal_when_not_recording_pends_for_macro_register() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('q'))
+            ),
+            Action::SetPending(Pending::AfterMacroStart)
+        ));
+    }
+
+    #[test]
+    fn q_in_normal_while_recording_stops() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx_recording(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('q'))
+            ),
+            Action::StopMacroRecord
+        ));
+    }
+
+    #[test]
+    fn at_in_normal_pends_for_macro_play() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('@'))
+            ),
+            Action::SetPending(Pending::AfterMacroPlay)
+        ));
+    }
+
+    #[test]
+    fn letter_after_q_starts_recording() {
+        let (_, b) = fixture();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterMacroStart, &b),
+            key(KeyCode::Char('a')),
+        ) {
+            Action::StartMacroRecord(c) => assert_eq!(c, 'a'),
+            other => panic!("expected StartMacroRecord, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn letter_after_at_plays_macro() {
+        let (_, b) = fixture();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterMacroPlay, &b),
+            key(KeyCode::Char('q')),
+        ) {
+            Action::PlayMacro(c) => assert_eq!(c, 'q'),
+            other => panic!("expected PlayMacro, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn at_at_plays_last_macro() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterMacroPlay, &b),
+                key(KeyCode::Char('@'))
+            ),
+            Action::PlayLastMacro
+        ));
+    }
+
+    #[test]
+    fn esc_after_macro_pending_clears() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterMacroStart, &b),
+                key(KeyCode::Esc)
+            ),
+            Action::SetPending(Pending::None)
+        ));
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterMacroPlay, &b),
+                key(KeyCode::Esc)
+            ),
+            Action::SetPending(Pending::None)
         ));
     }
 

@@ -168,9 +168,10 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | :w / :write [path]      | ✅     |        |
 | :q / :q!                | ✅     |        |
 | :wq                     | ✅     |        |
-| :s/.../.../[g]          | ⛔     |        |
-| :g/pattern/cmd          | ⛔     | §B.2   |
-| :v/pattern/cmd          | ⛔     | §B.2   |
+| :s/.../.../[g]          | ✅ (literal) |        |
+| :g/pattern/cmd          | ✅     | §B.2   |
+| :v/pattern/cmd          | ✅     | §B.2   |
+| :d / :delete            | ✅     |        |
 | :set option=value       | ⛔     | §5.12  |
 | :describe-command, etc. | ⛔     | §5.11  |
 | :history-*              | ⛔     | §B.3   |
@@ -269,7 +270,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-645 tests across the workspace as of the last commit. Coverage by crate:
+653 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
@@ -277,7 +278,7 @@ are crossed out there. Items that influence active tasks:
 | lattice-core (incl. integration) | 70    |
 | lattice-grammar                  | 125   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 397   |
+| lattice-ui-tui                   | 405   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

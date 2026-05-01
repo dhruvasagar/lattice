@@ -889,6 +889,88 @@ impl App {
                 replacement,
                 global,
             } => self.do_substitute(scope, &pattern, &replacement, global),
+            ExCommand::Global {
+                pattern,
+                inverted,
+                body,
+            } => self.do_global(&pattern, inverted, &body),
+            ExCommand::DeleteLine => self.do_delete_line(),
+        }
+    }
+
+    /// Delete the cursor's whole line including its trailing newline
+    /// (vim's `:d`). The standard delete operator's CurrentLine range
+    /// preserves the newline, which leaves an empty line behind -- that's
+    /// fine for `dd` (cursor stays put on a now-empty line) but wrong
+    /// for `:d` and `:g/.../d`. Here we explicitly include the newline.
+    fn do_delete_line(&mut self) {
+        let line = self.cursor.line;
+        let last = last_addressable_line(&self.document);
+        let len = line_byte_len(&self.document, line);
+        let r = if line < last {
+            // Include the trailing newline by extending into the next line.
+            ProtoRange::new(Position::new(line, 0), Position::new(line + 1, 0))
+        } else if line > 0 {
+            // Last line: include the previous line's newline by reaching
+            // back to the end of `line - 1`.
+            let prev = line - 1;
+            let prev_len = line_byte_len(&self.document, prev);
+            ProtoRange::new(Position::new(prev, prev_len), Position::new(line, len))
+        } else {
+            // Single-line buffer: just delete the content.
+            ProtoRange::new(Position::new(line, 0), Position::new(line, len))
+        };
+        if self.document.apply_edit(Edit::delete(r)).is_ok() {
+            self.cursor = Position::new(line.min(last_addressable_line(&self.document)), 0);
+        }
+    }
+
+    /// Vim's :g / :v -- execute `body` on every line matching (or NOT
+    /// matching, when inverted) the literal pattern. Operates bottom-up
+    /// so deletions don't shift the upcoming target lines. v1: `body`
+    /// is parsed as a single ex-command.
+    fn do_global(&mut self, pattern: &str, inverted: bool, body: &str) {
+        if pattern.is_empty() {
+            self.set_message(EchoLevel::Error, "empty pattern".to_string());
+            return;
+        }
+        let last = last_addressable_line(&self.document);
+        // Build the list of target line numbers from the current snapshot
+        // (so subsequent edits don't shift our intent).
+        let mut targets = Vec::new();
+        {
+            let text = self.document.text();
+            for (i, line) in text.split_inclusive('\n').enumerate() {
+                if i as u32 > last {
+                    break;
+                }
+                let stripped = line.trim_end_matches('\n');
+                let matches = stripped.contains(pattern);
+                if matches != inverted {
+                    targets.push(i as u32);
+                }
+            }
+        }
+        if targets.is_empty() {
+            self.set_message(
+                EchoLevel::Error,
+                format!("no lines {} pattern: {pattern}", if inverted { "lacking" } else { "matching" }),
+            );
+            return;
+        }
+        // Run bottom-up so deletions and edits on later lines don't
+        // shift the line numbers we plan to operate on.
+        for &line in targets.iter().rev() {
+            self.cursor = Position::new(line, 0);
+            // Recursively parse + execute the body. If parsing fails,
+            // we surface the error and abort.
+            match crate::excommand::parse(body) {
+                Ok(cmd) => self.execute_ex(cmd),
+                Err(err) => {
+                    self.set_message(EchoLevel::Error, format!("g: {err}"));
+                    return;
+                }
+            }
         }
     }
 
@@ -3038,6 +3120,38 @@ mod tests {
         let msg = a.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(msg.text.contains("3"));
+    }
+
+    #[test]
+    fn global_delete_matching_lines() {
+        let mut a = app_with("foo\nbar\nfoo\nbaz", 10);
+        submit_ex(&mut a, "g/foo/d");
+        // Both "foo" lines deleted; "bar" and "baz" remain.
+        assert_eq!(a.document.text(), "bar\nbaz");
+    }
+
+    #[test]
+    fn vglobal_delete_non_matching_lines() {
+        let mut a = app_with("foo\nbar\nfoo\nbaz", 10);
+        submit_ex(&mut a, "v/foo/d");
+        // Only "foo" lines remain.
+        assert_eq!(a.document.text(), "foo\nfoo");
+    }
+
+    #[test]
+    fn global_substitute_on_matching_lines() {
+        let mut a = app_with("foo\nbaz\nfoo", 10);
+        submit_ex(&mut a, "g/foo/s/foo/X/");
+        // Both "foo" lines get substituted.
+        assert_eq!(a.document.text(), "X\nbaz\nX");
+    }
+
+    #[test]
+    fn global_no_matches_emits_error() {
+        let mut a = app_with("hello\nworld", 10);
+        submit_ex(&mut a, "g/xyz/d");
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
     }
 
     #[test]

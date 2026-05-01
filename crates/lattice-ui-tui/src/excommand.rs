@@ -30,6 +30,15 @@ pub enum ExCommand {
         replacement: String,
         global: bool,
     },
+    /// Vim's `:g/pat/cmd` (and `:v/pat/cmd`). Runs `body` on every line
+    /// matching `pattern` (or NOT matching, when `inverted = true`).
+    Global {
+        pattern: String,
+        inverted: bool,
+        body: String,
+    },
+    /// Vim's `:d` -- delete the current line (CurrentLine range).
+    DeleteLine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +71,10 @@ pub fn parse(line: &str) -> Result<ExCommand, ExCommandError> {
     if let Some(sub) = parse_substitute(trimmed)? {
         return Ok(sub);
     }
+    // :g and :v have similar `/pattern/body` shape.
+    if let Some(gcmd) = parse_global(trimmed)? {
+        return Ok(gcmd);
+    }
 
     // Split into command word and rest. The command word may end in `!`.
     let (cmd, rest) = match trimmed.find(char::is_whitespace) {
@@ -79,8 +92,53 @@ pub fn parse(line: &str) -> Result<ExCommand, ExCommandError> {
             .ok_or(ExCommandError::TrailingArgs),
         "wq!" | "x!" => no_args(rest)?.then_some(ExCommand::WriteQuit { force: true })
             .ok_or(ExCommandError::TrailingArgs),
+        "d" | "delete" => no_args(rest)?
+            .then_some(ExCommand::DeleteLine)
+            .ok_or(ExCommandError::TrailingArgs),
         other => Err(ExCommandError::Unknown(other.to_string())),
     }
+}
+
+/// Parse vim's :g and :v: `g/pattern/body` and `v/pattern/body`.
+fn parse_global(input: &str) -> Result<Option<ExCommand>, ExCommandError> {
+    let (inverted, rest) = if let Some(rest) = input.strip_prefix("g/") {
+        (false, rest)
+    } else if let Some(rest) = input.strip_prefix("v/") {
+        (true, rest)
+    } else {
+        return Ok(None);
+    };
+    // Walk forward to the next unescaped `/`.
+    let mut pattern = String::new();
+    let mut chars = rest.chars().peekable();
+    let mut found_delim = false;
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                pattern.push(next);
+            }
+            continue;
+        }
+        if c == '/' {
+            found_delim = true;
+            break;
+        }
+        pattern.push(c);
+    }
+    if !found_delim {
+        return Err(ExCommandError::BadSubstitute(
+            "missing closing `/` after pattern",
+        ));
+    }
+    if pattern.is_empty() {
+        return Err(ExCommandError::BadSubstitute("empty pattern"));
+    }
+    let body: String = chars.collect();
+    Ok(Some(ExCommand::Global {
+        pattern,
+        inverted,
+        body,
+    }))
 }
 
 /// Parse vim's substitute syntax: `[%]s/pattern/replacement/[flags]`.
@@ -315,6 +373,48 @@ mod tests {
                 global: true,
             })
         );
+    }
+
+    #[test]
+    fn global_basic_match_with_delete_body() {
+        assert_eq!(
+            parse("g/foo/d"),
+            Ok(ExCommand::Global {
+                pattern: "foo".into(),
+                inverted: false,
+                body: "d".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn vglobal_inverts_match() {
+        assert_eq!(
+            parse("v/foo/d"),
+            Ok(ExCommand::Global {
+                pattern: "foo".into(),
+                inverted: true,
+                body: "d".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn global_body_can_be_substitute() {
+        assert_eq!(
+            parse("g/foo/s/foo/bar/g"),
+            Ok(ExCommand::Global {
+                pattern: "foo".into(),
+                inverted: false,
+                body: "s/foo/bar/g".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn delete_short_form() {
+        assert_eq!(parse("d"), Ok(ExCommand::DeleteLine));
+        assert_eq!(parse("delete"), Ok(ExCommand::DeleteLine));
     }
 
     #[test]

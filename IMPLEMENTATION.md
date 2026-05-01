@@ -36,7 +36,7 @@ rendering, and v1.0 polish.
 | Phase | Title                                 | Status                                                            | Notes                                                                                         |
 |-------|---------------------------------------|-------------------------------------------------------------------|-----------------------------------------------------------------------------------------------|
 | 0     | Foundation                            | ✅ done                                                           | Workspace, lattice-core, document/buffer/undo, file I/O, protocol enums                       |
-| 1     | Modal Editing                         | ✅ done (engine), 🟡 catalog (most builtins land + chord routing) | Vim grammar fully dispatchable; remaining builtin gaps tracked below                          |
+| 1     | Modal Editing                         | ✅ done                                                           | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch) / folds / ex-commands. Blockwise visual highlights but operators don't dispatch per-line yet (§15). |
 | 2     | Terminal UI Bootstrap                 | ✅ done                                                           | crossterm + ratatui; modal cursor; mode line; gutter                                          |
 | 3     | Tree-Sitter                           | ✅ done (Rust/Python/JS)                                          | Highlights wired; grammar extension API used by builtins, not yet by plugins                  |
 | 4     | LSP                                   | ⛔ not started                                                    | Phase 4 still waiting; depends on async-actor work and the Pending->Effect plumbing in §5.2.1 |
@@ -47,8 +47,11 @@ rendering, and v1.0 polish.
 | 9     | Rich Buffer Rendering                 | ⛔ not started                                                    | Per-line shaped path, Fenwick height index                                                    |
 | 10    | Polish + v1.0                         | ⛔ not started                                                    | `*scratch:rust*` live-eval workflow (§10), accessibility, packaging, themes                   |
 
-Active focus: **closing the remaining vim grammar gaps (Phase 1 catalog) and
-tightening the §15 open questions.**
+Active focus: **Phase 4 (LSP) is the next major chunk. It depends on the
+§5.2.1 async-dispatcher refactor (`execute → Pending<Effect>`) and the
+§5.6.8 render-snapshot model, neither of which is implemented yet --
+the TUI runs a synchronous dispatcher today. Those two together are
+the gating prerequisite for Phases 4-7.**
 
 ---
 

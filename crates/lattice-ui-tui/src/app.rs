@@ -2771,9 +2771,35 @@ mod tests {
             lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
-        // Unnamed populated; named map empty.
+        // Unnamed populated; "0 also populated by vim's auto-fill on yank.
+        // Named map's only entry is the numbered "0 register.
         assert!(a.unnamed_register.is_some());
-        assert!(a.registers.is_empty());
+        assert!(a.registers.contains_key(&Register::Numbered(0)));
+        // No alphabetic named slots populated.
+        assert!(!a.registers.keys().any(|r| matches!(r, Register::Named(_))));
+    }
+
+    #[test]
+    fn yank_auto_populates_zero_register() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        let zero = a.registers.get(&Register::Numbered(0)).unwrap();
+        assert_eq!(zero.content, "hello ");
+    }
+
+    #[test]
+    fn delete_does_not_populate_zero_register() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        // Delete populates unnamed but NOT "0.
+        assert!(!a.registers.contains_key(&Register::Numbered(0)));
+        assert!(a.unnamed_register.is_some());
     }
 
     #[test]

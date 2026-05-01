@@ -1131,11 +1131,21 @@ fn operator_yank(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     } else {
         YankKind::Charwise
     };
-    Ok(Effect::Yank {
-        register: ctx.register,
-        content,
-        kind,
-    })
+    // Yank ALSO populates `"0` per vim semantics. Two Effect::Yanks --
+    // first the requested register (which the App layer's store_yank
+    // also mirrors into the unnamed register), then "0.
+    Ok(Effect::Many(vec![
+        Effect::Yank {
+            register: ctx.register,
+            content: content.clone(),
+            kind,
+        },
+        Effect::Yank {
+            register: crate::register::Register::Numbered(0),
+            content,
+            kind,
+        },
+    ]))
 }
 
 // ---- Indent operators (>, <) ----
@@ -2165,7 +2175,7 @@ mod tests {
     // ---- yank operator (y) ----
 
     #[test]
-    fn yank_with_word_forward_emits_charwise_yank() {
+    fn yank_with_word_forward_emits_charwise_yank_and_zero_register() {
         let (registry, b, mut doc) = fixture("hello world");
         let original_text = doc.text();
         let inv = CommandInvocation::of(b.yank.0)
@@ -2173,13 +2183,26 @@ mod tests {
         let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
         // Yank does NOT touch the buffer.
         assert_eq!(doc.text(), original_text);
+        // Yank emits Many([requested-register, "0]).
         match effect {
-            Effect::Yank { content, kind, register } => {
-                assert_eq!(content, "hello ");
-                assert_eq!(kind, YankKind::Charwise);
-                assert_eq!(register, crate::register::Register::Unnamed);
+            Effect::Many(parts) => {
+                assert_eq!(parts.len(), 2);
+                match &parts[0] {
+                    Effect::Yank { content, kind, register } => {
+                        assert_eq!(content, "hello ");
+                        assert_eq!(*kind, YankKind::Charwise);
+                        assert_eq!(*register, crate::register::Register::Unnamed);
+                    }
+                    other => panic!("expected Yank at [0], got {other:?}"),
+                }
+                match &parts[1] {
+                    Effect::Yank { register, .. } => {
+                        assert_eq!(*register, crate::register::Register::Numbered(0));
+                    }
+                    other => panic!("expected Yank(\"0) at [1], got {other:?}"),
+                }
             }
-            other => panic!("expected Yank, got {other:?}"),
+            other => panic!("expected Many, got {other:?}"),
         }
     }
 
@@ -2188,14 +2211,18 @@ mod tests {
         let (registry, b, mut doc) = fixture("aaa\nBBB\nccc");
         let inv = CommandInvocation::of(b.yank.0).with_range(crate::range::Range::CurrentLine);
         let effect = execute(&registry, &mut doc, Position::new(1, 0), inv).unwrap();
-        // No buffer mutation.
         assert_eq!(doc.text(), "aaa\nBBB\nccc");
         match effect {
-            Effect::Yank { content, kind, .. } => {
-                assert_eq!(content, "BBB");
-                assert_eq!(kind, YankKind::Linewise);
+            Effect::Many(parts) => {
+                match &parts[0] {
+                    Effect::Yank { content, kind, .. } => {
+                        assert_eq!(content, "BBB");
+                        assert_eq!(*kind, YankKind::Linewise);
+                    }
+                    other => panic!("expected Yank, got {other:?}"),
+                }
             }
-            other => panic!("expected Yank, got {other:?}"),
+            other => panic!("expected Many, got {other:?}"),
         }
     }
 
@@ -2205,11 +2232,14 @@ mod tests {
         let inv = CommandInvocation::of(b.yank.0).with_range(crate::range::Range::Whole);
         let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
         match effect {
-            Effect::Yank { content, kind, .. } => {
-                assert_eq!(content, "hello\nworld");
-                assert_eq!(kind, YankKind::Linewise);
-            }
-            other => panic!("expected Yank, got {other:?}"),
+            Effect::Many(parts) => match &parts[0] {
+                Effect::Yank { content, kind, .. } => {
+                    assert_eq!(content, "hello\nworld");
+                    assert_eq!(*kind, YankKind::Linewise);
+                }
+                other => panic!("expected Yank, got {other:?}"),
+            },
+            other => panic!("expected Many, got {other:?}"),
         }
     }
 

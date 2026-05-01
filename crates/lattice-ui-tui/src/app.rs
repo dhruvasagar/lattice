@@ -119,6 +119,22 @@ pub enum EchoLevel {
 /// by `Effect::Echo`) into the App's display-typed `EchoLevel`. Two types
 /// because the App's is part of the public crate API; the grammar's is a
 /// dispatch detail.
+/// Resolve user-typed command text to a `CommandId`, accepting
+/// either the canonical registry name (`ex:write`) or an alias
+/// (`write`, `w`). Used by App handlers that take a command name
+/// from user input -- mirrors the two-stage logic in
+/// `excommand::parse_invocation`.
+fn resolve_command_name_or_alias(
+    registry: &lattice_grammar::CommandRegistry,
+    name: &str,
+) -> Option<lattice_grammar::CommandId> {
+    if let Some(id) = registry.id_by_name(name) {
+        return Some(id);
+    }
+    let canonical = crate::excommand::aliases().get(name).copied()?;
+    registry.id_by_name(canonical)
+}
+
 /// Rewrite Command-kind candidates from canonical names
 /// (`ex:describe-command`) to the user-facing alias
 /// (`describe-command`) and recompute their match ranges against
@@ -2181,7 +2197,11 @@ impl App {
     /// anchor after rendering. Used by the cmdline's arg-aware
     /// `<C-h>` to jump to `arg:<name>`.
     fn do_describe_command(&mut self, name: &str, anchor: Option<&str>) {
-        let Some(id) = self.registry.id_by_name(name) else {
+        // Two-stage resolution mirrors `excommand::parse_invocation`:
+        // try the typed text as a registry name first (canonical
+        // forms like `ex:write`), then fall back to alias expansion
+        // (`write` -> `ex:write`). Lets users type either form.
+        let Some(id) = resolve_command_name_or_alias(&self.registry, name) else {
             self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
             return;
         };
@@ -6903,6 +6923,76 @@ mod tests {
         prefer_aliases_for_command_candidates(&mut candidates, "tmp");
         // File candidate untouched.
         assert_eq!(candidates[0].raw.text, "/tmp/foo.rs");
+    }
+
+    #[test]
+    fn describe_command_resolves_alias_arg() {
+        // `:describe-command apropos` -- the arg is an alias.
+        // The handler must do two-stage resolution: alias `apropos`
+        // -> canonical `ex:apropos` -> CommandSpec lookup.
+        // Regression for the bug where the handler did a single
+        // direct id_by_name(name) and failed for every alias.
+        let mut a = app_in_command_mode("describe-command apropos");
+        a.apply(Action::CommandLineSubmit);
+        let h = a
+            .help_buffer
+            .as_ref()
+            .expect("describe-command apropos should open help");
+        assert!(
+            h.title.contains("apropos"),
+            "title should reference apropos, got `{}`",
+            h.title
+        );
+        // Should NOT be the error path.
+        assert!(
+            a.last_message
+                .as_ref()
+                .map(|m| m.level != EchoLevel::Error)
+                .unwrap_or(true)
+        );
+    }
+
+    #[test]
+    fn describe_command_resolves_short_alias_arg() {
+        // Same shape but with a short alias (`w` -> `ex:write`).
+        let mut a = app_in_command_mode("describe-command w");
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("describe-command w");
+        // Title shows whatever the user typed; the resolved spec
+        // is `ex:write`. Body must mention the canonical name to
+        // confirm we resolved correctly.
+        let body = h.content.as_string();
+        assert!(
+            body.contains("ex:write"),
+            "body should reference ex:write: {body}"
+        );
+    }
+
+    #[test]
+    fn describe_command_unknown_alias_emits_error() {
+        let mut a = app_in_command_mode("describe-command xyzzy-not-a-thing");
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.help_buffer.is_none());
+        let m = a.last_message.as_ref().unwrap();
+        assert_eq!(m.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn resolve_command_name_or_alias_handles_both_forms() {
+        let mut registry = lattice_grammar::CommandRegistry::new();
+        let _ = lattice_grammar::builtins::populate(&mut registry);
+        let _ = lattice_grammar::ex_commands::populate(&mut registry);
+        // Canonical hits.
+        assert!(resolve_command_name_or_alias(&registry, "ex:write").is_some());
+        assert!(resolve_command_name_or_alias(&registry, "ex:apropos").is_some());
+        assert!(resolve_command_name_or_alias(&registry, "motion:line-down").is_some());
+        // Alias hits.
+        assert!(resolve_command_name_or_alias(&registry, "w").is_some());
+        assert!(resolve_command_name_or_alias(&registry, "apropos").is_some());
+        assert!(resolve_command_name_or_alias(&registry, "describe-command").is_some());
+        // Misses.
+        assert!(resolve_command_name_or_alias(&registry, "nope").is_none());
+        assert!(resolve_command_name_or_alias(&registry, "").is_none());
     }
 
     #[test]

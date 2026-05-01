@@ -326,6 +326,10 @@ pub struct App {
     /// Range of the most recent search match, used to draw the highlight
     /// in the buffer view. Cleared on Esc and on cursor motion.
     pub current_match: Option<ProtoRange>,
+    /// Every occurrence of the most recent search pattern, used to draw
+    /// the secondary "hlsearch" overlay. Cleared on Esc; persists after
+    /// submit until the next search.
+    pub all_matches: Vec<ProtoRange>,
     /// Unnamed register -- destination of `y` / `d` / `c`, source of
     /// `p` / `P`. `None` until something has been yanked.
     pub unnamed_register: Option<UnnamedRegister>,
@@ -479,6 +483,7 @@ impl App {
             search_line: None,
             last_search: None,
             current_match: None,
+            all_matches: Vec::new(),
             unnamed_register: None,
             pending_count: 0,
             op_count: 0,
@@ -768,6 +773,7 @@ impl App {
         };
         if line.pattern.is_empty() {
             self.current_match = None;
+            self.all_matches.clear();
             return;
         }
         let dir = match line.direction {
@@ -778,6 +784,9 @@ impl App {
             Ok(Some(SearchHit { range, .. })) => self.current_match = Some(range),
             _ => self.current_match = None,
         }
+        // Live hlsearch: highlight every occurrence as the user types.
+        self.all_matches =
+            search::find_all(self.document.buffer(), &line.pattern).unwrap_or_default();
     }
 
     fn submit_search(&mut self) {
@@ -804,6 +813,8 @@ impl App {
             Ok(Some(hit)) => {
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
+                self.all_matches =
+                    search::find_all(self.document.buffer(), &line.pattern).unwrap_or_default();
                 if hit.wrapped {
                     let level = EchoLevel::Warn;
                     let text = match line.direction {
@@ -819,6 +830,7 @@ impl App {
             }
             Ok(None) => {
                 self.current_match = None;
+                self.all_matches.clear();
                 self.set_message(EchoLevel::Error, format!("E486: Pattern not found: {}", line.pattern));
                 // Vim still records the pattern so `n`/`N` can retry later.
                 self.last_search = Some(LastSearch {
@@ -828,6 +840,7 @@ impl App {
             }
             Err(_) => {
                 self.current_match = None;
+                self.all_matches.clear();
             }
         }
     }
@@ -837,6 +850,7 @@ impl App {
             self.cursor = line.origin;
         }
         self.current_match = None;
+        self.all_matches.clear();
         self.modal = ModalState::Normal;
         self.pending = Pending::None;
     }
@@ -1898,6 +1912,11 @@ impl App {
                 self.push_position_history(pre_jump);
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
+                self.all_matches = lattice_core::search::find_all(
+                    self.document.buffer(),
+                    &word,
+                )
+                .unwrap_or_default();
                 if hit.wrapped {
                     let text = match direction {
                         SearchDirection::Forward => "search hit BOTTOM, continuing at TOP",
@@ -1908,6 +1927,7 @@ impl App {
             }
             Ok(None) => {
                 self.current_match = None;
+                self.all_matches.clear();
                 self.set_message(
                     EchoLevel::Error,
                     format!("E486: Pattern not found: {word}"),
@@ -1915,6 +1935,7 @@ impl App {
             }
             Err(_) => {
                 self.current_match = None;
+                self.all_matches.clear();
             }
         }
         self.last_search = Some(LastSearch {
@@ -4653,6 +4674,43 @@ mod tests {
         assert_eq!(a.modal, ModalState::Insert);
         a.apply(Action::Insert("HEY ".into()));
         assert_eq!(a.document.text(), "HEY world");
+    }
+
+    // ---- Search hlsearch ----
+
+    #[test]
+    fn search_preview_populates_all_matches() {
+        let mut a = app_with("foo bar foo baz foo", 10);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        type_pattern(&mut a, "foo");
+        assert_eq!(a.all_matches.len(), 3);
+    }
+
+    #[test]
+    fn search_submit_keeps_all_matches_for_hlsearch() {
+        let mut a = app_with("foo bar foo", 10);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        type_pattern(&mut a, "foo");
+        a.apply(Action::SearchSubmit);
+        assert_eq!(a.all_matches.len(), 2);
+    }
+
+    #[test]
+    fn search_cancel_clears_all_matches() {
+        let mut a = app_with("foo bar foo", 10);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        type_pattern(&mut a, "foo");
+        assert!(!a.all_matches.is_empty());
+        a.apply(Action::SearchCancel);
+        assert!(a.all_matches.is_empty());
+    }
+
+    #[test]
+    fn search_word_under_cursor_populates_all_matches() {
+        let mut a = app_with("foo bar foo bar foo", 10);
+        a.cursor = Position::new(0, 1); // on first "foo"
+        a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
+        assert_eq!(a.all_matches.len(), 3);
     }
 
     #[test]

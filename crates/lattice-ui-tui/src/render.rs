@@ -209,6 +209,15 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         {
             body = apply_match_overlay(body, overlay_start, overlay_end, visual_style());
         }
+        // Hlsearch overlay: every other occurrence of the search pattern,
+        // softer than the current_match style.
+        for &range in app.all_matches.iter() {
+            if let Some((overlay_start, overlay_end)) =
+                match_overlay_range(range, line_idx, line_text.len())
+            {
+                body = apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
+            }
+        }
         if let Some(range) = app.current_match
             && let Some((overlay_start, overlay_end)) =
                 match_overlay_range(range, line_idx, line_text.len())
@@ -218,6 +227,13 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         out.push(combine(gutter, body));
     }
     out
+}
+
+fn hlsearch_style() -> TuiStyle {
+    // Softer than the primary match (which is yellow-bg). Cyan-bg reads
+    // as "another instance of what you're searching for" without
+    // stealing attention from the cursor's match.
+    TuiStyle::default().bg(Color::Cyan).fg(Color::Black)
 }
 
 /// For blockwise Visual: the rectangle defined by the selection's

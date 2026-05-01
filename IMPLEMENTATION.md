@@ -159,7 +159,7 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | Search highlight in buffer               | ✅     | §5.6.2                                |
 | `:s/foo/bar/[g]` substitute              | ✅ (literal) | §5.2.1 worked example uses substitute. Regex deferred. |
 | Regex search                             | ⛔     | Currently literal substring; §15      |
-| Search-as-you-type live preview          | ⛔     | §5.9.10                               |
+| Search-as-you-type live preview (hlsearch) | ✅   | every match highlighted; persists after submit |
 
 ### Ex commands
 
@@ -238,9 +238,13 @@ Update this section when picking up the in-flight item.
 2. **Computed folds** (syntax-driven, indent-based) — manual folds via
    zf/zo/zc/za/zR/zM/zd are done; computed folds need tree-sitter integration
    and an indent-based fall-back.
-3. **Live preview decoration in search** — incremental match highlight as
-   the user types in the `/` minibuffer, plus substitute preview decorations
-   (§5.9.10).
+3. **`:set option=value` + typed options** — full §5.12 system; v1 has no
+   options at all today.
+4. **`:describe-command` / `:describe-key` / `:apropos`** — introspection
+   needs a key→action registry first (§5.11).
+5. **Substitute live preview** — decorations on the target buffer while the
+   user types `:s/foo/bar/...`. The hlsearch now lights up matches when the
+   search minibuffer is open; substitute should do the same.
 3. **Tag text object** (`it`, `at`) — XML/HTML tags.
 7. **`:set option=value`** + the typed-options system. §5.12.
 8. **`:describe-command` / `:describe-key` / `:apropos`** — introspection
@@ -270,15 +274,15 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-656 tests across the workspace as of the last commit. Coverage by crate:
+665 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
 | lattice-protocol                 | 30    |
-| lattice-core (incl. integration) | 70    |
+| lattice-core (incl. integration) | 75    |
 | lattice-grammar                  | 125   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 408   |
+| lattice-ui-tui                   | 412   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

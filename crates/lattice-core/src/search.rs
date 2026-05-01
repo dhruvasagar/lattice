@@ -37,6 +37,36 @@ pub struct SearchHit {
     pub wrapped: bool,
 }
 
+/// Find every literal occurrence of `query` in the buffer. Returns
+/// the positional ranges in left-to-right order. Returns an empty
+/// vector for empty patterns or buffers shorter than the pattern.
+pub fn find_all(buffer: &Buffer, query: &str) -> CoreResult<Vec<Range>> {
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let text = buffer.as_string();
+    let bytes = text.as_bytes();
+    let needle = query.as_bytes();
+    if needle.len() > bytes.len() {
+        return Ok(Vec::new());
+    }
+    let mut hits = Vec::new();
+    let max = bytes.len() - needle.len();
+    let mut i = 0;
+    while i <= max {
+        if bytes[i..i + needle.len()] == *needle {
+            let start = buffer.byte_to_position(i)?;
+            let end = buffer.byte_to_position(i + needle.len())?;
+            hits.push(Range::new(start, end));
+            // Advance past the match (no overlapping matches in v1).
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    Ok(hits)
+}
+
 pub fn find(
     buffer: &Buffer,
     query: &str,
@@ -280,6 +310,45 @@ mod tests {
         // from=0: backward primary finds match at 0 itself.
         assert_eq!(hit.range.start, p(0, 0));
         assert!(!hit.wrapped);
+    }
+
+    #[test]
+    fn find_all_returns_every_occurrence() {
+        let b = Buffer::from_text("foo bar foo baz foo");
+        let hits = find_all(&b, "foo").unwrap();
+        assert_eq!(hits.len(), 3);
+        assert_eq!(hits[0].start, p(0, 0));
+        assert_eq!(hits[1].start, p(0, 8));
+        assert_eq!(hits[2].start, p(0, 16));
+    }
+
+    #[test]
+    fn find_all_empty_query_returns_empty() {
+        let b = Buffer::from_text("hello");
+        assert!(find_all(&b, "").unwrap().is_empty());
+    }
+
+    #[test]
+    fn find_all_no_match_returns_empty() {
+        let b = Buffer::from_text("hello");
+        assert!(find_all(&b, "xyz").unwrap().is_empty());
+    }
+
+    #[test]
+    fn find_all_does_not_overlap_matches() {
+        let b = Buffer::from_text("aaaa");
+        // Pattern "aa" matches at 0 and 2 (advancing by needle.len() each time).
+        let hits = find_all(&b, "aa").unwrap();
+        assert_eq!(hits.len(), 2);
+    }
+
+    #[test]
+    fn find_all_across_lines() {
+        let b = Buffer::from_text("foo\nbar\nfoo");
+        let hits = find_all(&b, "foo").unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].start.line, 0);
+        assert_eq!(hits[1].start.line, 2);
     }
 
     #[test]

@@ -177,6 +177,17 @@ emit `Effect` variants (`SaveBuffer`, `QuitEditor`, `OpenBuffer`,
 `SetOption`, `Substitute`, `Global`, `Echo`, ...); `App::apply_effect`
 owns the side effects.
 
+**Surface-form gating.** Each `ExCommandSpec` carries a
+`surface_form: SurfaceForm` (`Keyword` or `Delimiter { hint }`).
+Delimiter-form commands (`ex:substitute`, `ex:global`) are routed by
+the parser's delimiter-detection pass; the keyword form
+(`:ex:global`) returns `WrongSurfaceForm { name, hint }`, which
+surfaces the intended syntax (`:g/pattern/body  (or :v/pattern/body
+for inverted)`). The `gen:commands` completion generator filters
+delimiter-form commands so the cmdline popup never offers a
+candidate that would error when accepted. They remain reachable via
+`:describe-command` / `:apropos` for introspection.
+
 | Command                 | Status | Anchor |
 |-------------------------|--------|--------|
 | :w / :write [path]      | ✅ registry | §5.2.1 |
@@ -193,7 +204,7 @@ owns the side effects.
 | :v/pattern/cmd          | ✅ registry | §B.2; `Args::List([pattern, true, body])` -- same command as `:g`, inverted flag set. |
 | :describe-command       | ✅ buffer (popup) | §5.11; renders `CommandSpec.doc` + each `args_schema` entry's name/kind/doc/default. |
 | :describe-buffer        | ✅ buffer (popup) | §5.11; path / language / modal / cursor / dirty / line-count / registers / marks / position-history / macros / folds / view options. |
-| :describe-key <chord>   | ✅ buffer (popup) | §5.11; renders every `KeymapEntry` for the chord through the unified `Introspectable` surface. Each binding shows `Bound at: [[file:keymap.rs:LINE]]` (built-in) -- the row's source captured by the `keymap_entry!` macro -- plus an Action: `[[command:...]]` cross-reference. |
+| :describe-key <chord>   | ✅ buffer (popup) | §5.11; renders every `KeymapEntry` for the chord through the unified `Introspectable` surface. Each binding shows `Bound at: [[file:keymap.rs:LINE]]` (built-in) -- the row's source captured by the `keymap_entry!` macro -- plus an Action: `[[command:...]]` cross-reference. The `chord` arg uses `ArgKind::Chord`: typing `:describe-key <space>` puts the cmdline into chord-capture mode (raw key events render as canonical tokens -- `Ctrl-c` -> `<C-c>`, `Up` -> `<Up>`); `:describe-key<CR>` with no arg arms a one-shot prompt and the very next chord auto-submits. |
 | :keymap                 | ✅ buffer (popup) | §5.11; lists all default bindings grouped by mode, every chord linked via `[[key:...]]` for follow-up `:describe-key`. |
 | :apropos <pattern>      | ✅ buffer (popup) | §5.11; case-insensitive substring over every `CommandSpec.name` + `doc`. Picker UI (§5.9.7) is post-1.0. |
 | :describe-option, :describe-event, :describe-mode | ⛔ | §5.11; each lands when its registry does (typed options §5.12 / event bus §5.10 / modes Phase 8). |
@@ -208,13 +219,17 @@ owns the side effects.
 
 Help is **buffer-backed from day one**, modeled after emacs's `*Help*`.
 A `HelpBuffer` (in `lattice-ui-tui::help`) holds a real
-`lattice_core::Buffer` (rope) plus the title, scroll offset, and an
-extracted `Vec<HelpLink>`. The current display strategy is the centred
-popup overlay; **`HelpDisplayMode` enumerates Popup / Split / Tab /
-Window** so when multi-buffer support arrives (Phase 6 / §5.9) the
-display target swaps without touching the help-content layer. The
-target is configurable per-user (eventually via `:set
-help.display-mode=...`).
+`lattice_core::Buffer` (rope) plus the title, scroll offset, a real
+**cursor** (`Position`), and an extracted `Vec<HelpLink>`. The popup
+overlay treats the help buffer as a buffer: `j` `k` `h` `l` `0` `$`
+`gg` `G` `Ctrl-D` `Ctrl-U` move the cursor and scroll auto-follows.
+The terminal cursor is rendered at the screen translation of
+`help.cursor` so the user sees their position. The current display
+strategy is the centred popup overlay; **`HelpDisplayMode` enumerates
+Popup / Split / Tab / Window** so when multi-buffer support arrives
+(Phase 6 / §5.9) the display target swaps without touching the
+help-content layer. The target is configurable per-user (eventually
+via `:set help.display-mode=...`).
 
 ### Provenance (§5.11.1)
 

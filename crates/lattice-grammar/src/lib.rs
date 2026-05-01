@@ -51,7 +51,7 @@ pub use crate::range::{Range, RangeBound};
 pub use crate::register::Register;
 pub use crate::registry::{
     CommandRegistration, CommandRegistry, ExCommandContext, ExCommandSpec, MotionSpec,
-    OperatorContext, OperatorSpec, TextObjectSpec,
+    OperatorContext, OperatorSpec, SurfaceForm, TextObjectSpec,
 };
 pub use crate::registry::{ExCommandId, MotionId, OperatorId, TextObjectId};
 pub use crate::target::Target;

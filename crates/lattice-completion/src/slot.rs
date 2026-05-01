@@ -154,23 +154,29 @@ pub fn current_slot(
     // Strip a trailing `!` for alias resolution but keep the bang
     // accounted for in offsets.
     let cmd_word = cmd_word_with_bang.trim_end_matches('!');
-    let canonical = match alias_resolve(cmd_word) {
-        Some(c) => c,
-        None => {
-            return CommandLineSlot::UnknownCommand {
-                word: cmd_word.to_string(),
-                replace_start: leading_ws,
-            };
+    // Resolution order matches `excommand::parse_invocation`:
+    // try the typed text as a canonical registry name first
+    // (so `ex:describe-key` resolves), then alias-expand if that
+    // misses (so `describe-key` resolves too). Both forms reach
+    // the same spec; this is what lets the slot detector agree
+    // with the parser regardless of which form the user typed.
+    let id = if let Some(id) = registry.id_by_name(cmd_word) {
+        id
+    } else if let Some(canonical) = alias_resolve(cmd_word) {
+        match registry.id_by_name(&canonical) {
+            Some(id) => id,
+            None => {
+                return CommandLineSlot::UnknownCommand {
+                    word: cmd_word.to_string(),
+                    replace_start: leading_ws,
+                };
+            }
         }
-    };
-    let id = match registry.id_by_name(&canonical) {
-        Some(id) => id,
-        None => {
-            return CommandLineSlot::UnknownCommand {
-                word: cmd_word.to_string(),
-                replace_start: leading_ws,
-            };
-        }
+    } else {
+        return CommandLineSlot::UnknownCommand {
+            word: cmd_word.to_string(),
+            replace_start: leading_ws,
+        };
     };
     let spec = match registry.lookup(id) {
         Some(s) => s,

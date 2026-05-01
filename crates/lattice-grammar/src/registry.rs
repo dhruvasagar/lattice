@@ -170,6 +170,29 @@ type ExParseFn = Box<dyn Fn(&str, bool) -> GrammarResult<Args> + Send + Sync>;
 type ExApplyFn =
     Box<dyn Fn(&ExCommandContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
 
+/// How the user types this command on the `:` line. The default
+/// (`Keyword`) covers most commands -- `:write`, `:quit`, `:set
+/// number`. `Delimiter` is for the small family of commands whose
+/// arguments are interleaved with delimiters: `:s/pat/repl/`,
+/// `:g/pat/body`, `:v/pat/body`. The keyword form (`:ex:substitute`,
+/// `:ex:global`) for these is intentionally a hard error -- the
+/// front-end parser routes them via `try_parse_substitute` /
+/// `try_parse_global`. UI surfaces (completion, command palette)
+/// hide `Delimiter` commands because there's no useful keyword-form
+/// completion for them; the user types the delimiter directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SurfaceForm {
+    /// Type the command word, optionally with `!`, then args
+    /// separated by whitespace. The default for most commands.
+    #[default]
+    Keyword,
+    /// Type a delimiter prefix followed by a body. The keyword form
+    /// errors with a redirect message; the embedded `hint` is the
+    /// canonical syntax shown in that error (`:s/pat/repl/`,
+    /// `:g/pat/body`).
+    Delimiter { hint: &'static str },
+}
+
 pub struct ExCommandSpec {
     /// Whether the parser should accept a trailing `!` after the command
     /// word. If `false`, `:cmd!` parses as an unknown command.
@@ -185,6 +208,9 @@ pub struct ExCommandSpec {
     /// `:describe-command` output. Empty for commands taking no
     /// structured args (`:q`, `:noh`).
     pub args_schema: Vec<ArgSpec>,
+    /// User-facing surface form. Drives whether completion / palette
+    /// list this command. Defaults to [`SurfaceForm::Keyword`].
+    pub surface_form: SurfaceForm,
 }
 
 impl std::fmt::Debug for ExCommandSpec {

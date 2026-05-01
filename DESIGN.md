@@ -2440,6 +2440,10 @@ Three entry paths consume the same schema:
 
 Result: one declaration covers `:` invocation, keymap-with-prompt, and palette-with-form. There is no second mechanism.
 
+**Per-kind input modes.** `ArgKind` is more than a type tag -- it picks the cmdline's input mode while the cursor sits in that arg's slot. v1 implements `Chord`: when the active arg has `kind == Chord` (e.g. `:describe-key`'s sole arg, the future `:map <lhs> <rhs>`), the cmdline switches into chord-capture: every key event renders to its canonical chord token (`<C-c>`, `<Up>`, `gg`) and gets appended; `<BS>` deletes one full token (not a byte); `<Esc>` cancels, `<CR>` submits. The `Ctrl-c -> Quit` global hatch is intentionally suppressed inside chord-capture so `:describe-key <C-c>` is reachable; `<Esc>` remains the abort.
+
+When a `Chord`-required arg is submitted empty (`:describe-key<CR>`), instead of erroring the cmdline pre-fills with the command word + space, arms a one-shot auto-submit, and shows the schema-supplied `prompt` as a status hint. The very next chord captured fires the lookup -- no second `<CR>` needed. This is the v1 implementation of the missing-arg prompt path; richer prompt minibuffers (multi-arg, `String` / `Pattern` / completion-driven) layer onto the same arming mechanism.
+
 ### B.2 `:g` and `:v` are normal commands
 
 ```vim

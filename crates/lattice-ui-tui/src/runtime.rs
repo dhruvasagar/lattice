@@ -114,6 +114,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         recording_macro: app.macro_recording.is_some(),
                         help_open: app.help_buffer.is_some(),
                         completion_open: app.completion_state.is_some(),
+                        chord_capture: app.chord_capture_active(),
                     };
                     let action = translate(ctx, k);
                     app.apply(action);

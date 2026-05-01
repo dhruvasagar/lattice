@@ -27,7 +27,9 @@ use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 use crate::effect::{Effect, SubstituteScope};
 use crate::error::{CommandError, GrammarResult};
 use crate::range::Range;
-use crate::registry::{CommandRegistry, ExCommandContext, ExCommandId, ExCommandSpec};
+use crate::registry::{
+    CommandRegistry, ExCommandContext, ExCommandId, ExCommandSpec, SurfaceForm,
+};
 
 /// Set of registered ex-command ids; mirrors the `Builtins` shape for
 /// motions / operators / text objects.
@@ -68,6 +70,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 default: ArgDefault::None,
                 completion: Some("gen:files"),
             }],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     let quit = registry.register_ex_command(
@@ -79,6 +82,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Box::new(parse_no_args),
             apply: Box::new(apply_quit),
             args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     let write_quit = registry.register_ex_command(
@@ -90,6 +94,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Box::new(parse_no_args),
             apply: Box::new(apply_write_quit),
             args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     let no_hlsearch = registry.register_ex_command(
@@ -101,6 +106,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::ClearSearchHighlight)),
             args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     let list_registers = registry.register_ex_command(
@@ -112,6 +118,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::EchoRegisters)),
             args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     let list_marks = registry.register_ex_command(
@@ -123,6 +130,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::EchoMarks)),
             args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     let delete_line = registry.register_ex_command(
@@ -134,6 +142,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::DeleteCurrentLine)),
             args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     let set_option = registry.register_ex_command(
@@ -145,6 +154,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Box::new(parse_required_string),
             apply: Box::new(apply_set),
             args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     let edit = registry.register_ex_command(
@@ -163,6 +173,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 default: ArgDefault::None,
                 completion: Some("gen:files"),
             }],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     let substitute = registry.register_ex_command(
@@ -201,6 +212,9 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                     completion: None,
                 },
             ],
+            surface_form: SurfaceForm::Delimiter {
+                hint: ":s/pattern/replacement/[flags]  (or :%s/.../.../  for whole buffer)",
+            },
         },
     );
     let global = registry.register_ex_command(
@@ -231,6 +245,9 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                     "Ex-command to run on each matching line (re-parsed per match)",
                 ),
             ],
+            surface_form: SurfaceForm::Delimiter {
+                hint: ":g/pattern/body  (or :v/pattern/body  for inverted)",
+            },
         },
     );
     let describe_command = registry.register_ex_command(
@@ -249,6 +266,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 default: ArgDefault::Required,
                 completion: Some("gen:commands"),
             }],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     let describe_buffer = registry.register_ex_command(
@@ -260,6 +278,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::DescribeBuffer)),
             args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     let apropos = registry.register_ex_command(
@@ -278,6 +297,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 default: ArgDefault::Required,
                 completion: None,
             }],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     let describe_key = registry.register_ex_command(
@@ -290,12 +310,13 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             apply: Box::new(apply_describe_key),
             args_schema: vec![ArgSpec {
                 name: "chord",
-                kind: ArgKind::String,
+                kind: ArgKind::Chord,
                 doc: "Chord notation (`j`, `dw`, `<C-d>`, `gg`, `<Esc>`, ...)",
                 prompt: "key:",
                 default: ArgDefault::Required,
                 completion: None,
             }],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     let list_keymap = registry.register_ex_command(
@@ -307,6 +328,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::ListKeymap)),
             args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
         },
     );
     ExBuiltins {

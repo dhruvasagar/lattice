@@ -24,6 +24,15 @@ use crate::traits::{CandidateGenerator, GenerateContext};
 /// `RawCandidate` per registered `CommandSpec`. Filtering is
 /// deferred to the matcher; the generator returns the full set
 /// every time the cache misses.
+///
+/// Delimiter-form commands (`ex:substitute`, `ex:global` --
+/// `SurfaceForm::Delimiter`) are excluded: the user types those
+/// via `:s/.../.../`, `:g/.../.../`, `:v/.../.../`. Surfacing them
+/// as completion candidates is misleading because typing
+/// `:ex:global` would error with "use the delimiter form" -- the
+/// keyword form is intentionally a hard-error redirect (DESIGN.md
+/// §B.2). They remain reachable through `:describe-command` /
+/// `:apropos` for introspection.
 pub struct CommandsGenerator;
 
 impl CandidateGenerator for CommandsGenerator {
@@ -34,6 +43,16 @@ impl CandidateGenerator for CommandsGenerator {
             .filter_map(|name| {
                 let id = ctx.registry.id_by_name(name)?;
                 let spec = ctx.registry.lookup(id)?;
+                // Filter delimiter-only commands -- they have no
+                // useful keyword-form completion target.
+                if let Some(ex) = ctx.registry.ex_command_spec(id)
+                    && matches!(
+                        ex.surface_form,
+                        lattice_grammar::SurfaceForm::Delimiter { .. }
+                    )
+                {
+                    return None;
+                }
                 Some(RawCandidate {
                     text: spec.name.clone(),
                     display: spec.name.clone(),
@@ -204,6 +223,30 @@ mod tests {
         assert!(candidates.iter().any(|c| c.text == "ex:write"));
         // Spot-check: motion:line-down should be in there.
         assert!(candidates.iter().any(|c| c.text == "motion:line-down"));
+    }
+
+    #[test]
+    fn commands_generator_filters_delimiter_only_commands() {
+        // ex:substitute and ex:global have SurfaceForm::Delimiter --
+        // they're typed via :s/.../.../  and :g/.../.../  not by
+        // name. The completion list must hide them so the user
+        // doesn't see (and can't pick) a candidate that would error
+        // when accepted.
+        let mut registry = CommandRegistry::new();
+        let _ = lattice_grammar::builtins::populate(&mut registry);
+        let _ = lattice_grammar::ex_commands::populate(&mut registry);
+        let document = Document::empty();
+        let candidates = CommandsGenerator.generate(&ctx_for("", &document, &registry));
+        assert!(
+            !candidates.iter().any(|c| c.text == "ex:substitute"),
+            "ex:substitute is delimiter-form-only and must not appear",
+        );
+        assert!(
+            !candidates.iter().any(|c| c.text == "ex:global"),
+            "ex:global is delimiter-form-only and must not appear",
+        );
+        // Other ex-commands stay present.
+        assert!(candidates.iter().any(|c| c.text == "ex:write"));
     }
 
     #[test]

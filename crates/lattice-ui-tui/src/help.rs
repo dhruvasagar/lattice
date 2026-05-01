@@ -74,6 +74,12 @@ pub struct HelpBuffer {
     /// future split/tab/window renderer would use the buffer's own
     /// scroll state instead).
     pub scroll: usize,
+    /// Cursor position inside the help content. The help overlay
+    /// behaves like any other buffer -- motions move this cursor
+    /// and `scroll` auto-adjusts to keep it in view. The terminal
+    /// cursor is rendered at the screen translation of this
+    /// position.
+    pub cursor: Position,
     /// Every `[[…]]` link in the rendered text, with its byte range
     /// inside `content` and its resolved target.
     pub links: Vec<HelpLink>,
@@ -98,6 +104,7 @@ impl std::fmt::Debug for HelpBuffer {
         f.debug_struct("HelpBuffer")
             .field("title", &self.title)
             .field("scroll", &self.scroll)
+            .field("cursor", &self.cursor)
             .field("link_count", &self.links.len())
             .field("anchor_count", &self.anchors.len())
             .field("line_count", &self.content.line_count())
@@ -134,6 +141,7 @@ impl HelpBuffer {
             title: title.into(),
             content: buffer,
             scroll: 0,
+            cursor: Position::ZERO,
             links,
             anchors,
         }
@@ -168,23 +176,91 @@ impl HelpBuffer {
             .collect()
     }
 
-    pub fn scroll_down(&mut self, delta: usize, viewport: usize) {
-        let total = self.line_count() as usize;
-        let max = total.saturating_sub(viewport);
-        self.scroll = (self.scroll + delta).min(max);
+    /// Move cursor by `dy` lines and `dx` bytes, then auto-scroll
+    /// so the cursor stays visible in the given `viewport` rows.
+    /// Negative deltas move up / left. Bytes clamp to the new
+    /// line's length; lines clamp to `[0, line_count - 1]`.
+    pub fn move_cursor(&mut self, dx: i32, dy: i32, viewport: usize) {
+        let last_line = self.line_count().saturating_sub(1) as i32;
+        let new_line = (self.cursor.line as i32 + dy).clamp(0, last_line) as u32;
+        let line_len = self.line_byte_len(new_line);
+        // h/l are line-only -- they don't wrap across newlines.
+        let new_byte = (self.cursor.byte as i32 + dx).clamp(0, line_len as i32) as u32;
+        self.cursor = Position::new(new_line, new_byte);
+        self.adjust_scroll_to_cursor(viewport);
     }
 
-    pub fn scroll_up(&mut self, delta: usize) {
-        self.scroll = self.scroll.saturating_sub(delta);
+    /// Jump cursor to a specific line. Bytes preserved if the
+    /// new line is long enough; clamped to line end otherwise.
+    pub fn jump_cursor_to(&mut self, line: u32, viewport: usize) {
+        let last_line = self.line_count().saturating_sub(1);
+        let target = line.min(last_line);
+        let line_len = self.line_byte_len(target);
+        self.cursor = Position::new(target, self.cursor.byte.min(line_len));
+        self.adjust_scroll_to_cursor(viewport);
     }
 
+    /// Jump cursor to the start of the current line (`0`).
+    pub fn cursor_line_start(&mut self) {
+        self.cursor.byte = 0;
+    }
+
+    /// Jump cursor to the end of the current line (`$`).
+    pub fn cursor_line_end(&mut self) {
+        let line_len = self.line_byte_len(self.cursor.line);
+        // Match vim's `$`: cursor sits on the last char (byte
+        // line_len-1), or at byte 0 on an empty line.
+        self.cursor.byte = line_len.saturating_sub(1);
+    }
+
+    /// Auto-scroll so `cursor.line` is in view. If the cursor is
+    /// already visible, scroll doesn't change.
+    pub fn adjust_scroll_to_cursor(&mut self, viewport: usize) {
+        if viewport == 0 {
+            return;
+        }
+        let line = self.cursor.line as usize;
+        if line < self.scroll {
+            self.scroll = line;
+        } else if line >= self.scroll + viewport {
+            self.scroll = line + 1 - viewport;
+        }
+    }
+
+    /// Jump cursor to the top of the buffer (`gg`).
     pub fn jump_top(&mut self) {
         self.scroll = 0;
+        self.cursor = Position::ZERO;
     }
 
+    /// Jump cursor to the bottom of the buffer (`G`).
     pub fn jump_bottom(&mut self, viewport: usize) {
-        let total = self.line_count() as usize;
-        self.scroll = total.saturating_sub(viewport);
+        let last_line = self.line_count().saturating_sub(1);
+        self.cursor = Position::new(last_line, 0);
+        self.adjust_scroll_to_cursor(viewport);
+    }
+
+    /// Half-page down (`Ctrl-D` in vim). Moves cursor by `viewport / 2`
+    /// lines and adjusts scroll.
+    pub fn half_page_down(&mut self, viewport: usize) {
+        let delta = (viewport / 2).max(1) as i32;
+        self.move_cursor(0, delta, viewport);
+    }
+
+    /// Half-page up (`Ctrl-U`).
+    pub fn half_page_up(&mut self, viewport: usize) {
+        let delta = (viewport / 2).max(1) as i32;
+        self.move_cursor(0, -delta, viewport);
+    }
+
+    /// Byte length of a given line (excluding the trailing newline).
+    /// Returns 0 for out-of-range lines.
+    fn line_byte_len(&self, line: u32) -> u32 {
+        let s = self.content.as_string();
+        s.split('\n')
+            .nth(line as usize)
+            .map(|l| l.len() as u32)
+            .unwrap_or(0)
     }
 }
 
@@ -439,23 +515,99 @@ mod tests {
     }
 
     #[test]
-    fn scroll_clamps_within_content() {
+    fn move_cursor_down_within_viewport_does_not_scroll() {
         let lines: Vec<String> = (0..20).map(|i| format!("l{i}")).collect();
         let mut h = HelpBuffer::from_lines("t", lines);
-        h.scroll_down(5, 10);
-        assert_eq!(h.scroll, 5);
-        h.scroll_down(1000, 10);
-        assert_eq!(h.scroll, 10); // 20 lines - 10 viewport = 10 max
-        h.scroll_up(3);
-        assert_eq!(h.scroll, 7);
+        h.move_cursor(0, 5, 10);
+        assert_eq!(h.cursor.line, 5);
+        assert_eq!(h.scroll, 0);
     }
 
     #[test]
-    fn jump_bottom_lands_at_max_scroll() {
+    fn move_cursor_past_viewport_advances_scroll() {
+        let lines: Vec<String> = (0..20).map(|i| format!("l{i}")).collect();
+        let mut h = HelpBuffer::from_lines("t", lines);
+        h.move_cursor(0, 12, 10);
+        assert_eq!(h.cursor.line, 12);
+        // cursor at line 12 with viewport=10 -> scroll = 12 + 1 - 10 = 3.
+        assert_eq!(h.scroll, 3);
+    }
+
+    #[test]
+    fn move_cursor_clamps_to_last_line() {
+        let lines: Vec<String> = (0..20).map(|i| format!("l{i}")).collect();
+        let mut h = HelpBuffer::from_lines("t", lines);
+        h.move_cursor(0, 1000, 10);
+        assert_eq!(h.cursor.line, 19);
+        // 20 lines - viewport 10 -> max scroll = 10.
+        assert_eq!(h.scroll, 10);
+    }
+
+    #[test]
+    fn move_cursor_up_pulls_scroll_back() {
+        let lines: Vec<String> = (0..20).map(|i| format!("l{i}")).collect();
+        let mut h = HelpBuffer::from_lines("t", lines);
+        h.move_cursor(0, 19, 10);
+        assert_eq!(h.scroll, 10);
+        // Move cursor up to line 5; scroll should clamp to follow.
+        h.move_cursor(0, -14, 10);
+        assert_eq!(h.cursor.line, 5);
+        assert_eq!(h.scroll, 5);
+    }
+
+    #[test]
+    fn move_cursor_horizontal_clamps_to_line_length() {
+        let h_start = HelpBuffer::from_lines("t", vec!["abc".into(), "xy".into()]);
+        let mut h = h_start;
+        h.move_cursor(2, 0, 10);
+        assert_eq!(h.cursor.byte, 2);
+        h.move_cursor(100, 0, 10); // clamp to line length (3)
+        assert_eq!(h.cursor.byte, 3);
+        h.move_cursor(-1000, 0, 10); // clamp to 0
+        assert_eq!(h.cursor.byte, 0);
+    }
+
+    #[test]
+    fn cursor_line_start_and_end_jump_within_line() {
+        let mut h = HelpBuffer::from_lines("t", vec!["hello world".into()]);
+        h.cursor_line_end();
+        // vim `$` lands on the last char index.
+        assert_eq!(h.cursor.byte, 10);
+        h.cursor_line_start();
+        assert_eq!(h.cursor.byte, 0);
+    }
+
+    #[test]
+    fn jump_top_resets_cursor_and_scroll() {
+        let lines: Vec<String> = (0..30).map(|i| format!("l{i}")).collect();
+        let mut h = HelpBuffer::from_lines("t", lines);
+        h.move_cursor(0, 25, 10);
+        assert_ne!(h.scroll, 0);
+        h.jump_top();
+        assert_eq!(h.cursor, Position::ZERO);
+        assert_eq!(h.scroll, 0);
+    }
+
+    #[test]
+    fn jump_bottom_lands_cursor_and_scroll() {
         let lines: Vec<String> = (0..30).map(|i| format!("l{i}")).collect();
         let mut h = HelpBuffer::from_lines("t", lines);
         h.jump_bottom(10);
+        assert_eq!(h.cursor.line, 29);
+        // 30 lines, viewport 10 -> scroll = 30 - 10 = 20.
         assert_eq!(h.scroll, 20);
+    }
+
+    #[test]
+    fn half_page_motions_move_by_viewport_half() {
+        let lines: Vec<String> = (0..30).map(|i| format!("l{i}")).collect();
+        let mut h = HelpBuffer::from_lines("t", lines);
+        h.half_page_down(10);
+        assert_eq!(h.cursor.line, 5);
+        h.half_page_down(10);
+        assert_eq!(h.cursor.line, 10);
+        h.half_page_up(10);
+        assert_eq!(h.cursor.line, 5);
     }
 
     #[test]

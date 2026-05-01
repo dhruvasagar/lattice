@@ -17,6 +17,7 @@
 //! hardcoded `Action` enum used here.
 
 pub mod app;
+pub mod chord;
 pub mod excommand;
 pub mod input;
 pub mod help;

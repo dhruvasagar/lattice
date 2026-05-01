@@ -37,6 +37,11 @@ pub enum ExCommandError {
     BadArgs(String),
     #[error("`!` is not allowed for `{0}`")]
     BangNotAllowed(String),
+    /// User typed the keyword form (`:ex:global`) of a command whose
+    /// surface form is `Delimiter`. `name` is the canonical command
+    /// name, `hint` is the syntax to use instead.
+    #[error("`{name}` uses delimiter syntax; type `{hint}`")]
+    WrongSurfaceForm { name: String, hint: &'static str },
 }
 
 /// Parse a `:` line into a [`CommandInvocation`] dispatchable through
@@ -106,6 +111,20 @@ fn parse_invocation(
     }
 
     let spec = ex_spec_for(registry, id).ok_or_else(|| ExCommandError::Unknown(raw_cmd.to_string()))?;
+    // Surface-form check before parse_args. Commands flagged
+    // `Delimiter` (`:ex:substitute`, `:ex:global`) are not
+    // keyword-invocable; the front-end's delimiter-detection path
+    // (`try_parse_substitute` / `try_parse_global`) is the only
+    // valid entry. Reaching here means the user typed the keyword
+    // form by hand. Surface a precise error with the right syntax
+    // hint instead of letting the call fall through to a generic
+    // `parse_args` failure (which would say "invalid args").
+    if let lattice_grammar::SurfaceForm::Delimiter { hint } = spec.surface_form {
+        return Err(ExCommandError::WrongSurfaceForm {
+            name: entry.name.clone(),
+            hint,
+        });
+    }
     if bang && !spec.accepts_bang {
         return Err(ExCommandError::BangNotAllowed(raw_cmd.to_string()));
     }
@@ -640,5 +659,51 @@ mod tests {
         assert_eq!(global.args_schema[0].name, "pattern");
         assert_eq!(global.args_schema[1].name, "inverted");
         assert_eq!(global.args_schema[2].name, "body");
+    }
+
+    #[test]
+    fn keyword_form_of_substitute_returns_wrong_surface_form_error() {
+        // The user types `:ex:substitute foo`. Surface-form check
+        // fires before parse_args; the error names the canonical
+        // command and the syntax to use.
+        let r = fixture();
+        let err = parse("ex:substitute foo bar", &r).unwrap_err();
+        match err {
+            ExCommandError::WrongSurfaceForm { name, hint } => {
+                assert_eq!(name, "ex:substitute");
+                assert!(hint.contains(":s/"));
+            }
+            other => panic!("expected WrongSurfaceForm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn keyword_form_of_global_returns_wrong_surface_form_error() {
+        let r = fixture();
+        let err = parse("ex:global //d", &r).unwrap_err();
+        match err {
+            ExCommandError::WrongSurfaceForm { name, hint } => {
+                assert_eq!(name, "ex:global");
+                assert!(hint.contains(":g/"));
+                assert!(hint.contains(":v/"));
+            }
+            other => panic!("expected WrongSurfaceForm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delimiter_form_of_substitute_still_parses() {
+        // Surface-form gating must NOT break the front-end delimiter
+        // path -- the gate fires only for the keyword route.
+        let r = fixture();
+        let inv = parse("s/foo/bar/", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:substitute");
+    }
+
+    #[test]
+    fn delimiter_form_of_global_still_parses() {
+        let r = fixture();
+        let inv = parse("g/foo/d", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:global");
     }
 }

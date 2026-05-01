@@ -388,6 +388,14 @@ pub enum Action {
     /// resolves to a registered command; else describe the parent
     /// command at the relevant `arg:<name>` anchor.
     CommandLineDescribeUnderCursor,
+    /// Chord-capture overlay (`ArgKind::Chord` slot): append one
+    /// pre-formatted chord token (`<C-c>`, `<Esc>`, `gg`, ...) to
+    /// the cmdline. Translation from the raw `KeyEvent` happens
+    /// in `input::translate_command_chord_capture`.
+    CommandLineAppendChord(String),
+    /// Chord-capture overlay: backspace deletes one full chord
+    /// token (`<C-c>` is one unit, not 5 chars), not a single byte.
+    CommandLineDeleteChord,
 
     // ---- Completion popup (DESIGN.md §5.11.3) ----
     /// `<Tab>` -- open completion popup if closed; advance the
@@ -404,12 +412,23 @@ pub enum Action {
     CommandLineDismissCompletion,
 
     // ---- Help overlay (DESIGN.md §5.11) ----
-    /// Scroll the active help overlay. Positive deltas scroll down,
-    /// negative scroll up. Page-sized scrolls use `HelpScrollPage`.
-    HelpScroll(i32),
-    /// Page-sized scroll on the active help overlay (Ctrl-D / Ctrl-U).
-    /// `down = true` scrolls forward.
-    HelpScrollPage { down: bool },
+    // The help overlay is a real buffer with cursor + motions. j/k/h/l/0/$
+    // move the cursor; the popup auto-scrolls to keep the cursor in view.
+    /// `j` -- cursor down one line.
+    HelpCursorDown,
+    /// `k` -- cursor up one line.
+    HelpCursorUp,
+    /// `h` -- cursor left one byte (clamps at line start).
+    HelpCursorLeft,
+    /// `l` -- cursor right one byte (clamps at line end).
+    HelpCursorRight,
+    /// `0` -- cursor to start of current line.
+    HelpCursorLineStart,
+    /// `$` -- cursor to end of current line (vim-style: last char).
+    HelpCursorLineEnd,
+    /// Half-page motion (Ctrl-D / Ctrl-U). `down = true` moves forward.
+    /// Cursor follows; auto-scroll keeps it visible.
+    HelpHalfPage { down: bool },
     /// Jump to top (`gg`) / bottom (`G`) of the active help overlay.
     HelpJumpTop,
     HelpJumpBottom,
@@ -614,6 +633,53 @@ pub struct App {
     /// Active completion popup. `Some` while the user has Tab-
     /// triggered completion in the `:` line.
     pub completion_state: Option<CompletionState>,
+    /// One-shot "auto-submit on next chord" flag. Set when the
+    /// user submitted a Chord-arg-required command with no value
+    /// (`:describe-key<CR>`); the cmdline pre-fills with the
+    /// command word + space, and the very next captured chord
+    /// auto-fires [`Action::CommandLineSubmit`] without an
+    /// explicit `<CR>`. Reset on cancel / submit.
+    pub auto_submit_after_chord: bool,
+}
+
+/// Reasons `compute_completion_state` can fail. Kept narrow so the
+/// open and refresh paths can pick different recovery strategies --
+/// the open path turns these into echoed messages, the refresh path
+/// usually closes the popup but keeps it alive on `NoMatches` so
+/// vertico-style "type-to-filter, then back-out-to-recover" works.
+#[derive(Debug, Clone)]
+enum CompletionComputeError {
+    NoCompletionForArg(String),
+    NoCompletionAtCursor,
+    MissingSource(String),
+    PipelineUnconfigured,
+    NoMatches { prefix: String },
+}
+
+impl CompletionComputeError {
+    fn echo(&self) -> (EchoLevel, String) {
+        match self {
+            Self::NoCompletionForArg(name) => (
+                EchoLevel::Info,
+                format!("no completion for arg `{name}`"),
+            ),
+            Self::NoCompletionAtCursor => {
+                (EchoLevel::Info, "no completion at cursor".to_string())
+            }
+            Self::MissingSource(name) => (
+                EchoLevel::Error,
+                format!("completion source `{name}` not registered"),
+            ),
+            Self::PipelineUnconfigured => (
+                EchoLevel::Error,
+                "completion pipeline not configured (missing default matcher / ranker)"
+                    .to_string(),
+            ),
+            Self::NoMatches { prefix } => {
+                (EchoLevel::Info, format!("no completions for `{prefix}`"))
+            }
+        }
+    }
 }
 
 /// One open completion popup (DESIGN.md §5.11.3 vertico-style
@@ -797,6 +863,7 @@ impl App {
             help_display_mode: HelpDisplayMode::default(),
             completion_registry,
             completion_state: None,
+            auto_submit_after_chord: false,
         }
     }
 
@@ -867,26 +934,54 @@ impl App {
             Action::CommandLineAppend(c) => {
                 if matches!(self.modal, ModalState::Command) {
                     self.command_line.push(c);
-                    // Typing dismisses the popup; the user is
-                    // refining their query, not advancing the
-                    // existing candidate set. Re-trigger with Tab
-                    // when they want fresh completion.
-                    self.completion_state = None;
+                    // Vertico-style live filtering: if the popup is
+                    // open, re-run the pipeline against the new
+                    // prefix. The user can keep typing to drill
+                    // down without losing the popup.
+                    if self.completion_state.is_some() {
+                        self.refresh_completion_popup();
+                    }
                 }
             }
             Action::CommandLineBackspace => {
-                if matches!(self.modal, ModalState::Command) && self.command_line.pop().is_none() {
-                    // Empty buffer + backspace -> exit Command modal.
-                    self.modal = ModalState::Normal;
+                if matches!(self.modal, ModalState::Command) {
+                    if self.command_line.pop().is_none() {
+                        // Empty buffer + backspace -> exit Command modal.
+                        self.modal = ModalState::Normal;
+                        self.completion_state = None;
+                    } else if self.completion_state.is_some() {
+                        // Popup live-refilters against the shorter
+                        // prefix (vertico-style).
+                        self.refresh_completion_popup();
+                    }
                 }
             }
             Action::CommandLineSubmit => {
                 if matches!(self.modal, ModalState::Command) {
+                    // Missing-arg prompt path (DESIGN.md §B.1):
+                    // if the user submitted with a Chord-required
+                    // arg empty (`:describe-key<CR>`), don't fail
+                    // -- prefill the cmdline with the command
+                    // word + space (cursor lands in the chord-arg
+                    // slot, chord-capture auto-activates) and arm
+                    // a one-shot auto-submit. The very next
+                    // captured chord runs the lookup, no second
+                    // <CR> required.
+                    if let Some(prefill) = self.try_arm_missing_chord_prompt() {
+                        self.command_line = prefill;
+                        self.auto_submit_after_chord = true;
+                        self.set_message(
+                            EchoLevel::Info,
+                            "key: press the chord to look up".to_string(),
+                        );
+                        return;
+                    }
                     let line = std::mem::take(&mut self.command_line);
                     self.modal = ModalState::Normal;
                     self.pending = Pending::None;
                     self.command_history_cursor = None;
                     self.command_history_pending = None;
+                    self.auto_submit_after_chord = false;
                     if !line.trim().is_empty() {
                         // De-duplicate consecutive identical entries.
                         if self.command_history.last() != Some(&line) {
@@ -906,6 +1001,7 @@ impl App {
                     self.command_history_pending = None;
                     self.modal = ModalState::Normal;
                     self.pending = Pending::None;
+                    self.auto_submit_after_chord = false;
                 }
             }
             Action::CommandLineHistoryPrev => self.do_command_history_step(true),
@@ -1018,17 +1114,58 @@ impl App {
             Action::CommandLineClear => {
                 if matches!(self.modal, ModalState::Command) {
                     self.command_line.clear();
-                    self.completion_state = None;
+                    if self.completion_state.is_some() {
+                        // Empty cmdline -> slot becomes Empty, which
+                        // surfaces every command. Same live-refilter
+                        // contract as the other edit actions.
+                        self.refresh_completion_popup();
+                    }
                 }
             }
             Action::CommandLineDeleteWordBackward => {
                 if matches!(self.modal, ModalState::Command) {
                     delete_trailing_word(&mut self.command_line);
-                    self.completion_state = None;
+                    if self.completion_state.is_some() {
+                        // Same live-refilter contract as Append /
+                        // Backspace.
+                        self.refresh_completion_popup();
+                    }
                 }
             }
             Action::CommandLineDescribeUnderCursor => {
                 self.do_command_line_describe_under_cursor()
+            }
+            Action::CommandLineAppendChord(token) => {
+                if matches!(self.modal, ModalState::Command) {
+                    self.command_line.push_str(&token);
+                    // Chord-capture suppresses the completion popup
+                    // (no useful candidates for chord input). If
+                    // somehow open, drop it to keep the screen clean.
+                    self.completion_state = None;
+                    // One-shot auto-submit: when the cmdline was
+                    // armed by a missing-arg prompt, the very next
+                    // chord token also fires submit. Recursive
+                    // re-entry into apply() is fine -- Submit
+                    // resets the flag before doing anything else.
+                    if self.auto_submit_after_chord {
+                        self.auto_submit_after_chord = false;
+                        self.apply(Action::CommandLineSubmit);
+                    }
+                }
+            }
+            Action::CommandLineDeleteChord => {
+                if matches!(self.modal, ModalState::Command) {
+                    let n = crate::chord::last_chord_token_byte_len(&self.command_line);
+                    if n == 0 {
+                        // Empty buffer + delete -> exit Command modal,
+                        // matching plain `<BS>` semantics.
+                        self.modal = ModalState::Normal;
+                        self.completion_state = None;
+                    } else {
+                        let new_len = self.command_line.len() - n;
+                        self.command_line.truncate(new_len);
+                    }
+                }
             }
             Action::CommandLineCompleteOrAdvance => self.do_command_line_complete_or_advance(),
             Action::CommandLineCompletePrev => self.do_command_line_complete_prev(),
@@ -1037,8 +1174,21 @@ impl App {
                 self.completion_state = None;
             }
 
-            Action::HelpScroll(delta) => self.do_help_scroll(delta),
-            Action::HelpScrollPage { down } => self.do_help_scroll_page(down),
+            Action::HelpCursorDown => self.do_help_move_cursor(0, 1),
+            Action::HelpCursorUp => self.do_help_move_cursor(0, -1),
+            Action::HelpCursorLeft => self.do_help_move_cursor(-1, 0),
+            Action::HelpCursorRight => self.do_help_move_cursor(1, 0),
+            Action::HelpCursorLineStart => {
+                if let Some(h) = self.help_buffer.as_mut() {
+                    h.cursor_line_start();
+                }
+            }
+            Action::HelpCursorLineEnd => {
+                if let Some(h) = self.help_buffer.as_mut() {
+                    h.cursor_line_end();
+                }
+            }
+            Action::HelpHalfPage { down } => self.do_help_half_page(down),
             Action::HelpJumpTop => {
                 if let Some(h) = self.help_buffer.as_mut() {
                     h.jump_top();
@@ -1402,9 +1552,139 @@ impl App {
             .replace_range(state.replace_start..self.command_line.len(), &chosen.raw.text);
     }
 
+    /// On `Action::CommandLineSubmit`, decide whether the line is
+    /// an empty-arg invocation of a command whose first required
+    /// arg is `Chord`. If so, return the prefill string for the
+    /// cmdline (`<command-word> ` -- with trailing space) so the
+    /// caller can transition into a chord-capture prompt.
+    /// `None` means submit normally.
+    fn try_arm_missing_chord_prompt(&self) -> Option<String> {
+        let line = self.command_line.trim();
+        if line.is_empty() {
+            return None;
+        }
+        // Split off the command word + bang the same way
+        // `excommand::parse_invocation` does. We don't go through
+        // the full parser because we explicitly want the
+        // `args == empty` case here (the parser would error).
+        let (raw_cmd, rest) = match line.find(char::is_whitespace) {
+            Some(i) => (&line[..i], line[i..].trim()),
+            None => (line, ""),
+        };
+        if !rest.is_empty() {
+            // User supplied an arg -- normal submit handles it.
+            return None;
+        }
+        let cmd = raw_cmd.strip_suffix('!').unwrap_or(raw_cmd);
+        let canonical = self
+            .registry
+            .id_by_name(cmd)
+            .or_else(|| {
+                crate::excommand::aliases()
+                    .get(cmd)
+                    .copied()
+                    .and_then(|c| self.registry.id_by_name(c))
+            })?;
+        let spec = self.registry.ex_command_spec(canonical)?;
+        let first = spec.args_schema.first()?;
+        if first.kind != lattice_grammar::ArgKind::Chord {
+            return None;
+        }
+        if !matches!(first.default, lattice_grammar::ArgDefault::Required) {
+            // Non-required chord arg has a fallback; let the
+            // parser take the default path.
+            return None;
+        }
+        // Preserve the user's spelling (alias vs canonical) plus
+        // any bang they typed; just append the trailing space so
+        // the cursor lands in the chord-arg slot.
+        Some(format!("{raw_cmd} "))
+    }
+
+    /// True when the cmdline cursor is on an `ArgKind::Chord` arg
+    /// slot. Drives the input layer's chord-capture overlay
+    /// (`translate_command_chord_capture`). v1: `:describe-key`'s
+    /// `chord` arg is the only `Chord`-kinded arg in the registry;
+    /// when `:map` / `:nnoremap` land they reuse this gate.
+    pub fn chord_capture_active(&self) -> bool {
+        if !matches!(self.modal, ModalState::Command) {
+            return false;
+        }
+        let line = &self.command_line;
+        let alias_resolver = |short: &str| {
+            crate::excommand::aliases()
+                .get(short)
+                .map(|s| (*s).to_string())
+        };
+        let slot = lattice_completion::current_slot(
+            line,
+            line.len(),
+            &self.registry,
+            &alias_resolver,
+        );
+        matches!(
+            &slot,
+            lattice_completion::CommandLineSlot::Arg { arg_spec, .. }
+                if arg_spec.kind == lattice_grammar::ArgKind::Chord
+        )
+    }
+
     /// Build the pipeline for the current slot and run it. Caches
     /// results into `completion_state`.
     fn open_completion_popup(&mut self) {
+        match self.compute_completion_state() {
+            Ok(state) => {
+                self.completion_state = Some(state);
+            }
+            Err(err) => {
+                let (level, msg) = err.echo();
+                self.set_message(level, msg);
+            }
+        }
+    }
+
+    /// Re-run the completion pipeline against the current command line
+    /// and update the popup in place. Called from `CommandLineAppend` /
+    /// `CommandLineBackspace` / `CommandLineDeleteWordBackward` while
+    /// the popup is open -- this is the vertico "filter as you type"
+    /// behaviour. No echo: refresh is silent. Empty results keep the
+    /// popup alive (so further edits can repopulate it); a slot
+    /// transition that has no completion source closes it.
+    fn refresh_completion_popup(&mut self) {
+        if self.completion_state.is_none() {
+            return;
+        }
+        match self.compute_completion_state() {
+            Ok(state) => {
+                self.completion_state = Some(state);
+            }
+            Err(CompletionComputeError::NoMatches { .. }) => {
+                // Keep the popup open with zero candidates so the user
+                // can backspace and re-match without re-tabbing.
+                if let Some(state) = self.completion_state.as_mut() {
+                    state.candidates.clear();
+                    state.selected = 0;
+                    state.original_line = self.command_line.clone();
+                }
+            }
+            Err(_) => {
+                // Slot moved to a region with no completion source
+                // (UnknownCommand, BeyondSchema, arg without
+                // `completion`). Drop the popup; the user can re-Tab
+                // to re-arm it later.
+                self.completion_state = None;
+            }
+        }
+    }
+
+    /// Slot-detect, build the pipeline, run it, and host-rewrite
+    /// command candidates to user-facing aliases. Pure -- no
+    /// `set_message` side effects, so both the open and the refresh
+    /// path can share it. Errors carry enough info for the open path
+    /// to surface them via echo.
+    fn compute_completion_state(
+        &self,
+    ) -> Result<CompletionState, CompletionComputeError> {
         let line = self.command_line.clone();
         let cursor = line.len();
         let alias_resolver = |short: &str| {
@@ -1431,42 +1711,28 @@ impl App {
             } => match arg_spec.completion {
                 Some(name) => (name, prefix.clone(), *replace_start),
                 None => {
-                    self.set_message(
-                        EchoLevel::Info,
-                        format!("no completion for arg `{}`", arg_spec.name),
-                    );
-                    return;
+                    return Err(CompletionComputeError::NoCompletionForArg(
+                        arg_spec.name.to_string(),
+                    ));
                 }
             },
             lattice_completion::CommandLineSlot::Empty => {
                 ("gen:commands", String::new(), 0)
             }
             _ => {
-                self.set_message(
-                    EchoLevel::Info,
-                    "no completion at cursor".to_string(),
-                );
-                return;
+                return Err(CompletionComputeError::NoCompletionAtCursor);
             }
         };
 
         let Some(generator) = self.completion_registry.generator_by_name(source_name) else {
-            self.set_message(
-                EchoLevel::Error,
-                format!("completion source `{source_name}` not registered"),
-            );
-            return;
+            return Err(CompletionComputeError::MissingSource(source_name.to_string()));
         };
         let generator_id = generator.id;
         let Some(pipeline) = lattice_completion::CompletionPipeline::for_generator(
             &self.completion_registry,
             generator_id,
         ) else {
-            self.set_message(
-                EchoLevel::Error,
-                "completion pipeline not configured (missing default matcher / ranker)".to_string(),
-            );
-            return;
+            return Err(CompletionComputeError::PipelineUnconfigured);
         };
         let ctx = lattice_completion::GenerateContext {
             prefix: &prefix,
@@ -1486,18 +1752,14 @@ impl App {
         prefer_aliases_for_command_candidates(&mut candidates, &prefix);
 
         if candidates.is_empty() {
-            self.set_message(
-                EchoLevel::Info,
-                format!("no completions for `{prefix}`"),
-            );
-            return;
+            return Err(CompletionComputeError::NoMatches { prefix });
         }
-        self.completion_state = Some(CompletionState {
+        Ok(CompletionState {
             candidates,
             selected: 0,
             replace_start,
             original_line: line,
-        });
+        })
     }
 
     fn execute_ex_line(&mut self, line: &str) {
@@ -2427,24 +2689,20 @@ impl App {
         popup.max(1)
     }
 
-    fn do_help_scroll(&mut self, delta: i32) {
+    fn do_help_move_cursor(&mut self, dx: i32, dy: i32) {
         let viewport = self.help_bufferport_height();
         if let Some(h) = self.help_buffer.as_mut() {
-            if delta >= 0 {
-                h.scroll_down(delta as usize, viewport);
-            } else {
-                h.scroll_up((-delta) as usize);
-            }
+            h.move_cursor(dx, dy, viewport);
         }
     }
 
-    fn do_help_scroll_page(&mut self, down: bool) {
+    fn do_help_half_page(&mut self, down: bool) {
         let viewport = self.help_bufferport_height();
         if let Some(h) = self.help_buffer.as_mut() {
             if down {
-                h.scroll_down(viewport.max(1), viewport);
+                h.half_page_down(viewport);
             } else {
-                h.scroll_up(viewport.max(1));
+                h.half_page_up(viewport);
             }
         }
     }
@@ -6733,13 +6991,242 @@ mod tests {
     }
 
     #[test]
-    fn typing_after_popup_open_dismisses_it() {
-        let mut a = app_in_command_mode("descri");
+    fn typing_after_popup_open_live_refilters_candidates() {
+        // Vertico-style: typing while the popup is open keeps it
+        // open and re-runs the pipeline against the longer prefix.
+        let mut a = app_in_command_mode("descr");
         a.apply(Action::CommandLineCompleteOrAdvance);
         assert!(a.completion_state.is_some());
-        a.apply(Action::CommandLineAppend('b'));
+        let initial_count = a.completion_state.as_ref().unwrap().candidates.len();
+
+        a.apply(Action::CommandLineAppend('i'));
+        assert!(
+            a.completion_state.is_some(),
+            "popup must stay open while filtering"
+        );
+        assert_eq!(a.command_line, "descri");
+        // Typing narrows the prefix -> candidate set should shrink
+        // or stay equal, never grow.
+        let narrowed = a.completion_state.as_ref().unwrap().candidates.len();
+        assert!(narrowed <= initial_count);
+        // Selection resets to first match (the candidate set
+        // changed; previous index would be meaningless).
+        assert_eq!(a.completion_state.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn backspace_after_popup_open_live_refilters() {
+        let mut a = app_in_command_mode("describ");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let narrow_count = a.completion_state.as_ref().unwrap().candidates.len();
+        a.apply(Action::CommandLineBackspace);
+        assert!(a.completion_state.is_some());
+        assert_eq!(a.command_line, "descri");
+        // Shorter prefix -> at least as many candidates.
+        let widened = a.completion_state.as_ref().unwrap().candidates.len();
+        assert!(widened >= narrow_count);
+    }
+
+    #[test]
+    fn typing_no_match_keeps_popup_open_with_empty_candidates() {
+        // Vertico-style: typing past the matchable region leaves the
+        // popup alive (just empty), so a single backspace can recover.
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        for c in "zxqzxqzxq".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        let state = a.completion_state.as_ref().expect("popup must stay open on no-match");
+        assert!(state.candidates.is_empty());
+        // Backspacing the noise restores matches.
+        for _ in 0.."zxqzxqzxq".len() {
+            a.apply(Action::CommandLineBackspace);
+        }
+        assert!(a.completion_state.is_some());
+        assert!(!a.completion_state.as_ref().unwrap().candidates.is_empty());
+    }
+
+    #[test]
+    fn delete_word_backward_with_open_popup_refilters() {
+        let mut a = app_in_command_mode("describ");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        a.apply(Action::CommandLineDeleteWordBackward);
+        // Word-delete leaves us with an empty cmdline -> Empty slot
+        // -> all commands; popup stays open.
+        assert!(a.completion_state.is_some());
+        assert_eq!(a.command_line, "");
+    }
+
+    #[test]
+    fn clear_with_open_popup_widens_to_all_commands() {
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let narrow_count = a.completion_state.as_ref().unwrap().candidates.len();
+        a.apply(Action::CommandLineClear);
+        assert!(a.completion_state.is_some());
+        assert_eq!(a.command_line, "");
+        let widened = a.completion_state.as_ref().unwrap().candidates.len();
+        assert!(widened >= narrow_count);
+    }
+
+    #[test]
+    fn typing_with_no_popup_open_does_not_open_one() {
+        // Refresh only fires when a popup is already open; bare
+        // typing without a prior <Tab> stays as it was.
+        let mut a = app_in_command_mode("desc");
+        a.apply(Action::CommandLineAppend('r'));
         assert!(a.completion_state.is_none());
-        assert_eq!(a.command_line, "describ");
+        assert_eq!(a.command_line, "descr");
+    }
+
+    // ---- Chord-capture (DESIGN.md §B.1, ArgKind::Chord) ----
+
+    #[test]
+    fn chord_capture_active_only_when_in_chord_arg_slot() {
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Command;
+        // Empty cmdline -> CommandName slot, not chord-capture.
+        a.command_line = String::new();
+        assert!(!a.chord_capture_active());
+        // Mid command-name slot.
+        a.command_line = "describe-key".into();
+        assert!(!a.chord_capture_active());
+        // Now the cursor is past the space; arg slot is `chord`
+        // with kind=Chord -> capture is active.
+        a.command_line = "describe-key ".into();
+        assert!(a.chord_capture_active());
+        // describe-command's first arg is String, NOT Chord ->
+        // no capture even though we're in an arg slot.
+        a.command_line = "describe-command ".into();
+        assert!(!a.chord_capture_active());
+        // Outside Command modal, never active.
+        a.modal = ModalState::Normal;
+        a.command_line = "describe-key ".into();
+        assert!(!a.chord_capture_active());
+    }
+
+    #[test]
+    fn chord_capture_active_for_canonical_command_name() {
+        // `:ex:describe-key ` (canonical, not the alias). The slot
+        // detector tries `id_by_name` first and only falls back
+        // to alias-expand, so both forms switch into chord-capture.
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Command;
+        a.command_line = "ex:describe-key ".into();
+        assert!(a.chord_capture_active());
+    }
+
+    #[test]
+    fn append_chord_concatenates_token() {
+        let mut a = app_in_command_mode("describe-key ");
+        a.apply(Action::CommandLineAppendChord("<C-c>".into()));
+        assert_eq!(a.command_line, "describe-key <C-c>");
+    }
+
+    #[test]
+    fn append_chord_supports_multi_token_sequences() {
+        // gg / <C-w>j -- multi-stroke chords. Each press appends
+        // its own token.
+        let mut a = app_in_command_mode("describe-key ");
+        a.apply(Action::CommandLineAppendChord("g".into()));
+        a.apply(Action::CommandLineAppendChord("g".into()));
+        assert_eq!(a.command_line, "describe-key gg");
+    }
+
+    #[test]
+    fn delete_chord_pops_one_full_token() {
+        let mut a = app_in_command_mode("describe-key <C-c>");
+        a.apply(Action::CommandLineDeleteChord);
+        // The whole `<C-c>` token (5 bytes) gets removed in one
+        // delete -- not a single byte.
+        assert_eq!(a.command_line, "describe-key ");
+    }
+
+    #[test]
+    fn delete_chord_on_plain_char_pops_one_char() {
+        let mut a = app_in_command_mode("describe-key gg");
+        a.apply(Action::CommandLineDeleteChord);
+        assert_eq!(a.command_line, "describe-key g");
+    }
+
+    #[test]
+    fn delete_chord_on_empty_cmdline_exits_command_mode() {
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Command;
+        a.command_line = String::new();
+        a.apply(Action::CommandLineDeleteChord);
+        assert!(matches!(a.modal, ModalState::Normal));
+    }
+
+    // ---- Missing-arg chord prompt (DESIGN.md §B.1) ----
+
+    #[test]
+    fn empty_submit_of_describe_key_arms_chord_prompt() {
+        // User typed `:describe-key<CR>` with no arg. The required
+        // Chord arg is missing -- we shouldn't error; we should
+        // prefill the cmdline and arm auto-submit.
+        let mut a = app_in_command_mode("describe-key");
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.command_line, "describe-key ");
+        assert!(a.auto_submit_after_chord);
+        assert!(matches!(a.modal, ModalState::Command));
+    }
+
+    #[test]
+    fn empty_submit_of_canonical_describe_key_arms_chord_prompt() {
+        // Same prompt path through the canonical name, not just
+        // the alias.
+        let mut a = app_in_command_mode("ex:describe-key");
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.command_line, "ex:describe-key ");
+        assert!(a.auto_submit_after_chord);
+    }
+
+    #[test]
+    fn first_chord_after_arming_auto_submits() {
+        let mut a = app_in_command_mode("describe-key");
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.auto_submit_after_chord);
+        // The first chord token captured should auto-fire submit;
+        // the cmdline should clear and we land back in Normal.
+        a.apply(Action::CommandLineAppendChord("j".into()));
+        assert!(!a.auto_submit_after_chord);
+        assert!(matches!(a.modal, ModalState::Normal));
+        // The submitted line was `describe-key j` -- which opens
+        // a help buffer for chord `j`. Smoke check that some
+        // help got produced.
+        assert!(a.help_buffer.is_some());
+    }
+
+    #[test]
+    fn empty_submit_of_describe_command_does_not_arm_prompt() {
+        // describe-command's arg is String, not Chord -- normal
+        // missing-arg behaviour (parser errors).
+        let mut a = app_in_command_mode("describe-command");
+        a.apply(Action::CommandLineSubmit);
+        assert!(!a.auto_submit_after_chord);
+        // Cmdline submitted (and errored); modal is back to Normal.
+        assert!(matches!(a.modal, ModalState::Normal));
+    }
+
+    #[test]
+    fn cancel_clears_armed_chord_prompt() {
+        let mut a = app_in_command_mode("describe-key");
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.auto_submit_after_chord);
+        a.apply(Action::CommandLineCancel);
+        assert!(!a.auto_submit_after_chord);
+    }
+
+    #[test]
+    fn submit_with_arg_supplied_takes_normal_path() {
+        // `describe-key j` with explicit arg should NOT enter
+        // prompt mode -- it should just dispatch.
+        let mut a = app_in_command_mode("describe-key j");
+        a.apply(Action::CommandLineSubmit);
+        assert!(!a.auto_submit_after_chord);
+        assert!(matches!(a.modal, ModalState::Normal));
+        assert!(a.help_buffer.is_some());
     }
 
     #[test]
@@ -7106,26 +7593,64 @@ mod tests {
     }
 
     #[test]
-    fn help_scroll_clamps_within_content() {
+    fn help_cursor_down_advances_then_pulls_scroll() {
         let mut a = app_with("xx", 10);
         let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
         a.help_buffer = Some(HelpBuffer::from_lines("scroll-test", lines));
         // viewport_height is 10; help viewport math caps at 10*7/10 - 2 = 5.
-        a.apply(Action::HelpScroll(3));
-        assert_eq!(a.help_buffer.as_ref().unwrap().scroll, 3);
-        a.apply(Action::HelpScroll(1000));
+        for _ in 0..3 {
+            a.apply(Action::HelpCursorDown);
+        }
         let h = a.help_buffer.as_ref().unwrap();
-        let total = h.line_count() as usize;
-        assert!(h.scroll <= total);
-        assert!(h.scroll >= total.saturating_sub(20));
+        assert_eq!(h.cursor.line, 3);
+        // Cursor still inside the 5-row viewport -> no scroll yet.
+        assert_eq!(h.scroll, 0);
     }
 
     #[test]
-    fn help_scroll_up_clamps_at_zero() {
+    fn help_cursor_clamps_at_last_line() {
+        let mut a = app_with("xx", 10);
+        let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
+        a.help_buffer = Some(HelpBuffer::from_lines("scroll-test", lines));
+        for _ in 0..1000 {
+            a.apply(Action::HelpCursorDown);
+        }
+        let h = a.help_buffer.as_ref().unwrap();
+        assert_eq!(h.cursor.line, 49);
+        // Scroll keeps cursor on screen: line 49 + 1 - 5 = 45.
+        assert_eq!(h.scroll, 45);
+    }
+
+    #[test]
+    fn help_cursor_up_clamps_at_zero() {
         let mut a = app_with("xx", 10);
         a.help_buffer = Some(HelpBuffer::from_lines("scroll-test", vec!["a".into(); 30]));
-        a.apply(Action::HelpScroll(-1000));
-        assert_eq!(a.help_buffer.as_ref().unwrap().scroll, 0);
+        for _ in 0..1000 {
+            a.apply(Action::HelpCursorUp);
+        }
+        let h = a.help_buffer.as_ref().unwrap();
+        assert_eq!(h.cursor.line, 0);
+        assert_eq!(h.scroll, 0);
+    }
+
+    #[test]
+    fn help_cursor_horizontal_motion_within_line() {
+        let mut a = app_with("xx", 10);
+        a.help_buffer = Some(HelpBuffer::from_lines(
+            "hl-test",
+            vec!["hello world".into()],
+        ));
+        a.apply(Action::HelpCursorRight);
+        a.apply(Action::HelpCursorRight);
+        a.apply(Action::HelpCursorRight);
+        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.byte, 3);
+        a.apply(Action::HelpCursorLeft);
+        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.byte, 2);
+        a.apply(Action::HelpCursorLineEnd);
+        // vim `$`: last char index = len - 1 = 10.
+        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.byte, 10);
+        a.apply(Action::HelpCursorLineStart);
+        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.byte, 0);
     }
 
     #[test]
@@ -7133,9 +7658,28 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.help_buffer = Some(HelpBuffer::from_lines("jt", vec!["x".into(); 30]));
         a.apply(Action::HelpJumpBottom);
-        assert!(a.help_buffer.as_ref().unwrap().scroll > 0);
+        let h = a.help_buffer.as_ref().unwrap();
+        assert_eq!(h.cursor.line, 29);
+        assert!(h.scroll > 0);
         a.apply(Action::HelpJumpTop);
-        assert_eq!(a.help_buffer.as_ref().unwrap().scroll, 0);
+        let h = a.help_buffer.as_ref().unwrap();
+        assert_eq!(h.cursor.line, 0);
+        assert_eq!(h.scroll, 0);
+    }
+
+    #[test]
+    fn help_half_page_motions_move_cursor() {
+        let mut a = app_with("xx", 10);
+        a.help_buffer = Some(HelpBuffer::from_lines(
+            "hp",
+            (0..30).map(|i| format!("l{i}")).collect(),
+        ));
+        a.apply(Action::HelpHalfPage { down: true });
+        let h = a.help_buffer.as_ref().unwrap();
+        // viewport = 5, so half-page = 2.
+        assert_eq!(h.cursor.line, 2);
+        a.apply(Action::HelpHalfPage { down: false });
+        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.line, 0);
     }
 
     #[test]

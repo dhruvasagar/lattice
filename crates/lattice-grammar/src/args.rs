@@ -62,6 +62,13 @@ pub enum ArgValue {
     Int(i64),
     /// A pattern -- regex when v1 grows regex; literal substring today.
     Pattern(String),
+    /// A keyboard chord in canonical notation (`<C-c>`, `<Esc>`, `gg`,
+    /// `<C-S-x>`). Stored as a string so the value layer doesn't need
+    /// to know about crossterm / KeyEvent; the UI captures raw key
+    /// events and renders them via `format_chord` before the value
+    /// reaches here. Used by `:describe-key` and (later) `:map`,
+    /// `:nnoremap`, etc.
+    Chord(String),
     /// A nested invocation. Used by `:g/.../body` where the body is a
     /// command in its own right; the parser front-end produces a
     /// `CommandInvocation` and the host dispatches it per match. Boxed
@@ -81,6 +88,7 @@ impl ArgValue {
             ArgValue::Bool(_) => ArgKind::Bool,
             ArgValue::Int(_) => ArgKind::Int,
             ArgValue::Pattern(_) => ArgKind::Pattern,
+            ArgValue::Chord(_) => ArgKind::Chord,
             ArgValue::Invocation(_) => ArgKind::Body,
             ArgValue::Raw(_) => ArgKind::Raw,
         }
@@ -88,7 +96,10 @@ impl ArgValue {
 
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            ArgValue::String(s) | ArgValue::Pattern(s) | ArgValue::Raw(s) => Some(s),
+            ArgValue::String(s)
+            | ArgValue::Pattern(s)
+            | ArgValue::Chord(s)
+            | ArgValue::Raw(s) => Some(s),
             _ => None,
         }
     }
@@ -110,6 +121,11 @@ pub enum ArgKind {
     Bool,
     Int,
     Pattern,
+    /// A keyboard chord. UI surfaces switch the cmdline into
+    /// chord-capture mode while the cursor sits in this slot --
+    /// raw key events are translated to canonical chord notation
+    /// (`<C-c>`, `<Esc>`, ...) and inserted as one token.
+    Chord,
     /// A parsed sub-invocation (a CommandInvocation in its own right).
     Body,
     /// Unparsed text (host re-parses or interprets later).

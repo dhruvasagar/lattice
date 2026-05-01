@@ -171,17 +171,21 @@ fn candidate_to_line<'a>(
         spans.push(Span::styled(text[cursor..].to_string(), row_style));
     }
 
-    // Annotations right-aligned.
+    // Annotations right-aligned. Use a foreground that contrasts
+    // with the row background -- on a selected row, `DarkGray` fg
+    // would vanish into the `DarkGray` bg, hiding the marginalia.
     let annotations = c.annotations.join("  ");
     if !annotations.is_empty() {
         let used: usize = prefix.len() + text.len();
         let want = annotations.len() + 2;
         let pad = (width as usize).saturating_sub(used + want);
         spans.push(Span::styled(" ".repeat(pad + 2), row_style));
-        spans.push(Span::styled(
-            annotations,
-            row_style.fg(Color::DarkGray),
-        ));
+        let annotation_fg = if selected {
+            Color::Gray
+        } else {
+            Color::DarkGray
+        };
+        spans.push(Span::styled(annotations, row_style.fg(annotation_fg)));
     }
     Line::from(spans)
 }
@@ -232,15 +236,19 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);
 
-    // Move the terminal cursor inside the popup so the user has a
-    // clear visual indication that input is now captured by the
-    // help overlay (j/k/Ctrl-D/Ctrl-U scroll, Esc/q dismiss).
-    // Anchored at the first content row's first column;
-    // overrides any earlier `set_cursor_position` from
-    // `draw_buffer` / `draw_command_or_echo` because the help
-    // overlay paints later.
+    // Move the terminal cursor inside the popup so motions
+    // (j/k/h/l, 0/$, Ctrl-D/Ctrl-U, gg/G) read like a real buffer:
+    // the cursor visibly tracks `help.cursor`. Overrides any earlier
+    // `set_cursor_position` from `draw_buffer` /
+    // `draw_command_or_echo` because the help overlay paints later.
     if inner.height > 0 && inner.width > 0 {
-        frame.set_cursor_position((inner.x, inner.y));
+        let cursor = help.cursor;
+        // Translate buffer-space (line, byte) into screen coords by
+        // subtracting `scroll` and clamping to the popup interior.
+        let row_off = (cursor.line as usize).saturating_sub(help.scroll);
+        let row_off = row_off.min(inner.height.saturating_sub(1) as usize);
+        let col_off = (cursor.byte as usize).min(inner.width.saturating_sub(1) as usize);
+        frame.set_cursor_position((inner.x + col_off as u16, inner.y + row_off as u16));
     }
 }
 
@@ -263,12 +271,40 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     if matches!(app.modal, ModalState::Command) {
         // ":<typed>" with the cursor sitting at the end of the typed text.
         let prompt = format!(":{}", app.command_line);
-        let para = Paragraph::new(Line::from(prompt.clone()));
-        frame.render_widget(para, area);
-        let col = area
+        let cursor_col = area
             .x
             .saturating_add(prompt.len().min(area.width as usize) as u16);
-        frame.set_cursor_position((col, area.y));
+
+        // Visual hints. Two non-mutually-exclusive layers show
+        // after the cursor in a dim style:
+        //   1. `auto_submit_after_chord` (missing-arg prompt
+        //      armed by `:describe-key<CR>`): show a clear
+        //      "press a chord" cue so the user knows the next
+        //      keypress runs the lookup.
+        //   2. Otherwise, if chord-capture is just active
+        //      (cursor in a `Chord` arg slot), show a softer
+        //      `(chord)` tag so the user knows the cmdline is
+        //      consuming raw key events as chord tokens.
+        let hint: Option<&'static str> = if app.auto_submit_after_chord {
+            Some("press a chord")
+        } else if app.chord_capture_active() {
+            Some("(chord)")
+        } else {
+            None
+        };
+
+        let mut spans: Vec<Span<'_>> = vec![Span::raw(prompt)];
+        if let Some(text) = hint {
+            spans.push(Span::styled(
+                text,
+                TuiStyle::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ));
+        }
+        let para = Paragraph::new(Line::from(spans));
+        frame.render_widget(para, area);
+        frame.set_cursor_position((cursor_col, area.y));
         return;
     }
 

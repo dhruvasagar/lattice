@@ -41,9 +41,24 @@ pub struct TranslateContext<'a> {
     /// (DESIGN.md §5.11.3). Tab / S-Tab / Enter / Esc are claimed
     /// by the popup before falling through to Command mode.
     pub completion_open: bool,
+    /// True when the cmdline cursor sits on an `ArgKind::Chord`
+    /// arg slot. In this mode every key event renders to a chord
+    /// token and gets appended; the only edits are `<BS>` (delete
+    /// last chord token), `<CR>` (submit), `<Esc>` (cancel). Lookup
+    /// of multi-stroke sequences (`gg`, `<C-w>j`) is supported by
+    /// pressing each chord in turn.
+    pub chord_capture: bool,
 }
 
 pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
+    // Chord-capture overlay precedes the universal `<C-c>` -> Quit
+    // hatch, because looking up `<C-c>`'s binding via
+    // `:describe-key <C-c>` is a legitimate user need. The overlay
+    // reserves Esc as the abort path, so the user is never stuck.
+    if matches!(ctx.modal, ModalState::Command) && ctx.chord_capture {
+        return translate_command_chord_capture(event);
+    }
+
     // Universal escape hatch.
     if event.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(event.code, KeyCode::Char('c'))
@@ -68,7 +83,7 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
             ctx.pending_count,
             ctx.recording_macro,
         ),
-        ModalState::Command => translate_command(event, ctx.completion_open),
+        ModalState::Command => translate_command(event, ctx.completion_open, ctx.chord_capture),
         ModalState::Search(_) => translate_search(event),
         ModalState::Visual(_) => translate_visual(event, ctx.builtins),
         ModalState::Replace => translate_replace(event),
@@ -83,8 +98,8 @@ fn translate_help(event: KeyEvent) -> Action {
     // independently of the key code.
     if event.modifiers.contains(KeyModifiers::CONTROL) {
         return match event.code {
-            KeyCode::Char('d') => Action::HelpScrollPage { down: true },
-            KeyCode::Char('u') => Action::HelpScrollPage { down: false },
+            KeyCode::Char('d') => Action::HelpHalfPage { down: true },
+            KeyCode::Char('u') => Action::HelpHalfPage { down: false },
             // Universal Ctrl-c quit-or-cancel was already handled
             // above; falling through here is "no-op", same as for the
             // unknown-chord case.
@@ -93,12 +108,16 @@ fn translate_help(event: KeyEvent) -> Action {
     }
     match event.code {
         KeyCode::Esc | KeyCode::Char('q') => Action::HelpDismiss,
-        KeyCode::Char('j') | KeyCode::Down => Action::HelpScroll(1),
-        KeyCode::Char('k') | KeyCode::Up => Action::HelpScroll(-1),
+        KeyCode::Char('j') | KeyCode::Down => Action::HelpCursorDown,
+        KeyCode::Char('k') | KeyCode::Up => Action::HelpCursorUp,
+        KeyCode::Char('h') | KeyCode::Left => Action::HelpCursorLeft,
+        KeyCode::Char('l') | KeyCode::Right => Action::HelpCursorRight,
+        KeyCode::Char('0') => Action::HelpCursorLineStart,
+        KeyCode::Char('$') => Action::HelpCursorLineEnd,
         KeyCode::Char('g') => Action::HelpJumpTop,
         KeyCode::Char('G') => Action::HelpJumpBottom,
-        KeyCode::PageDown => Action::HelpScrollPage { down: true },
-        KeyCode::PageUp => Action::HelpScrollPage { down: false },
+        KeyCode::PageDown => Action::HelpHalfPage { down: true },
+        KeyCode::PageUp => Action::HelpHalfPage { down: false },
         _ => Action::None,
     }
 }
@@ -179,7 +198,16 @@ fn translate_search(event: KeyEvent) -> Action {
     }
 }
 
-fn translate_command(event: KeyEvent, completion_open: bool) -> Action {
+fn translate_command(
+    event: KeyEvent,
+    completion_open: bool,
+    _chord_capture: bool,
+) -> Action {
+    // Note: chord-capture is dispatched at the top-level
+    // `translate()` (so it precedes the universal Ctrl-C quit).
+    // This signature still takes the bit so call sites stay
+    // explicit, but if we reach here the overlay is off.
+
     // The completion popup claims a small set of keys first
     // (Tab / S-Tab / Enter / Esc) -- two-stage Esc per DESIGN.md
     // §5.11.3 Q6: first Esc dismisses the popup, second cancels
@@ -217,6 +245,29 @@ fn translate_command(event: KeyEvent, completion_open: bool) -> Action {
             Action::CommandLineAppend(c)
         }
         _ => Action::None,
+    }
+}
+
+/// Cmdline chord-capture overlay. Reserves the three minimal
+/// edits (Esc/CR/BS); everything else flows through
+/// `format_chord` and becomes one chord token in the cmdline.
+fn translate_command_chord_capture(event: KeyEvent) -> Action {
+    // Reserved keys -- these never become chord tokens because
+    // they're how the user finishes / aborts / corrects. To look
+    // up `<Esc>` / `<CR>` themselves, use the missing-arg prompt
+    // path (`:describe-key<CR>` with no arg) which captures the
+    // very next event.
+    match event.code {
+        KeyCode::Esc => return Action::CommandLineCancel,
+        KeyCode::Enter => return Action::CommandLineSubmit,
+        KeyCode::Backspace => return Action::CommandLineDeleteChord,
+        _ => {}
+    }
+    match crate::chord::format_chord(&event) {
+        Some(token) => Action::CommandLineAppendChord(token),
+        // Release events / modifier-only presses don't have a
+        // chord representation -- swallow them silently.
+        None => Action::None,
     }
 }
 
@@ -823,6 +874,7 @@ mod tests {
             recording_macro: false,
             help_open: false,
             completion_open: false,
+            chord_capture: false,
         }
     }
 
@@ -840,6 +892,7 @@ mod tests {
             recording_macro: false,
             help_open: false,
             completion_open: false,
+            chord_capture: false,
         }
     }
 
@@ -856,6 +909,20 @@ mod tests {
             recording_macro: true,
             help_open: false,
             completion_open: false,
+            chord_capture: false,
+        }
+    }
+
+    fn ctx_chord_capture<'a>(b: &'a Builtins) -> TranslateContext<'a> {
+        TranslateContext {
+            modal: ModalState::Command,
+            pending: Pending::None,
+            builtins: b,
+            pending_count: 0,
+            recording_macro: false,
+            help_open: false,
+            completion_open: false,
+            chord_capture: true,
         }
     }
 
@@ -1753,6 +1820,7 @@ mod tests {
             recording_macro: false,
             help_open: true,
             completion_open: false,
+            chord_capture: false,
         }
     }
 
@@ -1783,40 +1851,78 @@ mod tests {
     }
 
     #[test]
-    fn help_open_routes_jk_to_scroll() {
+    fn help_open_routes_jk_to_cursor_motion() {
         let (_, b) = fixture();
         assert!(matches!(
             translate(
                 ctx_help_open(ModalState::Normal, Pending::None, &b),
                 key(KeyCode::Char('j'))
             ),
-            Action::HelpScroll(1)
+            Action::HelpCursorDown
         ));
         assert!(matches!(
             translate(
                 ctx_help_open(ModalState::Normal, Pending::None, &b),
                 key(KeyCode::Char('k'))
             ),
-            Action::HelpScroll(-1)
+            Action::HelpCursorUp
         ));
     }
 
     #[test]
-    fn help_open_routes_ctrl_d_u_to_page_scroll() {
+    fn help_open_routes_hl_to_cursor_motion() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('h'))
+            ),
+            Action::HelpCursorLeft
+        ));
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('l'))
+            ),
+            Action::HelpCursorRight
+        ));
+    }
+
+    #[test]
+    fn help_open_routes_zero_and_dollar_to_line_endpoints() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('0'))
+            ),
+            Action::HelpCursorLineStart
+        ));
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('$'))
+            ),
+            Action::HelpCursorLineEnd
+        ));
+    }
+
+    #[test]
+    fn help_open_routes_ctrl_d_u_to_half_page() {
         let (_, b) = fixture();
         assert!(matches!(
             translate(
                 ctx_help_open(ModalState::Normal, Pending::None, &b),
                 ctrl(KeyCode::Char('d'))
             ),
-            Action::HelpScrollPage { down: true }
+            Action::HelpHalfPage { down: true }
         ));
         assert!(matches!(
             translate(
                 ctx_help_open(ModalState::Normal, Pending::None, &b),
                 ctrl(KeyCode::Char('u'))
             ),
-            Action::HelpScrollPage { down: false }
+            Action::HelpHalfPage { down: false }
         ));
     }
 
@@ -1962,6 +2068,7 @@ mod tests {
                 recording_macro: false,
                 help_open,
                 completion_open: false,
+                chord_capture: false,
             };
             last = translate(ctx, event);
             if let Action::SetPending(p) = &last {
@@ -3270,6 +3377,66 @@ mod tests {
                 other => panic!("expected motion target, got {other:?}"),
             },
             _ => panic!("expected Invoke"),
+        }
+    }
+
+    // ---- Chord-capture (DESIGN.md §B.1, ArgKind::Chord) ----
+
+    #[test]
+    fn chord_capture_translates_ctrl_letter_to_chord_token() {
+        let (_, b) = fixture();
+        let action = translate(ctx_chord_capture(&b), ctrl(KeyCode::Char('c')));
+        match action {
+            Action::CommandLineAppendChord(s) => assert_eq!(s, "<C-c>"),
+            other => panic!("expected CommandLineAppendChord, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chord_capture_translates_plain_letter_unwrapped() {
+        let (_, b) = fixture();
+        let action = translate(ctx_chord_capture(&b), key(KeyCode::Char('g')));
+        match action {
+            Action::CommandLineAppendChord(s) => assert_eq!(s, "g"),
+            other => panic!("expected CommandLineAppendChord, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chord_capture_reserves_esc_for_cancel() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_chord_capture(&b), key(KeyCode::Esc)),
+            Action::CommandLineCancel
+        ));
+    }
+
+    #[test]
+    fn chord_capture_reserves_enter_for_submit() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_chord_capture(&b), key(KeyCode::Enter)),
+            Action::CommandLineSubmit
+        ));
+    }
+
+    #[test]
+    fn chord_capture_reserves_backspace_for_delete_chord() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_chord_capture(&b), key(KeyCode::Backspace)),
+            Action::CommandLineDeleteChord
+        ));
+    }
+
+    #[test]
+    fn chord_capture_translates_special_keys_with_angles() {
+        let (_, b) = fixture();
+        // Up arrow -- the canonical chord is `<Up>`, not Esc.
+        let action = translate(ctx_chord_capture(&b), key(KeyCode::Up));
+        match action {
+            Action::CommandLineAppendChord(s) => assert_eq!(s, "<Up>"),
+            other => panic!("expected CommandLineAppendChord, got {other:?}"),
         }
     }
 }

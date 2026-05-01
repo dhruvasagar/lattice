@@ -3695,22 +3695,25 @@ impl App {
 }
 
 pub(crate) fn line_byte_len(buf: &Buffer, line: u32) -> u32 {
-    let s = buf.as_string();
-    s.split_inclusive('\n')
-        .nth(line as usize)
-        .map(|l| l.trim_end_matches('\n').len() as u32)
-        .unwrap_or(0)
+    // §8.2 hot path: use ropey's O(log n) line API instead of
+    // materialising the whole buffer.
+    buf.line_byte_len(line)
 }
 
 pub(crate) fn last_addressable_line(buf: &Buffer) -> u32 {
     let lc = buf.line_count();
-    let s = buf.as_string();
     if lc == 0 {
-        0
-    } else if s.ends_with('\n') {
-        lc.saturating_sub(2)
+        return 0;
+    }
+    // ropey reports an extra empty line for any rope ending in
+    // `\n`. Detect that by checking whether the last "line" the
+    // rope reports is empty, without materialising the entire
+    // buffer text.
+    let last_idx = lc - 1;
+    if buf.line_byte_len(last_idx) == 0 && lc >= 2 {
+        last_idx - 1
     } else {
-        lc.saturating_sub(1)
+        last_idx
     }
 }
 
@@ -6870,15 +6873,19 @@ mod tests {
     }
 
     #[test]
-    fn describe_command_with_no_args_emits_no_anchors() {
+    fn describe_command_with_no_args_emits_no_arg_anchors() {
+        // ex:quit has no args, so no `arg:*` or `args` anchors. The
+        // `latency` anchor is always present (latency-class
+        // declaration is mandatory metadata, DESIGN.md §5.2.5).
         let mut a = app_with("xx", 10);
         a.command_line = "describe-command ex:quit".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.help_buffer.as_ref().unwrap();
         assert!(
-            h.anchors.is_empty(),
-            "ex:quit has no args; no anchors expected"
+            h.anchors.iter().all(|a| a.name == "latency"),
+            "ex:quit has no args; only the latency anchor is expected: {:?}",
+            h.anchors,
         );
     }
 

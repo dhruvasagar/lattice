@@ -194,6 +194,13 @@ pub enum SurfaceForm {
 }
 
 pub struct ExCommandSpec {
+    /// Latency class declaration (DESIGN.md §5.2.5). Most ex-commands
+    /// stay [`LatencyClass::Reflex`] (the default) -- they're cheap
+    /// state mutations. File I/O (`:write`, `:edit`) and help-buffer
+    /// builders (`:describe-*`, `:apropos`, `:keymap`) declare
+    /// [`LatencyClass::Display`] so future cancellation / deadline
+    /// machinery treats them with the right budget.
+    pub latency_class: crate::command::LatencyClass,
     /// Whether the parser should accept a trailing `!` after the command
     /// word. If `false`, `:cmd!` parses as an unknown command.
     pub accepts_bang: bool,
@@ -302,6 +309,7 @@ impl CommandRegistry {
                 doc: doc.to_string(),
                 args_schema,
                 source,
+                latency_class: crate::command::LatencyClass::Reflex,
             },
             registration: CommandRegistration::Motion(spec),
         });
@@ -331,6 +339,7 @@ impl CommandRegistry {
                 doc: doc.to_string(),
                 args_schema,
                 source,
+                latency_class: crate::command::LatencyClass::Reflex,
             },
             registration: CommandRegistration::Operator(spec),
         });
@@ -365,6 +374,7 @@ impl CommandRegistry {
                 doc: doc.to_string(),
                 args_schema,
                 source,
+                latency_class: crate::command::LatencyClass::Reflex,
             },
             registration: CommandRegistration::TextObject(spec),
         });
@@ -399,6 +409,7 @@ impl CommandRegistry {
                 doc: doc.to_string(),
                 args_schema,
                 source,
+                latency_class: spec.latency_class,
             },
             registration: CommandRegistration::ExCommand(spec),
         });

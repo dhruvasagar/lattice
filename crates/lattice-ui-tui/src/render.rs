@@ -382,12 +382,12 @@ fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App) {
 /// document text we slice out of for this frame. One alloc per visible line
 /// per frame -- negligible at terminal sizes (typically 50-100 lines).
 pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'static>> {
-    let buffer_text = app.document.snapshot().buffer.as_string();
-    let raw_lines: Vec<String> = buffer_text
-        .split_inclusive('\n')
-        .map(|l| l.trim_end_matches('\n').to_string())
-        .collect();
-    let total_lines = raw_lines.len() as u32;
+    // §5.6.8 contract: one snapshot per frame, used for everything.
+    // §8.2 hot path: never materialise the whole buffer -- iterate
+    // ropey's line API and pull only the visible window. A 100MB
+    // log file should cost the same per-frame as a 100-line file.
+    let snap = app.document.snapshot();
+    let total_lines = snap.buffer.line_count();
     let gutter_w = if app.show_line_numbers {
         gutter_width(total_lines)
     } else {
@@ -402,11 +402,12 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
     let visual_range = visual_selection_range(app);
     let block = visual_block_extents(app);
 
-    // Build the visible-buffer-line ordering: starting from `scroll`, skip
-    // lines inside closed folds, taking up to `height` entries.
+    // Build the visible-buffer-line ordering: starting from `scroll`,
+    // skip lines inside closed folds, taking up to `height` entries.
+    // Bound the walk by `total_lines` from ropey -- O(1).
     let mut visible: Vec<u32> = Vec::with_capacity(height as usize);
     let mut buf_line = app.scroll;
-    while visible.len() < height as usize && (buf_line as usize) < raw_lines.len() {
+    while visible.len() < height as usize && buf_line < total_lines {
         if app.line_inside_closed_fold(buf_line) {
             buf_line += 1;
             continue;
@@ -430,7 +431,9 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
                 continue;
             }
         };
-        let line_text = &raw_lines[line_idx as usize];
+        // Pull just this line's text (O(log n) lookup +
+        // O(line_len) materialisation).
+        let line_text = snap.buffer.line(line_idx).unwrap_or_default();
         let gutter = render_gutter_for(app, line_idx, gutter_w);
         // Fold summary: show "+--- N lines ---" instead of the line body.
         if let Some(fold) = app.fold_start_at(line_idx) {
@@ -442,14 +445,14 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
             continue;
         }
         let spans = app.highlights_for_viewport_row(i);
-        let mut body = render_styled_line(line_text, spans, buffer_w);
+        let mut body = render_styled_line(&line_text, spans, buffer_w);
+        let line_len = line_text.len();
         // Blockwise visual: per-line column band [min_col, max_col].
         // Charwise / Linewise visual go through `visual_range` instead.
         if let Some(b) = block
             && line_idx >= b.start_line
             && line_idx <= b.end_line
         {
-            let line_len = line_text.len();
             let start = (b.start_col as usize).min(line_len);
             let end = ((b.end_col as usize) + 1).min(line_len);
             if start < end {
@@ -457,7 +460,7 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
             }
         } else if let Some(range) = visual_range
             && let Some((overlay_start, overlay_end)) =
-                match_overlay_range(range, line_idx, line_text.len())
+                match_overlay_range(range, line_idx, line_len)
         {
             body = apply_match_overlay(body, overlay_start, overlay_end, visual_style());
         }
@@ -465,14 +468,14 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         // softer than the current_match style.
         for &range in app.all_matches.iter() {
             if let Some((overlay_start, overlay_end)) =
-                match_overlay_range(range, line_idx, line_text.len())
+                match_overlay_range(range, line_idx, line_len)
             {
                 body = apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
             }
         }
         if let Some(range) = app.current_match
             && let Some((overlay_start, overlay_end)) =
-                match_overlay_range(range, line_idx, line_text.len())
+                match_overlay_range(range, line_idx, line_len)
         {
             body = apply_match_overlay(body, overlay_start, overlay_end, match_style());
         }
@@ -748,11 +751,9 @@ fn cursor_screen_position(app: &App, area: Rect) -> Option<(u16, u16)> {
     if row_in_view >= area.height as u32 {
         return None;
     }
-    let buffer_text = app.document.snapshot().buffer.as_string();
-    let total_lines = buffer_text
-        .split_inclusive('\n')
-        .count()
-        .max(1) as u32;
+    // §8.2 hot path: don't materialise the buffer just to count
+    // lines. ropey gives us `line_count()` in O(1).
+    let total_lines = app.document.snapshot().buffer.line_count().max(1);
     let gutter_w = if app.show_line_numbers {
         gutter_width(total_lines)
     } else {

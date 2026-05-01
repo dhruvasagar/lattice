@@ -1,0 +1,107 @@
+# Continuous integration for lattice.
+#
+# Three concerns gated:
+#
+# 1. **Correctness.** `cargo test --workspace` -- the full suite on
+#    every push. Workspace currently runs ~1056 tests in <1s.
+# 2. **Lint hygiene.** `cargo clippy --workspace --tests -- -D
+#    warnings`. The workspace lints in `Cargo.toml` ([workspace.lints])
+#    forbid `unsafe_code`, deny `unused_must_use`, and warn on
+#    `unwrap_used` / `panic` / `todo` -- so a missed `let _ = ...`
+#    on an unused `Pending` (DESIGN.md §5.2.1) is a CI failure.
+# 3. **Benchmark surface.** `cargo bench --no-run` per crate that
+#    has benches. Fast (compile-only) -- catches bench rot when
+#    refactors break the criterion harness without anyone running
+#    `cargo bench` locally.
+#
+# What is NOT gated yet:
+#
+# - **Bench regression detection** (DESIGN.md §8.2: "CI fails on >10%
+#   regression vs. main"). Shared-tenant runners (the GitHub-hosted
+#   default) have ~20% bench variance; gating at 10% on those is
+#   noise. Honest path: stand up a self-hosted runner or adopt
+#   `bencher.dev` / `criterion-compare-action`, then enable the gate.
+#   The bench-baseline job below records numbers on every push to
+#   main as a build artifact so a future comparison step has data
+#   to diff against.
+# - **Cross-platform matrix** (DESIGN.md §A.6). Linux only for now;
+#   adding macOS / Windows is a one-line matrix expansion when the
+#   workspace is platform-clean (TUI uses crossterm which is
+#   cross-platform; nothing today blocks that).
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel any prior in-flight run for the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked
+      - name: cargo clippy --workspace --tests -- -D warnings
+        run: cargo clippy --workspace --tests --locked -- -D warnings
+
+  bench-compile:
+    name: bench-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo bench --workspace --no-run
+        # Compile every bench target to catch bench-code rot. Does
+        # not execute the benches -- that's the bench-baseline job
+        # below, gated on push-to-main only.
+        run: cargo bench --workspace --no-run --locked
+
+  bench-baseline:
+    name: bench-baseline
+    runs-on: ubuntu-latest
+    # Record baselines only on main pushes -- PR runs would compete
+    # with each other for shared-runner time and the numbers
+    # wouldn't be useful for regression detection (variance dwarfs
+    # signal). Once self-hosted runners or a stable bench harness
+    # exist, this becomes a `bench-compare` job that fails on
+    # regression.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo bench --workspace
+        # Quick mode: small sample sizes, ~10x faster than full
+        # criterion. Trades p99 fidelity for CI runtime; full runs
+        # happen locally with `cargo bench` when a regression is
+        # suspected.
+        run: cargo bench --workspace --locked -- --quick
+      - name: Upload criterion results
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-results
+          path: target/criterion/
+          retention-days: 30

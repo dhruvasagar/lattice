@@ -444,18 +444,74 @@ restructuring it.
 
 ## Performance posture
 
-| Concern                           | Status | Anchor |
-|-----------------------------------|--------|--------|
-| Criterion bench harness           | ✅     | §8.2   |
-| Per-class budget assertions in CI | ⛔     | §5.2.5 |
-| Allocation discipline check in CI | ⛔     | §A.6   |
-| Long-running session benches      | ⛔     | §A.6   |
-| Cross-platform acceptance suite   | ⛔     | §A.6   |
+| Concern                                     | Status | Anchor          |
+|---------------------------------------------|--------|-----------------|
+| Criterion bench harness                     | ✅     | §8.2            |
+| Render hot-path is viewport-bounded         | ✅     | §8.2 (this commit) |
+| Actor / runtime benches                     | ✅     | §5.6.8 / §8.2   |
+| `LatencyClass` declaration on `CommandSpec` | ✅     | §5.2.5          |
+| Test + clippy CI gate                       | ✅     | (.github/workflows/ci.yml) |
+| Bench-compile CI gate                       | ✅     | (catches bench rot) |
+| Bench baseline recording (push to main)     | ✅     | (artifact upload, no diff yet) |
+| Bench regression detection (>10% threshold) | ⛔     | §8.2 -- needs stable runner |
+| Per-class budget assertions in CI           | ⛔     | §5.2.5 -- needs cancellation/deadline machinery |
+| Allocation discipline check in CI           | ⛔     | §A.6            |
+| Long-running session benches                | ⛔     | §A.6            |
+| Cross-platform acceptance suite             | ⛔     | §A.6            |
+
+**Render hot path.** `compose_visible_lines` previously did
+`buffer.as_string().split('\n').collect::<Vec<String>>()` once per
+frame -- O(buffer size) bytes per paint, blowing the §8.2 <2ms frame
+budget on any non-trivial buffer. Now uses ropey's O(log n) per-line
+API via `Buffer::line(idx)` and materializes only the visible
+window (`height` lines, typically 50). 100MB log files now pay the
+same per-frame cost as 100-line files.
+
+**Actor benches** (`crates/lattice-runtime/benches/actor.rs`)
+characterize the load-bearing async primitives:
+
+| Benchmark | DESIGN target (p99) | Observed (median) |
+|---|---|---|
+| `apply_edit` round-trip | <100µs | ~80µs (constant across 10/1k/50k lines) |
+| `snapshot_load` | <5ns aspirational | ~16ns (`load_full`'s Arc bump) |
+| `snapshot_post_publish_read` | -- | ~17ns |
+
+The `apply_edit` round-trip meets §8.2 with 20% margin. The
+snapshot-load gap (16ns vs. aspirational 5ns) is `load_full`'s
+refcount bump; the wait-free `Cache::load` would be closer but needs
+per-thread state -- revisit when GPU rendering arrives and the
+per-frame overhead matters.
+
+**`LatencyClass` declaration** (DESIGN.md §5.2.5) is now a field on
+every `CommandSpec`. `:describe-command` surfaces it under a
+"Latency:" section. v1 is purely declarative; the cancellation /
+deadline machinery that enforces it lands with the §5.10 event-bus.
+Default classifications:
+
+- **Reflex** (<2ms p99): every motion, operator, text-object; cheap
+  ex-commands (`:quit`, `:noh`, `:set`, `:delete`, `:s`, `:g`,
+  `:v`).
+- **Display** (<10ms p99 sync prelude): file I/O (`:write`,
+  `:write-quit`, `:edit`); help-buffer builders (`:reg`, `:marks`,
+  `:describe-*`, `:apropos`, `:keymap`).
+- **Background**: none yet -- the indexer / file-watcher / LSP
+  debounce paths arrive in Phases 4-7.
+
+**CI** (`.github/workflows/ci.yml`) gates every push/PR on
+`cargo test --workspace --locked` and `cargo clippy --workspace
+--tests --locked -- -D warnings`. A `bench-compile` job catches
+bench-code rot via `cargo bench --no-run`. A `bench-baseline` job on
+push-to-main runs the benches in `--quick` mode and uploads the
+criterion reports as artifacts -- groundwork for the regression
+gate when stable bench infrastructure (self-hosted runner or
+`bencher.dev`) lands.
 
 Current bench coverage: motions (word_forward / backward / end /
 first_non_blank / counted), operators (dw / dd / d_whole / yw / cw / diw /
 di_paren), search (forward first / last / no-match-with-wrap / backward),
-buffer (insert at origin / middle, delete one byte, position round-trip).
+buffer (insert at origin / middle, delete one byte, position round-trip),
+runtime actor (apply_edit round-trip / snapshot_load /
+snapshot_post_publish_read at 10/1k/50k lines).
 
 ---
 

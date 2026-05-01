@@ -58,6 +58,53 @@ impl Buffer {
         self.rope.to_string()
     }
 
+    /// Materialise one logical line (without its trailing `\n`).
+    /// Returns `None` if `line` is past the end. Locating the line
+    /// is `O(log n)`; copying its bytes is `O(line_len)`.
+    ///
+    /// Why this exists: the renderer's hot path needs only the
+    /// visible window of lines per frame. Calling [`Self::as_string`]
+    /// followed by `split('\n').collect::<Vec<_>>()` once per frame
+    /// allocates `O(buffer size)` bytes; a 100MB log blows the §8.2
+    /// frame budget on every paint. Iterating one line at a time
+    /// keeps the per-frame work proportional to the viewport, not
+    /// the document.
+    pub fn line(&self, line: u32) -> Option<String> {
+        if line >= self.line_count() {
+            return None;
+        }
+        let slice = self.rope.line(line as usize);
+        let text = slice.to_string();
+        // ropey includes the trailing newline in line slices; the
+        // renderer wants the line content without it.
+        Some(match text.strip_suffix('\n') {
+            Some(s) => s.to_string(),
+            None => text,
+        })
+    }
+
+    /// Byte length of one line excluding the trailing newline.
+    /// O(log n). Cheap helper for renderers that want to know a
+    /// line's width without materialising its text.
+    pub fn line_byte_len(&self, line: u32) -> u32 {
+        if line >= self.line_count() {
+            return 0;
+        }
+        let slice = self.rope.line(line as usize);
+        let bytes = slice.len_bytes();
+        // Subtract 1 if the slice ends in a newline (ropey
+        // includes trailing `\n` in its line slice). ropey's
+        // `Chars` isn't double-ended so we peek the last byte
+        // directly.
+        let has_trailing_newline = bytes > 0 && slice.byte(bytes - 1) == b'\n';
+        let len = if has_trailing_newline {
+            bytes - 1
+        } else {
+            bytes
+        };
+        u32::try_from(len).unwrap_or(u32::MAX)
+    }
+
     pub fn slice(&self, range: Range) -> CoreResult<String> {
         let start = self.position_to_byte(range.start)?;
         let end = self.position_to_byte(range.end)?;
@@ -207,6 +254,43 @@ mod tests {
         let b = Buffer::from_text("hello\nworld");
         let r = Range::new(Position::new(0, 1), Position::new(1, 3));
         assert_eq!(b.slice(r).unwrap(), "ello\nwor");
+    }
+
+    #[test]
+    fn line_returns_one_line_without_newline() {
+        let b = Buffer::from_text("hello\nworld\nfoo");
+        assert_eq!(b.line(0), Some("hello".into()));
+        assert_eq!(b.line(1), Some("world".into()));
+        assert_eq!(b.line(2), Some("foo".into()));
+    }
+
+    #[test]
+    fn line_out_of_range_is_none() {
+        let b = Buffer::from_text("a\nb");
+        assert_eq!(b.line(99), None);
+    }
+
+    #[test]
+    fn line_handles_trailing_newline() {
+        // Trailing newline -> ropey reports an extra empty line;
+        // it must materialise as the empty string.
+        let b = Buffer::from_text("a\nb\n");
+        assert_eq!(b.line(0), Some("a".into()));
+        assert_eq!(b.line(1), Some("b".into()));
+        assert_eq!(b.line(2), Some(String::new()));
+    }
+
+    #[test]
+    fn line_byte_len_excludes_newline() {
+        let b = Buffer::from_text("hello\nworld");
+        assert_eq!(b.line_byte_len(0), 5);
+        assert_eq!(b.line_byte_len(1), 5);
+    }
+
+    #[test]
+    fn line_byte_len_for_empty_line_is_zero() {
+        let b = Buffer::from_text("\n");
+        assert_eq!(b.line_byte_len(0), 0);
     }
 
     #[test]

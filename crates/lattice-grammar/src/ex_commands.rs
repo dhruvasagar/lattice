@@ -24,6 +24,7 @@
 //! `lattice-ui-tui::excommand`).
 
 use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
+use crate::command::LatencyClass;
 use crate::effect::{Effect, SubstituteScope};
 use crate::error::{CommandError, GrammarResult};
 use crate::range::Range;
@@ -58,6 +59,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:write",
         "Write the current buffer to disk (`:w [path]`).",
         ExCommandSpec {
+            latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_optional_path),
@@ -77,6 +79,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:quit",
         "Quit the editor (`:q[!]`).",
         ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
             accepts_bang: true,
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
@@ -89,6 +92,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:write-quit",
         "Write the current buffer and quit (`:wq[!]` / `:x[!]`).",
         ExCommandSpec {
+            latency_class: LatencyClass::Display,
             accepts_bang: true,
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
@@ -101,6 +105,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:nohlsearch",
         "Clear the search-highlight overlay (`:noh[lsearch]`).",
         ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
@@ -113,6 +118,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:registers",
         "Show every register's contents (`:reg[isters]`).",
         ExCommandSpec {
+            latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
@@ -125,6 +131,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:marks",
         "Show every set mark's name + position (`:marks`).",
         ExCommandSpec {
+            latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
@@ -137,6 +144,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:delete",
         "Delete the current line including its newline (`:d[elete]`).",
         ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
@@ -149,6 +157,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:set",
         "Set a view option (`:set <option>`).",
         ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_required_string),
@@ -161,6 +170,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:edit",
         "Load a file into the current document (`:e[!] [path]`).",
         ExCommandSpec {
+            latency_class: LatencyClass::Display,
             accepts_bang: true,
             accepts_range: false,
             parse_args: Box::new(parse_optional_path),
@@ -180,6 +190,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:substitute",
         "Replace pattern with replacement on the current line or `%` whole buffer (`:s/pat/rep/[g]`).",
         ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             // `accepts_range: true` even though v1 only honours
             // CurrentLine and Whole; the parser front-end provides the
@@ -221,6 +232,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:global",
         "Run a command on every line matching (`:g`) or NOT matching (`:v`) a pattern.",
         ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_global_args_unreachable),
@@ -254,6 +266,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:describe-command",
         "Open the help view for a named command (DESIGN.md §5.11).",
         ExCommandSpec {
+            latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_required_string),
@@ -273,6 +286,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:describe-buffer",
         "Open the help view for the current buffer's state (DESIGN.md §5.11).",
         ExCommandSpec {
+            latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
@@ -285,6 +299,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:apropos",
         "Search every registered command's name + doc for a substring (DESIGN.md §5.11).",
         ExCommandSpec {
+            latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_required_string),
@@ -304,6 +319,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:describe-key",
         "Open the help view for a key chord (DESIGN.md §5.11).",
         ExCommandSpec {
+            latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_required_string),
@@ -323,6 +339,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         "ex:keymap",
         "Open the help view listing every default keymap binding by mode (DESIGN.md §5.11).",
         ExCommandSpec {
+            latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_no_args),

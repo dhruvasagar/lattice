@@ -42,7 +42,7 @@ pub use crate::introspect::{
     render_introspection, render_introspection_lines,
 };
 pub use crate::source::{SourceKind, SourceLayer, SourceLocation};
-pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count};
+pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count, LatencyClass};
 pub use crate::dispatcher::execute;
 pub use crate::effect::{EchoLevel, Effect, SubstituteScope, YankKind};
 pub use crate::error::{CommandError, GrammarResult};

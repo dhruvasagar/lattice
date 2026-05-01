@@ -15,6 +15,11 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "actor"
+harness = false
 
 [lints]
 workspace = true

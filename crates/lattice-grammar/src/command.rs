@@ -123,6 +123,54 @@ impl CommandKind {
     }
 }
 
+/// How the runtime should schedule a command, and what budget the CI
+/// test harness will eventually enforce on it (DESIGN.md §5.2.5).
+///
+/// **v1 status: declarative only.** Every spec carries a class and
+/// `:describe-command` surfaces it. The runtime infrastructure that
+/// actually enforces these budgets (cancellation tokens; deadline
+/// timers; bench-time per-class p99 assertions) lands together with
+/// the §5.10 event-bus and the cancellation-token contract. Adding
+/// the field now means hundreds of registrations don't have to be
+/// retrofitted later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LatencyClass {
+    /// Single-stroke editing primitive: cursor motion, char insert,
+    /// mode entry, simple delete, scroll. Sync `Effect` must commit
+    /// within the keystroke budget (`<2ms p99`). The default for
+    /// motions, operators, text objects, and small ex-commands.
+    #[default]
+    Reflex,
+    /// UI affordance whose sync prelude must *appear* immediately
+    /// (`<10ms p99`) but whose data may arrive later via events:
+    /// completion popup, picker, hover, status segment. The
+    /// `:describe-*` family of help views fits here.
+    Display,
+    /// No user-perceived sync budget. File-watcher tick, indexer
+    /// pass, plugin housekeeping, LSP debounce. Throughput-only.
+    Background,
+}
+
+impl LatencyClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            LatencyClass::Reflex => "reflex",
+            LatencyClass::Display => "display",
+            LatencyClass::Background => "background",
+        }
+    }
+
+    /// Human-readable budget string for `:describe-command`
+    /// rendering. Values come straight from DESIGN.md §5.2.5.
+    pub fn budget_label(self) -> &'static str {
+        match self {
+            LatencyClass::Reflex => "<2ms p99",
+            LatencyClass::Display => "<10ms p99 sync prelude",
+            LatencyClass::Background => "throughput-only",
+        }
+    }
+}
+
 /// Metadata + the actual implementation of a registered command. Stored in
 /// the `CommandRegistry`.
 #[derive(Debug)]
@@ -146,6 +194,11 @@ pub struct CommandSpec {
     /// `pub(crate) insert_*` registry methods -- there is no public
     /// API that takes a `SourceLocation` parameter.
     pub source: crate::source::SourceLocation,
+    /// Latency class declaration (DESIGN.md §5.2.5). Surfaced by
+    /// `:describe-command`; future cancellation / deadline
+    /// machinery reads this to set per-call budgets. v1 is purely
+    /// declarative -- no runtime enforcement yet.
+    pub latency_class: LatencyClass,
 }
 
 impl crate::introspect::Introspectable for CommandSpec {
@@ -169,44 +222,55 @@ impl crate::introspect::Introspectable for CommandSpec {
     }
 
     fn extra_sections(&self) -> Vec<crate::introspect::HelpSection> {
-        if self.args_schema.is_empty() {
-            return Vec::new();
-        }
-        // Two-tiered render: a parent "Arguments:" section
-        // anchored as "args", then one subsection per arg
-        // anchored as "arg:<name>". `<C-h>` on the cmdline
-        // jumps directly to the relevant `arg:<name>` (DESIGN.md
-        // §5.11.1 + §5.11.3 arg-aware help).
-        let mut sections = Vec::with_capacity(1 + self.args_schema.len());
+        let mut sections = Vec::new();
+        // Latency class declaration (DESIGN.md §5.2.5). Surfaced
+        // in describe-command so users can see the budget the
+        // runtime treats this command under.
         sections.push(crate::introspect::HelpSection {
-            heading: "Arguments:".to_string(),
-            lines: Vec::new(),
-            anchor: Some("args".to_string()),
+            heading: "Latency:".to_string(),
+            lines: vec![format!(
+                "       {}  ({})",
+                self.latency_class.label(),
+                self.latency_class.budget_label()
+            )],
+            anchor: Some("latency".to_string()),
         });
-        for (i, arg) in self.args_schema.iter().enumerate() {
-            let default = match &arg.default {
-                crate::args::ArgDefault::Required => "required".to_string(),
-                crate::args::ArgDefault::None => "optional".to_string(),
-                crate::args::ArgDefault::Literal(_) => "default".to_string(),
-                crate::args::ArgDefault::UseSelection => "default: selection".to_string(),
-                crate::args::ArgDefault::UseCursorWord => "default: cursor word".to_string(),
-                crate::args::ArgDefault::UseLastResponse => "default: last value".to_string(),
-            };
-            let mut lines = Vec::with_capacity(2);
-            if !arg.doc.is_empty() {
-                lines.push(format!("       {}", arg.doc));
-            }
+        if !self.args_schema.is_empty() {
+            // Two-tiered render: a parent "Arguments:" section
+            // anchored as "args", then one subsection per arg
+            // anchored as "arg:<name>". `<C-h>` on the cmdline
+            // jumps directly to the relevant `arg:<name>` (DESIGN.md
+            // §5.11.1 + §5.11.3 arg-aware help).
             sections.push(crate::introspect::HelpSection {
-                heading: format!(
-                    "  {}. {}: {:?}  ({})",
-                    i + 1,
-                    arg.name,
-                    arg.kind,
-                    default
-                ),
-                lines,
-                anchor: Some(format!("arg:{}", arg.name)),
+                heading: "Arguments:".to_string(),
+                lines: Vec::new(),
+                anchor: Some("args".to_string()),
             });
+            for (i, arg) in self.args_schema.iter().enumerate() {
+                let default = match &arg.default {
+                    crate::args::ArgDefault::Required => "required".to_string(),
+                    crate::args::ArgDefault::None => "optional".to_string(),
+                    crate::args::ArgDefault::Literal(_) => "default".to_string(),
+                    crate::args::ArgDefault::UseSelection => "default: selection".to_string(),
+                    crate::args::ArgDefault::UseCursorWord => "default: cursor word".to_string(),
+                    crate::args::ArgDefault::UseLastResponse => "default: last value".to_string(),
+                };
+                let mut lines = Vec::with_capacity(2);
+                if !arg.doc.is_empty() {
+                    lines.push(format!("       {}", arg.doc));
+                }
+                sections.push(crate::introspect::HelpSection {
+                    heading: format!(
+                        "  {}. {}: {:?}  ({})",
+                        i + 1,
+                        arg.name,
+                        arg.kind,
+                        default
+                    ),
+                    lines,
+                    anchor: Some(format!("arg:{}", arg.name)),
+                });
+            }
         }
         sections
     }

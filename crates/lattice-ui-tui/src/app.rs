@@ -119,6 +119,71 @@ pub enum EchoLevel {
 /// by `Effect::Echo`) into the App's display-typed `EchoLevel`. Two types
 /// because the App's is part of the public crate API; the grammar's is a
 /// dispatch detail.
+/// Rewrite Command-kind candidates from canonical names
+/// (`ex:describe-command`) to the user-facing alias
+/// (`describe-command`) and recompute their match ranges against
+/// the new text. Non-command candidates pass through.
+///
+/// This is purely a UX rewrite -- the parser accepts both forms.
+/// We re-derive match ranges instead of clearing them so the
+/// popup's match-face highlighting still shows where the query
+/// matched.
+fn prefer_aliases_for_command_candidates(
+    candidates: &mut Vec<lattice_completion::RenderedCandidate>,
+    query: &str,
+) {
+    let needle = query.to_ascii_lowercase();
+    candidates.retain_mut(|c| {
+        if !matches!(c.raw.kind, lattice_completion::CandidateKind::Command) {
+            return true;
+        }
+        let canonical = c.raw.text.clone();
+        let alias = crate::excommand::preferred_alias_for(&canonical);
+        let new_text = alias.map(|a| a.to_string()).unwrap_or(canonical);
+        c.raw.text = new_text.clone();
+        c.raw.display = new_text.clone();
+        // Recompute match ranges: subsequence-match the lowercase
+        // query against the lowercase text; emit one range per
+        // matched byte. Mirrors the fuzzy matcher's range output
+        // so the popup highlights work consistently.
+        c.match_ranges = subsequence_match_ranges(&needle, &new_text);
+        // Keep the candidate even if the rewrite no longer
+        // visibly contains the query -- the matcher already
+        // accepted it against the canonical form. Filtering here
+        // would surprise users (typing `ex:` then accepting an
+        // alias-rewritten candidate would unexpectedly drop the
+        // candidate). Empty match_ranges just means no
+        // highlights.
+        true
+    });
+}
+
+fn subsequence_match_ranges(needle_lower: &str, haystack: &str) -> Vec<std::ops::Range<usize>> {
+    if needle_lower.is_empty() {
+        return Vec::new();
+    }
+    let n = needle_lower.as_bytes();
+    let h = haystack.as_bytes();
+    let mut ranges = Vec::with_capacity(n.len());
+    let mut ni = 0;
+    for (i, b) in h.iter().enumerate() {
+        if ni >= n.len() {
+            break;
+        }
+        if b.eq_ignore_ascii_case(&n[ni]) {
+            ranges.push(i..i + 1);
+            ni += 1;
+        }
+    }
+    if ni < n.len() {
+        // Couldn't match every needle char -- abandon the highlights;
+        // the candidate stays (host kept the framework's verdict).
+        Vec::new()
+    } else {
+        ranges
+    }
+}
+
 /// Trim the last whitespace-delimited word from the end of `s`.
 /// `<C-w>` semantics on the command line: removes the partial token
 /// the user is typing (plus any trailing spaces). v1 cursor is
@@ -1393,7 +1458,17 @@ impl App {
             registry: &self.registry,
             case_sensitive: false,
         };
-        let candidates = pipeline.run(&ctx, &prefix, &self.completion_registry.cache);
+        let mut candidates = pipeline.run(&ctx, &prefix, &self.completion_registry.cache);
+
+        // Host-side post-process: command candidates from
+        // `gen:commands` come back as canonical names
+        // (`ex:describe-command`). Rewrite to the user-facing alias
+        // (`describe-command`) so the popup shows -- and accepts --
+        // what the user would actually type. The parser accepts
+        // both forms (see excommand::parse_invocation), so this is
+        // purely a UX rewrite.
+        prefer_aliases_for_command_candidates(&mut candidates, &prefix);
+
         if candidates.is_empty() {
             self.set_message(
                 EchoLevel::Info,
@@ -6580,10 +6655,13 @@ mod tests {
         let mut a = app_in_command_mode("descri");
         a.apply(Action::CommandLineCompleteOrAdvance);
         let state = a.completion_state.as_ref().expect("popup should open");
-        // Should have describe-command, describe-buffer,
-        // describe-key as candidates.
-        assert!(state.candidates.iter().any(|c| c.raw.text == "ex:describe-command"));
-        assert!(state.candidates.iter().any(|c| c.raw.text == "ex:describe-buffer"));
+        // Candidates use the user-facing alias form, not the
+        // canonical `ex:*` registry name. Both `:describe-command`
+        // and `:ex:describe-command` parse correctly via the
+        // dispatcher's two-stage resolution; the popup shows the
+        // form a user actually types.
+        assert!(state.candidates.iter().any(|c| c.raw.text == "describe-command"));
+        assert!(state.candidates.iter().any(|c| c.raw.text == "describe-buffer"));
         assert_eq!(state.selected, 0);
     }
 
@@ -6612,9 +6690,16 @@ mod tests {
     fn accept_completion_replaces_prefix_with_chosen_text() {
         let mut a = app_in_command_mode("descri");
         a.apply(Action::CommandLineCompleteOrAdvance);
-        // First candidate is alphabetical: ex:describe-buffer.
+        // The accepted candidate uses the user-facing alias form,
+        // not the canonical `ex:*` name. The first candidate (after
+        // ranking) is one of the describe-* family.
         a.apply(Action::CommandLineAcceptCompletion);
-        assert_eq!(a.command_line, "ex:describe-buffer");
+        assert!(
+            a.command_line.starts_with("describe-")
+                || a.command_line == "apropos",
+            "expected user-facing alias, got `{}`",
+            a.command_line
+        );
         assert!(a.completion_state.is_none());
     }
 
@@ -6762,6 +6847,80 @@ mod tests {
     }
 
     // ---- delete_trailing_word helper ----
+
+    // ---- Alias preference for command candidates ----
+
+    #[test]
+    fn prefer_aliases_rewrites_canonical_to_alias() {
+        use lattice_completion::{
+            CandidateData, CandidateKind, MatchScore, RawCandidate, RenderedCandidate,
+        };
+        use lattice_grammar::source::SourceLocation;
+        let mut candidates = vec![RenderedCandidate {
+            raw: RawCandidate {
+                text: "ex:describe-command".into(),
+                display: "ex:describe-command".into(),
+                kind: CandidateKind::Command,
+                data: CandidateData::Command {
+                    name: "ex:describe-command".into(),
+                    doc: "doc".into(),
+                    kind_label: "ex-command".into(),
+                    source: SourceLocation::synthetic("test"),
+                },
+            },
+            score: MatchScore::PERFECT,
+            match_ranges: vec![],
+            annotations: vec![],
+        }];
+        prefer_aliases_for_command_candidates(&mut candidates, "descri");
+        assert_eq!(candidates[0].raw.text, "describe-command");
+        assert_eq!(candidates[0].raw.display, "describe-command");
+        // Match ranges recomputed against the new text.
+        assert!(!candidates[0].match_ranges.is_empty());
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn prefer_aliases_leaves_non_command_candidates_alone() {
+        use lattice_completion::{
+            CandidateData, CandidateKind, MatchScore, RawCandidate, RenderedCandidate,
+        };
+        let mut candidates = vec![RenderedCandidate {
+            raw: RawCandidate {
+                text: "/tmp/foo.rs".into(),
+                display: "foo.rs".into(),
+                kind: CandidateKind::File,
+                data: CandidateData::File {
+                    path: "/tmp/foo.rs".into(),
+                    is_dir: false,
+                    size: None,
+                },
+            },
+            score: MatchScore::PERFECT,
+            match_ranges: vec![0..3],
+            annotations: vec![],
+        }];
+        prefer_aliases_for_command_candidates(&mut candidates, "tmp");
+        // File candidate untouched.
+        assert_eq!(candidates[0].raw.text, "/tmp/foo.rs");
+    }
+
+    #[test]
+    fn parser_accepts_canonical_name_directly() {
+        // Defensive: even if the user types the canonical name
+        // (`:ex:describe-command`), the parser resolves it. The
+        // assertion: no "unknown command" error message. Whatever
+        // happens downstream (e.g. `:ex:write` errors on no file
+        // name) is unrelated to parser resolution.
+        let mut a = app_in_command_mode("ex:describe-command ex:write");
+        a.apply(Action::CommandLineSubmit);
+        // Should have opened the help buffer; no "unknown
+        // command" error from the parser.
+        assert!(
+            a.help_buffer.is_some(),
+            "help should open from canonical-name describe-command"
+        );
+    }
 
     #[test]
     fn delete_trailing_word_strips_then_cuts() {

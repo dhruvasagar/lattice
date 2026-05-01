@@ -78,10 +78,23 @@ fn parse_invocation(
         (raw_cmd, false)
     };
 
-    let canonical = expand_alias(cmd).ok_or_else(|| ExCommandError::Unknown(raw_cmd.to_string()))?;
-    let id = registry
-        .id_by_name(canonical)
-        .ok_or_else(|| ExCommandError::Unknown(raw_cmd.to_string()))?;
+    // Resolution order: try the typed text directly as a registry
+    // name first (so canonical names like `ex:describe-command`
+    // resolve), then fall back to alias expansion (so user-friendly
+    // shorthands like `describe-command` / `q` / `wq` resolve too).
+    // Both forms reach the same `CommandSpec`; this is what lets
+    // tab-completion's accepted candidates submit correctly
+    // regardless of whether the candidate text was the canonical
+    // form or the alias.
+    let id = if let Some(id) = registry.id_by_name(cmd) {
+        id
+    } else if let Some(canonical) = expand_alias(cmd) {
+        registry
+            .id_by_name(canonical)
+            .ok_or_else(|| ExCommandError::Unknown(raw_cmd.to_string()))?
+    } else {
+        return Err(ExCommandError::Unknown(raw_cmd.to_string()));
+    };
 
     let entry = registry
         .lookup(id)
@@ -159,6 +172,24 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
 /// and any future `:describe-aliases` view.
 pub fn aliases() -> HashMap<&'static str, &'static str> {
     ALIAS_TABLE.iter().copied().collect()
+}
+
+/// Reverse map of the alias table: for each canonical name, the
+/// preferred user-facing alias (the longest one). Used by completion
+/// to rewrite raw `gen:commands` output (which produces canonical
+/// names like `ex:describe-command`) into the form a user actually
+/// types (`describe-command`).
+///
+/// Picking the longest alias produces the most descriptive form
+/// (`write` over `w`, `nohlsearch` over `noh`). Commands without
+/// any alias map to themselves -- the canonical IS the user-facing
+/// form.
+pub fn preferred_alias_for(canonical: &str) -> Option<&'static str> {
+    ALIAS_TABLE
+        .iter()
+        .filter(|(_, c)| *c == canonical)
+        .map(|(short, _)| *short)
+        .max_by_key(|s| s.len())
 }
 
 /// `:g/pattern/body` and `:v/pattern/body`. Produces a registered-

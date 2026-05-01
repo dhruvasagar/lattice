@@ -311,7 +311,8 @@ own line item.
 | `<C-h>` describe under cursor | ✅ | hybrid: word-at-cursor describes self if registered; else parent command at `arg:<name>` anchor |
 | `<C-u>` clear cmdline | ✅ | also dismisses popup |
 | `<C-w>` delete trailing word | ✅ | strips whitespace then last token |
-| Vertico-style popup render | ✅ | bordered, anchored above `:`, selected row highlighted, matched byte ranges painted, annotations right-aligned |
+| Vertico-style popup render | ✅ | bordered, anchored BELOW the `:` prompt (cmdline shifts up to make room), selected row highlighted, matched byte ranges painted, annotations right-aligned |
+| Alias-preferred candidate text | ✅ | `gen:commands` returns canonical names (`ex:describe-command`); host post-process rewrites to the user-facing alias (`describe-command`) and recomputes match ranges. Parser accepts both forms via two-stage resolution. |
 | Help overlay dismissed when entering `:` | ✅ | Q16: user can only focus on one thing |
 | `<C-b>` / `<C-e>` cursor movement | ⛔ deferred | needs full cmdline-cursor refactor; v1 cursor stays at end |
 | `<C-r>` register paste | ⛔ deferred | needs `Pending::AfterCommandLineRegister` substate |
@@ -480,7 +481,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-968 tests across the workspace as of the last commit. Coverage by crate:
+972 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
@@ -489,7 +490,7 @@ are crossed out there. Items that influence active tasks:
 | lattice-grammar                  | 174   |
 | lattice-completion               | 81    |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 553   |
+| lattice-ui-tui                   | 556   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

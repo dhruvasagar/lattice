@@ -25,40 +25,64 @@ use lattice_syntax::{Lang, Style, StyledSpan};
 use crate::app::{App, EchoLevel};
 
 pub fn draw_frame(frame: &mut Frame, app: &App) {
+    // Vertico-style layout (DESIGN.md §5.11.3): when a completion
+    // popup is open, the `:` prompt moves up by `popup_height` rows
+    // so the candidate list sits BELOW the prompt -- the selected
+    // candidate visually adjacent to where the user is typing,
+    // alternatives extending downward. Without an open popup the
+    // layout is the standard buffer / mode-line / cmdline three.
+    let popup_rows = app
+        .completion_state
+        .as_ref()
+        .map(|s| popup_height(s.candidates.len()))
+        .unwrap_or(0);
+
+    let constraints: Vec<Constraint> = if popup_rows > 0 {
+        vec![
+            Constraint::Min(1),                      // buffer
+            Constraint::Length(1),                   // mode line
+            Constraint::Length(1),                   // cmdline (above popup)
+            Constraint::Length(popup_rows as u16),   // popup (bottom)
+        ]
+    } else {
+        vec![
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ]
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(1),    // buffer
-            Constraint::Length(1), // mode line
-            Constraint::Length(1), // command line / echo area
-        ])
+        .constraints(constraints)
         .split(frame.area());
 
     draw_buffer(frame, chunks[0], app);
     draw_mode_line(frame, chunks[1], app);
     draw_command_or_echo(frame, chunks[2], app);
-    // Help overlay paints last so it sits on top of the buffer area.
+    // Help overlay paints over the buffer area.
     if app.help_buffer.is_some() {
         draw_help_overlay(frame, chunks[0], app);
     }
-    // Completion popup paints atop the help overlay, anchored
-    // above the `:` prompt -- vertico-style.
-    if app.completion_state.is_some() {
-        draw_completion_popup(frame, chunks[0], chunks[2], app);
+    // Completion popup occupies the bottom rows when active --
+    // vertico-style, below the cmdline.
+    if popup_rows > 0 {
+        draw_completion_popup(frame, chunks[3], app);
     }
 }
 
-/// Vertico-style completion popup (DESIGN.md §5.11.3).
-/// Anchored just above the `:` prompt, growing upward (the bottom
-/// of the popup sits one row above the prompt; selected row
-/// highlighted; matched byte ranges painted with a distinct style;
-/// annotations right-aligned).
-fn draw_completion_popup(
-    frame: &mut Frame,
-    buffer_area: Rect,
-    prompt_area: Rect,
-    app: &App,
-) {
+/// Total rows the popup occupies (content + borders), capped so it
+/// never dominates the screen.
+fn popup_height(candidate_count: usize) -> usize {
+    const MAX_ROWS: usize = 10;
+    let visible = candidate_count.min(MAX_ROWS);
+    visible + 2 // top + bottom border
+}
+
+/// Vertico-style completion popup (DESIGN.md §5.11.3). Sits BELOW
+/// the `:` prompt; the selected candidate is the FIRST visible row
+/// (closest to the prompt above), alternatives fan downward. Match
+/// ranges painted with a distinct style; annotations right-aligned.
+fn draw_completion_popup(frame: &mut Frame, popup_area: Rect, app: &App) {
     let Some(state) = app.completion_state.as_ref() else {
         return;
     };
@@ -66,33 +90,23 @@ fn draw_completion_popup(
         return;
     }
 
-    // Up to 10 rows of candidates + 2 for borders. Sized by content.
-    const MAX_ROWS: usize = 10;
-    let visible_count = state.candidates.len().min(MAX_ROWS);
-    let height = (visible_count + 2) as u16;
-    let width = buffer_area.width.saturating_sub(4).clamp(40, 100);
-    // Anchor: bottom of popup sits one row above the prompt.
-    let y = prompt_area.y.saturating_sub(height);
-    let x = buffer_area.x + 2;
-    let popup = Rect {
-        x,
-        y,
-        width,
-        height,
-    };
-
-    frame.render_widget(Clear, popup);
+    frame.render_widget(Clear, popup_area);
     let title = format!(
         " completion ({} of {}) ",
         state.selected + 1,
         state.candidates.len()
     );
     let block = Block::default().borders(Borders::ALL).title(title);
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
 
-    // Compute the visible window: scroll the candidate list so
-    // the selected entry stays in view.
+    // Visible window. Selected stays in view as the user advances
+    // with Tab; once it would scroll off the bottom, we shift the
+    // window so the selected sits at the bottom row.
+    let visible_count = inner.height as usize;
+    if visible_count == 0 {
+        return;
+    }
     let scroll = if state.selected < visible_count {
         0
     } else {

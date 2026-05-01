@@ -386,11 +386,15 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
     keymap_entry! { mode: Replace, chord: "<CR>", doc: "Insert newline" },
 
     // ---- Command (`:`) ----
-    keymap_entry! { mode: Command, chord: "<Esc>", doc: "Cancel command line" },
-    keymap_entry! { mode: Command, chord: "<CR>", doc: "Submit command line" },
+    keymap_entry! { mode: Command, chord: "<Esc>", doc: "Cancel command line (or dismiss completion popup if open)" },
+    keymap_entry! { mode: Command, chord: "<CR>", doc: "Submit command line (or accept completion if popup is open)" },
     keymap_entry! { mode: Command, chord: "<BS>", doc: "Delete previous char" },
     keymap_entry! { mode: Command, chord: "<Up>", doc: "Walk command-history backward" },
     keymap_entry! { mode: Command, chord: "<Down>", doc: "Walk command-history forward" },
+    keymap_entry! { mode: Command, chord: "<Tab>", doc: "Trigger completion / advance to next candidate" },
+    keymap_entry! { mode: Command, chord: "<C-h>", doc: "Describe command word / arg under cursor", cmd: "ex:describe-command" },
+    keymap_entry! { mode: Command, chord: "<C-u>", doc: "Clear the command line" },
+    keymap_entry! { mode: Command, chord: "<C-w>", doc: "Delete the trailing word" },
 
     // ---- Search (`/` `?`) ----
     keymap_entry! { mode: Search, chord: "<Esc>", doc: "Cancel search" },
@@ -454,9 +458,12 @@ mod tests {
     fn motion_chords_link_to_registered_command_names() {
         // Every entry whose `command` is Some must point at a name
         // that the registry actually registers. Drift-test against
-        // the builtin populator.
+        // the builtin populator. Includes ex-commands because
+        // Command-mode keymap rows reference `ex:describe-command`
+        // for `<C-h>`.
         let mut registry = lattice_grammar::CommandRegistry::new();
         let _ = lattice_grammar::builtins::populate(&mut registry);
+        let _ = lattice_grammar::ex_commands::populate(&mut registry);
         for entry in default_keymap() {
             if let Some(name) = entry.command {
                 assert!(

@@ -37,6 +37,10 @@ pub struct TranslateContext<'a> {
     /// overlay's own bindings (j/k/Ctrl-D/Ctrl-U/gg/G/Esc/q) take
     /// priority.
     pub help_open: bool,
+    /// True when the command-line completion popup is open
+    /// (DESIGN.md §5.11.3). Tab / S-Tab / Enter / Esc are claimed
+    /// by the popup before falling through to Command mode.
+    pub completion_open: bool,
 }
 
 pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
@@ -64,7 +68,7 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
             ctx.pending_count,
             ctx.recording_macro,
         ),
-        ModalState::Command => translate_command(event),
+        ModalState::Command => translate_command(event, ctx.completion_open),
         ModalState::Search(_) => translate_search(event),
         ModalState::Visual(_) => translate_visual(event, ctx.builtins),
         ModalState::Replace => translate_replace(event),
@@ -175,11 +179,38 @@ fn translate_search(event: KeyEvent) -> Action {
     }
 }
 
-fn translate_command(event: KeyEvent) -> Action {
+fn translate_command(event: KeyEvent, completion_open: bool) -> Action {
+    // The completion popup claims a small set of keys first
+    // (Tab / S-Tab / Enter / Esc) -- two-stage Esc per DESIGN.md
+    // §5.11.3 Q6: first Esc dismisses the popup, second cancels
+    // the command line. Other keys fall through; appending text
+    // implicitly dismisses the popup (the App handler clears
+    // `completion_state` on every typed char).
+    if completion_open {
+        match event.code {
+            KeyCode::Tab => return Action::CommandLineCompleteOrAdvance,
+            KeyCode::BackTab => return Action::CommandLineCompletePrev,
+            KeyCode::Enter => return Action::CommandLineAcceptCompletion,
+            KeyCode::Esc => return Action::CommandLineDismissCompletion,
+            _ => {}
+        }
+    }
+
+    if event.modifiers.contains(KeyModifiers::CONTROL) {
+        return match event.code {
+            KeyCode::Char('h') => Action::CommandLineDescribeUnderCursor,
+            KeyCode::Char('u') => Action::CommandLineClear,
+            KeyCode::Char('w') => Action::CommandLineDeleteWordBackward,
+            _ => Action::None,
+        };
+    }
+
     match event.code {
         KeyCode::Esc => Action::CommandLineCancel,
         KeyCode::Enter => Action::CommandLineSubmit,
         KeyCode::Backspace => Action::CommandLineBackspace,
+        KeyCode::Tab => Action::CommandLineCompleteOrAdvance,
+        KeyCode::BackTab => Action::CommandLineCompletePrev,
         KeyCode::Up => Action::CommandLineHistoryPrev,
         KeyCode::Down => Action::CommandLineHistoryNext,
         KeyCode::Char(c) if !event.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -791,6 +822,7 @@ mod tests {
             pending_count: 0,
             recording_macro: false,
             help_open: false,
+            completion_open: false,
         }
     }
 
@@ -807,6 +839,7 @@ mod tests {
             pending_count,
             recording_macro: false,
             help_open: false,
+            completion_open: false,
         }
     }
 
@@ -822,6 +855,7 @@ mod tests {
             pending_count: 0,
             recording_macro: true,
             help_open: false,
+            completion_open: false,
         }
     }
 
@@ -1718,6 +1752,7 @@ mod tests {
             pending_count: 0,
             recording_macro: false,
             help_open: true,
+            completion_open: false,
         }
     }
 
@@ -1926,6 +1961,7 @@ mod tests {
                 pending_count: 0,
                 recording_macro: false,
                 help_open,
+                completion_open: false,
             };
             last = translate(ctx, event);
             if let Action::SetPending(p) = &last {

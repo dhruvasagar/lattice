@@ -78,7 +78,12 @@ pub fn populate(registry: &mut CompletionRegistry) -> CompletionBuiltins {
         annotators::DocSnippetAnnotator,
     );
 
-    registry.default_matcher = Some(match_prefix);
+    // Fuzzy is the v1 default (Q4 from the design discussion --
+    // modern editors should have fuzzy matching out of the box).
+    // Users / configs can swap to `match:prefix` /
+    // `match:substring` via `cmdline.matcher` once §5.12 typed
+    // options lands.
+    registry.default_matcher = Some(match_fuzzy);
     registry.default_ranker = Some(rank_score);
     registry.default_annotators = vec![anno_kind_label, anno_doc_snippet];
 
@@ -115,7 +120,9 @@ mod tests {
     fn populate_sets_sensible_defaults() {
         let mut r = CompletionRegistry::new();
         let b = populate(&mut r);
-        assert_eq!(r.default_matcher, Some(b.match_prefix));
+        // Q4: fuzzy is the v1 default. Configurable via
+        // `cmdline.matcher` once typed options land.
+        assert_eq!(r.default_matcher, Some(b.match_fuzzy));
         assert_eq!(r.default_ranker, Some(b.rank_score));
         assert_eq!(
             r.default_annotators,

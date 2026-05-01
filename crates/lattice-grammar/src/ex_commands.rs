@@ -60,7 +60,14 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_optional_path),
             apply: Box::new(apply_write),
-            args_schema: vec![],
+            args_schema: vec![ArgSpec {
+                name: "path",
+                kind: ArgKind::String,
+                doc: "Destination path. Absent = overwrite current file.",
+                prompt: "path:",
+                default: ArgDefault::None,
+                completion: Some("gen:files"),
+            }],
         },
     );
     let quit = registry.register_ex_command(
@@ -148,7 +155,14 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_optional_path),
             apply: Box::new(apply_edit),
-            args_schema: vec![],
+            args_schema: vec![ArgSpec {
+                name: "path",
+                kind: ArgKind::String,
+                doc: "File path to open. Absent = reload current file.",
+                prompt: "path:",
+                default: ArgDefault::None,
+                completion: Some("gen:files"),
+            }],
         },
     );
     let substitute = registry.register_ex_command(
@@ -184,6 +198,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                     doc: "Flags string (currently `g` honoured; others ignored)",
                     prompt: "",
                     default: ArgDefault::Literal(ArgValue::String(String::new())),
+                    completion: None,
                 },
             ],
         },
@@ -208,6 +223,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                     doc: "True for `:v` form -- match lines NOT matching the pattern.",
                     prompt: "",
                     default: ArgDefault::Literal(ArgValue::Bool(false)),
+                    completion: None,
                 },
                 ArgSpec::required(
                     "body",
@@ -231,6 +247,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Registered command name (`ex:write`, `motion:word-forward`, ...)",
                 prompt: "command:",
                 default: ArgDefault::Required,
+                completion: Some("gen:commands"),
             }],
         },
     );
@@ -259,6 +276,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Case-insensitive substring matched against name and doc",
                 prompt: "apropos:",
                 default: ArgDefault::Required,
+                completion: None,
             }],
         },
     );
@@ -276,6 +294,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Chord notation (`j`, `dw`, `<C-d>`, `gg`, `<Esc>`, ...)",
                 prompt: "key:",
                 default: ArgDefault::Required,
+                completion: None,
             }],
         },
     );

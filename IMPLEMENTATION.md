@@ -257,7 +257,9 @@ impl plus one new ex-command; the renderer doesn't change.
 ### Completion pipeline (§5.11.3)
 
 `lattice-completion` is a standalone crate with its own test corpus
-(81 tests). Four pluggable stages, vertico-shaped:
+(81 tests) wired into the `:`-line via the App's
+`completion_registry` + `completion_state`. Four pluggable stages,
+vertico-shaped:
 
 | Stage | Trait | Built-ins |
 |---|---|---|
@@ -295,6 +297,34 @@ deferred until first cross-crate trusted subsystem lands.
 The crate doesn't depend on `lattice-ui-tui`, so it's tested
 independently. CI runs `cargo test -p lattice-completion` as its
 own line item.
+
+**App integration:**
+
+| Capability | Status | Notes |
+|---|---|---|
+| `<Tab>` opens completion popup | ✅ | Slot-aware: command-name slot uses `gen:commands`; arg slot uses `arg_spec.completion`. |
+| `<Tab>` advances candidates while open | ✅ | wraps at end |
+| `<S-Tab>` moves backward | ✅ | wraps at start |
+| `<CR>` accepts selected | ✅ | replaces `[replace_start, end)` with the candidate's `text` |
+| `<Esc>` two-stage dismiss | ✅ | first Esc closes popup; second cancels cmdline |
+| Typing dismisses popup | ✅ | re-trigger with Tab for fresh candidate set |
+| `<C-h>` describe under cursor | ✅ | hybrid: word-at-cursor describes self if registered; else parent command at `arg:<name>` anchor |
+| `<C-u>` clear cmdline | ✅ | also dismisses popup |
+| `<C-w>` delete trailing word | ✅ | strips whitespace then last token |
+| Vertico-style popup render | ✅ | bordered, anchored above `:`, selected row highlighted, matched byte ranges painted, annotations right-aligned |
+| Help overlay dismissed when entering `:` | ✅ | Q16: user can only focus on one thing |
+| `<C-b>` / `<C-e>` cursor movement | ⛔ deferred | needs full cmdline-cursor refactor; v1 cursor stays at end |
+| `<C-r>` register paste | ⛔ deferred | needs `Pending::AfterCommandLineRegister` substate |
+| Completion inside `:s/.../.../` body | ⛔ deferred | DelimiterBody slot returned; renderer doesn't recurse into pattern/replacement/flags |
+
+**ArgSpec.completion**: `Option<&'static str>` field naming a registered
+generator. v1 wires `gen:files` for `:write`/`:edit` paths and
+`gen:commands` for `:describe-command`'s name arg. Adding `gen:options`
+when typed options land is one schema edit per command.
+
+The default matcher (`match:fuzzy`) is set at registry construction;
+users / configs can swap to `match:prefix` or `match:substring` once
+typed options land via `cmdline.matcher = "match:prefix"`.
 
 Link markup -- forward-compatible reference syntax in help bodies:
 
@@ -450,7 +480,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-947 tests across the workspace as of the last commit. Coverage by crate:
+968 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
@@ -459,7 +489,7 @@ are crossed out there. Items that influence active tasks:
 | lattice-grammar                  | 174   |
 | lattice-completion               | 81    |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 532   |
+| lattice-ui-tui                   | 553   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

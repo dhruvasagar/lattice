@@ -113,6 +113,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         pending_count: app.pending_count,
                         recording_macro: app.macro_recording.is_some(),
                         help_open: app.help_buffer.is_some(),
+                        completion_open: app.completion_state.is_some(),
                     };
                     let action = translate(ctx, k);
                     app.apply(action);

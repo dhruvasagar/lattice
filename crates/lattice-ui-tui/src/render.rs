@@ -41,6 +41,135 @@ pub fn draw_frame(frame: &mut Frame, app: &App) {
     if app.help_buffer.is_some() {
         draw_help_overlay(frame, chunks[0], app);
     }
+    // Completion popup paints atop the help overlay, anchored
+    // above the `:` prompt -- vertico-style.
+    if app.completion_state.is_some() {
+        draw_completion_popup(frame, chunks[0], chunks[2], app);
+    }
+}
+
+/// Vertico-style completion popup (DESIGN.md §5.11.3).
+/// Anchored just above the `:` prompt, growing upward (the bottom
+/// of the popup sits one row above the prompt; selected row
+/// highlighted; matched byte ranges painted with a distinct style;
+/// annotations right-aligned).
+fn draw_completion_popup(
+    frame: &mut Frame,
+    buffer_area: Rect,
+    prompt_area: Rect,
+    app: &App,
+) {
+    let Some(state) = app.completion_state.as_ref() else {
+        return;
+    };
+    if state.candidates.is_empty() {
+        return;
+    }
+
+    // Up to 10 rows of candidates + 2 for borders. Sized by content.
+    const MAX_ROWS: usize = 10;
+    let visible_count = state.candidates.len().min(MAX_ROWS);
+    let height = (visible_count + 2) as u16;
+    let width = buffer_area.width.saturating_sub(4).clamp(40, 100);
+    // Anchor: bottom of popup sits one row above the prompt.
+    let y = prompt_area.y.saturating_sub(height);
+    let x = buffer_area.x + 2;
+    let popup = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, popup);
+    let title = format!(
+        " completion ({} of {}) ",
+        state.selected + 1,
+        state.candidates.len()
+    );
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    // Compute the visible window: scroll the candidate list so
+    // the selected entry stays in view.
+    let scroll = if state.selected < visible_count {
+        0
+    } else {
+        state.selected + 1 - visible_count
+    };
+    let visible: Vec<Line> = state
+        .candidates
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_count)
+        .map(|(i, c)| candidate_to_line(c, i == state.selected, inner.width))
+        .collect();
+    let para = Paragraph::new(visible);
+    frame.render_widget(para, inner);
+}
+
+/// Render one candidate as a single styled line. Matched byte
+/// ranges are painted with a distinct style; annotations
+/// right-aligned in the row's remaining width.
+fn candidate_to_line<'a>(
+    c: &'a lattice_completion::RenderedCandidate,
+    selected: bool,
+    width: u16,
+) -> Line<'a> {
+    let prefix = if selected { "▶ " } else { "  " };
+    let row_style = if selected {
+        TuiStyle::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        TuiStyle::default()
+    };
+    let match_style = TuiStyle::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+
+    // Build spans: text with match-range highlighting, then padding,
+    // then annotations on the right.
+    let text = &c.raw.display;
+    let mut spans: Vec<Span<'a>> = Vec::new();
+    spans.push(Span::styled(prefix, row_style));
+
+    // Walk text + match_ranges to paint runs.
+    let mut cursor = 0usize;
+    let mut sorted_ranges: Vec<_> = c
+        .match_ranges
+        .iter()
+        .filter(|r| r.start < r.end && r.end <= text.len())
+        .cloned()
+        .collect();
+    sorted_ranges.sort_by_key(|r| r.start);
+    for range in sorted_ranges {
+        if range.start > cursor {
+            spans.push(Span::styled(text[cursor..range.start].to_string(), row_style));
+        }
+        spans.push(Span::styled(
+            text[range.start..range.end].to_string(),
+            match_style,
+        ));
+        cursor = range.end;
+    }
+    if cursor < text.len() {
+        spans.push(Span::styled(text[cursor..].to_string(), row_style));
+    }
+
+    // Annotations right-aligned.
+    let annotations = c.annotations.join("  ");
+    if !annotations.is_empty() {
+        let used: usize = prefix.len() + text.len();
+        let want = annotations.len() + 2;
+        let pad = (width as usize).saturating_sub(used + want);
+        spans.push(Span::styled(" ".repeat(pad + 2), row_style));
+        spans.push(Span::styled(
+            annotations,
+            row_style.fg(Color::DarkGray),
+        ));
+    }
+    Line::from(spans)
 }
 
 /// Draw the help buffer (DESIGN.md §5.11) as a centred popup. Popup

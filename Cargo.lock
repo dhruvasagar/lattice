@@ -638,6 +638,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm",
+ "lattice-completion",
  "lattice-core",
  "lattice-grammar",
  "lattice-protocol",

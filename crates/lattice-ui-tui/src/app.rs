@@ -119,6 +119,23 @@ pub enum EchoLevel {
 /// by `Effect::Echo`) into the App's display-typed `EchoLevel`. Two types
 /// because the App's is part of the public crate API; the grammar's is a
 /// dispatch detail.
+/// Trim the last whitespace-delimited word from the end of `s`.
+/// `<C-w>` semantics on the command line: removes the partial token
+/// the user is typing (plus any trailing spaces). v1 cursor is
+/// always at end-of-line; if cursor support lands later this should
+/// take a cursor offset and operate to the left of it.
+fn delete_trailing_word(s: &mut String) {
+    // Strip trailing whitespace.
+    let trimmed = s.trim_end_matches(char::is_whitespace);
+    if trimmed.len() < s.len() {
+        s.truncate(trimmed.len());
+    }
+    // Strip the trailing non-whitespace run.
+    let last_ws = s.rfind(char::is_whitespace);
+    let cut_to = last_ws.map(|i| i + 1).unwrap_or(0);
+    s.truncate(cut_to);
+}
+
 fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
     match level {
         lattice_grammar::EchoLevel::Info => EchoLevel::Info,
@@ -278,6 +295,32 @@ pub enum Action {
     /// Visual/Replace, command line in Command, search line in Search.
     /// One undo unit, so a single `u` reverts the entire paste.
     PasteText(String),
+
+    // ---- Command-line editing (DESIGN.md §5.11.3) ----
+    /// `<C-u>` -- clear the entire command line.
+    CommandLineClear,
+    /// `<C-w>` -- delete the word to the left of the cursor.
+    /// (v1: cursor is at end-of-line, so deletes the trailing word.)
+    CommandLineDeleteWordBackward,
+    /// `<C-h>` -- describe the command word / arg under cursor.
+    /// Hybrid resolution: word-at-cursor describes itself if it
+    /// resolves to a registered command; else describe the parent
+    /// command at the relevant `arg:<name>` anchor.
+    CommandLineDescribeUnderCursor,
+
+    // ---- Completion popup (DESIGN.md §5.11.3) ----
+    /// `<Tab>` -- open completion popup if closed; advance the
+    /// selected candidate if open.
+    CommandLineCompleteOrAdvance,
+    /// `<S-Tab>` -- previous candidate when popup is open.
+    CommandLineCompletePrev,
+    /// `<CR>` while popup open -- replace the prefix with the
+    /// selected candidate's `text` and close the popup.
+    CommandLineAcceptCompletion,
+    /// `<Esc>` while popup open -- close the popup without
+    /// touching the command line. (Two-stage Esc: a second Esc
+    /// then cancels the command line.)
+    CommandLineDismissCompletion,
 
     // ---- Help overlay (DESIGN.md §5.11) ----
     /// Scroll the active help overlay. Positive deltas scroll down,
@@ -482,6 +525,32 @@ pub struct App {
     /// phase. Configurable per-user (eventually via `:set
     /// help.display-mode=...`).
     pub help_display_mode: HelpDisplayMode,
+
+    /// Pluggable completion pipeline (DESIGN.md §5.11.3). Owned by
+    /// the App at v1 -- promotes to a sibling crate when plugins
+    /// need cross-buffer access.
+    pub completion_registry: lattice_completion::CompletionRegistry,
+    /// Active completion popup. `Some` while the user has Tab-
+    /// triggered completion in the `:` line.
+    pub completion_state: Option<CompletionState>,
+}
+
+/// One open completion popup (DESIGN.md §5.11.3 vertico-style
+/// rendering). Built by `Action::CommandLineCompleteOrAdvance`
+/// when the user presses Tab; consumed by accept / dismiss / scroll
+/// actions.
+#[derive(Debug, Clone)]
+pub struct CompletionState {
+    pub candidates: Vec<lattice_completion::RenderedCandidate>,
+    pub selected: usize,
+    /// Byte offset within `App.command_line` where the prefix being
+    /// completed begins. The accept-handler replaces
+    /// `[replace_start, command_line.len())` with the chosen
+    /// candidate's `text`.
+    pub replace_start: usize,
+    /// What the cmdline looked like at popup-open time (for
+    /// debugging + future filter-as-you-type refinement).
+    pub original_line: String,
 }
 
 const COMMAND_HISTORY_CAP: usize = 100;
@@ -588,6 +657,12 @@ impl App {
         // looks them up by name -- but registering them populates the
         // registry so `:`-line parsing can route to them.
         let _ex_builtins = lattice_grammar::ex_commands::populate(&mut registry);
+        // §5.11.3 completion pipeline: register the built-in
+        // generators / matchers / rankers / annotators and wire
+        // sensible defaults (prefix matcher, score ranker, kind +
+        // doc annotators).
+        let mut completion_registry = lattice_completion::CompletionRegistry::new();
+        let _completion_builtins = lattice_completion::populate(&mut completion_registry);
         let lang = Lang::detect_from_path(document.path());
         let mut syntax = Syntax::for_language(lang).ok().flatten();
         if let Some(s) = syntax.as_mut() {
@@ -639,6 +714,8 @@ impl App {
             command_history_pending: None,
             help_buffer: None,
             help_display_mode: HelpDisplayMode::default(),
+            completion_registry,
+            completion_state: None,
         }
     }
 
@@ -701,10 +778,19 @@ impl App {
                 self.modal = ModalState::Command;
                 self.pending = Pending::None;
                 self.last_message = None;
+                // Q16: opening the cmdline dismisses any open help.
+                // The user can only focus on one thing.
+                self.help_buffer = None;
+                self.completion_state = None;
             }
             Action::CommandLineAppend(c) => {
                 if matches!(self.modal, ModalState::Command) {
                     self.command_line.push(c);
+                    // Typing dismisses the popup; the user is
+                    // refining their query, not advancing the
+                    // existing candidate set. Re-trigger with Tab
+                    // when they want fresh completion.
+                    self.completion_state = None;
                 }
             }
             Action::CommandLineBackspace => {
@@ -846,6 +932,29 @@ impl App {
             Action::PasteAfter => self.do_paste(false),
             Action::PasteBefore => self.do_paste(true),
             Action::PasteText(text) => self.do_paste_text(&text),
+
+            // ---- Command-line editing + completion ----
+            Action::CommandLineClear => {
+                if matches!(self.modal, ModalState::Command) {
+                    self.command_line.clear();
+                    self.completion_state = None;
+                }
+            }
+            Action::CommandLineDeleteWordBackward => {
+                if matches!(self.modal, ModalState::Command) {
+                    delete_trailing_word(&mut self.command_line);
+                    self.completion_state = None;
+                }
+            }
+            Action::CommandLineDescribeUnderCursor => {
+                self.do_command_line_describe_under_cursor()
+            }
+            Action::CommandLineCompleteOrAdvance => self.do_command_line_complete_or_advance(),
+            Action::CommandLineCompletePrev => self.do_command_line_complete_prev(),
+            Action::CommandLineAcceptCompletion => self.do_command_line_accept_completion(),
+            Action::CommandLineDismissCompletion => {
+                self.completion_state = None;
+            }
 
             Action::HelpScroll(delta) => self.do_help_scroll(delta),
             Action::HelpScrollPage { down } => self.do_help_scroll_page(down),
@@ -1082,6 +1191,222 @@ impl App {
                 self.current_match = None;
             }
         }
+    }
+
+    /// Hybrid `<C-h>` resolution (DESIGN.md §5.11.3 Q11). Walk the
+    /// `:` line up to the cursor (v1: cursor is at end), find the
+    /// "word" the user is hovering on, and:
+    ///
+    /// 1. If the word resolves to a registered command (via alias
+    ///    expansion), describe THAT -- the user is asking about the
+    ///    command they're typing.
+    /// 2. Else, if we can identify the slot as an arg of a known
+    ///    command, describe the parent command scrolled to
+    ///    `arg:<name>`.
+    /// 3. Else, no-op + status message.
+    fn do_command_line_describe_under_cursor(&mut self) {
+        if !matches!(self.modal, ModalState::Command) {
+            return;
+        }
+        // Take what's typed so far. v1 cursor is at end-of-line.
+        let line = self.command_line.clone();
+        let cursor = line.len();
+        let alias_resolver = |short: &str| {
+            crate::excommand::aliases()
+                .get(short)
+                .map(|s| (*s).to_string())
+        };
+        let slot = lattice_completion::current_slot(
+            &line,
+            cursor,
+            &self.registry,
+            &alias_resolver,
+        );
+
+        // Word-at-cursor: try to resolve to a registered command.
+        let word = slot.prefix();
+        let canonical = if word.is_empty() {
+            None
+        } else {
+            // Try alias resolution; fall through to direct registry
+            // name lookup.
+            alias_resolver(word).or_else(|| {
+                self.registry
+                    .id_by_name(word)
+                    .and(Some(word.to_string()))
+            })
+        };
+
+        if let Some(name) = canonical
+            && self.registry.id_by_name(&name).is_some()
+        {
+            self.do_describe_command(&name, None);
+            return;
+        }
+
+        // Fall back to arg-aware: describe the parent command at
+        // arg:<name>.
+        match &slot {
+            lattice_completion::CommandLineSlot::Arg {
+                command_name,
+                arg_spec,
+                ..
+            } => {
+                let anchor = format!("arg:{}", arg_spec.name);
+                self.do_describe_command(command_name, Some(&anchor));
+            }
+            lattice_completion::CommandLineSlot::CommandName { prefix, .. } => {
+                // Cursor in the command-name slot but the prefix
+                // doesn't resolve. Surface a helpful message.
+                if prefix.is_empty() {
+                    self.set_message(
+                        EchoLevel::Info,
+                        "type a command name then C-h for its help".to_string(),
+                    );
+                } else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("no command named `{prefix}`"),
+                    );
+                }
+            }
+            _ => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no command-line context for `C-h`".to_string(),
+                );
+            }
+        }
+    }
+
+    /// `<Tab>` opens the completion popup or advances within an
+    /// open one. Slot detection drives generator selection; the
+    /// pipeline runs through the registered matcher / ranker /
+    /// annotators.
+    fn do_command_line_complete_or_advance(&mut self) {
+        if !matches!(self.modal, ModalState::Command) {
+            return;
+        }
+        if let Some(state) = self.completion_state.as_mut() {
+            if !state.candidates.is_empty() {
+                state.selected = (state.selected + 1) % state.candidates.len();
+            }
+            return;
+        }
+        self.open_completion_popup();
+    }
+
+    fn do_command_line_complete_prev(&mut self) {
+        if let Some(state) = self.completion_state.as_mut()
+            && !state.candidates.is_empty()
+        {
+            if state.selected == 0 {
+                state.selected = state.candidates.len() - 1;
+            } else {
+                state.selected -= 1;
+            }
+        }
+    }
+
+    fn do_command_line_accept_completion(&mut self) {
+        let Some(state) = self.completion_state.take() else {
+            return;
+        };
+        if state.candidates.is_empty() {
+            return;
+        }
+        let chosen = &state.candidates[state.selected];
+        // Replace [replace_start, end) with the chosen text.
+        self.command_line
+            .replace_range(state.replace_start..self.command_line.len(), &chosen.raw.text);
+    }
+
+    /// Build the pipeline for the current slot and run it. Caches
+    /// results into `completion_state`.
+    fn open_completion_popup(&mut self) {
+        let line = self.command_line.clone();
+        let cursor = line.len();
+        let alias_resolver = |short: &str| {
+            crate::excommand::aliases()
+                .get(short)
+                .map(|s| (*s).to_string())
+        };
+        let slot = lattice_completion::current_slot(
+            &line,
+            cursor,
+            &self.registry,
+            &alias_resolver,
+        );
+        let (source_name, prefix, replace_start) = match &slot {
+            lattice_completion::CommandLineSlot::CommandName {
+                prefix,
+                replace_start,
+            } => ("gen:commands", prefix.clone(), *replace_start),
+            lattice_completion::CommandLineSlot::Arg {
+                arg_spec,
+                prefix,
+                replace_start,
+                ..
+            } => match arg_spec.completion {
+                Some(name) => (name, prefix.clone(), *replace_start),
+                None => {
+                    self.set_message(
+                        EchoLevel::Info,
+                        format!("no completion for arg `{}`", arg_spec.name),
+                    );
+                    return;
+                }
+            },
+            lattice_completion::CommandLineSlot::Empty => {
+                ("gen:commands", String::new(), 0)
+            }
+            _ => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no completion at cursor".to_string(),
+                );
+                return;
+            }
+        };
+
+        let Some(generator) = self.completion_registry.generator_by_name(source_name) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("completion source `{source_name}` not registered"),
+            );
+            return;
+        };
+        let generator_id = generator.id;
+        let Some(pipeline) = lattice_completion::CompletionPipeline::for_generator(
+            &self.completion_registry,
+            generator_id,
+        ) else {
+            self.set_message(
+                EchoLevel::Error,
+                "completion pipeline not configured (missing default matcher / ranker)".to_string(),
+            );
+            return;
+        };
+        let ctx = lattice_completion::GenerateContext {
+            prefix: &prefix,
+            document: &self.document,
+            registry: &self.registry,
+            case_sensitive: false,
+        };
+        let candidates = pipeline.run(&ctx, &prefix, &self.completion_registry.cache);
+        if candidates.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                format!("no completions for `{prefix}`"),
+            );
+            return;
+        }
+        self.completion_state = Some(CompletionState {
+            candidates,
+            selected: 0,
+            replace_start,
+            original_line: line,
+        });
     }
 
     fn execute_ex_line(&mut self, line: &str) {
@@ -6239,6 +6564,224 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let body = a.help_buffer.as_ref().unwrap().content.as_string();
         assert!(body.contains("not bound"), "body: {body}");
+    }
+
+    // ---- Command-line completion (DESIGN.md §5.11.3) ----
+
+    fn app_in_command_mode(line: &str) -> App {
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Command;
+        a.command_line = line.into();
+        a
+    }
+
+    #[test]
+    fn tab_in_command_mode_opens_completion_popup() {
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let state = a.completion_state.as_ref().expect("popup should open");
+        // Should have describe-command, describe-buffer,
+        // describe-key as candidates.
+        assert!(state.candidates.iter().any(|c| c.raw.text == "ex:describe-command"));
+        assert!(state.candidates.iter().any(|c| c.raw.text == "ex:describe-buffer"));
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn second_tab_advances_selected_candidate() {
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let first = a.completion_state.as_ref().unwrap().selected;
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let second = a.completion_state.as_ref().unwrap().selected;
+        assert_eq!(first, 0);
+        assert_eq!(second, 1);
+    }
+
+    #[test]
+    fn shift_tab_walks_back_through_candidates() {
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        a.apply(Action::CommandLineCompletePrev);
+        assert_eq!(a.completion_state.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn accept_completion_replaces_prefix_with_chosen_text() {
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        // First candidate is alphabetical: ex:describe-buffer.
+        a.apply(Action::CommandLineAcceptCompletion);
+        assert_eq!(a.command_line, "ex:describe-buffer");
+        assert!(a.completion_state.is_none());
+    }
+
+    #[test]
+    fn dismiss_completion_keeps_command_line_intact() {
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        a.apply(Action::CommandLineDismissCompletion);
+        assert_eq!(a.command_line, "descri");
+        assert!(a.completion_state.is_none());
+    }
+
+    #[test]
+    fn typing_after_popup_open_dismisses_it() {
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        assert!(a.completion_state.is_some());
+        a.apply(Action::CommandLineAppend('b'));
+        assert!(a.completion_state.is_none());
+        assert_eq!(a.command_line, "describ");
+    }
+
+    #[test]
+    fn arg_slot_completion_for_describe_command_shows_command_names() {
+        // After "describe-command moti", the slot is arg 0 with
+        // completion source "gen:commands" -- popup should list
+        // motion:* commands.
+        let mut a = app_in_command_mode("describe-command moti");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let state = a.completion_state.as_ref().expect("popup");
+        assert!(
+            state.candidates.iter().any(|c| c.raw.text.starts_with("motion:")),
+            "expected motion:* candidates: {:?}",
+            state.candidates.iter().map(|c| &c.raw.text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn accept_in_arg_slot_replaces_only_the_arg_prefix() {
+        let mut a = app_in_command_mode("describe-command moti");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        a.apply(Action::CommandLineAcceptCompletion);
+        // Should now be "describe-command motion:..." -- the
+        // command word + space preserved; only `moti` replaced.
+        assert!(a.command_line.starts_with("describe-command motion:"));
+    }
+
+    #[test]
+    fn ctrl_u_clears_command_line_and_dismisses_popup() {
+        let mut a = app_in_command_mode("foo bar baz");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        a.apply(Action::CommandLineClear);
+        assert_eq!(a.command_line, "");
+        assert!(a.completion_state.is_none());
+    }
+
+    #[test]
+    fn ctrl_w_deletes_trailing_word() {
+        let mut a = app_in_command_mode("foo bar baz");
+        a.apply(Action::CommandLineDeleteWordBackward);
+        assert_eq!(a.command_line, "foo bar ");
+    }
+
+    #[test]
+    fn ctrl_w_with_trailing_whitespace_strips_word() {
+        let mut a = app_in_command_mode("foo bar  ");
+        a.apply(Action::CommandLineDeleteWordBackward);
+        assert_eq!(a.command_line, "foo ");
+    }
+
+    #[test]
+    fn ctrl_w_on_single_word_clears() {
+        let mut a = app_in_command_mode("foo");
+        a.apply(Action::CommandLineDeleteWordBackward);
+        assert_eq!(a.command_line, "");
+    }
+
+    // ---- Hybrid <C-h> (DESIGN.md §5.11.3 Q11) ----
+
+    #[test]
+    fn ctrl_h_on_known_command_describes_it_directly() {
+        // `:describe-command` on the cmdline; <C-h> describes that
+        // command itself (smart-resolve).
+        let mut a = app_in_command_mode("describe-command");
+        a.apply(Action::CommandLineDescribeUnderCursor);
+        let h = a.help_buffer.as_ref().expect("help should open");
+        assert!(h.title.contains("ex:describe-command"));
+    }
+
+    #[test]
+    fn ctrl_h_on_arg_describes_parent_command_at_arg_anchor() {
+        // `:describe-command moti` -- the cursor's word `moti`
+        // doesn't resolve to a command; fall back to describing
+        // the parent (`ex:describe-command`) scrolled to the
+        // `arg:name` anchor.
+        let mut a = app_in_command_mode("describe-command moti");
+        a.apply(Action::CommandLineDescribeUnderCursor);
+        let h = a.help_buffer.as_ref().expect("help should open");
+        assert!(h.title.contains("ex:describe-command"));
+        // scroll should be set to the arg:name anchor's line.
+        let arg_anchor = h.anchors.iter().find(|a| a.name == "arg:name").unwrap();
+        assert_eq!(h.scroll, arg_anchor.line as usize);
+    }
+
+    #[test]
+    fn ctrl_h_on_arg_value_that_is_a_known_command_describes_it() {
+        // `:describe-command motion:line-down` -- the arg VALUE
+        // resolves to a known command. Hybrid: describe THAT.
+        let mut a = app_in_command_mode("describe-command motion:line-down");
+        a.apply(Action::CommandLineDescribeUnderCursor);
+        let h = a.help_buffer.as_ref().expect("help should open");
+        assert!(h.title.contains("motion:line-down"));
+    }
+
+    #[test]
+    fn ctrl_h_on_unknown_word_emits_error_message() {
+        let mut a = app_in_command_mode("no-such-command");
+        a.apply(Action::CommandLineDescribeUnderCursor);
+        assert!(a.help_buffer.is_none());
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn entering_command_line_dismisses_open_help() {
+        // Q16: opening `:` dismisses help. The user can only focus
+        // on one thing.
+        let mut a = app_with("xx", 10);
+        a.help_buffer = Some(crate::help::HelpBuffer::from_lines("preexisting", vec!["x".into()]));
+        a.apply(Action::EnterCommandLine);
+        assert!(a.help_buffer.is_none());
+    }
+
+    #[test]
+    fn entering_command_line_dismisses_open_completion() {
+        let mut a = app_with("xx", 10);
+        a.completion_state = Some(CompletionState {
+            candidates: Vec::new(),
+            selected: 0,
+            replace_start: 0,
+            original_line: String::new(),
+        });
+        a.apply(Action::EnterCommandLine);
+        assert!(a.completion_state.is_none());
+    }
+
+    // ---- delete_trailing_word helper ----
+
+    #[test]
+    fn delete_trailing_word_strips_then_cuts() {
+        let mut s = String::from("alpha beta");
+        delete_trailing_word(&mut s);
+        assert_eq!(s, "alpha ");
+    }
+
+    #[test]
+    fn delete_trailing_word_handles_only_whitespace() {
+        let mut s = String::from("   ");
+        delete_trailing_word(&mut s);
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn delete_trailing_word_empty_string_is_noop() {
+        let mut s = String::new();
+        delete_trailing_word(&mut s);
+        assert_eq!(s, "");
     }
 
     #[test]

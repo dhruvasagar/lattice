@@ -163,6 +163,12 @@ pub struct ArgSpec {
     /// interactively. Empty string means "use `name` as the prompt".
     pub prompt: &'static str,
     pub default: ArgDefault,
+    /// Name of the registered completion source (`gen:commands`,
+    /// `gen:files`, etc. -- see `lattice-completion`) that fires
+    /// when the user is typing this arg. `None` = no completion
+    /// (free-form text). Wire-form is the source name (not its
+    /// runtime id) so the schema is constructable as a literal.
+    pub completion: Option<&'static str>,
 }
 
 impl ArgSpec {
@@ -174,6 +180,7 @@ impl ArgSpec {
             doc,
             prompt: "",
             default: ArgDefault::Required,
+            completion: None,
         }
     }
 
@@ -185,7 +192,14 @@ impl ArgSpec {
             doc,
             prompt: "",
             default: ArgDefault::None,
+            completion: None,
         }
+    }
+
+    /// Builder helper: attach a completion source by registered name.
+    pub fn with_completion(mut self, source_name: &'static str) -> Self {
+        self.completion = Some(source_name);
+        self
     }
 }
 

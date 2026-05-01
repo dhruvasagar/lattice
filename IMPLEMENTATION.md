@@ -216,6 +216,44 @@ display target swaps without touching the help-content layer. The
 target is configurable per-user (eventually via `:set
 help.display-mode=...`).
 
+### Provenance (§5.11.1)
+
+Every registration / binding / set captures a `SourceLocation`
+(`lattice-grammar::source`). `:describe-*` output always includes a
+`[[file:...]]` link to where the thing came from -- vim's
+`:verbose set` semantics, applied uniformly across commands, keys,
+options, events, modes.
+
+| Capture mechanism | Used for | Forgery resistance |
+|---|---|---|
+| `#[track_caller]` on `register_*` | built-in command registrations in `builtins.rs` / `ex_commands.rs` -- zero call-site burden | compiler-captured, caller cannot supply or override |
+| `keymap_entry!` declarative macro | static keymap rows (per-row `file!()` + `line!()`) | macro is the only construction path; `source` field is `pub(crate)` |
+| Trusted subsystem builds value | config loader, plugin host bridge, runtime dispatcher | reaches `pub(crate) insert_*` registry methods directly; sibling crates use sealed-trait re-exports when needed |
+| `SourceLocation::synthetic` (cfg-test only) | test fixtures | invisible outside tests |
+
+**Public API invariant**: there is no `pub fn` that takes a
+`SourceLocation` parameter and stores it. Verified by:
+- The `register_*` methods are all `#[track_caller]` and don't
+  accept a source.
+- The `pub(crate) insert_*` companions are visibility-gated to
+  `lattice-grammar`.
+- The `keymap_entry!` macro is the only path that constructs a
+  `KeymapEntry`; its `source` field is `pub(crate)`.
+
+**Determinism**: a unit test (`track_caller_captures_register_motion_call_site`) registers a sentinel at a known line and asserts the captured `SourceLocation` matches exactly. Six related tests cover propagation through `#[track_caller]` helpers, the negative case where unmarked helpers shift the captured line inward, and per-row line distinguishing across adjacent registrations. Any refactor that breaks call-site capture (a `dyn Fn` dispatcher around `register_*`, removed `#[track_caller]` on a helper in the chain) fails CI.
+
+### Generic renderer (§5.11.2)
+
+Every `:describe-*` target implements `Introspectable`
+(`lattice-grammar::introspect`). One generic
+`render_introspection(&dyn Introspectable) -> Vec<String>` produces
+the help body in a uniform shape: identifier + kind + doc +
+type-specific `extra_sections` + one `[[file:...]]` link per labelled
+source (`Defined at:`, `Bound at:`, `Subscribed at:`, `Last set at:`,
+`Overridden at:`, `Activated at:`). Adding a new introspection
+target -- when typed options / events / modes land -- is one trait
+impl plus one new ex-command; the renderer doesn't change.
+
 Link markup -- forward-compatible reference syntax in help bodies:
 
 | Markup                  | Resolution                              |
@@ -370,15 +408,15 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-800 tests across the workspace as of the last commit. Coverage by crate:
+823 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
 | lattice-protocol                 | 30    |
 | lattice-core (incl. integration) | 78    |
-| lattice-grammar                  | 152   |
+| lattice-grammar                  | 171   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 513   |
+| lattice-ui-tui                   | 516   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

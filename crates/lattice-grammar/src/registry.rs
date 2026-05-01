@@ -17,10 +17,11 @@ use lattice_core::Document;
 use lattice_protocol::ids::CommandId;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
-use crate::args::{Args, ArgSpec};
+use crate::args::{ArgSpec, Args};
 use crate::command::{CommandKind, CommandSpec, Count};
 use crate::error::{CommandError, GrammarResult};
 use crate::register::Register;
+use crate::source::{SourceKind, SourceLayer, SourceLocation};
 
 /// Strongly-typed handle to an operator command in the registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -242,7 +243,29 @@ impl CommandRegistry {
         Self::default()
     }
 
+    /// Register a motion. The caller's source location is captured
+    /// via `#[track_caller]` -- the caller cannot supply or override
+    /// it. Trusted subsystems (config loader, plugin host bridge,
+    /// runtime dispatcher) reach the `pub(crate) insert_motion`
+    /// companion directly with a layer-appropriate source.
+    #[track_caller]
     pub fn register_motion(&mut self, name: &str, doc: &str, spec: MotionSpec) -> MotionId {
+        let source = capture_builtin_source();
+        self.insert_motion(name, doc, spec, source)
+    }
+
+    /// Internal entry point: store the spec with a caller-supplied
+    /// source. Visible only inside `lattice-grammar`; trusted
+    /// subsystems in sibling crates reach this via a sealed-trait
+    /// re-export when they exist (deferred until first cross-crate
+    /// trusted subsystem lands -- see DESIGN.md §5.11).
+    pub(crate) fn insert_motion(
+        &mut self,
+        name: &str,
+        doc: &str,
+        spec: MotionSpec,
+        source: SourceLocation,
+    ) -> MotionId {
         let id = next_command_id();
         let args_schema = spec.args_schema.clone();
         self.insert(CommandEntry {
@@ -252,13 +275,26 @@ impl CommandRegistry {
                 kind: CommandKind::Motion,
                 doc: doc.to_string(),
                 args_schema,
+                source,
             },
             registration: CommandRegistration::Motion(spec),
         });
         MotionId(id)
     }
 
+    #[track_caller]
     pub fn register_operator(&mut self, name: &str, doc: &str, spec: OperatorSpec) -> OperatorId {
+        let source = capture_builtin_source();
+        self.insert_operator(name, doc, spec, source)
+    }
+
+    pub(crate) fn insert_operator(
+        &mut self,
+        name: &str,
+        doc: &str,
+        spec: OperatorSpec,
+        source: SourceLocation,
+    ) -> OperatorId {
         let id = next_command_id();
         let args_schema = spec.args_schema.clone();
         self.insert(CommandEntry {
@@ -268,17 +304,30 @@ impl CommandRegistry {
                 kind: CommandKind::Operator,
                 doc: doc.to_string(),
                 args_schema,
+                source,
             },
             registration: CommandRegistration::Operator(spec),
         });
         OperatorId(id)
     }
 
+    #[track_caller]
     pub fn register_text_object(
         &mut self,
         name: &str,
         doc: &str,
         spec: TextObjectSpec,
+    ) -> TextObjectId {
+        let source = capture_builtin_source();
+        self.insert_text_object(name, doc, spec, source)
+    }
+
+    pub(crate) fn insert_text_object(
+        &mut self,
+        name: &str,
+        doc: &str,
+        spec: TextObjectSpec,
+        source: SourceLocation,
     ) -> TextObjectId {
         let id = next_command_id();
         let args_schema = spec.args_schema.clone();
@@ -289,17 +338,30 @@ impl CommandRegistry {
                 kind: CommandKind::TextObject,
                 doc: doc.to_string(),
                 args_schema,
+                source,
             },
             registration: CommandRegistration::TextObject(spec),
         });
         TextObjectId(id)
     }
 
+    #[track_caller]
     pub fn register_ex_command(
         &mut self,
         name: &str,
         doc: &str,
         spec: ExCommandSpec,
+    ) -> ExCommandId {
+        let source = capture_builtin_source();
+        self.insert_ex_command(name, doc, spec, source)
+    }
+
+    pub(crate) fn insert_ex_command(
+        &mut self,
+        name: &str,
+        doc: &str,
+        spec: ExCommandSpec,
+        source: SourceLocation,
     ) -> ExCommandId {
         let id = next_command_id();
         let args_schema = spec.args_schema.clone();
@@ -310,6 +372,7 @@ impl CommandRegistry {
                 kind: CommandKind::ExCommand,
                 doc: doc.to_string(),
                 args_schema,
+                source,
             },
             registration: CommandRegistration::ExCommand(spec),
         });
@@ -367,6 +430,24 @@ impl CommandRegistry {
 fn next_command_id() -> CommandId {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     CommandId::new(NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Read the immediate caller's source location through the
+/// `#[track_caller]` mechanism. Must be called from inside a
+/// `#[track_caller]`-marked function whose caller is the
+/// registration site we want to record. Marked
+/// `#[track_caller]` itself so the location propagates through:
+/// `register_motion` -> `capture_builtin_source` -> caller's site.
+#[track_caller]
+fn capture_builtin_source() -> SourceLocation {
+    let loc = std::panic::Location::caller();
+    SourceLocation {
+        layer: SourceLayer::Builtin,
+        kind: SourceKind::File {
+            path: std::path::PathBuf::from(loc.file()),
+            line: Some(loc.line()),
+        },
+    }
 }
 
 /// Helper used by the dispatcher to extract the typed body from a registry
@@ -463,5 +544,148 @@ mod tests {
         let spec = r.lookup(id.0).unwrap();
         assert_eq!(spec.name, "test:m");
         assert_eq!(spec.doc, "doc");
+    }
+
+    // ---- Source-capture determinism (DESIGN.md §5.11) ----
+    //
+    // `#[track_caller]` is the load-bearing piece -- it captures the
+    // caller's `(file, line)` automatically so registration sites
+    // never need to spell their location explicitly. These tests
+    // pin its behaviour: any future refactor that breaks call-site
+    // capture (e.g. wrapping `register_motion` in a `dyn Fn`
+    // dispatcher, which resets the location) fails CI.
+
+    #[test]
+    fn track_caller_captures_register_motion_call_site() {
+        let mut r = CommandRegistry::new();
+        // Sentinel: capture the line of the next call.
+        let expected_line = line!() + 1;
+        let id = r.register_motion("test:sentinel", "", dummy_motion());
+        let spec = r.lookup(id.0).unwrap();
+        match &spec.source.kind {
+            SourceKind::File { path, line: Some(line) } => {
+                assert!(
+                    path.to_string_lossy().contains("registry.rs"),
+                    "expected path to contain `registry.rs`, got `{}`",
+                    path.display()
+                );
+                assert_eq!(
+                    *line, expected_line,
+                    "track_caller line drift: expected {expected_line}, got {line}"
+                );
+            }
+            other => panic!("expected Builtin/File source, got {other:?}"),
+        }
+        assert_eq!(spec.source.layer, SourceLayer::Builtin);
+    }
+
+    #[test]
+    fn track_caller_captures_register_operator_call_site() {
+        let mut r = CommandRegistry::new();
+        let expected_line = line!() + 1;
+        let id = r.register_operator(
+            "test:sentinel-op",
+            "",
+            OperatorSpec {
+                repeatable: false,
+                apply: Box::new(|_| Ok(crate::effect::Effect::None)),
+                args_schema: vec![],
+            },
+        );
+        let spec = r.lookup(id.0).unwrap();
+        if let SourceKind::File { line: Some(line), .. } = &spec.source.kind {
+            // The literal ends 6 lines after the `expected_line`
+            // assignment because of formatting -- track_caller records
+            // the line of the call expression's *first* token.
+            assert_eq!(*line, expected_line);
+        } else {
+            panic!("expected File source, got {:?}", spec.source.kind);
+        }
+    }
+
+    #[test]
+    fn track_caller_captures_register_text_object_call_site() {
+        let mut r = CommandRegistry::new();
+        let expected_line = line!() + 1;
+        let id = r.register_text_object(
+            "test:sentinel-tobj",
+            "",
+            TextObjectSpec {
+                apply: Box::new(|_| {
+                    Ok(ProtoRange::new(
+                        Position::ZERO,
+                        Position::ZERO,
+                    ))
+                }),
+                args_schema: vec![],
+            },
+        );
+        let spec = r.lookup(id.0).unwrap();
+        if let SourceKind::File { line: Some(line), .. } = &spec.source.kind {
+            assert_eq!(*line, expected_line);
+        } else {
+            panic!("expected File source");
+        }
+    }
+
+    #[test]
+    fn each_registration_records_its_own_line() {
+        // Two adjacent registrations should record different lines,
+        // proving that `#[track_caller]` distinguishes call sites
+        // and not just call origins.
+        let mut r = CommandRegistry::new();
+        let id_a = r.register_motion("test:a", "", dummy_motion());
+        let id_b = r.register_motion("test:b", "", dummy_motion());
+        let line_a = line_of(&r, id_a.0).expect("id_a has File source");
+        let line_b = line_of(&r, id_b.0).expect("id_b has File source");
+        assert_ne!(line_a, line_b);
+        assert!(line_b > line_a, "second call's line should follow the first");
+    }
+
+    #[test]
+    fn track_caller_propagates_through_helper_marked_track_caller() {
+        // A helper that wraps `register_motion` and is itself marked
+        // `#[track_caller]` should pass the caller's location through.
+        // Without `#[track_caller]` on the helper, the location would
+        // be that of the inner call inside the helper.
+        #[track_caller]
+        fn helper(r: &mut CommandRegistry, name: &str) -> MotionId {
+            r.register_motion(name, "", dummy_motion())
+        }
+        let mut r = CommandRegistry::new();
+        let expected_line = line!() + 1;
+        let id = helper(&mut r, "test:via-helper");
+        let line = line_of(&r, id.0).expect("File source");
+        assert_eq!(
+            line, expected_line,
+            "helper marked #[track_caller] should propagate the OUTER caller's line"
+        );
+    }
+
+    #[test]
+    fn unmarked_helper_records_inner_line_not_outer() {
+        // Counterexample: a helper that is NOT `#[track_caller]`
+        // captures its own internal line, not the outer caller.
+        // This documents the propagation contract -- any helper that
+        // wraps `register_*` must opt in.
+        fn unmarked_helper(r: &mut CommandRegistry, name: &str) -> (MotionId, u32) {
+            let inner_line = line!() + 1;
+            let id = r.register_motion(name, "", dummy_motion());
+            (id, inner_line)
+        }
+        let mut r = CommandRegistry::new();
+        let (id, inner_line) = unmarked_helper(&mut r, "test:unmarked");
+        let captured = line_of(&r, id.0).expect("File source");
+        assert_eq!(
+            captured, inner_line,
+            "unmarked helper should record the INNER call line"
+        );
+    }
+
+    fn line_of(r: &CommandRegistry, id: CommandId) -> Option<u32> {
+        match &r.lookup(id)?.source.kind {
+            SourceKind::File { line, .. } => *line,
+            _ => None,
+        }
     }
 }

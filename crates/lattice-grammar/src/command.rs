@@ -138,6 +138,66 @@ pub struct CommandSpec {
     /// Used by `:describe-command`, palette form rendering, and missing-
     /// arg prompts.
     pub args_schema: Vec<crate::args::ArgSpec>,
+    /// Where this command was registered (DESIGN.md §5.11). Captured
+    /// via `#[track_caller]` for built-ins, by the plugin host for
+    /// plugin-registered commands, by the config loader for
+    /// user-registered commands. The field is `pub` for read access
+    /// (introspection), but the only writers are the trusted
+    /// `pub(crate) insert_*` registry methods -- there is no public
+    /// API that takes a `SourceLocation` parameter.
+    pub source: crate::source::SourceLocation,
+}
+
+impl crate::introspect::Introspectable for CommandSpec {
+    fn kind_label(&self) -> &'static str {
+        self.kind.label()
+    }
+
+    fn identifier(&self) -> String {
+        self.name.clone()
+    }
+
+    fn doc(&self) -> &str {
+        &self.doc
+    }
+
+    fn sources(&self) -> Vec<crate::introspect::SourceEntry<'_>> {
+        vec![crate::introspect::SourceEntry {
+            label: crate::introspect::SourceLabel::DefinedAt,
+            source: &self.source,
+        }]
+    }
+
+    fn extra_sections(&self) -> Vec<crate::introspect::HelpSection> {
+        if self.args_schema.is_empty() {
+            return Vec::new();
+        }
+        let mut lines = Vec::with_capacity(self.args_schema.len() * 2);
+        for (i, arg) in self.args_schema.iter().enumerate() {
+            let default = match &arg.default {
+                crate::args::ArgDefault::Required => "required".to_string(),
+                crate::args::ArgDefault::None => "optional".to_string(),
+                crate::args::ArgDefault::Literal(_) => "default".to_string(),
+                crate::args::ArgDefault::UseSelection => "default: selection".to_string(),
+                crate::args::ArgDefault::UseCursorWord => "default: cursor word".to_string(),
+                crate::args::ArgDefault::UseLastResponse => "default: last value".to_string(),
+            };
+            lines.push(format!(
+                "  {}. {}: {:?}  ({})",
+                i + 1,
+                arg.name,
+                arg.kind,
+                default
+            ));
+            if !arg.doc.is_empty() {
+                lines.push(format!("       {}", arg.doc));
+            }
+        }
+        vec![crate::introspect::HelpSection {
+            heading: "Arguments:".to_string(),
+            lines,
+        }]
+    }
 }
 
 #[cfg(test)]

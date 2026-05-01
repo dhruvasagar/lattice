@@ -1505,6 +1505,60 @@ Each opens a buffer-backed help view (consistent with everything-is-a-buffer). T
 
 **Cost model.** Metadata lives next to registrations and is only materialized when an introspection command runs. The catalog is queryable in O(1) by id and O(log N) by name; `:apropos` is a streaming picker (§5.9.7) over all metadata.
 
+#### 5.11.1 Provenance: source-of-truth for every binding
+
+Vim's `:verbose set X?` shows where an option was last changed; Emacs's `C-h k` only shows the function bound, not where the binding came from. Lattice unifies these: **every registered / bound / set thing carries a `SourceLocation` recording where it was created**, surfaced as a `[[file:...]]` link in every `:describe-*` output. The user can follow the link to inspect or edit the source.
+
+```rust
+pub struct SourceLocation {
+	pub layer: SourceLayer,
+	pub kind:  SourceKind,
+}
+
+pub enum SourceLayer {
+	Builtin, UserConfig, ProjectConfig, Modeline, Runtime, Plugin(PluginId),
+}
+
+pub enum SourceKind {
+	File { path: PathBuf, line: Option<u32> },
+	CommandLine { history_index: usize },         // typed at `:`
+	MacroReplay { register: char, step: u32 },    // replayed
+	DotRepeat(Box<SourceLocation>),               // chains transitively
+	Synthetic(&'static str),                      // <initial-load>, <test>
+}
+```
+
+**Forgery prevention is structural.** There is **no public API that takes a `SourceLocation` parameter**. The four ways a `SourceLocation` can come into existence are:
+
+1. **Built-in registration** uses `#[track_caller]` on `register_motion` / `register_operator` / `register_text_object` / `register_ex_command`. The compiler captures the caller's `(file, line)` automatically -- the caller cannot supply or override it. Untrusted code can only call from a different `(file, line)`, which is just being honest about where it actually is.
+2. **Static-slice rows** use a per-row declarative macro (`keymap_entry!`, `option_spec!`, ...). `file!()` and `line!()` expand at *each row's* invocation site, so the captured location matches the row. The `source` field on the underlying struct is `pub(crate)`; the macro is the only construction path.
+3. **Trusted subsystems** (config loader, plugin host bridge, runtime dispatcher) construct `SourceLocation` from their own ground truth -- the loader knows which TOML file and line it parsed, the host knows the plugin's identity from its `Store<PluginCtx>`, the dispatcher knows it's executing a `:` line. They reach `pub(crate) insert_*` registry methods directly. Visibility is `pub(crate)` today (everything trusted lives in the same crate); when cross-crate trusted subsystems land, visibility is granted via sealed-trait re-exports, never by exposing a public `_at` form.
+4. **Tests** use `SourceLocation::synthetic("<test-fixture>")` behind `#[cfg(test)]`.
+
+**Determinism guarantee.** A unit test (`track_caller_captures_register_motion_call_site`) registers a sentinel command at a known line and asserts the captured location matches. Any future refactor that breaks call-site capture -- wrapping `register_motion` in a `dyn Fn` dispatcher, hand-rolling source values somewhere, removing `#[track_caller]` from a helper in the chain -- fails CI on the line-number mismatch.
+
+#### 5.11.2 Generic introspection (`Introspectable` trait)
+
+Every `:describe-*` target implements one trait:
+
+```rust
+pub trait Introspectable {
+	fn kind_label(&self) -> &'static str;
+	fn identifier(&self) -> String;
+	fn doc(&self) -> &str;
+	fn sources(&self) -> Vec<SourceEntry<'_>>;
+	fn extra_sections(&self) -> Vec<HelpSection> { Vec::new() }
+}
+
+pub fn render_introspection(item: &dyn Introspectable) -> Vec<String>;
+```
+
+`render_introspection` produces the help body in a uniform shape: `identifier (kind)` heading, doc, type-specific extra sections (e.g. `Arguments:` for commands), then one `[[file:...]]` link per source labelled (`Defined at:`, `Bound at:`, `Subscribed at:`, `Last set at:`, `Overridden at:`, `Activated at:`). Each `:describe-X` is a thin lookup-and-call.
+
+`extra_sections()` is the open hook for type-specific structure: commands render their `args_schema`, options render their type and current value, events render their subscribers list, modes render their keymap and hooks. Adding a new registry means adding one trait impl; the renderer doesn't change.
+
+**Multiple sources per item are first-class.** An option's `:describe-option` shows two source links: `Defined at:` for the registration (default-value source) and `Last set at:` for the most recent setter. A user-overridden built-in command shows `Defined at:` (the built-in) plus `Overridden at:` (the user config). The trait returns `Vec<SourceEntry>`; the renderer emits one labelled link per entry.
+
 ### 5.12 Configuration System (typed options + customize)
 
 Vim's `:set option=value` is a string-bag with no typing or validation. Emacs's `customize` is a typed system bridged awkwardly to `setq` for non-curated variables. We unify into one typed option registry.

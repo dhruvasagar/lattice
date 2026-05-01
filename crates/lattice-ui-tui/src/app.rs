@@ -1768,57 +1768,26 @@ impl App {
     /// (DESIGN.md §5.11). Pulls metadata directly from the registry's
     /// `CommandSpec` -- name, kind, doc, and `args_schema` -- so the
     /// view stays in sync as commands are registered or rewritten.
+    /// `:describe-command <name>` -- render via the unified
+    /// [`Introspectable`] surface so every `:describe-*` formatter
+    /// lands in `lattice_grammar::render_introspection`. Adding a
+    /// new section to command help (e.g. example invocations) means
+    /// extending `impl Introspectable for CommandSpec`, not editing
+    /// the host.
     fn do_describe_command(&mut self, name: &str) {
-        let id = match self.registry.id_by_name(name) {
-            Some(id) => id,
-            None => {
-                self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
-                return;
-            }
+        let Some(id) = self.registry.id_by_name(name) else {
+            self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
+            return;
         };
         let Some(spec) = self.registry.lookup(id) else {
             self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
             return;
         };
-        let mut lines: Vec<String> = Vec::new();
-        lines.push(format!("{}  ({})", spec.name, spec.kind.label()));
-        lines.push(String::new());
-        if spec.doc.is_empty() {
-            lines.push("(no documentation)".to_string());
-        } else {
-            for l in spec.doc.lines() {
-                lines.push(l.to_string());
-            }
-        }
-        if !spec.args_schema.is_empty() {
-            lines.push(String::new());
-            lines.push("Arguments:".to_string());
-            for (i, arg) in spec.args_schema.iter().enumerate() {
-                let default = match &arg.default {
-                    lattice_grammar::ArgDefault::Required => "required".to_string(),
-                    lattice_grammar::ArgDefault::None => "optional".to_string(),
-                    lattice_grammar::ArgDefault::Literal(_) => "default".to_string(),
-                    lattice_grammar::ArgDefault::UseSelection => "default: selection".to_string(),
-                    lattice_grammar::ArgDefault::UseCursorWord => {
-                        "default: cursor word".to_string()
-                    }
-                    lattice_grammar::ArgDefault::UseLastResponse => {
-                        "default: last value".to_string()
-                    }
-                };
-                lines.push(format!(
-                    "  {}. {}: {:?}  ({})",
-                    i + 1,
-                    arg.name,
-                    arg.kind,
-                    default
-                ));
-                if !arg.doc.is_empty() {
-                    lines.push(format!("       {}", arg.doc));
-                }
-            }
-        }
-        self.help_buffer = Some(HelpBuffer::from_lines(format!("describe-command {name}"), lines));
+        let lines = lattice_grammar::render_introspection(spec);
+        self.help_buffer = Some(HelpBuffer::from_lines(
+            format!("describe-command {name}"),
+            lines,
+        ));
     }
 
     fn do_describe_buffer(&mut self) {
@@ -6049,6 +6018,84 @@ mod tests {
         let lines = h.lines();
         assert!(lines[0].contains("ex:write"));
         assert!(lines[0].contains("ex-command"));
+    }
+
+    #[test]
+    fn describe_command_shows_source_link_to_registration_site() {
+        // §5.11: every :describe-* must surface a [[file:...]] link
+        // so the user can jump to where the thing was registered.
+        // Built-in commands record their source via #[track_caller]
+        // when populate() runs.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:write".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        assert!(
+            body.contains("Defined at:"),
+            "body should label the source: {body}"
+        );
+        assert!(
+            body.contains("[[file:") && body.contains("ex_commands.rs"),
+            "body should contain a file link to ex_commands.rs: {body}"
+        );
+        assert!(
+            body.contains("(built-in)"),
+            "body should label the source layer: {body}"
+        );
+    }
+
+    #[test]
+    fn describe_command_link_is_extracted_by_help_link_parser() {
+        // The HelpBuffer constructor runs parse_help_links over the
+        // body so the [[file:...]] markup becomes a HelpLink with
+        // a Source target -- ready for the styled-link renderer +
+        // follow-link motion (post-1.0).
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:quit".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        let source_link = h.links.iter().find(|l| {
+            matches!(l.target, crate::help::HelpLinkTarget::Source { .. })
+        });
+        assert!(
+            source_link.is_some(),
+            "expected at least one HelpLink with Source target; got {:?}",
+            h.links
+        );
+    }
+
+    #[test]
+    fn describe_command_arguments_section_renders_args_schema() {
+        // ex:apropos has a schema with one required arg "pattern".
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:apropos".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        assert!(
+            body.contains("Arguments:"),
+            "expected Arguments section: {body}"
+        );
+        assert!(
+            body.contains("pattern"),
+            "expected arg name `pattern`: {body}"
+        );
+    }
+
+    #[test]
+    fn describe_command_with_no_args_omits_arguments_section() {
+        // ex:quit has args_schema: vec![] -- no Arguments section.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:quit".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        assert!(
+            !body.contains("Arguments:"),
+            "Arguments section should be omitted: {body}"
+        );
     }
 
     #[test]

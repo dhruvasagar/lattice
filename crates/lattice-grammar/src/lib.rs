@@ -28,13 +28,19 @@ pub mod dispatcher;
 pub mod effect;
 pub mod error;
 pub mod ex_commands;
+pub mod introspect;
 pub mod modal;
 pub mod range;
 pub mod register;
 pub mod registry;
+pub mod source;
 pub mod target;
 
 pub use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
+pub use crate::introspect::{
+    HelpSection, Introspectable, SourceEntry, SourceLabel, render_introspection,
+};
+pub use crate::source::{SourceKind, SourceLayer, SourceLocation};
 pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count};
 pub use crate::dispatcher::execute;
 pub use crate::effect::{EchoLevel, Effect, SubstituteScope, YankKind};

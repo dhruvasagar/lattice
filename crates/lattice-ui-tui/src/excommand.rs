@@ -39,6 +39,12 @@ pub enum ExCommand {
     },
     /// Vim's `:d` -- delete the current line (CurrentLine range).
     DeleteLine,
+    /// Vim's `:noh[lsearch]` -- clear the hlsearch overlay.
+    NoHlSearch,
+    /// Vim's `:reg[isters]` -- show register contents.
+    ListRegisters,
+    /// Vim's `:marks` -- show all set marks.
+    ListMarks,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +100,15 @@ pub fn parse(line: &str) -> Result<ExCommand, ExCommandError> {
             .ok_or(ExCommandError::TrailingArgs),
         "d" | "delete" => no_args(rest)?
             .then_some(ExCommand::DeleteLine)
+            .ok_or(ExCommandError::TrailingArgs),
+        "noh" | "nohl" | "nohlsearch" => no_args(rest)?
+            .then_some(ExCommand::NoHlSearch)
+            .ok_or(ExCommandError::TrailingArgs),
+        "reg" | "registers" => no_args(rest)?
+            .then_some(ExCommand::ListRegisters)
+            .ok_or(ExCommandError::TrailingArgs),
+        "marks" => no_args(rest)?
+            .then_some(ExCommand::ListMarks)
             .ok_or(ExCommandError::TrailingArgs),
         other => Err(ExCommandError::Unknown(other.to_string())),
     }
@@ -409,6 +424,24 @@ mod tests {
                 body: "s/foo/bar/g".into(),
             })
         );
+    }
+
+    #[test]
+    fn nohlsearch_aliases() {
+        assert_eq!(parse("noh"), Ok(ExCommand::NoHlSearch));
+        assert_eq!(parse("nohl"), Ok(ExCommand::NoHlSearch));
+        assert_eq!(parse("nohlsearch"), Ok(ExCommand::NoHlSearch));
+    }
+
+    #[test]
+    fn registers_aliases() {
+        assert_eq!(parse("reg"), Ok(ExCommand::ListRegisters));
+        assert_eq!(parse("registers"), Ok(ExCommand::ListRegisters));
+    }
+
+    #[test]
+    fn marks_command_parses() {
+        assert_eq!(parse("marks"), Ok(ExCommand::ListMarks));
     }
 
     #[test]

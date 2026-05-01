@@ -927,7 +927,68 @@ impl App {
                 body,
             } => self.do_global(&pattern, inverted, &body),
             ExCommand::DeleteLine => self.do_delete_line(),
+            ExCommand::NoHlSearch => {
+                self.current_match = None;
+                self.all_matches.clear();
+            }
+            ExCommand::ListRegisters => self.do_list_registers(),
+            ExCommand::ListMarks => self.do_list_marks(),
         }
+    }
+
+    /// Vim's `:reg` -- list every register's contents in the echo area.
+    /// v1 shows the unnamed `""`, the numbered `"0`, and the named
+    /// alphabetic registers in alphabetical order.
+    fn do_list_registers(&mut self) {
+        let mut lines: Vec<String> = Vec::new();
+        if let Some(reg) = &self.unnamed_register {
+            lines.push(format!("\"\"  {}", preview_register(&reg.content)));
+        }
+        let mut keys: Vec<Register> = self.registers.keys().copied().collect();
+        keys.sort_by_key(|k| match k {
+            Register::Named(c) => format!("a{c}"),
+            Register::Numbered(n) => format!("b{n}"),
+            Register::System => "z+".into(),
+            _ => "z".into(),
+        });
+        for k in keys {
+            // The keys came from `self.registers.keys()`, so the lookup
+            // can't fail unless someone races us -- which we don't.
+            let Some(entry) = self.registers.get(&k) else {
+                continue;
+            };
+            let label = match k {
+                Register::Named(c) => format!("\"{c}"),
+                Register::Numbered(n) => format!("\"{n}"),
+                Register::System => "\"+".into(),
+                _ => "?".into(),
+            };
+            lines.push(format!("{label}  {}", preview_register(&entry.content)));
+        }
+        if lines.is_empty() {
+            self.set_message(EchoLevel::Info, "no registers set".to_string());
+        } else {
+            self.set_message(EchoLevel::Info, lines.join("  |  "));
+        }
+    }
+
+    /// Vim's `:marks` -- list every set mark's name + position.
+    fn do_list_marks(&mut self) {
+        let mut entries: Vec<(char, Position)> = self
+            .marks
+            .iter()
+            .map(|(c, p)| (*c, *p))
+            .collect();
+        entries.sort_by_key(|(c, _)| *c);
+        if entries.is_empty() {
+            self.set_message(EchoLevel::Info, "no marks set".to_string());
+            return;
+        }
+        let parts: Vec<String> = entries
+            .into_iter()
+            .map(|(c, p)| format!("{c}={}:{}", p.line + 1, p.byte))
+            .collect();
+        self.set_message(EchoLevel::Info, parts.join("  "));
     }
 
     /// Delete the cursor's whole line including its trailing newline
@@ -2202,6 +2263,19 @@ fn is_valid_mark_name(c: char) -> bool {
     c.is_ascii_alphabetic() || c.is_ascii_digit()
 }
 
+/// Render a register's content into a one-line preview (truncated and
+/// with newlines escaped). Used by `:reg`.
+fn preview_register(s: &str) -> String {
+    const MAX: usize = 40;
+    let escaped: String = s.chars().map(|c| if c == '\n' { '\u{21B5}' } else { c }).collect();
+    if escaped.chars().count() <= MAX {
+        escaped
+    } else {
+        let trimmed: String = escaped.chars().take(MAX).collect();
+        format!("{trimmed}…")
+    }
+}
+
 fn is_word_char_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
@@ -3131,6 +3205,59 @@ mod tests {
             a.apply(Action::CommandLineAppend(c));
         }
         a.apply(Action::CommandLineSubmit);
+    }
+
+    #[test]
+    fn nohlsearch_clears_overlay() {
+        let mut a = app_with("foo bar foo", 10);
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        type_pattern(&mut a, "foo");
+        a.apply(Action::SearchSubmit);
+        assert!(!a.all_matches.is_empty());
+        submit_ex(&mut a, "noh");
+        assert!(a.all_matches.is_empty());
+        assert!(a.current_match.is_none());
+    }
+
+    #[test]
+    fn list_registers_with_no_state_says_so() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "reg");
+        let msg = a.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("no registers"));
+    }
+
+    #[test]
+    fn list_registers_includes_unnamed_and_zero() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        submit_ex(&mut a, "reg");
+        let msg = a.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("\"\""));
+        assert!(msg.text.contains("\"0"));
+    }
+
+    #[test]
+    fn list_marks_with_no_marks_says_so() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "marks");
+        let msg = a.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("no marks"));
+    }
+
+    #[test]
+    fn list_marks_shows_set_marks() {
+        let mut a = app_with("hello\nworld", 10);
+        a.cursor = Position::new(1, 2);
+        a.apply(Action::SetMark('a'));
+        submit_ex(&mut a, "marks");
+        let msg = a.last_message.as_ref().unwrap();
+        assert!(msg.text.contains('a'));
+        // Line 2 (1-indexed for display) at byte 2.
+        assert!(msg.text.contains("2:2"));
     }
 
     #[test]

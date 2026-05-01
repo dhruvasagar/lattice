@@ -157,7 +157,7 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | `/` `?` `n` `N` literal search with wrap | ✅     | §5.9.10                               |
 | `*` / `#` word-search                    | ✅     |                                       |
 | Search highlight in buffer               | ✅     | §5.6.2                                |
-| `:s/foo/bar/[g]` substitute              | ⛔     | §5.2.1 worked example uses substitute |
+| `:s/foo/bar/[g]` substitute              | ✅ (literal) | §5.2.1 worked example uses substitute. Regex deferred. |
 | Regex search                             | ⛔     | Currently literal substring; §15      |
 | Search-as-you-type live preview          | ⛔     | §5.9.10                               |
 
@@ -234,11 +234,9 @@ Update this section when picking up the in-flight item.
    per-line. §5.2 + §15:N.
 2. **Folds** (zf, zo, zc, zR, zM, zj/zk) — vim's manual + computed folds.
    §15:18.
-3. **`:s/foo/bar/[g]`** — substitution. Worked example in §5.2.1; integrates
-   with the rich minibuffer (§5.9.10) for live preview.
-4. **Paragraph / sentence motions** (`}` `{` `)` `(`).
-5. **Inner / around paragraph & sentence text objects** (`ip`, `ap`, `is`, `as`).
-6. **Tag text object** (`it`, `at`) — XML/HTML tags.
+3. **Sentence motions and text objects** (`)` `(`, `is` `as`) — vim's
+   sentence-as-text-object set.
+4. **Tag text object** (`it`, `at`) — XML/HTML tags.
 7. **`:set option=value`** + the typed-options system. §5.12.
 8. **`:describe-command` / `:describe-key` / `:apropos`** — introspection
    (§5.11).
@@ -267,7 +265,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-603 tests across the workspace as of the last commit. Coverage by crate:
+617 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
@@ -275,7 +273,7 @@ are crossed out there. Items that influence active tasks:
 | lattice-core (incl. integration) | 70    |
 | lattice-grammar                  | 119   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 361   |
+| lattice-ui-tui                   | 375   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

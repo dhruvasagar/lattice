@@ -24,6 +24,18 @@ pub enum ExCommand {
     Write { path: Option<PathBuf> },
     Quit { force: bool },
     WriteQuit { force: bool },
+    Substitute {
+        scope: SubstituteScope,
+        pattern: String,
+        replacement: String,
+        global: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubstituteScope {
+    CurrentLine,
+    Whole,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -34,12 +46,21 @@ pub enum ExCommandError {
     Unknown(String),
     #[error("trailing characters after command")]
     TrailingArgs,
+    #[error("malformed substitute: {0}")]
+    BadSubstitute(&'static str),
 }
 
 pub fn parse(line: &str) -> Result<ExCommand, ExCommandError> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return Err(ExCommandError::Empty);
+    }
+
+    // Substitute has a delimiter-based syntax that breaks the
+    // whitespace-split-then-keyword model. Handle it inline:
+    // `[%]s/pattern/replacement/[flags]`.
+    if let Some(sub) = parse_substitute(trimmed)? {
+        return Ok(sub);
     }
 
     // Split into command word and rest. The command word may end in `!`.
@@ -60,6 +81,70 @@ pub fn parse(line: &str) -> Result<ExCommand, ExCommandError> {
             .ok_or(ExCommandError::TrailingArgs),
         other => Err(ExCommandError::Unknown(other.to_string())),
     }
+}
+
+/// Parse vim's substitute syntax: `[%]s/pattern/replacement/[flags]`.
+/// Returns `Ok(Some)` on a successful s-form match, `Ok(None)` if the
+/// input doesn't look like substitute at all, `Err(BadSubstitute)` on a
+/// malformed s-form.
+fn parse_substitute(input: &str) -> Result<Option<ExCommand>, ExCommandError> {
+    // Detect `%s/.../.../...` and `s/.../.../...`.
+    let (scope, body) = if let Some(rest) = input.strip_prefix("%s/") {
+        (SubstituteScope::Whole, rest)
+    } else if let Some(rest) = input.strip_prefix("s/") {
+        (SubstituteScope::CurrentLine, rest)
+    } else {
+        return Ok(None);
+    };
+
+    // Walk `body` character-by-character respecting backslash-escapes.
+    // Vim's substitute uses `\/` as an escape-for-delimiter; we accept
+    // `\/` as a literal `/` in either pattern or replacement.
+    let mut pattern = String::new();
+    let mut replacement = String::new();
+    let mut flags = String::new();
+    let mut state = 0u8; // 0 = pattern, 1 = replacement, 2 = flags
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            // Take the next char literally (escape).
+            if let Some(next) = chars.next() {
+                let target = match state {
+                    0 => &mut pattern,
+                    1 => &mut replacement,
+                    _ => &mut flags,
+                };
+                target.push(next);
+            }
+            continue;
+        }
+        if c == '/' {
+            state += 1;
+            if state > 2 {
+                return Err(ExCommandError::BadSubstitute("too many `/` separators"));
+            }
+            continue;
+        }
+        let target = match state {
+            0 => &mut pattern,
+            1 => &mut replacement,
+            _ => &mut flags,
+        };
+        target.push(c);
+    }
+
+    if pattern.is_empty() {
+        return Err(ExCommandError::BadSubstitute("empty pattern"));
+    }
+    // 'g' is the only flag honored in v1; 'i', 'c', etc. are accepted
+    // but ignored.
+    let global = flags.contains('g');
+    Ok(Some(ExCommand::Substitute {
+        scope,
+        pattern,
+        replacement,
+        global,
+    }))
 }
 
 fn parse_optional_path(rest: &str) -> Option<PathBuf> {
@@ -143,6 +228,93 @@ mod tests {
     fn trailing_args_on_no_arg_command_is_error() {
         assert_eq!(parse("q please"), Err(ExCommandError::TrailingArgs));
         assert_eq!(parse("wq somefile"), Err(ExCommandError::TrailingArgs));
+    }
+
+    #[test]
+    fn substitute_current_line_basic() {
+        assert_eq!(
+            parse("s/foo/bar/"),
+            Ok(ExCommand::Substitute {
+                scope: SubstituteScope::CurrentLine,
+                pattern: "foo".into(),
+                replacement: "bar".into(),
+                global: false,
+            })
+        );
+    }
+
+    #[test]
+    fn substitute_global_flag() {
+        assert_eq!(
+            parse("s/foo/bar/g"),
+            Ok(ExCommand::Substitute {
+                scope: SubstituteScope::CurrentLine,
+                pattern: "foo".into(),
+                replacement: "bar".into(),
+                global: true,
+            })
+        );
+    }
+
+    #[test]
+    fn substitute_whole_buffer() {
+        assert_eq!(
+            parse("%s/foo/bar/g"),
+            Ok(ExCommand::Substitute {
+                scope: SubstituteScope::Whole,
+                pattern: "foo".into(),
+                replacement: "bar".into(),
+                global: true,
+            })
+        );
+    }
+
+    #[test]
+    fn substitute_with_escaped_slash_in_pattern() {
+        // `\/` -> literal `/` in pattern.
+        assert_eq!(
+            parse("s/a\\/b/c/"),
+            Ok(ExCommand::Substitute {
+                scope: SubstituteScope::CurrentLine,
+                pattern: "a/b".into(),
+                replacement: "c".into(),
+                global: false,
+            })
+        );
+    }
+
+    #[test]
+    fn substitute_empty_pattern_is_error() {
+        assert!(matches!(parse("s//bar/"), Err(ExCommandError::BadSubstitute(_))));
+    }
+
+    #[test]
+    fn substitute_empty_replacement_is_valid_delete() {
+        // Empty replacement -> delete the pattern.
+        assert_eq!(
+            parse("s/foo//g"),
+            Ok(ExCommand::Substitute {
+                scope: SubstituteScope::CurrentLine,
+                pattern: "foo".into(),
+                replacement: String::new(),
+                global: true,
+            })
+        );
+    }
+
+    #[test]
+    fn substitute_unknown_flag_is_ignored() {
+        // 'i' (case-insensitive), 'c' (confirm), etc. are accepted but
+        // ignored in v1.
+        assert_eq!(
+            parse("s/foo/bar/gi"),
+            Ok(ExCommand::Substitute {
+                scope: SubstituteScope::CurrentLine,
+                pattern: "foo".into(),
+                replacement: "bar".into(),
+                global: true,
+            })
+        );
     }
 
     #[test]

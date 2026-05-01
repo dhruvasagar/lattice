@@ -844,6 +844,88 @@ impl App {
             ExCommand::Write { path } => self.do_write(path),
             ExCommand::Quit { force } => self.do_quit(force),
             ExCommand::WriteQuit { force } => self.do_write_quit(force),
+            ExCommand::Substitute {
+                scope,
+                pattern,
+                replacement,
+                global,
+            } => self.do_substitute(scope, &pattern, &replacement, global),
+        }
+    }
+
+    /// Vim's `:s/pattern/replacement/[g]` (and `:%s/...` for whole-buffer
+    /// scope). v1 is literal substring matching (regex deferred to
+    /// post-1.0). Returns count of replacements via the echo area.
+    fn do_substitute(
+        &mut self,
+        scope: crate::excommand::SubstituteScope,
+        pattern: &str,
+        replacement: &str,
+        global: bool,
+    ) {
+        if pattern.is_empty() {
+            self.set_message(EchoLevel::Error, "empty pattern".to_string());
+            return;
+        }
+        // Determine the line range.
+        let (first_line, last_line) = match scope {
+            crate::excommand::SubstituteScope::CurrentLine => {
+                (self.cursor.line, self.cursor.line)
+            }
+            crate::excommand::SubstituteScope::Whole => {
+                let last = last_addressable_line(&self.document);
+                (0, last)
+            }
+        };
+        let mut total = 0usize;
+        // Apply per line, top-down. A replacement may change later byte
+        // offsets on the same line, so we re-fetch each line per pass.
+        for line in first_line..=last_line {
+            let line_text = {
+                let buf_text = self.document.text();
+                buf_text
+                    .split_inclusive('\n')
+                    .nth(line as usize)
+                    .map(|l| l.trim_end_matches('\n').to_string())
+                    .unwrap_or_default()
+            };
+            // Find occurrences (literal).
+            let mut new_line = String::with_capacity(line_text.len());
+            let mut i = 0;
+            let mut count_on_line = 0usize;
+            let bytes = line_text.as_bytes();
+            while i < bytes.len() {
+                if bytes[i..].starts_with(pattern.as_bytes())
+                    && (global || count_on_line == 0)
+                {
+                    new_line.push_str(replacement);
+                    i += pattern.len();
+                    count_on_line += 1;
+                } else {
+                    new_line.push(bytes[i] as char);
+                    i += 1;
+                }
+            }
+            if count_on_line > 0 {
+                let line_len = bytes.len() as u32;
+                let r = ProtoRange::new(
+                    Position::new(line, 0),
+                    Position::new(line, line_len),
+                );
+                let _ = self.document.apply_edit(Edit::replace(r, &new_line));
+                total += count_on_line;
+            }
+        }
+        if total == 0 {
+            self.set_message(
+                EchoLevel::Error,
+                format!("E486: Pattern not found: {pattern}"),
+            );
+        } else {
+            self.set_message(
+                EchoLevel::Info,
+                format!("{total} substitution{}", if total == 1 { "" } else { "s" }),
+            );
         }
     }
 
@@ -2601,6 +2683,71 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- Substitute (:s/foo/bar/[g]) ----
+
+    fn submit_ex(a: &mut App, line: &str) {
+        a.apply(Action::EnterCommandLine);
+        for c in line.chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        a.apply(Action::CommandLineSubmit);
+    }
+
+    #[test]
+    fn substitute_first_match_on_current_line() {
+        let mut a = app_with("foo bar foo", 10);
+        submit_ex(&mut a, "s/foo/baz/");
+        assert_eq!(a.document.text(), "baz bar foo");
+    }
+
+    #[test]
+    fn substitute_global_replaces_all_on_line() {
+        let mut a = app_with("foo bar foo", 10);
+        submit_ex(&mut a, "s/foo/baz/g");
+        assert_eq!(a.document.text(), "baz bar baz");
+    }
+
+    #[test]
+    fn substitute_whole_buffer_with_g_flag() {
+        let mut a = app_with("foo\nbar foo\nfoo", 10);
+        submit_ex(&mut a, "%s/foo/X/g");
+        assert_eq!(a.document.text(), "X\nbar X\nX");
+    }
+
+    #[test]
+    fn substitute_no_match_emits_error() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "s/xyz/abc/");
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("Pattern not found"));
+        assert_eq!(a.document.text(), "hello");
+    }
+
+    #[test]
+    fn substitute_empty_replacement_deletes_pattern() {
+        let mut a = app_with("hello world hello", 10);
+        submit_ex(&mut a, "s/hello //g");
+        assert_eq!(a.document.text(), "world hello");
+    }
+
+    #[test]
+    fn substitute_count_message() {
+        let mut a = app_with("foo foo foo", 10);
+        submit_ex(&mut a, "s/foo/X/g");
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(msg.text.contains("3"));
+    }
+
+    #[test]
+    fn substitute_only_current_line_without_percent() {
+        let mut a = app_with("foo\nfoo\nfoo", 10);
+        a.cursor = Position::new(1, 0);
+        submit_ex(&mut a, "s/foo/X/");
+        assert_eq!(a.document.text(), "foo\nX\nfoo");
     }
 
     // ---- Line join (J / gJ) ----

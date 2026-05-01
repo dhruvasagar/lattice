@@ -283,6 +283,13 @@ pub enum Action {
     PasteAfter,
     /// Vim's `P` -- paste before cursor / above current line.
     PasteBefore,
+    /// A bracketed-paste burst from the terminal -- the user pressed
+    /// their terminal's paste shortcut (Ctrl-Shift-V, Cmd-V, mouse
+    /// middle-click, ...) and the terminal handed us the whole payload
+    /// in one event. Mode-dependent target: cursor in Insert/Normal/
+    /// Visual/Replace, command line in Command, search line in Search.
+    /// One undo unit, so a single `u` reverts the entire paste.
+    PasteText(String),
 
     // ---- Search (`/`, `?`, `n`, `N`) ----
     /// Pressed `/` (Forward) or `?` (Backward) -- enter Search modal with
@@ -821,6 +828,7 @@ impl App {
 
             Action::PasteAfter => self.do_paste(false),
             Action::PasteBefore => self.do_paste(true),
+            Action::PasteText(text) => self.do_paste_text(&text),
 
             Action::EnterSearch(direction) => {
                 self.search_line = Some(SearchLine {
@@ -1747,6 +1755,42 @@ impl App {
             // Capture into the in-flight Insert recording for dot-repeat.
             if let Some(rec) = self.recording_insert.as_mut() {
                 rec.push_str(s);
+            }
+        }
+    }
+
+    /// Bracketed-paste handler. Routes the payload to the right target
+    /// based on the current modal state -- cursor for editing modes,
+    /// command line for `:`, search line for `/` `?`. Always one undo
+    /// unit. The terminal already stripped the bracketed-paste markers
+    /// before crossterm handed us the string.
+    fn do_paste_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        match self.modal {
+            ModalState::Command => {
+                self.command_line.push_str(text);
+                self.command_history_cursor = None;
+            }
+            ModalState::Search(_) => {
+                if let Some(line) = self.search_line.as_mut() {
+                    line.pattern.push_str(text);
+                }
+            }
+            // Insert / Replace / Normal / Visual / OperatorPending all
+            // land at the cursor as a single edit. We deliberately don't
+            // transition modes -- the user's mode is preserved across
+            // the paste, matching Vim's `paste` option behaviour.
+            _ => {
+                if let Ok(applied) = self.document.apply_edit(Edit::insert(self.cursor, text)) {
+                    self.cursor = applied.inserted_range.end;
+                    if matches!(self.modal, ModalState::Insert)
+                        && let Some(rec) = self.recording_insert.as_mut()
+                    {
+                        rec.push_str(text);
+                    }
+                }
             }
         }
     }
@@ -5458,6 +5502,72 @@ mod tests {
         let msg = a.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert_eq!(a.document.text(), "hello");
+    }
+
+    // ---- Bracketed-paste burst (Action::PasteText) ----
+
+    #[test]
+    fn paste_text_in_normal_inserts_at_cursor_one_undo_unit() {
+        let mut a = app_with("hello", 10);
+        a.cursor = Position::new(0, 5);
+        a.apply(Action::PasteText(" world".into()));
+        assert_eq!(a.document.text(), "hello world");
+        assert_eq!(a.cursor, Position::new(0, 11));
+        // One bracketed-paste = one undo unit.
+        a.apply(Action::Undo);
+        assert_eq!(a.document.text(), "hello");
+    }
+
+    #[test]
+    fn paste_text_in_insert_inserts_and_records_for_dot_repeat() {
+        let mut a = app_with("a", 10);
+        a.cursor = Position::new(0, 1);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::PasteText("bcd".into()));
+        assert_eq!(a.document.text(), "abcd");
+        assert_eq!(a.cursor, Position::new(0, 4));
+        assert!(matches!(a.modal, ModalState::Insert));
+        // Dot-repeat insert recording captured the pasted text.
+        let rec = a.recording_insert.as_ref().unwrap();
+        assert_eq!(rec, "bcd");
+    }
+
+    #[test]
+    fn paste_text_in_command_appends_to_command_line() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::EnterMode(ModalState::Command));
+        a.command_line = "w ".into();
+        a.apply(Action::PasteText("foo.rs".into()));
+        assert_eq!(a.command_line, "w foo.rs");
+        // Document untouched.
+        assert_eq!(a.document.text(), "xx");
+    }
+
+    #[test]
+    fn paste_text_in_search_appends_to_search_pattern() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::EnterSearch(lattice_grammar::SearchDirection::Forward));
+        a.apply(Action::SearchAppend('a'));
+        a.apply(Action::PasteText("bcd".into()));
+        let line = a.search_line.as_ref().unwrap();
+        assert_eq!(line.pattern, "abcd");
+    }
+
+    #[test]
+    fn paste_text_empty_is_a_noop() {
+        let mut a = app_with("hello", 10);
+        let before = a.document.text();
+        a.apply(Action::PasteText(String::new()));
+        assert_eq!(a.document.text(), before);
+    }
+
+    #[test]
+    fn paste_text_with_newlines_lands_as_single_edit() {
+        let mut a = app_with("a", 10);
+        a.cursor = Position::new(0, 1);
+        a.apply(Action::PasteText("\nb\nc".into()));
+        assert_eq!(a.document.text(), "a\nb\nc");
+        assert_eq!(a.cursor, Position::new(2, 1));
     }
 
     #[test]

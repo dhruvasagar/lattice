@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use crossterm::cursor::SetCursorStyle;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -20,7 +20,7 @@ use ratatui::backend::CrosstermBackend;
 
 use lattice_core::Document;
 
-use crate::app::App;
+use crate::app::{Action, App};
 use crate::input::{TranslateContext, translate};
 use crate::render::draw_frame;
 
@@ -35,6 +35,15 @@ fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen).context("enter alt screen")?;
+    // Bracketed paste tells the terminal to wrap clipboard pastes in
+    // ESC[200~ ... ESC[201~ markers. Crossterm decodes those as
+    // `Event::Paste(String)`, which we hand to the App as a single
+    // bracketed-paste burst (one undo unit). Without this, terminals
+    // that bind Ctrl+V to clipboard paste (Konsole, Windows Terminal,
+    // tmux configs) replay the clipboard contents as a stream of
+    // raw key events -- which Normal mode then interprets as commands
+    // and the user gets unexpected behaviour instead of a paste.
+    execute!(stdout, EnableBracketedPaste).context("enable bracketed paste")?;
     let backend = CrosstermBackend::new(stdout);
     Terminal::new(backend).context("create terminal")
 }
@@ -45,6 +54,8 @@ fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     // editor was rendering.
     execute!(terminal.backend_mut(), SetCursorStyle::DefaultUserShape)
         .context("restore cursor style")?;
+    execute!(terminal.backend_mut(), DisableBracketedPaste)
+        .context("disable bracketed paste")?;
     disable_raw_mode().context("disable raw mode")?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen).context("leave alt screen")?;
     terminal.show_cursor().context("show cursor")?;
@@ -104,6 +115,14 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                     };
                     let action = translate(ctx, k);
                     app.apply(action);
+                }
+                Event::Paste(text) => {
+                    // Real bracketed-paste burst from the terminal's
+                    // clipboard shortcut. Hand the payload to the app
+                    // as a single edit; Ctrl+V keystrokes (the binding
+                    // for blockwise visual) still arrive as Event::Key
+                    // because they're not the terminal's paste path.
+                    app.apply(Action::PasteText(text));
                 }
                 Event::Resize(_, _) => {
                     // next iteration handles the new size

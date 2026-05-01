@@ -202,7 +202,16 @@ fn translate_normal(
             KeyCode::Char('r') => Action::Redo,
             KeyCode::Char('o') => Action::JumpHistoryBack,
             KeyCode::Char('i') => Action::JumpHistoryForward,
-            KeyCode::Char('v') => Action::EnterVisual(VisualKind::Blockwise),
+            // Ctrl+V and Ctrl+Q both enter blockwise Visual. Vim binds
+            // both for the same reason: many terminals (Konsole, Windows
+            // Terminal, tmux paste-key) hijack Ctrl+V for clipboard
+            // paste before it reaches us. Ctrl+Q is the universal
+            // fallback. We also enable bracketed paste in `runtime.rs`,
+            // so a hijacked Ctrl+V arrives as `Event::Paste` -- the
+            // user's paste still works either way.
+            KeyCode::Char('v') | KeyCode::Char('q') => {
+                Action::EnterVisual(VisualKind::Blockwise)
+            }
             _ => Action::None,
         };
     }
@@ -1621,6 +1630,36 @@ mod tests {
         ) {
             Action::EnterVisual(VisualKind::Blockwise) => {}
             other => panic!("expected EnterVisual(Blockwise), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_q_is_alternate_blockwise_visual() {
+        // Many terminals (Konsole, Windows Terminal, tmux paste-key)
+        // intercept Ctrl+V for clipboard paste before it reaches us.
+        // Vim binds Ctrl+Q as the alternate enter-block-visual key for
+        // exactly this reason.
+        let (_, b) = fixture();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            ctrl(KeyCode::Char('q')),
+        ) {
+            Action::EnterVisual(VisualKind::Blockwise) => {}
+            other => panic!("expected EnterVisual(Blockwise), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lowercase_q_without_ctrl_still_pends_macro_record() {
+        // Guard against the Ctrl+Q binding accidentally swallowing the
+        // bare `q` that starts macro recording.
+        let (_, b) = fixture();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('q')),
+        ) {
+            Action::SetPending(Pending::AfterMacroStart) => {}
+            other => panic!("expected SetPending(AfterMacroStart), got {other:?}"),
         }
     }
 

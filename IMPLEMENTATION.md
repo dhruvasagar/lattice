@@ -65,7 +65,7 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | Insert             | ✅     | §5.2      | Plus bar cursor                                             |
 | Visual (Charwise)  | ✅     | §5.2, B.1 | Selection extends, operators on Range::Selection            |
 | Visual (Linewise)  | ✅     | §5.2      |                                                             |
-| Visual (Blockwise) | ⛔     | §15:18    | Falls back to charwise; Ctrl-V key not bound                |
+| Visual (Blockwise) | ⚠️     | §15:18    | Ctrl-V enters; render highlights the rectangle. Operators fall back to charwise (proper per-line block dispatch is post-1.0). |
 | Operator-Pending   | ✅     | §5.2      | Resolved through translate_normal pending state             |
 | Command (`:`)      | ✅     | §5.9.10   | Rich minibuffer scope is partial; full spec is post-Phase-1 |
 | Search (`/`, `?`)  | ✅     | §5.9.10   | Live preview decoration not yet wired                       |
@@ -230,8 +230,10 @@ Update this section when picking up the in-flight item.
 
 ## Up next (priority order)
 
-1. **Blockwise visual** (Ctrl-V) — selection rectangle; operators apply
-   per-line. §5.2 + §15:N.
+1. **Blockwise visual operators** (delete-block, yank-block, change-block) —
+   currently the rectangle is highlighted but operators still cover a single
+   contiguous range. Proper per-line dispatch needs the multi-range plumbing
+   in `Range::Selection` resolution.
 2. **Folds** (zf, zo, zc, zR, zM, zj/zk) — vim's manual + computed folds.
    §15:18.
 3. **Tag text object** (`it`, `at`) — XML/HTML tags.
@@ -263,7 +265,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-620 tests across the workspace as of the last commit. Coverage by crate:
+623 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
@@ -271,7 +273,7 @@ are crossed out there. Items that influence active tasks:
 | lattice-core (incl. integration) | 70    |
 | lattice-grammar                  | 122   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 375   |
+| lattice-ui-tui                   | 378   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

@@ -200,6 +200,7 @@ fn translate_normal(
             KeyCode::Char('r') => Action::Redo,
             KeyCode::Char('o') => Action::JumpHistoryBack,
             KeyCode::Char('i') => Action::JumpHistoryForward,
+            KeyCode::Char('v') => Action::EnterVisual(VisualKind::Blockwise),
             _ => Action::None,
         };
     }
@@ -1478,6 +1479,20 @@ mod tests {
             ),
             Action::SetPending(Pending::None)
         ));
+    }
+
+    // ---- Blockwise visual ----
+
+    #[test]
+    fn ctrl_v_enters_blockwise_visual() {
+        let (_, b) = fixture();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            ctrl(KeyCode::Char('v')),
+        ) {
+            Action::EnterVisual(VisualKind::Blockwise) => {}
+            other => panic!("expected EnterVisual(Blockwise), got {other:?}"),
+        }
     }
 
     // ---- Position history ----

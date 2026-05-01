@@ -148,6 +148,7 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
 
     // Compute visual selection range once (instead of per line).
     let visual_range = visual_selection_range(app);
+    let block = visual_block_extents(app);
 
     let mut out = Vec::with_capacity(height as usize);
     for i in 0..height {
@@ -160,10 +161,19 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         let gutter = render_gutter(line_idx, gutter_w);
         let spans = app.highlights_for_viewport_row(i);
         let mut body = render_styled_line(line_text, spans, buffer_w);
-        // Visual selection overlay first, then search match overlay on top.
-        // Search match wins a priority tie because it's transient (you
-        // typed `/` *now*); visual is the user's edit context.
-        if let Some(range) = visual_range
+        // Blockwise visual: per-line column band [min_col, max_col].
+        // Charwise / Linewise visual go through `visual_range` instead.
+        if let Some(b) = block
+            && line_idx >= b.start_line
+            && line_idx <= b.end_line
+        {
+            let line_len = line_text.len();
+            let start = (b.start_col as usize).min(line_len);
+            let end = ((b.end_col as usize) + 1).min(line_len);
+            if start < end {
+                body = apply_match_overlay(body, start, end, visual_style());
+            }
+        } else if let Some(range) = visual_range
             && let Some((overlay_start, overlay_end)) =
                 match_overlay_range(range, line_idx, line_text.len())
         {
@@ -178,6 +188,33 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         out.push(combine(gutter, body));
     }
     out
+}
+
+/// For blockwise Visual: the rectangle defined by the selection's
+/// `(anchor, head)` positions. Returns `None` if not in blockwise mode.
+fn visual_block_extents(app: &App) -> Option<BlockExtents> {
+    if !matches!(app.modal, ModalState::Visual(lattice_grammar::VisualKind::Blockwise)) {
+        return None;
+    }
+    let sel = app.document.selections().primary();
+    let start_line = sel.anchor.line.min(sel.head.line);
+    let end_line = sel.anchor.line.max(sel.head.line);
+    let start_col = sel.anchor.byte.min(sel.head.byte);
+    let end_col = sel.anchor.byte.max(sel.head.byte);
+    Some(BlockExtents {
+        start_line,
+        end_line,
+        start_col,
+        end_col,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BlockExtents {
+    start_line: u32,
+    end_line: u32,
+    start_col: u32,
+    end_col: u32,
 }
 
 /// Compute the rendered range of the visual selection. Returns `None` if
@@ -682,6 +719,29 @@ mod tests {
         let r = visual_selection_range(&app).expect("range");
         assert_eq!(r.start, pos(0, 1));
         assert_eq!(r.end, pos(0, 5));
+    }
+
+    #[test]
+    fn visual_block_extents_returns_none_when_not_blockwise() {
+        let app = app_with("hello", 5);
+        assert!(visual_block_extents(&app).is_none());
+    }
+
+    #[test]
+    fn visual_block_extents_normalises_anchor_and_head() {
+        let mut app = app_with("aaa\nbbb\nccc", 10);
+        app.apply(crate::app::Action::EnterVisual(VisualKind::Blockwise));
+        let sel = Selection {
+            anchor: pos(2, 1),
+            head: pos(0, 2),
+            visual: Some(VisualMode::Blockwise),
+        };
+        app.document.set_selections(SelectionSet::single(sel));
+        let b = visual_block_extents(&app).unwrap();
+        assert_eq!(b.start_line, 0);
+        assert_eq!(b.end_line, 2);
+        assert_eq!(b.start_col, 1);
+        assert_eq!(b.end_col, 2);
     }
 
     #[test]

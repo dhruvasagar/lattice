@@ -193,7 +193,7 @@ owns the side effects.
 | :v/pattern/cmd          | ✅ registry | §B.2; `Args::List([pattern, true, body])` -- same command as `:g`, inverted flag set. |
 | :describe-command       | ✅ buffer (popup) | §5.11; renders `CommandSpec.doc` + each `args_schema` entry's name/kind/doc/default. |
 | :describe-buffer        | ✅ buffer (popup) | §5.11; path / language / modal / cursor / dirty / line-count / registers / marks / position-history / macros / folds / view options. |
-| :describe-key <chord>   | ✅ buffer (popup) | §5.11; renders every `KeymapEntry` for the chord, grouped by mode. Cross-references the bound command via `[[command:...]]` link markup. |
+| :describe-key <chord>   | ✅ buffer (popup) | §5.11; renders every `KeymapEntry` for the chord through the unified `Introspectable` surface. Each binding shows `Bound at: [[file:keymap.rs:LINE]]` (built-in) -- the row's source captured by the `keymap_entry!` macro -- plus an Action: `[[command:...]]` cross-reference. |
 | :keymap                 | ✅ buffer (popup) | §5.11; lists all default bindings grouped by mode, every chord linked via `[[key:...]]` for follow-up `:describe-key`. |
 | :apropos <pattern>      | ✅ buffer (popup) | §5.11; case-insensitive substring over every `CommandSpec.name` + `doc`. Picker UI (§5.9.7) is post-1.0. |
 | :describe-option, :describe-event, :describe-mode | ⛔ | §5.11; each lands when its registry does (typed options §5.12 / event bus §5.10 / modes Phase 8). |
@@ -224,12 +224,12 @@ Every registration / binding / set captures a `SourceLocation`
 `:verbose set` semantics, applied uniformly across commands, keys,
 options, events, modes.
 
-| Capture mechanism | Used for | Forgery resistance |
-|---|---|---|
-| `#[track_caller]` on `register_*` | built-in command registrations in `builtins.rs` / `ex_commands.rs` -- zero call-site burden | compiler-captured, caller cannot supply or override |
-| `keymap_entry!` declarative macro | static keymap rows (per-row `file!()` + `line!()`) | macro is the only construction path; `source` field is `pub(crate)` |
-| Trusted subsystem builds value | config loader, plugin host bridge, runtime dispatcher | reaches `pub(crate) insert_*` registry methods directly; sibling crates use sealed-trait re-exports when needed |
-| `SourceLocation::synthetic` (cfg-test only) | test fixtures | invisible outside tests |
+| Capture mechanism | Used for | Status | Forgery resistance |
+|---|---|---|---|
+| `#[track_caller]` on `register_*` | built-in command registrations in `builtins.rs` / `ex_commands.rs` -- zero call-site burden | ✅ implemented | compiler-captured, caller cannot supply or override |
+| `keymap_entry!` declarative macro | static keymap rows (per-row `file!()` + `line!()`) | ✅ implemented | macro is the only construction path; `source` field is `pub(crate)` |
+| Trusted subsystem builds value | config loader, plugin host bridge, runtime dispatcher | ⛔ deferred (no trusted subsystems exist yet) | `pub(crate) insert_*` registry methods exist; sibling crates will use sealed-trait re-exports when needed |
+| `SourceLocation::synthetic` (cfg-test only) | test fixtures | ✅ implemented | invisible outside tests |
 
 **Public API invariant**: there is no `pub fn` that takes a
 `SourceLocation` parameter and stores it. Verified by:
@@ -408,7 +408,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-823 tests across the workspace as of the last commit. Coverage by crate:
+831 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
@@ -416,7 +416,7 @@ are crossed out there. Items that influence active tasks:
 | lattice-core (incl. integration) | 78    |
 | lattice-grammar                  | 171   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 516   |
+| lattice-ui-tui                   | 525   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

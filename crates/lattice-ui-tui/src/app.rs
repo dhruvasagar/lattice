@@ -1883,10 +1883,12 @@ impl App {
         self.help_buffer = Some(HelpBuffer::from_lines(format!("apropos {pattern}"), lines));
     }
 
-    /// Format `:describe-key <chord>` (DESIGN.md §5.11). Pulls
-    /// metadata from the keymap registry; a chord may have entries in
-    /// multiple modes (e.g. `j` is "line down" in Normal and Visual,
-    /// "scroll" in Help) so we list each match grouped by mode.
+    /// Format `:describe-key <chord>` (DESIGN.md §5.11). A chord may
+    /// have entries in multiple modes (e.g. `j` is "line down" in
+    /// Normal and Visual, "scroll" in Help). Each entry renders
+    /// through the unified [`Introspectable`] surface so the source
+    /// link + Action section come out uniformly with the other
+    /// `:describe-*` commands.
     fn do_describe_key(&mut self, chord: &str) {
         let hits = crate::keymap::lookup(chord);
         let mut lines: Vec<String> = Vec::new();
@@ -1898,16 +1900,15 @@ impl App {
                 key_link(chord),
                 hits.len()
             ));
-            lines.push(String::new());
+            // One render_introspection per entry, so each binding's
+            // source (and any Action section) appears next to its
+            // mode header. The blank line between renders keeps
+            // adjacent entries readable.
             for entry in hits {
-                lines.push(format!("[{}]", entry.mode.label()));
-                lines.push(format!("  {}", entry.doc));
-                if let Some(name) = entry.command {
-                    // Cross-reference: dispatch this through
-                    // :describe-command via link-following.
-                    lines.push(format!("  command: {}", command_link(name)));
-                }
                 lines.push(String::new());
+                for l in lattice_grammar::render_introspection(entry) {
+                    lines.push(l);
+                }
             }
         }
         self.help_buffer = Some(HelpBuffer::from_lines(format!("describe-key {chord}"), lines));
@@ -6082,6 +6083,92 @@ mod tests {
             body.contains("pattern"),
             "expected arg name `pattern`: {body}"
         );
+    }
+
+    #[test]
+    fn describe_key_shows_source_link_to_keymap_row() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-key j".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        assert!(
+            body.contains("Bound at:"),
+            "describe-key output missing `Bound at:`: {body}"
+        );
+        assert!(
+            body.contains("[[file:") && body.contains("keymap.rs"),
+            "describe-key output missing source link: {body}"
+        );
+        assert!(
+            body.contains("(built-in)"),
+            "describe-key output missing source-layer label: {body}"
+        );
+    }
+
+    #[test]
+    fn describe_key_renders_command_cross_reference_links() {
+        // For `j`, three Normal/Visual/Help bindings -- the first
+        // two have a `command` and should produce [[command:...]]
+        // cross-reference links.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-key j".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        assert!(
+            body.contains("[[command:motion:line-down]]"),
+            "expected [[command:motion:line-down]] cross-reference: {body}"
+        );
+    }
+
+    #[test]
+    fn describe_key_each_binding_has_its_own_source_link() {
+        // `j` has 3 bindings (Normal, Visual, Help) -- each should
+        // surface its own [[file:...]] line because every
+        // KeymapEntry's source is captured at its own row.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-key j".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        let source_links: Vec<_> = h
+            .links
+            .iter()
+            .filter(|l| matches!(l.target, crate::help::HelpLinkTarget::Source { .. }))
+            .collect();
+        assert_eq!(
+            source_links.len(),
+            3,
+            "expected 3 source links (one per binding); got {}: {:?}",
+            source_links.len(),
+            h.links
+        );
+        // Each link should point at a distinct line in keymap.rs.
+        let mut lines: Vec<u32> = source_links
+            .iter()
+            .filter_map(|l| match &l.target {
+                crate::help::HelpLinkTarget::Source { line, .. } => Some(*line),
+                _ => None,
+            })
+            .collect();
+        lines.sort();
+        lines.dedup();
+        assert_eq!(
+            lines.len(),
+            3,
+            "expected 3 distinct source line numbers; got {lines:?}",
+        );
+    }
+
+    #[test]
+    fn describe_key_unknown_chord_renders_not_bound_message() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-key xyzzy".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        assert!(body.contains("not bound"), "body: {body}");
     }
 
     #[test]

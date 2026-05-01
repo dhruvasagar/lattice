@@ -1833,7 +1833,7 @@ mod tests {
 
     // ---- Keymap drift detection (DESIGN.md §5.2.3, §5.11) ----
 
-    /// Parse a chord-notation string from `keymap::DEFAULT_KEYMAP` into
+    /// Parse a chord-notation string from `keymap::default_keymap()` into
     /// a sequence of `KeyEvent`s. Recognises:
     /// - bare chars: `j` / `dw` / `gg`
     /// - special keys: `<Esc>`, `<CR>`, `<Tab>`, `<BS>`,
@@ -1937,18 +1937,18 @@ mod tests {
 
     #[test]
     fn keymap_descriptors_dont_drift_from_translate() {
-        // Every descriptor in `keymap::DEFAULT_KEYMAP` must produce a
+        // Every descriptor in `keymap::default_keymap()` must produce a
         // non-`None` Action when its chord is simulated through
         // `translate()` in the matching mode. This catches:
         //   - removed bindings (descriptor still in table)
         //   - moved bindings (descriptor in wrong mode)
         //   - typo'd chord notation
         // Adding a binding to `input.rs` without updating
-        // `DEFAULT_KEYMAP` is *not* caught here -- the inverse drift
+        // `default_keymap()` is *not* caught here -- the inverse drift
         // is fine for v1 (descriptors are a discoverability surface;
         // unmentioned bindings still work).
         let (_, b) = fixture();
-        for entry in crate::keymap::DEFAULT_KEYMAP {
+        for entry in crate::keymap::default_keymap() {
             let action = simulate_chord(entry.chord, entry.mode, &b);
             assert!(
                 !matches!(action, Action::None),

@@ -150,15 +150,45 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
     let visual_range = visual_selection_range(app);
     let block = visual_block_extents(app);
 
-    let mut out = Vec::with_capacity(height as usize);
-    for i in 0..height {
-        let line_idx = app.scroll + i;
-        if (line_idx as usize) >= raw_lines.len() {
-            out.push(empty_marker_line(gutter_w));
+    // Build the visible-buffer-line ordering: starting from `scroll`, skip
+    // lines inside closed folds, taking up to `height` entries.
+    let mut visible: Vec<u32> = Vec::with_capacity(height as usize);
+    let mut buf_line = app.scroll;
+    while visible.len() < height as usize && (buf_line as usize) < raw_lines.len() {
+        if app.line_inside_closed_fold(buf_line) {
+            buf_line += 1;
             continue;
         }
+        visible.push(buf_line);
+        // If this is a fold start, jump past the fold's interior in the
+        // next iteration (the interior is hidden).
+        if let Some(fold) = app.fold_start_at(buf_line) {
+            buf_line = fold.end_line + 1;
+        } else {
+            buf_line += 1;
+        }
+    }
+
+    let mut out = Vec::with_capacity(height as usize);
+    for i in 0..height {
+        let line_idx = match visible.get(i as usize) {
+            Some(&l) => l,
+            None => {
+                out.push(empty_marker_line(gutter_w));
+                continue;
+            }
+        };
         let line_text = &raw_lines[line_idx as usize];
         let gutter = render_gutter(line_idx, gutter_w);
+        // Fold summary: show "+--- N lines ---" instead of the line body.
+        if let Some(fold) = app.fold_start_at(line_idx) {
+            let n = fold.end_line - fold.start_line + 1;
+            let summary = format!("+--- {n} lines ---");
+            let summary_span =
+                Span::styled(summary, TuiStyle::default().fg(Color::DarkGray));
+            out.push(combine(gutter, vec![summary_span]));
+            continue;
+        }
         let spans = app.highlights_for_viewport_row(i);
         let mut body = render_styled_line(line_text, spans, buffer_w);
         // Blockwise visual: per-line column band [min_col, max_col].

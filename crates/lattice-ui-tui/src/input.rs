@@ -546,6 +546,14 @@ fn resolve_after_z(event: KeyEvent) -> Action {
         KeyCode::Char('z') | KeyCode::Char('.') => Action::ScrollCursorTo(ScrollPos::Center),
         KeyCode::Char('t') | KeyCode::Enter => Action::ScrollCursorTo(ScrollPos::Top),
         KeyCode::Char('b') | KeyCode::Char('-') => Action::ScrollCursorTo(ScrollPos::Bottom),
+        // Folds.
+        KeyCode::Char('f') => Action::CreateFoldFromVisual,
+        KeyCode::Char('o') => Action::OpenFoldAtCursor,
+        KeyCode::Char('c') => Action::CloseFoldAtCursor,
+        KeyCode::Char('a') => Action::ToggleFoldAtCursor,
+        KeyCode::Char('R') => Action::OpenAllFolds,
+        KeyCode::Char('M') => Action::CloseAllFolds,
+        KeyCode::Char('d') => Action::DeleteFoldAtCursor,
         _ => Action::SetPending(Pending::None),
     }
 }
@@ -1478,6 +1486,92 @@ mod tests {
                 key(KeyCode::Esc)
             ),
             Action::SetPending(Pending::None)
+        ));
+    }
+
+    // ---- Folds: zf zo zc za zR zM zd ----
+
+    #[test]
+    fn zf_after_z_emits_create_fold_from_visual() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterZ, &b),
+                key(KeyCode::Char('f'))
+            ),
+            Action::CreateFoldFromVisual
+        ));
+    }
+
+    #[test]
+    fn zo_after_z_emits_open_fold() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterZ, &b),
+                key(KeyCode::Char('o'))
+            ),
+            Action::OpenFoldAtCursor
+        ));
+    }
+
+    #[test]
+    fn zc_after_z_emits_close_fold() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterZ, &b),
+                key(KeyCode::Char('c'))
+            ),
+            Action::CloseFoldAtCursor
+        ));
+    }
+
+    #[test]
+    fn za_after_z_emits_toggle_fold() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterZ, &b),
+                key(KeyCode::Char('a'))
+            ),
+            Action::ToggleFoldAtCursor
+        ));
+    }
+
+    #[test]
+    fn capital_z_r_after_z_opens_all() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterZ, &b),
+                key(KeyCode::Char('R'))
+            ),
+            Action::OpenAllFolds
+        ));
+    }
+
+    #[test]
+    fn capital_z_m_after_z_closes_all() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterZ, &b),
+                key(KeyCode::Char('M'))
+            ),
+            Action::CloseAllFolds
+        ));
+    }
+
+    #[test]
+    fn zd_after_z_deletes_fold() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterZ, &b),
+                key(KeyCode::Char('d'))
+            ),
+            Action::DeleteFoldAtCursor
         ));
     }
 

@@ -234,8 +234,10 @@ Update this section when picking up the in-flight item.
    currently the rectangle is highlighted but operators still cover a single
    contiguous range. Proper per-line dispatch needs the multi-range plumbing
    in `Range::Selection` resolution.
-2. **Folds** (zf, zo, zc, zR, zM, zj/zk) — vim's manual + computed folds.
-   §15:18.
+2. **Computed folds** (syntax-driven, indent-based) — manual folds via
+   zf/zo/zc/za/zR/zM/zd are done; computed folds need tree-sitter integration
+   and an indent-based fall-back.
+3. **Fold navigation** (zj / zk) — go-to-next / -previous fold.
 3. **Tag text object** (`it`, `at`) — XML/HTML tags.
 7. **`:set option=value`** + the typed-options system. §5.12.
 8. **`:describe-command` / `:describe-key` / `:apropos`** — introspection
@@ -265,7 +267,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-623 tests across the workspace as of the last commit. Coverage by crate:
+639 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
@@ -273,7 +275,7 @@ are crossed out there. Items that influence active tasks:
 | lattice-core (incl. integration) | 70    |
 | lattice-grammar                  | 122   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 378   |
+| lattice-ui-tui                   | 394   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

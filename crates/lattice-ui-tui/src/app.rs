@@ -163,6 +163,20 @@ pub enum Action {
     /// Vim's `;` (no-reverse) and `,` (reverse): repeat the last
     /// f/F/t/T find on the current line.
     FindRepeat { reverse: bool },
+    /// Vim's `zf` -- create a fold from the current Visual selection.
+    CreateFoldFromVisual,
+    /// Vim's `zo` -- open the fold containing the cursor.
+    OpenFoldAtCursor,
+    /// Vim's `zc` -- close the fold containing the cursor.
+    CloseFoldAtCursor,
+    /// Vim's `za` -- toggle the fold containing the cursor.
+    ToggleFoldAtCursor,
+    /// Vim's `zR` -- open all folds.
+    OpenAllFolds,
+    /// Vim's `zM` -- close all folds.
+    CloseAllFolds,
+    /// Vim's `zd` -- delete the fold containing the cursor.
+    DeleteFoldAtCursor,
     /// `"<reg>` prefix -- stash the named register for the next operator
     /// / paste invocation.
     SelectRegister(Register),
@@ -370,6 +384,16 @@ pub struct App {
     pub last_played_macro: Option<char>,
     /// Last f/F/t/T find on this buffer, for `;` / `,`.
     pub last_find: Option<LastFind>,
+    /// Manual folds. v1 supports non-nested folds defined by line range.
+    /// `closed=true` means the fold's interior is skipped during render.
+    pub folds: Vec<Fold>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Fold {
+    pub start_line: u32,
+    pub end_line: u32,
+    pub closed: bool,
 }
 
 /// Capture of the most recent find/till for `;`/`,` repeat.
@@ -460,6 +484,7 @@ impl App {
             macro_recording: None,
             last_played_macro: None,
             last_find: None,
+            folds: Vec::new(),
         }
     }
 
@@ -564,6 +589,14 @@ impl App {
             Action::ToggleCaseAtCursor => self.do_toggle_case_at_cursor(),
             Action::JoinLines { with_space } => self.do_join_lines(with_space),
             Action::FindRepeat { reverse } => self.do_find_repeat(reverse),
+
+            Action::CreateFoldFromVisual => self.do_create_fold_from_visual(),
+            Action::OpenFoldAtCursor => self.do_set_fold_state_at_cursor(Some(false)),
+            Action::CloseFoldAtCursor => self.do_set_fold_state_at_cursor(Some(true)),
+            Action::ToggleFoldAtCursor => self.do_set_fold_state_at_cursor(None),
+            Action::OpenAllFolds => self.do_set_all_folds(false),
+            Action::CloseAllFolds => self.do_set_all_folds(true),
+            Action::DeleteFoldAtCursor => self.do_delete_fold_at_cursor(),
             Action::SelectRegister(reg) => {
                 self.pending_register = Some(reg);
             }
@@ -1482,6 +1515,77 @@ impl App {
                 .cloned()
                 .or_else(|| self.unnamed_register.clone()),
         }
+    }
+
+    /// Vim's `zf`: create a fold over the current Visual selection's
+    /// line range. No-op outside Visual mode.
+    fn do_create_fold_from_visual(&mut self) {
+        if !matches!(self.modal, ModalState::Visual(_)) {
+            self.set_message(EchoLevel::Error, "zf requires a Visual selection".to_string());
+            return;
+        }
+        let sel = self.document.selections().primary();
+        let start_line = sel.anchor.line.min(sel.head.line);
+        let end_line = sel.anchor.line.max(sel.head.line);
+        if start_line == end_line {
+            // Single-line "fold" is meaningless; vim allows it but we
+            // skip to avoid noise.
+            return;
+        }
+        self.folds.push(Fold {
+            start_line,
+            end_line,
+            closed: true,
+        });
+        // Exit Visual back to Normal at the fold start.
+        self.cursor = Position::new(start_line, 0);
+        self.do_exit_visual();
+    }
+
+    /// Toggle / open / close the fold containing the cursor. `state =
+    /// None` toggles; `Some(true)` closes; `Some(false)` opens.
+    fn do_set_fold_state_at_cursor(&mut self, state: Option<bool>) {
+        let line = self.cursor.line;
+        for fold in self.folds.iter_mut() {
+            if line >= fold.start_line && line <= fold.end_line {
+                fold.closed = match state {
+                    None => !fold.closed,
+                    Some(s) => s,
+                };
+                return;
+            }
+        }
+        // No fold here: if state was an explicit close-request, that's
+        // a no-op (vim says "No fold found" -- we silently ignore).
+    }
+
+    fn do_set_all_folds(&mut self, closed: bool) {
+        for fold in self.folds.iter_mut() {
+            fold.closed = closed;
+        }
+    }
+
+    fn do_delete_fold_at_cursor(&mut self) {
+        let line = self.cursor.line;
+        self.folds
+            .retain(|f| !(line >= f.start_line && line <= f.end_line));
+    }
+
+    /// Returns true if `line` is inside a closed fold (and not the fold
+    /// start, which is rendered as the summary). The renderer uses this
+    /// to skip lines.
+    pub fn line_inside_closed_fold(&self, line: u32) -> bool {
+        self.folds
+            .iter()
+            .any(|f| f.closed && line > f.start_line && line <= f.end_line)
+    }
+
+    /// Returns Some(fold) if `line` is the start of a closed fold; the
+    /// renderer renders the summary header instead of the line content.
+    pub fn fold_start_at(&self, line: u32) -> Option<&Fold> {
+        self.folds
+            .iter()
+            .find(|f| f.closed && f.start_line == line)
     }
 
     /// Vim's `J` / `gJ`: join the current line with the next. With
@@ -2683,6 +2787,133 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- Folds (zf, zo, zc, za, zR, zM, zd) ----
+
+    #[test]
+    fn zf_from_visual_creates_a_closed_fold() {
+        let mut a = app_with("a\nb\nc\nd\ne", 10);
+        a.apply(Action::EnterVisual(VisualKind::Linewise));
+        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.builtins.line_down));
+        // Selection now spans lines 0..2.
+        a.apply(Action::CreateFoldFromVisual);
+        assert_eq!(a.folds.len(), 1);
+        let fold = &a.folds[0];
+        assert_eq!(fold.start_line, 0);
+        assert_eq!(fold.end_line, 2);
+        assert!(fold.closed);
+        // Visual exited.
+        assert_eq!(a.modal, ModalState::Normal);
+    }
+
+    #[test]
+    fn zf_outside_visual_emits_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::CreateFoldFromVisual);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn zo_opens_fold_at_cursor() {
+        let mut a = app_with("a\nb\nc", 10);
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 2,
+            closed: true,
+        });
+        a.apply(Action::OpenFoldAtCursor);
+        assert!(!a.folds[0].closed);
+    }
+
+    #[test]
+    fn zc_closes_fold_at_cursor() {
+        let mut a = app_with("a\nb\nc", 10);
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 2,
+            closed: false,
+        });
+        a.apply(Action::CloseFoldAtCursor);
+        assert!(a.folds[0].closed);
+    }
+
+    #[test]
+    fn za_toggles_fold_at_cursor() {
+        let mut a = app_with("a\nb\nc", 10);
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 2,
+            closed: false,
+        });
+        a.apply(Action::ToggleFoldAtCursor);
+        assert!(a.folds[0].closed);
+        a.apply(Action::ToggleFoldAtCursor);
+        assert!(!a.folds[0].closed);
+    }
+
+    #[test]
+    fn capital_zr_opens_all_folds() {
+        let mut a = app_with("a\nb\nc\nd", 10);
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 1,
+            closed: true,
+        });
+        a.folds.push(Fold {
+            start_line: 2,
+            end_line: 3,
+            closed: true,
+        });
+        a.apply(Action::OpenAllFolds);
+        assert!(a.folds.iter().all(|f| !f.closed));
+    }
+
+    #[test]
+    fn capital_zm_closes_all_folds() {
+        let mut a = app_with("a\nb\nc\nd", 10);
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 1,
+            closed: false,
+        });
+        a.folds.push(Fold {
+            start_line: 2,
+            end_line: 3,
+            closed: false,
+        });
+        a.apply(Action::CloseAllFolds);
+        assert!(a.folds.iter().all(|f| f.closed));
+    }
+
+    #[test]
+    fn zd_deletes_fold_at_cursor() {
+        let mut a = app_with("a\nb\nc\nd", 10);
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 2,
+            closed: true,
+        });
+        a.cursor = Position::new(1, 0);
+        a.apply(Action::DeleteFoldAtCursor);
+        assert!(a.folds.is_empty());
+    }
+
+    #[test]
+    fn line_inside_closed_fold_returns_true_for_interior() {
+        let mut a = app_with("a\nb\nc\nd", 10);
+        a.folds.push(Fold {
+            start_line: 1,
+            end_line: 3,
+            closed: true,
+        });
+        assert!(!a.line_inside_closed_fold(0));
+        // Start line is the summary, NOT inside.
+        assert!(!a.line_inside_closed_fold(1));
+        assert!(a.line_inside_closed_fold(2));
+        assert!(a.line_inside_closed_fold(3));
     }
 
     // ---- Substitute (:s/foo/bar/[g]) ----

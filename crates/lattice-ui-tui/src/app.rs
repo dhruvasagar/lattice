@@ -137,6 +137,13 @@ pub enum Action {
     /// Vim's `gv` -- re-enter Visual with the same anchor / head / kind
     /// as the most recently exited Visual selection.
     ReselectLastVisual,
+    /// Vim's `*` (Forward) and `#` (Backward) -- search for the word under
+    /// the cursor in the given direction.
+    SearchWordUnderCursor(SearchDirection),
+    /// Vim's `%` -- jump to the matching bracket. Looks at or beyond the
+    /// cursor on the current line for the first `()[]{}` and seeks its
+    /// pair using a depth-tracking scan.
+    MatchBracket,
     /// Vim's `.` -- re-dispatch the last buffer-mutating invocation from
     /// the current cursor.
     RepeatLastChange,
@@ -452,6 +459,10 @@ impl App {
             Action::EnterVisual(kind) => self.do_enter_visual(kind),
             Action::ExitVisual => self.do_exit_visual(),
             Action::ReselectLastVisual => self.do_reselect_visual(),
+            Action::SearchWordUnderCursor(direction) => {
+                self.do_search_word_under_cursor(direction)
+            }
+            Action::MatchBracket => self.do_match_bracket(),
 
             Action::OverwriteChar(c) => self.do_overwrite_char(c),
             Action::ReplaceUndoLast => self.do_replace_undo_last(),
@@ -1079,6 +1090,133 @@ impl App {
             .set_selections(SelectionSet::single(Selection::cursor(self.cursor)));
     }
 
+    /// Vim's `*` / `#`: extract the word at the cursor, store it as
+    /// `last_search`, and jump to the next (or previous) occurrence.
+    /// Skips the current match by stepping one byte beyond it before
+    /// invoking the search engine.
+    fn do_search_word_under_cursor(&mut self, direction: SearchDirection) {
+        let text = self.document.text();
+        let bytes = text.as_bytes();
+        let cursor_byte = match self.document.buffer().position_to_byte(self.cursor) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        // Find the word boundaries at cursor; if cursor isn't on a word
+        // byte, scan forward to the next word on the same line.
+        let mut start = cursor_byte;
+        if start >= bytes.len() || !is_word_char_byte(bytes[start]) {
+            // Scan forward up to end-of-line for a word byte.
+            while start < bytes.len() && bytes[start] != b'\n' && !is_word_char_byte(bytes[start]) {
+                start += 1;
+            }
+            if start >= bytes.len() || bytes[start] == b'\n' {
+                self.set_message(EchoLevel::Error, "no word under cursor".to_string());
+                return;
+            }
+        }
+        // Walk back to start of word.
+        while start > 0 && is_word_char_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        let mut end = start;
+        while end < bytes.len() && is_word_char_byte(bytes[end]) {
+            end += 1;
+        }
+        let word = String::from_utf8_lossy(&bytes[start..end]).into_owned();
+        if word.is_empty() {
+            self.set_message(EchoLevel::Error, "no word under cursor".to_string());
+            return;
+        }
+        let dir = match direction {
+            SearchDirection::Forward => lattice_core::search::Direction::Forward,
+            SearchDirection::Backward => lattice_core::search::Direction::Backward,
+        };
+        // Skip the current match: search from one byte past for forward,
+        // one byte before for backward.
+        let from = match direction {
+            SearchDirection::Forward => step_byte(&self.document, self.cursor, direction),
+            SearchDirection::Backward => step_byte(&self.document, self.cursor, direction),
+        };
+        match lattice_core::search::find(self.document.buffer(), &word, from, dir) {
+            Ok(Some(hit)) => {
+                self.cursor = hit.range.start;
+                self.current_match = Some(hit.range);
+                if hit.wrapped {
+                    let text = match direction {
+                        SearchDirection::Forward => "search hit BOTTOM, continuing at TOP",
+                        SearchDirection::Backward => "search hit TOP, continuing at BOTTOM",
+                    };
+                    self.set_message(EchoLevel::Warn, text.to_string());
+                }
+            }
+            Ok(None) => {
+                self.current_match = None;
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("E486: Pattern not found: {word}"),
+                );
+            }
+            Err(_) => {
+                self.current_match = None;
+            }
+        }
+        self.last_search = Some(LastSearch {
+            pattern: word,
+            direction,
+        });
+    }
+
+    /// Vim's `%`: jump to the matching `()[]{}`. Behavior: scan the
+    /// current line from `cursor.byte` for the first bracket char; that
+    /// bracket and its match define the jump. If the cursor is past
+    /// every bracket on the line, do nothing.
+    fn do_match_bracket(&mut self) {
+        let text = self.document.text();
+        let bytes = text.as_bytes();
+        let cursor_byte = match self.document.buffer().position_to_byte(self.cursor) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        // Scan from cursor to end-of-line for a bracket char.
+        let mut idx = cursor_byte;
+        let mut bracket = None;
+        while idx < bytes.len() && bytes[idx] != b'\n' {
+            if matches!(bytes[idx], b'(' | b')' | b'[' | b']' | b'{' | b'}') {
+                bracket = Some((idx, bytes[idx]));
+                break;
+            }
+            idx += 1;
+        }
+        let Some((start, b)) = bracket else {
+            self.set_message(EchoLevel::Error, "no bracket on this line".to_string());
+            return;
+        };
+        let (open, close, forward) = match b {
+            b'(' => (b'(', b')', true),
+            b')' => (b'(', b')', false),
+            b'[' => (b'[', b']', true),
+            b']' => (b'[', b']', false),
+            b'{' => (b'{', b'}', true),
+            b'}' => (b'{', b'}', false),
+            _ => return,
+        };
+        let target = if forward {
+            scan_forward_for_match(bytes, start, open, close)
+        } else {
+            scan_backward_for_match(bytes, start, open, close)
+        };
+        match target {
+            Some(t) => {
+                if let Ok(pos) = self.document.buffer().byte_to_position(t) {
+                    self.cursor = pos;
+                }
+            }
+            None => {
+                self.set_message(EchoLevel::Error, "unmatched bracket".to_string());
+            }
+        }
+    }
+
     /// Jump to a recorded mark. `exact = true` puts the cursor at the
     /// stored byte; `exact = false` jumps to the line and column = first
     /// non-blank (vim's `'<letter>` semantics).
@@ -1277,6 +1415,50 @@ pub(crate) fn last_addressable_line(doc: &Document) -> u32 {
 
 fn is_valid_mark_name(c: char) -> bool {
     c.is_ascii_alphabetic() || c.is_ascii_digit()
+}
+
+fn is_word_char_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn scan_forward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = from;
+    loop {
+        if i >= bytes.len() {
+            return None;
+        }
+        let b = bytes[i];
+        if b == open {
+            depth += 1;
+        } else if b == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+}
+
+fn scan_backward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = from;
+    loop {
+        let b = bytes[i];
+        if b == close {
+            depth += 1;
+        } else if b == open {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    }
 }
 
 fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
@@ -1988,6 +2170,112 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- Word-search (* / #) and matching-bracket (%) ----
+
+    #[test]
+    fn star_finds_next_occurrence_of_word_under_cursor() {
+        let mut a = app_with("foo bar foo bar", 10);
+        a.cursor = Position::new(0, 1); // on 'o' of first "foo"
+        a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
+        assert_eq!(a.cursor, Position::new(0, 8)); // start of second "foo"
+        let last = a.last_search.as_ref().unwrap();
+        assert_eq!(last.pattern, "foo");
+    }
+
+    #[test]
+    fn hash_finds_previous_occurrence_of_word_under_cursor() {
+        let mut a = app_with("foo bar foo bar", 10);
+        a.cursor = Position::new(0, 8); // on 'f' of second "foo"
+        a.apply(Action::SearchWordUnderCursor(SearchDirection::Backward));
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn star_when_cursor_not_on_word_scans_forward() {
+        let mut a = app_with("  hello world", 10);
+        a.cursor = Position::new(0, 0); // on space
+        a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
+        // The first word "hello" appears once in the buffer; pattern is
+        // recorded but no match is found beyond it (no second "hello").
+        let last = a.last_search.as_ref().unwrap();
+        assert_eq!(last.pattern, "hello");
+    }
+
+    #[test]
+    fn star_with_no_word_on_line_emits_error() {
+        let mut a = app_with("   ", 10);
+        a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn star_records_pattern_even_on_no_other_match() {
+        let mut a = app_with("only hello", 10);
+        a.cursor = Position::new(0, 5); // on 'h'
+        a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
+        // Only one occurrence; wrap puts us at the same place.
+        let last = a.last_search.as_ref().unwrap();
+        assert_eq!(last.pattern, "hello");
+    }
+
+    #[test]
+    fn percent_jumps_from_open_to_close_paren() {
+        let mut a = app_with("call(arg1, arg2)", 10);
+        a.cursor = Position::new(0, 4); // on '('
+        a.apply(Action::MatchBracket);
+        assert_eq!(a.cursor, Position::new(0, 15));
+    }
+
+    #[test]
+    fn percent_jumps_from_close_to_open_paren() {
+        let mut a = app_with("call(arg1, arg2)", 10);
+        a.cursor = Position::new(0, 15); // on ')'
+        a.apply(Action::MatchBracket);
+        assert_eq!(a.cursor, Position::new(0, 4));
+    }
+
+    #[test]
+    fn percent_with_nested_picks_correct_match() {
+        let mut a = app_with("a(b(c)d)e", 10);
+        a.cursor = Position::new(0, 1); // on outer '('
+        a.apply(Action::MatchBracket);
+        assert_eq!(a.cursor, Position::new(0, 7)); // outer ')'
+    }
+
+    #[test]
+    fn percent_searches_forward_for_first_bracket_when_cursor_off() {
+        let mut a = app_with("call(arg)", 10);
+        a.cursor = Position::ZERO; // 'c'; first bracket on line is '(' at byte 4
+        a.apply(Action::MatchBracket);
+        assert_eq!(a.cursor, Position::new(0, 8)); // ')'
+    }
+
+    #[test]
+    fn percent_with_no_bracket_on_line_emits_error() {
+        let mut a = app_with("plain text only", 10);
+        a.apply(Action::MatchBracket);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn percent_with_unmatched_bracket_emits_error() {
+        let mut a = app_with("foo(bar", 10);
+        a.cursor = Position::new(0, 3);
+        a.apply(Action::MatchBracket);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn percent_works_for_brackets_and_braces() {
+        let mut a = app_with("[a, b, c]", 10);
+        a.cursor = Position::ZERO;
+        a.apply(Action::MatchBracket);
+        assert_eq!(a.cursor, Position::new(0, 8));
     }
 
     // ---- Viewport motions ----

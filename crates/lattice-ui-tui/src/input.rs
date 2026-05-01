@@ -254,6 +254,9 @@ fn translate_normal(
         KeyCode::Char('?') => Action::EnterSearch(SearchDirection::Backward),
         KeyCode::Char('n') => Action::SearchNext,
         KeyCode::Char('N') => Action::SearchPrevious,
+        KeyCode::Char('*') => Action::SearchWordUnderCursor(SearchDirection::Forward),
+        KeyCode::Char('#') => Action::SearchWordUnderCursor(SearchDirection::Backward),
+        KeyCode::Char('%') => Action::MatchBracket,
 
         // Find-char on the current line
         KeyCode::Char('f') => Action::SetPending(Pending::AfterFindChar {
@@ -1085,6 +1088,44 @@ mod tests {
         assert!(matches!(
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
+        ));
+    }
+
+    // ---- Word-search and matching-bracket ----
+
+    #[test]
+    fn star_emits_search_word_forward() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('*'))
+            ),
+            Action::SearchWordUnderCursor(SearchDirection::Forward)
+        ));
+    }
+
+    #[test]
+    fn hash_emits_search_word_backward() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('#'))
+            ),
+            Action::SearchWordUnderCursor(SearchDirection::Backward)
+        ));
+    }
+
+    #[test]
+    fn percent_emits_match_bracket() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('%'))
+            ),
+            Action::MatchBracket
         ));
     }
 

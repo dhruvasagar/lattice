@@ -548,6 +548,14 @@ impl App {
         {
             rec.actions.push(action.clone());
         }
+        // Pending lifecycle: any action that *resolves* (i.e. isn't
+        // itself SetPending) consumes the pending state. Without this,
+        // a chord like `zz` (ScrollCursorTo) would leave pending=AfterZ
+        // so the next key `j` would route through resolve_after_z and
+        // emit GotoNextFold instead of line_down.
+        if !matches!(action, Action::SetPending(_)) {
+            self.pending = Pending::None;
+        }
         match action {
             Action::None => {}
             Action::Quit => self.should_quit = true,
@@ -3897,6 +3905,61 @@ mod tests {
     }
 
     // ---- Position history (Ctrl-O / Ctrl-I) ----
+
+    // ---- Pending-state lifecycle (regression) ----
+
+    #[test]
+    fn zz_clears_pending_so_next_key_is_a_motion() {
+        // Regression: previously `zz` left pending=AfterZ, so `j` after
+        // `zz` was interpreted as `zj` (GotoNextFold) and emitted "no
+        // more folds".
+        let mut a = app_with("a\nb\nc\nd\ne", 10);
+        a.apply(Action::SetPending(Pending::AfterZ));
+        a.apply(Action::ScrollCursorTo(ScrollPos::Center));
+        assert_eq!(a.pending, Pending::None);
+    }
+
+    #[test]
+    fn set_mark_clears_pending() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::SetPending(Pending::AfterSetMark));
+        a.apply(Action::SetMark('a'));
+        assert_eq!(a.pending, Pending::None);
+    }
+
+    #[test]
+    fn select_register_clears_pending() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::SetPending(Pending::AfterRegister));
+        a.apply(Action::SelectRegister(Register::Named('a')));
+        assert_eq!(a.pending, Pending::None);
+    }
+
+    #[test]
+    fn jump_to_mark_clears_pending() {
+        let mut a = app_with("hello\nworld", 10);
+        a.apply(Action::SetMark('a'));
+        a.apply(Action::SetPending(Pending::AfterJumpMarkExact));
+        a.apply(Action::JumpToMarkExact('a'));
+        assert_eq!(a.pending, Pending::None);
+    }
+
+    #[test]
+    fn play_macro_clears_pending() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::SetPending(Pending::AfterMacroPlay));
+        // No macro recorded; this errors but should still clear pending.
+        a.apply(Action::PlayMacro('z'));
+        assert_eq!(a.pending, Pending::None);
+    }
+
+    #[test]
+    fn fold_action_clears_pending() {
+        let mut a = app_with("a\nb\nc", 10);
+        a.apply(Action::SetPending(Pending::AfterZ));
+        a.apply(Action::OpenFoldAtCursor);
+        assert_eq!(a.pending, Pending::None);
+    }
 
     #[test]
     fn jump_history_with_no_jumps_emits_error() {

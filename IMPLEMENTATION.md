@@ -450,16 +450,16 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-912 tests across the workspace as of the last commit. Coverage by crate:
+947 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
 | lattice-protocol                 | 30    |
 | lattice-core (incl. integration) | 78    |
-| lattice-grammar                  | 171   |
+| lattice-grammar                  | 174   |
 | lattice-completion               | 81    |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 525   |
+| lattice-ui-tui                   | 532   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

@@ -1601,7 +1601,9 @@ impl App {
                 body,
             } => self.do_global(&pattern, inverted, &body),
             Effect::DeleteCurrentLine => self.do_delete_line(),
-            Effect::DescribeCommand { name } => self.do_describe_command(&name),
+            Effect::DescribeCommand { name, anchor } => {
+                self.do_describe_command(&name, anchor.as_deref())
+            }
             Effect::DescribeBuffer => self.do_describe_buffer(),
             Effect::Apropos { pattern } => self.do_apropos(&pattern),
             Effect::DescribeKey { chord } => self.do_describe_key(&chord),
@@ -1774,7 +1776,11 @@ impl App {
     /// new section to command help (e.g. example invocations) means
     /// extending `impl Introspectable for CommandSpec`, not editing
     /// the host.
-    fn do_describe_command(&mut self, name: &str) {
+    ///
+    /// `anchor` (optional) scrolls the help buffer to a named
+    /// anchor after rendering. Used by the cmdline's arg-aware
+    /// `<C-h>` to jump to `arg:<name>`.
+    fn do_describe_command(&mut self, name: &str, anchor: Option<&str>) {
         let Some(id) = self.registry.id_by_name(name) else {
             self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
             return;
@@ -1783,11 +1789,24 @@ impl App {
             self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
             return;
         };
-        let lines = lattice_grammar::render_introspection(spec);
-        self.help_buffer = Some(HelpBuffer::from_lines(
+        let rendered = lattice_grammar::render_introspection(spec);
+        let anchors: Vec<crate::help::HelpAnchor> = rendered
+            .anchors
+            .into_iter()
+            .map(|a| crate::help::HelpAnchor {
+                name: a.name,
+                line: a.line,
+            })
+            .collect();
+        let mut buffer = HelpBuffer::from_lines_and_anchors(
             format!("describe-command {name}"),
-            lines,
-        ));
+            rendered.lines,
+            anchors,
+        );
+        if let Some(a) = anchor {
+            buffer.scroll_to_anchor(a);
+        }
+        self.help_buffer = Some(buffer);
     }
 
     fn do_describe_buffer(&mut self) {
@@ -1906,7 +1925,7 @@ impl App {
             // adjacent entries readable.
             for entry in hits {
                 lines.push(String::new());
-                for l in lattice_grammar::render_introspection(entry) {
+                for l in lattice_grammar::render_introspection_lines(entry) {
                     lines.push(l);
                 }
             }
@@ -6065,6 +6084,57 @@ mod tests {
             "expected at least one HelpLink with Source target; got {:?}",
             h.links
         );
+    }
+
+    #[test]
+    fn describe_command_emits_per_arg_anchors() {
+        // §5.11 anchor system: every arg produces an `arg:<name>`
+        // anchor, plus a parent `args` anchor for the section.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:apropos".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        // ex:apropos has one arg "pattern" -- expect "args" plus "arg:pattern".
+        assert!(
+            h.anchors.iter().any(|a| a.name == "args"),
+            "expected 'args' anchor, got {:?}",
+            h.anchors
+        );
+        assert!(
+            h.anchors.iter().any(|a| a.name == "arg:pattern"),
+            "expected 'arg:pattern' anchor, got {:?}",
+            h.anchors
+        );
+    }
+
+    #[test]
+    fn describe_command_with_no_args_emits_no_anchors() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:quit".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        assert!(
+            h.anchors.is_empty(),
+            "ex:quit has no args; no anchors expected"
+        );
+    }
+
+    #[test]
+    fn describe_command_anchor_lines_match_actual_section_headings() {
+        // Verify the recorded line index actually points at the
+        // section's heading row in the rendered content.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:apropos".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        let lines = h.lines();
+        let args_anchor = h.anchors.iter().find(|a| a.name == "args").unwrap();
+        let arg_anchor = h.anchors.iter().find(|a| a.name == "arg:pattern").unwrap();
+        assert_eq!(lines[args_anchor.line as usize], "Arguments:");
+        assert!(lines[arg_anchor.line as usize].contains("pattern"));
     }
 
     #[test]

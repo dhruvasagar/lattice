@@ -172,7 +172,17 @@ impl crate::introspect::Introspectable for CommandSpec {
         if self.args_schema.is_empty() {
             return Vec::new();
         }
-        let mut lines = Vec::with_capacity(self.args_schema.len() * 2);
+        // Two-tiered render: a parent "Arguments:" section
+        // anchored as "args", then one subsection per arg
+        // anchored as "arg:<name>". `<C-h>` on the cmdline
+        // jumps directly to the relevant `arg:<name>` (DESIGN.md
+        // §5.11.1 + §5.11.3 arg-aware help).
+        let mut sections = Vec::with_capacity(1 + self.args_schema.len());
+        sections.push(crate::introspect::HelpSection {
+            heading: "Arguments:".to_string(),
+            lines: Vec::new(),
+            anchor: Some("args".to_string()),
+        });
         for (i, arg) in self.args_schema.iter().enumerate() {
             let default = match &arg.default {
                 crate::args::ArgDefault::Required => "required".to_string(),
@@ -182,21 +192,23 @@ impl crate::introspect::Introspectable for CommandSpec {
                 crate::args::ArgDefault::UseCursorWord => "default: cursor word".to_string(),
                 crate::args::ArgDefault::UseLastResponse => "default: last value".to_string(),
             };
-            lines.push(format!(
-                "  {}. {}: {:?}  ({})",
-                i + 1,
-                arg.name,
-                arg.kind,
-                default
-            ));
+            let mut lines = Vec::with_capacity(2);
             if !arg.doc.is_empty() {
                 lines.push(format!("       {}", arg.doc));
             }
+            sections.push(crate::introspect::HelpSection {
+                heading: format!(
+                    "  {}. {}: {:?}  ({})",
+                    i + 1,
+                    arg.name,
+                    arg.kind,
+                    default
+                ),
+                lines,
+                anchor: Some(format!("arg:{}", arg.name)),
+            });
         }
-        vec![crate::introspect::HelpSection {
-            heading: "Arguments:".to_string(),
-            lines,
-        }]
+        sections
     }
 }
 

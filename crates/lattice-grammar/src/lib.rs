@@ -38,7 +38,8 @@ pub mod target;
 
 pub use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 pub use crate::introspect::{
-    HelpSection, Introspectable, SourceEntry, SourceLabel, render_introspection,
+    HelpSection, Introspectable, RenderedAnchor, RenderedIntrospection, SourceEntry, SourceLabel,
+    render_introspection, render_introspection_lines,
 };
 pub use crate::source::{SourceKind, SourceLayer, SourceLocation};
 pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count};

@@ -160,6 +160,7 @@ impl lattice_grammar::Introspectable for KeymapEntry {
         vec![lattice_grammar::HelpSection {
             heading: "Action:".to_string(),
             lines,
+            anchor: Some("action".to_string()),
         }]
     }
 }
@@ -571,7 +572,7 @@ mod tests {
             .iter()
             .find(|e| e.command.is_some())
             .expect("at least one entry has a command");
-        let lines = lattice_grammar::render_introspection(entry);
+        let lines = lattice_grammar::render_introspection_lines(entry);
         let body = lines.join("\n");
         assert!(
             body.contains("Bound at:"),

@@ -110,7 +110,14 @@ pub enum Effect {
     /// its `CommandRegistry` for the named entry and renders the
     /// metadata into a help overlay. Carried as a sentinel because
     /// the closure has no registry access.
-    DescribeCommand { name: String },
+    ///
+    /// `anchor` (optional) tells the host to scroll the help to a
+    /// named anchor after rendering -- used by the cmdline's
+    /// arg-aware `<C-h>` to land on `arg:<name>` directly.
+    DescribeCommand {
+        name: String,
+        anchor: Option<String>,
+    },
     /// `:describe-buffer`. The host renders a snapshot of the current
     /// buffer's view-relevant state (path, language, modal, cursor,
     /// dirty, line count, ...).

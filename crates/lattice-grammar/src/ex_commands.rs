@@ -449,7 +449,10 @@ fn apply_substitute(ctx: &ExCommandContext) -> GrammarResult<Effect> {
 
 fn apply_describe_command(ctx: &ExCommandContext) -> GrammarResult<Effect> {
     match &ctx.args {
-        Args::String(s) => Ok(Effect::DescribeCommand { name: s.clone() }),
+        Args::String(s) => Ok(Effect::DescribeCommand {
+            name: s.clone(),
+            anchor: None,
+        }),
         _ => Err(CommandError::BadArgs(
             "expected command name string".into(),
         )),
@@ -613,7 +616,10 @@ mod tests {
             .with_args(Args::String("ex:write".into()));
         let eff = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
         match eff {
-            Effect::DescribeCommand { name } => assert_eq!(name, "ex:write"),
+            Effect::DescribeCommand { name, anchor } => {
+                assert_eq!(name, "ex:write");
+                assert!(anchor.is_none());
+            }
             other => panic!("unexpected effect: {other:?}"),
         }
     }

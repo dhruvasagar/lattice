@@ -77,6 +77,20 @@ pub struct HelpBuffer {
     /// Every `[[…]]` link in the rendered text, with its byte range
     /// inside `content` and its resolved target.
     pub links: Vec<HelpLink>,
+    /// Named anchors recorded by the introspection renderer
+    /// (DESIGN.md §5.11). Convention: `kind:name`
+    /// (`arg:path`, `args`, `section:examples`). Used by
+    /// `scroll_to_anchor` and (post-Phase 6) by motion
+    /// commands that walk anchor-by-anchor.
+    pub anchors: Vec<HelpAnchor>,
+}
+
+/// Named scroll target inside a help buffer's content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpAnchor {
+    pub name: String,
+    /// Line index within `HelpBuffer::content`.
+    pub line: u32,
 }
 
 impl std::fmt::Debug for HelpBuffer {
@@ -85,6 +99,7 @@ impl std::fmt::Debug for HelpBuffer {
             .field("title", &self.title)
             .field("scroll", &self.scroll)
             .field("link_count", &self.links.len())
+            .field("anchor_count", &self.anchors.len())
             .field("line_count", &self.content.line_count())
             .finish()
     }
@@ -96,6 +111,16 @@ impl HelpBuffer {
     /// verbatim in the buffer text and indexed into [`HelpBuffer::links`]
     /// at the byte range it occupies in the joined output.
     pub fn from_lines(title: impl Into<String>, lines: Vec<String>) -> Self {
+        Self::from_lines_and_anchors(title, lines, Vec::new())
+    }
+
+    /// Build a help buffer with anchors. Used by the introspection
+    /// renderer to feed `RenderedIntrospection.anchors` through.
+    pub fn from_lines_and_anchors(
+        title: impl Into<String>,
+        lines: Vec<String>,
+        anchors: Vec<HelpAnchor>,
+    ) -> Self {
         let text = lines.join("\n");
         let links = parse_help_links(&text);
         let mut buffer = Buffer::empty();
@@ -110,6 +135,19 @@ impl HelpBuffer {
             content: buffer,
             scroll: 0,
             links,
+            anchors,
+        }
+    }
+
+    /// Scroll the help view so the named anchor's heading row is at
+    /// the top of the visible region. Returns `true` if the anchor
+    /// was found, `false` otherwise (caller can fall back to top).
+    pub fn scroll_to_anchor(&mut self, name: &str) -> bool {
+        if let Some(a) = self.anchors.iter().find(|a| a.name == name) {
+            self.scroll = a.line as usize;
+            true
+        } else {
+            false
         }
     }
 
@@ -270,6 +308,52 @@ fn byte_offset_to_position(text: &str, byte_offset: usize) -> Position {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    #[test]
+    fn from_lines_and_anchors_stores_provided_anchors() {
+        let h = HelpBuffer::from_lines_and_anchors(
+            "t",
+            vec!["heading".into(), "body".into()],
+            vec![HelpAnchor {
+                name: "section:foo".into(),
+                line: 0,
+            }],
+        );
+        assert_eq!(h.anchors.len(), 1);
+        assert_eq!(h.anchors[0].name, "section:foo");
+    }
+
+    #[test]
+    fn scroll_to_anchor_moves_to_recorded_line() {
+        let mut h = HelpBuffer::from_lines_and_anchors(
+            "t",
+            (0..30).map(|i| format!("line {i}")).collect(),
+            vec![HelpAnchor {
+                name: "mid".into(),
+                line: 15,
+            }],
+        );
+        assert!(h.scroll_to_anchor("mid"));
+        assert_eq!(h.scroll, 15);
+    }
+
+    #[test]
+    fn scroll_to_unknown_anchor_returns_false_and_leaves_scroll_alone() {
+        let mut h = HelpBuffer::from_lines_and_anchors(
+            "t",
+            vec!["a".into(), "b".into()],
+            vec![],
+        );
+        h.scroll = 1;
+        assert!(!h.scroll_to_anchor("nope"));
+        assert_eq!(h.scroll, 1);
+    }
+
+    #[test]
+    fn from_lines_creates_buffer_without_anchors() {
+        let h = HelpBuffer::from_lines("t", vec!["x".into()]);
+        assert!(h.anchors.is_empty());
+    }
 
     #[test]
     fn from_lines_round_trips_through_buffer() {

@@ -178,7 +178,8 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | :marks                  | ✅     |        |
 | :set option=value       | ⚠️     | §5.12. v1 only honors number/relativenumber toggles; the full typed-options system is post-1.0. |
 | :describe-command, etc. | ⛔     | §5.11  |
-| :history-*              | ⛔     | §B.3   |
+| Command-line history (Up/Down)  | ✅     | §B.3 |
+| :history-*              | ⛔     | §B.3 (picker UI; Up/Down already works) |
 | :customize              | ⛔     | §5.12  |
 | :autocmd / :add-hook    | ⛔     | §5.10  |
 
@@ -278,7 +279,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-687 tests across the workspace as of the last commit. Coverage by crate:
+697 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
@@ -286,7 +287,7 @@ are crossed out there. Items that influence active tasks:
 | lattice-core (incl. integration) | 75    |
 | lattice-grammar                  | 125   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 434   |
+| lattice-ui-tui                   | 444   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

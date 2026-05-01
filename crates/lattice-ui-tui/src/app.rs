@@ -237,6 +237,12 @@ pub enum Action {
     CommandLineSubmit,
     /// Drop the current command line and leave Command modal.
     CommandLineCancel,
+    /// Walk to an older entry in the command history (`Up` arrow in
+    /// Command modal).
+    CommandLineHistoryPrev,
+    /// Walk to a newer entry, eventually returning to the user's
+    /// in-progress line.
+    CommandLineHistoryNext,
     /// Replace the echo area with a typed message.
     Echo(EchoMessage),
 
@@ -408,7 +414,17 @@ pub struct App {
     /// When true, the gutter shows distance from the cursor on each
     /// line; the cursor's line shows its absolute number.
     pub relative_line_numbers: bool,
+    /// Submitted `:` command history. Newest at the back. Bounded.
+    pub command_history: Vec<String>,
+    /// While in Command modal: index into `command_history` of the
+    /// entry currently shown (None = the user's in-progress text).
+    pub command_history_cursor: Option<usize>,
+    /// Snapshot of the user's typed command_line on the first Up so
+    /// Down can return to it after walking through history.
+    pub command_history_pending: Option<String>,
 }
+
+const COMMAND_HISTORY_CAP: usize = 100;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Fold {
@@ -511,6 +527,9 @@ impl App {
             recording_insert: None,
             show_line_numbers: true,
             relative_line_numbers: false,
+            command_history: Vec::new(),
+            command_history_cursor: None,
+            command_history_pending: None,
         }
     }
 
@@ -582,16 +601,31 @@ impl App {
                     let line = std::mem::take(&mut self.command_line);
                     self.modal = ModalState::Normal;
                     self.pending = Pending::None;
+                    self.command_history_cursor = None;
+                    self.command_history_pending = None;
+                    if !line.trim().is_empty() {
+                        // De-duplicate consecutive identical entries.
+                        if self.command_history.last() != Some(&line) {
+                            self.command_history.push(line.clone());
+                            if self.command_history.len() > COMMAND_HISTORY_CAP {
+                                self.command_history.remove(0);
+                            }
+                        }
+                    }
                     self.execute_ex_line(&line);
                 }
             }
             Action::CommandLineCancel => {
                 if matches!(self.modal, ModalState::Command) {
                     self.command_line.clear();
+                    self.command_history_cursor = None;
+                    self.command_history_pending = None;
                     self.modal = ModalState::Normal;
                     self.pending = Pending::None;
                 }
             }
+            Action::CommandLineHistoryPrev => self.do_command_history_step(true),
+            Action::CommandLineHistoryNext => self.do_command_history_step(false),
             Action::Echo(message) => {
                 self.last_message = Some(message);
             }
@@ -943,6 +977,40 @@ impl App {
             ExCommand::ListMarks => self.do_list_marks(),
             ExCommand::Set { option } => self.do_set(&option),
             ExCommand::Edit { path, force } => self.do_edit(path, force),
+        }
+    }
+
+    /// Walk through `:` command history in Command modal. `back = true`
+    /// goes to older entries (Up); `false` goes newer (Down).
+    fn do_command_history_step(&mut self, back: bool) {
+        if !matches!(self.modal, ModalState::Command) {
+            return;
+        }
+        if self.command_history.is_empty() {
+            return;
+        }
+        let new_cursor = match (self.command_history_cursor, back) {
+            (None, true) => {
+                // First Up: snapshot the in-progress line and move to
+                // the most recent history entry.
+                self.command_history_pending = Some(self.command_line.clone());
+                Some(self.command_history.len() - 1)
+            }
+            (None, false) => return, // Down with no history walked yet: no-op.
+            (Some(0), true) => return, // Already at oldest.
+            (Some(i), true) => Some(i - 1),
+            (Some(i), false) if i + 1 >= self.command_history.len() => {
+                // Past the newest history entry: restore the
+                // in-progress line.
+                self.command_line = self.command_history_pending.take().unwrap_or_default();
+                self.command_history_cursor = None;
+                return;
+            }
+            (Some(i), false) => Some(i + 1),
+        };
+        if let Some(idx) = new_cursor {
+            self.command_line = self.command_history[idx].clone();
+            self.command_history_cursor = Some(idx);
         }
     }
 
@@ -3295,6 +3363,85 @@ mod tests {
             a.apply(Action::CommandLineAppend(c));
         }
         a.apply(Action::CommandLineSubmit);
+    }
+
+    #[test]
+    fn submit_pushes_command_into_history() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "set number");
+        assert_eq!(a.command_history, vec!["set number".to_string()]);
+    }
+
+    #[test]
+    fn submit_dedupes_consecutive_identical_history() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "set number");
+        submit_ex(&mut a, "set number");
+        assert_eq!(a.command_history.len(), 1);
+    }
+
+    #[test]
+    fn empty_submit_does_not_push_history() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.command_history.is_empty());
+    }
+
+    #[test]
+    fn up_in_command_walks_to_most_recent_history() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "set number");
+        submit_ex(&mut a, "set nonumber");
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineHistoryPrev);
+        assert_eq!(a.command_line, "set nonumber");
+    }
+
+    #[test]
+    fn up_then_up_walks_to_older() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "set number");
+        submit_ex(&mut a, "set nonumber");
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineHistoryPrev);
+        a.apply(Action::CommandLineHistoryPrev);
+        assert_eq!(a.command_line, "set number");
+    }
+
+    #[test]
+    fn down_returns_to_in_progress_typed_text() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "set number");
+        a.apply(Action::EnterCommandLine);
+        for c in "se".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        // User starts typing "se", presses Up -> walks to "set number".
+        a.apply(Action::CommandLineHistoryPrev);
+        assert_eq!(a.command_line, "set number");
+        // Down returns to "se".
+        a.apply(Action::CommandLineHistoryNext);
+        assert_eq!(a.command_line, "se");
+    }
+
+    #[test]
+    fn history_navigation_with_no_history_is_no_op() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineAppend('w'));
+        a.apply(Action::CommandLineHistoryPrev);
+        assert_eq!(a.command_line, "w");
+    }
+
+    #[test]
+    fn history_persists_across_command_sessions() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "set number");
+        // Reopen command line; Up should still recall.
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineHistoryPrev);
+        assert_eq!(a.command_line, "set number");
     }
 
     #[test]

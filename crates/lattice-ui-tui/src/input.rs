@@ -142,6 +142,8 @@ fn translate_command(event: KeyEvent) -> Action {
         KeyCode::Esc => Action::CommandLineCancel,
         KeyCode::Enter => Action::CommandLineSubmit,
         KeyCode::Backspace => Action::CommandLineBackspace,
+        KeyCode::Up => Action::CommandLineHistoryPrev,
+        KeyCode::Down => Action::CommandLineHistoryNext,
         KeyCode::Char(c) if !event.modifiers.contains(KeyModifiers::CONTROL) => {
             Action::CommandLineAppend(c)
         }
@@ -1138,6 +1140,27 @@ mod tests {
                 key(KeyCode::Backspace)
             ),
             Action::CommandLineBackspace
+        ));
+    }
+
+    #[test]
+    fn up_in_command_emits_history_prev() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx(ModalState::Command, Pending::None, &b), key(KeyCode::Up)),
+            Action::CommandLineHistoryPrev
+        ));
+    }
+
+    #[test]
+    fn down_in_command_emits_history_next() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Command, Pending::None, &b),
+                key(KeyCode::Down)
+            ),
+            Action::CommandLineHistoryNext
         ));
     }
 

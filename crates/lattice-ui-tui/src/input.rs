@@ -380,6 +380,9 @@ fn resolve_after_g(event: KeyEvent, builtins: &Builtins) -> Action {
         KeyCode::Char('v') => Action::ReselectLastVisual,
         // `gJ`: join lines without inserting a space.
         KeyCode::Char('J') => Action::JoinLines { with_space: false },
+        // `g;` / `g,`: walk named-mark history.
+        KeyCode::Char(';') => Action::WalkMarkHistoryBack,
+        KeyCode::Char(',') => Action::WalkMarkHistoryForward,
         _ => Action::SetPending(Pending::None),
     }
 }
@@ -1619,6 +1622,32 @@ mod tests {
             Action::EnterVisual(VisualKind::Blockwise) => {}
             other => panic!("expected EnterVisual(Blockwise), got {other:?}"),
         }
+    }
+
+    // ---- Mark history (g; / g,) ----
+
+    #[test]
+    fn g_semicolon_after_g_walks_mark_history_back() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterG, &b),
+                key(KeyCode::Char(';'))
+            ),
+            Action::WalkMarkHistoryBack
+        ));
+    }
+
+    #[test]
+    fn g_comma_after_g_walks_mark_history_forward() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterG, &b),
+                key(KeyCode::Char(','))
+            ),
+            Action::WalkMarkHistoryForward
+        ));
     }
 
     // ---- Position history ----

@@ -95,7 +95,8 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | viewport_top / middle / bottom    | H, M, L        | ✅     | App-level (needs viewport_height) |
 | word_search_forward / backward    | *, #           | ✅     | §B.3 informally                   |
 | match_bracket                     | %              | ✅     | App-level                         |
-| jump_history_back / forward       | Ctrl-O, Ctrl-I | ✅     | §5.1.1 (position history)         |
+| jump_history_back / forward       | Ctrl-O, Ctrl-I | ✅     | §5.1.1 unified ring (filtered to AutoJump+PluginPush) |
+| mark_history_back / forward       | g;, g,         | ✅     | §5.1.1 unified ring (filtered to NamedMark) |
 | page_down / page_up               | Ctrl-F, Ctrl-B | ✅     | App-level                         |
 | scroll_line_up / down             | Ctrl-Y, Ctrl-E | ✅     | App-level                         |
 | half_page_down / up               | Ctrl-D, Ctrl-U | ✅     | Hardcoded count 10                |
@@ -282,7 +283,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-697 tests across the workspace as of the last commit. Coverage by crate:
+711 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
@@ -290,7 +291,7 @@ are crossed out there. Items that influence active tasks:
 | lattice-core (incl. integration) | 75    |
 | lattice-grammar                  | 125   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 444   |
+| lattice-ui-tui                   | 458   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

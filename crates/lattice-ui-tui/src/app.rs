@@ -188,6 +188,11 @@ pub enum Action {
     JumpHistoryBack,
     /// Vim's `Ctrl-I` (Tab) -- step forward.
     JumpHistoryForward,
+    /// Vim's `g;` -- step backward through `NamedMark` entries in the
+    /// unified position history.
+    WalkMarkHistoryBack,
+    /// Vim's `g,` -- step forward.
+    WalkMarkHistoryForward,
     /// Vim's `q<reg>` to start recording into a register; `q` while
     /// recording stops. App handles routing internally.
     StartMacroRecord(char),
@@ -379,11 +384,18 @@ pub struct App {
     /// Consumed-and-cleared by `run_invocation` (operators) and
     /// `do_paste` (paste). `None` means use unnamed.
     pub pending_register: Option<Register>,
-    /// Position-history ring for `Ctrl-O` / `Ctrl-I` navigation
-    /// (§5.1.1). Pushed before "big jumps" (gg, G, search submit,
-    /// n / N, *, #, %, mark jumps). The cursor sits at one past the
-    /// last navigated entry; Ctrl-O moves backward, Ctrl-I forward.
-    pub position_history: Vec<Position>,
+    /// Unified position-history ring (§5.1.1). Every entry is tagged
+    /// by source, so different keybindings can iterate filtered views
+    /// of the same data:
+    ///
+    /// - `Ctrl-O` / `Ctrl-I` (Tab) walk `AutoJump` and `PluginPush`.
+    /// - `g;` / `g,` walk `NamedMark`.
+    ///
+    /// Pushed before "big jumps" (gg, G, search submit, n / N, *, #,
+    /// %, mark jumps) with `AutoJump`, plus on every `mX` with
+    /// `NamedMark(X)`. The cursor sits at one past the last navigated
+    /// entry; the navigation action chooses both direction and filter.
+    pub position_history: Vec<PositionEntry>,
     pub position_history_cursor: usize,
     /// Macros: completed recordings keyed by register name. Replays go
     /// through `do_play_macro`. v1 records `Action` streams; insert-mode
@@ -447,6 +459,47 @@ pub struct MacroRecording {
 }
 
 const POSITION_HISTORY_CAP: usize = 100;
+
+/// One entry in the unified position history (§5.1.1). The `document`
+/// and `timestamp` fields the spec mentions are omitted in v1 since
+/// the TUI runs against a single document; they re-enter when
+/// multi-buffer support arrives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PositionEntry {
+    pub position: Position,
+    pub source: PositionSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionSource {
+    /// Pushed by "big motions" -- gg, G, search, *, #, %, mark jump.
+    /// The default Ctrl-O / Ctrl-I view filters to this (and Plugin).
+    AutoJump,
+    /// Reserved: `g<C-o>` style "I explicitly want to remember here"
+    /// pushes (emacs `set-mark`). Not yet wired to a key.
+    ExplicitMark,
+    /// Reserved: pushed by plugins (LSP go-to-definition, fuzzy-finder
+    /// hop, etc.). Treated like AutoJump for navigation.
+    PluginPush,
+    /// `mX` named mark. Walks via `g;` / `g,`.
+    NamedMark(char),
+}
+
+impl PositionEntry {
+    /// True for entries that the standard Ctrl-O / Ctrl-I jump-list
+    /// walks consume.
+    pub fn is_jump(&self) -> bool {
+        matches!(
+            self.source,
+            PositionSource::AutoJump | PositionSource::PluginPush
+        )
+    }
+
+    /// True for entries the `g;` / `g,` mark-history walks consume.
+    pub fn is_named_mark(&self) -> bool {
+        matches!(self.source, PositionSource::NamedMark(_))
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ReplaceEntry {
@@ -672,6 +725,8 @@ impl App {
             }
             Action::JumpHistoryBack => self.do_jump_history(-1),
             Action::JumpHistoryForward => self.do_jump_history(1),
+            Action::WalkMarkHistoryBack => self.do_mark_history(-1),
+            Action::WalkMarkHistoryForward => self.do_mark_history(1),
 
             Action::StartMacroRecord(reg) => self.do_start_macro_record(reg),
             Action::StopMacroRecord => self.do_stop_macro_record(),
@@ -697,6 +752,10 @@ impl App {
             Action::SetMark(name) => {
                 if is_valid_mark_name(name) {
                     self.marks.insert(name, self.cursor);
+                    // Also fold into the unified position history so
+                    // `g;` / `g,` can walk through marks chronologically.
+                    let cur = self.cursor;
+                    self.push_position_history(cur, PositionSource::NamedMark(name));
                 } else {
                     self.set_message(EchoLevel::Error, format!("invalid mark: {name}"));
                 }
@@ -854,7 +913,7 @@ impl App {
         }
         // Save the pre-search position so Ctrl-O returns.
         let from_pos = line.origin;
-        self.push_position_history(from_pos);
+        self.push_position_history(from_pos, PositionSource::AutoJump);
         let dir = match line.direction {
             SearchDirection::Forward => search::Direction::Forward,
             SearchDirection::Backward => search::Direction::Backward,
@@ -914,7 +973,7 @@ impl App {
         };
         // Push pre-jump position so Ctrl-O can return.
         let cur = self.cursor;
-        self.push_position_history(cur);
+        self.push_position_history(cur, PositionSource::AutoJump);
         let direction = match (last.direction, reverse) {
             (SearchDirection::Forward, false) | (SearchDirection::Backward, true) => {
                 SearchDirection::Forward
@@ -1374,7 +1433,7 @@ impl App {
             || inv.command == self.builtins.goto_last_line.0
         {
             let cur = self.cursor;
-            self.push_position_history(cur);
+            self.push_position_history(cur, PositionSource::AutoJump);
         }
         // Capture find/till invocations for `;` / `,` repeat.
         if let lattice_grammar::Args::Char(c) = inv.args {
@@ -1778,61 +1837,108 @@ impl App {
         self.last_played_macro = Some(register);
     }
 
-    /// Push a position onto the history ring. If the history-cursor is
-    /// not at the end (the user has been walking back), truncate forward
-    /// entries before pushing -- standard "modify-from-middle" undo-tree
+    /// Push a tagged entry onto the history ring. If the history-cursor
+    /// is not at the end (the user has been walking back), truncate
+    /// forward entries before pushing -- standard "modify-from-middle"
     /// semantics. Capped at POSITION_HISTORY_CAP entries; oldest dropped.
-    pub fn push_position_history(&mut self, pos: Position) {
-        // Don't record duplicates.
+    /// Adjacent same-position-and-source duplicates are coalesced.
+    pub fn push_position_history(&mut self, pos: Position, source: PositionSource) {
         if let Some(last) = self.position_history.last()
-            && *last == pos
+            && last.position == pos
+            && last.source == source
         {
             return;
         }
         if self.position_history_cursor < self.position_history.len() {
-            self.position_history
-                .truncate(self.position_history_cursor);
+            self.position_history.truncate(self.position_history_cursor);
         }
-        self.position_history.push(pos);
+        self.position_history.push(PositionEntry { position: pos, source });
         if self.position_history.len() > POSITION_HISTORY_CAP {
             self.position_history.remove(0);
+            // Truncating from the front shifts the cursor too; clamp
+            // before we re-anchor it.
+            self.position_history_cursor =
+                self.position_history_cursor.saturating_sub(1);
         }
         self.position_history_cursor = self.position_history.len();
     }
 
-    /// Step through the position history. `delta = -1` for Ctrl-O,
-    /// `+1` for Ctrl-I. The cursor pointer represents "where the next
-    /// push would land," so going back from `len()` lands at `len() - 1`.
+    /// Step through the position history filtered to jump-class entries
+    /// (AutoJump | PluginPush). `delta = -1` for Ctrl-O, `+1` for Ctrl-I.
+    /// On the first Ctrl-O from end-of-ring, also snapshot the current
+    /// cursor as AutoJump so a subsequent Ctrl-I can return to it.
     fn do_jump_history(&mut self, delta: i32) {
-        if self.position_history.is_empty() {
-            self.set_message(EchoLevel::Error, "no jumps".to_string());
-            return;
-        }
-        if delta < 0 {
-            // Ctrl-O: on the first step back, also push the current
-            // position onto the ring so Ctrl-I can return to it. Then
-            // step the cursor back by one.
-            if self.position_history_cursor == self.position_history.len() {
-                self.position_history.push(self.cursor);
-                if self.position_history.len() > POSITION_HISTORY_CAP {
-                    self.position_history.remove(0);
-                }
+        if delta < 0
+            && self.position_history_cursor == self.position_history.len()
+            && self.position_history.iter().any(|e| e.is_jump())
+        {
+            let already_there = self
+                .position_history
+                .last()
+                .map(|e| e.position == self.cursor)
+                .unwrap_or(false);
+            if !already_there {
+                let cur = self.cursor;
+                self.push_position_history(cur, PositionSource::AutoJump);
+                // After push the cursor==len. Step it one back so the
+                // walk finds the entry preceding our snapshot rather
+                // than the snapshot itself.
                 self.position_history_cursor =
-                    self.position_history.len().saturating_sub(2);
-            } else if self.position_history_cursor == 0 {
-                self.set_message(EchoLevel::Error, "at start of jump list".to_string());
-                return;
-            } else {
-                self.position_history_cursor -= 1;
+                    self.position_history.len().saturating_sub(1);
             }
-        } else if self.position_history_cursor + 1 >= self.position_history.len() {
-            self.set_message(EchoLevel::Error, "at end of jump list".to_string());
-            return;
-        } else {
-            self.position_history_cursor += 1;
         }
-        let target = self.position_history[self.position_history_cursor];
-        self.cursor = target;
+        self.do_walk_history(delta, |e| e.is_jump(), "jumps", "jump list");
+    }
+
+    /// Step through named-mark entries -- vim's `g;` (back) / `g,`
+    /// (forward) per §5.1.1's interpretation. No "snapshot current
+    /// pos" pre-step: mark navigation is exploratory and shouldn't
+    /// pollute the jump-list ring.
+    fn do_mark_history(&mut self, delta: i32) {
+        self.do_walk_history(delta, |e| e.is_named_mark(), "marks", "mark history");
+    }
+
+    /// Generic walk over the unified ring filtered by `pred`. Mirrors
+    /// vim's "save current pos on first step back so the forward step
+    /// can return to it" behavior, but only when the current position
+    /// itself qualifies for the filter (so jumping back over named
+    /// marks doesn't pollute the ring with AutoJump entries and vice
+    /// versa).
+    fn do_walk_history<F: Fn(&PositionEntry) -> bool>(
+        &mut self,
+        delta: i32,
+        pred: F,
+        empty_label: &str,
+        bound_label: &str,
+    ) {
+        if !self.position_history.iter().any(&pred) {
+            self.set_message(EchoLevel::Error, format!("no {empty_label}"));
+            return;
+        }
+        let target_idx = if delta < 0 {
+            self.position_history[..self.position_history_cursor]
+                .iter()
+                .rposition(&pred)
+        } else {
+            let from = self
+                .position_history_cursor
+                .saturating_add(1)
+                .min(self.position_history.len());
+            self.position_history[from..]
+                .iter()
+                .position(&pred)
+                .map(|i| i + from)
+        };
+        let Some(idx) = target_idx else {
+            let bound = if delta < 0 { "start" } else { "end" };
+            self.set_message(
+                EchoLevel::Error,
+                format!("at {bound} of {bound_label}"),
+            );
+            return;
+        };
+        self.position_history_cursor = idx;
+        self.cursor = self.position_history[idx].position;
         self.clamp_cursor_to_buffer();
     }
 
@@ -2136,7 +2242,7 @@ impl App {
         };
         match lattice_core::search::find(self.document.buffer(), &word, from, dir) {
             Ok(Some(hit)) => {
-                self.push_position_history(pre_jump);
+                self.push_position_history(pre_jump, PositionSource::AutoJump);
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
                 self.all_matches = lattice_core::search::find_all(
@@ -2214,7 +2320,7 @@ impl App {
         match target {
             Some(t) => {
                 if let Ok(pos) = self.document.buffer().byte_to_position(t) {
-                    self.push_position_history(pre_jump);
+                    self.push_position_history(pre_jump, PositionSource::AutoJump);
                     self.cursor = pos;
                 }
             }
@@ -2238,7 +2344,7 @@ impl App {
         };
         // Push pre-jump position so Ctrl-O can return.
         let cur = self.cursor;
-        self.push_position_history(cur);
+        self.push_position_history(cur, PositionSource::AutoJump);
         if exact {
             self.cursor = pos;
         } else {
@@ -4039,12 +4145,104 @@ mod tests {
         assert_eq!(a.cursor, Position::ZERO);
     }
 
+    // ---- §5.1.1 unified position history ----
+
+    #[test]
+    fn set_mark_pushes_named_mark_into_position_history() {
+        let mut a = app_with("hello\nworld", 10);
+        a.cursor = Position::new(1, 2);
+        a.apply(Action::SetMark('a'));
+        // Last entry is a NamedMark.
+        let last = a.position_history.last().unwrap();
+        assert_eq!(last.position, Position::new(1, 2));
+        assert!(matches!(last.source, PositionSource::NamedMark('a')));
+    }
+
+    #[test]
+    fn jump_history_filters_to_jump_class_only() {
+        let mut a = app_with("aaa\nbbb\nccc\nddd", 10);
+        // mX (NamedMark) followed by gg (AutoJump). Ctrl-O should walk
+        // to the AutoJump entry, NOT the NamedMark.
+        a.cursor = Position::new(1, 0);
+        a.apply(Action::SetMark('a'));
+        // Position history now has [NamedMark('a') at (1,0)].
+        a.cursor = Position::new(3, 0);
+        a.apply(invoke_motion(a.builtins.goto_first_line));
+        // Now history: [NamedMark('a'), AutoJump (3,0)].
+        a.apply(Action::JumpHistoryBack);
+        // Ctrl-O lands on the AutoJump entry, not the named mark.
+        assert_eq!(a.cursor, Position::new(3, 0));
+    }
+
+    #[test]
+    fn g_semicolon_walks_named_mark_history_backward() {
+        let mut a = app_with("a\nb\nc\nd\ne", 10);
+        // Set marks at three positions.
+        a.cursor = Position::new(1, 0);
+        a.apply(Action::SetMark('a'));
+        a.cursor = Position::new(3, 0);
+        a.apply(Action::SetMark('b'));
+        a.cursor = Position::new(4, 0);
+        // g; lands on 'b' (most recent named mark).
+        a.apply(Action::WalkMarkHistoryBack);
+        assert_eq!(a.cursor, Position::new(3, 0));
+        // g; again -> 'a'.
+        a.apply(Action::WalkMarkHistoryBack);
+        assert_eq!(a.cursor, Position::new(1, 0));
+    }
+
+    #[test]
+    fn g_comma_walks_named_mark_history_forward() {
+        let mut a = app_with("a\nb\nc\nd\ne", 10);
+        a.cursor = Position::new(1, 0);
+        a.apply(Action::SetMark('a'));
+        a.cursor = Position::new(3, 0);
+        a.apply(Action::SetMark('b'));
+        a.cursor = Position::new(4, 0);
+        a.apply(Action::WalkMarkHistoryBack); // -> 'b'
+        a.apply(Action::WalkMarkHistoryBack); // -> 'a'
+        a.apply(Action::WalkMarkHistoryForward); // -> 'b'
+        assert_eq!(a.cursor, Position::new(3, 0));
+    }
+
+    #[test]
+    fn g_semicolon_with_no_named_marks_emits_error() {
+        let mut a = app_with("a\nb\nc", 10);
+        a.cursor = Position::new(2, 0);
+        a.apply(invoke_motion(a.builtins.goto_first_line)); // pushes AutoJump
+        a.apply(Action::WalkMarkHistoryBack);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("no marks"));
+    }
+
+    #[test]
+    fn jump_and_mark_walks_share_the_same_ring_cursor() {
+        // After Ctrl-O moves cursor through the ring, g; should pick
+        // up from the new cursor position when scanning for marks.
+        let mut a = app_with("a\nb\nc\nd\ne", 10);
+        a.cursor = Position::new(1, 0);
+        a.apply(Action::SetMark('a')); // ring [NamedMark a@(1,0)] cursor=1
+        a.cursor = Position::new(3, 0);
+        a.apply(invoke_motion(a.builtins.goto_first_line));
+        // ring [NamedMark a, AutoJump (3,0)] cursor=2
+        // Ctrl-O jumps to AutoJump (3,0). Snapshot of (0,0) pushed.
+        // Actually: with snapshot pre-step, ring [a, (3,0), (0,0)],
+        // cursor walks from 3 backward to find jump -> index 1 ((3,0)).
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.cursor, Position::new(3, 0));
+        // g; from current ring cursor (1) walks back to find NamedMark
+        // at index 0.
+        a.apply(Action::WalkMarkHistoryBack);
+        assert_eq!(a.cursor, Position::new(1, 0));
+    }
+
     #[test]
     fn position_history_dedups_consecutive_same() {
         let mut a = app_with("a\nb\nc", 10);
-        a.push_position_history(Position::new(2, 0));
-        a.push_position_history(Position::new(2, 0));
-        // Pushing the same position twice in a row -> single entry.
+        a.push_position_history(Position::new(2, 0), PositionSource::AutoJump);
+        a.push_position_history(Position::new(2, 0), PositionSource::AutoJump);
+        // Pushing the same position-and-source twice in a row -> single entry.
         assert_eq!(a.position_history.len(), 1);
     }
 
@@ -4052,7 +4250,7 @@ mod tests {
     fn position_history_capped_at_max() {
         let mut a = app_with("a\nb\nc", 10);
         for i in 0..200 {
-            a.push_position_history(Position::new(i % 3, 0));
+            a.push_position_history(Position::new(i % 3, 0), PositionSource::AutoJump);
         }
         assert!(a.position_history.len() <= 100);
     }

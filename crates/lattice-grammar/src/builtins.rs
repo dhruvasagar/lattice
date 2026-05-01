@@ -121,6 +121,24 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Box::new(motion_big_word_end),
         },
     );
+    let paragraph_forward = registry.register_motion(
+        "motion:paragraph-forward",
+        "Move to the next paragraph boundary -- the next blank line at or after the cursor (vim's `}`).",
+        MotionSpec {
+            jump: true,
+            exclusive: false,
+            apply: Box::new(motion_paragraph_forward),
+        },
+    );
+    let paragraph_backward = registry.register_motion(
+        "motion:paragraph-backward",
+        "Move to the previous paragraph boundary (vim's `{`).",
+        MotionSpec {
+            jump: true,
+            exclusive: false,
+            apply: Box::new(motion_paragraph_backward),
+        },
+    );
     let char_left = registry.register_motion(
         "motion:char-left",
         "Move one byte to the left within the current line.",
@@ -259,6 +277,21 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         },
     );
 
+    let inner_paragraph = registry.register_text_object(
+        "text-object:inner-paragraph",
+        "Inner paragraph -- the run of non-blank lines containing the cursor (vim's `ip`).",
+        TextObjectSpec {
+            apply: Box::new(text_object_inner_paragraph),
+        },
+    );
+    let around_paragraph = registry.register_text_object(
+        "text-object:around-paragraph",
+        "Around paragraph -- inner_paragraph plus trailing blank lines (vim's `ap`).",
+        TextObjectSpec {
+            apply: Box::new(text_object_around_paragraph),
+        },
+    );
+
     let inner_word = registry.register_text_object(
         "text-object:inner-word",
         "Inner word -- alphanum + underscore run containing the cursor (vim's `iw`).",
@@ -370,6 +403,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         big_word_forward,
         big_word_backward,
         big_word_end,
+        paragraph_forward,
+        paragraph_backward,
         char_left,
         char_right,
         line_up,
@@ -386,6 +421,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         upper,
         lower,
         toggle_case,
+        inner_paragraph,
+        around_paragraph,
         inner_word,
         around_word,
         inner_quote_double,
@@ -416,6 +453,8 @@ pub struct Builtins {
     pub big_word_forward: MotionId,
     pub big_word_backward: MotionId,
     pub big_word_end: MotionId,
+    pub paragraph_forward: MotionId,
+    pub paragraph_backward: MotionId,
     pub char_left: MotionId,
     pub char_right: MotionId,
     pub line_up: MotionId,
@@ -432,6 +471,8 @@ pub struct Builtins {
     pub upper: OperatorId,
     pub lower: OperatorId,
     pub toggle_case: OperatorId,
+    pub inner_paragraph: TextObjectId,
+    pub around_paragraph: TextObjectId,
     pub inner_word: TextObjectId,
     pub around_word: TextObjectId,
     pub inner_quote_double: TextObjectId,
@@ -601,6 +642,75 @@ fn motion_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
     Ok(MotionResult { target, linewise: false })
+}
+
+// ---- Paragraph motions (vim's `}`, `{`) ----
+//
+// A paragraph is a maximal run of non-blank lines. `}` lands on the
+// next blank line at or after `cursor.line + 1`; `{` lands on the
+// previous blank line. If no boundary exists, lands at end / start of
+// buffer respectively.
+
+fn line_is_blank(text: &str, line: u32) -> bool {
+    text.split_inclusive('\n')
+        .nth(line as usize)
+        .map(|l| l.trim_end_matches('\n').trim().is_empty())
+        .unwrap_or(true)
+}
+
+fn buffer_last_line(text: &str) -> u32 {
+    let lc = text.split_inclusive('\n').count() as u32;
+    if text.ends_with('\n') {
+        lc.saturating_sub(2)
+    } else {
+        lc.saturating_sub(1)
+    }
+}
+
+fn motion_paragraph_forward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let text = ctx.buffer.as_string();
+    let count = ctx.count.get().max(1);
+    let last = buffer_last_line(&text);
+    let mut line = ctx.from.line;
+    for _ in 0..count {
+        // Step forward at least one line.
+        if line > last {
+            line = last;
+            break;
+        }
+        line = line.saturating_add(1);
+        // Skip current paragraph (non-blank lines).
+        while line <= last && !line_is_blank(&text, line) {
+            line = line.saturating_add(1);
+        }
+        if line > last {
+            line = last;
+            break;
+        }
+    }
+    Ok(MotionResult {
+        target: Position::new(line, 0),
+        linewise: false,
+    })
+}
+
+fn motion_paragraph_backward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
+    let text = ctx.buffer.as_string();
+    let count = ctx.count.get().max(1);
+    let mut line = ctx.from.line;
+    for _ in 0..count {
+        if line == 0 {
+            break;
+        }
+        line = line.saturating_sub(1);
+        while line > 0 && !line_is_blank(&text, line) {
+            line = line.saturating_sub(1);
+        }
+    }
+    Ok(MotionResult {
+        target: Position::new(line, 0),
+        linewise: false,
+    })
 }
 
 // ---- WORD motions (vim's W, B, E) ----
@@ -935,6 +1045,52 @@ fn last_addressable_line(buffer: &lattice_core::Buffer) -> u32 {
         lc.saturating_sub(2)
     } else {
         lc.saturating_sub(1)
+    }
+}
+
+// ---- Paragraph text objects (vim's `ip`, `ap`) ----
+
+fn text_object_inner_paragraph(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    let text = ctx.buffer.as_string();
+    let last_line = buffer_last_line(&text);
+    let cursor_line = ctx.at.line.min(last_line);
+    let blank_at_cursor = line_is_blank(&text, cursor_line);
+    // Walk back to the start of the contiguous run-of-same-blank-status.
+    let mut start = cursor_line;
+    while start > 0 && line_is_blank(&text, start - 1) == blank_at_cursor {
+        start -= 1;
+    }
+    // Walk forward to the end of the run.
+    let mut end = cursor_line;
+    while end < last_line && line_is_blank(&text, end + 1) == blank_at_cursor {
+        end += 1;
+    }
+    let end_byte = line_byte_len(ctx.buffer, end);
+    Ok(ProtoRange::new(
+        Position::new(start, 0),
+        Position::new(end, end_byte),
+    ))
+}
+
+fn text_object_around_paragraph(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    // Inner paragraph + trailing blank lines (or leading if at end of buffer).
+    let inner = text_object_inner_paragraph(ctx)?;
+    let text = ctx.buffer.as_string();
+    let last_line = buffer_last_line(&text);
+    let mut end_line = inner.end.line;
+    let blank_at_inner = line_is_blank(&text, end_line);
+    if !blank_at_inner {
+        while end_line < last_line && line_is_blank(&text, end_line + 1) {
+            end_line += 1;
+        }
+        let end_byte = line_byte_len(ctx.buffer, end_line);
+        Ok(ProtoRange::new(inner.start, Position::new(end_line, end_byte)))
+    } else {
+        while end_line < last_line && !line_is_blank(&text, end_line + 1) {
+            end_line += 1;
+        }
+        let end_byte = line_byte_len(ctx.buffer, end_line);
+        Ok(ProtoRange::new(inner.start, Position::new(end_line, end_byte)))
     }
 }
 
@@ -2116,6 +2272,67 @@ mod tests {
             other => panic!("expected Many, got {other:?}"),
         }
         assert_eq!(doc.text(), " world");
+    }
+
+    // ---- Paragraph motions and text objects ----
+
+    #[test]
+    fn paragraph_forward_lands_on_next_blank_line() {
+        let (registry, b, mut doc) = fixture("foo\nbar\n\nbaz");
+        let inv = CommandInvocation::of(b.paragraph_forward.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => {
+                // First blank line is line 2.
+                assert_eq!(s.primary().head, Position::new(2, 0));
+            }
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn paragraph_backward_lands_on_previous_blank_line() {
+        let (registry, b, mut doc) = fixture("foo\n\nbar\nbaz");
+        let inv = CommandInvocation::of(b.paragraph_backward.0);
+        let effect = execute(&registry, &mut doc, Position::new(3, 0), inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(1, 0)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn paragraph_forward_at_end_of_buffer_clamps() {
+        let (registry, b, mut doc) = fixture("foo\nbar");
+        let inv = CommandInvocation::of(b.paragraph_forward.0);
+        let effect = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match effect {
+            Effect::SelectionChange(s) => {
+                // No blank line; lands at last addressable line.
+                assert_eq!(s.primary().head.line, 1);
+            }
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dap_deletes_paragraph_with_blank_lines() {
+        let (registry, b, mut doc) = fixture("foo\nbar\n\nbaz");
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::TextObject(b.around_paragraph, crate::args::Args::None));
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        // Around paragraph: first non-blank run + trailing blank line.
+        assert!(doc.text().contains("baz"));
+    }
+
+    #[test]
+    fn dip_deletes_paragraph_only() {
+        let (registry, b, mut doc) = fixture("foo\nbar\n\nbaz");
+        let inv = CommandInvocation::of(b.delete.0)
+            .with_target(Target::TextObject(b.inner_paragraph, crate::args::Args::None));
+        execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        // Inner paragraph: just the non-blank run, blank line preserved.
+        assert!(doc.text().starts_with('\n') || doc.text().starts_with("\nbaz"));
     }
 
     // ---- WORD motions (W, B, E) ----

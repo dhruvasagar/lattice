@@ -83,7 +83,7 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | word_backward                     | b              | ✅     | §5.2.2                            |
 | word_end                          | e              | ✅     | §5.2.2                            |
 | WORD_forward / backward / end     | W, B, E        | ✅     | Whitespace-delimited variants     |
-| paragraph_forward / backward      | }, {           | ⛔     | §5.2.2                            |
+| paragraph_forward / backward      | }, {           | ✅     | §5.2.2                            |
 | sentence_forward / backward       | ), (           | ⛔     |                                   |
 | goto_first_line / goto_last_line  | gg, G          | ✅     | §5.2.2                            |
 | find_char_forward / backward      | f, F           | ✅     | §5.2.2                            |
@@ -128,7 +128,7 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | inner_brace / around     | i{ / a{   | ✅     |                 |
 | inner_angle / around     | i< / a<   | ⛔     |                 |
 | inner_tag / around       | it / at   | ⛔     | XML/HTML tags   |
-| inner_paragraph / around | ip / ap   | ⛔     |                 |
+| inner_paragraph / around | ip / ap   | ✅     |                 |
 | inner_sentence / around  | is / as   | ⛔     |                 |
 
 ### Counts, registers, ranges, marks, macros, dot-repeat
@@ -267,13 +267,13 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-598 tests across the workspace as of the last commit. Coverage by crate:
+603 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
 | lattice-protocol                 | 30    |
 | lattice-core (incl. integration) | 70    |
-| lattice-grammar                  | 114   |
+| lattice-grammar                  | 119   |
 | lattice-syntax                   | 23    |
 | lattice-ui-tui                   | 361   |
 

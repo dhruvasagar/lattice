@@ -100,6 +100,8 @@ fn translate_visual(event: KeyEvent, builtins: &Builtins) -> Action {
         KeyCode::Char('W') => invoke(builtins.big_word_forward),
         KeyCode::Char('B') => invoke(builtins.big_word_backward),
         KeyCode::Char('E') => invoke(builtins.big_word_end),
+        KeyCode::Char('}') => invoke(builtins.paragraph_forward),
+        KeyCode::Char('{') => invoke(builtins.paragraph_backward),
         KeyCode::Char('G') => invoke(builtins.goto_last_line),
 
         // Operators on the selection. `Range::Selection` resolves to the
@@ -238,6 +240,8 @@ fn translate_normal(
         KeyCode::Char('W') => invoke(builtins.big_word_forward),
         KeyCode::Char('B') => invoke(builtins.big_word_backward),
         KeyCode::Char('E') => invoke(builtins.big_word_end),
+        KeyCode::Char('}') => invoke(builtins.paragraph_forward),
+        KeyCode::Char('{') => invoke(builtins.paragraph_backward),
         KeyCode::Char('G') => invoke(builtins.goto_last_line),
 
         // Viewport jumps
@@ -390,6 +394,8 @@ fn resolve_after_operator(
         KeyCode::Char('W') => Target::Motion(builtins.big_word_forward, Args::None),
         KeyCode::Char('B') => Target::Motion(builtins.big_word_backward, Args::None),
         KeyCode::Char('E') => Target::Motion(builtins.big_word_end, Args::None),
+        KeyCode::Char('}') => Target::Motion(builtins.paragraph_forward, Args::None),
+        KeyCode::Char('{') => Target::Motion(builtins.paragraph_backward, Args::None),
         KeyCode::Char('h') | KeyCode::Left => Target::Motion(builtins.char_left, Args::None),
         KeyCode::Char('l') | KeyCode::Right => Target::Motion(builtins.char_right, Args::None),
         KeyCode::Char('j') | KeyCode::Down => Target::Motion(builtins.line_down, Args::None),
@@ -578,6 +584,13 @@ fn resolve_after_text_object(
                 builtins.around_word
             } else {
                 builtins.inner_word
+            }
+        }
+        KeyCode::Char('p') => {
+            if around {
+                builtins.around_paragraph
+            } else {
+                builtins.inner_paragraph
             }
         }
         KeyCode::Char('"') => {

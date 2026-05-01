@@ -342,14 +342,18 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App) {
-    let path = app
-        .document
+    // Load one snapshot per frame -- DESIGN.md §5.6.8: the
+    // renderer reads through a single arc-swap acquire and uses
+    // that snapshot for the entire frame, never round-tripping
+    // the actor.
+    let snap = app.document.snapshot();
+    let path = snap
         .path()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "[no name]".to_string());
-    let dirty = if app.document.dirty() { "[+]" } else { "   " };
+    let dirty = if snap.dirty { "[+]" } else { "   " };
     let pos = format!("{}:{}", app.cursor.line + 1, app.cursor.byte);
-    let lang = Lang::detect_from_path(app.document.path()).label();
+    let lang = Lang::detect_from_path(snap.path()).label();
     let mode_label = app.modal_label();
 
     let left = format!("[{mode_label}] {dirty} {path}");
@@ -378,7 +382,7 @@ fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App) {
 /// document text we slice out of for this frame. One alloc per visible line
 /// per frame -- negligible at terminal sizes (typically 50-100 lines).
 pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'static>> {
-    let buffer_text = app.document.text();
+    let buffer_text = app.document.snapshot().buffer.as_string();
     let raw_lines: Vec<String> = buffer_text
         .split_inclusive('\n')
         .map(|l| l.trim_end_matches('\n').to_string())
@@ -490,7 +494,8 @@ fn visual_block_extents(app: &App) -> Option<BlockExtents> {
     if !matches!(app.modal, ModalState::Visual(lattice_grammar::VisualKind::Blockwise)) {
         return None;
     }
-    let sel = app.document.selections().primary();
+    let sels = app.document.selections();
+    let sel = sels.primary();
     let start_line = sel.anchor.line.min(sel.head.line);
     let end_line = sel.anchor.line.max(sel.head.line);
     let start_col = sel.anchor.byte.min(sel.head.byte);
@@ -519,7 +524,8 @@ fn visual_selection_range(app: &App) -> Option<ProtoRange> {
     if !matches!(app.modal, ModalState::Visual(_)) {
         return None;
     }
-    let sel = app.document.selections().primary();
+    let sels = app.document.selections();
+    let sel = sels.primary();
     let (a, b) = if sel.anchor <= sel.head {
         (sel.anchor, sel.head)
     } else {
@@ -742,7 +748,7 @@ fn cursor_screen_position(app: &App, area: Rect) -> Option<(u16, u16)> {
     if row_in_view >= area.height as u32 {
         return None;
     }
-    let buffer_text = app.document.text();
+    let buffer_text = app.document.snapshot().buffer.as_string();
     let total_lines = buffer_text
         .split_inclusive('\n')
         .count()
@@ -995,7 +1001,7 @@ mod tests {
             head: pos(0, 2),
             visual: Some(VisualMode::Charwise),
         };
-        app.document.set_selections(SelectionSet::single(sel));
+        app.set_selections_blocking(SelectionSet::single(sel));
         let r = visual_selection_range(&app).expect("range");
         assert_eq!(r.start, pos(0, 0));
         // Charwise includes head: end byte = head.byte + 1.
@@ -1011,7 +1017,7 @@ mod tests {
             head: pos(2, 1),
             visual: Some(VisualMode::Linewise),
         };
-        app.document.set_selections(SelectionSet::single(sel));
+        app.set_selections_blocking(SelectionSet::single(sel));
         let r = visual_selection_range(&app).expect("range");
         assert_eq!(r.start, pos(0, 0));
         // Linewise end byte is u32::MAX so per-line clamping picks line_len.
@@ -1028,7 +1034,7 @@ mod tests {
             head: pos(0, 1),
             visual: Some(VisualMode::Charwise),
         };
-        app.document.set_selections(SelectionSet::single(sel));
+        app.set_selections_blocking(SelectionSet::single(sel));
         let r = visual_selection_range(&app).expect("range");
         assert_eq!(r.start, pos(0, 1));
         assert_eq!(r.end, pos(0, 5));
@@ -1049,7 +1055,7 @@ mod tests {
             head: pos(0, 2),
             visual: Some(VisualMode::Blockwise),
         };
-        app.document.set_selections(SelectionSet::single(sel));
+        app.set_selections_blocking(SelectionSet::single(sel));
         let b = visual_block_extents(&app).unwrap();
         assert_eq!(b.start_line, 0);
         assert_eq!(b.end_line, 2);
@@ -1066,7 +1072,7 @@ mod tests {
             head: pos(0, 4),
             visual: Some(VisualMode::Charwise),
         };
-        app.document.set_selections(SelectionSet::single(sel));
+        app.set_selections_blocking(SelectionSet::single(sel));
         let lines = compose_visible_lines(&app, 1, 80);
         let dump = format!("{:?}", lines[0]);
         // The selected "hello" should appear as its own span(s); we just

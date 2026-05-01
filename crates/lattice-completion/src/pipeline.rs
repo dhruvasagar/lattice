@@ -122,7 +122,7 @@ mod tests {
     use crate::candidate::{
         CacheKey, CandidateKind, MatchScore, RawCandidate,
     };
-    use lattice_core::Document;
+    use lattice_core::{Buffer, Document};
     use lattice_grammar::CommandRegistry;
     use std::ops::Range;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -193,12 +193,12 @@ mod tests {
 
     fn ctx<'a>(
         prefix: &'a str,
-        document: &'a Document,
+        buffer: &'a Buffer,
         registry: &'a CommandRegistry,
     ) -> GenerateContext<'a> {
         GenerateContext {
             prefix,
-            document,
+            buffer,
             registry,
             case_sensitive: false,
         }
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn pipeline_runs_all_four_stages() {
-        let document = Document::empty();
+        let document = Document::empty(); let buffer = document.buffer().clone();
         let registry = CommandRegistry::new();
         let cache = GeneratorCache::new();
         let p = CompletionPipeline {
@@ -218,7 +218,7 @@ mod tests {
             ranker: Arc::new(ScoreRank),
             annotators: vec![Arc::new(LengthAnno)],
         };
-        let result = p.run(&ctx("alph", &document, &registry), "alph", &cache);
+        let result = p.run(&ctx("alph", &buffer, &registry), "alph", &cache);
         // Only "alpha" and "alphabet" match `alph`.
         assert_eq!(result.len(), 2);
         // Annotator appended length.
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn caching_prevents_regeneration_on_second_run() {
-        let document = Document::empty();
+        let document = Document::empty(); let buffer = document.buffer().clone();
         let registry = CommandRegistry::new();
         let cache = GeneratorCache::new();
         let generator = Arc::new(CountingGen::new(vec!["x", "y"], Some("k1")));
@@ -237,16 +237,16 @@ mod tests {
             ranker: Arc::new(ScoreRank),
             annotators: vec![],
         };
-        let _ = p.run(&ctx("", &document, &registry), "", &cache);
-        let _ = p.run(&ctx("", &document, &registry), "", &cache);
-        let _ = p.run(&ctx("", &document, &registry), "", &cache);
+        let _ = p.run(&ctx("", &buffer, &registry), "", &cache);
+        let _ = p.run(&ctx("", &buffer, &registry), "", &cache);
+        let _ = p.run(&ctx("", &buffer, &registry), "", &cache);
         // Generator called exactly once -- cache served the next two.
         assert_eq!(generator.calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn no_cache_key_means_no_caching() {
-        let document = Document::empty();
+        let document = Document::empty(); let buffer = document.buffer().clone();
         let registry = CommandRegistry::new();
         let cache = GeneratorCache::new();
         let generator = Arc::new(CountingGen::new(vec!["x"], None));
@@ -256,14 +256,14 @@ mod tests {
             ranker: Arc::new(ScoreRank),
             annotators: vec![],
         };
-        let _ = p.run(&ctx("", &document, &registry), "", &cache);
-        let _ = p.run(&ctx("", &document, &registry), "", &cache);
+        let _ = p.run(&ctx("", &buffer, &registry), "", &cache);
+        let _ = p.run(&ctx("", &buffer, &registry), "", &cache);
         assert_eq!(generator.calls.load(Ordering::Relaxed), 2);
     }
 
     #[test]
     fn matcher_filters_non_matches() {
-        let document = Document::empty();
+        let document = Document::empty(); let buffer = document.buffer().clone();
         let registry = CommandRegistry::new();
         let cache = GeneratorCache::new();
         let p = CompletionPipeline {
@@ -272,14 +272,14 @@ mod tests {
             ranker: Arc::new(ScoreRank),
             annotators: vec![],
         };
-        let result = p.run(&ctx("ba", &document, &registry), "ba", &cache);
+        let result = p.run(&ctx("ba", &buffer, &registry), "ba", &cache);
         assert_eq!(result.len(), 2);
         assert!(result.iter().all(|r| r.raw.text.starts_with("ba")));
     }
 
     #[test]
     fn match_ranges_propagate_to_rendered_candidates() {
-        let document = Document::empty();
+        let document = Document::empty(); let buffer = document.buffer().clone();
         let registry = CommandRegistry::new();
         let cache = GeneratorCache::new();
         let p = CompletionPipeline {
@@ -288,13 +288,13 @@ mod tests {
             ranker: Arc::new(ScoreRank),
             annotators: vec![],
         };
-        let result = p.run(&ctx("alp", &document, &registry), "alp", &cache);
+        let result = p.run(&ctx("alp", &buffer, &registry), "alp", &cache);
         assert_eq!(result[0].match_ranges, vec![0..3]);
     }
 
     #[test]
     fn empty_query_with_prefix_matcher_matches_all() {
-        let document = Document::empty();
+        let document = Document::empty(); let buffer = document.buffer().clone();
         let registry = CommandRegistry::new();
         let cache = GeneratorCache::new();
         let p = CompletionPipeline {
@@ -303,7 +303,7 @@ mod tests {
             ranker: Arc::new(ScoreRank),
             annotators: vec![],
         };
-        let result = p.run(&ctx("", &document, &registry), "", &cache);
+        let result = p.run(&ctx("", &buffer, &registry), "", &cache);
         assert_eq!(result.len(), 3);
     }
 

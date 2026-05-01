@@ -10,6 +10,7 @@
 //! locally on `App` because they're inherently a state-machine concern, not
 //! a buffer command. Phase 3+ migrates more of these to the grammar layer.
 
+use lattice_core::Buffer;
 use lattice_core::CoreError;
 use lattice_core::Document;
 use lattice_core::buffer::AppliedEdit;
@@ -21,16 +22,17 @@ use lattice_grammar::VisualKind;
 use lattice_grammar::YankKind;
 use lattice_grammar::builtins::{Builtins, populate};
 use lattice_grammar::command::CommandInvocation;
-use lattice_grammar::dispatcher::execute;
 use lattice_grammar::effect::Effect;
 use lattice_grammar::register::Register;
 use lattice_grammar::registry::OperatorId;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+use lattice_runtime::{DocumentHandle, RuntimeError, block_on, spawn_document};
 use lattice_syntax::{Lang, StyledSpan, Syntax};
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::excommand;
 use crate::help::{HelpBuffer, HelpDisplayMode, command_link, key_link};
@@ -478,7 +480,10 @@ pub struct UnnamedRegister {
 }
 
 pub struct App {
-    pub document: Document,
+    /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
+    /// The actor owns the writable [`Document`]; mutations route
+    /// through it; reads load a versioned snapshot.
+    pub document: DocumentHandle,
     pub cursor: Position,
     /// First visible line in the viewport (0-based).
     pub scroll: u32,
@@ -488,7 +493,12 @@ pub struct App {
     pub viewport_height: u32,
     pub modal: ModalState,
     pub pending: Pending,
-    pub registry: CommandRegistry,
+    /// Grammar registry shared with the document actor by `Arc`. The
+    /// actor calls `lattice_grammar::execute` with this registry from
+    /// inside its own task. The App also reads it directly for the
+    /// parser, completion pipeline, and introspection -- all
+    /// read-only operations.
+    pub registry: Arc<CommandRegistry>,
     pub builtins: Builtins,
     /// In-progress text in the `:` minibuffer. Populated only while
     /// `modal == ModalState::Command`.
@@ -816,6 +826,13 @@ impl App {
             s.parse(&document.text());
         }
         let last_parsed_text_version = document.text_version();
+        // Hand the document to the actor (DESIGN.md §5.7). After
+        // this call the only way to read or mutate it is through
+        // the returned `DocumentHandle` -- the App holds no other
+        // reference. The registry moves into an `Arc` so the
+        // actor and the App share it without lifetime gymnastics.
+        let registry = Arc::new(registry);
+        let document = spawn_document(document, registry.clone());
         Self {
             document,
             cursor: Position::ZERO,
@@ -867,6 +884,76 @@ impl App {
         }
     }
 
+    // ---- Blocking bridges to the document actor ----
+    //
+    // Per DESIGN.md §5.2.1 every mutating call returns a
+    // `Pending<T>`. The TUI input loop runs on a blocking thread
+    // (crossterm's poll model) so it forwards each Pending to
+    // [`lattice_runtime::block_on`]. These helpers concentrate the
+    // bridging in one place; the rest of `App` reads as if it
+    // owned `Document` directly.
+    //
+    // Returns are pre-flattened: callers that only care about
+    // success use `.ok()`; callers that need to inspect the error
+    // can match on `RuntimeError::Core(_)` for invalid edits vs.
+    // `Busy` / `ActorGone` for actor-protocol failures.
+
+    /// Block_on `apply_edit` and return the `AppliedEdit` (or
+    /// `RuntimeError`). Snapshot republishes inside the actor
+    /// before this returns.
+    pub fn apply_edit_blocking(&self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
+        block_on(self.document.apply_edit(edit))
+    }
+
+    /// Block_on `apply_edit_batch`. The batch lands as one undo
+    /// unit on the document's undo stack.
+    pub fn apply_edit_batch_blocking(
+        &self,
+        edits: Vec<Edit>,
+    ) -> Result<Vec<AppliedEdit>, RuntimeError> {
+        block_on(self.document.apply_edit_batch(edits))
+    }
+
+    pub fn undo_blocking(&self) -> Result<Vec<AppliedEdit>, RuntimeError> {
+        block_on(self.document.undo())
+    }
+
+    pub fn redo_blocking(&self) -> Result<Vec<AppliedEdit>, RuntimeError> {
+        block_on(self.document.redo())
+    }
+
+    pub fn save_blocking(&self) -> Result<std::path::PathBuf, RuntimeError> {
+        block_on(self.document.save())
+    }
+
+    pub fn save_as_blocking(&self, path: std::path::PathBuf) -> Result<(), RuntimeError> {
+        block_on(self.document.save_as(path))
+    }
+
+    pub fn set_selections_blocking(&self, selections: SelectionSet) {
+        // SetSelections only fails on actor-gone; ignore the
+        // Result (post-shutdown nothing meaningful to do).
+        let _ = block_on(self.document.set_selections(selections));
+    }
+
+    /// Replace the actor's document outright. Used by `:edit
+    /// path`. The actor swaps state in place and republishes the
+    /// snapshot.
+    pub fn replace_document_blocking(&self, document: Document) {
+        let _ = block_on(self.document.replace(document));
+    }
+
+    /// Block_on a grammar dispatch through the actor (DESIGN.md
+    /// §5.2.1). Replaces direct `lattice_grammar::execute(&self.registry,
+    /// &mut self.document, ...)` calls; the actor holds the only
+    /// `&mut Document` and runs `execute` inside its task.
+    pub fn dispatch_blocking(
+        &self,
+        invocation: CommandInvocation,
+    ) -> Result<Effect, RuntimeError> {
+        block_on(self.document.dispatch(invocation, self.cursor))
+    }
+
     pub fn apply(&mut self, action: Action) {
         // While a macro recording is in flight, capture every Action
         // EXCEPT the recording-management ones themselves (otherwise the
@@ -913,11 +1000,11 @@ impl App {
                 self.pending = p;
             }
             Action::Undo => {
-                let _ = self.document.undo();
+                let _ = self.undo_blocking();
                 self.clamp_cursor_to_buffer();
             }
             Action::Redo => {
-                let _ = self.document.redo();
+                let _ = self.redo_blocking();
                 self.clamp_cursor_to_buffer();
             }
 
@@ -1303,13 +1390,13 @@ impl App {
             SearchDirection::Forward => search::Direction::Forward,
             SearchDirection::Backward => search::Direction::Backward,
         };
-        match search::find(self.document.buffer(), &line.pattern, line.origin, dir) {
+        match search::find(&self.document.snapshot().buffer, &line.pattern, line.origin, dir) {
             Ok(Some(SearchHit { range, .. })) => self.current_match = Some(range),
             _ => self.current_match = None,
         }
         // Live hlsearch: highlight every occurrence as the user types.
         self.all_matches =
-            search::find_all(self.document.buffer(), &line.pattern).unwrap_or_default();
+            search::find_all(&self.document.snapshot().buffer, &line.pattern).unwrap_or_default();
     }
 
     fn submit_search(&mut self) {
@@ -1332,12 +1419,12 @@ impl App {
             SearchDirection::Forward => search::Direction::Forward,
             SearchDirection::Backward => search::Direction::Backward,
         };
-        match search::find(self.document.buffer(), &line.pattern, line.origin, dir) {
+        match search::find(&self.document.snapshot().buffer, &line.pattern, line.origin, dir) {
             Ok(Some(hit)) => {
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
                 self.all_matches =
-                    search::find_all(self.document.buffer(), &line.pattern).unwrap_or_default();
+                    search::find_all(&self.document.snapshot().buffer, &line.pattern).unwrap_or_default();
                 if hit.wrapped {
                     let level = EchoLevel::Warn;
                     let text = match line.direction {
@@ -1401,8 +1488,8 @@ impl App {
             SearchDirection::Backward => search::Direction::Backward,
         };
         // Skip current match: advance one byte in the chosen direction.
-        let from = step_byte(&self.document, self.cursor, direction);
-        match search::find(self.document.buffer(), &last.pattern, from, dir) {
+        let from = step_byte(&self.document.snapshot().buffer, self.cursor, direction);
+        match search::find(&self.document.snapshot().buffer, &last.pattern, from, dir) {
             Ok(Some(hit)) => {
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
@@ -1734,9 +1821,10 @@ impl App {
         ) else {
             return Err(CompletionComputeError::PipelineUnconfigured);
         };
+        let snap = self.document.snapshot();
         let ctx = lattice_completion::GenerateContext {
             prefix: &prefix,
-            document: &self.document,
+            buffer: &snap.buffer,
             registry: &self.registry,
             case_sensitive: false,
         };
@@ -1764,7 +1852,7 @@ impl App {
 
     fn execute_ex_line(&mut self, line: &str) {
         match excommand::parse(line, &self.registry) {
-            Ok(inv) => match execute(&self.registry, &mut self.document, self.cursor, inv) {
+            Ok(inv) => match self.dispatch_blocking(inv) {
                 Ok(eff) => self.apply_effect(eff),
                 Err(e) => self.set_message(EchoLevel::Error, e.to_string()),
             },
@@ -1818,7 +1906,7 @@ impl App {
         let target = match path {
             Some(p) => p,
             None => match self.document.path() {
-                Some(p) => p.to_path_buf(),
+                Some(p) => p,
                 None => {
                     self.set_message(EchoLevel::Error, "no file name".to_string());
                     return;
@@ -1847,7 +1935,7 @@ impl App {
         }
         self.last_parsed_text_version = new_doc.text_version();
         self.syntax = syntax;
-        self.document = new_doc;
+        self.replace_document_blocking(new_doc);
         // Per-document state resets (vim's behavior).
         self.cursor = Position::ZERO;
         self.scroll = 0;
@@ -1950,8 +2038,8 @@ impl App {
     /// for `:d` and `:g/.../d`. Here we explicitly include the newline.
     fn do_delete_line(&mut self) {
         let line = self.cursor.line;
-        let last = last_addressable_line(&self.document);
-        let len = line_byte_len(&self.document, line);
+        let last = last_addressable_line(&self.document.snapshot().buffer);
+        let len = line_byte_len(&self.document.snapshot().buffer, line);
         let r = if line < last {
             // Include the trailing newline by extending into the next line.
             ProtoRange::new(Position::new(line, 0), Position::new(line + 1, 0))
@@ -1959,14 +2047,14 @@ impl App {
             // Last line: include the previous line's newline by reaching
             // back to the end of `line - 1`.
             let prev = line - 1;
-            let prev_len = line_byte_len(&self.document, prev);
+            let prev_len = line_byte_len(&self.document.snapshot().buffer, prev);
             ProtoRange::new(Position::new(prev, prev_len), Position::new(line, len))
         } else {
             // Single-line buffer: just delete the content.
             ProtoRange::new(Position::new(line, 0), Position::new(line, len))
         };
-        if self.document.apply_edit(Edit::delete(r)).is_ok() {
-            self.cursor = Position::new(line.min(last_addressable_line(&self.document)), 0);
+        if self.apply_edit_blocking(Edit::delete(r)).is_ok() {
+            self.cursor = Position::new(line.min(last_addressable_line(&self.document.snapshot().buffer)), 0);
         }
     }
 
@@ -1979,7 +2067,7 @@ impl App {
             self.set_message(EchoLevel::Error, "empty pattern".to_string());
             return;
         }
-        let last = last_addressable_line(&self.document);
+        let last = last_addressable_line(&self.document.snapshot().buffer);
         // Build the list of target line numbers from the current snapshot
         // (so subsequent edits don't shift our intent).
         let mut targets = Vec::new();
@@ -2012,7 +2100,7 @@ impl App {
         for &line in targets.iter().rev() {
             self.cursor = Position::new(line, 0);
             match crate::excommand::parse(body, &self.registry) {
-                Ok(inv) => match execute(&self.registry, &mut self.document, self.cursor, inv) {
+                Ok(inv) => match self.dispatch_blocking(inv) {
                     Ok(eff) => self.apply_effect(eff),
                     Err(e) => {
                         self.set_message(EchoLevel::Error, format!("g: {e}"));
@@ -2045,7 +2133,7 @@ impl App {
         let (first_line, last_line) = match scope {
             lattice_grammar::SubstituteScope::CurrentLine => (self.cursor.line, self.cursor.line),
             lattice_grammar::SubstituteScope::Whole => {
-                let last = last_addressable_line(&self.document);
+                let last = last_addressable_line(&self.document.snapshot().buffer);
                 (0, last)
             }
         };
@@ -2084,7 +2172,7 @@ impl App {
                     Position::new(line, 0),
                     Position::new(line, line_len),
                 );
-                let _ = self.document.apply_edit(Edit::replace(r, &new_line));
+                let _ = self.apply_edit_blocking(Edit::replace(r, &new_line));
                 total += count_on_line;
             }
         }
@@ -2102,16 +2190,13 @@ impl App {
     }
 
     fn do_write(&mut self, path: Option<std::path::PathBuf>) {
-        let result = match path {
-            Some(p) => self.document.save_as(&p).map(|()| p.display().to_string()),
-            None => self
-                .document
-                .save()
-                .map(|p| p.display().to_string()),
+        let result: Result<String, RuntimeError> = match path {
+            Some(p) => self.save_as_blocking(p.clone()).map(|()| p.display().to_string()),
+            None => self.save_blocking().map(|p| p.display().to_string()),
         };
         match result {
             Ok(displayed) => self.set_message(EchoLevel::Info, format!("\"{displayed}\" written")),
-            Err(CoreError::NoPath) => {
+            Err(RuntimeError::Core(CoreError::NoPath)) => {
                 self.set_message(EchoLevel::Error, "no file name (use :w <path>)".to_string());
             }
             Err(e) => self.set_message(EchoLevel::Error, format!("write error: {e}")),
@@ -2192,7 +2277,7 @@ impl App {
         let was_visual = matches!(self.modal, ModalState::Visual(_));
         let mut should_exit_visual = false;
         let inv_for_repeat = inv.clone();
-        match execute(&self.registry, &mut self.document, self.cursor, inv) {
+        match self.dispatch_blocking(inv) {
             Ok(effect) => {
                 // Visual exits on any operator-class effect (mutation OR
                 // yank-only); dot-repeat only records buffer mutations.
@@ -2234,7 +2319,7 @@ impl App {
                         head: new_head,
                         visual: Some(visual_kind_to_mode(kind)),
                     };
-                    self.document.set_selections(SelectionSet::single(sel));
+                    self.set_selections_blocking(SelectionSet::single(sel));
                 }
             }
             Effect::Yank {
@@ -2312,9 +2397,9 @@ impl App {
             ViewportPos::Middle => self.scroll + height / 2,
             ViewportPos::Bottom => self.scroll + height.saturating_sub(1),
         };
-        let last = last_addressable_line(&self.document);
+        let last = last_addressable_line(&self.document.snapshot().buffer);
         let line = line.min(last);
-        let len = line_byte_len(&self.document, line);
+        let len = line_byte_len(&self.document.snapshot().buffer, line);
         let byte = self.cursor.byte.min(len);
         self.cursor = Position::new(line, byte);
     }
@@ -2337,13 +2422,13 @@ impl App {
     fn do_page(&mut self, down: bool) {
         let height = self.viewport_height.max(1);
         let step = height.saturating_sub(2).max(1);
-        let last = last_addressable_line(&self.document);
+        let last = last_addressable_line(&self.document.snapshot().buffer);
         let new_line = if down {
             self.cursor.line.saturating_add(step).min(last)
         } else {
             self.cursor.line.saturating_sub(step)
         };
-        let len = line_byte_len(&self.document, new_line);
+        let len = line_byte_len(&self.document.snapshot().buffer, new_line);
         let byte = self.cursor.byte.min(len);
         self.cursor = Position::new(new_line, byte);
     }
@@ -2354,7 +2439,7 @@ impl App {
     fn do_scroll_line(&mut self, down: bool) {
         let height = self.viewport_height.max(1);
         if down {
-            let last = last_addressable_line(&self.document);
+            let last = last_addressable_line(&self.document.snapshot().buffer);
             self.scroll = self.scroll.saturating_add(1).min(last);
             // Pull cursor down if it's now off the top of the viewport.
             if self.cursor.line < self.scroll {
@@ -2368,7 +2453,7 @@ impl App {
                 self.cursor.line = bottom;
             }
         }
-        let len = line_byte_len(&self.document, self.cursor.line);
+        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
         if self.cursor.byte > len {
             self.cursor.byte = len;
         }
@@ -2380,7 +2465,7 @@ impl App {
     /// one byte. The original byte (or `None` if past EOL) is pushed
     /// onto `replace_history` so backspace can restore it.
     fn do_overwrite_char(&mut self, c: char) {
-        let len = line_byte_len(&self.document, self.cursor.line);
+        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
         let s = c.to_string();
         let entry_pos = self.cursor;
         if self.cursor.byte < len {
@@ -2389,8 +2474,8 @@ impl App {
                 Position::new(self.cursor.line, self.cursor.byte + 1),
             );
             // Capture the original byte before the replace lands.
-            let original = self.document.buffer().slice(r).ok();
-            if let Ok(applied) = self.document.apply_edit(Edit::replace(r, &s)) {
+            let original = self.document.snapshot().buffer.slice(r).ok();
+            if let Ok(applied) = self.apply_edit_blocking(Edit::replace(r, &s)) {
                 self.cursor = applied.inserted_range.end;
                 self.replace_history.push(ReplaceEntry {
                     at: entry_pos,
@@ -2399,7 +2484,7 @@ impl App {
             }
         } else {
             // Past end of line: extend. Original is None.
-            if let Ok(applied) = self.document.apply_edit(Edit::insert(self.cursor, &s)) {
+            if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.cursor, &s)) {
                 self.cursor = applied.inserted_range.end;
                 self.replace_history.push(ReplaceEntry {
                     at: entry_pos,
@@ -2422,10 +2507,10 @@ impl App {
         let r = ProtoRange::new(entry.at, after);
         match entry.original {
             Some(orig) => {
-                let _ = self.document.apply_edit(Edit::replace(r, &orig));
+                let _ = self.apply_edit_blocking(Edit::replace(r, &orig));
             }
             None => {
-                let _ = self.document.apply_edit(Edit::delete(r));
+                let _ = self.apply_edit_blocking(Edit::delete(r));
             }
         }
         self.cursor = entry.at;
@@ -2435,7 +2520,7 @@ impl App {
         if s.is_empty() {
             return;
         }
-        if let Ok(applied) = self.document.apply_edit(Edit::insert(self.cursor, s)) {
+        if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.cursor, s)) {
             self.cursor = applied.inserted_range.end;
             // Capture into the in-flight Insert recording for dot-repeat.
             if let Some(rec) = self.recording_insert.as_mut() {
@@ -2493,14 +2578,14 @@ impl App {
 
     fn do_describe_buffer(&mut self) {
         let mut lines: Vec<String> = Vec::new();
-        let path = self
-            .document
+        let snap = self.document.snapshot();
+        let path = snap
             .path()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "(no file)".to_string());
-        let lang = lattice_syntax::Lang::detect_from_path(self.document.path());
-        let line_count = self.document.buffer().line_count();
-        let byte_count = self.document.text().len();
+        let lang = lattice_syntax::Lang::detect_from_path(snap.path());
+        let line_count = snap.buffer.line_count();
+        let byte_count = snap.buffer.as_string().len();
         let dirty = if self.document.dirty() {
             "yes"
         } else {
@@ -2731,7 +2816,7 @@ impl App {
             // transition modes -- the user's mode is preserved across
             // the paste, matching Vim's `paste` option behaviour.
             _ => {
-                if let Ok(applied) = self.document.apply_edit(Edit::insert(self.cursor, text)) {
+                if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.cursor, text)) {
                     self.cursor = applied.inserted_range.end;
                     if matches!(self.modal, ModalState::Insert)
                         && let Some(rec) = self.recording_insert.as_mut()
@@ -2744,12 +2829,12 @@ impl App {
     }
 
     fn do_delete_char_backward(&mut self) {
-        let prev = previous_position(&self.document, self.cursor);
+        let prev = previous_position(&self.document.snapshot().buffer, self.cursor);
         if prev == self.cursor {
             return;
         }
         let range = ProtoRange::new(prev, self.cursor);
-        if self.document.apply_edit(Edit::delete(range)).is_ok() {
+        if self.apply_edit_blocking(Edit::delete(range)).is_ok() {
             self.cursor = prev;
         }
     }
@@ -2788,7 +2873,7 @@ impl App {
     }
 
     fn do_enter_append(&mut self) {
-        let len = line_byte_len(&self.document, self.cursor.line);
+        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
         if self.cursor.byte < len {
             self.cursor.byte += 1;
         }
@@ -2797,9 +2882,9 @@ impl App {
     }
 
     fn do_open_line_below(&mut self) {
-        let len = line_byte_len(&self.document, self.cursor.line);
+        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
         let eol = Position::new(self.cursor.line, len);
-        if self.document.apply_edit(Edit::insert(eol, "\n")).is_ok() {
+        if self.apply_edit_blocking(Edit::insert(eol, "\n")).is_ok() {
             self.cursor = Position::new(self.cursor.line + 1, 0);
         }
         self.modal = ModalState::Insert;
@@ -2817,7 +2902,7 @@ impl App {
             head: self.cursor,
             visual: Some(visual_kind_to_mode(kind)),
         };
-        self.document.set_selections(SelectionSet::single(sel));
+        self.set_selections_blocking(SelectionSet::single(sel));
     }
 
     fn do_exit_visual(&mut self) {
@@ -2825,7 +2910,8 @@ impl App {
         // restore them. We want the kind from `self.modal` (Visual carries
         // it) and the anchor / head from the document selection.
         if let ModalState::Visual(kind) = self.modal {
-            let sel = self.document.selections().primary();
+            let sels = self.document.selections();
+            let sel = sels.primary();
             self.last_visual = Some(LastVisual {
                 anchor: sel.anchor,
                 head: sel.head,
@@ -2836,8 +2922,7 @@ impl App {
         self.pending = Pending::None;
         self.visual_anchor = None;
         // Collapse selection to a cursor at the current head.
-        self.document
-            .set_selections(SelectionSet::single(Selection::cursor(self.cursor)));
+        self.set_selections_blocking(SelectionSet::single(Selection::cursor(self.cursor)));
     }
 
     fn do_start_macro_record(&mut self, register: char) {
@@ -3049,7 +3134,8 @@ impl App {
             self.set_message(EchoLevel::Error, "zf requires a Visual selection".to_string());
             return;
         }
-        let sel = self.document.selections().primary();
+        let sels = self.document.selections();
+        let sel = sels.primary();
         let start_line = sel.anchor.line.min(sel.head.line);
         let end_line = sel.anchor.line.max(sel.head.line);
         if start_line == end_line {
@@ -3140,14 +3226,14 @@ impl App {
     /// (and any leading whitespace on the next line is trimmed). With
     /// `with_space = false` (gJ), no replacement -- pure concat.
     fn do_join_lines(&mut self, with_space: bool) {
-        let last = last_addressable_line(&self.document);
+        let last = last_addressable_line(&self.document.snapshot().buffer);
         if self.cursor.line >= last {
             // No next line to join.
             return;
         }
         let line = self.cursor.line;
         let next_line = line + 1;
-        let cur_len = line_byte_len(&self.document, line);
+        let cur_len = line_byte_len(&self.document.snapshot().buffer, line);
         // Compute how many leading whitespace bytes to trim from the
         // next line's content (only for J, not gJ).
         let trim = if with_space {
@@ -3172,10 +3258,7 @@ impl App {
             Position::new(next_line, trim),
         );
         let replacement = if with_space { " " } else { "" };
-        if let Ok(applied) = self
-            .document
-            .apply_edit(Edit::replace(range, replacement))
-        {
+        if let Ok(applied) = self.apply_edit_blocking(Edit::replace(range, replacement)) {
             // Cursor lands at the end of the original first line (vim's
             // standard J behavior puts cursor on the first space).
             self.cursor = applied.original_range.start;
@@ -3219,7 +3302,7 @@ impl App {
     /// Non-letter chars are unchanged; cursor still advances. At EOL
     /// the cursor stops (no wrap).
     fn do_toggle_case_at_cursor(&mut self) {
-        let line_len = line_byte_len(&self.document, self.cursor.line);
+        let line_len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
         if self.cursor.byte >= line_len {
             return;
         }
@@ -3227,7 +3310,7 @@ impl App {
             self.cursor,
             Position::new(self.cursor.line, self.cursor.byte + 1),
         );
-        let original = match self.document.buffer().slice(r) {
+        let original = match self.document.snapshot().buffer.slice(r) {
             Ok(s) => s,
             Err(_) => return,
         };
@@ -3240,7 +3323,7 @@ impl App {
                 other => other as char,
             })
             .collect();
-        if let Ok(applied) = self.document.apply_edit(Edit::replace(r, &toggled)) {
+        if let Ok(applied) = self.apply_edit_blocking(Edit::replace(r, &toggled)) {
             self.cursor = applied.inserted_range.end;
         }
     }
@@ -3253,7 +3336,7 @@ impl App {
         let pre_jump = self.cursor;
         let text = self.document.text();
         let bytes = text.as_bytes();
-        let cursor_byte = match self.document.buffer().position_to_byte(self.cursor) {
+        let cursor_byte = match self.document.snapshot().buffer.position_to_byte(self.cursor) {
             Ok(b) => b,
             Err(_) => return,
         };
@@ -3290,16 +3373,16 @@ impl App {
         // Skip the current match: search from one byte past for forward,
         // one byte before for backward.
         let from = match direction {
-            SearchDirection::Forward => step_byte(&self.document, self.cursor, direction),
-            SearchDirection::Backward => step_byte(&self.document, self.cursor, direction),
+            SearchDirection::Forward => step_byte(&self.document.snapshot().buffer, self.cursor, direction),
+            SearchDirection::Backward => step_byte(&self.document.snapshot().buffer, self.cursor, direction),
         };
-        match lattice_core::search::find(self.document.buffer(), &word, from, dir) {
+        match lattice_core::search::find(&self.document.snapshot().buffer, &word, from, dir) {
             Ok(Some(hit)) => {
                 self.push_position_history(pre_jump, PositionSource::AutoJump);
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
                 self.all_matches = lattice_core::search::find_all(
-                    self.document.buffer(),
+                    &self.document.snapshot().buffer,
                     &word,
                 )
                 .unwrap_or_default();
@@ -3337,7 +3420,7 @@ impl App {
     fn do_match_bracket(&mut self) {
         let text = self.document.text();
         let bytes = text.as_bytes();
-        let cursor_byte = match self.document.buffer().position_to_byte(self.cursor) {
+        let cursor_byte = match self.document.snapshot().buffer.position_to_byte(self.cursor) {
             Ok(b) => b,
             Err(_) => return,
         };
@@ -3372,7 +3455,7 @@ impl App {
         };
         match target {
             Some(t) => {
-                if let Ok(pos) = self.document.buffer().byte_to_position(t) {
+                if let Ok(pos) = self.document.snapshot().buffer.byte_to_position(t) {
                     self.push_position_history(pre_jump, PositionSource::AutoJump);
                     self.cursor = pos;
                 }
@@ -3437,7 +3520,7 @@ impl App {
             head: last.head,
             visual: Some(visual_kind_to_mode(last.kind)),
         };
-        self.document.set_selections(SelectionSet::single(sel));
+        self.set_selections_blocking(SelectionSet::single(sel));
     }
 
     /// Paste from the chosen register (`pending_register` if set, else
@@ -3454,7 +3537,7 @@ impl App {
         match reg.kind {
             YankKind::Charwise => {
                 // `p` inserts after the cursor's byte; `P` at the cursor.
-                let line_len = line_byte_len(&self.document, self.cursor.line);
+                let line_len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
                 let insert_at = if before {
                     self.cursor
                 } else if self.cursor.byte < line_len {
@@ -3462,9 +3545,8 @@ impl App {
                 } else {
                     self.cursor
                 };
-                if let Ok(applied) = self
-                    .document
-                    .apply_edit(Edit::insert(insert_at, &reg.content))
+                if let Ok(applied) =
+                    self.apply_edit_blocking(Edit::insert(insert_at, &reg.content))
                 {
                     // Vim leaves the cursor on the last char of the pasted text.
                     let end = applied.inserted_range.end;
@@ -3486,25 +3568,25 @@ impl App {
                 let insert_at = if before {
                     Position::new(self.cursor.line, 0)
                 } else {
-                    let len = line_byte_len(&self.document, self.cursor.line);
+                    let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
                     // Insert at end of current line then a newline -- but
                     // vim's `p` puts the line BELOW. So insert at start of
                     // the next line. If we're on the last line and there's
                     // no trailing newline, insert "\n<payload-without-tail>".
-                    if self.cursor.line + 1 < self.document.buffer().line_count() {
+                    if self.cursor.line + 1 < self.document.snapshot().buffer.line_count() {
                         Position::new(self.cursor.line + 1, 0)
                     } else {
                         // Append at EOL of last line; payload starts with \n
                         // implicit in being on a "new" line.
-                        let _ = self
-                            .document
-                            .apply_edit(Edit::insert(Position::new(self.cursor.line, len), "\n"));
+                        let _ = self.apply_edit_blocking(Edit::insert(
+                            Position::new(self.cursor.line, len),
+                            "\n",
+                        ));
                         Position::new(self.cursor.line + 1, 0)
                     }
                 };
-                if let Ok(applied) = self
-                    .document
-                    .apply_edit(Edit::insert(insert_at, &payload))
+                if let Ok(applied) =
+                    self.apply_edit_blocking(Edit::insert(insert_at, &payload))
                 {
                     // Cursor lands at the start of the pasted block.
                     self.cursor = applied.inserted_range.start;
@@ -3527,7 +3609,7 @@ impl App {
         }
         let rows: Vec<&str> = content.split('\n').collect();
         let start_line = self.cursor.line;
-        let line_len = line_byte_len(&self.document, start_line);
+        let line_len = line_byte_len(&self.document.snapshot().buffer, start_line);
         let start_col = if before {
             self.cursor.byte
         } else if self.cursor.byte < line_len {
@@ -3538,31 +3620,32 @@ impl App {
 
         for (i, row) in rows.iter().enumerate() {
             let target_line = start_line + i as u32;
-            let total_lines = self.document.buffer().line_count();
+            let total_lines = self.document.snapshot().buffer.line_count();
             if target_line >= total_lines {
                 // Need a new line at the bottom of the buffer. Append
                 // a newline at the end of the current last line.
                 let last = total_lines.saturating_sub(1);
-                let last_len = line_byte_len(&self.document, last);
-                let _ = self
-                    .document
-                    .apply_edit(Edit::insert(Position::new(last, last_len), "\n"));
+                let last_len = line_byte_len(&self.document.snapshot().buffer, last);
+                let _ = self.apply_edit_blocking(Edit::insert(
+                    Position::new(last, last_len),
+                    "\n",
+                ));
             }
-            let target_len = line_byte_len(&self.document, target_line);
+            let target_len = line_byte_len(&self.document.snapshot().buffer, target_line);
             let insert_col = start_col.min(target_len);
             let pos = Position::new(target_line, insert_col);
             // Pad with spaces if the target line is shorter than the
             // start column (vim's behaviour: don't extend the rectangle
             // to the left). With `target_len <= start_col`, append at
             // end-of-line instead.
-            let _ = self.document.apply_edit(Edit::insert(pos, *row));
+            let _ = self.apply_edit_blocking(Edit::insert(pos, *row));
         }
         self.cursor = Position::new(start_line, start_col);
     }
 
     fn do_open_line_above(&mut self) {
         let bol = Position::new(self.cursor.line, 0);
-        if self.document.apply_edit(Edit::insert(bol, "\n")).is_ok() {
+        if self.apply_edit_blocking(Edit::insert(bol, "\n")).is_ok() {
             self.cursor = bol;
         }
         self.modal = ModalState::Insert;
@@ -3570,11 +3653,11 @@ impl App {
     }
 
     fn clamp_cursor_to_buffer(&mut self) {
-        let last_line = last_addressable_line(&self.document);
+        let last_line = last_addressable_line(&self.document.snapshot().buffer);
         if self.cursor.line > last_line {
             self.cursor.line = last_line;
         }
-        let len = line_byte_len(&self.document, self.cursor.line);
+        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
         if self.cursor.byte > len {
             self.cursor.byte = len;
         }
@@ -3611,17 +3694,17 @@ impl App {
     }
 }
 
-pub(crate) fn line_byte_len(doc: &Document, line: u32) -> u32 {
-    let s = doc.text();
+pub(crate) fn line_byte_len(buf: &Buffer, line: u32) -> u32 {
+    let s = buf.as_string();
     s.split_inclusive('\n')
         .nth(line as usize)
         .map(|l| l.trim_end_matches('\n').len() as u32)
         .unwrap_or(0)
 }
 
-pub(crate) fn last_addressable_line(doc: &Document) -> u32 {
-    let lc = doc.buffer().line_count();
-    let s = doc.text();
+pub(crate) fn last_addressable_line(buf: &Buffer) -> u32 {
+    let lc = buf.line_count();
+    let s = buf.as_string();
     if lc == 0 {
         0
     } else if s.ends_with('\n') {
@@ -3757,12 +3840,12 @@ fn effect_mutates(effect: &Effect) -> bool {
     }
 }
 
-fn previous_position(doc: &Document, p: Position) -> Position {
+fn previous_position(buf: &Buffer, p: Position) -> Position {
     if p.byte > 0 {
         Position::new(p.line, p.byte - 1)
     } else if p.line > 0 {
         let prev_line = p.line - 1;
-        Position::new(prev_line, line_byte_len(doc, prev_line))
+        Position::new(prev_line, line_byte_len(buf, prev_line))
     } else {
         p
     }
@@ -3772,14 +3855,14 @@ fn previous_position(doc: &Document, p: Position) -> Position {
 /// search-repeat: skip the current match by advancing one byte before
 /// calling the engine. At buffer extremes we return the original
 /// position; the engine then handles wrap.
-fn step_byte(doc: &Document, p: Position, dir: SearchDirection) -> Position {
+fn step_byte(buf: &Buffer, p: Position, dir: SearchDirection) -> Position {
     match dir {
         SearchDirection::Forward => {
-            let len = line_byte_len(doc, p.line);
+            let len = line_byte_len(buf, p.line);
             if p.byte < len {
                 Position::new(p.line, p.byte + 1)
             } else {
-                let last = last_addressable_line(doc);
+                let last = last_addressable_line(buf);
                 if p.line < last {
                     Position::new(p.line + 1, 0)
                 } else {
@@ -3787,7 +3870,7 @@ fn step_byte(doc: &Document, p: Position, dir: SearchDirection) -> Position {
                 }
             }
         }
-        SearchDirection::Backward => previous_position(doc, p),
+        SearchDirection::Backward => previous_position(buf, p),
     }
 }
 
@@ -5984,7 +6067,7 @@ mod tests {
         // gv:
         a.apply(Action::ReselectLastVisual);
         assert_eq!(a.modal, ModalState::Visual(VisualKind::Charwise));
-        let sel = a.document.selections().primary();
+        let sels = a.document.selections(); let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
         assert_eq!(sel.head, Position::new(0, 6));
         assert_eq!(a.cursor, Position::new(0, 6));
@@ -6003,7 +6086,7 @@ mod tests {
         assert_eq!(a.modal, ModalState::Normal);
         a.apply(Action::ReselectLastVisual);
         assert_eq!(a.modal, ModalState::Visual(VisualKind::Charwise));
-        let sel = a.document.selections().primary();
+        let sels = a.document.selections(); let sel = sels.primary();
         assert_eq!(sel.head, Position::new(0, 6));
     }
 
@@ -6145,7 +6228,7 @@ mod tests {
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         assert_eq!(a.modal, ModalState::Visual(VisualKind::Charwise));
         assert_eq!(a.visual_anchor, Some(Position::new(0, 1)));
-        let sel = a.document.selections().primary();
+        let sels = a.document.selections(); let sel = sels.primary();
         assert_eq!(sel.anchor, Position::new(0, 1));
         assert_eq!(sel.head, Position::new(0, 1));
         assert_eq!(sel.visual, Some(VisualMode::Charwise));
@@ -6156,7 +6239,7 @@ mod tests {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         a.apply(invoke_motion(a.builtins.word_forward));
-        let sel = a.document.selections().primary();
+        let sels = a.document.selections(); let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
         assert_eq!(sel.head, Position::new(0, 6));
         assert_eq!(a.cursor, Position::new(0, 6));
@@ -6252,7 +6335,7 @@ mod tests {
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         a.apply(Action::PushDigit(2));
         a.apply(invoke_motion(a.builtins.word_forward));
-        let sel = a.document.selections().primary();
+        let sels = a.document.selections(); let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
         // 2w from origin advances 2 word starts: "ONE two THREE" -> byte 8.
         assert_eq!(sel.head, Position::new(0, 8));
@@ -6591,7 +6674,7 @@ mod tests {
             head,
             visual: Some(VisualMode::Blockwise),
         };
-        a.document.set_selections(SelectionSet::single(sel));
+        a.set_selections_blocking(SelectionSet::single(sel));
         a
     }
 

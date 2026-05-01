@@ -8,20 +8,27 @@
 use std::ops::Range;
 
 use crate::candidate::{CacheKey, MatchScore, RawCandidate, RenderedCandidate, ScoredCandidate};
-use lattice_core::Document;
+use lattice_core::Buffer;
 use lattice_grammar::CommandRegistry;
 
 /// Snapshot of editor state a generator may need to consult. Held
 /// by reference so the pipeline borrows from the surrounding
 /// frame for the duration of the call. Generators that don't need
-/// document or registry state simply ignore those fields.
+/// buffer or registry state simply ignore those fields.
+///
+/// `buffer` is the raw rope-backed text the cmdline cursor sits
+/// over. We pass `&Buffer` rather than the full `Document` so
+/// completion stays decoupled from the actor crate
+/// (`lattice-runtime`); generators that need richer document
+/// state will get a `&DocumentSnapshot` once a consumer requires
+/// one.
 pub struct GenerateContext<'a> {
     /// Partial text in the current slot, before the cursor. The
     /// matcher gets the same string as `query` -- generators may
     /// also use it (e.g. `gen:files` resolves the directory by
     /// splitting prefix at the last `/`).
     pub prefix: &'a str,
-    pub document: &'a Document,
+    pub buffer: &'a Buffer,
     pub registry: &'a CommandRegistry,
     /// Whether matching should be case-sensitive. Generators that
     /// do their own filtering before returning candidates honor

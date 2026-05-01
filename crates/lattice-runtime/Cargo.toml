@@ -1,5 +1,5 @@
 [package]
-name = "lattice-ui-tui"
+name = "lattice-runtime"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,13 +9,12 @@ license.workspace = true
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-core = { path = "../lattice-core" }
 lattice-grammar = { path = "../lattice-grammar" }
-lattice-completion = { path = "../lattice-completion" }
-lattice-syntax = { path = "../lattice-syntax" }
-lattice-runtime = { path = "../lattice-runtime" }
-ratatui = { workspace = true }
-crossterm = { workspace = true }
-anyhow = { workspace = true }
+tokio = { workspace = true }
+arc-swap = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "time"] }
 
 [lints]
 workspace = true

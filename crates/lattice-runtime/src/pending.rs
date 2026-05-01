@@ -1,0 +1,182 @@
+//! `Pending<T>` -- the typed handle returned by every mutating
+//! actor call (DESIGN.md §5.2.1).
+//!
+//! A `Pending` wraps a `tokio::sync::oneshot::Receiver`. Three usage
+//! patterns:
+//!
+//! 1. **Async caller** (LSP client, plugin host, future async UI):
+//!    `pending.await` yields the typed result.
+//! 2. **Sync caller in a tokio context** (test fixtures running
+//!    `#[tokio::test]`): same as above.
+//! 3. **Sync caller outside tokio** (the TUI input loop, which is a
+//!    blocking `crossterm::event::read` loop on the main thread):
+//!    `pending.blocking_recv()` parks the current thread until the
+//!    actor responds. The TUI uses
+//!    [`crate::runtime::block_on`] which forwards to this.
+//!
+//! Errors are kept narrow: [`RuntimeError::Busy`] when the actor's
+//! bounded mailbox is full at send time, [`RuntimeError::ActorGone`]
+//! when the actor task has shut down before it could respond, and
+//! [`RuntimeError::Core`] for any inner [`lattice_core::CoreError`]
+//! (range out of bounds, etc.). Distinguishing them lets the UI
+//! show a "buffer is busy" indicator (Busy) vs. a hard error (the
+//! others).
+
+use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use lattice_core::CoreError;
+use lattice_grammar::CommandError;
+use thiserror::Error;
+use tokio::sync::oneshot;
+
+/// Monotonic id assigned to every actor-bound invocation. Unique
+/// across the process -- not reused if an actor task dies and is
+/// respawned. Useful for telemetry, logging, and (post-Phase-7)
+/// for plugin-side correlation of request/response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InvocationId(pub u64);
+
+impl InvocationId {
+    /// Allocate the next id. Lock-free.
+    pub fn next() -> Self {
+        static SEQ: AtomicU64 = AtomicU64::new(1);
+        Self(SEQ.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl fmt::Display for InvocationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
+
+/// Outcome of an actor-bound mutation. Wraps a oneshot receiver so
+/// the caller can await (or block on) the result.
+///
+/// `Pending` is neither `Clone` nor `Copy` -- the receiver is
+/// single-use, matching the "one response per request" contract.
+/// Dropping a `Pending` cancels the wait but does not interrupt the
+/// actor; the response is silently discarded.
+#[must_use = "the actor result is dropped if the Pending is not awaited or block_on'd"]
+pub struct Pending<T> {
+    pub id: InvocationId,
+    rx: oneshot::Receiver<Result<T, RuntimeError>>,
+}
+
+impl<T> Pending<T> {
+    pub(crate) fn new(id: InvocationId, rx: oneshot::Receiver<Result<T, RuntimeError>>) -> Self {
+        Self { id, rx }
+    }
+
+    /// Block the current thread until the actor responds. Used by
+    /// the TUI input loop and by tests that don't drive a tokio
+    /// reactor explicitly. Panics only if the oneshot's internal
+    /// invariants are violated, which can't happen in safe code.
+    pub fn blocking_recv(self) -> Result<T, RuntimeError> {
+        match self.rx.blocking_recv() {
+            Ok(res) => res,
+            // Sender dropped without sending -- actor died mid-call.
+            Err(_) => Err(RuntimeError::ActorGone),
+        }
+    }
+}
+
+impl<T> std::future::Future for Pending<T> {
+    type Output = Result<T, RuntimeError>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        use std::task::Poll;
+        match std::pin::Pin::new(&mut self.rx).poll(cx) {
+            Poll::Ready(Ok(res)) => Poll::Ready(res),
+            Poll::Ready(Err(_)) => Poll::Ready(Err(RuntimeError::ActorGone)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<T> fmt::Debug for Pending<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pending").field("id", &self.id).finish()
+    }
+}
+
+/// Failure modes a runtime caller can observe. Kept narrow so the
+/// UI can branch on the failure shape rather than a generic message.
+#[derive(Debug, Error)]
+pub enum RuntimeError {
+    /// The actor's bounded mailbox was full at send time -- the
+    /// caller is producing requests faster than the actor commits
+    /// them. Per DESIGN.md §5.2.1: callers are expected to handle
+    /// this rather than block. The TUI surfaces a "buffer is busy"
+    /// indicator; scripts may retry with backoff.
+    #[error("document actor mailbox is full")]
+    Busy,
+
+    /// The actor task has terminated (panic, drop, or graceful
+    /// shutdown) before it could respond. Treated as a permanent
+    /// failure -- the caller should re-spawn the document.
+    #[error("document actor is no longer running")]
+    ActorGone,
+
+    /// An inner [`lattice_core::CoreError`] from
+    /// `Document::apply_edit` / `undo` / `redo`. The actor is healthy;
+    /// the operation itself was invalid.
+    #[error(transparent)]
+    Core(#[from] CoreError),
+
+    /// A [`lattice_grammar::CommandError`] from a
+    /// `lattice_grammar::execute` dispatch (unknown command, bad
+    /// args, motion out-of-bounds, ...). The actor is healthy; the
+    /// invocation was invalid.
+    #[error(transparent)]
+    Grammar(#[from] CommandError),
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+
+    #[test]
+    fn invocation_ids_are_monotonic() {
+        let a = InvocationId::next();
+        let b = InvocationId::next();
+        let c = InvocationId::next();
+        assert!(a.0 < b.0);
+        assert!(b.0 < c.0);
+    }
+
+    #[tokio::test]
+    async fn pending_resolves_to_sent_value() {
+        let (tx, rx) = oneshot::channel();
+        let p: Pending<i32> = Pending::new(InvocationId::next(), rx);
+        tx.send(Ok(42)).unwrap();
+        assert_eq!(p.await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn pending_yields_actor_gone_when_sender_dropped() {
+        let (tx, rx) = oneshot::channel::<Result<i32, RuntimeError>>();
+        let p = Pending::new(InvocationId::next(), rx);
+        drop(tx);
+        match p.await {
+            Err(RuntimeError::ActorGone) => {}
+            other => panic!("expected ActorGone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pending_blocking_recv_returns_actor_gone_on_drop() {
+        let (tx, rx) = oneshot::channel::<Result<i32, RuntimeError>>();
+        let p = Pending::new(InvocationId::next(), rx);
+        drop(tx);
+        match p.blocking_recv() {
+            Err(RuntimeError::ActorGone) => {}
+            other => panic!("expected ActorGone, got {other:?}"),
+        }
+    }
+}

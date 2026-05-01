@@ -737,6 +737,13 @@ fn resolve_after_text_object(
                 builtins.inner_word
             }
         }
+        KeyCode::Char('W') => {
+            if around {
+                builtins.around_big_word
+            } else {
+                builtins.inner_big_word
+            }
+        }
         KeyCode::Char('p') => {
             if around {
                 builtins.around_paragraph
@@ -798,6 +805,13 @@ fn resolve_after_text_object(
                 builtins.around_brace
             } else {
                 builtins.inner_brace
+            }
+        }
+        KeyCode::Char('<') | KeyCode::Char('>') => {
+            if around {
+                builtins.around_angle
+            } else {
+                builtins.inner_angle
             }
         }
         _ => return Action::SetPending(Pending::None),
@@ -2825,6 +2839,92 @@ mod tests {
                     other => panic!("expected text-object target, got {other:?}"),
                 }
             }
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn diW_resolves_to_delete_inner_big_word() {
+        let (_, b) = fixture();
+        let pending = Pending::AfterTextObject {
+            operator: b.delete,
+            around: false,
+        };
+        let action = translate(
+            ctx(ModalState::Normal, pending, &b),
+            key(KeyCode::Char('W')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                match inv.target {
+                    Some(Target::TextObject(id, _)) => assert_eq!(id, b.inner_big_word),
+                    other => panic!("expected text-object target, got {other:?}"),
+                }
+            }
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn daW_resolves_to_delete_around_big_word() {
+        let (_, b) = fixture();
+        let pending = Pending::AfterTextObject {
+            operator: b.delete,
+            around: true,
+        };
+        let action = translate(
+            ctx(ModalState::Normal, pending, &b),
+            key(KeyCode::Char('W')),
+        );
+        match action {
+            Action::Invoke(inv) => match inv.target {
+                Some(Target::TextObject(id, _)) => assert_eq!(id, b.around_big_word),
+                other => panic!("expected text-object target, got {other:?}"),
+            },
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn ci_angle_resolves_to_change_inner_angle() {
+        let (_, b) = fixture();
+        let pending = Pending::AfterTextObject {
+            operator: b.change,
+            around: false,
+        };
+        let action = translate(
+            ctx(ModalState::Normal, pending, &b),
+            key(KeyCode::Char('<')),
+        );
+        match action {
+            Action::Invoke(inv) => match inv.target {
+                Some(Target::TextObject(id, _)) => assert_eq!(id, b.inner_angle),
+                other => panic!("expected text-object target, got {other:?}"),
+            },
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn da_angle_via_closer_resolves_to_delete_around_angle() {
+        // Both `<` and `>` should resolve to the angle text object.
+        let (_, b) = fixture();
+        let pending = Pending::AfterTextObject {
+            operator: b.delete,
+            around: true,
+        };
+        let action = translate(
+            ctx(ModalState::Normal, pending, &b),
+            key(KeyCode::Char('>')),
+        );
+        match action {
+            Action::Invoke(inv) => match inv.target {
+                Some(Target::TextObject(id, _)) => assert_eq!(id, b.around_angle),
+                other => panic!("expected text-object target, got {other:?}"),
+            },
             _ => panic!("expected Invoke"),
         }
     }

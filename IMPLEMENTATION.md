@@ -33,19 +33,19 @@ rendering, and v1.0 polish.
 
 ## Phase status
 
-| Phase | Title                                 | Status                                                            | Notes                                                                                         |
-|-------|---------------------------------------|-------------------------------------------------------------------|-----------------------------------------------------------------------------------------------|
-| 0     | Foundation                            | ✅ done                                                           | Workspace, lattice-core, document/buffer/undo, file I/O, protocol enums                       |
-| 1     | Modal Editing                         | ✅ done                                                           | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch) / folds / ex-commands (every command -- including `:s` / `:g` / `:v` via `Args::List` -- registered as `ExCommandSpec` peers, dispatched through unified `grammar::execute()` per §5.2.1, §B.2). Blockwise visual: per-row dispatch for `d` / `y` / `c` plus blockwise paste; `I` / `A` / `>` / `<` block forms still fall back to charwise. |
-| 2     | Terminal UI Bootstrap                 | ✅ done                                                           | crossterm + ratatui; modal cursor; mode line; gutter                                          |
-| 3     | Tree-Sitter                           | ✅ done (Rust/Python/JS)                                          | Highlights wired; grammar extension API used by builtins, not yet by plugins                  |
-| 4     | LSP                                   | ⛔ not started                                                    | Phase 4 still waiting; depends on async-actor work and the Pending->Effect plumbing in §5.2.1 |
-| 5     | GPU Rendering Foundation              | ⛔ not started                                                    | TUI is the live renderer for v1; GPU is a separate paint surface                              |
-| 6     | Document Renderer + UI Components     | ⛔ not started                                                    | Popups, pickers, panels-as-buffers all live in §5.9                                           |
-| 7     | Plugin Host                           | ⛔ not started                                                    | wasmtime + Component Model + WIT scaffolding                                                  |
-| 8     | Major/Minor Modes + Reference Plugins | ⛔ not started                                                    | Major / minor modes are themselves plugins (§5.8.3)                                           |
-| 9     | Rich Buffer Rendering                 | ⛔ not started                                                    | Per-line shaped path, Fenwick height index                                                    |
-| 10    | Polish + v1.0                         | ⛔ not started                                                    | `*scratch:rust*` live-eval workflow (§10), accessibility, packaging, themes                   |
+| Phase | Title                                 | Status                   | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+|-------|---------------------------------------|--------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 0     | Foundation                            | ✅ done                  | Workspace, lattice-core, document/buffer/undo, file I/O, protocol enums                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 1     | Modal Editing                         | ✅ done                  | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch) / folds / ex-commands (every command -- including `:s` / `:g` / `:v` via `Args::List` -- registered as `ExCommandSpec` peers, dispatched through unified `grammar::execute()` per §5.2.1, §B.2). Blockwise visual: per-row dispatch for `d` / `y` / `c` plus blockwise paste; `I` / `A` / `>` / `<` block forms still fall back to charwise. |
+| 2     | Terminal UI Bootstrap                 | ✅ done                  | crossterm + ratatui; modal cursor; mode line; gutter                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 3     | Tree-Sitter                           | ✅ done (Rust/Python/JS) | Highlights wired; grammar extension API used by builtins, not yet by plugins                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| 4     | LSP                                   | ⛔ not started           | Phase 4 still waiting; depends on async-actor work and the Pending->Effect plumbing in §5.2.1                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 5     | GPU Rendering Foundation              | ⛔ not started           | TUI is the live renderer for v1; GPU is a separate paint surface                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 6     | Document Renderer + UI Components     | ⛔ not started           | Popups, pickers, panels-as-buffers all live in §5.9                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 7     | Plugin Host                           | ⛔ not started           | wasmtime + Component Model + WIT scaffolding                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| 8     | Major/Minor Modes + Reference Plugins | ⛔ not started           | Major / minor modes are themselves plugins (§5.8.3)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 9     | Rich Buffer Rendering                 | ⛔ not started           | Per-line shaped path, Fenwick height index                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| 10    | Polish + v1.0                         | ⛔ not started           | `*scratch:rust*` live-eval workflow (§10), accessibility, packaging, themes                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 Active focus: **Phase 4 (LSP) is the next major chunk. It depends on the
 §5.2.1 async-dispatcher refactor (`execute → Pending<Effect>`) and the
@@ -62,78 +62,78 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 
 ### Modal states
 
-| State              | Status | Anchor    | Notes                                                       |
-|--------------------|--------|-----------|-------------------------------------------------------------|
-| Normal             | ✅     | §5.2      | Plus block cursor in TUI                                    |
-| Insert             | ✅     | §5.2      | Plus bar cursor                                             |
-| Visual (Charwise)  | ✅     | §5.2, B.1 | Selection extends, operators on Range::Selection            |
-| Visual (Linewise)  | ✅     | §5.2      |                                                             |
-| Visual (Blockwise) | ✅ d/y/c + paste | §15:18 | Ctrl-V (or Ctrl-Q on terminals that hijack Ctrl-V) enters; render highlights the rectangle; `d` / `y` / `c` dispatch per-row in the dispatcher with merged Edits + one Blockwise yank. `YankKind::Blockwise` paste replays each row at the same column. `I` / `A` / `>` / `<` block forms still post-1.0. |
-| Operator-Pending   | ✅     | §5.2      | Resolved through translate_normal pending state             |
-| Command (`:`)      | ✅     | §5.9.10   | Rich minibuffer scope is partial; full spec is post-Phase-1 |
-| Search (`/`, `?`)  | ✅     | §5.9.10   | Live preview decoration not yet wired                       |
-| Replace (`R`)      | ✅     | §5.2      | Backspace-restore wired                                     |
+| State              | Status           | Anchor    | Notes                                                                                                                                                                                                                                                                                                     |
+|--------------------|------------------|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Normal             | ✅               | §5.2      | Plus block cursor in TUI                                                                                                                                                                                                                                                                                  |
+| Insert             | ✅               | §5.2      | Plus bar cursor                                                                                                                                                                                                                                                                                           |
+| Visual (Charwise)  | ✅               | §5.2, B.1 | Selection extends, operators on Range::Selection                                                                                                                                                                                                                                                          |
+| Visual (Linewise)  | ✅               | §5.2      |                                                                                                                                                                                                                                                                                                           |
+| Visual (Blockwise) | ✅ d/y/c + paste | §15:18    | Ctrl-V (or Ctrl-Q on terminals that hijack Ctrl-V) enters; render highlights the rectangle; `d` / `y` / `c` dispatch per-row in the dispatcher with merged Edits + one Blockwise yank. `YankKind::Blockwise` paste replays each row at the same column. `I` / `A` / `>` / `<` block forms still post-1.0. |
+| Operator-Pending   | ✅               | §5.2      | Resolved through translate_normal pending state                                                                                                                                                                                                                                                           |
+| Command (`:`)      | ✅               | §5.9.10   | Rich minibuffer scope is partial; full spec is post-Phase-1                                                                                                                                                                                                                                               |
+| Search (`/`, `?`)  | ✅               | §5.9.10   | Live preview decoration not yet wired                                                                                                                                                                                                                                                                     |
+| Replace (`R`)      | ✅               | §5.2      | Backspace-restore wired                                                                                                                                                                                                                                                                                   |
 
 ### Motions (Reflex-class)
 
-| Motion                            | Key            | Status | Anchor                            |
-|-----------------------------------|----------------|--------|-----------------------------------|
-| char_left / char_right            | h, l           | ✅     | §5.2.2                            |
-| line_up / line_down               | k, j           | ✅     | §5.2.2                            |
-| line_start / line_end             | 0, $           | ✅     | §5.2.2                            |
-| first_non_blank                   | ^              | ✅     | §5.2.2                            |
-| word_forward                      | w              | ✅     | §5.2.2                            |
-| word_backward                     | b              | ✅     | §5.2.2                            |
-| word_end                          | e              | ✅     | §5.2.2                            |
-| WORD_forward / backward / end     | W, B, E        | ✅     | Whitespace-delimited variants     |
-| paragraph_forward / backward      | }, {           | ✅     | §5.2.2                            |
-| sentence_forward / backward       | ), (           | ✅     |                                   |
-| goto_first_line / goto_last_line  | gg, G          | ✅     | §5.2.2                            |
-| find_char_forward / backward      | f, F           | ✅     | §5.2.2                            |
-| till_char_forward / backward      | t, T           | ✅     | §5.2.2                            |
-| find_repeat / find_repeat_reverse | ;, ,           | ✅     |                                   |
-| viewport_top / middle / bottom    | H, M, L        | ✅     | App-level (needs viewport_height) |
-| word_search_forward / backward    | *, #           | ✅     | §B.3 informally                   |
-| match_bracket                     | %              | ✅     | App-level                         |
+| Motion                            | Key            | Status | Anchor                                                |
+|-----------------------------------|----------------|--------|-------------------------------------------------------|
+| char_left / char_right            | h, l           | ✅     | §5.2.2                                                |
+| line_up / line_down               | k, j           | ✅     | §5.2.2                                                |
+| line_start / line_end             | 0, $           | ✅     | §5.2.2                                                |
+| first_non_blank                   | ^              | ✅     | §5.2.2                                                |
+| word_forward                      | w              | ✅     | §5.2.2                                                |
+| word_backward                     | b              | ✅     | §5.2.2                                                |
+| word_end                          | e              | ✅     | §5.2.2                                                |
+| WORD_forward / backward / end     | W, B, E        | ✅     | Whitespace-delimited variants                         |
+| paragraph_forward / backward      | }, {           | ✅     | §5.2.2                                                |
+| sentence_forward / backward       | ), (           | ✅     |                                                       |
+| goto_first_line / goto_last_line  | gg, G          | ✅     | §5.2.2                                                |
+| find_char_forward / backward      | f, F           | ✅     | §5.2.2                                                |
+| till_char_forward / backward      | t, T           | ✅     | §5.2.2                                                |
+| find_repeat / find_repeat_reverse | ;, ,           | ✅     |                                                       |
+| viewport_top / middle / bottom    | H, M, L        | ✅     | App-level (needs viewport_height)                     |
+| word_search_forward / backward    | *, #           | ✅     | §B.3 informally                                       |
+| match_bracket                     | %              | ✅     | App-level                                             |
 | jump_history_back / forward       | Ctrl-O, Ctrl-I | ✅     | §5.1.1 unified ring (filtered to AutoJump+PluginPush) |
-| mark_history_back / forward       | g;, g,         | ✅     | §5.1.1 unified ring (filtered to NamedMark) |
-| page_down / page_up               | Ctrl-F, Ctrl-B | ✅     | App-level                         |
-| scroll_line_up / down             | Ctrl-Y, Ctrl-E | ✅     | App-level                         |
-| half_page_down / up               | Ctrl-D, Ctrl-U | ✅     | Hardcoded count 10                |
-| mark jumps                        | 'a, \`a        | ✅     | §5.1.1                            |
+| mark_history_back / forward       | g;, g,         | ✅     | §5.1.1 unified ring (filtered to NamedMark)           |
+| page_down / page_up               | Ctrl-F, Ctrl-B | ✅     | App-level                                             |
+| scroll_line_up / down             | Ctrl-Y, Ctrl-E | ✅     | App-level                                             |
+| half_page_down / up               | Ctrl-D, Ctrl-U | ✅     | Hardcoded count 10                                    |
+| mark jumps                        | 'a, \`a        | ✅     | §5.1.1                                                |
 
 ### Operators (Reflex-class for sync prelude)
 
-| Operator     | Key      | Status           | Anchor                                     |
-|--------------|----------|------------------|--------------------------------------------|
-| delete       | d, dd, D | ✅               | §5.2.2                                     |
-| change       | c, cc, C | ✅               | §5.2.2                                     |
-| yank         | y, yy, Y | ✅               | §5.2.2                                     |
-| indent_left  | <        | ✅               | §5.2.2                                     |
-| indent_right | >        | ✅               | §5.2.2                                     |
-| upper        | gU       | ✅               | §5.2.2                                     |
-| lower        | gu       | ✅               | §5.2.2                                     |
-| toggle_case  | g~       | ✅               | §5.2.2                                     |
-| filter       | !        | ⛔               | Subprocess pipe; depends on `:!cmd` (§B.6) |
-| format       | gq       | ⛔               | Depends on plugin / formatter              |
-| join_lines   | J, gJ    | ✅               | App-level (not a grammar operator)         |
+| Operator     | Key      | Status | Anchor                                     |
+|--------------|----------|--------|--------------------------------------------|
+| delete       | d, dd, D | ✅     | §5.2.2                                     |
+| change       | c, cc, C | ✅     | §5.2.2                                     |
+| yank         | y, yy, Y | ✅     | §5.2.2                                     |
+| indent_left  | <        | ✅     | §5.2.2                                     |
+| indent_right | >        | ✅     | §5.2.2                                     |
+| upper        | gU       | ✅     | §5.2.2                                     |
+| lower        | gu       | ✅     | §5.2.2                                     |
+| toggle_case  | g~       | ✅     | §5.2.2                                     |
+| filter       | !        | ⛔     | Subprocess pipe; depends on `:!cmd` (§B.6) |
+| format       | gq       | ⛔     | Depends on plugin / formatter              |
+| join_lines   | J, gJ    | ✅     | App-level (not a grammar operator)         |
 
 ### Text objects
 
-| Text object              | Key       | Status | Anchor          |
-|--------------------------|-----------|--------|-----------------|
-| inner_word / around_word | iw / aw   | ✅     | §5.2.2          |
-| inner_WORD / around_WORD | iW / aW   | ⛔     | Whitespace word |
-| inner_quote_dbl / around | i" / a"   | ✅     |                 |
-| inner_quote_sgl / around | i' / a'   | ✅     |                 |
-| inner_quote_btk / around | i\` / a\` | ✅     |                 |
-| inner_paren / around     | i( / a(   | ✅     |                 |
-| inner_bracket / around   | i[ / a[   | ✅     |                 |
-| inner_brace / around     | i{ / a{   | ✅     |                 |
-| inner_angle / around     | i< / a<   | ⛔     |                 |
-| inner_tag / around       | it / at   | ✅     | XML/HTML tags   |
-| inner_paragraph / around | ip / ap   | ✅     |                 |
-| inner_sentence / around  | is / as   | ✅     |                 |
+| Text object              | Key       | Status | Anchor                                                                                                                                                                                                  |
+|--------------------------|-----------|--------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| inner_word / around_word | iw / aw   | ✅     | §5.2.2; alphanum + `_` run                                                                                                                                                                              |
+| inner_WORD / around_WORD | iW / aW   | ✅     | Whitespace-delimited; punctuation kept (`foo.bar` is one WORD). Shares `text_object_inner_word_class` / `_around_word_class` with `iw` / `aw` -- only the byte classifier differs (`is_big_word_byte`). |
+| inner_quote_dbl / around | i" / a"   | ✅     |                                                                                                                                                                                                         |
+| inner_quote_sgl / around | i' / a'   | ✅     |                                                                                                                                                                                                         |
+| inner_quote_btk / around | i\` / a\` | ✅     |                                                                                                                                                                                                         |
+| inner_paren / around     | i( / a(   | ✅     |                                                                                                                                                                                                         |
+| inner_bracket / around   | i[ / a[   | ✅     |                                                                                                                                                                                                         |
+| inner_brace / around     | i{ / a{   | ✅     |                                                                                                                                                                                                         |
+| inner_angle / around     | i< / a<   | ✅     | `<…>` pair; reuses `text_object_inner_brackets` / `_around_brackets`. Both `<` and `>` resolve to the same target.                                                                                      |
+| inner_tag / around       | it / at   | ✅     | XML/HTML tags                                                                                                                                                                                           |
+| inner_paragraph / around | ip / ap   | ✅     |                                                                                                                                                                                                         |
+| inner_sentence / around  | is / as   | ✅     |                                                                                                                                                                                                         |
 
 ### Counts, registers, ranges, marks, macros, dot-repeat
 
@@ -156,14 +156,14 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 
 ### Search and substitution
 
-| Feature                                  | Status | Anchor                                |
-|------------------------------------------|--------|---------------------------------------|
-| `/` `?` `n` `N` literal search with wrap | ✅     | §5.9.10                               |
-| `*` / `#` word-search                    | ✅     |                                       |
-| Search highlight in buffer               | ✅     | §5.6.2                                |
-| `:s/foo/bar/[g]` substitute              | ✅ (literal) | §5.2.1 worked example uses substitute. Regex deferred. |
-| Regex search                             | ⛔     | Currently literal substring; §15      |
-| Search-as-you-type live preview (hlsearch) | ✅   | every match highlighted; persists after submit |
+| Feature                                    | Status       | Anchor                                                 |
+|--------------------------------------------|--------------|--------------------------------------------------------|
+| `/` `?` `n` `N` literal search with wrap   | ✅           | §5.9.10                                                |
+| `*` / `#` word-search                      | ✅           |                                                        |
+| Search highlight in buffer                 | ✅           | §5.6.2                                                 |
+| `:s/foo/bar/[g]` substitute                | ✅ (literal) | §5.2.1 worked example uses substitute. Regex deferred. |
+| Regex search                               | ⛔           | Currently literal substring; §15                       |
+| Search-as-you-type live preview (hlsearch) | ✅           | every match highlighted; persists after submit         |
 
 ### Ex commands
 
@@ -188,30 +188,30 @@ delimiter-form commands so the cmdline popup never offers a
 candidate that would error when accepted. They remain reachable via
 `:describe-command` / `:apropos` for introspection.
 
-| Command                 | Status | Anchor |
-|-------------------------|--------|--------|
-| :w / :write [path]      | ✅ registry | §5.2.1 |
-| :q / :q!                | ✅ registry | §5.2.1 |
-| :wq / :x / :wq! / :x!   | ✅ registry | §5.2.1 (Effect::Many) |
-| :e / :edit [path] / :e! | ✅ registry | §5.2.1 |
-| :d / :delete            | ✅ registry | §5.2.1 |
-| :noh / :nohl / :nohlsearch | ✅ registry | §5.2.1 |
-| :reg / :registers       | ✅ registry | §5.2.1 |
-| :marks                  | ✅ registry | §5.2.1 |
-| :set option=value       | ✅ registry; ⚠️ option set | §5.12. v1 only honors number/relativenumber toggles; full typed-options post-1.0. |
-| :s/.../.../[g]          | ✅ registry (literal substring) | §5.2.1 / §B.2; `Args::List([pattern, replacement, flags])`, scope via Range::CurrentLine/Whole. Regex deferred. |
-| :g/pattern/cmd          | ✅ registry | §B.2; `Args::List([pattern, false, body])`. Body re-parsed per match. |
-| :v/pattern/cmd          | ✅ registry | §B.2; `Args::List([pattern, true, body])` -- same command as `:g`, inverted flag set. |
-| :describe-command       | ✅ buffer (popup) | §5.11; renders `CommandSpec.doc` + each `args_schema` entry's name/kind/doc/default. |
-| :describe-buffer        | ✅ buffer (popup) | §5.11; path / language / modal / cursor / dirty / line-count / registers / marks / position-history / macros / folds / view options. |
-| :describe-key <chord>   | ✅ buffer (popup) | §5.11; renders every `KeymapEntry` for the chord through the unified `Introspectable` surface. Each binding shows `Bound at: [[file:keymap.rs:LINE]]` (built-in) -- the row's source captured by the `keymap_entry!` macro -- plus an Action: `[[command:...]]` cross-reference. The `chord` arg uses `ArgKind::Chord`: typing `:describe-key <space>` puts the cmdline into chord-capture mode (raw key events render as canonical tokens -- `Ctrl-c` -> `<C-c>`, `Up` -> `<Up>`); `:describe-key<CR>` with no arg arms a one-shot prompt and the very next chord auto-submits. |
-| :keymap                 | ✅ buffer (popup) | §5.11; lists all default bindings grouped by mode, every chord linked via `[[key:...]]` for follow-up `:describe-key`. |
-| :apropos <pattern>      | ✅ buffer (popup) | §5.11; case-insensitive substring over every `CommandSpec.name` + `doc`. Picker UI (§5.9.7) is post-1.0. |
-| :describe-option, :describe-event, :describe-mode | ⛔ | §5.11; each lands when its registry does (typed options §5.12 / event bus §5.10 / modes Phase 8). |
-| Command-line history (Up/Down)  | ✅     | §B.3 |
-| :history-*              | ⛔     | §B.3 (picker UI; Up/Down already works) |
-| :customize              | ⛔     | §5.12  |
-| :autocmd / :add-hook    | ⛔     | §5.10  |
+| Command                                           | Status                          | Anchor                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+|---------------------------------------------------|---------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| :w / :write [path]                                | ✅ registry                     | §5.2.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| :q / :q!                                          | ✅ registry                     | §5.2.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| :wq / :x / :wq! / :x!                             | ✅ registry                     | §5.2.1 (Effect::Many)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| :e / :edit [path] / :e!                           | ✅ registry                     | §5.2.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| :d / :delete                                      | ✅ registry                     | §5.2.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| :noh / :nohl / :nohlsearch                        | ✅ registry                     | §5.2.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| :reg / :registers                                 | ✅ registry                     | §5.2.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| :marks                                            | ✅ registry                     | §5.2.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| :set option=value                                 | ✅ registry; ⚠️ option set       | §5.12. v1 only honors number/relativenumber toggles; full typed-options post-1.0.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| :s/.../.../[g]                                    | ✅ registry (literal substring) | §5.2.1 / §B.2; `Args::List([pattern, replacement, flags])`, scope via Range::CurrentLine/Whole. Regex deferred.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| :g/pattern/cmd                                    | ✅ registry                     | §B.2; `Args::List([pattern, false, body])`. Body re-parsed per match.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| :v/pattern/cmd                                    | ✅ registry                     | §B.2; `Args::List([pattern, true, body])` -- same command as `:g`, inverted flag set.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| :describe-command                                 | ✅ buffer (popup)               | §5.11; renders `CommandSpec.doc` + each `args_schema` entry's name/kind/doc/default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| :describe-buffer                                  | ✅ buffer (popup)               | §5.11; path / language / modal / cursor / dirty / line-count / registers / marks / position-history / macros / folds / view options.                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| :describe-key <chord>                             | ✅ buffer (popup)               | §5.11; renders every `KeymapEntry` for the chord through the unified `Introspectable` surface. Each binding shows `Bound at: [[file:keymap.rs:LINE]]` (built-in) -- the row's source captured by the `keymap_entry!` macro -- plus an Action: `[[command:...]]` cross-reference. The `chord` arg uses `ArgKind::Chord`: typing `:describe-key <space>` puts the cmdline into chord-capture mode (raw key events render as canonical tokens -- `Ctrl-c` -> `<C-c>`, `Up` -> `<Up>`); `:describe-key<CR>` with no arg arms a one-shot prompt and the very next chord auto-submits. |
+| :keymap                                           | ✅ buffer (popup)               | §5.11; lists all default bindings grouped by mode, every chord linked via `[[key:...]]` for follow-up `:describe-key`.                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| :apropos <pattern>                                | ✅ buffer (popup)               | §5.11; case-insensitive substring over every `CommandSpec.name` + `doc`. Picker UI (§5.9.7) is post-1.0.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| :describe-option, :describe-event, :describe-mode | ⛔                              | §5.11; each lands when its registry does (typed options §5.12 / event bus §5.10 / modes Phase 8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Command-line history (Up/Down)                    | ✅                              | §B.3                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| :history-*                                        | ⛔                              | §B.3 (picker UI; Up/Down already works)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| :customize                                        | ⛔                              | §5.12                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| :autocmd / :add-hook                              | ⛔                              | §5.10                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ---
 
@@ -239,12 +239,12 @@ Every registration / binding / set captures a `SourceLocation`
 `:verbose set` semantics, applied uniformly across commands, keys,
 options, events, modes.
 
-| Capture mechanism | Used for | Status | Forgery resistance |
-|---|---|---|---|
-| `#[track_caller]` on `register_*` | built-in command registrations in `builtins.rs` / `ex_commands.rs` -- zero call-site burden | ✅ implemented | compiler-captured, caller cannot supply or override |
-| `keymap_entry!` declarative macro | static keymap rows (per-row `file!()` + `line!()`) | ✅ implemented | macro is the only construction path; `source` field is `pub(crate)` |
-| Trusted subsystem builds value | config loader, plugin host bridge, runtime dispatcher | ⛔ deferred (no trusted subsystems exist yet) | `pub(crate) insert_*` registry methods exist; sibling crates will use sealed-trait re-exports when needed |
-| `SourceLocation::synthetic` (cfg-test only) | test fixtures | ✅ implemented | invisible outside tests |
+| Capture mechanism                           | Used for                                                                                    | Status                                        | Forgery resistance                                                                                        |
+|---------------------------------------------|---------------------------------------------------------------------------------------------|-----------------------------------------------|-----------------------------------------------------------------------------------------------------------|
+| `#[track_caller]` on `register_*`           | built-in command registrations in `builtins.rs` / `ex_commands.rs` -- zero call-site burden | ✅ implemented                                | compiler-captured, caller cannot supply or override                                                       |
+| `keymap_entry!` declarative macro           | static keymap rows (per-row `file!()` + `line!()`)                                          | ✅ implemented                                | macro is the only construction path; `source` field is `pub(crate)`                                       |
+| Trusted subsystem builds value              | config loader, plugin host bridge, runtime dispatcher                                       | ⛔ deferred (no trusted subsystems exist yet) | `pub(crate) insert_*` registry methods exist; sibling crates will use sealed-trait re-exports when needed |
+| `SourceLocation::synthetic` (cfg-test only) | test fixtures                                                                               | ✅ implemented                                | invisible outside tests                                                                                   |
 
 **Public API invariant**: there is no `pub fn` that takes a
 `SourceLocation` parameter and stores it. Verified by:
@@ -276,12 +276,12 @@ impl plus one new ex-command; the renderer doesn't change.
 `completion_registry` + `completion_state`. Four pluggable stages,
 vertico-shaped:
 
-| Stage | Trait | Built-ins |
-|---|---|---|
+| Stage      | Trait                | Built-ins                                                             |
+|------------|----------------------|-----------------------------------------------------------------------|
 | Generation | `CandidateGenerator` | `gen:commands`, `gen:files` (host-state generators in lattice-ui-tui) |
-| Matching | `CandidateMatcher` | `match:prefix` (default), `match:substring`, `match:fuzzy` |
-| Ranking | `CandidateRanker` | `rank:score` (default), `rank:alphabetical` |
-| Annotation | `CandidateAnnotator` | `anno:kind-label`, `anno:doc-snippet` |
+| Matching   | `CandidateMatcher`   | `match:prefix` (default), `match:substring`, `match:fuzzy`            |
+| Ranking    | `CandidateRanker`    | `rank:score` (default), `rank:alphabetical`                           |
+| Annotation | `CandidateAnnotator` | `anno:kind-label`, `anno:doc-snippet`                                 |
 
 `CompletionRegistry` registers each stage with `#[track_caller]`
 provenance. `CompletionPipeline::run(ctx, query, cache)` walks the
@@ -315,23 +315,23 @@ own line item.
 
 **App integration:**
 
-| Capability | Status | Notes |
-|---|---|---|
-| `<Tab>` opens completion popup | ✅ | Slot-aware: command-name slot uses `gen:commands`; arg slot uses `arg_spec.completion`. |
-| `<Tab>` advances candidates while open | ✅ | wraps at end |
-| `<S-Tab>` moves backward | ✅ | wraps at start |
-| `<CR>` accepts selected | ✅ | replaces `[replace_start, end)` with the candidate's `text` |
-| `<Esc>` two-stage dismiss | ✅ | first Esc closes popup; second cancels cmdline |
-| Typing dismisses popup | ✅ | re-trigger with Tab for fresh candidate set |
-| `<C-h>` describe under cursor | ✅ | hybrid: word-at-cursor describes self if registered; else parent command at `arg:<name>` anchor |
-| `<C-u>` clear cmdline | ✅ | also dismisses popup |
-| `<C-w>` delete trailing word | ✅ | strips whitespace then last token |
-| Vertico-style popup render | ✅ | bordered, anchored BELOW the `:` prompt (cmdline shifts up to make room), selected row highlighted, matched byte ranges painted, annotations right-aligned |
-| Alias-preferred candidate text | ✅ | `gen:commands` returns canonical names (`ex:describe-command`); host post-process rewrites to the user-facing alias (`describe-command`) and recomputes match ranges. Parser accepts both forms via two-stage resolution. |
-| Help overlay dismissed when entering `:` | ✅ | Q16: user can only focus on one thing |
-| `<C-b>` / `<C-e>` cursor movement | ⛔ deferred | needs full cmdline-cursor refactor; v1 cursor stays at end |
-| `<C-r>` register paste | ⛔ deferred | needs `Pending::AfterCommandLineRegister` substate |
-| Completion inside `:s/.../.../` body | ⛔ deferred | DelimiterBody slot returned; renderer doesn't recurse into pattern/replacement/flags |
+| Capability                               | Status      | Notes                                                                                                                                                                                                                     |
+|------------------------------------------|-------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `<Tab>` opens completion popup           | ✅          | Slot-aware: command-name slot uses `gen:commands`; arg slot uses `arg_spec.completion`.                                                                                                                                   |
+| `<Tab>` advances candidates while open   | ✅          | wraps at end                                                                                                                                                                                                              |
+| `<S-Tab>` moves backward                 | ✅          | wraps at start                                                                                                                                                                                                            |
+| `<CR>` accepts selected                  | ✅          | replaces `[replace_start, end)` with the candidate's `text`                                                                                                                                                               |
+| `<Esc>` two-stage dismiss                | ✅          | first Esc closes popup; second cancels cmdline                                                                                                                                                                            |
+| Typing dismisses popup                   | ✅          | re-trigger with Tab for fresh candidate set                                                                                                                                                                               |
+| `<C-h>` describe under cursor            | ✅          | hybrid: word-at-cursor describes self if registered; else parent command at `arg:<name>` anchor                                                                                                                           |
+| `<C-u>` clear cmdline                    | ✅          | also dismisses popup                                                                                                                                                                                                      |
+| `<C-w>` delete trailing word             | ✅          | strips whitespace then last token                                                                                                                                                                                         |
+| Vertico-style popup render               | ✅          | bordered, anchored BELOW the `:` prompt (cmdline shifts up to make room), selected row highlighted, matched byte ranges painted, annotations right-aligned                                                                |
+| Alias-preferred candidate text           | ✅          | `gen:commands` returns canonical names (`ex:describe-command`); host post-process rewrites to the user-facing alias (`describe-command`) and recomputes match ranges. Parser accepts both forms via two-stage resolution. |
+| Help overlay dismissed when entering `:` | ✅          | Q16: user can only focus on one thing                                                                                                                                                                                     |
+| `<C-b>` / `<C-e>` cursor movement        | ⛔ deferred | needs full cmdline-cursor refactor; v1 cursor stays at end                                                                                                                                                                |
+| `<C-r>` register paste                   | ⛔ deferred | needs `Pending::AfterCommandLineRegister` substate                                                                                                                                                                        |
+| Completion inside `:s/.../.../` body     | ⛔ deferred | DelimiterBody slot returned; renderer doesn't recurse into pattern/replacement/flags                                                                                                                                      |
 
 **ArgSpec.completion**: `Option<&'static str>` field naming a registered
 generator. v1 wires `gen:files` for `:write`/`:edit` paths and
@@ -344,34 +344,34 @@ typed options land via `cmdline.matcher = "match:prefix"`.
 
 Link markup -- forward-compatible reference syntax in help bodies:
 
-| Markup                  | Resolution                              |
-|-------------------------|-----------------------------------------|
-| `[[command:NAME]]`      | re-dispatch `:describe-command NAME`    |
-| `[[key:CHORD]]`         | re-dispatch `:describe-key CHORD`       |
-| `[[file:PATH:LINE]]`    | open PATH at LINE                       |
-| `[[anything-else]]`     | Unresolved (preserved verbatim)         |
+| Markup               | Resolution                           |
+|----------------------|--------------------------------------|
+| `[[command:NAME]]`   | re-dispatch `:describe-command NAME` |
+| `[[key:CHORD]]`      | re-dispatch `:describe-key CHORD`    |
+| `[[file:PATH:LINE]]` | open PATH at LINE                    |
+| `[[anything-else]]`  | Unresolved (preserved verbatim)      |
 
 The popup renderer is dumb today: links render verbatim. The
 follow-link motion + styled link ranges + `[[file:...]]` source
 navigation arrive incrementally:
 
-| Capability                                | Status | Notes |
-|-------------------------------------------|--------|-------|
-| Buffer-backed help (rope content)         | ✅     | `HelpBuffer.content: Buffer` |
-| Link markup defined + parsed              | ✅     | `parse_help_links` returns `Vec<HelpLink>` with byte ranges |
-| Help formatters emit links                | ✅     | `:describe-key`, `:apropos`, `:keymap` reference cross-targets |
-| Display: Popup overlay                    | ✅     | v1 default |
-| Display: Split / Tab / Window             | ⛔     | post-multi-buffer (Phase 6) |
-| Styled link ranges in renderer            | ⛔     | renderer ignores `links` today |
-| Follow-link motion (e.g. `<CR>` on link)  | ⛔     | needs tree-sitter help grammar + link motion |
-| Help major mode + tree-sitter grammar     | ⛔     | post-Phase-3-extension; sections / code-blocks / link-targets |
-| `SourceLocation` on `CommandSpec`         | ⛔     | needs `register_*` API extension; powers `[[file:...]]` auto-emit |
-| `:source-of <command>`                    | ⛔     | depends on `SourceLocation` |
-| `:describe-key`                           | ✅     | keymap registry §5.2.3 -- see below |
-| `:keymap`                                 | ✅     | full default keymap, grouped by mode |
-| `:describe-option`                        | ⛔     | needs typed options registry §5.12 |
-| `:describe-event`                         | ⛔     | needs event bus §5.10 |
-| `:describe-mode`                          | ⛔     | needs major/minor modes (Phase 8) |
+| Capability                               | Status | Notes                                                             |
+|------------------------------------------|--------|-------------------------------------------------------------------|
+| Buffer-backed help (rope content)        | ✅     | `HelpBuffer.content: Buffer`                                      |
+| Link markup defined + parsed             | ✅     | `parse_help_links` returns `Vec<HelpLink>` with byte ranges       |
+| Help formatters emit links               | ✅     | `:describe-key`, `:apropos`, `:keymap` reference cross-targets    |
+| Display: Popup overlay                   | ✅     | v1 default                                                        |
+| Display: Split / Tab / Window            | ⛔     | post-multi-buffer (Phase 6)                                       |
+| Styled link ranges in renderer           | ⛔     | renderer ignores `links` today                                    |
+| Follow-link motion (e.g. `<CR>` on link) | ⛔     | needs tree-sitter help grammar + link motion                      |
+| Help major mode + tree-sitter grammar    | ⛔     | post-Phase-3-extension; sections / code-blocks / link-targets     |
+| `SourceLocation` on `CommandSpec`        | ⛔     | needs `register_*` API extension; powers `[[file:...]]` auto-emit |
+| `:source-of <command>`                   | ⛔     | depends on `SourceLocation`                                       |
+| `:describe-key`                          | ✅     | keymap registry §5.2.3 -- see below                               |
+| `:keymap`                                | ✅     | full default keymap, grouped by mode                              |
+| `:describe-option`                       | ⛔     | needs typed options registry §5.12                                |
+| `:describe-event`                        | ⛔     | needs event bus §5.10                                             |
+| `:describe-mode`                         | ⛔     | needs major/minor modes (Phase 8)                                 |
 
 ### Keymap registry (DESIGN.md §5.2.3)
 
@@ -394,25 +394,51 @@ seed.
 
 ## Async / actor architecture (DESIGN.md §5.2.1, §5.6.8, §5.7)
 
-Currently the dispatcher is synchronous: `execute(registry, document, cursor,
-inv) -> Effect`. The async-Pending API spec'd in §5.2.1 has not yet replaced
-it. The render-snapshot coherence model (§5.6.8) is also unimplemented.
+The async core lands in `lattice-runtime`. Every document is owned by
+its own tokio task (the **document actor**); mutations route through a
+bounded mpsc mailbox; commits publish an immutable `DocumentSnapshot`
+to an `arc_swap::ArcSwap` cell that any reader (renderer, future LSP
+client, future plugin) loads wait-free.
 
-| Concern                                                    | Status               | Anchor                     |
-|------------------------------------------------------------|----------------------|----------------------------|
-| Sync dispatcher                                            | ✅                   | DESIGN.md §5.2.1 (current) |
-| Async `execute -> Pending`                                 | ⛔                   | §5.2.1 (spec)              |
-| Document actor / mailbox                                   | ⛔                   | §5.7                       |
-| `arc-swap` published `DocumentSnapshot`                    | ⛔                   | §5.6.8                     |
-| Veto-class hooks (1ms p99)                                 | ⛔                   | §5.2.1                     |
-| Cancellation token contract                                | ⛔                   | §5.2.5                     |
-| Latency-class declarations (Reflex / Display / Background) | ⛔                   | §5.2.5                     |
-| Events-over-invocation rule                                | ⛔                   | §5.2.5                     |
-| Multi-pane selection transformation                        | n/a (single-pane v1) | §5.6.8                     |
+`lattice_grammar::execute` stays a pure sync function (no tokio
+dependency, no async signature). The actor calls it *inside* its own
+task via the `Dispatch` message; only the *boundary* between caller
+and document is async.
 
-These land in Phase 4–7 alongside LSP and the plugin host. The v1 TUI runs
-synchronously in `runtime.rs`; the spec is followed in §5.2.1 / §5.6.8 /
-§5.2.5 but the implementation hasn't caught up.
+App talks to the actor through `DocumentHandle` (cheap Clone -- an
+`mpsc::Sender` + `Arc<PublishedSnapshot>`). The TUI input loop, which
+is a blocking crossterm poll, bridges sync→async via
+`lattice_runtime::block_on`. Every mutating method returns
+`Pending<T>` (a typed wrapper around `oneshot::Receiver`); the App's
+`*_blocking` helpers concentrate the bridge in one place.
+
+**Publish-before-reply.** The actor's run loop publishes the new
+snapshot *before* sending the `oneshot` reply for any mutation. This
+guarantees that any caller observing the reply also observes the new
+snapshot via `arc_swap::load` -- without this ordering, callers can
+race past their own commit.
+
+| Concern                                                    | Status               | Anchor                                  |
+|------------------------------------------------------------|----------------------|-----------------------------------------|
+| Document actor / bounded mpsc mailbox                      | ✅                   | §5.7 (`lattice-runtime::DocumentActor`) |
+| `Pending<T>` returned by every mutating call               | ✅                   | §5.2.1 (`lattice-runtime::Pending`)     |
+| Bounded backpressure (`RuntimeError::Busy`)                | ✅                   | §5.2.1 (mailbox cap = 64)               |
+| `arc-swap` published `DocumentSnapshot`                    | ✅                   | §5.6.8 (`PublishedSnapshot`)            |
+| Renderer reads via single `Cache::load` per frame          | ✅                   | §5.6.8 (`render::draw_*`)               |
+| Publish-before-reply ordering                              | ✅                   | §5.6.8 (acquire/release contract)       |
+| Sync `lattice_grammar::execute` (runs inside actor)        | ✅                   | §5.2.1 (purity preserved)               |
+| Veto-class hooks (1ms p99)                                 | ⛔                   | §5.2.1 (needs §5.10 event bus)          |
+| Cancellation token contract                                | ⛔                   | §5.2.5 (needs `LatencyClass` field)     |
+| Latency-class declarations (Reflex / Display / Background) | ⛔                   | §5.2.5                                  |
+| Events-over-invocation rule                                | ⛔                   | §5.2.5                                  |
+| Multi-pane selection transformation                        | n/a (single-pane v1) | §5.6.8                                  |
+
+This is **Phase 4 / 7's prerequisite** — LSP clients and the WASM
+plugin host can now share `DocumentHandle` with the App; both
+register against the same actor, both observe the same snapshot
+stream. The remaining ⛔ rows (cancellation, latency classes, hook
+classification, event bus) layer on top of the actor without
+restructuring it.
 
 ---
 
@@ -443,36 +469,31 @@ Update this section when picking up the in-flight item.
 
 ## Up next (priority order)
 
-1. **`SourceLocation` on `CommandSpec`** + `:source-of <command>` —
-   `register_*` capture `concat!(file!(), ":", line!())` at registration
-   sites; `:describe-command` emits `[[file:...]]` automatically;
-   `:source-of` (or link-following on a file link) opens the file. Small
-   change with high payoff for the introspection surface.
-2. **Block-visual `I` / `A` / `>` / `<`** — extend the per-row block
+1. **Block-visual `I` / `A` / `>` / `<`** — extend the per-row block
    dispatch with the remaining vim affordances: insert-at-block-start,
    append-at-block-end, indent-block-right/left.
-3. **Computed folds** (syntax-driven, indent-based) — manual folds via
+2. **Computed folds** (syntax-driven, indent-based) — manual folds via
    zf/zo/zc/za/zR/zM/zd are done; computed folds need tree-sitter integration
    and an indent-based fall-back.
-4. **`:set option=value` + typed options** (§5.12) — also unblocks
+3. **`:set option=value` + typed options** (§5.12) — also unblocks
    `:describe-option`.
-5. **Multi-buffer foundations** (§5.9) — the trigger for `HelpDisplayMode`
+4. **Multi-buffer foundations** (§5.9) — the trigger for `HelpDisplayMode`
    beyond `Popup`. Until this lands, all introspection is overlay-rendered.
-6. **Help major mode + tree-sitter grammar** — defines sections,
+5. **Help major mode + tree-sitter grammar** — defines sections,
    link-targets, code-blocks. Needs the help mode registered as a major
    mode, which depends on the modes registry (Phase 8) but the *grammar*
    can be drafted earlier.
-7. **Substitute live preview** — decorations on the target buffer while
+6. **Substitute live preview** — decorations on the target buffer while
    the user types `:s/foo/bar/...`. The hlsearch now lights up matches
    when the search minibuffer is open; substitute should do the same.
-8. **Tag text object** (`it`, `at`) — XML/HTML tags.
-9. **Promote `:g` body to a parsed CommandInvocation** — currently the
+7. **Promote `:g` body to a parsed CommandInvocation** — currently the
    body is `ArgValue::Raw(String)` and re-parsed per match.
-10. **Interactive arg-prompts via `args_schema`** (§B.1 phase 2) — when a
-    command has a missing required arg, drop the user into the minibuffer
-    with the schema's prompt text + completion source.
-11. **Async dispatcher** — replace `execute(...) -> Effect` with `execute
-    -> Pending<Effect>` per §5.2.1.
+8. **Interactive arg-prompts via `args_schema`** (§B.1 phase 2) — `Chord`
+   slot is done (chord-capture + auto-submit on `:describe-key<CR>`).
+   Generalise to other kinds: drop the user into the minibuffer with
+   the schema's prompt + completion source for any missing required arg.
+9. **Async dispatcher** — replace `execute(...) -> Effect` with `execute
+   -> Pending<Effect>` per §5.2.1.
 
 ---
 

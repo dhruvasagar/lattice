@@ -489,6 +489,38 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             args_schema: vec![],
         },
     );
+    let inner_big_word = registry.register_text_object(
+        "text-object:inner-big-word",
+        "Inner WORD -- whitespace-delimited run containing the cursor (vim's `iW`).",
+        TextObjectSpec {
+            apply: Box::new(text_object_inner_big_word),
+            args_schema: vec![],
+        },
+    );
+    let around_big_word = registry.register_text_object(
+        "text-object:around-big-word",
+        "Around WORD -- inner WORD plus trailing whitespace (vim's `aW`).",
+        TextObjectSpec {
+            apply: Box::new(text_object_around_big_word),
+            args_schema: vec![],
+        },
+    );
+    let inner_angle = registry.register_text_object(
+        "text-object:inner-angle",
+        "Inside the innermost enclosing `<>` pair (vim's `i<`).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_inner_brackets(ctx, '<', '>')),
+            args_schema: vec![],
+        },
+    );
+    let around_angle = registry.register_text_object(
+        "text-object:around-angle",
+        "Around the innermost enclosing `<>` pair, including the brackets (vim's `a<`).",
+        TextObjectSpec {
+            apply: Box::new(|ctx| text_object_around_brackets(ctx, '<', '>')),
+            args_schema: vec![],
+        },
+    );
 
     Builtins {
         word_forward,
@@ -542,6 +574,10 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         around_brace,
         inner_tag,
         around_tag,
+        inner_big_word,
+        around_big_word,
+        inner_angle,
+        around_angle,
     }
 }
 
@@ -598,6 +634,10 @@ pub struct Builtins {
     pub around_brace: TextObjectId,
     pub inner_tag: TextObjectId,
     pub around_tag: TextObjectId,
+    pub inner_big_word: TextObjectId,
+    pub around_big_word: TextObjectId,
+    pub inner_angle: TextObjectId,
+    pub around_angle: TextObjectId,
 }
 
 // ---- Motion: word-forward ----
@@ -1366,23 +1406,30 @@ fn text_object_around_paragraph(ctx: &TextObjectContext) -> Result<ProtoRange, C
 // dispatcher's [start, end) range is constructed to match by extending
 // `end` past the last byte we want included.
 
-fn text_object_inner_word(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+/// Inner-word run shared between `iw` and `iW`. The only difference
+/// between the two is the byte classifier: `is_word_byte` for `iw`
+/// (alphanum + underscore), `is_big_word_byte` for `iW` (any
+/// non-whitespace run).
+fn text_object_inner_word_class(
+    ctx: &TextObjectContext,
+    is_class: fn(u8) -> bool,
+) -> Result<ProtoRange, CommandError> {
     let text = ctx.buffer.as_string();
     let bytes = text.as_bytes();
     let cursor = ctx
         .buffer
         .position_to_byte(ctx.at)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
-    if cursor >= bytes.len() || !is_word_byte(bytes[cursor]) {
+    if cursor >= bytes.len() || !is_class(bytes[cursor]) {
         // Not on a word -- range is the cursor position alone.
         return Ok(ProtoRange::new(ctx.at, ctx.at));
     }
     let mut start = cursor;
-    while start > 0 && is_word_byte(bytes[start - 1]) {
+    while start > 0 && is_class(bytes[start - 1]) {
         start -= 1;
     }
     let mut end = cursor;
-    while end + 1 < bytes.len() && is_word_byte(bytes[end + 1]) {
+    while end + 1 < bytes.len() && is_class(bytes[end + 1]) {
         end += 1;
     }
     // [start, end] inclusive of word -> half-open is end + 1.
@@ -1397,9 +1444,15 @@ fn text_object_inner_word(ctx: &TextObjectContext) -> Result<ProtoRange, Command
     Ok(ProtoRange::new(start_pos, end_pos))
 }
 
-fn text_object_around_word(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
-    // Inner word + trailing whitespace (or leading if no trailing).
-    let inner = text_object_inner_word(ctx)?;
+/// Around-word run shared between `aw` and `aW`. Trailing whitespace
+/// extension (or leading if none) is identical for both classes --
+/// vim's `aw` and `aW` both stay on the line and use space/tab as
+/// the whitespace to absorb.
+fn text_object_around_word_class(
+    ctx: &TextObjectContext,
+    is_class: fn(u8) -> bool,
+) -> Result<ProtoRange, CommandError> {
+    let inner = text_object_inner_word_class(ctx, is_class)?;
     let text = ctx.buffer.as_string();
     let bytes = text.as_bytes();
     let inner_end_byte = ctx
@@ -1432,6 +1485,22 @@ fn text_object_around_word(ctx: &TextObjectContext) -> Result<ProtoRange, Comman
             .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
         Ok(ProtoRange::new(inner.start, end_pos))
     }
+}
+
+fn text_object_inner_word(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    text_object_inner_word_class(ctx, is_word_byte)
+}
+
+fn text_object_around_word(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    text_object_around_word_class(ctx, is_word_byte)
+}
+
+fn text_object_inner_big_word(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    text_object_inner_word_class(ctx, is_big_word_byte)
+}
+
+fn text_object_around_big_word(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
+    text_object_around_word_class(ctx, is_big_word_byte)
 }
 
 fn find_quote_pair(bytes: &[u8], cursor: usize, q: u8) -> Option<(usize, usize)> {
@@ -2557,6 +2626,54 @@ mod tests {
         // Cursor on 'w' at byte 6 -- no trailing whitespace, so leading.
         execute(&registry, &mut doc, Position::new(0, 6), inv).unwrap();
         assert_eq!(doc.text(), "hello");
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn iW_treats_punctuation_as_part_of_big_word() {
+        // `iw` would split on `.`; `iW` does not because `.` is
+        // non-whitespace -> part of the WORD.
+        let (registry, b, mut doc) = fixture("foo.bar baz");
+        let inv = invoke_textobj(b.delete, b.inner_big_word);
+        execute(&registry, &mut doc, Position::new(0, 2), inv).unwrap();
+        assert_eq!(doc.text(), " baz");
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn iW_on_whitespace_is_no_op() {
+        let (registry, b, mut doc) = fixture("hello world");
+        let inv = invoke_textobj(b.delete, b.inner_big_word);
+        // Cursor on space at byte 5 -- not on a WORD.
+        execute(&registry, &mut doc, Position::new(0, 5), inv).unwrap();
+        assert_eq!(doc.text(), "hello world");
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn aW_around_big_word_includes_trailing_whitespace() {
+        let (registry, b, mut doc) = fixture("foo.bar baz");
+        let inv = invoke_textobj(b.delete, b.around_big_word);
+        execute(&registry, &mut doc, Position::new(0, 0), inv).unwrap();
+        // around_big_word: "foo.bar" + trailing space -> "baz".
+        assert_eq!(doc.text(), "baz");
+    }
+
+    #[test]
+    fn i_angle_covers_inside_pair() {
+        let (registry, b, mut doc) = fixture("Vec<String>");
+        let inv = invoke_textobj(b.delete, b.inner_angle);
+        // Cursor inside angles (byte 5 = 'S' in "String").
+        execute(&registry, &mut doc, Position::new(0, 5), inv).unwrap();
+        assert_eq!(doc.text(), "Vec<>");
+    }
+
+    #[test]
+    fn a_angle_covers_pair_including_brackets() {
+        let (registry, b, mut doc) = fixture("Vec<String>");
+        let inv = invoke_textobj(b.delete, b.around_angle);
+        execute(&registry, &mut doc, Position::new(0, 5), inv).unwrap();
+        assert_eq!(doc.text(), "Vec");
     }
 
     #[test]

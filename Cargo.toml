@@ -6,6 +6,7 @@ members = [
 	"crates/lattice-grammar",
 	"crates/lattice-completion",
 	"crates/lattice-syntax",
+	"crates/lattice-runtime",
 	"crates/lattice-ui-tui",
 	"crates/lattice-cli",
 ]
@@ -23,9 +24,10 @@ ropey = "1.6"
 thiserror = "2.0"
 anyhow = "1.0"
 
-# Async (will be wired in later phases)
+# Async (lattice-runtime + future Phase 4 LSP, Phase 7 plugin host)
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] }
 futures = "0.3"
+arc-swap = "1.7"
 
 # Serialization (Phase 0 just uses serde for protocol type derives)
 serde = { version = "1.0", features = ["derive"] }

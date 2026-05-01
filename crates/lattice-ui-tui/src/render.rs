@@ -231,6 +231,17 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);
+
+    // Move the terminal cursor inside the popup so the user has a
+    // clear visual indication that input is now captured by the
+    // help overlay (j/k/Ctrl-D/Ctrl-U scroll, Esc/q dismiss).
+    // Anchored at the first content row's first column;
+    // overrides any earlier `set_cursor_position` from
+    // `draw_buffer` / `draw_command_or_echo` because the help
+    // overlay paints later.
+    if inner.height > 0 && inner.width > 0 {
+        frame.set_cursor_position((inner.x, inner.y));
+    }
 }
 
 fn draw_buffer(frame: &mut Frame, area: Rect, app: &App) {

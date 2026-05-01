@@ -942,7 +942,70 @@ impl App {
             ExCommand::ListRegisters => self.do_list_registers(),
             ExCommand::ListMarks => self.do_list_marks(),
             ExCommand::Set { option } => self.do_set(&option),
+            ExCommand::Edit { path, force } => self.do_edit(path, force),
         }
+    }
+
+    /// Vim's `:e [path]` -- swap the current document for the file at
+    /// `path`. With `path = None`, re-reads the current document from
+    /// disk (vim's `:e` reload). Refuses if the buffer is dirty unless
+    /// `force` is true. Registers, marks, and global state persist
+    /// across the swap; cursor / scroll / search / syntax / undo /
+    /// folds are reset to the new doc.
+    fn do_edit(&mut self, path: Option<std::path::PathBuf>, force: bool) {
+        let target = match path {
+            Some(p) => p,
+            None => match self.document.path() {
+                Some(p) => p.to_path_buf(),
+                None => {
+                    self.set_message(EchoLevel::Error, "no file name".to_string());
+                    return;
+                }
+            },
+        };
+        if !force && self.document.dirty() {
+            self.set_message(
+                EchoLevel::Error,
+                "no write since last change (add ! to override)".to_string(),
+            );
+            return;
+        }
+        let new_doc = match Document::open(&target) {
+            Ok(d) => d,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("open error: {e}"));
+                return;
+            }
+        };
+        // Re-initialise syntax for the new doc's language.
+        let lang = Lang::detect_from_path(new_doc.path());
+        let mut syntax = Syntax::for_language(lang).ok().flatten();
+        if let Some(s) = syntax.as_mut() {
+            s.parse(&new_doc.text());
+        }
+        self.last_parsed_text_version = new_doc.text_version();
+        self.syntax = syntax;
+        self.document = new_doc;
+        // Per-document state resets (vim's behavior).
+        self.cursor = Position::ZERO;
+        self.scroll = 0;
+        self.current_match = None;
+        self.all_matches.clear();
+        self.search_line = None;
+        self.last_search = None;
+        self.last_find = None;
+        self.last_change = None;
+        self.last_visual = None;
+        self.visual_anchor = None;
+        self.replace_history.clear();
+        self.position_history.clear();
+        self.position_history_cursor = 0;
+        self.folds.clear();
+        // Registers, marks, macros, and view options persist.
+        self.set_message(
+            EchoLevel::Info,
+            format!("\"{}\" opened", target.display()),
+        );
     }
 
     /// Vim's `:set <option>`. v1 honors a tiny fixed set; everything
@@ -3232,6 +3295,93 @@ mod tests {
             a.apply(Action::CommandLineAppend(c));
         }
         a.apply(Action::CommandLineSubmit);
+    }
+
+    #[test]
+    fn edit_loads_named_file() {
+        let dir = unique_tempdir();
+        let path = dir.join("hello.txt");
+        std::fs::write(&path, "loaded contents\nsecond line").unwrap();
+        let mut a = app_with("original", 10);
+        let cmd = format!("e {}", path.display());
+        submit_ex(&mut a, &cmd);
+        assert_eq!(a.document.text(), "loaded contents\nsecond line");
+        assert_eq!(a.cursor, Position::ZERO);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edit_refuses_when_dirty() {
+        let mut a = app_with("modified", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert!(a.document.dirty());
+        submit_ex(&mut a, "e /nonexistent");
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        // Document unchanged.
+        assert_eq!(a.document.text(), "Xmodified");
+    }
+
+    #[test]
+    fn edit_force_overrides_dirty_guard() {
+        let dir = unique_tempdir();
+        let path = dir.join("forced.txt");
+        std::fs::write(&path, "loaded").unwrap();
+        let mut a = app_with("dirty content", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("Z".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        let cmd = format!("e! {}", path.display());
+        submit_ex(&mut a, &cmd);
+        assert_eq!(a.document.text(), "loaded");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edit_preserves_registers_across_swap() {
+        let dir = unique_tempdir();
+        let path = dir.join("preserve.txt");
+        std::fs::write(&path, "new content").unwrap();
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        assert!(a.unnamed_register.is_some());
+        let cmd = format!("e {}", path.display());
+        submit_ex(&mut a, &cmd);
+        // Register survives.
+        assert!(a.unnamed_register.is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edit_resets_per_document_state() {
+        let dir = unique_tempdir();
+        let path = dir.join("reset.txt");
+        std::fs::write(&path, "fresh").unwrap();
+        let mut a = app_with("aaa\nbbb\nccc", 10);
+        a.cursor = Position::new(2, 1);
+        a.apply(invoke_motion(a.builtins.goto_first_line));
+        // Now position_history has an entry.
+        assert!(!a.position_history.is_empty());
+        let cmd = format!("e {}", path.display());
+        submit_ex(&mut a, &cmd);
+        assert!(a.position_history.is_empty());
+        assert_eq!(a.cursor, Position::ZERO);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edit_unknown_path_emits_error() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "e /absolutely/does/not/exist/anywhere.txt");
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        // Buffer unchanged.
+        assert_eq!(a.document.text(), "hello");
     }
 
     #[test]

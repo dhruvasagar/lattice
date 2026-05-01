@@ -49,6 +49,10 @@ pub enum ExCommand {
     /// number / nonumber / nu / nonu, relativenumber / norelativenumber /
     /// rnu / nornu.
     Set { option: String },
+    /// Vim's `:e[dit] [path]`. With path: load that file as the current
+    /// document. Without path: refresh from disk (or no-op if no path).
+    /// `force = true` discards unsaved changes.
+    Edit { path: Option<PathBuf>, force: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +126,14 @@ pub fn parse(line: &str) -> Result<ExCommand, ExCommandError> {
                 option: rest.to_string(),
             })
         }
+        "e" | "edit" => Ok(ExCommand::Edit {
+            path: parse_optional_path(rest),
+            force: false,
+        }),
+        "e!" | "edit!" => Ok(ExCommand::Edit {
+            path: parse_optional_path(rest),
+            force: true,
+        }),
         other => Err(ExCommandError::Unknown(other.to_string())),
     }
 }
@@ -449,6 +461,46 @@ mod tests {
     fn registers_aliases() {
         assert_eq!(parse("reg"), Ok(ExCommand::ListRegisters));
         assert_eq!(parse("registers"), Ok(ExCommand::ListRegisters));
+    }
+
+    #[test]
+    fn edit_with_path() {
+        assert_eq!(
+            parse("e foo.txt"),
+            Ok(ExCommand::Edit {
+                path: Some(PathBuf::from("foo.txt")),
+                force: false,
+            })
+        );
+        assert_eq!(
+            parse("edit /abs/path.rs"),
+            Ok(ExCommand::Edit {
+                path: Some(PathBuf::from("/abs/path.rs")),
+                force: false,
+            })
+        );
+    }
+
+    #[test]
+    fn edit_force_with_bang() {
+        assert_eq!(
+            parse("e! /tmp/x"),
+            Ok(ExCommand::Edit {
+                path: Some(PathBuf::from("/tmp/x")),
+                force: true,
+            })
+        );
+    }
+
+    #[test]
+    fn edit_without_path_reloads() {
+        assert_eq!(
+            parse("e"),
+            Ok(ExCommand::Edit {
+                path: None,
+                force: false,
+            })
+        );
     }
 
     #[test]

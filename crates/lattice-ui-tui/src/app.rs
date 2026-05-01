@@ -391,6 +391,13 @@ pub struct App {
     /// Manual folds. v1 supports non-nested folds defined by line range.
     /// `closed=true` means the fold's interior is skipped during render.
     pub folds: Vec<Fold>,
+    /// Text inserted during the most recently completed Insert session.
+    /// Captured on Esc out of Insert; replayed by dot-repeat after the
+    /// operator part. `None` if the last change had no insert phase.
+    pub last_insert: Option<String>,
+    /// Text being captured during the *current* Insert session.
+    /// Promoted into `last_insert` when leaving Insert.
+    pub recording_insert: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -489,6 +496,8 @@ impl App {
             last_played_macro: None,
             last_find: None,
             folds: Vec::new(),
+            last_insert: None,
+            recording_insert: None,
         }
     }
 
@@ -642,11 +651,20 @@ impl App {
 
             Action::RepeatLastChange => {
                 if let Some(inv) = self.last_change.clone() {
-                    // Direct dispatch: bypass the `last_change` recording
-                    // path inside run_invocation by setting a re-entry guard.
-                    // For v1 simple model, we just call run_invocation; the
-                    // resulting last_change overwrite is identical.
+                    // Snapshot last_insert because run_invocation may
+                    // reset it (running the change op enters Insert,
+                    // which clears recording_insert) -- we want the
+                    // OLD text to replay.
+                    let insert_replay = self.last_insert.clone();
                     self.run_invocation(inv);
+                    // If the change flipped us into Insert and there's
+                    // captured text, replay it and exit back to Normal.
+                    if matches!(self.modal, ModalState::Insert)
+                        && let Some(text) = insert_replay
+                    {
+                        self.do_insert_text(&text);
+                        self.enter_mode(ModalState::Normal);
+                    }
                 } else {
                     self.set_message(
                         EchoLevel::Error,
@@ -1207,12 +1225,12 @@ impl App {
                 register,
             } => self.store_yank(register, content, kind),
             Effect::EnterMode(mode) => {
-                // Operators that flip mode (`c` -> Insert) come through here.
-                // We bypass `enter_mode`'s "pull cursor back one byte" guard
-                // because the operator already placed the cursor at the
-                // correct insertion point.
-                self.modal = mode;
-                self.pending = Pending::None;
+                // Operators that flip mode (`c` -> Insert) come through
+                // the same `enter_mode` helper as direct Action::EnterMode
+                // does, so the dot-repeat insert-recording starts/stops
+                // consistently. (`enter_mode`'s cursor pull-back only
+                // fires when going to Normal; safe for our use cases.)
+                self.enter_mode(mode);
             }
             Effect::Many(many) => {
                 for e in many {
@@ -1365,6 +1383,10 @@ impl App {
         }
         if let Ok(applied) = self.document.apply_edit(Edit::insert(self.cursor, s)) {
             self.cursor = applied.inserted_range.end;
+            // Capture into the in-flight Insert recording for dot-repeat.
+            if let Some(rec) = self.recording_insert.as_mut() {
+                rec.push_str(s);
+            }
         }
     }
 
@@ -1384,6 +1406,21 @@ impl App {
         // so backspace-restore is bounded to the current `R` session.
         if matches!(state, ModalState::Replace) {
             self.replace_history.clear();
+        }
+        let was_insert_like = matches!(self.modal, ModalState::Insert | ModalState::Replace);
+        let entering_insert_like = matches!(state, ModalState::Insert | ModalState::Replace);
+        // Insert-replay capture:
+        //   - Entering Insert/Replace from anything else: start recording.
+        //   - Leaving Insert/Replace to anything else: promote into last_insert.
+        if entering_insert_like && !was_insert_like {
+            self.recording_insert = Some(String::new());
+        }
+        if was_insert_like
+            && !entering_insert_like
+            && let Some(rec) = self.recording_insert.take()
+            && !rec.is_empty()
+        {
+            self.last_insert = Some(rec);
         }
         self.modal = state;
         self.pending = Pending::None;
@@ -4142,6 +4179,55 @@ mod tests {
         // `.` re-runs `dd` at the cursor; line 1 (empty) becomes a no-op
         // edit since CurrentLine is empty. Buffer unchanged.
         assert_eq!(a.document.text(), "aaa\n\nccc\nddd");
+    }
+
+    #[test]
+    fn insert_session_captures_typed_text_into_last_insert() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::Insert("Y".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.last_insert.as_deref(), Some("XY"));
+    }
+
+    #[test]
+    fn dot_repeats_change_with_insert_replay() {
+        // Classic vim test: cw foo<Esc> followed by . on another word
+        // replaces that word with "foo" too.
+        let mut a = app_with("alpha beta gamma", 10);
+        // cw on first word.
+        let inv = CommandInvocation::of(a.builtins.change.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.document.text(), "Xbeta gamma");
+        // Move to "beta" (cursor is now on 'X' / position 0; let's go to 'b'
+        // at byte 1).
+        a.cursor = Position::new(0, 1);
+        // Repeat.
+        a.apply(Action::RepeatLastChange);
+        // cw replays: deletes "beta " and inserts "X" -> "XXgamma".
+        // (Note: our cw includes the trailing space; vim's cw is implicitly
+        // ce, a deferred refinement.)
+        assert_eq!(a.document.text(), "XXgamma");
+        assert_eq!(a.modal, ModalState::Normal);
+    }
+
+    #[test]
+    fn dot_without_insert_replay_when_no_text_was_typed() {
+        // dw (no insert phase) -> . repeats just the delete.
+        let mut a = app_with("alpha beta gamma", 10);
+        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        // dw deletes "alpha "; then `.` deletes another word (no insert).
+        a.apply(Action::RepeatLastChange);
+        // Two dws: "alpha " then "beta " -> "gamma".
+        assert_eq!(a.document.text(), "gamma");
     }
 
     #[test]

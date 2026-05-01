@@ -147,8 +147,8 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | Mark for last visual (`'<`, `'>`)              | ⛔                                    |                |
 | gv (reselect last visual)                      | ✅                                    |                |
 | Macros (q, @, @@)                              | ✅                                    | §5.2.4         |
-| Dot-repeat (.)                                 | ✅ (operators only)                   | §5.2.4         |
-| Insert-mode replay in dot-repeat               | ⛔                                    | §15:N          |
+| Dot-repeat (.)                                 | ✅                                    | §5.2.4         |
+| Insert-mode replay in dot-repeat               | ✅                                    | §5.2.4         |
 
 ### Search and substitution
 
@@ -270,7 +270,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-653 tests across the workspace as of the last commit. Coverage by crate:
+656 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
@@ -278,7 +278,7 @@ are crossed out there. Items that influence active tasks:
 | lattice-core (incl. integration) | 70    |
 | lattice-grammar                  | 125   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 405   |
+| lattice-ui-tui                   | 408   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

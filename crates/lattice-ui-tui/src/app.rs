@@ -53,12 +53,28 @@ pub enum Pending {
         operator: OperatorId,
         around: bool,
     },
+    /// `z` pressed; the next char selects the scroll command (`zz`, `zt`, `zb`).
+    AfterZ,
     /// `m` pressed; the next char is the mark to set.
     AfterSetMark,
     /// `'` pressed; the next char is the mark to jump to (linewise).
     AfterJumpMarkLine,
     /// `` ` `` pressed; the next char is the mark to jump to (exact).
     AfterJumpMarkExact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewportPos {
+    Top,
+    Middle,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollPos {
+    Top,
+    Center,
+    Bottom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +147,18 @@ pub enum Action {
     /// `replace_history` and restore the original byte (or delete if the
     /// overwrite was a line extension).
     ReplaceUndoLast,
+    /// Jump cursor to a viewport-relative line (vim's `H`, `M`, `L`).
+    JumpViewport(ViewportPos),
+    /// Adjust scroll so the cursor lands at the viewport top / center /
+    /// bottom (vim's `zt`, `zz`, `zb`).
+    ScrollCursorTo(ScrollPos),
+    /// Move cursor down / up by one viewport-page (vim's Ctrl-F / Ctrl-B).
+    PageDown,
+    PageUp,
+    /// Scroll the viewport one line up (Ctrl-Y) or down (Ctrl-E),
+    /// nudging the cursor to keep it on-screen.
+    ScrollLineUp,
+    ScrollLineDown,
     /// `m<letter>` -- record the cursor at mark `<letter>`.
     SetMark(char),
     /// `'<letter>` -- jump to the line of mark `<letter>` (column = first
@@ -427,6 +455,13 @@ impl App {
 
             Action::OverwriteChar(c) => self.do_overwrite_char(c),
             Action::ReplaceUndoLast => self.do_replace_undo_last(),
+
+            Action::JumpViewport(vp) => self.do_jump_viewport(vp),
+            Action::ScrollCursorTo(sp) => self.do_scroll_cursor_to(sp),
+            Action::PageDown => self.do_page(true),
+            Action::PageUp => self.do_page(false),
+            Action::ScrollLineUp => self.do_scroll_line(false),
+            Action::ScrollLineDown => self.do_scroll_line(true),
 
             Action::SetMark(name) => {
                 if is_valid_mark_name(name) {
@@ -821,6 +856,78 @@ impl App {
         // (which is now the position of whatever followed). Vim's behavior.
         if let Some(first) = edits.first() {
             self.cursor = first.original_range.start;
+        }
+    }
+
+    /// Jump the cursor to a viewport-relative line. `H` -> top of view,
+    /// `M` -> middle, `L` -> bottom. Column is preserved (clamped to the
+    /// destination line's length).
+    fn do_jump_viewport(&mut self, vpos: ViewportPos) {
+        let height = self.viewport_height.max(1);
+        let line = match vpos {
+            ViewportPos::Top => self.scroll,
+            ViewportPos::Middle => self.scroll + height / 2,
+            ViewportPos::Bottom => self.scroll + height.saturating_sub(1),
+        };
+        let last = last_addressable_line(&self.document);
+        let line = line.min(last);
+        let len = line_byte_len(&self.document, line);
+        let byte = self.cursor.byte.min(len);
+        self.cursor = Position::new(line, byte);
+    }
+
+    /// Adjust scroll so the cursor lands at the requested viewport row.
+    /// Cursor itself doesn't move (vim's `zt`/`zz`/`zb`).
+    fn do_scroll_cursor_to(&mut self, spos: ScrollPos) {
+        let height = self.viewport_height.max(1);
+        self.scroll = match spos {
+            ScrollPos::Top => self.cursor.line,
+            ScrollPos::Center => self.cursor.line.saturating_sub(height / 2),
+            ScrollPos::Bottom => self.cursor.line.saturating_sub(height.saturating_sub(1)),
+        };
+    }
+
+    /// Move cursor by one viewport-height (vim's Ctrl-F / Ctrl-B). Vim
+    /// leaves a 1-line overlap; we mirror that by stepping
+    /// `viewport_height - 2` lines and letting `ensure_cursor_visible`
+    /// handle the scroll.
+    fn do_page(&mut self, down: bool) {
+        let height = self.viewport_height.max(1);
+        let step = height.saturating_sub(2).max(1);
+        let last = last_addressable_line(&self.document);
+        let new_line = if down {
+            self.cursor.line.saturating_add(step).min(last)
+        } else {
+            self.cursor.line.saturating_sub(step)
+        };
+        let len = line_byte_len(&self.document, new_line);
+        let byte = self.cursor.byte.min(len);
+        self.cursor = Position::new(new_line, byte);
+    }
+
+    /// Scroll one line. `down = true` -> Ctrl-E (scroll content up,
+    /// pulling the next line into view); `down = false` -> Ctrl-Y.
+    /// Cursor follows so it stays on-screen.
+    fn do_scroll_line(&mut self, down: bool) {
+        let height = self.viewport_height.max(1);
+        if down {
+            let last = last_addressable_line(&self.document);
+            self.scroll = self.scroll.saturating_add(1).min(last);
+            // Pull cursor down if it's now off the top of the viewport.
+            if self.cursor.line < self.scroll {
+                self.cursor.line = self.scroll;
+            }
+        } else {
+            self.scroll = self.scroll.saturating_sub(1);
+            // Push cursor up if it's now off the bottom.
+            let bottom = self.scroll + height.saturating_sub(1);
+            if self.cursor.line > bottom {
+                self.cursor.line = bottom;
+            }
+        }
+        let len = line_byte_len(&self.document, self.cursor.line);
+        if self.cursor.byte > len {
+            self.cursor.byte = len;
         }
     }
 
@@ -1881,6 +1988,123 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- Viewport motions ----
+
+    #[test]
+    fn jump_viewport_top_lands_on_scroll_line() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.scroll = 3;
+        a.cursor = Position::new(7, 0);
+        a.apply(Action::JumpViewport(ViewportPos::Top));
+        assert_eq!(a.cursor.line, 3);
+    }
+
+    #[test]
+    fn jump_viewport_middle_lands_at_half_height() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 6);
+        a.scroll = 0;
+        a.apply(Action::JumpViewport(ViewportPos::Middle));
+        // height/2 = 3, so cursor goes to line 3.
+        assert_eq!(a.cursor.line, 3);
+    }
+
+    #[test]
+    fn jump_viewport_bottom_lands_at_height_minus_one() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.scroll = 2;
+        a.apply(Action::JumpViewport(ViewportPos::Bottom));
+        // 2 + 5 - 1 = 6.
+        assert_eq!(a.cursor.line, 6);
+    }
+
+    #[test]
+    fn jump_viewport_clamps_to_last_addressable_line() {
+        let mut a = app_with("a\nb", 50);
+        a.apply(Action::JumpViewport(ViewportPos::Bottom));
+        assert_eq!(a.cursor.line, 1);
+    }
+
+    #[test]
+    fn scroll_cursor_to_center_centers_cursor() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.cursor = Position::new(6, 0);
+        a.apply(Action::ScrollCursorTo(ScrollPos::Center));
+        // cursor.line - height/2 = 6 - 2 = 4.
+        assert_eq!(a.scroll, 4);
+        // Cursor itself unchanged.
+        assert_eq!(a.cursor.line, 6);
+    }
+
+    #[test]
+    fn scroll_cursor_to_top_aligns_scroll_with_cursor() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.cursor = Position::new(6, 0);
+        a.apply(Action::ScrollCursorTo(ScrollPos::Top));
+        assert_eq!(a.scroll, 6);
+    }
+
+    #[test]
+    fn scroll_cursor_to_bottom_pulls_scroll_up_by_height_minus_one() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.cursor = Position::new(8, 0);
+        a.apply(Action::ScrollCursorTo(ScrollPos::Bottom));
+        // 8 - (5 - 1) = 4.
+        assert_eq!(a.scroll, 4);
+    }
+
+    #[test]
+    fn page_down_advances_by_viewport_height_minus_two() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.cursor = Position::ZERO;
+        a.apply(Action::PageDown);
+        assert_eq!(a.cursor.line, 3);
+    }
+
+    #[test]
+    fn page_down_clamps_to_last_addressable_line() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.cursor = Position::new(8, 0);
+        a.apply(Action::PageDown);
+        assert_eq!(a.cursor.line, 9);
+    }
+
+    #[test]
+    fn page_up_steps_back_by_viewport_height_minus_two() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.cursor = Position::new(7, 0);
+        a.apply(Action::PageUp);
+        assert_eq!(a.cursor.line, 4);
+    }
+
+    #[test]
+    fn page_up_at_top_stays_at_top() {
+        let mut a = app_with("0\n1\n2", 5);
+        a.apply(Action::PageUp);
+        assert_eq!(a.cursor.line, 0);
+    }
+
+    #[test]
+    fn scroll_line_down_advances_scroll_and_pulls_cursor_if_off_top() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6", 3);
+        a.cursor = Position::ZERO;
+        a.scroll = 0;
+        a.apply(Action::ScrollLineDown);
+        assert_eq!(a.scroll, 1);
+        // Cursor was at line 0; now it's off the top, so it follows.
+        assert_eq!(a.cursor.line, 1);
+    }
+
+    #[test]
+    fn scroll_line_up_decreases_scroll_and_pushes_cursor_if_off_bottom() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6", 3);
+        a.cursor = Position::new(4, 0);
+        a.scroll = 2; // viewport covers lines 2,3,4.
+        a.apply(Action::ScrollLineUp);
+        assert_eq!(a.scroll, 1);
+        // Bottom of new viewport is line 3; cursor was at 4, gets pushed up.
+        assert_eq!(a.cursor.line, 3);
     }
 
     // ---- Replace mode ----

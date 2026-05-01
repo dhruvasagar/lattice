@@ -17,7 +17,7 @@ use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::registry::{MotionId, OperatorId};
 
-use crate::app::{Action, FindKind, Pending};
+use crate::app::{Action, FindKind, Pending, ScrollPos, ViewportPos};
 
 pub struct TranslateContext<'a> {
     pub modal: ModalState,
@@ -162,6 +162,7 @@ fn translate_normal(
         Pending::AfterTextObject { operator, around } => {
             return resolve_after_text_object(event, builtins, operator, around);
         }
+        Pending::AfterZ => return resolve_after_z(event),
         Pending::AfterSetMark => return resolve_after_set_mark(event),
         Pending::AfterJumpMarkLine => return resolve_after_jump_mark(event, false),
         Pending::AfterJumpMarkExact => return resolve_after_jump_mark(event, true),
@@ -172,6 +173,10 @@ fn translate_normal(
         return match event.code {
             KeyCode::Char('d') => invoke_with_count(builtins.line_down, 10),
             KeyCode::Char('u') => invoke_with_count(builtins.line_up, 10),
+            KeyCode::Char('f') => Action::PageDown,
+            KeyCode::Char('b') => Action::PageUp,
+            KeyCode::Char('e') => Action::ScrollLineDown,
+            KeyCode::Char('y') => Action::ScrollLineUp,
             KeyCode::Char('r') => Action::Redo,
             _ => Action::None,
         };
@@ -203,8 +208,14 @@ fn translate_normal(
         KeyCode::Char('e') => invoke(builtins.word_end),
         KeyCode::Char('G') => invoke(builtins.goto_last_line),
 
+        // Viewport jumps
+        KeyCode::Char('H') => Action::JumpViewport(ViewportPos::Top),
+        KeyCode::Char('M') => Action::JumpViewport(ViewportPos::Middle),
+        KeyCode::Char('L') => Action::JumpViewport(ViewportPos::Bottom),
+
         // Pending key sequences
         KeyCode::Char('g') => Action::SetPending(Pending::AfterG),
+        KeyCode::Char('z') => Action::SetPending(Pending::AfterZ),
 
         // Operator-leading keys
         KeyCode::Char('d') => Action::SetPending(Pending::AfterOperator(builtins.delete)),
@@ -405,6 +416,18 @@ fn resolve_after_operator(
         _ => return Action::SetPending(Pending::None),
     };
     Action::Invoke(CommandInvocation::of(op.0).with_target(target))
+}
+
+fn resolve_after_z(event: KeyEvent) -> Action {
+    if matches!(event.code, KeyCode::Esc) {
+        return Action::SetPending(Pending::None);
+    }
+    match event.code {
+        KeyCode::Char('z') | KeyCode::Char('.') => Action::ScrollCursorTo(ScrollPos::Center),
+        KeyCode::Char('t') | KeyCode::Enter => Action::ScrollCursorTo(ScrollPos::Top),
+        KeyCode::Char('b') | KeyCode::Char('-') => Action::ScrollCursorTo(ScrollPos::Bottom),
+        _ => Action::SetPending(Pending::None),
+    }
 }
 
 fn resolve_after_set_mark(event: KeyEvent) -> Action {
@@ -1062,6 +1085,138 @@ mod tests {
         assert!(matches!(
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
+        ));
+    }
+
+    // ---- Viewport motions: H, M, L, z*, Ctrl-F/B/Y/E ----
+
+    #[test]
+    fn capital_h_emits_jump_viewport_top() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('H')),
+        );
+        assert!(matches!(action, Action::JumpViewport(ViewportPos::Top)));
+    }
+
+    #[test]
+    fn capital_m_emits_jump_viewport_middle() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('M')),
+        );
+        assert!(matches!(action, Action::JumpViewport(ViewportPos::Middle)));
+    }
+
+    #[test]
+    fn capital_l_emits_jump_viewport_bottom() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('L')),
+        );
+        assert!(matches!(action, Action::JumpViewport(ViewportPos::Bottom)));
+    }
+
+    #[test]
+    fn z_sets_pending_after_z() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('z')),
+        );
+        assert!(matches!(action, Action::SetPending(Pending::AfterZ)));
+    }
+
+    #[test]
+    fn zz_emits_scroll_cursor_center() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterZ, &b),
+            key(KeyCode::Char('z')),
+        );
+        assert!(matches!(action, Action::ScrollCursorTo(ScrollPos::Center)));
+    }
+
+    #[test]
+    fn zt_emits_scroll_cursor_top() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterZ, &b),
+            key(KeyCode::Char('t')),
+        );
+        assert!(matches!(action, Action::ScrollCursorTo(ScrollPos::Top)));
+    }
+
+    #[test]
+    fn zb_emits_scroll_cursor_bottom() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterZ, &b),
+            key(KeyCode::Char('b')),
+        );
+        assert!(matches!(action, Action::ScrollCursorTo(ScrollPos::Bottom)));
+    }
+
+    #[test]
+    fn ctrl_f_emits_page_down() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                ctrl(KeyCode::Char('f'))
+            ),
+            Action::PageDown
+        ));
+    }
+
+    #[test]
+    fn ctrl_b_emits_page_up() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                ctrl(KeyCode::Char('b'))
+            ),
+            Action::PageUp
+        ));
+    }
+
+    #[test]
+    fn ctrl_e_emits_scroll_line_down() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                ctrl(KeyCode::Char('e'))
+            ),
+            Action::ScrollLineDown
+        ));
+    }
+
+    #[test]
+    fn ctrl_y_emits_scroll_line_up() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                ctrl(KeyCode::Char('y'))
+            ),
+            Action::ScrollLineUp
+        ));
+    }
+
+    #[test]
+    fn esc_after_z_pending_clears() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterZ, &b),
+                key(KeyCode::Esc)
+            ),
+            Action::SetPending(Pending::None)
         ));
     }
 

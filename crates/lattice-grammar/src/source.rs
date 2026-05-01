@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceLocation {
     pub layer: SourceLayer,
     pub kind: SourceKind,
@@ -23,7 +23,7 @@ pub struct SourceLocation {
 
 /// Why this thing exists -- editor binary, user config, plugin, etc.
 /// Renders as a one-word label next to the `[[link]]` in help output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SourceLayer {
     /// Compiled into the editor binary.
     Builtin,
@@ -57,7 +57,7 @@ impl SourceLayer {
 /// synthetic origins that the link follower routes to a different
 /// kind of buffer (command-history, macro buffer, transitive
 /// dot-repeat).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SourceKind {
     /// Concrete file location, optionally with a line.
     File { path: PathBuf, line: Option<u32> },
@@ -72,8 +72,9 @@ pub enum SourceKind {
     /// from. The link follower follows the inner source.
     DotRepeat(Box<SourceLocation>),
     /// Synthetic origin like `<initial-load>` or `<test-fixture>`.
-    /// Renders inert.
-    Synthetic(&'static str),
+    /// Renders inert. Owned `String` (not `&'static`) so the type
+    /// can derive Deserialize for plugin-bridge wire transport.
+    Synthetic(String),
 }
 
 impl SourceLocation {
@@ -92,10 +93,10 @@ impl SourceLocation {
 
     /// Synthetic source for tests + the rare runtime case where no
     /// concrete origin exists.
-    pub fn synthetic(tag: &'static str) -> Self {
+    pub fn synthetic(tag: impl Into<String>) -> Self {
         Self {
             layer: SourceLayer::Runtime,
-            kind: SourceKind::Synthetic(tag),
+            kind: SourceKind::Synthetic(tag.into()),
         }
     }
 

@@ -4,6 +4,7 @@ members = [
 	"crates/lattice-protocol",
 	"crates/lattice-core",
 	"crates/lattice-grammar",
+	"crates/lattice-completion",
 	"crates/lattice-syntax",
 	"crates/lattice-ui-tui",
 	"crates/lattice-cli",

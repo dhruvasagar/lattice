@@ -1559,6 +1559,68 @@ pub fn render_introspection(item: &dyn Introspectable) -> Vec<String>;
 
 **Multiple sources per item are first-class.** An option's `:describe-option` shows two source links: `Defined at:` for the registration (default-value source) and `Last set at:` for the most recent setter. A user-overridden built-in command shows `Defined at:` (the built-in) plus `Overridden at:` (the user config). The trait returns `Vec<SourceEntry>`; the renderer emits one labelled link per entry.
 
+#### 5.11.3 Completion pipeline
+
+The `:`-line and (eventually) every minibuffer-shaped prompt run their candidates through a four-stage pipeline modelled after emacs's `vertico` / `orderless` / `marginalia` ecosystem -- composability is the architectural property, not a future ambition. The crate `lattice-completion` is a standalone library with its own test corpus; it depends on `lattice-grammar` for the `CommandRegistry` shape but does not depend on any UI crate.
+
+```rust
+// Each stage is a trait. Plugin authors target these.
+pub trait CandidateGenerator { fn generate(&self, ctx: &GenerateContext) -> Vec<RawCandidate>; ... }
+pub trait CandidateMatcher   { fn matches(&self, query: &str, c: &RawCandidate) -> Option<(MatchScore, Vec<Range<usize>>)>; }
+pub trait CandidateRanker    { fn rank(&self, scored: &mut Vec<ScoredCandidate>); }
+pub trait CandidateAnnotator { fn annotate(&self, candidate: &mut RenderedCandidate); }
+
+// One assembled pipeline runs all four in sequence.
+pub struct CompletionPipeline {
+	pub generators: Vec<Arc<dyn CandidateGenerator>>,
+	pub matcher:    Arc<dyn CandidateMatcher>,
+	pub ranker:     Arc<dyn CandidateRanker>,
+	pub annotators: Vec<Arc<dyn CandidateAnnotator>>,
+}
+```
+
+**Stages, mapped to the emacs analogue:**
+
+| Lattice stage | Emacs analogue |
+|---|---|
+| `CandidateGenerator` | `consult`'s sources |
+| `CandidateMatcher` | `orderless` (or default substring matching) |
+| `CandidateRanker` | scoring step (custom in vertico-prescient, etc.) |
+| `CandidateAnnotator` | `marginalia` |
+| Renderer (in `lattice-ui-tui`) | `vertico` |
+
+**Per-slot resolution.** The `:`-line driver computes the current slot (command name, arg N, delimiter-syntax body) via `current_slot(line, cursor, registry)`. The slot dictates which generator the pipeline uses for this query; the matcher / ranker / annotators come from the registry's user-configured defaults (`cmdline.matcher = "match:fuzzy"`, etc.).
+
+**Forgery resistance.** Every registration is `#[track_caller]`; the registry has `pub(crate) insert_*` companions. Same invariant as commands and keymap entries: no public API takes a `SourceLocation`.
+
+**Caching.** Opt-in per generator via `CandidateGenerator::cache_key` returning `Option<CacheKey>`. The pipeline reads from a shared `GeneratorCache` before invoking `generate`; on miss it caches the produced candidate set. Each generator declares its own TTL via `cache_ttl()` (default `Duration::MAX`). Built-in cache strategies:
+
+| Generator | `cache_key` | `cache_ttl` |
+|---|---|---|
+| `gen:commands` | `"gen:commands:v1"` (fixed -- v1 commands don't change post-startup) | `MAX` |
+| `gen:files` | `"gen:files:{dir}"` | 1 second (filesystem mutates) |
+| `gen:options` (post-§5.12) | `"gen:options:v{N}"` | `MAX` until version bumps |
+
+The matcher / ranker / annotators always run live; only generation is cached.
+
+**Built-ins shipped with `lattice-completion`:**
+
+| Stage | Built-in | Purpose |
+|---|---|---|
+| Generator | `gen:commands` | every `CommandSpec` |
+| Generator | `gen:files` | filesystem walk |
+| Matcher | `match:prefix` | exact-prefix (default) |
+| Matcher | `match:substring` | case-insensitive contains |
+| Matcher | `match:fuzzy` | subsequence with byte-range tracking; score decays with skipped chars; prefix-bonus |
+| Ranker | `rank:score` | descending score (default) |
+| Ranker | `rank:alphabetical` | A-Z |
+| Annotator | `anno:kind-label` | `(motion)`, `(file)`, `(directory)`, etc. |
+| Annotator | `anno:doc-snippet` | first line of doc |
+
+Host-state generators (`gen:chords`, `gen:registers`, `gen:marks`, `gen:buffers`) live in the host crate (`lattice-ui-tui`) because they read App-level state; they register against the same `CompletionRegistry` like any plugin would.
+
+**Vertico-style rendering** (post-popup work): a vertical list of candidates, one per row, with the matched byte ranges from `ScoredCandidate.match_ranges` painted with a distinct style. Annotations rendered right-aligned. Selected row marked. Renderer is replaceable -- when the rich minibuffer (§5.9.10) lands, the popup graduates to a tree-sitter-styled buffer view; the underlying `RenderedCandidate` shape doesn't change.
+
 ### 5.12 Configuration System (typed options + customize)
 
 Vim's `:set option=value` is a string-bag with no typing or validation. Emacs's `customize` is a typed system bridged awkwardly to `setq` for non-curated variables. We unify into one typed option registry.

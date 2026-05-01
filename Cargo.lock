@@ -577,6 +577,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-completion"
+version = "0.1.0"
+dependencies = [
+ "lattice-core",
+ "lattice-grammar",
+ "lattice-protocol",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "lattice-core"
 version = "0.1.0"
 dependencies = [

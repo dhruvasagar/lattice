@@ -254,6 +254,48 @@ source (`Defined at:`, `Bound at:`, `Subscribed at:`, `Last set at:`,
 target -- when typed options / events / modes land -- is one trait
 impl plus one new ex-command; the renderer doesn't change.
 
+### Completion pipeline (§5.11.3)
+
+`lattice-completion` is a standalone crate with its own test corpus
+(81 tests). Four pluggable stages, vertico-shaped:
+
+| Stage | Trait | Built-ins |
+|---|---|---|
+| Generation | `CandidateGenerator` | `gen:commands`, `gen:files` (host-state generators in lattice-ui-tui) |
+| Matching | `CandidateMatcher` | `match:prefix` (default), `match:substring`, `match:fuzzy` |
+| Ranking | `CandidateRanker` | `rank:score` (default), `rank:alphabetical` |
+| Annotation | `CandidateAnnotator` | `anno:kind-label`, `anno:doc-snippet` |
+
+`CompletionRegistry` registers each stage with `#[track_caller]`
+provenance. `CompletionPipeline::run(ctx, query, cache)` walks the
+four stages and returns a `Vec<RenderedCandidate>` for the renderer.
+Slot detection (`current_slot`) parses the `:`-line into
+`CommandLineSlot::CommandName`, `Arg { command_name, arg_index,
+arg_spec, .. }`, `DelimiterBody { command_name, body }`,
+`UnknownCommand`, `BeyondSchema`, or `Empty`.
+
+**Caching** is opt-in per generator via `cache_key()` returning
+`Option<CacheKey>`. `gen:commands` returns a fixed `"gen:commands:v1"`
+key (commands don't change at runtime in v1, so cached effectively
+forever); `gen:files` keys per-directory with a 1-second TTL.
+
+**Composability** is structural: every stage is a trait, plugins
+register impls against the same registry as built-ins, the
+default matcher / ranker / annotators are configurable per-user
+(`cmdline.matcher = "match:fuzzy"` post-§5.12). The pluggable
+shape mirrors emacs's `vertico` / `orderless` / `marginalia` /
+`consult` -- composability by design, not retrofit.
+
+**Forgery resistance** mirrors the §5.11.1 invariant: no public
+API takes a `SourceLocation` parameter. `register_*` are all
+`#[track_caller]`; `pub(crate) insert_*` companions exist for
+trusted subsystems (config loader, plugin host bridge) but
+deferred until first cross-crate trusted subsystem lands.
+
+The crate doesn't depend on `lattice-ui-tui`, so it's tested
+independently. CI runs `cargo test -p lattice-completion` as its
+own line item.
+
 Link markup -- forward-compatible reference syntax in help bodies:
 
 | Markup                  | Resolution                              |
@@ -408,13 +450,14 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-831 tests across the workspace as of the last commit. Coverage by crate:
+912 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
 | lattice-protocol                 | 30    |
 | lattice-core (incl. integration) | 78    |
 | lattice-grammar                  | 171   |
+| lattice-completion               | 81    |
 | lattice-syntax                   | 23    |
 | lattice-ui-tui                   | 525   |
 

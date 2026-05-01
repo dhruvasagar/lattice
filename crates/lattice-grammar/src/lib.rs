@@ -27,6 +27,7 @@ pub mod command;
 pub mod dispatcher;
 pub mod effect;
 pub mod error;
+pub mod ex_commands;
 pub mod modal;
 pub mod range;
 pub mod register;
@@ -36,15 +37,16 @@ pub mod target;
 pub use crate::args::Args;
 pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count};
 pub use crate::dispatcher::execute;
-pub use crate::effect::{Effect, YankKind};
+pub use crate::effect::{EchoLevel, Effect, SubstituteScope, YankKind};
 pub use crate::error::{CommandError, GrammarResult};
 pub use crate::modal::{ModalState, SearchDirection, VisualKind};
 pub use crate::range::{Range, RangeBound};
 pub use crate::register::Register;
 pub use crate::registry::{
-    CommandRegistration, CommandRegistry, MotionSpec, OperatorContext, OperatorSpec,
-    TextObjectSpec,
+    CommandRegistration, CommandRegistry, ExCommandContext, ExCommandSpec, MotionSpec,
+    OperatorContext, OperatorSpec, TextObjectSpec,
 };
+pub use crate::registry::{ExCommandId, MotionId, OperatorId, TextObjectId};
 pub use crate::target::Target;
 
 /// Re-export the protocol's CommandId so callers don't need a second import.

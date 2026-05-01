@@ -32,7 +32,7 @@ use lattice_syntax::{Lang, StyledSpan, Syntax};
 
 use std::collections::HashMap;
 
-use crate::excommand::{self, ExCommand};
+use crate::excommand::{self, ExCommand, Parsed as ParsedEx};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pending {
@@ -112,6 +112,32 @@ pub enum EchoLevel {
     Info,
     Warn,
     Error,
+}
+
+/// Convert grammar's wire-typed [`lattice_grammar::EchoLevel`] (carried
+/// by `Effect::Echo`) into the App's display-typed `EchoLevel`. Two types
+/// because the App's is part of the public crate API; the grammar's is a
+/// dispatch detail.
+fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
+    match level {
+        lattice_grammar::EchoLevel::Info => EchoLevel::Info,
+        lattice_grammar::EchoLevel::Warn => EchoLevel::Warn,
+        lattice_grammar::EchoLevel::Error => EchoLevel::Error,
+    }
+}
+
+/// Convert the legacy `excommand::SubstituteScope` to the unified
+/// `lattice_grammar::SubstituteScope` while the legacy enum-based path
+/// still exists. Removed once `excommand::ExCommand` is gone.
+fn excommand_scope_to_grammar(
+    scope: crate::excommand::SubstituteScope,
+) -> lattice_grammar::SubstituteScope {
+    match scope {
+        crate::excommand::SubstituteScope::CurrentLine => {
+            lattice_grammar::SubstituteScope::CurrentLine
+        }
+        crate::excommand::SubstituteScope::Whole => lattice_grammar::SubstituteScope::Whole,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -534,6 +560,12 @@ impl App {
     pub fn new(document: Document) -> Self {
         let mut registry = CommandRegistry::new();
         let builtins = populate(&mut registry);
+        // Register the built-in ex-commands as peers of motions /
+        // operators / text objects (DESIGN.md §5.2.1). The returned
+        // ids aren't held in App state today -- the parser front-end
+        // looks them up by name -- but registering them populates the
+        // registry so `:`-line parsing can route to them.
+        let _ex_builtins = lattice_grammar::ex_commands::populate(&mut registry);
         let lang = Lang::detect_from_path(document.path());
         let mut syntax = Syntax::for_language(lang).ok().flatten();
         if let Some(s) = syntax.as_mut() {
@@ -1011,39 +1043,45 @@ impl App {
     }
 
     fn execute_ex_line(&mut self, line: &str) {
-        match excommand::parse(line) {
-            Ok(cmd) => self.execute_ex(cmd),
+        match excommand::parse(line, &self.registry) {
+            Ok(ParsedEx::Invocation(inv)) => {
+                // Registry path: dispatch through the unified
+                // grammar::execute() like every other vim chord.
+                match execute(&self.registry, &mut self.document, self.cursor, inv) {
+                    Ok(eff) => self.apply_effect(eff),
+                    Err(e) => self.set_message(EchoLevel::Error, e.to_string()),
+                }
+            }
+            Ok(ParsedEx::Legacy(cmd)) => self.execute_ex(cmd),
             Err(err) => {
                 self.set_message(EchoLevel::Error, err.to_string());
             }
         }
     }
 
+    /// Execute the still-legacy ex-commands (`:s/.../.../`,
+    /// `:%s/.../.../`, `:g/.../...`, `:v/.../...`). Once those land in
+    /// the registry with structured args, this match shrinks to
+    /// nothing and the function goes away. See excommand.rs for the
+    /// migration plan.
     fn execute_ex(&mut self, cmd: ExCommand) {
         match cmd {
-            ExCommand::Write { path } => self.do_write(path),
-            ExCommand::Quit { force } => self.do_quit(force),
-            ExCommand::WriteQuit { force } => self.do_write_quit(force),
             ExCommand::Substitute {
                 scope,
                 pattern,
                 replacement,
                 global,
-            } => self.do_substitute(scope, &pattern, &replacement, global),
+            } => self.do_substitute(
+                excommand_scope_to_grammar(scope),
+                &pattern,
+                &replacement,
+                global,
+            ),
             ExCommand::Global {
                 pattern,
                 inverted,
                 body,
             } => self.do_global(&pattern, inverted, &body),
-            ExCommand::DeleteLine => self.do_delete_line(),
-            ExCommand::NoHlSearch => {
-                self.current_match = None;
-                self.all_matches.clear();
-            }
-            ExCommand::ListRegisters => self.do_list_registers(),
-            ExCommand::ListMarks => self.do_list_marks(),
-            ExCommand::Set { option } => self.do_set(&option),
-            ExCommand::Edit { path, force } => self.do_edit(path, force),
         }
     }
 
@@ -1281,9 +1319,20 @@ impl App {
         for &line in targets.iter().rev() {
             self.cursor = Position::new(line, 0);
             // Recursively parse + execute the body. If parsing fails,
-            // we surface the error and abort.
-            match crate::excommand::parse(body) {
-                Ok(cmd) => self.execute_ex(cmd),
+            // we surface the error and abort. The body can itself be
+            // either a registry-bound command (`d`, `noh`, ...) or a
+            // delimiter-syntax legacy one (`s/.../.../`).
+            match crate::excommand::parse(body, &self.registry) {
+                Ok(ParsedEx::Invocation(inv)) => {
+                    match execute(&self.registry, &mut self.document, self.cursor, inv) {
+                        Ok(eff) => self.apply_effect(eff),
+                        Err(e) => {
+                            self.set_message(EchoLevel::Error, format!("g: {e}"));
+                            return;
+                        }
+                    }
+                }
+                Ok(ParsedEx::Legacy(cmd)) => self.execute_ex(cmd),
                 Err(err) => {
                     self.set_message(EchoLevel::Error, format!("g: {err}"));
                     return;
@@ -1297,7 +1346,7 @@ impl App {
     /// post-1.0). Returns count of replacements via the echo area.
     fn do_substitute(
         &mut self,
-        scope: crate::excommand::SubstituteScope,
+        scope: lattice_grammar::SubstituteScope,
         pattern: &str,
         replacement: &str,
         global: bool,
@@ -1308,10 +1357,8 @@ impl App {
         }
         // Determine the line range.
         let (first_line, last_line) = match scope {
-            crate::excommand::SubstituteScope::CurrentLine => {
-                (self.cursor.line, self.cursor.line)
-            }
-            crate::excommand::SubstituteScope::Whole => {
+            lattice_grammar::SubstituteScope::CurrentLine => (self.cursor.line, self.cursor.line),
+            lattice_grammar::SubstituteScope::Whole => {
                 let last = last_addressable_line(&self.document);
                 (0, last)
             }
@@ -1396,25 +1443,10 @@ impl App {
         self.should_quit = true;
     }
 
-    fn do_write_quit(&mut self, force: bool) {
-        match self.document.save() {
-            Ok(_) => {
-                self.should_quit = true;
-            }
-            Err(CoreError::NoPath) => {
-                self.set_message(EchoLevel::Error, "no file name (use :w <path>)".to_string());
-                if force {
-                    self.should_quit = true;
-                }
-            }
-            Err(e) => {
-                self.set_message(EchoLevel::Error, format!("write error: {e}"));
-                if force {
-                    self.should_quit = true;
-                }
-            }
-        }
-    }
+    // `:wq` / `:x` are now Effect::Many([SaveBuffer, QuitEditor{force}])
+    // composed in `lattice_grammar::ex_commands::apply_write_quit`. The
+    // do_write + do_quit pair runs in sequence via apply_effect; the
+    // quit's force-bit comes from the trailing `!` (DESIGN.md §5.2.1).
 
     fn run_invocation(&mut self, mut inv: CommandInvocation) {
         // Pending state is consumed by the input layer that built `inv`; any
@@ -1532,6 +1564,35 @@ impl App {
                 // fires when going to Normal; safe for our use cases.)
                 self.enter_mode(mode);
             }
+            // --- Ex-command effects (DESIGN.md §5.2.1 unified dispatch). ---
+            // These come from ex-command apply closures registered in the
+            // grammar registry; the host owns the side effects.
+            Effect::SaveBuffer { path } => self.do_write(path),
+            Effect::QuitEditor { force } => self.do_quit(force),
+            Effect::OpenBuffer { path, force } => self.do_edit(path, force),
+            Effect::SetOption { spec } => self.do_set(&spec),
+            Effect::ClearSearchHighlight => {
+                self.current_match = None;
+                self.all_matches.clear();
+            }
+            Effect::Echo {
+                level,
+                text,
+            } => self.set_message(echo_level_from_grammar(level), text),
+            Effect::EchoRegisters => self.do_list_registers(),
+            Effect::EchoMarks => self.do_list_marks(),
+            Effect::Substitute {
+                scope,
+                pattern,
+                replacement,
+                global,
+            } => self.do_substitute(scope, &pattern, &replacement, global),
+            Effect::Global {
+                pattern,
+                inverted,
+                body,
+            } => self.do_global(&pattern, inverted, &body),
+            Effect::DeleteCurrentLine => self.do_delete_line(),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -2607,8 +2668,20 @@ fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
 fn effect_mutates_or_yanks(effect: &Effect) -> bool {
     match effect {
         Effect::Edits(_) | Effect::Yank { .. } => true,
+        // Ex-effects that the host turns into edits / yanks at apply time.
+        Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
-        Effect::None | Effect::SelectionChange(_) | Effect::EnterMode(_) => false,
+        Effect::None
+        | Effect::SelectionChange(_)
+        | Effect::EnterMode(_)
+        | Effect::SaveBuffer { .. }
+        | Effect::QuitEditor { .. }
+        | Effect::OpenBuffer { .. }
+        | Effect::SetOption { .. }
+        | Effect::ClearSearchHighlight
+        | Effect::Echo { .. }
+        | Effect::EchoRegisters
+        | Effect::EchoMarks => false,
     }
 }
 
@@ -2618,10 +2691,20 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
 fn effect_mutates(effect: &Effect) -> bool {
     match effect {
         Effect::Edits(_) => true,
+        Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates),
-        Effect::None | Effect::SelectionChange(_) | Effect::Yank { .. } | Effect::EnterMode(_) => {
-            false
-        }
+        Effect::None
+        | Effect::SelectionChange(_)
+        | Effect::Yank { .. }
+        | Effect::EnterMode(_)
+        | Effect::SaveBuffer { .. }
+        | Effect::QuitEditor { .. }
+        | Effect::OpenBuffer { .. }
+        | Effect::SetOption { .. }
+        | Effect::ClearSearchHighlight
+        | Effect::Echo { .. }
+        | Effect::EchoRegisters
+        | Effect::EchoMarks => false,
     }
 }
 

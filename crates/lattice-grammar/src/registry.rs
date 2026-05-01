@@ -139,12 +139,55 @@ impl std::fmt::Debug for TextObjectSpec {
     }
 }
 
+/// Context handed to an ex-command's evaluator. Mirrors the shape passed
+/// to motion / operator / text-object specs but adds the `bang` bit and
+/// drops direct document mutation: ex-commands describe their work by
+/// returning an [`crate::effect::Effect`], which the host applies.
+pub struct ExCommandContext {
+    pub bang: bool,
+    pub args: Args,
+    pub range: Option<crate::range::Range>,
+    pub register: Register,
+    pub count: Count,
+}
+
+/// Parser callback for an ex-command. The host hands the rest of the
+/// command line (everything after the command word and the optional `!`)
+/// plus the `bang` bit; the callback returns typed [`Args`].
+type ExParseFn = Box<dyn Fn(&str, bool) -> GrammarResult<Args> + Send + Sync>;
+
+/// Evaluator callback. Returns the [`Effect`] the host should commit.
+type ExApplyFn =
+    Box<dyn Fn(&ExCommandContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
+
+pub struct ExCommandSpec {
+    /// Whether the parser should accept a trailing `!` after the command
+    /// word. If `false`, `:cmd!` parses as an unknown command.
+    pub accepts_bang: bool,
+    /// Whether the parser should accept an ex-style line range (`1,5cmd`,
+    /// `'a,'bcmd`, ...). v1 only honours `Whole` and `CurrentLine`; this
+    /// flag is the migration knob for richer range parsing.
+    pub accepts_range: bool,
+    pub parse_args: ExParseFn,
+    pub apply: ExApplyFn,
+}
+
+impl std::fmt::Debug for ExCommandSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExCommandSpec")
+            .field("accepts_bang", &self.accepts_bang)
+            .field("accepts_range", &self.accepts_range)
+            .finish_non_exhaustive()
+    }
+}
+
 /// What a registered command holds in the registry, beyond its metadata.
 pub enum CommandRegistration {
     Motion(MotionSpec),
     Operator(OperatorSpec),
     TextObject(TextObjectSpec),
-    /// Phase 1 stub for ex-commands and free-form actions; populated later.
+    ExCommand(ExCommandSpec),
+    /// Phase 1 stub for free-form actions populated later.
     Stub,
 }
 
@@ -154,6 +197,7 @@ impl CommandRegistration {
             CommandRegistration::Motion(_) => CommandKind::Motion,
             CommandRegistration::Operator(_) => CommandKind::Operator,
             CommandRegistration::TextObject(_) => CommandKind::TextObject,
+            CommandRegistration::ExCommand(_) => CommandKind::ExCommand,
             CommandRegistration::Stub => CommandKind::Action,
         }
     }
@@ -231,6 +275,25 @@ impl CommandRegistry {
         TextObjectId(id)
     }
 
+    pub fn register_ex_command(
+        &mut self,
+        name: &str,
+        doc: &str,
+        spec: ExCommandSpec,
+    ) -> ExCommandId {
+        let id = next_command_id();
+        self.insert(CommandEntry {
+            spec: CommandSpec {
+                id,
+                name: name.to_string(),
+                kind: CommandKind::ExCommand,
+                doc: doc.to_string(),
+            },
+            registration: CommandRegistration::ExCommand(spec),
+        });
+        ExCommandId(id)
+    }
+
     pub fn lookup(&self, id: CommandId) -> Option<&CommandSpec> {
         self.by_id.get(&id).map(|e| &e.spec)
     }
@@ -245,6 +308,18 @@ impl CommandRegistry {
 
     pub(crate) fn entry(&self, id: CommandId) -> Option<&CommandEntry> {
         self.by_id.get(&id)
+    }
+
+    /// Borrow the [`ExCommandSpec`] body for an ex-command id. Returns
+    /// `None` for ids that aren't ex-commands or aren't registered.
+    /// Used by the `:`-line parser front-end so it can call the
+    /// command's `parse_args` callback before building the
+    /// `CommandInvocation`.
+    pub fn ex_command_spec(&self, id: CommandId) -> Option<&ExCommandSpec> {
+        match self.by_id.get(&id)?.registration {
+            CommandRegistration::ExCommand(ref spec) => Some(spec),
+            _ => None,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -299,6 +374,16 @@ pub(crate) fn require_text_object(entry: &CommandEntry) -> GrammarResult<&TextOb
         CommandRegistration::TextObject(s) => Ok(s),
         other => Err(CommandError::KindMismatch {
             expected: "text-object",
+            actual: other.kind().label(),
+        }),
+    }
+}
+
+pub(crate) fn require_ex_command(entry: &CommandEntry) -> GrammarResult<&ExCommandSpec> {
+    match &entry.registration {
+        CommandRegistration::ExCommand(s) => Ok(s),
+        other => Err(CommandError::KindMismatch {
+            expected: "ex-command",
             actual: other.kind().label(),
         }),
     }

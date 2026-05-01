@@ -40,6 +40,12 @@ pub struct CommandInvocation {
     pub range: Option<Range>,
     pub target: Option<Target>,
     pub args: Args,
+    /// Trailing `!` on the ex-syntax form (`:q!`, `:w!`, `:e!`). Carried
+    /// out of the parser into the dispatcher; meaningless for non-ex
+    /// invocations and ignored by motion / operator / text-object
+    /// dispatch.
+    #[serde(default)]
+    pub bang: bool,
 }
 
 impl CommandInvocation {
@@ -51,6 +57,7 @@ impl CommandInvocation {
             range: None,
             target: None,
             args: Args::None,
+            bang: false,
         }
     }
 
@@ -76,6 +83,11 @@ impl CommandInvocation {
 
     pub fn with_args(mut self, args: Args) -> Self {
         self.args = args;
+        self
+    }
+
+    pub fn with_bang(mut self, bang: bool) -> Self {
+        self.bang = bang;
         self
     }
 

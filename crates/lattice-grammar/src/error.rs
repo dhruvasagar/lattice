@@ -20,6 +20,12 @@ pub enum CommandError {
     #[error("invalid args for command: {0}")]
     InvalidArgs(&'static str),
 
+    /// An ex-command's `parse_args` callback rejected the input. Carries
+    /// the human-readable reason; the parser front-end surfaces it through
+    /// `ExCommandError::BadArgs`.
+    #[error("invalid ex-command args: {0}")]
+    BadArgs(String),
+
     #[error(transparent)]
     Core(#[from] CoreError),
 

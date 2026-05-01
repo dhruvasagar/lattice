@@ -19,8 +19,8 @@ use crate::effect::Effect;
 use crate::error::{CommandError, GrammarResult};
 use crate::range::Range;
 use crate::registry::{
-    CommandEntry, CommandRegistry, MotionContext, OperatorContext, TextObjectContext,
-    require_motion, require_operator, require_text_object,
+    CommandEntry, CommandRegistry, ExCommandContext, MotionContext, OperatorContext,
+    TextObjectContext, require_ex_command, require_motion, require_operator, require_text_object,
 };
 use crate::target::Target;
 use lattice_core::Document;
@@ -44,10 +44,26 @@ pub fn execute(
         CommandKind::Motion => execute_motion(document, cursor, &invocation, entry),
         CommandKind::TextObject => execute_text_object(document, cursor, &invocation, entry),
         CommandKind::Operator => execute_operator(registry, document, cursor, &invocation, entry),
-        CommandKind::ExCommand | CommandKind::Action => Err(CommandError::InvalidArgs(
-            "ex-commands and free-form actions are not yet wired in Phase 1",
+        CommandKind::ExCommand => execute_ex_command(&invocation, entry),
+        CommandKind::Action => Err(CommandError::InvalidArgs(
+            "free-form actions are not yet wired in Phase 1",
         )),
     }
+}
+
+fn execute_ex_command(
+    invocation: &CommandInvocation,
+    entry: &CommandEntry,
+) -> GrammarResult<Effect> {
+    let spec = require_ex_command(entry)?;
+    let ctx = ExCommandContext {
+        bang: invocation.bang,
+        args: invocation.args.clone(),
+        range: invocation.range.clone(),
+        register: invocation.register_or_default(),
+        count: invocation.count_or_default(),
+    };
+    (spec.apply)(&ctx)
 }
 
 fn execute_motion(

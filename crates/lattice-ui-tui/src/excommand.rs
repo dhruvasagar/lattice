@@ -151,6 +151,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("describe-command", "ex:describe-command"),
     ("describe-buffer", "ex:describe-buffer"),
     ("apropos", "ex:apropos"),
+    ("describe-key", "ex:describe-key"),
+    ("keymap", "ex:keymap"),
 ];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests

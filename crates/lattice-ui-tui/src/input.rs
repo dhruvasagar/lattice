@@ -1831,6 +1831,136 @@ mod tests {
         ));
     }
 
+    // ---- Keymap drift detection (DESIGN.md §5.2.3, §5.11) ----
+
+    /// Parse a chord-notation string from `keymap::DEFAULT_KEYMAP` into
+    /// a sequence of `KeyEvent`s. Recognises:
+    /// - bare chars: `j` / `dw` / `gg`
+    /// - special keys: `<Esc>`, `<CR>`, `<Tab>`, `<BS>`,
+    ///   `<Up>`/`<Down>`/`<Left>`/`<Right>`, `<Home>`/`<End>`,
+    ///   `<PageUp>`/`<PageDown>`
+    /// - control chords: `<C-d>`, `<C-v>`, `<C-r>`, ...
+    fn parse_chord_for_test(chord: &str) -> Vec<KeyEvent> {
+        // `<` and `>` are valid bare chords (indent-left / indent-right
+        // operators). Treat a single-char chord as a literal character
+        // so the escape parser doesn't try to interpret `<` as the
+        // start of a `<Special>` token.
+        if chord.chars().count() == 1 {
+            let c = chord.chars().next().expect("len == 1");
+            return vec![KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)];
+        }
+        let mut out = Vec::new();
+        let mut chars = chord.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '<' {
+                out.push(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+                continue;
+            }
+            let mut body = String::new();
+            for n in chars.by_ref() {
+                if n == '>' {
+                    break;
+                }
+                body.push(n);
+            }
+            let evt = match body.as_str() {
+                "Esc" => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                "CR" | "Enter" => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                "Tab" => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                "BS" => KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+                "Up" => KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+                "Down" => KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                "Left" => KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+                "Right" => KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+                "Home" => KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+                "End" => KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+                "PageUp" => KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+                "PageDown" => KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+                other => {
+                    if let Some(rest) = other.strip_prefix("C-")
+                        && let Some(c) = rest.chars().next()
+                    {
+                        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+                    } else {
+                        // Unrecognised special-key notation -- skip
+                        // rather than panic; the drift test will fail
+                        // with a clearer message about the descriptor.
+                        continue;
+                    }
+                }
+            };
+            out.push(evt);
+        }
+        out
+    }
+
+    /// Walk a chord through `translate()` from the descriptor's
+    /// starting mode, updating pending state across multi-key
+    /// sequences. Returns the final Action.
+    fn simulate_chord(
+        chord: &str,
+        mode: crate::keymap::BindingMode,
+        builtins: &Builtins,
+    ) -> Action {
+        use crate::keymap::BindingMode;
+        let modal = match mode {
+            BindingMode::Visual => ModalState::Visual(lattice_grammar::VisualKind::Charwise),
+            BindingMode::Insert => ModalState::Insert,
+            BindingMode::Replace => ModalState::Replace,
+            BindingMode::Command => ModalState::Command,
+            BindingMode::Search => ModalState::Search(lattice_grammar::SearchDirection::Forward),
+            // After-* modes are pending substates of Normal: their
+            // chords include the prefix (`gg`, `gU`, `zz`, ...) so we
+            // start the walk from Normal pending=None and let
+            // translate() set the pending state mid-sequence.
+            _ => ModalState::Normal,
+        };
+        let help_open = matches!(mode, BindingMode::Help);
+        let mut pending = Pending::None;
+        let mut last = Action::None;
+        for event in parse_chord_for_test(chord) {
+            let ctx = TranslateContext {
+                modal,
+                pending,
+                builtins,
+                pending_count: 0,
+                recording_macro: false,
+                help_open,
+            };
+            last = translate(ctx, event);
+            if let Action::SetPending(p) = &last {
+                pending = *p;
+            }
+        }
+        last
+    }
+
+    #[test]
+    fn keymap_descriptors_dont_drift_from_translate() {
+        // Every descriptor in `keymap::DEFAULT_KEYMAP` must produce a
+        // non-`None` Action when its chord is simulated through
+        // `translate()` in the matching mode. This catches:
+        //   - removed bindings (descriptor still in table)
+        //   - moved bindings (descriptor in wrong mode)
+        //   - typo'd chord notation
+        // Adding a binding to `input.rs` without updating
+        // `DEFAULT_KEYMAP` is *not* caught here -- the inverse drift
+        // is fine for v1 (descriptors are a discoverability surface;
+        // unmentioned bindings still work).
+        let (_, b) = fixture();
+        for entry in crate::keymap::DEFAULT_KEYMAP {
+            let action = simulate_chord(entry.chord, entry.mode, &b);
+            assert!(
+                !matches!(action, Action::None),
+                "keymap descriptor `{}` ({}) doc=`{}` produced Action::None -- \
+                 binding may have been removed or moved",
+                entry.chord,
+                entry.mode.label(),
+                entry.doc,
+            );
+        }
+    }
+
     // ---- Mark history (g; / g,) ----
 
     #[test]

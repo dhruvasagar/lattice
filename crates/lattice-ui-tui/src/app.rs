@@ -33,6 +33,7 @@ use lattice_syntax::{Lang, StyledSpan, Syntax};
 use std::collections::HashMap;
 
 use crate::excommand;
+use crate::help::{HelpBuffer, HelpDisplayMode, command_link, key_link};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pending {
@@ -467,57 +468,20 @@ pub struct App {
     /// Snapshot of the user's typed command_line on the first Up so
     /// Down can return to it after walking through history.
     pub command_history_pending: Option<String>,
-    /// Active help/introspection overlay (DESIGN.md §5.11). `Some`
-    /// while a `:describe-*` / `:apropos` view is open. The overlay
-    /// claims input (j/k/Ctrl-D/Ctrl-U scroll, Esc/q dismiss) and
-    /// renders as a centered popup over the buffer area. The
-    /// buffer-backed version of this -- a real `*help:command:<name>*`
-    /// buffer rendered through the same major-mode pipeline as
-    /// everything else -- arrives with multi-buffer support
-    /// (Phase 6 / §5.9). The metadata + dispatch surface is the
-    /// architecture; the overlay is the v1 surface.
-    pub help_view: Option<HelpView>,
-}
-
-/// One open introspection overlay. `lines` is the pre-rendered
-/// content (each entry is one display line); `scroll` is the index
-/// of the first visible line within `lines`.
-#[derive(Debug, Clone)]
-pub struct HelpView {
-    pub title: String,
-    pub lines: Vec<String>,
-    pub scroll: usize,
-}
-
-impl HelpView {
-    pub fn new(title: impl Into<String>, lines: Vec<String>) -> Self {
-        Self {
-            title: title.into(),
-            lines,
-            scroll: 0,
-        }
-    }
-
-    /// Scroll forward by `delta` lines, clamped so the last visible
-    /// line never moves above the bottom of the content. `viewport`
-    /// is the number of content rows the overlay can display
-    /// (excluding any chrome).
-    pub fn scroll_down(&mut self, delta: usize, viewport: usize) {
-        let max = self.lines.len().saturating_sub(viewport);
-        self.scroll = (self.scroll + delta).min(max);
-    }
-
-    pub fn scroll_up(&mut self, delta: usize) {
-        self.scroll = self.scroll.saturating_sub(delta);
-    }
-
-    pub fn jump_top(&mut self) {
-        self.scroll = 0;
-    }
-
-    pub fn jump_bottom(&mut self, viewport: usize) {
-        self.scroll = self.lines.len().saturating_sub(viewport);
-    }
+    /// Active help buffer (DESIGN.md §5.11). `Some` while a
+    /// `:describe-*` / `:apropos` view is open. Held as a real
+    /// rope-backed [`HelpBuffer`] -- the same data shape as a code
+    /// buffer -- so the migration to multi-buffer (Phase 6 / §5.9)
+    /// only needs to swap the *display strategy* without touching the
+    /// help-content layer. The current display strategy is the
+    /// centred popup; [`Self::help_display_mode`] picks between
+    /// surfaces.
+    pub help_buffer: Option<HelpBuffer>,
+    /// Where the active help buffer is rendered. v1 only implements
+    /// `Popup`; the other variants are reserved for the multi-buffer
+    /// phase. Configurable per-user (eventually via `:set
+    /// help.display-mode=...`).
+    pub help_display_mode: HelpDisplayMode,
 }
 
 const COMMAND_HISTORY_CAP: usize = 100;
@@ -673,7 +637,8 @@ impl App {
             command_history: Vec::new(),
             command_history_cursor: None,
             command_history_pending: None,
-            help_view: None,
+            help_buffer: None,
+            help_display_mode: HelpDisplayMode::default(),
         }
     }
 
@@ -885,18 +850,18 @@ impl App {
             Action::HelpScroll(delta) => self.do_help_scroll(delta),
             Action::HelpScrollPage { down } => self.do_help_scroll_page(down),
             Action::HelpJumpTop => {
-                if let Some(h) = self.help_view.as_mut() {
+                if let Some(h) = self.help_buffer.as_mut() {
                     h.jump_top();
                 }
             }
             Action::HelpJumpBottom => {
-                let viewport = self.help_viewport_height();
-                if let Some(h) = self.help_view.as_mut() {
+                let viewport = self.help_bufferport_height();
+                if let Some(h) = self.help_buffer.as_mut() {
                     h.jump_bottom(viewport);
                 }
             }
             Action::HelpDismiss => {
-                self.help_view = None;
+                self.help_buffer = None;
             }
 
             Action::EnterSearch(direction) => {
@@ -1639,6 +1604,8 @@ impl App {
             Effect::DescribeCommand { name } => self.do_describe_command(&name),
             Effect::DescribeBuffer => self.do_describe_buffer(),
             Effect::Apropos { pattern } => self.do_apropos(&pattern),
+            Effect::DescribeKey { chord } => self.do_describe_key(&chord),
+            Effect::ListKeymap => self.do_list_keymap(),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -1851,7 +1818,7 @@ impl App {
                 }
             }
         }
-        self.help_view = Some(HelpView::new(format!("describe-command {name}"), lines));
+        self.help_buffer = Some(HelpBuffer::from_lines(format!("describe-command {name}"), lines));
     }
 
     fn do_describe_buffer(&mut self) {
@@ -1892,7 +1859,7 @@ impl App {
             "options:        number={}  relativenumber={}",
             self.show_line_numbers, self.relative_line_numbers
         ));
-        self.help_view = Some(HelpView::new("describe-buffer", lines));
+        self.help_buffer = Some(HelpBuffer::from_lines("describe-buffer", lines));
     }
 
     fn do_apropos(&mut self, pattern: &str) {
@@ -1926,21 +1893,115 @@ impl App {
         } else {
             lines.push(format!("{} match(es) for `{pattern}`:", hits.len()));
             lines.push(String::new());
-            // Compute alignment width once.
+            // Compute alignment width once. We measure pre-link
+            // wrapping so the visible text stays aligned even after
+            // the renderer eventually styles the link markup.
             let name_w = hits.iter().map(|(n, _, _)| n.len()).max().unwrap_or(0);
             let kind_w = hits.iter().map(|(_, k, _)| k.len()).max().unwrap_or(0);
             for (name, kind, first) in hits {
+                let pad_n = name_w.saturating_sub(name.len());
+                let pad_k = kind_w.saturating_sub(kind.len());
                 lines.push(format!(
-                    "  {:name_w$}  {:kind_w$}  {}",
-                    name,
+                    "  {}{}  {}{}  {}",
+                    command_link(&name),
+                    " ".repeat(pad_n),
                     kind,
-                    first,
-                    name_w = name_w,
-                    kind_w = kind_w
+                    " ".repeat(pad_k),
+                    first
                 ));
             }
         }
-        self.help_view = Some(HelpView::new(format!("apropos {pattern}"), lines));
+        self.help_buffer = Some(HelpBuffer::from_lines(format!("apropos {pattern}"), lines));
+    }
+
+    /// Format `:describe-key <chord>` (DESIGN.md §5.11). Pulls
+    /// metadata from the keymap registry; a chord may have entries in
+    /// multiple modes (e.g. `j` is "line down" in Normal and Visual,
+    /// "scroll" in Help) so we list each match grouped by mode.
+    fn do_describe_key(&mut self, chord: &str) {
+        let hits = crate::keymap::lookup(chord);
+        let mut lines: Vec<String> = Vec::new();
+        if hits.is_empty() {
+            lines.push(format!("`{chord}` is not bound in any mode."));
+        } else {
+            lines.push(format!(
+                "{} -- {} binding(s):",
+                key_link(chord),
+                hits.len()
+            ));
+            lines.push(String::new());
+            for entry in hits {
+                lines.push(format!("[{}]", entry.mode.label()));
+                lines.push(format!("  {}", entry.doc));
+                if let Some(name) = entry.command {
+                    // Cross-reference: dispatch this through
+                    // :describe-command via link-following.
+                    lines.push(format!("  command: {}", command_link(name)));
+                }
+                lines.push(String::new());
+            }
+        }
+        self.help_buffer = Some(HelpBuffer::from_lines(format!("describe-key {chord}"), lines));
+    }
+
+    fn do_list_keymap(&mut self) {
+        use crate::keymap::{BindingMode, entries};
+        let mut by_mode: std::collections::BTreeMap<&str, Vec<&crate::keymap::KeymapEntry>> =
+            std::collections::BTreeMap::new();
+        // Stable iteration order: enumerate modes in a fixed order so
+        // the rendered output reads top-down.
+        let mode_order = [
+            BindingMode::Normal,
+            BindingMode::Visual,
+            BindingMode::OperatorPending,
+            BindingMode::AfterG,
+            BindingMode::AfterZ,
+            BindingMode::AfterMark,
+            BindingMode::AfterJumpMarkLine,
+            BindingMode::AfterJumpMarkExact,
+            BindingMode::AfterRegister,
+            BindingMode::AfterMacroStart,
+            BindingMode::AfterMacroPlay,
+            BindingMode::AfterFindChar,
+            BindingMode::AfterTextObject,
+            BindingMode::Insert,
+            BindingMode::Replace,
+            BindingMode::Command,
+            BindingMode::Search,
+            BindingMode::Help,
+        ];
+        for entry in entries() {
+            by_mode.entry(entry.mode.label()).or_default().push(entry);
+        }
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!(
+            "Default keymap: {} bindings across {} modes",
+            entries().len(),
+            mode_order.len()
+        ));
+        lines.push(String::new());
+        for mode in mode_order {
+            let label = mode.label();
+            let Some(group) = by_mode.get(label) else {
+                continue;
+            };
+            lines.push(format!("[{label}]"));
+            // Compute alignment width on the unwrapped chord string;
+            // pad after the link wrapper so the visible text stays
+            // column-aligned once the renderer styles links.
+            let chord_w = group.iter().map(|e| e.chord.len()).max().unwrap_or(0);
+            for entry in group {
+                let pad = chord_w.saturating_sub(entry.chord.len());
+                lines.push(format!(
+                    "  {}{}  {}",
+                    key_link(entry.chord),
+                    " ".repeat(pad),
+                    entry.doc
+                ));
+            }
+            lines.push(String::new());
+        }
+        self.help_buffer = Some(HelpBuffer::from_lines("keymap", lines));
     }
 
     /// Estimated help-overlay viewport height. The overlay is centred
@@ -1948,7 +2009,7 @@ impl App {
     /// the visible content rows are `buffer_rows - 2 - 4` (the outer
     /// 4 is the centring margin). Floor at 1 so scroll math is well-
     /// defined when the terminal is tiny.
-    fn help_viewport_height(&self) -> usize {
+    fn help_bufferport_height(&self) -> usize {
         // Approximate: assume the popup fills ~70% of the buffer area
         // vertically (matches `draw_help_overlay`). The render layer
         // re-clamps if the terminal is smaller.
@@ -1958,8 +2019,8 @@ impl App {
     }
 
     fn do_help_scroll(&mut self, delta: i32) {
-        let viewport = self.help_viewport_height();
-        if let Some(h) = self.help_view.as_mut() {
+        let viewport = self.help_bufferport_height();
+        if let Some(h) = self.help_buffer.as_mut() {
             if delta >= 0 {
                 h.scroll_down(delta as usize, viewport);
             } else {
@@ -1969,8 +2030,8 @@ impl App {
     }
 
     fn do_help_scroll_page(&mut self, down: bool) {
-        let viewport = self.help_viewport_height();
-        if let Some(h) = self.help_view.as_mut() {
+        let viewport = self.help_bufferport_height();
+        if let Some(h) = self.help_buffer.as_mut() {
             if down {
                 h.scroll_down(viewport.max(1), viewport);
             } else {
@@ -2995,7 +3056,9 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::EchoMarks
         | Effect::DescribeCommand { .. }
         | Effect::DescribeBuffer
-        | Effect::Apropos { .. } => false,
+        | Effect::Apropos { .. }
+        | Effect::DescribeKey { .. }
+        | Effect::ListKeymap => false,
     }
 }
 
@@ -3021,7 +3084,9 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::EchoMarks
         | Effect::DescribeCommand { .. }
         | Effect::DescribeBuffer
-        | Effect::Apropos { .. } => false,
+        | Effect::Apropos { .. }
+        | Effect::DescribeKey { .. }
+        | Effect::ListKeymap => false,
     }
 }
 
@@ -5972,17 +6037,18 @@ mod tests {
     // ---- Help overlay (DESIGN.md §5.11) ----
 
     #[test]
-    fn describe_command_opens_help_view_with_metadata() {
+    fn describe_command_opens_help_buffer_with_metadata() {
         let mut a = app_with("xx", 10);
         // `:describe-command ex:write` -- the registry knows about this.
         a.command_line = "describe-command ex:write".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_view.as_ref().expect("help view should open");
+        let h = a.help_buffer.as_ref().expect("help view should open");
         assert!(h.title.contains("ex:write"));
         // First two lines: "ex:write  (ex-command)" + blank.
-        assert!(h.lines[0].contains("ex:write"));
-        assert!(h.lines[0].contains("ex-command"));
+        let lines = h.lines();
+        assert!(lines[0].contains("ex:write"));
+        assert!(lines[0].contains("ex-command"));
     }
 
     #[test]
@@ -5991,7 +6057,7 @@ mod tests {
         a.command_line = "describe-command ex:nope".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.help_view.is_none());
+        assert!(a.help_buffer.is_none());
         let msg = a.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
@@ -6002,9 +6068,9 @@ mod tests {
         a.command_line = "describe-buffer".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_view.as_ref().expect("help view should open");
+        let h = a.help_buffer.as_ref().expect("help view should open");
         // Some predictable content lines.
-        let body = h.lines.join("\n");
+        let body = h.content.as_string();
         assert!(body.contains("modal state"));
         assert!(body.contains("cursor:"));
         assert!(body.contains("dirty:"));
@@ -6017,8 +6083,8 @@ mod tests {
         a.command_line = "apropos write".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_view.as_ref().expect("help view should open");
-        let body = h.lines.join("\n");
+        let h = a.help_buffer.as_ref().expect("help view should open");
+        let body = h.content.as_string();
         // Both ex:write and ex:write-quit match the substring.
         assert!(body.contains("ex:write"));
         assert!(body.contains("ex:write-quit"));
@@ -6030,49 +6096,50 @@ mod tests {
         a.command_line = "apropos zxqzxqzxq".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_view.as_ref().unwrap();
-        let body = h.lines.join("\n");
+        let h = a.help_buffer.as_ref().unwrap();
+        let body = h.content.as_string();
         assert!(body.contains("no matches"));
     }
 
     #[test]
     fn help_dismiss_clears_overlay() {
         let mut a = app_with("xx", 10);
-        a.help_view = Some(HelpView::new("test", vec!["a".into(), "b".into()]));
+        a.help_buffer = Some(HelpBuffer::from_lines("test", vec!["a".into(), "b".into()]));
         a.apply(Action::HelpDismiss);
-        assert!(a.help_view.is_none());
+        assert!(a.help_buffer.is_none());
     }
 
     #[test]
     fn help_scroll_clamps_within_content() {
         let mut a = app_with("xx", 10);
         let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
-        a.help_view = Some(HelpView::new("scroll-test", lines));
+        a.help_buffer = Some(HelpBuffer::from_lines("scroll-test", lines));
         // viewport_height is 10; help viewport math caps at 10*7/10 - 2 = 5.
         a.apply(Action::HelpScroll(3));
-        assert_eq!(a.help_view.as_ref().unwrap().scroll, 3);
+        assert_eq!(a.help_buffer.as_ref().unwrap().scroll, 3);
         a.apply(Action::HelpScroll(1000));
-        let h = a.help_view.as_ref().unwrap();
-        assert!(h.scroll <= h.lines.len());
-        assert!(h.scroll >= h.lines.len().saturating_sub(20));
+        let h = a.help_buffer.as_ref().unwrap();
+        let total = h.line_count() as usize;
+        assert!(h.scroll <= total);
+        assert!(h.scroll >= total.saturating_sub(20));
     }
 
     #[test]
     fn help_scroll_up_clamps_at_zero() {
         let mut a = app_with("xx", 10);
-        a.help_view = Some(HelpView::new("scroll-test", vec!["a".into(); 30]));
+        a.help_buffer = Some(HelpBuffer::from_lines("scroll-test", vec!["a".into(); 30]));
         a.apply(Action::HelpScroll(-1000));
-        assert_eq!(a.help_view.as_ref().unwrap().scroll, 0);
+        assert_eq!(a.help_buffer.as_ref().unwrap().scroll, 0);
     }
 
     #[test]
     fn help_jump_top_and_bottom() {
         let mut a = app_with("xx", 10);
-        a.help_view = Some(HelpView::new("jt", vec!["x".into(); 30]));
+        a.help_buffer = Some(HelpBuffer::from_lines("jt", vec!["x".into(); 30]));
         a.apply(Action::HelpJumpBottom);
-        assert!(a.help_view.as_ref().unwrap().scroll > 0);
+        assert!(a.help_buffer.as_ref().unwrap().scroll > 0);
         a.apply(Action::HelpJumpTop);
-        assert_eq!(a.help_view.as_ref().unwrap().scroll, 0);
+        assert_eq!(a.help_buffer.as_ref().unwrap().scroll, 0);
     }
 
     #[test]

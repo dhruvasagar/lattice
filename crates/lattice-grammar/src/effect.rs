@@ -119,6 +119,14 @@ pub enum Effect {
     /// every registered `CommandSpec` (name + doc) and renders the
     /// matches.
     Apropos { pattern: String },
+    /// `:describe-key <chord>` (DESIGN.md §5.11). The host queries
+    /// its keymap registry for every binding of `chord` (a chord may
+    /// appear in multiple modes -- Normal / Visual / Help, etc.) and
+    /// renders them.
+    DescribeKey { chord: String },
+    /// `:keymap`. The host renders the full default keymap grouped by
+    /// mode.
+    ListKeymap,
 
     Many(Vec<Effect>),
 }

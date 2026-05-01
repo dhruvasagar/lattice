@@ -47,6 +47,8 @@ pub struct ExBuiltins {
     pub describe_command: ExCommandId,
     pub describe_buffer: ExCommandId,
     pub apropos: ExCommandId,
+    pub describe_key: ExCommandId,
+    pub list_keymap: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -260,6 +262,34 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             }],
         },
     );
+    let describe_key = registry.register_ex_command(
+        "ex:describe-key",
+        "Open the help view for a key chord (DESIGN.md §5.11).",
+        ExCommandSpec {
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(apply_describe_key),
+            args_schema: vec![ArgSpec {
+                name: "chord",
+                kind: ArgKind::String,
+                doc: "Chord notation (`j`, `dw`, `<C-d>`, `gg`, `<Esc>`, ...)",
+                prompt: "key:",
+                default: ArgDefault::Required,
+            }],
+        },
+    );
+    let list_keymap = registry.register_ex_command(
+        "ex:keymap",
+        "Open the help view listing every default keymap binding by mode (DESIGN.md §5.11).",
+        ExCommandSpec {
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::ListKeymap)),
+            args_schema: vec![],
+        },
+    );
     ExBuiltins {
         write,
         quit,
@@ -275,6 +305,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         describe_command,
         describe_buffer,
         apropos,
+        describe_key,
+        list_keymap,
     }
 }
 
@@ -428,6 +460,15 @@ fn apply_apropos(ctx: &ExCommandContext) -> GrammarResult<Effect> {
     match &ctx.args {
         Args::String(s) => Ok(Effect::Apropos { pattern: s.clone() }),
         _ => Err(CommandError::BadArgs("expected pattern string".into())),
+    }
+}
+
+fn apply_describe_key(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    match &ctx.args {
+        Args::String(s) => Ok(Effect::DescribeKey { chord: s.clone() }),
+        _ => Err(CommandError::BadArgs(
+            "expected chord notation string".into(),
+        )),
     }
 }
 

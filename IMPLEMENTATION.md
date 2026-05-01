@@ -191,14 +191,78 @@ owns the side effects.
 | :s/.../.../[g]          | ✅ registry (literal substring) | §5.2.1 / §B.2; `Args::List([pattern, replacement, flags])`, scope via Range::CurrentLine/Whole. Regex deferred. |
 | :g/pattern/cmd          | ✅ registry | §B.2; `Args::List([pattern, false, body])`. Body re-parsed per match. |
 | :v/pattern/cmd          | ✅ registry | §B.2; `Args::List([pattern, true, body])` -- same command as `:g`, inverted flag set. |
-| :describe-command       | ✅ overlay | §5.11; renders `CommandSpec.doc` + each `args_schema` entry's name/kind/doc/default. |
-| :describe-buffer        | ✅ overlay | §5.11; path / language / modal / cursor / dirty / line-count / registers / marks / position-history / macros / folds / view options. |
-| :apropos <pattern>      | ✅ overlay | §5.11; case-insensitive substring over every `CommandSpec.name` + `doc`. Picker UI (§5.9.7) is post-1.0. |
-| :describe-key, :describe-option, :describe-event, :describe-mode | ⛔ | §5.11; needs keymap-registry / typed-options-registry / event-bus / mode-registry respectively. |
+| :describe-command       | ✅ buffer (popup) | §5.11; renders `CommandSpec.doc` + each `args_schema` entry's name/kind/doc/default. |
+| :describe-buffer        | ✅ buffer (popup) | §5.11; path / language / modal / cursor / dirty / line-count / registers / marks / position-history / macros / folds / view options. |
+| :describe-key <chord>   | ✅ buffer (popup) | §5.11; renders every `KeymapEntry` for the chord, grouped by mode. Cross-references the bound command via `[[command:...]]` link markup. |
+| :keymap                 | ✅ buffer (popup) | §5.11; lists all default bindings grouped by mode, every chord linked via `[[key:...]]` for follow-up `:describe-key`. |
+| :apropos <pattern>      | ✅ buffer (popup) | §5.11; case-insensitive substring over every `CommandSpec.name` + `doc`. Picker UI (§5.9.7) is post-1.0. |
+| :describe-option, :describe-event, :describe-mode | ⛔ | §5.11; each lands when its registry does (typed options §5.12 / event bus §5.10 / modes Phase 8). |
 | Command-line history (Up/Down)  | ✅     | §B.3 |
 | :history-*              | ⛔     | §B.3 (picker UI; Up/Down already works) |
 | :customize              | ⛔     | §5.12  |
 | :autocmd / :add-hook    | ⛔     | §5.10  |
+
+---
+
+## Introspection architecture (DESIGN.md §5.11)
+
+Help is **buffer-backed from day one**, modeled after emacs's `*Help*`.
+A `HelpBuffer` (in `lattice-ui-tui::help`) holds a real
+`lattice_core::Buffer` (rope) plus the title, scroll offset, and an
+extracted `Vec<HelpLink>`. The current display strategy is the centred
+popup overlay; **`HelpDisplayMode` enumerates Popup / Split / Tab /
+Window** so when multi-buffer support arrives (Phase 6 / §5.9) the
+display target swaps without touching the help-content layer. The
+target is configurable per-user (eventually via `:set
+help.display-mode=...`).
+
+Link markup -- forward-compatible reference syntax in help bodies:
+
+| Markup                  | Resolution                              |
+|-------------------------|-----------------------------------------|
+| `[[command:NAME]]`      | re-dispatch `:describe-command NAME`    |
+| `[[key:CHORD]]`         | re-dispatch `:describe-key CHORD`       |
+| `[[file:PATH:LINE]]`    | open PATH at LINE                       |
+| `[[anything-else]]`     | Unresolved (preserved verbatim)         |
+
+The popup renderer is dumb today: links render verbatim. The
+follow-link motion + styled link ranges + `[[file:...]]` source
+navigation arrive incrementally:
+
+| Capability                                | Status | Notes |
+|-------------------------------------------|--------|-------|
+| Buffer-backed help (rope content)         | ✅     | `HelpBuffer.content: Buffer` |
+| Link markup defined + parsed              | ✅     | `parse_help_links` returns `Vec<HelpLink>` with byte ranges |
+| Help formatters emit links                | ✅     | `:describe-key`, `:apropos`, `:keymap` reference cross-targets |
+| Display: Popup overlay                    | ✅     | v1 default |
+| Display: Split / Tab / Window             | ⛔     | post-multi-buffer (Phase 6) |
+| Styled link ranges in renderer            | ⛔     | renderer ignores `links` today |
+| Follow-link motion (e.g. `<CR>` on link)  | ⛔     | needs tree-sitter help grammar + link motion |
+| Help major mode + tree-sitter grammar     | ⛔     | post-Phase-3-extension; sections / code-blocks / link-targets |
+| `SourceLocation` on `CommandSpec`         | ⛔     | needs `register_*` API extension; powers `[[file:...]]` auto-emit |
+| `:source-of <command>`                    | ⛔     | depends on `SourceLocation` |
+| `:describe-key`                           | ✅     | keymap registry §5.2.3 -- see below |
+| `:keymap`                                 | ✅     | full default keymap, grouped by mode |
+| `:describe-option`                        | ⛔     | needs typed options registry §5.12 |
+| `:describe-event`                         | ⛔     | needs event bus §5.10 |
+| `:describe-mode`                          | ⛔     | needs major/minor modes (Phase 8) |
+
+### Keymap registry (DESIGN.md §5.2.3)
+
+`KeymapEntry { chord, mode, doc, command }` in `lattice-ui-tui::keymap`,
+populated as a `&'static [KeymapEntry] DEFAULT_KEYMAP` covering every
+chord in `input.rs`. v1 is a *descriptor table* the introspection layer
+queries; the input layer (`input.rs::translate`) still owns the
+chord-to-Action translation. A drift test
+(`keymap_descriptors_dont_drift_from_translate`) walks every descriptor
+through `translate()` and asserts a non-`None` Action -- catches
+removed/moved bindings before they ship.
+
+Registry-driven dispatch (the input layer *consuming* the keymap
+registry rather than running a parallel `match`) is post-1.0 -- it
+needs the layered keymap walker (built-in / major-mode / minor-modes /
+user / per-buffer) from §5.2.3. The descriptor table is the migration
+seed.
 
 ---
 
@@ -253,37 +317,36 @@ Update this section when picking up the in-flight item.
 
 ## Up next (priority order)
 
-1. **Block-visual `I` / `A` / `>` / `<`** — extend the per-row block
+1. **`SourceLocation` on `CommandSpec`** + `:source-of <command>` —
+   `register_*` capture `concat!(file!(), ":", line!())` at registration
+   sites; `:describe-command` emits `[[file:...]]` automatically;
+   `:source-of` (or link-following on a file link) opens the file. Small
+   change with high payoff for the introspection surface.
+2. **Block-visual `I` / `A` / `>` / `<`** — extend the per-row block
    dispatch with the remaining vim affordances: insert-at-block-start,
-   append-at-block-end, indent-block-right/left. The `d`/`y`/`c` /
-   paste path is in; these reuse the same row-iteration pattern.
-2. **Keymap registry → `:describe-key`** — vim's default keymap is
-   currently a hardcoded match in `input.rs` (§5.2.3 deviation).
-   Promote it to a typed registry so chords map to
-   `CommandInvocation`s queryable by chord; `:describe-key <chord>`
-   then renders that lookup against the same overlay machinery
-   `:describe-command` uses.
+   append-at-block-end, indent-block-right/left.
 3. **Computed folds** (syntax-driven, indent-based) — manual folds via
    zf/zo/zc/za/zR/zM/zd are done; computed folds need tree-sitter integration
    and an indent-based fall-back.
-4. **`:set option=value` + typed options** — `:set` is now a registered
-   ex-command (`Effect::SetOption { spec }`), but the host still only
-   understands the `number` / `relativenumber` toggles; full §5.12 typed
-   options are post-1.0. Also unblocks `:describe-option`.
-5. **Substitute live preview** — decorations on the target buffer while
+4. **`:set option=value` + typed options** (§5.12) — also unblocks
+   `:describe-option`.
+5. **Multi-buffer foundations** (§5.9) — the trigger for `HelpDisplayMode`
+   beyond `Popup`. Until this lands, all introspection is overlay-rendered.
+6. **Help major mode + tree-sitter grammar** — defines sections,
+   link-targets, code-blocks. Needs the help mode registered as a major
+   mode, which depends on the modes registry (Phase 8) but the *grammar*
+   can be drafted earlier.
+7. **Substitute live preview** — decorations on the target buffer while
    the user types `:s/foo/bar/...`. The hlsearch now lights up matches
    when the search minibuffer is open; substitute should do the same.
-6. **Tag text object** (`it`, `at`) — XML/HTML tags.
-7. **Promote `:g` body to a parsed CommandInvocation** — currently the
-   body is `ArgValue::Raw(String)` and re-parsed per match. Parsing once
-   would be faster and lets the body's own args propagate cleanly. Small
-   follow-up to the §B.2 migration.
-8. **Interactive arg-prompts via `args_schema`** (§B.1 phase 2) — when a
-   command has a missing required arg, drop the user into the minibuffer
-   with the schema's prompt text + completion source. Needs a
-   minibuffer-popup UI primitive we don't have yet.
-9. **Async dispatcher** — replace `execute(...) -> Effect` with `execute
-   -> Pending<Effect>` per §5.2.1.
+8. **Tag text object** (`it`, `at`) — XML/HTML tags.
+9. **Promote `:g` body to a parsed CommandInvocation** — currently the
+   body is `ArgValue::Raw(String)` and re-parsed per match.
+10. **Interactive arg-prompts via `args_schema`** (§B.1 phase 2) — when a
+    command has a missing required arg, drop the user into the minibuffer
+    with the schema's prompt text + completion source.
+11. **Async dispatcher** — replace `execute(...) -> Effect` with `execute
+    -> Pending<Effect>` per §5.2.1.
 
 ---
 
@@ -307,7 +370,7 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-780 tests across the workspace as of the last commit. Coverage by crate:
+800 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
@@ -315,7 +378,7 @@ are crossed out there. Items that influence active tasks:
 | lattice-core (incl. integration) | 78    |
 | lattice-grammar                  | 152   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 493   |
+| lattice-ui-tui                   | 513   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

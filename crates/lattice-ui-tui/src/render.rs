@@ -38,23 +38,23 @@ pub fn draw_frame(frame: &mut Frame, app: &App) {
     draw_mode_line(frame, chunks[1], app);
     draw_command_or_echo(frame, chunks[2], app);
     // Help overlay paints last so it sits on top of the buffer area.
-    if app.help_view.is_some() {
+    if app.help_buffer.is_some() {
         draw_help_overlay(frame, chunks[0], app);
     }
 }
 
-/// Draw the help overlay (DESIGN.md §5.11) as a centered popup over
-/// the buffer area. Width is `min(buffer_width - 4, 100)`, height is
-/// 70% of the buffer area, both bounded so the popup never disappears
-/// on small terminals. Content is the `HelpView`'s pre-rendered lines
-/// from `scroll` to `scroll + viewport`. Lines longer than the popup
-/// width are truncated; the user can resize the terminal for more
-/// width since v1 doesn't word-wrap help text.
+/// Draw the help buffer (DESIGN.md §5.11) as a centred popup. Popup
+/// is the v1 display strategy; multi-buffer support brings split /
+/// tab / window targets per [`crate::help::HelpDisplayMode`]. Width is
+/// `min(buffer_width - 4, 100)`, height is 70% of the buffer area.
+/// Content is the [`crate::help::HelpBuffer`]'s rope text; we slice
+/// the visible window from the rendered string. Link markup
+/// (`[[…]]`) renders verbatim today; future passes paint the link
+/// ranges with a distinct style and add a follow-link motion.
 fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
-    let Some(help) = app.help_view.as_ref() else {
+    let Some(help) = app.help_buffer.as_ref() else {
         return;
     };
-    // Centred popup. 70% h x min(area.w - 4, 100).
     let height = (buffer_area.height as u32 * 7 / 10).max(5) as u16;
     let width = (buffer_area.width.saturating_sub(4)).clamp(20, 100);
     let x = buffer_area.x + buffer_area.width.saturating_sub(width) / 2;
@@ -66,7 +66,6 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         height,
     };
 
-    // Wipe the area first so buffer text doesn't bleed through.
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
@@ -75,10 +74,13 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    // Render the visible window of pre-formatted lines.
+    // Pull the visible window out of the help buffer's rope text.
+    // Allocates per frame, but only across the visible viewport
+    // (~30 lines) -- well under any latency budget for a help
+    // surface.
     let viewport = inner.height as usize;
-    let visible: Vec<Line> = help
-        .lines
+    let lines = help.lines();
+    let visible: Vec<Line> = lines
         .iter()
         .skip(help.scroll)
         .take(viewport)

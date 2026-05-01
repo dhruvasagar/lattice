@@ -191,7 +191,10 @@ owns the side effects.
 | :s/.../.../[g]          | ✅ registry (literal substring) | §5.2.1 / §B.2; `Args::List([pattern, replacement, flags])`, scope via Range::CurrentLine/Whole. Regex deferred. |
 | :g/pattern/cmd          | ✅ registry | §B.2; `Args::List([pattern, false, body])`. Body re-parsed per match. |
 | :v/pattern/cmd          | ✅ registry | §B.2; `Args::List([pattern, true, body])` -- same command as `:g`, inverted flag set. |
-| :describe-command, etc. | ⛔     | §5.11  |
+| :describe-command       | ✅ overlay | §5.11; renders `CommandSpec.doc` + each `args_schema` entry's name/kind/doc/default. |
+| :describe-buffer        | ✅ overlay | §5.11; path / language / modal / cursor / dirty / line-count / registers / marks / position-history / macros / folds / view options. |
+| :apropos <pattern>      | ✅ overlay | §5.11; case-insensitive substring over every `CommandSpec.name` + `doc`. Picker UI (§5.9.7) is post-1.0. |
+| :describe-key, :describe-option, :describe-event, :describe-mode | ⛔ | §5.11; needs keymap-registry / typed-options-registry / event-bus / mode-registry respectively. |
 | Command-line history (Up/Down)  | ✅     | §B.3 |
 | :history-*              | ⛔     | §B.3 (picker UI; Up/Down already works) |
 | :customize              | ⛔     | §5.12  |
@@ -254,17 +257,19 @@ Update this section when picking up the in-flight item.
    dispatch with the remaining vim affordances: insert-at-block-start,
    append-at-block-end, indent-block-right/left. The `d`/`y`/`c` /
    paste path is in; these reuse the same row-iteration pattern.
-2. **Computed folds** (syntax-driven, indent-based) — manual folds via
+2. **Keymap registry → `:describe-key`** — vim's default keymap is
+   currently a hardcoded match in `input.rs` (§5.2.3 deviation).
+   Promote it to a typed registry so chords map to
+   `CommandInvocation`s queryable by chord; `:describe-key <chord>`
+   then renders that lookup against the same overlay machinery
+   `:describe-command` uses.
+3. **Computed folds** (syntax-driven, indent-based) — manual folds via
    zf/zo/zc/za/zR/zM/zd are done; computed folds need tree-sitter integration
    and an indent-based fall-back.
-3. **`:set option=value` + typed options** — `:set` is now a registered
+4. **`:set option=value` + typed options** — `:set` is now a registered
    ex-command (`Effect::SetOption { spec }`), but the host still only
    understands the `number` / `relativenumber` toggles; full §5.12 typed
-   options are post-1.0.
-4. **`:describe-command` / `:describe-key` / `:apropos`** — introspection
-   needs a key→action registry first (§5.11). Every command now carries a
-   `doc` string AND `args_schema: Vec<ArgSpec>` (§B.1), so the
-   describe surface is mostly a query + render away.
+   options are post-1.0. Also unblocks `:describe-option`.
 5. **Substitute live preview** — decorations on the target buffer while
    the user types `:s/foo/bar/...`. The hlsearch now lights up matches
    when the search minibuffer is open; substitute should do the same.
@@ -302,15 +307,15 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-759 tests across the workspace as of the last commit. Coverage by crate:
+780 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
 | lattice-protocol                 | 30    |
 | lattice-core (incl. integration) | 78    |
-| lattice-grammar                  | 147   |
+| lattice-grammar                  | 152   |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 477   |
+| lattice-ui-tui                   | 493   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators).
 

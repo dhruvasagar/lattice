@@ -122,56 +122,41 @@ fn ex_spec_for(
 /// entries -- so that `:describe-command` and the command palette show
 /// one row per command, not five.
 fn expand_alias(cmd: &str) -> Option<&'static str> {
-    static ALIASES: &[(&str, &str)] = &[
-        ("w", "ex:write"),
-        ("write", "ex:write"),
-        ("q", "ex:quit"),
-        ("quit", "ex:quit"),
-        ("wq", "ex:write-quit"),
-        ("x", "ex:write-quit"),
-        ("noh", "ex:nohlsearch"),
-        ("nohl", "ex:nohlsearch"),
-        ("nohlsearch", "ex:nohlsearch"),
-        ("reg", "ex:registers"),
-        ("registers", "ex:registers"),
-        ("marks", "ex:marks"),
-        ("d", "ex:delete"),
-        ("delete", "ex:delete"),
-        ("set", "ex:set"),
-        ("e", "ex:edit"),
-        ("edit", "ex:edit"),
-    ];
-    // O(N) over a tiny static table -- cheaper than a lazy hashmap for
-    // ~17 entries on a non-keystroke path.
-    ALIASES.iter().find_map(|(short, canon)| (*short == cmd).then_some(*canon))
+    ALIAS_TABLE
+        .iter()
+        .find_map(|(short, canon)| (*short == cmd).then_some(*canon))
 }
+
+/// Single source of truth for the alias table. `aliases()` exposes it
+/// as a HashMap for tests and any future `:describe-aliases` view; the
+/// hot path uses the slice directly via `expand_alias`.
+static ALIAS_TABLE: &[(&str, &str)] = &[
+    ("w", "ex:write"),
+    ("write", "ex:write"),
+    ("q", "ex:quit"),
+    ("quit", "ex:quit"),
+    ("wq", "ex:write-quit"),
+    ("x", "ex:write-quit"),
+    ("noh", "ex:nohlsearch"),
+    ("nohl", "ex:nohlsearch"),
+    ("nohlsearch", "ex:nohlsearch"),
+    ("reg", "ex:registers"),
+    ("registers", "ex:registers"),
+    ("marks", "ex:marks"),
+    ("d", "ex:delete"),
+    ("delete", "ex:delete"),
+    ("set", "ex:set"),
+    ("e", "ex:edit"),
+    ("edit", "ex:edit"),
+    ("describe-command", "ex:describe-command"),
+    ("describe-buffer", "ex:describe-buffer"),
+    ("apropos", "ex:apropos"),
+];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests
 /// and any future `:describe-aliases` view.
 pub fn aliases() -> HashMap<&'static str, &'static str> {
-    let mut m = HashMap::new();
-    for (s, c) in [
-        ("w", "ex:write"),
-        ("write", "ex:write"),
-        ("q", "ex:quit"),
-        ("quit", "ex:quit"),
-        ("wq", "ex:write-quit"),
-        ("x", "ex:write-quit"),
-        ("noh", "ex:nohlsearch"),
-        ("nohl", "ex:nohlsearch"),
-        ("nohlsearch", "ex:nohlsearch"),
-        ("reg", "ex:registers"),
-        ("registers", "ex:registers"),
-        ("marks", "ex:marks"),
-        ("d", "ex:delete"),
-        ("delete", "ex:delete"),
-        ("set", "ex:set"),
-        ("e", "ex:edit"),
-        ("edit", "ex:edit"),
-    ] {
-        m.insert(s, c);
-    }
-    m
+    ALIAS_TABLE.iter().copied().collect()
 }
 
 /// `:g/pattern/body` and `:v/pattern/body`. Produces a registered-

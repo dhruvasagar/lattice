@@ -278,6 +278,19 @@ pub enum Action {
     /// One undo unit, so a single `u` reverts the entire paste.
     PasteText(String),
 
+    // ---- Help overlay (DESIGN.md §5.11) ----
+    /// Scroll the active help overlay. Positive deltas scroll down,
+    /// negative scroll up. Page-sized scrolls use `HelpScrollPage`.
+    HelpScroll(i32),
+    /// Page-sized scroll on the active help overlay (Ctrl-D / Ctrl-U).
+    /// `down = true` scrolls forward.
+    HelpScrollPage { down: bool },
+    /// Jump to top (`gg`) / bottom (`G`) of the active help overlay.
+    HelpJumpTop,
+    HelpJumpBottom,
+    /// Close the active help overlay (Esc / q).
+    HelpDismiss,
+
     // ---- Search (`/`, `?`, `n`, `N`) ----
     /// Pressed `/` (Forward) or `?` (Backward) -- enter Search modal with
     /// empty pattern, remembering origin so cancel restores cursor.
@@ -454,6 +467,57 @@ pub struct App {
     /// Snapshot of the user's typed command_line on the first Up so
     /// Down can return to it after walking through history.
     pub command_history_pending: Option<String>,
+    /// Active help/introspection overlay (DESIGN.md §5.11). `Some`
+    /// while a `:describe-*` / `:apropos` view is open. The overlay
+    /// claims input (j/k/Ctrl-D/Ctrl-U scroll, Esc/q dismiss) and
+    /// renders as a centered popup over the buffer area. The
+    /// buffer-backed version of this -- a real `*help:command:<name>*`
+    /// buffer rendered through the same major-mode pipeline as
+    /// everything else -- arrives with multi-buffer support
+    /// (Phase 6 / §5.9). The metadata + dispatch surface is the
+    /// architecture; the overlay is the v1 surface.
+    pub help_view: Option<HelpView>,
+}
+
+/// One open introspection overlay. `lines` is the pre-rendered
+/// content (each entry is one display line); `scroll` is the index
+/// of the first visible line within `lines`.
+#[derive(Debug, Clone)]
+pub struct HelpView {
+    pub title: String,
+    pub lines: Vec<String>,
+    pub scroll: usize,
+}
+
+impl HelpView {
+    pub fn new(title: impl Into<String>, lines: Vec<String>) -> Self {
+        Self {
+            title: title.into(),
+            lines,
+            scroll: 0,
+        }
+    }
+
+    /// Scroll forward by `delta` lines, clamped so the last visible
+    /// line never moves above the bottom of the content. `viewport`
+    /// is the number of content rows the overlay can display
+    /// (excluding any chrome).
+    pub fn scroll_down(&mut self, delta: usize, viewport: usize) {
+        let max = self.lines.len().saturating_sub(viewport);
+        self.scroll = (self.scroll + delta).min(max);
+    }
+
+    pub fn scroll_up(&mut self, delta: usize) {
+        self.scroll = self.scroll.saturating_sub(delta);
+    }
+
+    pub fn jump_top(&mut self) {
+        self.scroll = 0;
+    }
+
+    pub fn jump_bottom(&mut self, viewport: usize) {
+        self.scroll = self.lines.len().saturating_sub(viewport);
+    }
 }
 
 const COMMAND_HISTORY_CAP: usize = 100;
@@ -609,6 +673,7 @@ impl App {
             command_history: Vec::new(),
             command_history_cursor: None,
             command_history_pending: None,
+            help_view: None,
         }
     }
 
@@ -816,6 +881,23 @@ impl App {
             Action::PasteAfter => self.do_paste(false),
             Action::PasteBefore => self.do_paste(true),
             Action::PasteText(text) => self.do_paste_text(&text),
+
+            Action::HelpScroll(delta) => self.do_help_scroll(delta),
+            Action::HelpScrollPage { down } => self.do_help_scroll_page(down),
+            Action::HelpJumpTop => {
+                if let Some(h) = self.help_view.as_mut() {
+                    h.jump_top();
+                }
+            }
+            Action::HelpJumpBottom => {
+                let viewport = self.help_viewport_height();
+                if let Some(h) = self.help_view.as_mut() {
+                    h.jump_bottom(viewport);
+                }
+            }
+            Action::HelpDismiss => {
+                self.help_view = None;
+            }
 
             Action::EnterSearch(direction) => {
                 self.search_line = Some(SearchLine {
@@ -1554,6 +1636,9 @@ impl App {
                 body,
             } => self.do_global(&pattern, inverted, &body),
             Effect::DeleteCurrentLine => self.do_delete_line(),
+            Effect::DescribeCommand { name } => self.do_describe_command(&name),
+            Effect::DescribeBuffer => self.do_describe_buffer(),
+            Effect::Apropos { pattern } => self.do_apropos(&pattern),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -1708,6 +1793,188 @@ impl App {
             // Capture into the in-flight Insert recording for dot-repeat.
             if let Some(rec) = self.recording_insert.as_mut() {
                 rec.push_str(s);
+            }
+        }
+    }
+
+    /// Format `:describe-command <name>` into a help overlay
+    /// (DESIGN.md §5.11). Pulls metadata directly from the registry's
+    /// `CommandSpec` -- name, kind, doc, and `args_schema` -- so the
+    /// view stays in sync as commands are registered or rewritten.
+    fn do_describe_command(&mut self, name: &str) {
+        let id = match self.registry.id_by_name(name) {
+            Some(id) => id,
+            None => {
+                self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
+                return;
+            }
+        };
+        let Some(spec) = self.registry.lookup(id) else {
+            self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
+            return;
+        };
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("{}  ({})", spec.name, spec.kind.label()));
+        lines.push(String::new());
+        if spec.doc.is_empty() {
+            lines.push("(no documentation)".to_string());
+        } else {
+            for l in spec.doc.lines() {
+                lines.push(l.to_string());
+            }
+        }
+        if !spec.args_schema.is_empty() {
+            lines.push(String::new());
+            lines.push("Arguments:".to_string());
+            for (i, arg) in spec.args_schema.iter().enumerate() {
+                let default = match &arg.default {
+                    lattice_grammar::ArgDefault::Required => "required".to_string(),
+                    lattice_grammar::ArgDefault::None => "optional".to_string(),
+                    lattice_grammar::ArgDefault::Literal(_) => "default".to_string(),
+                    lattice_grammar::ArgDefault::UseSelection => "default: selection".to_string(),
+                    lattice_grammar::ArgDefault::UseCursorWord => {
+                        "default: cursor word".to_string()
+                    }
+                    lattice_grammar::ArgDefault::UseLastResponse => {
+                        "default: last value".to_string()
+                    }
+                };
+                lines.push(format!(
+                    "  {}. {}: {:?}  ({})",
+                    i + 1,
+                    arg.name,
+                    arg.kind,
+                    default
+                ));
+                if !arg.doc.is_empty() {
+                    lines.push(format!("       {}", arg.doc));
+                }
+            }
+        }
+        self.help_view = Some(HelpView::new(format!("describe-command {name}"), lines));
+    }
+
+    fn do_describe_buffer(&mut self) {
+        let mut lines: Vec<String> = Vec::new();
+        let path = self
+            .document
+            .path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(no file)".to_string());
+        let lang = lattice_syntax::Lang::detect_from_path(self.document.path());
+        let line_count = self.document.buffer().line_count();
+        let byte_count = self.document.text().len();
+        let dirty = if self.document.dirty() {
+            "yes"
+        } else {
+            "no"
+        };
+        lines.push(format!("path:           {path}"));
+        lines.push(format!("language:       {lang:?}"));
+        lines.push(format!("modal state:    {:?}", self.modal));
+        lines.push(format!(
+            "cursor:         line {}, col {}",
+            self.cursor.line + 1,
+            self.cursor.byte
+        ));
+        lines.push(format!("dirty:          {dirty}"));
+        lines.push(format!("line count:     {line_count}"));
+        lines.push(format!("byte count:     {byte_count}"));
+        lines.push(format!("registers set:  {}", self.registers.len()));
+        lines.push(format!("marks set:      {}", self.marks.len()));
+        lines.push(format!(
+            "position-history depth: {}",
+            self.position_history.len()
+        ));
+        lines.push(format!("macros stored:  {}", self.macros.len()));
+        lines.push(format!("folds:          {}", self.folds.len()));
+        lines.push(format!(
+            "options:        number={}  relativenumber={}",
+            self.show_line_numbers, self.relative_line_numbers
+        ));
+        self.help_view = Some(HelpView::new("describe-buffer", lines));
+    }
+
+    fn do_apropos(&mut self, pattern: &str) {
+        if pattern.is_empty() {
+            self.set_message(EchoLevel::Error, "empty pattern".to_string());
+            return;
+        }
+        let needle = pattern.to_ascii_lowercase();
+        // Collect (name, kind, first_line_of_doc) for every spec whose
+        // name or doc contains `needle` (case-insensitive).
+        let mut hits: Vec<(String, &'static str, String)> = Vec::new();
+        for name in self.registry.names() {
+            let id = match self.registry.id_by_name(name) {
+                Some(id) => id,
+                None => continue,
+            };
+            let Some(spec) = self.registry.lookup(id) else {
+                continue;
+            };
+            let name_match = spec.name.to_ascii_lowercase().contains(&needle);
+            let doc_match = spec.doc.to_ascii_lowercase().contains(&needle);
+            if name_match || doc_match {
+                let first = spec.doc.lines().next().unwrap_or("").to_string();
+                hits.push((spec.name.clone(), spec.kind.label(), first));
+            }
+        }
+        hits.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut lines: Vec<String> = Vec::new();
+        if hits.is_empty() {
+            lines.push(format!("no matches for `{pattern}`"));
+        } else {
+            lines.push(format!("{} match(es) for `{pattern}`:", hits.len()));
+            lines.push(String::new());
+            // Compute alignment width once.
+            let name_w = hits.iter().map(|(n, _, _)| n.len()).max().unwrap_or(0);
+            let kind_w = hits.iter().map(|(_, k, _)| k.len()).max().unwrap_or(0);
+            for (name, kind, first) in hits {
+                lines.push(format!(
+                    "  {:name_w$}  {:kind_w$}  {}",
+                    name,
+                    kind,
+                    first,
+                    name_w = name_w,
+                    kind_w = kind_w
+                ));
+            }
+        }
+        self.help_view = Some(HelpView::new(format!("apropos {pattern}"), lines));
+    }
+
+    /// Estimated help-overlay viewport height. The overlay is centred
+    /// over the buffer area with a 2-row chrome (border + title), so
+    /// the visible content rows are `buffer_rows - 2 - 4` (the outer
+    /// 4 is the centring margin). Floor at 1 so scroll math is well-
+    /// defined when the terminal is tiny.
+    fn help_viewport_height(&self) -> usize {
+        // Approximate: assume the popup fills ~70% of the buffer area
+        // vertically (matches `draw_help_overlay`). The render layer
+        // re-clamps if the terminal is smaller.
+        let buffer = self.viewport_height as usize;
+        let popup = (buffer * 7 / 10).saturating_sub(2); // 2 = top+bottom border
+        popup.max(1)
+    }
+
+    fn do_help_scroll(&mut self, delta: i32) {
+        let viewport = self.help_viewport_height();
+        if let Some(h) = self.help_view.as_mut() {
+            if delta >= 0 {
+                h.scroll_down(delta as usize, viewport);
+            } else {
+                h.scroll_up((-delta) as usize);
+            }
+        }
+    }
+
+    fn do_help_scroll_page(&mut self, down: bool) {
+        let viewport = self.help_viewport_height();
+        if let Some(h) = self.help_view.as_mut() {
+            if down {
+                h.scroll_down(viewport.max(1), viewport);
+            } else {
+                h.scroll_up(viewport.max(1));
             }
         }
     }
@@ -2725,7 +2992,10 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters
-        | Effect::EchoMarks => false,
+        | Effect::EchoMarks
+        | Effect::DescribeCommand { .. }
+        | Effect::DescribeBuffer
+        | Effect::Apropos { .. } => false,
     }
 }
 
@@ -2748,7 +3018,10 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
         | Effect::EchoRegisters
-        | Effect::EchoMarks => false,
+        | Effect::EchoMarks
+        | Effect::DescribeCommand { .. }
+        | Effect::DescribeBuffer
+        | Effect::Apropos { .. } => false,
     }
 }
 
@@ -5694,6 +5967,112 @@ mod tests {
         a.apply(Action::PasteAfter);
         // Line 2: "WXYZ" -> "WbcXYZ"; Line 3: "----" -> "-23---"
         assert_eq!(a.document.text(), "abcd\n1234\nWbcXYZ\n-23---");
+    }
+
+    // ---- Help overlay (DESIGN.md §5.11) ----
+
+    #[test]
+    fn describe_command_opens_help_view_with_metadata() {
+        let mut a = app_with("xx", 10);
+        // `:describe-command ex:write` -- the registry knows about this.
+        a.command_line = "describe-command ex:write".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_view.as_ref().expect("help view should open");
+        assert!(h.title.contains("ex:write"));
+        // First two lines: "ex:write  (ex-command)" + blank.
+        assert!(h.lines[0].contains("ex:write"));
+        assert!(h.lines[0].contains("ex-command"));
+    }
+
+    #[test]
+    fn describe_command_unknown_emits_error_no_overlay() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:nope".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.help_view.is_none());
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn describe_buffer_renders_state_summary() {
+        let mut a = app_with("hello\nworld", 10);
+        a.command_line = "describe-buffer".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_view.as_ref().expect("help view should open");
+        // Some predictable content lines.
+        let body = h.lines.join("\n");
+        assert!(body.contains("modal state"));
+        assert!(body.contains("cursor:"));
+        assert!(body.contains("dirty:"));
+        assert!(body.contains("line count:"));
+    }
+
+    #[test]
+    fn apropos_lists_matching_commands() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "apropos write".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_view.as_ref().expect("help view should open");
+        let body = h.lines.join("\n");
+        // Both ex:write and ex:write-quit match the substring.
+        assert!(body.contains("ex:write"));
+        assert!(body.contains("ex:write-quit"));
+    }
+
+    #[test]
+    fn apropos_no_matches_renders_empty_view() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "apropos zxqzxqzxq".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_view.as_ref().unwrap();
+        let body = h.lines.join("\n");
+        assert!(body.contains("no matches"));
+    }
+
+    #[test]
+    fn help_dismiss_clears_overlay() {
+        let mut a = app_with("xx", 10);
+        a.help_view = Some(HelpView::new("test", vec!["a".into(), "b".into()]));
+        a.apply(Action::HelpDismiss);
+        assert!(a.help_view.is_none());
+    }
+
+    #[test]
+    fn help_scroll_clamps_within_content() {
+        let mut a = app_with("xx", 10);
+        let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
+        a.help_view = Some(HelpView::new("scroll-test", lines));
+        // viewport_height is 10; help viewport math caps at 10*7/10 - 2 = 5.
+        a.apply(Action::HelpScroll(3));
+        assert_eq!(a.help_view.as_ref().unwrap().scroll, 3);
+        a.apply(Action::HelpScroll(1000));
+        let h = a.help_view.as_ref().unwrap();
+        assert!(h.scroll <= h.lines.len());
+        assert!(h.scroll >= h.lines.len().saturating_sub(20));
+    }
+
+    #[test]
+    fn help_scroll_up_clamps_at_zero() {
+        let mut a = app_with("xx", 10);
+        a.help_view = Some(HelpView::new("scroll-test", vec!["a".into(); 30]));
+        a.apply(Action::HelpScroll(-1000));
+        assert_eq!(a.help_view.as_ref().unwrap().scroll, 0);
+    }
+
+    #[test]
+    fn help_jump_top_and_bottom() {
+        let mut a = app_with("xx", 10);
+        a.help_view = Some(HelpView::new("jt", vec!["x".into(); 30]));
+        a.apply(Action::HelpJumpBottom);
+        assert!(a.help_view.as_ref().unwrap().scroll > 0);
+        a.apply(Action::HelpJumpTop);
+        assert_eq!(a.help_view.as_ref().unwrap().scroll, 0);
     }
 
     #[test]

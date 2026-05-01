@@ -32,6 +32,11 @@ pub struct TranslateContext<'a> {
     /// this so `q` while recording stops, while `q` otherwise starts a
     /// new recording.
     pub recording_macro: bool,
+    /// True when a help overlay (DESIGN.md §5.11) is open. Input is
+    /// claimed by the overlay regardless of modal state -- the
+    /// overlay's own bindings (j/k/Ctrl-D/Ctrl-U/gg/G/Esc/q) take
+    /// priority.
+    pub help_open: bool,
 }
 
 pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
@@ -40,6 +45,14 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         && matches!(event.code, KeyCode::Char('c'))
     {
         return Action::Quit;
+    }
+
+    // The help overlay claims input first. It maps a small fixed set
+    // of keys for navigation + dismiss; everything else is a no-op so
+    // accidental presses don't fall through to the underlying modal
+    // state (which is still tracked, but invisible while help is up).
+    if ctx.help_open {
+        return translate_help(event);
     }
 
     match ctx.modal {
@@ -57,6 +70,31 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         ModalState::Replace => translate_replace(event),
         // OperatorPending routes to no-op (it's a transient resolution
         // state inside translate_normal, not a top-level reachable state).
+        _ => Action::None,
+    }
+}
+
+fn translate_help(event: KeyEvent) -> Action {
+    // Ctrl chord first -- crossterm reports modifier flags
+    // independently of the key code.
+    if event.modifiers.contains(KeyModifiers::CONTROL) {
+        return match event.code {
+            KeyCode::Char('d') => Action::HelpScrollPage { down: true },
+            KeyCode::Char('u') => Action::HelpScrollPage { down: false },
+            // Universal Ctrl-c quit-or-cancel was already handled
+            // above; falling through here is "no-op", same as for the
+            // unknown-chord case.
+            _ => Action::None,
+        };
+    }
+    match event.code {
+        KeyCode::Esc | KeyCode::Char('q') => Action::HelpDismiss,
+        KeyCode::Char('j') | KeyCode::Down => Action::HelpScroll(1),
+        KeyCode::Char('k') | KeyCode::Up => Action::HelpScroll(-1),
+        KeyCode::Char('g') => Action::HelpJumpTop,
+        KeyCode::Char('G') => Action::HelpJumpBottom,
+        KeyCode::PageDown => Action::HelpScrollPage { down: true },
+        KeyCode::PageUp => Action::HelpScrollPage { down: false },
         _ => Action::None,
     }
 }
@@ -752,6 +790,7 @@ mod tests {
             builtins: b,
             pending_count: 0,
             recording_macro: false,
+            help_open: false,
         }
     }
 
@@ -767,6 +806,7 @@ mod tests {
             builtins: b,
             pending_count,
             recording_macro: false,
+            help_open: false,
         }
     }
 
@@ -781,6 +821,7 @@ mod tests {
             builtins: b,
             pending_count: 0,
             recording_macro: true,
+            help_open: false,
         }
     }
 
@@ -1661,6 +1702,133 @@ mod tests {
             Action::SetPending(Pending::AfterMacroStart) => {}
             other => panic!("expected SetPending(AfterMacroStart), got {other:?}"),
         }
+    }
+
+    // ---- Help overlay (DESIGN.md §5.11) ----
+
+    fn ctx_help_open<'a>(
+        modal: ModalState,
+        pending: Pending,
+        b: &'a Builtins,
+    ) -> TranslateContext<'a> {
+        TranslateContext {
+            modal,
+            pending,
+            builtins: b,
+            pending_count: 0,
+            recording_macro: false,
+            help_open: true,
+        }
+    }
+
+    #[test]
+    fn help_open_intercepts_q_to_dismiss() {
+        let (_, b) = fixture();
+        // While help is open, `q` dismisses (does NOT start macro
+        // recording, the usual Normal-mode meaning).
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('q'))
+            ),
+            Action::HelpDismiss
+        ));
+    }
+
+    #[test]
+    fn help_open_intercepts_esc_to_dismiss() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Esc)
+            ),
+            Action::HelpDismiss
+        ));
+    }
+
+    #[test]
+    fn help_open_routes_jk_to_scroll() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('j'))
+            ),
+            Action::HelpScroll(1)
+        ));
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('k'))
+            ),
+            Action::HelpScroll(-1)
+        ));
+    }
+
+    #[test]
+    fn help_open_routes_ctrl_d_u_to_page_scroll() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                ctrl(KeyCode::Char('d'))
+            ),
+            Action::HelpScrollPage { down: true }
+        ));
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                ctrl(KeyCode::Char('u'))
+            ),
+            Action::HelpScrollPage { down: false }
+        ));
+    }
+
+    #[test]
+    fn help_open_routes_gg_and_capital_g_to_jumps() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('g'))
+            ),
+            Action::HelpJumpTop
+        ));
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('G'))
+            ),
+            Action::HelpJumpBottom
+        ));
+    }
+
+    #[test]
+    fn help_open_swallows_unknown_keys() {
+        // While help is open, accidental keys (e.g., `i` -- which would
+        // normally enter Insert) become no-ops rather than fall through.
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('i'))
+            ),
+            Action::None
+        ));
+    }
+
+    #[test]
+    fn ctrl_c_still_quits_when_help_is_open() {
+        // The universal escape hatch sits above the help intercept.
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                ctrl(KeyCode::Char('c'))
+            ),
+            Action::Quit
+        ));
     }
 
     // ---- Mark history (g; / g,) ----

@@ -44,6 +44,9 @@ pub struct ExBuiltins {
     pub edit: ExCommandId,
     pub substitute: ExCommandId,
     pub global: ExCommandId,
+    pub describe_command: ExCommandId,
+    pub describe_buffer: ExCommandId,
+    pub apropos: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -212,6 +215,51 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             ],
         },
     );
+    let describe_command = registry.register_ex_command(
+        "ex:describe-command",
+        "Open the help view for a named command (DESIGN.md §5.11).",
+        ExCommandSpec {
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(apply_describe_command),
+            args_schema: vec![ArgSpec {
+                name: "name",
+                kind: ArgKind::String,
+                doc: "Registered command name (`ex:write`, `motion:word-forward`, ...)",
+                prompt: "command:",
+                default: ArgDefault::Required,
+            }],
+        },
+    );
+    let describe_buffer = registry.register_ex_command(
+        "ex:describe-buffer",
+        "Open the help view for the current buffer's state (DESIGN.md §5.11).",
+        ExCommandSpec {
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::DescribeBuffer)),
+            args_schema: vec![],
+        },
+    );
+    let apropos = registry.register_ex_command(
+        "ex:apropos",
+        "Search every registered command's name + doc for a substring (DESIGN.md §5.11).",
+        ExCommandSpec {
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(apply_apropos),
+            args_schema: vec![ArgSpec {
+                name: "pattern",
+                kind: ArgKind::String,
+                doc: "Case-insensitive substring matched against name and doc",
+                prompt: "apropos:",
+                default: ArgDefault::Required,
+            }],
+        },
+    );
     ExBuiltins {
         write,
         quit,
@@ -224,6 +272,9 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         edit,
         substitute,
         global,
+        describe_command,
+        describe_buffer,
+        apropos,
     }
 }
 
@@ -364,6 +415,22 @@ fn apply_substitute(ctx: &ExCommandContext) -> GrammarResult<Effect> {
     })
 }
 
+fn apply_describe_command(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    match &ctx.args {
+        Args::String(s) => Ok(Effect::DescribeCommand { name: s.clone() }),
+        _ => Err(CommandError::BadArgs(
+            "expected command name string".into(),
+        )),
+    }
+}
+
+fn apply_apropos(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    match &ctx.args {
+        Args::String(s) => Ok(Effect::Apropos { pattern: s.clone() }),
+        _ => Err(CommandError::BadArgs("expected pattern string".into())),
+    }
+}
+
 fn apply_global(ctx: &ExCommandContext) -> GrammarResult<Effect> {
     let list = ctx
         .args
@@ -496,6 +563,54 @@ mod tests {
         let inv = CommandInvocation::of(ex.delete_line.0);
         let eff = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
         assert!(matches!(eff, Effect::DeleteCurrentLine));
+    }
+
+    #[test]
+    fn describe_command_emits_describe_command_effect() {
+        let (registry, ex, mut doc) = fixture();
+        let inv = CommandInvocation::of(ex.describe_command.0)
+            .with_args(Args::String("ex:write".into()));
+        let eff = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match eff {
+            Effect::DescribeCommand { name } => assert_eq!(name, "ex:write"),
+            other => panic!("unexpected effect: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn describe_buffer_emits_describe_buffer_effect() {
+        let (registry, ex, mut doc) = fixture();
+        let inv = CommandInvocation::of(ex.describe_buffer.0);
+        let eff = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        assert!(matches!(eff, Effect::DescribeBuffer));
+    }
+
+    #[test]
+    fn apropos_emits_apropos_effect() {
+        let (registry, ex, mut doc) = fixture();
+        let inv = CommandInvocation::of(ex.apropos.0).with_args(Args::String("write".into()));
+        let eff = execute(&registry, &mut doc, Position::ZERO, inv).unwrap();
+        match eff {
+            Effect::Apropos { pattern } => assert_eq!(pattern, "write"),
+            other => panic!("unexpected effect: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn describe_command_advertises_args_schema() {
+        // §B.1 metadata is what makes :describe-command interesting.
+        let (registry, ex, _doc) = fixture();
+        let spec = registry.lookup(ex.describe_command.0).unwrap();
+        assert_eq!(spec.args_schema.len(), 1);
+        assert_eq!(spec.args_schema[0].name, "name");
+    }
+
+    #[test]
+    fn apropos_advertises_args_schema() {
+        let (registry, ex, _doc) = fixture();
+        let spec = registry.lookup(ex.apropos.0).unwrap();
+        assert_eq!(spec.args_schema.len(), 1);
+        assert_eq!(spec.args_schema[0].name, "pattern");
     }
 
     #[test]

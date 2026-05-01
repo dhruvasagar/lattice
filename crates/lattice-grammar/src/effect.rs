@@ -106,6 +106,19 @@ pub enum Effect {
     /// range, which preserves the newline (vim's `dd` semantics differ
     /// from `:d` -- §5.2.1).
     DeleteCurrentLine,
+    /// `:describe-command <name>` (DESIGN.md §5.11). The host queries
+    /// its `CommandRegistry` for the named entry and renders the
+    /// metadata into a help overlay. Carried as a sentinel because
+    /// the closure has no registry access.
+    DescribeCommand { name: String },
+    /// `:describe-buffer`. The host renders a snapshot of the current
+    /// buffer's view-relevant state (path, language, modal, cursor,
+    /// dirty, line count, ...).
+    DescribeBuffer,
+    /// `:apropos <pattern>`. The host runs a substring search over
+    /// every registered `CommandSpec` (name + doc) and renders the
+    /// matches.
+    Apropos { pattern: String },
 
     Many(Vec<Effect>),
 }

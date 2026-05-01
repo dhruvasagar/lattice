@@ -15,7 +15,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style as TuiStyle};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use lattice_grammar::{ModalState, SearchDirection};
 use lattice_protocol::position::Range as ProtoRange;
@@ -37,6 +37,55 @@ pub fn draw_frame(frame: &mut Frame, app: &App) {
     draw_buffer(frame, chunks[0], app);
     draw_mode_line(frame, chunks[1], app);
     draw_command_or_echo(frame, chunks[2], app);
+    // Help overlay paints last so it sits on top of the buffer area.
+    if app.help_view.is_some() {
+        draw_help_overlay(frame, chunks[0], app);
+    }
+}
+
+/// Draw the help overlay (DESIGN.md §5.11) as a centered popup over
+/// the buffer area. Width is `min(buffer_width - 4, 100)`, height is
+/// 70% of the buffer area, both bounded so the popup never disappears
+/// on small terminals. Content is the `HelpView`'s pre-rendered lines
+/// from `scroll` to `scroll + viewport`. Lines longer than the popup
+/// width are truncated; the user can resize the terminal for more
+/// width since v1 doesn't word-wrap help text.
+fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
+    let Some(help) = app.help_view.as_ref() else {
+        return;
+    };
+    // Centred popup. 70% h x min(area.w - 4, 100).
+    let height = (buffer_area.height as u32 * 7 / 10).max(5) as u16;
+    let width = (buffer_area.width.saturating_sub(4)).clamp(20, 100);
+    let x = buffer_area.x + buffer_area.width.saturating_sub(width) / 2;
+    let y = buffer_area.y + buffer_area.height.saturating_sub(height) / 2;
+    let popup = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+
+    // Wipe the area first so buffer text doesn't bleed through.
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} (q / Esc to dismiss) ", help.title));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    // Render the visible window of pre-formatted lines.
+    let viewport = inner.height as usize;
+    let visible: Vec<Line> = help
+        .lines
+        .iter()
+        .skip(help.scroll)
+        .take(viewport)
+        .map(|l| Line::from(l.as_str()))
+        .collect();
+    let para = Paragraph::new(visible);
+    frame.render_widget(para, inner);
 }
 
 fn draw_buffer(frame: &mut Frame, area: Rect, app: &App) {

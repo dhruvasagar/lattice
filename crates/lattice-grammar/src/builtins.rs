@@ -1067,7 +1067,6 @@ fn operator_delete(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     if ctx.range.is_empty() {
         return Ok(Effect::None);
     }
-    let _ = ctx.register; // explicit register selection lands later
     let yanked = ctx.document.buffer().slice(ctx.range)?;
     let edit = Edit::delete(ctx.range);
     let applied = ctx.document.apply_edit(edit)?;
@@ -1079,7 +1078,7 @@ fn operator_delete(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     Ok(Effect::Many(vec![
         Effect::Edits(vec![applied]),
         Effect::Yank {
-            register: crate::register::Register::Unnamed,
+            register: ctx.register,
             content: yanked,
             kind: yank_kind,
         },
@@ -1109,7 +1108,7 @@ fn operator_change(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     Ok(Effect::Many(vec![
         Effect::Edits(vec![applied]),
         Effect::Yank {
-            register: crate::register::Register::Unnamed,
+            register: ctx.register,
             content: yanked,
             kind: yank_kind,
         },
@@ -1133,7 +1132,7 @@ fn operator_yank(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
         YankKind::Charwise
     };
     Ok(Effect::Yank {
-        register: crate::register::Register::Unnamed,
+        register: ctx.register,
         content,
         kind,
     })

@@ -23,6 +23,7 @@ use lattice_grammar::builtins::{Builtins, populate};
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::dispatcher::execute;
 use lattice_grammar::effect::Effect;
+use lattice_grammar::register::Register;
 use lattice_grammar::registry::OperatorId;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
@@ -55,6 +56,9 @@ pub enum Pending {
     },
     /// `z` pressed; the next char selects the scroll command (`zz`, `zt`, `zb`).
     AfterZ,
+    /// `"` pressed; the next char selects the register for the upcoming
+    /// operator or paste.
+    AfterRegister,
     /// `m` pressed; the next char is the mark to set.
     AfterSetMark,
     /// `'` pressed; the next char is the mark to jump to (linewise).
@@ -147,6 +151,9 @@ pub enum Action {
     /// Vim's `~` -- toggle the case of the char at the cursor and
     /// advance by one byte.
     ToggleCaseAtCursor,
+    /// `"<reg>` prefix -- stash the named register for the next operator
+    /// / paste invocation.
+    SelectRegister(Register),
     /// Vim's `.` -- re-dispatch the last buffer-mutating invocation from
     /// the current cursor.
     RepeatLastChange,
@@ -310,8 +317,16 @@ pub struct App {
     /// pushed on each `OverwriteChar`, popped on `ReplaceUndoLast`.
     /// `original` is `None` when the cursor was past EOL and the
     /// overwrite extended the line -- backspace deletes that byte rather
-    /// than restoring it.
+    /// than relying on it.
     pub replace_history: Vec<ReplaceEntry>,
+    /// Named registers `"a-z`, `"A-Z`, numbered `"0-"9`, etc. Stores
+    /// content + kind. `""` (the unnamed register) is the
+    /// `unnamed_register` field above; this map covers everything else.
+    pub registers: HashMap<Register, UnnamedRegister>,
+    /// Register selected for the next operator / paste (`"a` prefix).
+    /// Consumed-and-cleared by `run_invocation` (operators) and
+    /// `do_paste` (paste). `None` means use unnamed.
+    pub pending_register: Option<Register>,
 }
 
 #[derive(Debug, Clone)]
@@ -379,6 +394,8 @@ impl App {
             last_visual: None,
             marks: HashMap::new(),
             replace_history: Vec::new(),
+            registers: HashMap::new(),
+            pending_register: None,
         }
     }
 
@@ -467,6 +484,9 @@ impl App {
             }
             Action::MatchBracket => self.do_match_bracket(),
             Action::ToggleCaseAtCursor => self.do_toggle_case_at_cursor(),
+            Action::SelectRegister(reg) => {
+                self.pending_register = Some(reg);
+            }
 
             Action::OverwriteChar(c) => self.do_overwrite_char(c),
             Action::ReplaceUndoLast => self.do_replace_undo_last(),
@@ -780,6 +800,13 @@ impl App {
         // Pending state is consumed by the input layer that built `inv`; any
         // dispatch resets it.
         self.pending = Pending::None;
+        // Attach the pending register (from a `"a` prefix) to the
+        // invocation if not already specified.
+        if let Some(reg) = self.pending_register.take()
+            && inv.register.is_none()
+        {
+            inv = inv.with_register(reg);
+        }
         // Apply the count multiplication: the operator's count (latched at
         // `op_count`) multiplies with the motion's count (the in-progress
         // `pending_count`, or the invocation's own count default of 1).
@@ -847,9 +874,11 @@ impl App {
                     self.document.set_selections(SelectionSet::single(sel));
                 }
             }
-            Effect::Yank { content, kind, .. } => {
-                self.unnamed_register = Some(UnnamedRegister { content, kind });
-            }
+            Effect::Yank {
+                content,
+                kind,
+                register,
+            } => self.store_yank(register, content, kind),
             Effect::EnterMode(mode) => {
                 // Operators that flip mode (`c` -> Insert) come through here.
                 // We bypass `enter_mode`'s "pull cursor back one byte" guard
@@ -1094,6 +1123,53 @@ impl App {
             .set_selections(SelectionSet::single(Selection::cursor(self.cursor)));
     }
 
+    /// Store a yank into the appropriate register slot. Vim's behavior:
+    ///
+    /// - `Register::BlackHole` -> drop on the floor, no storage.
+    /// - Any explicit register -> store there AND in `""` (unnamed).
+    /// - `Register::Unnamed` -> store in `""`.
+    /// - Yanks (vs deletes) also populate `"0`. We approximate vim's
+    ///   distinction by treating any `Effect::Yank` from a yank operator
+    ///   as also writing `"0`; deletes don't (they hit `"1`+ in vim,
+    ///   which we don't model in v1).
+    fn store_yank(&mut self, register: Register, content: String, kind: YankKind) {
+        if matches!(register, Register::BlackHole) {
+            return;
+        }
+        let entry = UnnamedRegister {
+            content: content.clone(),
+            kind,
+        };
+        // Always update unnamed.
+        self.unnamed_register = Some(entry.clone());
+        // If a named / numbered / system register was explicitly chosen,
+        // store there too.
+        match register {
+            Register::Unnamed | Register::BlackHole => {}
+            other => {
+                self.registers.insert(other, entry.clone());
+            }
+        }
+        // For uppercase named registers, vim *appends* to the lowercase
+        // version. v1 simplification: A-Z replaces lowercase too (so
+        // both "a and "A end up with the same content). The append
+        // semantics is logged for follow-up.
+    }
+
+    /// Read the register slot for paste / inspection. Falls back to
+    /// `unnamed_register`.
+    fn read_register(&self, register: Option<Register>) -> Option<UnnamedRegister> {
+        match register {
+            None | Some(Register::Unnamed) => self.unnamed_register.clone(),
+            Some(Register::BlackHole) => None,
+            Some(r) => self
+                .registers
+                .get(&r)
+                .cloned()
+                .or_else(|| self.unnamed_register.clone()),
+        }
+    }
+
     /// Vim's `~`: toggle the case of the char at cursor and advance.
     /// Non-letter chars are unchanged; cursor still advances. At EOL
     /// the cursor stops (no wrap).
@@ -1305,12 +1381,14 @@ impl App {
         self.document.set_selections(SelectionSet::single(sel));
     }
 
-    /// Paste from the unnamed register. `before = true` for `P` (paste
-    /// before cursor / above current line), `false` for `p` (paste after
-    /// cursor / below current line). Linewise yanks insert on a new line;
-    /// charwise yanks splice at the cursor.
+    /// Paste from the chosen register (`pending_register` if set, else
+    /// the unnamed register). `before = true` for `P` (paste before
+    /// cursor / above current line), `false` for `p` (paste after
+    /// cursor / below current line). Linewise yanks insert on a new
+    /// line; charwise yanks splice at the cursor.
     fn do_paste(&mut self, before: bool) {
-        let Some(reg) = self.unnamed_register.clone() else {
+        let chosen = self.pending_register.take();
+        let Some(reg) = self.read_register(chosen) else {
             self.set_message(EchoLevel::Error, "register empty".to_string());
             return;
         };
@@ -2204,6 +2282,94 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
         assert_eq!(a.modal, ModalState::Insert);
+    }
+
+    // ---- Multiple registers ----
+
+    #[test]
+    fn select_register_stashes_pending_register() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::SelectRegister(Register::Named('a')));
+        assert_eq!(a.pending_register, Some(Register::Named('a')));
+    }
+
+    #[test]
+    fn yank_with_named_register_stores_into_named_and_unnamed() {
+        let mut a = app_with("hello world", 10);
+        a.apply(Action::SelectRegister(Register::Named('a')));
+        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        // Named slot populated.
+        let named = a.registers.get(&Register::Named('a')).unwrap();
+        assert_eq!(named.content, "hello ");
+        // Unnamed also populated.
+        assert_eq!(a.unnamed_register.as_ref().unwrap().content, "hello ");
+        // Pending register consumed.
+        assert!(a.pending_register.is_none());
+    }
+
+    #[test]
+    fn paste_from_named_register_uses_named_content() {
+        let mut a = app_with("hello", 10);
+        // Manually populate "a with custom content.
+        a.registers.insert(
+            Register::Named('a'),
+            UnnamedRegister {
+                content: "X".into(),
+                kind: YankKind::Charwise,
+            },
+        );
+        a.apply(Action::SelectRegister(Register::Named('a')));
+        a.apply(Action::PasteAfter);
+        assert_eq!(a.document.text(), "hXello");
+    }
+
+    #[test]
+    fn delete_into_black_hole_does_not_overwrite_unnamed() {
+        let mut a = app_with("hello world", 10);
+        // First yank into unnamed.
+        let yank = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(yank));
+        let pre_delete_unnamed = a.unnamed_register.as_ref().unwrap().content.clone();
+        // Now delete into black hole; unnamed should be untouched.
+        a.apply(Action::SelectRegister(Register::BlackHole));
+        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        assert_eq!(
+            a.unnamed_register.as_ref().unwrap().content,
+            pre_delete_unnamed
+        );
+    }
+
+    #[test]
+    fn invocation_with_no_pending_register_uses_unnamed() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        // Unnamed populated; named map empty.
+        assert!(a.unnamed_register.is_some());
+        assert!(a.registers.is_empty());
+    }
+
+    #[test]
+    fn paste_from_unset_named_register_falls_back_to_unnamed() {
+        let mut a = app_with("hello", 10);
+        a.unnamed_register = Some(UnnamedRegister {
+            content: "X".into(),
+            kind: YankKind::Charwise,
+        });
+        a.apply(Action::SelectRegister(Register::Named('z')));
+        a.apply(Action::PasteAfter);
+        // 'z' is empty -> fall back to unnamed.
+        assert_eq!(a.document.text(), "hXello");
     }
 
     // ---- ~ toggle case at cursor ----

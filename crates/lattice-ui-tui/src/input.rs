@@ -15,6 +15,7 @@ use lattice_grammar::VisualKind;
 use lattice_grammar::args::Args;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
+use lattice_grammar::register::Register;
 use lattice_grammar::registry::{MotionId, OperatorId};
 
 use crate::app::{Action, FindKind, Pending, ScrollPos, ViewportPos};
@@ -166,6 +167,7 @@ fn translate_normal(
         Pending::AfterSetMark => return resolve_after_set_mark(event),
         Pending::AfterJumpMarkLine => return resolve_after_jump_mark(event, false),
         Pending::AfterJumpMarkExact => return resolve_after_jump_mark(event, true),
+        Pending::AfterRegister => return resolve_after_register(event),
         Pending::None => {}
     }
 
@@ -284,6 +286,10 @@ fn translate_normal(
 
         // Dot-repeat
         KeyCode::Char('.') => Action::RepeatLastChange,
+
+        // Register prefix: `"<reg>` selects the register for the next
+        // operator or paste.
+        KeyCode::Char('"') => Action::SetPending(Pending::AfterRegister),
 
         // Marks
         KeyCode::Char('m') => Action::SetPending(Pending::AfterSetMark),
@@ -422,6 +428,25 @@ fn resolve_after_operator(
         _ => return Action::SetPending(Pending::None),
     };
     Action::Invoke(CommandInvocation::of(op.0).with_target(target))
+}
+
+fn resolve_after_register(event: KeyEvent) -> Action {
+    if matches!(event.code, KeyCode::Esc) {
+        return Action::SetPending(Pending::None);
+    }
+    let c = match event.code {
+        KeyCode::Char(c) => c,
+        _ => return Action::SetPending(Pending::None),
+    };
+    let reg = match c {
+        'a'..='z' | 'A'..='Z' => Register::Named(c),
+        '0'..='9' => Register::Numbered((c as u8) - b'0'),
+        '"' => Register::Unnamed,
+        '_' => Register::BlackHole,
+        '+' | '*' => Register::System,
+        _ => return Action::SetPending(Pending::None),
+    };
+    Action::SelectRegister(reg)
 }
 
 fn resolve_after_z(event: KeyEvent) -> Action {
@@ -1091,6 +1116,81 @@ mod tests {
         assert!(matches!(
             translate(ctx(modal, Pending::None, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
+        ));
+    }
+
+    // ---- Register prefix ----
+
+    #[test]
+    fn quote_in_normal_sets_pending_after_register() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Char('"'))
+            ),
+            Action::SetPending(Pending::AfterRegister)
+        ));
+    }
+
+    #[test]
+    fn lowercase_letter_after_quote_selects_named_register() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterRegister, &b),
+            key(KeyCode::Char('a')),
+        );
+        match action {
+            Action::SelectRegister(Register::Named(c)) => assert_eq!(c, 'a'),
+            other => panic!("expected SelectRegister(Named('a')), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn digit_after_quote_selects_numbered_register() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterRegister, &b),
+            key(KeyCode::Char('0')),
+        );
+        match action {
+            Action::SelectRegister(Register::Numbered(n)) => assert_eq!(n, 0),
+            other => panic!("expected SelectRegister(Numbered(0)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn underscore_after_quote_selects_black_hole() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterRegister, &b),
+            key(KeyCode::Char('_')),
+        );
+        assert!(matches!(
+            action,
+            Action::SelectRegister(Register::BlackHole)
+        ));
+    }
+
+    #[test]
+    fn plus_after_quote_selects_system() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Normal, Pending::AfterRegister, &b),
+            key(KeyCode::Char('+')),
+        );
+        assert!(matches!(action, Action::SelectRegister(Register::System)));
+    }
+
+    #[test]
+    fn invalid_char_after_quote_clears_pending() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterRegister, &b),
+                key(KeyCode::Char('@'))
+            ),
+            Action::SetPending(Pending::None)
         ));
     }
 

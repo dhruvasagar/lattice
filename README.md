@@ -306,6 +306,7 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 | [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) | Per-feature status ledger; updated per session.   |
 | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)| Latest measured numbers vs. §8.2 commitments.            |
 | [`docs/VERIFY.md`](docs/VERIFY.md)        | Manual-verification checklist for recently shipped features. |
+| [`docs/help/`](docs/help/)                | User-facing reference (the `:help`-style topic docs).    |
 | [`CLAUDE.md`](CLAUDE.md)                  | Conventions for AI-assisted contributions.               |
 
 When something disagrees, **DESIGN.md and IMPLEMENTATION.md are the

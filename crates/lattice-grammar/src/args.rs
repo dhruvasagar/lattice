@@ -110,6 +110,15 @@ impl ArgValue {
             _ => None,
         }
     }
+
+    /// Extract a parsed sub-invocation. Used by `:g`'s body slot to
+    /// pull the pre-parsed `CommandInvocation` out at apply time.
+    pub fn as_invocation(&self) -> Option<&CommandInvocation> {
+        match self {
+            ArgValue::Invocation(inv) => Some(inv.as_ref()),
+            _ => None,
+        }
+    }
 }
 
 /// Type tag for an argument. Mirrors [`ArgValue`] one-for-one and is

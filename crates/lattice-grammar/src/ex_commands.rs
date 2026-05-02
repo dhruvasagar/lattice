@@ -551,13 +551,17 @@ fn apply_global(ctx: &ExCommandContext) -> GrammarResult<Effect> {
         .as_bool()
         .ok_or_else(|| CommandError::BadArgs("arg 1 (inverted) must be bool".into()))?;
     let body = list[2]
-        .as_str()
-        .ok_or_else(|| CommandError::BadArgs("arg 2 (body) must be string-shaped".into()))?
-        .to_string();
+        .as_invocation()
+        .ok_or_else(|| {
+            CommandError::BadArgs(
+                "arg 2 (body) must be a parsed Invocation -- parser front-end is responsible".into(),
+            )
+        })?
+        .clone();
     Ok(Effect::Global {
         pattern,
         inverted,
-        body,
+        body: Box::new(body),
     })
 }
 

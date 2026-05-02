@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use lattice_core::buffer::AppliedEdit;
 use lattice_protocol::selection::SelectionSet;
 
+use crate::command::CommandInvocation;
 use crate::modal::ModalState;
 use crate::register::Register;
 
@@ -96,10 +97,14 @@ pub enum Effect {
         global: bool,
     },
     /// `:g/pat/body` (and `:v/pat/body` with `inverted = true`).
+    /// `body` is a pre-parsed [`CommandInvocation`] -- the parser
+    /// front-end (`lattice-ui-tui::excommand`) compiles it once at
+    /// `:g` parse time so the host doesn't re-parse per matching
+    /// line, and so body parse errors surface before `:g` fires.
     Global {
         pattern: String,
         inverted: bool,
-        body: String,
+        body: Box<CommandInvocation>,
     },
     /// `:d` -- delete the current line including its trailing newline.
     /// Distinct from the standard `delete` operator with a `CurrentLine`

@@ -2128,7 +2128,7 @@ impl App {
     /// matching, when inverted) the literal pattern. Operates bottom-up
     /// so deletions don't shift the upcoming target lines. v1: `body`
     /// is parsed as a single ex-command.
-    fn do_global(&mut self, pattern: &str, inverted: bool, body: &str) {
+    fn do_global(&mut self, pattern: &str, inverted: bool, body: &CommandInvocation) {
         if pattern.is_empty() {
             self.set_message(EchoLevel::Error, "empty pattern".to_string());
             return;
@@ -2158,23 +2158,16 @@ impl App {
             return;
         }
         // Run bottom-up so deletions and edits on later lines don't
-        // shift the line numbers we plan to operate on. Re-parse the
-        // body per match -- the parse is cheap and lets the body
-        // observe per-line cursor state. (Promoting body to a
-        // pre-parsed CommandInvocation is a follow-up; today's
-        // `Args::Raw(body_string)` is the simpler path.)
+        // shift the line numbers we plan to operate on. The body is
+        // already parsed -- the cmdline's `:g/pat/body` parser
+        // compiled it once at submit time, so we just clone the
+        // invocation per match.
         for &line in targets.iter().rev() {
             self.cursor = Position::new(line, 0);
-            match crate::excommand::parse(body, &self.registry) {
-                Ok(inv) => match self.dispatch_blocking(inv) {
-                    Ok(eff) => self.apply_effect(eff),
-                    Err(e) => {
-                        self.set_message(EchoLevel::Error, format!("g: {e}"));
-                        return;
-                    }
-                },
-                Err(err) => {
-                    self.set_message(EchoLevel::Error, format!("g: {err}"));
+            match self.dispatch_blocking(body.clone()) {
+                Ok(eff) => self.apply_effect(eff),
+                Err(e) => {
+                    self.set_message(EchoLevel::Error, format!("g: {e}"));
                     return;
                 }
             }
@@ -2441,7 +2434,7 @@ impl App {
                 pattern,
                 inverted,
                 body,
-            } => self.do_global(&pattern, inverted, &body),
+            } => self.do_global(&pattern, inverted, body.as_ref()),
             Effect::DeleteCurrentLine => self.do_delete_line(),
             Effect::DescribeCommand { name, anchor } => {
                 self.do_describe_command(&name, anchor.as_deref())

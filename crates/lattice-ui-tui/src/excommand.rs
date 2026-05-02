@@ -251,6 +251,13 @@ fn try_parse_global(
         return Err(ExCommandError::BadSubstitute("empty pattern"));
     }
     let body: String = chars.collect();
+    if body.is_empty() {
+        return Err(ExCommandError::BadSubstitute("empty body"));
+    }
+    // Parse the body as a CommandInvocation up front so the host
+    // dispatches it per matching line without re-parsing, and body
+    // syntax errors surface at `:g` parse time rather than mid-iteration.
+    let body_inv = parse(&body, registry)?;
     let id = registry
         .id_by_name("ex:global")
         .ok_or_else(|| ExCommandError::Unknown("ex:global".into()))?;
@@ -258,7 +265,7 @@ fn try_parse_global(
         CommandInvocation::of(id).with_args(Args::List(vec![
             ArgValue::Pattern(pattern),
             ArgValue::Bool(inverted),
-            ArgValue::Raw(body),
+            ArgValue::Invocation(Box::new(body_inv)),
         ])),
     ))
 }
@@ -506,7 +513,10 @@ mod tests {
         let list = inv.args.as_list().unwrap();
         assert_eq!(list[0], ArgValue::Pattern("foo".into()));
         assert_eq!(list[1], ArgValue::Bool(false));
-        assert_eq!(list[2], ArgValue::Raw("d".into()));
+        // Body is parsed up front -- arg 2 is an Invocation pointing
+        // at the resolved `:d` command, not a Raw string.
+        let body = list[2].as_invocation().expect("body should be parsed");
+        assert_eq!(invocation_name(body, &r), "ex:delete");
     }
 
     #[test]
@@ -519,12 +529,36 @@ mod tests {
 
     #[test]
     fn global_body_can_be_substitute() {
-        // The body of `:g` is a raw string parsed per match by the
-        // host; nesting another delimiter command is fine.
+        // Nested delimiter command in the body is parsed up front;
+        // the resulting Invocation points at `:s` with its own args.
         let r = fixture();
         let inv = parse("g/foo/s/a/b/g", &r).unwrap();
         let list = inv.args.as_list().unwrap();
-        assert_eq!(list[2], ArgValue::Raw("s/a/b/g".into()));
+        let body = list[2].as_invocation().expect("body should be parsed");
+        assert_eq!(invocation_name(body, &r), "ex:substitute");
+        let body_list = body.args.as_list().unwrap();
+        assert_eq!(body_list[0], ArgValue::Pattern("a".into()));
+        assert_eq!(body_list[1], ArgValue::String("b".into()));
+        assert_eq!(body_list[2], ArgValue::String("g".into()));
+    }
+
+    #[test]
+    fn global_with_unparseable_body_errors_at_parse_time() {
+        // The body must parse against the registry; an unknown
+        // command surfaces immediately, not after `:g` matches.
+        let r = fixture();
+        let result = parse("g/foo/this-is-not-a-real-command", &r);
+        assert!(
+            matches!(result, Err(ExCommandError::Unknown(_))),
+            "expected Unknown error, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn global_with_empty_body_errors_at_parse_time() {
+        let r = fixture();
+        let result = parse("g/foo/", &r);
+        assert!(matches!(result, Err(ExCommandError::BadSubstitute(_))));
     }
 
     #[test]

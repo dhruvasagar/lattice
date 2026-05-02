@@ -15,6 +15,7 @@ lattice-runtime = { path = "../lattice-runtime" }
 fancy-regex = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+unicode-width = "0.2"
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 

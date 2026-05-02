@@ -697,6 +697,7 @@ dependencies = [
  "lattice-syntax",
  "ratatui",
  "thiserror 2.0.18",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

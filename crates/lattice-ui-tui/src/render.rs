@@ -753,17 +753,50 @@ fn cursor_screen_position(app: &App, area: Rect) -> Option<(u16, u16)> {
     }
     // §8.2 hot path: don't materialise the buffer just to count
     // lines. ropey gives us `line_count()` in O(1).
-    let total_lines = app.document.snapshot().buffer.line_count().max(1);
+    let snap = app.document.snapshot();
+    let total_lines = snap.buffer.line_count().max(1);
     let gutter_w = if app.show_line_numbers {
         gutter_width(total_lines)
     } else {
         2
     };
-    let col = gutter_w + app.cursor.byte;
+    // `cursor.byte` is a UTF-8 byte offset into the line; the
+    // terminal places glyphs by display width, not byte count. A
+    // line containing `§` (2 bytes / 1 cell) or a CJK glyph (3
+    // bytes / 2 cells) puts the cursor at the wrong column if we
+    // use the byte offset directly. Compute the display width of
+    // the prefix `line[..cursor.byte]` -- handles ASCII (1:1),
+    // Latin-1 / Greek / Cyrillic (multi-byte but 1 cell), CJK and
+    // emoji (1-4 bytes, 2 cells).
+    let col = gutter_w + display_col_for_byte(&snap.buffer, app.cursor);
     Some((
         area.x.saturating_add(col.try_into().unwrap_or(u16::MAX)),
         area.y.saturating_add(row_in_view.try_into().unwrap_or(u16::MAX)),
     ))
+}
+
+/// Display column (terminal cells) of `pos.byte` within
+/// `pos.line`. Falls back to `pos.byte` when the line is missing
+/// or the byte index lands past the line end (so the cursor still
+/// renders at a sensible position rather than disappearing).
+fn display_col_for_byte(buffer: &lattice_core::Buffer, pos: lattice_protocol::Position) -> u32 {
+    use unicode_width::UnicodeWidthStr;
+
+    let line = match buffer.line(pos.line) {
+        Some(s) => s,
+        None => return pos.byte,
+    };
+    let byte = (pos.byte as usize).min(line.len());
+    // Truncate to the prefix at a UTF-8 boundary. `is_char_boundary`
+    // is true at index 0 and at every codepoint start; if the
+    // caller happened to point inside a multi-byte char (motions
+    // shouldn't, but guard anyway), step back to the previous
+    // boundary so `&line[..byte]` is a valid str slice.
+    let mut byte = byte;
+    while byte > 0 && !line.is_char_boundary(byte) {
+        byte -= 1;
+    }
+    UnicodeWidthStr::width(&line[..byte]) as u32
 }
 
 fn style_to_tui(s: Style) -> TuiStyle {
@@ -838,6 +871,35 @@ mod tests {
         // gutter for 1-line file is 3 cells; cursor at byte 3 -> column 6.
         assert_eq!(pos.0, 6);
         assert_eq!(pos.1, 0);
+    }
+
+    #[test]
+    fn cursor_position_uses_display_width_for_multibyte_chars() {
+        // `§` is 2 bytes / 1 cell in a terminal. With cursor.byte = 6
+        // (the `P` of "Performance" on the line below), the rendered
+        // column must be 5 cells in (`-`, ` `, `§`, `8`, ` `, `P`),
+        // not 6 -- which is what the byte offset would give us if
+        // we used it as the column.
+        let mut app = app_with("- §8 Performance commitments", 5);
+        app.cursor.byte = 6;
+        let area = Rect::new(0, 0, 80, 5);
+        let pos = cursor_screen_position(&app, area).unwrap();
+        // gutter_w is 3 for a 1-line file. `P` is at display col 5
+        // within the line, so absolute screen col = 3 + 5 = 8.
+        assert_eq!(pos.0, 8);
+    }
+
+    #[test]
+    fn cursor_position_handles_cjk_double_width() {
+        // CJK chars are 3 bytes / 2 cells. After "abc中" the cursor
+        // at byte 6 (the space after the CJK char) should land at
+        // display col 5 (a, b, c, 中=2 cells = total 5 cells).
+        let mut app = app_with("abc中 def", 5);
+        app.cursor.byte = 6; // past the 3-byte CJK char
+        let area = Rect::new(0, 0, 80, 5);
+        let pos = cursor_screen_position(&app, area).unwrap();
+        // gutter_w (3) + 5 display cells = 8.
+        assert_eq!(pos.0, 8);
     }
 
     #[test]

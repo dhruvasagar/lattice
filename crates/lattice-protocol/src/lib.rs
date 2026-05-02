@@ -23,7 +23,7 @@ pub use crate::cancel::CancellationToken;
 pub use crate::command::Command;
 pub use crate::edit::{Edit, EditKind};
 pub use crate::error::{ProtocolError, Result};
-pub use crate::event::Event;
+pub use crate::event::{Event, EventKind};
 pub use crate::ids::{
     BufferId, CommandId, DocumentId, MajorModeId, MinorModeId, PaneId, PluginId, TabId, WindowId,
 };

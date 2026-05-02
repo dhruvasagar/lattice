@@ -60,12 +60,14 @@
 //!   document, but the App still tracks a single document.
 
 pub mod actor;
+pub mod events;
 pub mod handle;
 pub mod pending;
 pub mod runtime;
 pub mod snapshot;
 
 pub use actor::DocumentActor;
+pub use events::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
 pub use handle::{DocumentHandle, spawn_document};
 pub use lattice_grammar::CancellationToken;
 pub use pending::{InvocationId, Pending, RuntimeError};

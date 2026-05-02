@@ -38,7 +38,7 @@ pub mod source;
 pub mod target;
 
 pub use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
-pub use crate::cancel::CancellationToken;
+pub use crate::cancel::{CancellationToken, CheckCancelled};
 pub use crate::introspect::{
     HelpSection, Introspectable, RenderedAnchor, RenderedIntrospection, SourceEntry, SourceLabel,
     render_introspection, render_introspection_lines,

@@ -53,10 +53,11 @@
 //! one byte before calling.
 
 use fancy_regex::Regex;
+use lattice_protocol::CancellationToken;
 use lattice_protocol::position::{Position, Range};
 
 use crate::buffer::Buffer;
-use crate::error::CoreResult;
+use crate::error::{CoreError, CoreResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -96,25 +97,35 @@ const SCAN_WINDOW_BYTES: usize = 128 * 1024;
 /// Walks the rope's chunk iterator -- never allocates the whole
 /// buffer text. Per-call cost on literal patterns is dominated by
 /// the SIMD prefilter via the `regex` crate's literal extraction.
-pub fn find_all(buffer: &Buffer, regex: &Regex) -> CoreResult<Vec<Range>> {
+///
+/// `cancel` is polled between matches and at chunk boundaries
+/// inside the inner walks. A flipped token short-circuits with
+/// [`CoreError::Cancelled`]; partial results are discarded.
+pub fn find_all(buffer: &Buffer, regex: &Regex, cancel: &CancellationToken) -> CoreResult<Vec<Range>> {
     let total = buffer.byte_len() as usize;
     if total == 0 {
         return Ok(Vec::new());
     }
     let mut hits = Vec::new();
     let mut next = 0;
-    while let Some((start_b, end_b)) =
-        find_forward_in_rope(buffer.rope(), regex, next).map_err(regex_to_core_err)?
-    {
-        let start = buffer.byte_to_position(start_b)?;
-        let end = buffer.byte_to_position(end_b)?;
-        hits.push(Range::new(start, end));
-        // Advance past the match to avoid overlapping. If the match
-        // was zero-width (e.g. `^`, `\b`), still advance one byte
-        // so we make progress.
-        next = if end_b > start_b { end_b } else { start_b + 1 };
-        if next >= total {
-            break;
+    loop {
+        if cancel.is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
+        match find_forward_in_rope(buffer.rope(), regex, next, cancel)? {
+            Some((start_b, end_b)) => {
+                let start = buffer.byte_to_position(start_b)?;
+                let end = buffer.byte_to_position(end_b)?;
+                hits.push(Range::new(start, end));
+                // Advance past the match to avoid overlapping. If the
+                // match was zero-width (e.g. `^`, `\b`), still advance
+                // one byte so we make progress.
+                next = if end_b > start_b { end_b } else { start_b + 1 };
+                if next >= total {
+                    break;
+                }
+            }
+            None => break,
         }
     }
     Ok(hits)
@@ -125,6 +136,7 @@ pub fn find(
     regex: &Regex,
     from: Position,
     direction: Direction,
+    cancel: &CancellationToken,
 ) -> CoreResult<Option<SearchHit>> {
     let total = buffer.byte_len() as usize;
     if total == 0 {
@@ -134,35 +146,29 @@ pub fn find(
     let rope = buffer.rope();
 
     let (match_range, wrapped) = match direction {
-        Direction::Forward => {
-            match find_forward_in_rope(rope, regex, from_byte).map_err(regex_to_core_err)? {
-                Some(r) => (Some(r), false),
-                None => {
-                    // Wrap: search [0, from). Filter out matches at
-                    // or past `from` -- those would have been seen
-                    // by the primary pass.
-                    let wrap = find_forward_in_rope(rope, regex, 0)
-                        .map_err(regex_to_core_err)?
-                        .filter(|&(s, _)| s < from_byte);
-                    (wrap, true)
-                }
+        Direction::Forward => match find_forward_in_rope(rope, regex, from_byte, cancel)? {
+            Some(r) => (Some(r), false),
+            None => {
+                // Wrap: search [0, from). Filter out matches at
+                // or past `from` -- those would have been seen
+                // by the primary pass.
+                let wrap = find_forward_in_rope(rope, regex, 0, cancel)?
+                    .filter(|&(s, _)| s < from_byte);
+                (wrap, true)
             }
-        }
-        Direction::Backward => {
-            match find_backward_in_rope(rope, regex, from_byte).map_err(regex_to_core_err)? {
-                Some(r) => (Some(r), false),
-                None => {
-                    // Wrap: largest match in (from, total]. Run a
-                    // backward scan from end-of-buffer, filter out
-                    // matches at or before from.
-                    let last = total.saturating_sub(1);
-                    let wrap = find_backward_in_rope(rope, regex, last)
-                        .map_err(regex_to_core_err)?
-                        .filter(|&(s, _)| s > from_byte);
-                    (wrap, true)
-                }
+        },
+        Direction::Backward => match find_backward_in_rope(rope, regex, from_byte, cancel)? {
+            Some(r) => (Some(r), false),
+            None => {
+                // Wrap: largest match in (from, total]. Run a
+                // backward scan from end-of-buffer, filter out
+                // matches at or before from.
+                let last = total.saturating_sub(1);
+                let wrap = find_backward_in_rope(rope, regex, last, cancel)?
+                    .filter(|&(s, _)| s > from_byte);
+                (wrap, true)
             }
-        }
+        },
     };
 
     match match_range {
@@ -179,16 +185,16 @@ pub fn find(
 }
 
 /// Streaming forward regex search. Returns `Ok(Some((start, end)))`
-/// for the leftmost match at or after `from`, or `Ok(None)` if no
-/// match exists. Returns `Err` only if the regex engine signals a
-/// runtime error (e.g. recursion-limit exceeded on a pathological
-/// backref pattern).
-#[allow(clippy::result_large_err)]
+/// for the leftmost match at or after `from`, `Ok(None)` if no
+/// match exists. Returns `Err(CoreError::Cancelled)` on a flipped
+/// `cancel` token, or a regex runtime error (e.g. recursion-limit
+/// exceeded on a pathological backref pattern).
 fn find_forward_in_rope(
     rope: &ropey::Rope,
     regex: &Regex,
     from: usize,
-) -> Result<Option<(usize, usize)>, fancy_regex::Error> {
+    cancel: &CancellationToken,
+) -> CoreResult<Option<(usize, usize)>> {
     let total = rope.len_bytes();
     if from >= total {
         return Ok(None);
@@ -198,6 +204,12 @@ fn find_forward_in_rope(
     let mut window_start_abs = from;
 
     for chunk in slice.chunks() {
+        // Poll once per chunk: ~1-16KB of work per check, cheaper
+        // than a regex call's ~5µs setup. A flipped token bails
+        // before we extend the window or enter regex.
+        if cancel.is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
         window.extend_from_slice(chunk.as_bytes());
         // Only call into the regex engine once we've accumulated a
         // full SCAN_WINDOW_BYTES of data. Reduces per-call setup
@@ -206,7 +218,7 @@ fn find_forward_in_rope(
         if window.len() < SCAN_WINDOW_BYTES {
             continue;
         }
-        if let Some(m) = find_in_window(&window, regex)? {
+        if let Some(m) = find_in_window(&window, regex).map_err(regex_to_core_err)? {
             return Ok(Some((window_start_abs + m.0, window_start_abs + m.1)));
         }
         // Slide forward: keep the last MAX_MATCH_LEN bytes so a
@@ -224,7 +236,7 @@ fn find_forward_in_rope(
     // Final flush: search whatever remains in the window after the
     // last chunk (in particular, when the rope ends mid-window).
     if !window.is_empty()
-        && let Some(m) = find_in_window(&window, regex)?
+        && let Some(m) = find_in_window(&window, regex).map_err(regex_to_core_err)?
     {
         return Ok(Some((window_start_abs + m.0, window_start_abs + m.1)));
     }
@@ -254,13 +266,13 @@ fn find_in_window(
 
 /// Streaming backward regex search. Returns the rightmost match in
 /// `[0, from + MAX_MATCH_LEN)` clamped to buffer bounds. Walks the
-/// rope's chunks right-to-left.
-#[allow(clippy::result_large_err)]
+/// rope's chunks right-to-left. Polls `cancel` once per chunk.
 fn find_backward_in_rope(
     rope: &ropey::Rope,
     regex: &Regex,
     from: usize,
-) -> Result<Option<(usize, usize)>, fancy_regex::Error> {
+    cancel: &CancellationToken,
+) -> CoreResult<Option<(usize, usize)>> {
     let total = rope.len_bytes();
     if total == 0 {
         return Ok(None);
@@ -278,6 +290,9 @@ fn find_backward_in_rope(
     let mut window_end_abs = end;
 
     for chunk in chunks.iter().rev() {
+        if cancel.is_cancelled() {
+            return Err(CoreError::Cancelled);
+        }
         let cb = chunk.as_bytes();
         // Frame: this chunk + bridge from the just-processed (more-
         // rightward) chunk. The bridge holds at most MAX_MATCH_LEN
@@ -298,7 +313,7 @@ fn find_backward_in_rope(
         // we stop at the chunk granularity.
         let mut best: Option<(usize, usize)> = None;
         for m in regex.find_iter(s) {
-            let m = m?;
+            let m = m.map_err(regex_to_core_err)?;
             let abs_start = frame_start_abs + m.start();
             // Constrain to the [0, from] start range. Since we
             // process chunks right-to-left, in the rightmost
@@ -384,14 +399,14 @@ mod tests {
     #[test]
     fn find_in_empty_buffer_returns_none() {
         let b = Buffer::empty();
-        let hit = find(&b, &re("needle"), Position::ZERO, Direction::Forward).unwrap();
+        let hit = find(&b, &re("needle"), Position::ZERO, Direction::Forward, &CancellationToken::never()).unwrap();
         assert!(hit.is_none());
     }
 
     #[test]
     fn forward_basic_match_no_wrap() {
         let b = Buffer::from_text("hello world");
-        let hit = find(&b, &re("world"), Position::ZERO, Direction::Forward)
+        let hit = find(&b, &re("world"), Position::ZERO, Direction::Forward, &CancellationToken::never())
             .unwrap()
             .expect("match");
         assert_eq!(hit.range, r(p(0, 6), p(0, 11)));
@@ -401,7 +416,7 @@ mod tests {
     #[test]
     fn forward_wraps_when_no_match_after_from() {
         let b = Buffer::from_text("foo bar baz");
-        let hit = find(&b, &re("foo"), p(0, 5), Direction::Forward)
+        let hit = find(&b, &re("foo"), p(0, 5), Direction::Forward, &CancellationToken::never())
             .unwrap()
             .expect("match");
         assert_eq!(hit.range, r(p(0, 0), p(0, 3)));
@@ -411,14 +426,14 @@ mod tests {
     #[test]
     fn forward_no_match_anywhere_is_none() {
         let b = Buffer::from_text("hello");
-        let hit = find(&b, &re("xyz"), Position::ZERO, Direction::Forward).unwrap();
+        let hit = find(&b, &re("xyz"), Position::ZERO, Direction::Forward, &CancellationToken::never()).unwrap();
         assert!(hit.is_none());
     }
 
     #[test]
     fn forward_inclusive_of_from_byte() {
         let b = Buffer::from_text("abc abc");
-        let hit = find(&b, &re("abc"), p(0, 4), Direction::Forward)
+        let hit = find(&b, &re("abc"), p(0, 4), Direction::Forward, &CancellationToken::never())
             .unwrap()
             .expect("match");
         assert_eq!(hit.range.start, p(0, 4));
@@ -428,7 +443,7 @@ mod tests {
     #[test]
     fn backward_basic_match_no_wrap() {
         let b = Buffer::from_text("foo bar foo");
-        let hit = find(&b, &re("foo"), p(0, 10), Direction::Backward)
+        let hit = find(&b, &re("foo"), p(0, 10), Direction::Backward, &CancellationToken::never())
             .unwrap()
             .expect("match");
         assert_eq!(hit.range.start, p(0, 8));
@@ -438,7 +453,7 @@ mod tests {
     #[test]
     fn backward_wraps_when_no_match_before_from() {
         let b = Buffer::from_text("alpha beta gamma");
-        let hit = find(&b, &re("gamma"), p(0, 0), Direction::Backward)
+        let hit = find(&b, &re("gamma"), p(0, 0), Direction::Backward, &CancellationToken::never())
             .unwrap()
             .expect("match");
         assert_eq!(hit.range.start, p(0, 11));
@@ -448,7 +463,7 @@ mod tests {
     #[test]
     fn forward_finds_match_across_lines() {
         let b = Buffer::from_text("foo\nbar\nbaz");
-        let hit = find(&b, &re("bar"), Position::ZERO, Direction::Forward)
+        let hit = find(&b, &re("bar"), Position::ZERO, Direction::Forward, &CancellationToken::never())
             .unwrap()
             .expect("match");
         assert_eq!(hit.range, r(p(1, 0), p(1, 3)));
@@ -457,7 +472,7 @@ mod tests {
     #[test]
     fn backward_at_start_of_buffer_finds_match_at_zero() {
         let b = Buffer::from_text("alpha gamma alpha");
-        let hit = find(&b, &re("alpha"), p(0, 0), Direction::Backward)
+        let hit = find(&b, &re("alpha"), p(0, 0), Direction::Backward, &CancellationToken::never())
             .unwrap()
             .expect("match");
         // from=0: backward primary finds match at 0 itself.
@@ -468,7 +483,7 @@ mod tests {
     #[test]
     fn unicode_pattern_matches_at_codepoint_boundary() {
         let b = Buffer::from_text("café au lait");
-        let hit = find(&b, &re("café"), Position::ZERO, Direction::Forward)
+        let hit = find(&b, &re("café"), Position::ZERO, Direction::Forward, &CancellationToken::never())
             .unwrap()
             .expect("match");
         // "café" = 5 UTF-8 bytes (c=1, a=1, f=1, é=2)
@@ -480,7 +495,7 @@ mod tests {
     #[test]
     fn regex_alternation_matches_either_branch() {
         let b = Buffer::from_text("foo bar baz");
-        let hit = find(&b, &re("(bar|baz)"), Position::ZERO, Direction::Forward)
+        let hit = find(&b, &re("(bar|baz)"), Position::ZERO, Direction::Forward, &CancellationToken::never())
             .unwrap()
             .expect("match");
         assert_eq!(hit.range.start, p(0, 4));
@@ -489,7 +504,7 @@ mod tests {
     #[test]
     fn regex_character_class_matches() {
         let b = Buffer::from_text("abc123def");
-        let hit = find(&b, &re(r"\d+"), Position::ZERO, Direction::Forward)
+        let hit = find(&b, &re(r"\d+"), Position::ZERO, Direction::Forward, &CancellationToken::never())
             .unwrap()
             .expect("match");
         assert_eq!(hit.range, r(p(0, 3), p(0, 6)));
@@ -499,7 +514,7 @@ mod tests {
     fn regex_with_pattern_backref_matches_repeated_word() {
         // fancy-regex's defining feature vs. plain `regex` crate.
         let b = Buffer::from_text("the cat the dog");
-        let hit = find(&b, &re(r"(\w+) \w+ \1"), Position::ZERO, Direction::Forward)
+        let hit = find(&b, &re(r"(\w+) \w+ \1"), Position::ZERO, Direction::Forward, &CancellationToken::never())
             .unwrap()
             .expect("match");
         assert_eq!(hit.range, r(p(0, 0), p(0, 11))); // "the cat the"
@@ -508,7 +523,7 @@ mod tests {
     #[test]
     fn regex_anchor_matches_start_of_string() {
         let b = Buffer::from_text("hello world");
-        let hit = find(&b, &re("^hello"), Position::ZERO, Direction::Forward)
+        let hit = find(&b, &re("^hello"), Position::ZERO, Direction::Forward, &CancellationToken::never())
             .unwrap()
             .expect("match");
         assert_eq!(hit.range.start, p(0, 0));
@@ -519,7 +534,7 @@ mod tests {
     #[test]
     fn find_all_returns_every_occurrence() {
         let b = Buffer::from_text("foo bar foo baz foo");
-        let hits = find_all(&b, &re("foo")).unwrap();
+        let hits = find_all(&b, &re("foo"), &CancellationToken::never()).unwrap();
         assert_eq!(hits.len(), 3);
         assert_eq!(hits[0].start, p(0, 0));
         assert_eq!(hits[1].start, p(0, 8));
@@ -529,21 +544,25 @@ mod tests {
     #[test]
     fn find_all_no_match_returns_empty() {
         let b = Buffer::from_text("hello");
-        assert!(find_all(&b, &re("xyz")).unwrap().is_empty());
+        assert!(
+            find_all(&b, &re("xyz"), &CancellationToken::never())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
     fn find_all_does_not_overlap_matches() {
         let b = Buffer::from_text("aaaa");
         // Pattern "aa" matches at 0 and 2 (advancing by match.end each time).
-        let hits = find_all(&b, &re("aa")).unwrap();
+        let hits = find_all(&b, &re("aa"), &CancellationToken::never()).unwrap();
         assert_eq!(hits.len(), 2);
     }
 
     #[test]
     fn find_all_across_lines() {
         let b = Buffer::from_text("foo\nbar\nfoo");
-        let hits = find_all(&b, &re("foo")).unwrap();
+        let hits = find_all(&b, &re("foo"), &CancellationToken::never()).unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].start.line, 0);
         assert_eq!(hits[1].start.line, 2);
@@ -552,7 +571,7 @@ mod tests {
     #[test]
     fn find_all_with_regex_class() {
         let b = Buffer::from_text("a1 b2 c3");
-        let hits = find_all(&b, &re(r"\d")).unwrap();
+        let hits = find_all(&b, &re(r"\d"), &CancellationToken::never()).unwrap();
         assert_eq!(hits.len(), 3);
     }
 
@@ -560,10 +579,51 @@ mod tests {
     fn backward_skip_current_via_caller_advance() {
         // Caller skipping the current match passes from-1.
         let b = Buffer::from_text("foo bar foo");
-        let hit = find(&b, &re("foo"), p(0, 7), Direction::Backward)
+        let hit = find(&b, &re("foo"), p(0, 7), Direction::Backward, &CancellationToken::never())
             .unwrap()
             .expect("match");
         assert_eq!(hit.range.start, p(0, 0));
+    }
+
+    // ---- Cancellation ----
+
+    #[test]
+    fn pre_flipped_token_short_circuits_find() {
+        let b = Buffer::from_text("foo bar baz");
+        let token = CancellationToken::new();
+        token.cancel();
+        let result = find(
+            &b,
+            &re("foo"),
+            Position::ZERO,
+            Direction::Forward,
+            &token,
+        );
+        assert!(matches!(result, Err(CoreError::Cancelled)));
+    }
+
+    #[test]
+    fn pre_flipped_token_short_circuits_find_all() {
+        let b = Buffer::from_text("foo bar foo baz foo");
+        let token = CancellationToken::new();
+        token.cancel();
+        let result = find_all(&b, &re("foo"), &token);
+        assert!(matches!(result, Err(CoreError::Cancelled)));
+    }
+
+    #[test]
+    fn pre_flipped_token_short_circuits_find_backward() {
+        let b = Buffer::from_text("foo bar foo");
+        let token = CancellationToken::new();
+        token.cancel();
+        let result = find(
+            &b,
+            &re("foo"),
+            p(0, 10),
+            Direction::Backward,
+            &token,
+        );
+        assert!(matches!(result, Err(CoreError::Cancelled)));
     }
 
     #[test]

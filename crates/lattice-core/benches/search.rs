@@ -20,6 +20,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use fancy_regex::Regex;
 use lattice_core::Buffer;
 use lattice_core::search::{Direction, find};
+use lattice_protocol::CancellationToken;
 use lattice_protocol::position::Position;
 
 fn build_buffer(n_lines: usize) -> String {
@@ -48,8 +49,14 @@ fn search_forward_first_match(c: &mut Criterion) {
             &buffer,
             |bencher, buf| {
                 bencher.iter(|| {
-                    let _ = find(buf, black_box(&regex), Position::ZERO, Direction::Forward)
-                        .unwrap();
+                    let _ = find(
+                        buf,
+                        black_box(&regex),
+                        Position::ZERO,
+                        Direction::Forward,
+                        &CancellationToken::never(),
+                    )
+                    .unwrap();
                 });
             },
         );
@@ -71,8 +78,14 @@ fn search_forward_last_match(c: &mut Criterion) {
             &buffer,
             |bencher, buf| {
                 bencher.iter(|| {
-                    let _ = find(buf, black_box(&regex), Position::ZERO, Direction::Forward)
-                        .unwrap();
+                    let _ = find(
+                        buf,
+                        black_box(&regex),
+                        Position::ZERO,
+                        Direction::Forward,
+                        &CancellationToken::never(),
+                    )
+                    .unwrap();
                 });
             },
         );
@@ -99,6 +112,7 @@ fn search_no_match_with_wrap(c: &mut Criterion) {
                         black_box(&regex),
                         Position::new((size as u32) / 2, 0),
                         Direction::Forward,
+                        &CancellationToken::never(),
                     )
                     .unwrap();
                 });
@@ -125,6 +139,7 @@ fn search_backward(c: &mut Criterion) {
                         black_box(&regex),
                         Position::new((size as u32).saturating_sub(1), 0),
                         Direction::Backward,
+                        &CancellationToken::never(),
                     )
                     .unwrap();
                 });
@@ -146,7 +161,14 @@ fn search_regex_features(c: &mut Criterion) {
     let alt = re(r"(handler_42|handler_4242|handler_42420)");
     g.bench_function("alternation_50k", |bencher| {
         bencher.iter(|| {
-            let _ = find(&buffer, black_box(&alt), Position::ZERO, Direction::Forward).unwrap();
+            let _ = find(
+                &buffer,
+                black_box(&alt),
+                Position::ZERO,
+                Direction::Forward,
+                &CancellationToken::never(),
+            )
+            .unwrap();
         });
     });
 
@@ -154,7 +176,14 @@ fn search_regex_features(c: &mut Criterion) {
     let class = re(r"\bhandler_\d{4,6}\b");
     g.bench_function("class_quantifier_50k", |bencher| {
         bencher.iter(|| {
-            let _ = find(&buffer, black_box(&class), Position::ZERO, Direction::Forward).unwrap();
+            let _ = find(
+                &buffer,
+                black_box(&class),
+                Position::ZERO,
+                Direction::Forward,
+                &CancellationToken::never(),
+            )
+            .unwrap();
         });
     });
 
@@ -162,7 +191,14 @@ fn search_regex_features(c: &mut Criterion) {
     let backref = re(r"(handler_\d+)\b.*\b\1");
     g.bench_function("backref_50k", |bencher| {
         bencher.iter(|| {
-            let _ = find(&buffer, black_box(&backref), Position::ZERO, Direction::Forward).unwrap();
+            let _ = find(
+                &buffer,
+                black_box(&backref),
+                Position::ZERO,
+                Direction::Forward,
+                &CancellationToken::never(),
+            )
+            .unwrap();
         });
     });
 

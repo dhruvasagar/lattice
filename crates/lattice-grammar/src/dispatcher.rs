@@ -14,7 +14,7 @@
 
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
-use crate::cancel::CancellationToken;
+use crate::cancel::{CancellationToken, CheckCancelled};
 use crate::command::{CommandInvocation, CommandKind};
 use crate::effect::{Effect, YankKind};
 use crate::error::{CommandError, GrammarResult};

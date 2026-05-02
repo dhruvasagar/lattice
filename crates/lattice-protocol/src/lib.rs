@@ -10,14 +10,16 @@
 //! Wire format details (MessagePack envelope for cross-process transport) live
 //! in this crate as well; in-process callers pay zero serialization cost.
 
+pub mod cancel;
+pub mod command;
+pub mod edit;
+pub mod error;
+pub mod event;
 pub mod ids;
 pub mod position;
-pub mod edit;
 pub mod selection;
-pub mod command;
-pub mod event;
-pub mod error;
 
+pub use crate::cancel::CancellationToken;
 pub use crate::command::Command;
 pub use crate::edit::{Edit, EditKind};
 pub use crate::error::{ProtocolError, Result};

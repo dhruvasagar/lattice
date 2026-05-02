@@ -29,7 +29,9 @@ use lattice_grammar::registry::OperatorId;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
-use lattice_runtime::{DocumentHandle, RuntimeError, block_on, spawn_document};
+use lattice_runtime::{
+    CancellationToken, DocumentHandle, RuntimeError, block_on, spawn_document,
+};
 use lattice_syntax::{Lang, StyledSpan, Syntax};
 
 use std::collections::HashMap;
@@ -948,11 +950,23 @@ impl App {
     /// §5.2.1). Replaces direct `lattice_grammar::execute(&self.registry,
     /// &mut self.document, ...)` calls; the actor holds the only
     /// `&mut Document` and runs `execute` inside its task.
+    ///
+    /// v1 passes a `CancellationToken::never()` -- the input loop
+    /// (`lattice_ui_tui::runtime::run`) is single-threaded crossterm
+    /// poll, so no concurrent code path can flip the token while
+    /// `block_on` parks the thread. The plumbing is in place for a
+    /// future runtime that reads input on a separate task and flips
+    /// the dispatch token on Esc; see `dispatch_with_cancel` on
+    /// [`DocumentHandle`].
     pub fn dispatch_blocking(
         &self,
         invocation: CommandInvocation,
     ) -> Result<Effect, RuntimeError> {
-        block_on(self.document.dispatch(invocation, self.cursor))
+        block_on(self.document.dispatch_with_cancel(
+            invocation,
+            self.cursor,
+            CancellationToken::never(),
+        ))
     }
 
     pub fn apply(&mut self, action: Action) {
@@ -1398,13 +1412,23 @@ impl App {
             SearchDirection::Forward => search::Direction::Forward,
             SearchDirection::Backward => search::Direction::Backward,
         };
-        match search::find(&self.document.snapshot().buffer, &regex, line.origin, dir) {
+        match search::find(
+            &self.document.snapshot().buffer,
+            &regex,
+            line.origin,
+            dir,
+            &CancellationToken::never(),
+        ) {
             Ok(Some(SearchHit { range, .. })) => self.current_match = Some(range),
             _ => self.current_match = None,
         }
         // Live hlsearch: highlight every occurrence as the user types.
-        self.all_matches =
-            search::find_all(&self.document.snapshot().buffer, &regex).unwrap_or_default();
+        self.all_matches = search::find_all(
+            &self.document.snapshot().buffer,
+            &regex,
+            &CancellationToken::never(),
+        )
+        .unwrap_or_default();
     }
 
     fn submit_search(&mut self) {
@@ -1437,12 +1461,22 @@ impl App {
             SearchDirection::Forward => search::Direction::Forward,
             SearchDirection::Backward => search::Direction::Backward,
         };
-        match search::find(&self.document.snapshot().buffer, &regex, line.origin, dir) {
+        match search::find(
+            &self.document.snapshot().buffer,
+            &regex,
+            line.origin,
+            dir,
+            &CancellationToken::never(),
+        ) {
             Ok(Some(hit)) => {
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
-                self.all_matches =
-                    search::find_all(&self.document.snapshot().buffer, &regex).unwrap_or_default();
+                self.all_matches = search::find_all(
+                    &self.document.snapshot().buffer,
+                    &regex,
+                    &CancellationToken::never(),
+                )
+                .unwrap_or_default();
                 if hit.wrapped {
                     let level = EchoLevel::Warn;
                     let text = match line.direction {
@@ -1515,7 +1549,13 @@ impl App {
                 return;
             }
         };
-        match search::find(&self.document.snapshot().buffer, &regex, from, dir) {
+        match search::find(
+            &self.document.snapshot().buffer,
+            &regex,
+            from,
+            dir,
+            &CancellationToken::never(),
+        ) {
             Ok(Some(hit)) => {
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
@@ -3429,7 +3469,13 @@ impl App {
                 return;
             }
         };
-        match lattice_core::search::find(&self.document.snapshot().buffer, &regex, from, dir) {
+        match lattice_core::search::find(
+            &self.document.snapshot().buffer,
+            &regex,
+            from,
+            dir,
+            &CancellationToken::never(),
+        ) {
             Ok(Some(hit)) => {
                 self.push_position_history(pre_jump, PositionSource::AutoJump);
                 self.cursor = hit.range.start;
@@ -3437,6 +3483,7 @@ impl App {
                 self.all_matches = lattice_core::search::find_all(
                     &self.document.snapshot().buffer,
                     &regex,
+                    &CancellationToken::never(),
                 )
                 .unwrap_or_default();
                 if hit.wrapped {

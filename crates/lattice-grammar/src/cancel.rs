@@ -1,11 +1,14 @@
 //! Cancellation tokens for evaluator interruption (DESIGN.md §5.2.5).
 //!
-//! Every evaluator (motion / operator / text-object / ex-command)
-//! that does meaningful work behind a loop receives a
-//! [`CancellationToken`] and polls it on a regular cadence.
+//! The primitive lives at the protocol layer (so search loops in
+//! [`lattice_core`] can poll it without depending on grammar). This
+//! module re-exports it as [`CancellationToken`] and adds the
+//! grammar-domain `check()` short-circuit that converts a flipped
+//! token into [`crate::CommandError::Cancelled`].
 //!
-//! The token is a clone-cheap `Arc<AtomicBool>`. Setting it costs
-//! one atomic store; reading is one atomic load. The DESIGN.md
+//! Every evaluator (motion / operator / text-object / ex-command)
+//! that does meaningful work behind a loop receives a token via its
+//! context struct and polls it on a regular cadence. The DESIGN.md
 //! contract requires evaluators to observe a flip within 100µs --
 //! polling once per inner-loop iteration is more than enough on
 //! modern CPUs (a polled load is ~ns).
@@ -21,8 +24,7 @@
 //!   evaluators. v1 uses user-Esc cancellation only.
 //! - **Supersede.** A newer same-event request invalidates the
 //!   in-flight one (e.g. a newer `CompletionRequested` cancels the
-//!   prior LSP request). Used by Display-class commands; Reflex
-//!   commands don't supersede.
+//!   prior LSP request). NOT YET WIRED.
 //!
 //! # Cancellation semantics (§5.2.5)
 //!
@@ -33,71 +35,31 @@
 //! caller-observable state (cursor, selections, undo stack) is
 //! unchanged. From the user's perspective the keystroke had no
 //! effect -- which is the correct framing since they cancelled it.
-//!
-//! # Default token
-//!
-//! Callers that don't care about cancellation use
-//! [`CancellationToken::never`] -- a singleton-style token that
-//! can never be cancelled. Spawned via clone of a static
-//! `AtomicBool::new(false)`; cost is identical to a custom token,
-//! which keeps the evaluator polling logic uniform.
-
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::{CommandError, GrammarResult};
 
-/// Cooperative cancellation handle. Cheap to clone (one Arc bump);
-/// safe to share across threads / tasks.
-#[derive(Debug, Clone, Default)]
-pub struct CancellationToken {
-    flag: Arc<AtomicBool>,
+/// Re-export of the protocol-layer cancellation primitive. Grammar
+/// callers access it under this name; lower crates (search loops in
+/// `lattice-core`) use [`lattice_protocol::CancellationToken`]
+/// directly. The two are the same type.
+pub use lattice_protocol::CancellationToken;
+
+/// Grammar extension: convert a flipped token into a
+/// [`CommandError::Cancelled`] result. The `?` operator threads it
+/// through naturally:
+///
+/// ```ignore
+/// for chunk in chunks {
+///     ctx.cancel.check()?;
+///     // ... work ...
+/// }
+/// ```
+pub trait CheckCancelled {
+    fn check(&self) -> GrammarResult<()>;
 }
 
-impl CancellationToken {
-    /// Build a fresh, un-cancelled token.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Build a token that can never be cancelled. Useful as a
-    /// default for callers that don't drive cancellation. Two
-    /// `never()` tokens are independent (each owns its own
-    /// `AtomicBool`); calling `cancel()` on one has no effect on
-    /// other clones unless they were `Clone`'d from the same
-    /// `Arc`. The "can never be cancelled" guarantee comes from
-    /// not exposing the token after construction -- the caller
-    /// keeps it private and never flips it.
-    pub fn never() -> Self {
-        Self::default()
-    }
-
-    /// Flip the token. Subsequent `is_cancelled` / `check` calls
-    /// (on this clone or any other) will observe the cancellation.
-    pub fn cancel(&self) {
-        // Release ordering so any state the canceller wrote before
-        // flipping is visible to readers that observe the flag.
-        self.flag.store(true, Ordering::Release);
-    }
-
-    /// Cheap (one atomic load) check. Returns `true` iff the
-    /// token has been cancelled by some clone.
-    pub fn is_cancelled(&self) -> bool {
-        self.flag.load(Ordering::Acquire)
-    }
-
-    /// Convenience for evaluator hot loops: returns
-    /// `Err(CommandError::Cancelled)` if the token has been
-    /// flipped, `Ok(())` otherwise. The `?` operator threads it
-    /// through naturally:
-    ///
-    /// ```ignore
-    /// for chunk in chunks {
-    ///     ctx.token.check()?;
-    ///     // ... work ...
-    /// }
-    /// ```
-    pub fn check(&self) -> GrammarResult<()> {
+impl CheckCancelled for CancellationToken {
+    fn check(&self) -> GrammarResult<()> {
         if self.is_cancelled() {
             Err(CommandError::Cancelled)
         } else {
@@ -112,39 +74,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fresh_token_is_not_cancelled() {
+    fn check_on_fresh_token_is_ok() {
         let t = CancellationToken::new();
-        assert!(!t.is_cancelled());
         assert!(t.check().is_ok());
     }
 
     #[test]
-    fn cancel_flips_observed_state() {
+    fn check_on_flipped_token_returns_cancelled() {
         let t = CancellationToken::new();
         t.cancel();
-        assert!(t.is_cancelled());
         assert!(matches!(t.check(), Err(CommandError::Cancelled)));
-    }
-
-    #[test]
-    fn clone_observes_same_state() {
-        let t = CancellationToken::new();
-        let t2 = t.clone();
-        t.cancel();
-        assert!(t2.is_cancelled());
-    }
-
-    #[test]
-    fn cancel_via_clone_observed_by_original() {
-        let t = CancellationToken::new();
-        let t2 = t.clone();
-        t2.cancel();
-        assert!(t.is_cancelled());
-    }
-
-    #[test]
-    fn never_token_starts_uncancelled() {
-        let t = CancellationToken::never();
-        assert!(!t.is_cancelled());
     }
 }

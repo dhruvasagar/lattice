@@ -435,9 +435,10 @@ race past their own commit.
 | Sync `lattice_grammar::execute` (runs inside actor)        | ✅                   | §5.2.1 (purity preserved)               |
 | Latency-class declarations (Reflex / Display / Background) | ✅ declarative        | §5.2.5 (`LatencyClass` field on `CommandSpec`; runtime enforcement deferred) |
 | Cancellation token contract                                | ✅ user-Esc           | §5.2.5; `CancellationToken` (Arc<AtomicBool>) plumbed through `dispatch_with_cancel` → grammar dispatcher → operator/motion/text-object contexts → search loops. Deadline-timer flipper (Reflex < 2 ms, Display < 10 ms) is the remaining piece. |
-| Event bus (observation baseline)                           | ✅                   | §5.10; `EventBus` in lattice-runtime: kind-indexed dispatch, `SubscriptionTarget::Channel` (mpsc) + `Invocation` (queued via `drain_pending_invocations`). Actor publish hooks + Before-event veto seam are the next layer. |
-| Veto-class hooks (1ms p99)                                 | ⛔                   | §5.2.1 (needs Before-event mutation/veto path on top of the bus) |
-| Events-over-invocation rule                                | ⛔                   | §5.2.5 (needs the actor to publish edit / mode-change events) |
+| Event bus (observation baseline)                           | ✅                   | §5.10; `EventBus` in lattice-runtime: kind-indexed dispatch, `SubscriptionTarget::Channel` (mpsc) + `Invocation` (queued via `drain_pending_invocations`). |
+| App-side event publish                                     | ✅                   | §5.10; App publishes `DocumentChanged` (apply_edit / batch / undo / redo), `SelectionsChanged` (set_selections), `ModalModeChanged` (only on actual axis movement), `BeforeSave` + `DocumentSaved` (sync wrapper around save / save_as), `BeforeQuit` (Action::Quit + `:q` after dirty-check). |
+| Veto-class hooks (1ms p99)                                 | ⛔                   | §5.2.1 (needs Before-event return-path so handlers can mutate / abort; v1 publish is observation-only) |
+| Events-over-invocation rule                                | ⛔                   | §5.2.5 (needs `:autocmd` and `add-hook` parser front-ends to desugar into `subscribe`) |
 | Interactive arg-prompts (§B.1 phase 2)                     | ✅                   | Submitting bare `:cmd<CR>` with a Required first arg arms a prompt: prefills `:cmd `, surfaces the schema's prompt in the echo area, and waits for typed input (Chord-kind args additionally auto-submit on the next captured chord). Optional-default args take the parser's normal path. |
 | Multi-pane selection transformation                        | n/a (single-pane v1) | §5.6.8                                  |
 

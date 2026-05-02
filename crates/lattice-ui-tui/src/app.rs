@@ -26,10 +26,13 @@ use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::effect::Effect;
 use lattice_grammar::register::Register;
 use lattice_grammar::registry::OperatorId;
+use lattice_protocol::Event;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
-use lattice_runtime::{CancellationToken, DocumentHandle, RuntimeError, block_on, spawn_document};
+use lattice_runtime::{
+    CancellationToken, DocumentHandle, EventBus, RuntimeError, block_on, spawn_document,
+};
 use lattice_syntax::{Lang, StyledSpan, Syntax};
 
 use std::collections::HashMap;
@@ -514,6 +517,13 @@ pub struct App {
     /// parser, completion pipeline, and introspection -- all
     /// read-only operations.
     pub registry: Arc<CommandRegistry>,
+    /// In-process event bus (DESIGN.md §5.10). The App publishes
+    /// editor lifecycle events (DocumentChanged, SelectionsChanged,
+    /// ModalModeChanged, BeforeSave, DocumentSaved, BeforeQuit)
+    /// after observing the corresponding state transitions.
+    /// Subscribers are external -- v1 nobody subscribes by default,
+    /// but plugins / autocmd compat will wire up here.
+    pub event_bus: Arc<EventBus>,
     pub builtins: Builtins,
     /// In-progress text in the `:` minibuffer. Populated only while
     /// `modal == ModalState::Command`.
@@ -943,6 +953,7 @@ impl App {
             modal: ModalState::Normal,
             pending: Pending::None,
             registry,
+            event_bus: Arc::new(EventBus::new()),
             builtins,
             command_line: String::new(),
             last_message: None,
@@ -1003,9 +1014,14 @@ impl App {
 
     /// Block_on `apply_edit` and return the `AppliedEdit` (or
     /// `RuntimeError`). Snapshot republishes inside the actor
-    /// before this returns.
+    /// before this returns. On success, publishes a
+    /// [`Event::DocumentChanged`] to the App's event bus.
     pub fn apply_edit_blocking(&self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
-        block_on(self.document.apply_edit(edit))
+        let result = block_on(self.document.apply_edit(edit));
+        if result.is_ok() {
+            self.publish_document_changed();
+        }
+        result
     }
 
     /// Block_on `apply_edit_batch`. The batch lands as one undo
@@ -1014,29 +1030,101 @@ impl App {
         &self,
         edits: Vec<Edit>,
     ) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        block_on(self.document.apply_edit_batch(edits))
+        let result = block_on(self.document.apply_edit_batch(edits));
+        if result.is_ok() {
+            self.publish_document_changed();
+        }
+        result
     }
 
     pub fn undo_blocking(&self) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        block_on(self.document.undo())
+        let result = block_on(self.document.undo());
+        if result.is_ok() {
+            self.publish_document_changed();
+        }
+        result
     }
 
     pub fn redo_blocking(&self) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        block_on(self.document.redo())
+        let result = block_on(self.document.redo());
+        if result.is_ok() {
+            self.publish_document_changed();
+        }
+        result
     }
 
     pub fn save_blocking(&self) -> Result<std::path::PathBuf, RuntimeError> {
-        block_on(self.document.save())
+        // BeforeSave fires before the actor commits, so a future
+        // veto-class handler (§5.10.2) can format / sanitize the
+        // buffer before it hits disk. v1 is observation-only, so
+        // BeforeSave runs only for telemetry / autocmd compatibility.
+        let snap = self.document.snapshot();
+        if let Some(path) = snap.path.as_ref() {
+            self.event_bus.publish(Event::BeforeSave {
+                id: snap.id,
+                path: (**path).clone(),
+            });
+        }
+        let result = block_on(self.document.save());
+        if let Ok(path) = result.as_ref() {
+            self.event_bus.publish(Event::DocumentSaved {
+                id: snap.id,
+                path: path.clone(),
+            });
+        }
+        result
     }
 
     pub fn save_as_blocking(&self, path: std::path::PathBuf) -> Result<(), RuntimeError> {
-        block_on(self.document.save_as(path))
+        let snap = self.document.snapshot();
+        self.event_bus.publish(Event::BeforeSave {
+            id: snap.id,
+            path: path.clone(),
+        });
+        let result = block_on(self.document.save_as(path.clone()));
+        if result.is_ok() {
+            self.event_bus
+                .publish(Event::DocumentSaved { id: snap.id, path });
+        }
+        result
     }
 
     pub fn set_selections_blocking(&self, selections: SelectionSet) {
         // SetSelections only fails on actor-gone; ignore the
         // Result (post-shutdown nothing meaningful to do).
         let _ = block_on(self.document.set_selections(selections));
+        self.publish_selections_changed();
+    }
+
+    /// Build + publish [`Event::DocumentChanged`] from the current
+    /// snapshot. Called from every path that mutates the buffer
+    /// (apply_edit / batch / undo / redo). The post-mutation
+    /// snapshot drives the event payload.
+    fn publish_document_changed(&self) {
+        let snap = self.document.snapshot();
+        // v1 doesn't carry the per-edit AppliedEdits in the event
+        // payload (the protocol's `Event::DocumentChanged.edits`
+        // field is reserved for the future actor-side publish path
+        // where the actor knows what was applied). For now the
+        // event signals "something changed; reload via snapshot".
+        self.event_bus.publish(Event::DocumentChanged {
+            id: snap.id,
+            version: snap.version,
+            edits: Vec::new(),
+        });
+    }
+
+    /// Build + publish [`Event::SelectionsChanged`] from the current
+    /// snapshot. Called whenever the App's view of selections
+    /// rotates (visual extension, dispatcher SelectionChange effect,
+    /// `gv` reselect, etc.).
+    fn publish_selections_changed(&self) {
+        let snap = self.document.snapshot();
+        self.event_bus.publish(Event::SelectionsChanged {
+            id: snap.id,
+            version: snap.version,
+            selections: (*snap.selections).clone(),
+        });
     }
 
     /// Replace the actor's document outright. Used by `:edit
@@ -1091,7 +1179,10 @@ impl App {
         }
         match action {
             Action::None => {}
-            Action::Quit => self.should_quit = true,
+            Action::Quit => {
+                self.event_bus.publish(Event::BeforeQuit);
+                self.should_quit = true;
+            }
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             Action::DeleteCharBackward => self.do_delete_char_backward(),
@@ -2497,6 +2588,11 @@ impl App {
             );
             return;
         }
+        // BeforeQuit is observation-only in v1 (no veto seam yet --
+        // see §5.10.2 follow-up). Subscribers see it; the quit
+        // proceeds regardless. Future: if a Before-class handler
+        // returns Err, abort.
+        self.event_bus.publish(Event::BeforeQuit);
         self.should_quit = true;
     }
 
@@ -3127,6 +3223,7 @@ impl App {
     }
 
     fn enter_mode(&mut self, state: ModalState) {
+        let prior = self.modal;
         // Reset Replace's history every time we enter (or re-enter) Replace
         // so backspace-restore is bounded to the current `R` session.
         if matches!(state, ModalState::Replace) {
@@ -3171,6 +3268,17 @@ impl App {
             if self.cursor.byte > 0 {
                 self.cursor.byte -= 1;
             }
+        }
+        // Publish ModalModeChanged whenever the modal axis actually
+        // moves. (DESIGN.md §5.10 catalog.) Re-entering the same
+        // mode -- e.g. the dot-repeat path that calls enter_mode
+        // for the side-effect of recording/replay accounting --
+        // doesn't fire the event.
+        if prior != state {
+            self.event_bus.publish(Event::ModalModeChanged {
+                from: format!("{prior:?}"),
+                to: format!("{state:?}"),
+            });
         }
     }
 
@@ -4324,6 +4432,101 @@ mod tests {
         let mut a = App::new(Document::from_text(text));
         a.set_viewport_height(viewport);
         a
+    }
+
+    /// Subscribe a channel sink to the App's event bus. Returns
+    /// the receiver so tests can drain published events. The
+    /// subscription stays alive for the rx's lifetime.
+    fn subscribe_all_events(a: &App) -> tokio::sync::mpsc::UnboundedReceiver<Event> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        a.event_bus.subscribe(
+            lattice_runtime::EventFilter::any(),
+            lattice_runtime::SubscriptionTarget::Channel(tx),
+        );
+        rx
+    }
+
+    #[test]
+    fn event_bus_publishes_document_changed_on_apply_edit() {
+        let a = app_with("hello", 5);
+        let mut rx = subscribe_all_events(&a);
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 5), " world"))
+            .unwrap();
+        assert!(matches!(rx.try_recv(), Ok(Event::DocumentChanged { .. })));
+    }
+
+    #[test]
+    fn event_bus_publishes_document_changed_on_undo_redo() {
+        let a = app_with("a", 5);
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 1), "b"))
+            .unwrap();
+        let mut rx = subscribe_all_events(&a);
+        a.undo_blocking().unwrap();
+        a.redo_blocking().unwrap();
+        let mut count = 0;
+        while let Ok(Event::DocumentChanged { .. }) = rx.try_recv() {
+            count += 1;
+        }
+        assert_eq!(count, 2, "expected DocumentChanged for undo + redo");
+    }
+
+    #[test]
+    fn event_bus_publishes_modal_mode_changed_on_actual_transition() {
+        let mut a = app_with("", 5);
+        let mut rx = subscribe_all_events(&a);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        let evt = rx.try_recv().unwrap();
+        match evt {
+            Event::ModalModeChanged { from, to } => {
+                assert_eq!(from, "Normal");
+                assert_eq!(to, "Insert");
+            }
+            other => panic!("expected ModalModeChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn event_bus_skips_modal_mode_changed_when_state_unchanged() {
+        // enter_mode is sometimes called for the side-effect of
+        // recording / replay accounting without actually moving
+        // the modal axis. Those re-entries shouldn't fire events.
+        let mut a = app_with("", 5);
+        let mut rx = subscribe_all_events(&a);
+        a.apply(Action::EnterMode(ModalState::Normal)); // Normal -> Normal
+        assert!(rx.try_recv().is_err(), "no event for same-state re-entry");
+    }
+
+    #[test]
+    fn event_bus_publishes_before_quit_on_action_quit() {
+        let mut a = app_with("", 5);
+        let mut rx = subscribe_all_events(&a);
+        a.apply(Action::Quit);
+        // Drain until BeforeQuit (other events may precede).
+        let mut found = false;
+        while let Ok(evt) = rx.try_recv() {
+            if matches!(evt, Event::BeforeQuit) {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "BeforeQuit should be published on Action::Quit");
+        assert!(a.should_quit);
+    }
+
+    #[test]
+    fn event_bus_publishes_selections_changed_on_set_selections() {
+        let a = app_with("hello world", 5);
+        let mut rx = subscribe_all_events(&a);
+        let sel = Selection::cursor(Position::new(0, 5));
+        a.set_selections_blocking(SelectionSet::single(sel));
+        let mut found = false;
+        while let Ok(evt) = rx.try_recv() {
+            if matches!(evt, Event::SelectionsChanged { .. }) {
+                found = true;
+                break;
+            }
+        }
+        assert!(found);
     }
 
     fn invoke_motion(id: lattice_grammar::registry::MotionId) -> Action {

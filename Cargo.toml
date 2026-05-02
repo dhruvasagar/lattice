@@ -31,8 +31,20 @@ arc-swap = "1.7"
 
 # SIMD-optimized substring search (lattice-core::search). Already a
 # transitive dep via tree-sitter; promoting it to direct gives us
-# `memchr::memmem::find` for ~2GB/s scans on AVX2.
+# `memchr::memmem::find` for ~2GB/s scans on AVX2. Used inside the
+# `regex` crate as well; we keep the direct dep for ad-hoc literal
+# scans the regex engine doesn't drive.
 memchr = "2.7"
+
+# Regex engine for `/`, `?`, `n`, `N`, `:s`. `fancy-regex` is a
+# hybrid: it routes patterns without backrefs/lookarounds through
+# the `regex` crate's RE2-style engine (linear-time, SIMD literal
+# prefilter); only patterns that genuinely need backtracking fall
+# back to its own bounded NFA. Net: same speed as `regex` for the
+# common case, full vim/emacs-class backref support when needed,
+# and a configurable recursion limit guards against catastrophic
+# backtracking that emacs/vim cannot prevent.
+fancy-regex = "0.13"
 
 # Reserved for future parallel paths (tree-sitter query batches,
 # index rebuilds, file-glob walks). Tried for `lattice-core::search`
@@ -68,7 +80,10 @@ proptest = "1.7"
 criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# `deny` (not `forbid`) so a hot-path module can opt in via
+# `#![allow(unsafe_code)]` with a documented safety argument. The
+# default for new code remains "no unsafe".
+unsafe_code = "deny"
 unused_must_use = "deny"
 
 [workspace.lints.clippy]

@@ -12,6 +12,7 @@ lattice-grammar = { path = "../lattice-grammar" }
 lattice-completion = { path = "../lattice-completion" }
 lattice-syntax = { path = "../lattice-syntax" }
 lattice-runtime = { path = "../lattice-runtime" }
+fancy-regex = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 anyhow = { workspace = true }

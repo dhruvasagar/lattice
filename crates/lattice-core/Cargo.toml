@@ -9,6 +9,7 @@ license.workspace = true
 lattice-protocol = { path = "../lattice-protocol" }
 ropey = { workspace = true }
 memchr = { workspace = true }
+fancy-regex = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 

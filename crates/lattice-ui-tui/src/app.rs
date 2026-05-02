@@ -14,6 +14,7 @@ use lattice_core::Buffer;
 use lattice_core::CoreError;
 use lattice_core::Document;
 use lattice_core::buffer::AppliedEdit;
+use fancy_regex::Regex;
 use lattice_core::search::{self, SearchHit};
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::ModalState;
@@ -1386,17 +1387,24 @@ impl App {
             self.all_matches.clear();
             return;
         }
+        // Live preview tolerates compile errors silently -- the user
+        // is still typing. The submit path surfaces the error.
+        let Ok(regex) = compile_search_pattern(&line.pattern) else {
+            self.current_match = None;
+            self.all_matches.clear();
+            return;
+        };
         let dir = match line.direction {
             SearchDirection::Forward => search::Direction::Forward,
             SearchDirection::Backward => search::Direction::Backward,
         };
-        match search::find(&self.document.snapshot().buffer, &line.pattern, line.origin, dir) {
+        match search::find(&self.document.snapshot().buffer, &regex, line.origin, dir) {
             Ok(Some(SearchHit { range, .. })) => self.current_match = Some(range),
             _ => self.current_match = None,
         }
         // Live hlsearch: highlight every occurrence as the user types.
         self.all_matches =
-            search::find_all(&self.document.snapshot().buffer, &line.pattern).unwrap_or_default();
+            search::find_all(&self.document.snapshot().buffer, &regex).unwrap_or_default();
     }
 
     fn submit_search(&mut self) {
@@ -1415,16 +1423,26 @@ impl App {
         // Save the pre-search position so Ctrl-O returns.
         let from_pos = line.origin;
         self.push_position_history(from_pos, PositionSource::AutoJump);
+        // Compile once for both find + find_all + later n/N replays.
+        let regex = match compile_search_pattern(&line.pattern) {
+            Ok(r) => r,
+            Err(msg) => {
+                self.set_message(EchoLevel::Error, format!("regex: {msg}"));
+                self.current_match = None;
+                self.all_matches.clear();
+                return;
+            }
+        };
         let dir = match line.direction {
             SearchDirection::Forward => search::Direction::Forward,
             SearchDirection::Backward => search::Direction::Backward,
         };
-        match search::find(&self.document.snapshot().buffer, &line.pattern, line.origin, dir) {
+        match search::find(&self.document.snapshot().buffer, &regex, line.origin, dir) {
             Ok(Some(hit)) => {
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
                 self.all_matches =
-                    search::find_all(&self.document.snapshot().buffer, &line.pattern).unwrap_or_default();
+                    search::find_all(&self.document.snapshot().buffer, &regex).unwrap_or_default();
                 if hit.wrapped {
                     let level = EchoLevel::Warn;
                     let text = match line.direction {
@@ -1489,7 +1507,15 @@ impl App {
         };
         // Skip current match: advance one byte in the chosen direction.
         let from = step_byte(&self.document.snapshot().buffer, self.cursor, direction);
-        match search::find(&self.document.snapshot().buffer, &last.pattern, from, dir) {
+        let regex = match compile_search_pattern(&last.pattern) {
+            Ok(r) => r,
+            Err(msg) => {
+                self.set_message(EchoLevel::Error, format!("regex: {msg}"));
+                self.current_match = None;
+                return;
+            }
+        };
+        match search::find(&self.document.snapshot().buffer, &regex, from, dir) {
             Ok(Some(hit)) => {
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
@@ -2129,6 +2155,17 @@ impl App {
             self.set_message(EchoLevel::Error, "empty pattern".to_string());
             return;
         }
+        // Compile once. Surface compile errors to the user.
+        // Replacement template syntax follows fancy-regex /
+        // `regex` crate: `$1`, `${name}`, `$0` (whole match), `$$`
+        // for a literal `$`. NOT vim's `\1`/`&` -- modern syntax.
+        let regex = match compile_search_pattern(pattern) {
+            Ok(r) => r,
+            Err(msg) => {
+                self.set_message(EchoLevel::Error, format!("regex: {msg}"));
+                return;
+            }
+        };
         // Determine the line range.
         let (first_line, last_line) = match scope {
             lattice_grammar::SubstituteScope::CurrentLine => (self.cursor.line, self.cursor.line),
@@ -2138,43 +2175,45 @@ impl App {
             }
         };
         let mut total = 0usize;
-        // Apply per line, top-down. A replacement may change later byte
-        // offsets on the same line, so we re-fetch each line per pass.
+        // Apply per line, top-down. fancy-regex's `replace_all` /
+        // `replace` does the heavy lifting: SIMD literal prefilter
+        // for backref-free patterns, NFA fallback when needed,
+        // template substitution with $1/${name}.
         for line in first_line..=last_line {
-            let line_text = {
-                let buf_text = self.document.text();
-                buf_text
-                    .split_inclusive('\n')
-                    .nth(line as usize)
-                    .map(|l| l.trim_end_matches('\n').to_string())
-                    .unwrap_or_default()
+            let line_text = self
+                .document
+                .snapshot()
+                .buffer
+                .line(line)
+                .unwrap_or_default();
+            let new_line = if global {
+                regex.replace_all(&line_text, replacement)
+            } else {
+                regex.replace(&line_text, replacement)
             };
-            // Find occurrences (literal).
-            let mut new_line = String::with_capacity(line_text.len());
-            let mut i = 0;
-            let mut count_on_line = 0usize;
-            let bytes = line_text.as_bytes();
-            while i < bytes.len() {
-                if bytes[i..].starts_with(pattern.as_bytes())
-                    && (global || count_on_line == 0)
-                {
-                    new_line.push_str(replacement);
-                    i += pattern.len();
-                    count_on_line += 1;
-                } else {
-                    new_line.push(bytes[i] as char);
-                    i += 1;
+            // If nothing changed on this line, skip the edit.
+            if new_line == line_text {
+                continue;
+            }
+            // Count substitutions: cheap to tally via find_iter.
+            let count_on_line = if global {
+                let mut c = 0usize;
+                for m in regex.find_iter(&line_text) {
+                    if m.is_ok() {
+                        c += 1;
+                    }
                 }
-            }
-            if count_on_line > 0 {
-                let line_len = bytes.len() as u32;
-                let r = ProtoRange::new(
-                    Position::new(line, 0),
-                    Position::new(line, line_len),
-                );
-                let _ = self.apply_edit_blocking(Edit::replace(r, &new_line));
-                total += count_on_line;
-            }
+                c
+            } else {
+                1
+            };
+            let line_len = line_text.len() as u32;
+            let r = ProtoRange::new(
+                Position::new(line, 0),
+                Position::new(line, line_len),
+            );
+            let _ = self.apply_edit_blocking(Edit::replace(r, new_line.into_owned()));
+            total += count_on_line;
         }
         if total == 0 {
             self.set_message(
@@ -3376,14 +3415,28 @@ impl App {
             SearchDirection::Forward => step_byte(&self.document.snapshot().buffer, self.cursor, direction),
             SearchDirection::Backward => step_byte(&self.document.snapshot().buffer, self.cursor, direction),
         };
-        match lattice_core::search::find(&self.document.snapshot().buffer, &word, from, dir) {
+        // The word is a literal we want to find verbatim, not a
+        // pattern. Escape regex metachars before compiling so words
+        // containing `.`, `*`, `(` etc. don't trigger metacharacter
+        // semantics. (vim's `*` also adds `\<...\>` word-boundary
+        // anchors -- if we want that later, change this to
+        // `\b{escaped}\b`.)
+        let escaped = fancy_regex::escape(&word).into_owned();
+        let regex = match compile_search_pattern(&escaped) {
+            Ok(r) => r,
+            Err(_) => {
+                self.set_message(EchoLevel::Error, "regex compile failed".to_string());
+                return;
+            }
+        };
+        match lattice_core::search::find(&self.document.snapshot().buffer, &regex, from, dir) {
             Ok(Some(hit)) => {
                 self.push_position_history(pre_jump, PositionSource::AutoJump);
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
                 self.all_matches = lattice_core::search::find_all(
                     &self.document.snapshot().buffer,
-                    &word,
+                    &regex,
                 )
                 .unwrap_or_default();
                 if hit.wrapped {
@@ -3698,6 +3751,20 @@ pub(crate) fn line_byte_len(buf: &Buffer, line: u32) -> u32 {
     // §8.2 hot path: use ropey's O(log n) line API instead of
     // materialising the whole buffer.
     buf.line_byte_len(line)
+}
+
+/// Compile a search / substitute pattern string into a
+/// [`fancy_regex::Regex`]. Returns the compile error's display
+/// string on failure -- callers surface it via `set_message` or
+/// equivalent.
+///
+/// Why a free function: hlsearch / live-preview compiles per
+/// keystroke; the submit path compiles once. Both reach for the
+/// same helper. If profiling shows compile cost bites we can add
+/// a cache on App keyed by `(pattern, ...flags)` -- but for ~10us
+/// compile of typical patterns it's unnecessary.
+fn compile_search_pattern(pattern: &str) -> Result<Regex, String> {
+    Regex::new(pattern).map_err(|e| e.to_string())
 }
 
 pub(crate) fn last_addressable_line(buf: &Buffer) -> u32 {

@@ -8,7 +8,7 @@ use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_ma
 
 use lattice_core::Document;
 use lattice_grammar::{
-    Args, Range, Target,
+    Args, CancellationToken, Range, Target,
     builtins::populate,
     command::CommandInvocation,
     dispatcher::execute,
@@ -44,6 +44,7 @@ fn operator_dw(c: &mut Criterion) {
                         &mut doc,
                         black_box(Position::ZERO),
                         inv,
+                        &CancellationToken::never(),
                     )
                     .unwrap();
                 },
@@ -71,6 +72,7 @@ fn operator_dd(c: &mut Criterion) {
                         &mut doc,
                         black_box(Position::ZERO),
                         inv,
+                        &CancellationToken::never(),
                     )
                     .unwrap();
                 },
@@ -98,6 +100,7 @@ fn operator_d_whole(c: &mut Criterion) {
                         &mut doc,
                         black_box(Position::ZERO),
                         inv,
+                        &CancellationToken::never(),
                     )
                     .unwrap();
                 },
@@ -120,7 +123,7 @@ fn operator_yw(c: &mut Criterion) {
                 |mut doc| {
                     let inv = CommandInvocation::of(b.yank.0)
                         .with_target(Target::Motion(b.word_forward, Args::None));
-                    let _ = execute(&registry, &mut doc, black_box(Position::ZERO), inv).unwrap();
+                    let _ = execute(&registry, &mut doc, black_box(Position::ZERO), inv, &CancellationToken::never()).unwrap();
                 },
             );
         });
@@ -141,7 +144,7 @@ fn operator_cw(c: &mut Criterion) {
                 |mut doc| {
                     let inv = CommandInvocation::of(b.change.0)
                         .with_target(Target::Motion(b.word_forward, Args::None));
-                    let _ = execute(&registry, &mut doc, black_box(Position::ZERO), inv).unwrap();
+                    let _ = execute(&registry, &mut doc, black_box(Position::ZERO), inv, &CancellationToken::never()).unwrap();
                 },
             );
         });
@@ -167,6 +170,7 @@ fn operator_diw(c: &mut Criterion) {
                         &mut doc,
                         black_box(Position::new(0, 5)),
                         inv,
+                        &CancellationToken::never(),
                     )
                     .unwrap();
                 },
@@ -200,6 +204,7 @@ fn operator_di_paren(c: &mut Criterion) {
                     &mut doc,
                     black_box(Position::new(0, 5_000)),
                     inv,
+                    &CancellationToken::never(),
                 )
                 .unwrap();
             },

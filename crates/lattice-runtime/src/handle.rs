@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lattice_core::Document;
-use lattice_grammar::{CommandInvocation, CommandRegistry, Effect};
+use lattice_grammar::{CancellationToken, CommandInvocation, CommandRegistry, Effect};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::Position;
@@ -172,10 +172,32 @@ impl DocumentHandle {
     /// mutations route here. The returned `Effect` is for the App
     /// to apply to its session-scoped state (registers, modal
     /// transitions, marks, etc.).
+    ///
+    /// This form uses a no-op [`CancellationToken::never()`]; the
+    /// dispatch will run to completion. Use
+    /// [`Self::dispatch_with_cancel`] when the caller needs to
+    /// cancel a long-running motion / operator on user Esc.
     pub fn dispatch(&self, invocation: CommandInvocation, cursor: Position) -> Pending<Effect> {
+        self.dispatch_with_cancel(invocation, cursor, CancellationToken::never())
+    }
+
+    /// Like [`Self::dispatch`] but routes a caller-owned
+    /// [`CancellationToken`] into the grammar `execute` call. The
+    /// caller keeps a clone and flips it (e.g. on user Esc) to
+    /// short-circuit a long-running motion / operator. Per
+    /// DESIGN.md §5.7, cancellation is cooperative -- the grammar
+    /// polls at quantisation points (per-row in blockwise ops, per
+    /// match in search loops, etc.).
+    pub fn dispatch_with_cancel(
+        &self,
+        invocation: CommandInvocation,
+        cursor: Position,
+        cancel: CancellationToken,
+    ) -> Pending<Effect> {
         self.send(|reply| ActorMsg::Dispatch {
             invocation,
             cursor,
+            cancel,
             reply,
         })
     }

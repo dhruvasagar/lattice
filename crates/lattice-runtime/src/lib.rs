@@ -40,11 +40,20 @@
 //! it but isolate at the actor-task level: each [`spawn_document`]
 //! call creates a fresh task with its own mailbox + snapshot.
 //!
+//! ## Cancellation
+//!
+//! [`DocumentHandle::dispatch_with_cancel`] threads a
+//! [`lattice_grammar::CancellationToken`] into the grammar
+//! `execute` call. The caller (App) holds a clone and flips it
+//! (e.g. on user Esc) to short-circuit a long-running motion or
+//! operator. The plain [`DocumentHandle::dispatch`] form uses a
+//! no-op token; use it when no cancellation seam is required.
+//!
 //! ## What's NOT here in v1
 //!
-//! - **Cancellation tokens** (DESIGN.md §5.2.5) -- the
-//!   `LatencyClass` tag and Reflex-deadline timer arrive when
-//!   `CommandSpec` grows the field.
+//! - **`LatencyClass` deadline timers** (DESIGN.md §5.2.5) --
+//!   arrive when `CommandSpec` grows the field. v1 supports
+//!   user-Esc cancellation only.
 //! - **Veto / observation hook split** (DESIGN.md §5.2.1, §5.10) --
 //!   needs the event-bus primitive that doesn't exist yet.
 //! - **Multi-document / cross-document atoms** -- one actor per
@@ -58,6 +67,7 @@ pub mod snapshot;
 
 pub use actor::DocumentActor;
 pub use handle::{DocumentHandle, spawn_document};
+pub use lattice_grammar::CancellationToken;
 pub use pending::{InvocationId, Pending, RuntimeError};
 pub use runtime::{block_on, shared_runtime};
 pub use snapshot::{DocumentSnapshot, PublishedSnapshot};

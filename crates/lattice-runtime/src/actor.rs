@@ -111,9 +111,15 @@ pub(crate) enum ActorMsg {
     /// `cursor` is the App's view cursor (per-pane), passed in
     /// because the grammar needs it but it's not document-owned
     /// state.
+    /// `cancel` is the cooperative cancellation token. The actor
+    /// passes it straight to [`lattice_grammar::execute`]; the
+    /// caller (App) holds a clone and flips it on user Esc.
+    /// Cheap callers that don't need cancellation pass
+    /// [`CancellationToken::never()`].
     Dispatch {
         invocation: CommandInvocation,
         cursor: Position,
+        cancel: CancellationToken,
         reply: oneshot::Sender<Result<Effect, RuntimeError>>,
     },
 }
@@ -217,19 +223,15 @@ impl DocumentActor {
             ActorMsg::Dispatch {
                 invocation,
                 cursor,
+                cancel,
                 reply,
             } => {
-                // Default no-op cancellation token. Real cancellation
-                // (user Esc, deadline timer) plumbs through a separate
-                // ActorMsg::DispatchWithCancel variant added in the
-                // next runtime commit.
-                let token = CancellationToken::never();
                 let result = execute(
                     &self.registry,
                     &mut self.document,
                     cursor,
                     invocation,
-                    &token,
+                    &cancel,
                 )
                 .map_err(RuntimeError::Grammar);
                 self.publish();
@@ -348,5 +350,56 @@ mod tests {
         drop(h2);
         // Actor task exits when its mailbox closes; the test simply
         // asserts that no panic / hang occurs across the drop.
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_with_cancel_short_circuits_when_pre_flipped() {
+        // The actor MUST honour a flipped cancellation token by
+        // surfacing CommandError::Cancelled. The grammar dispatcher
+        // checks the token before any registry lookup, so an empty
+        // registry + bogus CommandId is a sufficient minimal case.
+        use lattice_grammar::CommandId;
+        use lattice_grammar::CommandInvocation;
+        use lattice_grammar::error::CommandError;
+
+        let handle = spawn_document(Document::from_text("hello"), empty_registry());
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let result = handle
+            .dispatch_with_cancel(
+                CommandInvocation::of(CommandId::new(1)),
+                Position::ZERO,
+                token,
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(RuntimeError::Grammar(CommandError::Cancelled))
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_with_cancel_runs_when_token_fresh() {
+        // Sanity: a fresh token does not block dispatch -- the
+        // unknown-command error must surface, not Cancelled.
+        use lattice_grammar::CommandId;
+        use lattice_grammar::CommandInvocation;
+        use lattice_grammar::error::CommandError;
+
+        let handle = spawn_document(Document::from_text("hello"), empty_registry());
+        let token = CancellationToken::new();
+
+        let result = handle
+            .dispatch_with_cancel(
+                CommandInvocation::of(CommandId::new(1)),
+                Position::ZERO,
+                token,
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(RuntimeError::Grammar(CommandError::UnknownCommand))
+        ));
     }
 }

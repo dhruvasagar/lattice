@@ -13,7 +13,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 
 use lattice_core::Document;
 use lattice_grammar::{
-    CommandRegistry,
+    CancellationToken, CommandRegistry,
     builtins::{Builtins, populate},
     command::{CommandInvocation, Count},
     dispatcher::execute,
@@ -46,7 +46,7 @@ fn motion_word_forward(c: &mut Criterion) {
             let inv = CommandInvocation::of(b.word_forward.0);
             bencher.iter(|| {
                 let _ =
-                    execute(&registry, &mut doc, black_box(Position::ZERO), inv.clone()).unwrap();
+                    execute(&registry, &mut doc, black_box(Position::ZERO), inv.clone(), &CancellationToken::never()).unwrap();
             });
         });
     }
@@ -71,6 +71,7 @@ fn motion_word_backward(c: &mut Criterion) {
                     &mut doc,
                     black_box(Position::new(last_line, line_len)),
                     inv.clone(),
+                    &CancellationToken::never(),
                 )
                 .unwrap();
             });
@@ -91,7 +92,7 @@ fn motion_word_end(c: &mut Criterion) {
             let inv = CommandInvocation::of(b.word_end.0);
             bencher.iter(|| {
                 let _ =
-                    execute(&registry, &mut doc, black_box(Position::ZERO), inv.clone()).unwrap();
+                    execute(&registry, &mut doc, black_box(Position::ZERO), inv.clone(), &CancellationToken::never()).unwrap();
             });
         });
     }
@@ -113,6 +114,7 @@ fn motion_first_non_blank(c: &mut Criterion) {
                 &mut doc,
                 black_box(Position::new(25_000, 0)),
                 inv.clone(),
+                &CancellationToken::never(),
             )
             .unwrap();
         });
@@ -131,7 +133,7 @@ fn motion_word_forward_with_count(c: &mut Criterion) {
         let inv = CommandInvocation::of(b.word_forward.0).with_count(Count(50));
         bencher.iter(|| {
             let _ =
-                execute(&registry, &mut doc, black_box(Position::ZERO), inv.clone()).unwrap();
+                execute(&registry, &mut doc, black_box(Position::ZERO), inv.clone(), &CancellationToken::never()).unwrap();
         });
     });
     g.finish();
@@ -150,7 +152,7 @@ fn motion_find_char_forward(c: &mut Criterion) {
         let inv = CommandInvocation::of(b.find_char_forward.0)
             .with_args(lattice_grammar::Args::Char('z'));
         bencher.iter(|| {
-            let _ = execute(&registry, &mut doc, black_box(Position::ZERO), inv.clone()).unwrap();
+            let _ = execute(&registry, &mut doc, black_box(Position::ZERO), inv.clone(), &CancellationToken::never()).unwrap();
         });
     });
     g.finish();

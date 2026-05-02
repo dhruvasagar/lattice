@@ -540,6 +540,14 @@ pub struct App {
     /// the secondary "hlsearch" overlay. Cleared on Esc; persists after
     /// submit until the next search.
     pub all_matches: Vec<ProtoRange>,
+    /// In-progress substitute preview. Populated as the user types
+    /// `:s/pat...` or `:%s/pat...` in the cmdline; the renderer
+    /// overlays match ranges (and the typed replacement, when the
+    /// user has typed past the second `/`) so the user sees what
+    /// the substitute will do before pressing Enter. Cleared when
+    /// the cmdline closes or the input no longer parses as a
+    /// substitute. (DESIGN.md §5.9.10 minibuffer live preview.)
+    pub substitute_preview: Option<SubstitutePreview>,
     /// Unnamed register -- destination of `y` / `d` / `c`, source of
     /// `p` / `P`. `None` until something has been yanked.
     pub unnamed_register: Option<UnnamedRegister>,
@@ -807,6 +815,29 @@ pub struct LastVisual {
     pub kind: VisualKind,
 }
 
+/// Snapshot of an in-progress `:s/pat/repl/...` preview. Refreshed
+/// on every cmdline keystroke while the input parses as a
+/// substitute; consumed by the renderer to overlay match ranges
+/// (and the typed replacement, when present) on the target buffer.
+///
+/// The preview is observation-only -- it never mutates the document.
+/// On submit, the actual substitute runs through `do_substitute`;
+/// on cancel the preview is dropped.
+#[derive(Debug, Clone)]
+pub struct SubstitutePreview {
+    /// Match ranges in the target line(s). Empty when the pattern
+    /// is empty or compile-failed.
+    pub matches: Vec<ProtoRange>,
+    /// The user-typed replacement template, once the second `/` has
+    /// been entered. None while the user is still inside the
+    /// pattern field.
+    pub replacement: Option<String>,
+    /// Whether the user has explicitly typed flags including 'g'.
+    /// `:s/foo/bar/g` matches every occurrence per line; without
+    /// 'g' only the first match is highlighted (vim's default).
+    pub global: bool,
+}
+
 /// In-flight blockwise-visual insert (`I` or `A`).
 ///
 /// Vim's semantics: when the user enters `I` from blockwise visual,
@@ -906,6 +937,7 @@ impl App {
             last_search: None,
             current_match: None,
             all_matches: Vec::new(),
+            substitute_preview: None,
             unnamed_register: None,
             pending_count: 0,
             op_count: 0,
@@ -1097,6 +1129,7 @@ impl App {
                     if self.completion_state.is_some() {
                         self.refresh_completion_popup();
                     }
+                    self.refresh_substitute_preview();
                 }
             }
             Action::CommandLineBackspace => {
@@ -1105,10 +1138,14 @@ impl App {
                         // Empty buffer + backspace -> exit Command modal.
                         self.modal = ModalState::Normal;
                         self.completion_state = None;
-                    } else if self.completion_state.is_some() {
-                        // Popup live-refilters against the shorter
-                        // prefix (vertico-style).
-                        self.refresh_completion_popup();
+                        self.substitute_preview = None;
+                    } else {
+                        if self.completion_state.is_some() {
+                            // Popup live-refilters against the shorter
+                            // prefix (vertico-style).
+                            self.refresh_completion_popup();
+                        }
+                        self.refresh_substitute_preview();
                     }
                 }
             }
@@ -1138,6 +1175,7 @@ impl App {
                     self.command_history_cursor = None;
                     self.command_history_pending = None;
                     self.auto_submit_after_chord = false;
+                    self.substitute_preview = None;
                     if !line.trim().is_empty() {
                         // De-duplicate consecutive identical entries.
                         if self.command_history.last() != Some(&line) {
@@ -1158,6 +1196,7 @@ impl App {
                     self.modal = ModalState::Normal;
                     self.pending = Pending::None;
                     self.auto_submit_after_chord = false;
+                    self.substitute_preview = None;
                 }
             }
             Action::CommandLineHistoryPrev => self.do_command_history_step(true),
@@ -1857,6 +1896,103 @@ impl App {
     /// behaviour. No echo: refresh is silent. Empty results keep the
     /// popup alive (so further edits can repopulate it); a slot
     /// transition that has no completion source closes it.
+    /// Recompute the in-progress substitute preview against the
+    /// current `command_line`. Called from CommandLineAppend /
+    /// Backspace / cmdline-init so the preview tracks the user's
+    /// typing in real time.
+    ///
+    /// Drops the preview when the cmdline doesn't parse as a
+    /// substitute, when the pattern is empty, or when regex
+    /// compilation fails. Cleared explicitly by CommandLineCancel
+    /// and by execute_ex_line on submit.
+    fn refresh_substitute_preview(&mut self) {
+        let parsed = match crate::excommand::try_parse_substitute_partial(&self.command_line) {
+            Some(p) => p,
+            None => {
+                self.substitute_preview = None;
+                return;
+            }
+        };
+        if parsed.pattern.is_empty() {
+            self.substitute_preview = None;
+            return;
+        }
+        let regex = match compile_search_pattern(&parsed.pattern) {
+            Ok(r) => r,
+            Err(_) => {
+                // Pattern doesn't compile yet (mid-typing). Keep the
+                // last preview rather than flickering -- but if we
+                // never had one, drop quietly.
+                return;
+            }
+        };
+        let global = parsed
+            .flags
+            .as_ref()
+            .map(|f| f.contains('g'))
+            .unwrap_or(false);
+
+        let buffer = self.document.snapshot().buffer.clone();
+        let mut matches: Vec<ProtoRange> = Vec::new();
+        match parsed.scope {
+            crate::excommand::SubstitutePartialScope::CurrentLine => {
+                self.collect_substitute_matches_for_line(
+                    &buffer,
+                    &regex,
+                    self.cursor.line,
+                    global,
+                    &mut matches,
+                );
+            }
+            crate::excommand::SubstitutePartialScope::Whole => {
+                let last = last_addressable_line(&buffer);
+                for line in 0..=last {
+                    self.collect_substitute_matches_for_line(
+                        &buffer, &regex, line, global, &mut matches,
+                    );
+                }
+            }
+        }
+
+        self.substitute_preview = Some(SubstitutePreview {
+            matches,
+            replacement: parsed.replacement,
+            global,
+        });
+    }
+
+    /// Push every match of `regex` on `line` into `out`. Honours
+    /// `global`: when false, only the leftmost match is collected
+    /// (mirrors vim's default `:s` without the `g` flag).
+    fn collect_substitute_matches_for_line(
+        &self,
+        buffer: &Buffer,
+        regex: &fancy_regex::Regex,
+        line: u32,
+        global: bool,
+        out: &mut Vec<ProtoRange>,
+    ) {
+        let line_text = match buffer.line(line) {
+            Some(s) => s,
+            None => return,
+        };
+        if line_text.is_empty() {
+            return;
+        }
+        for m in regex.find_iter(&line_text) {
+            let m = match m {
+                Ok(m) => m,
+                Err(_) => break,
+            };
+            let start = Position::new(line, m.start() as u32);
+            let end = Position::new(line, m.end() as u32);
+            out.push(ProtoRange::new(start, end));
+            if !global {
+                break;
+            }
+        }
+    }
+
     fn refresh_completion_popup(&mut self) {
         if self.completion_state.is_none() {
             return;
@@ -4443,6 +4579,86 @@ mod tests {
         assert_eq!(a.modal, ModalState::Command);
         assert_eq!(a.command_line, "");
         assert!(a.last_message.is_none());
+    }
+
+    fn type_cmdline(a: &mut App, s: &str) {
+        a.apply(Action::EnterCommandLine);
+        for c in s.chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+    }
+
+    #[test]
+    fn substitute_preview_highlights_first_match_on_current_line_without_g() {
+        let mut a = app_with("foo bar foo baz foo\nfoo elsewhere", 10);
+        a.cursor = Position::new(0, 0);
+        type_cmdline(&mut a, "s/foo/X");
+        let preview = a.substitute_preview.as_ref().expect("preview live");
+        assert_eq!(preview.matches.len(), 1, "only the leftmost match -- no /g");
+        assert_eq!(preview.matches[0].start, Position::new(0, 0));
+        assert_eq!(preview.replacement.as_deref(), Some("X"));
+        assert!(!preview.global);
+    }
+
+    #[test]
+    fn substitute_preview_with_g_flag_highlights_every_match_on_line() {
+        let mut a = app_with("foo bar foo baz foo\nfoo elsewhere", 10);
+        a.cursor = Position::new(0, 0);
+        type_cmdline(&mut a, "s/foo/X/g");
+        let preview = a.substitute_preview.as_ref().unwrap();
+        // Three matches on the cursor's line; line 1 is out of scope.
+        assert_eq!(preview.matches.len(), 3);
+        assert!(preview.global);
+    }
+
+    #[test]
+    fn substitute_preview_percent_scope_walks_whole_buffer() {
+        let mut a = app_with("foo\nbar foo\nfoo", 10);
+        a.cursor = Position::new(0, 0);
+        type_cmdline(&mut a, "%s/foo/X/g");
+        let preview = a.substitute_preview.as_ref().unwrap();
+        // Three matches across three lines.
+        assert_eq!(preview.matches.len(), 3);
+    }
+
+    #[test]
+    fn substitute_preview_clears_on_cmdline_cancel() {
+        let mut a = app_with("foo bar", 10);
+        type_cmdline(&mut a, "s/foo/X");
+        assert!(a.substitute_preview.is_some());
+        a.apply(Action::CommandLineCancel);
+        assert!(a.substitute_preview.is_none());
+    }
+
+    #[test]
+    fn substitute_preview_clears_on_cmdline_submit() {
+        let mut a = app_with("foo bar", 10);
+        type_cmdline(&mut a, "s/foo/X");
+        assert!(a.substitute_preview.is_some());
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.substitute_preview.is_none());
+    }
+
+    #[test]
+    fn substitute_preview_dropped_when_input_no_longer_parses_as_substitute() {
+        let mut a = app_with("foo bar", 10);
+        // Enter a substitute, get preview, then backspace past `s` --
+        // input is no longer a substitute.
+        type_cmdline(&mut a, "s/foo");
+        assert!(a.substitute_preview.is_some());
+        for _ in 0.."s/foo".len() {
+            a.apply(Action::CommandLineBackspace);
+        }
+        assert!(a.substitute_preview.is_none());
+    }
+
+    #[test]
+    fn substitute_preview_empty_pattern_drops_preview() {
+        // After typing `s/` the pattern is empty -- preview shouldn't
+        // highlight anything (no matches to show).
+        let mut a = app_with("foo bar", 10);
+        type_cmdline(&mut a, "s/");
+        assert!(a.substitute_preview.is_none());
     }
 
     #[test]

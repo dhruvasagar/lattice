@@ -274,6 +274,107 @@ fn try_parse_global(
 /// registered-invocation pointing at `ex:substitute` with the scope
 /// expressed via `Range::CurrentLine` / `Range::Whole` and
 /// `Args::List([pattern, replacement, flags])`.
+/// Scope (current line vs. whole buffer) detected on the partial
+/// or full `:s` / `:%s` form. Used by both the substitute parser
+/// and the live-preview parser below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubstitutePartialScope {
+    CurrentLine,
+    Whole,
+}
+
+/// Result of a best-effort parse of an in-progress substitute
+/// command line, used by the live-preview path
+/// (`refresh_substitute_preview` in App). Unlike
+/// [`try_parse_substitute`] this never errors on incomplete input
+/// -- a half-typed pattern or a missing second `/` is fine. Returns
+/// `None` only when the input doesn't look like a substitute at
+/// all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubstitutePartial {
+    pub scope: SubstitutePartialScope,
+    pub pattern: String,
+    /// None when the user hasn't typed the second `/` yet (still
+    /// inside the pattern field). `Some("")` is a typed second `/`
+    /// with an empty replacement so far.
+    pub replacement: Option<String>,
+    /// None when the user hasn't typed the third `/` yet. `Some("")`
+    /// is a typed third `/` with no flags so far. The flags string
+    /// is opaque -- the live preview only uses pattern + replacement.
+    pub flags: Option<String>,
+}
+
+/// Best-effort parse of a partial `:s` / `:%s` command line. Used by
+/// the live-preview path: as the user types, we want to highlight
+/// matches of the in-progress pattern even before the second `/` or
+/// closing `/` is typed. Backslash-escapes are honored the same way
+/// `try_parse_substitute` honors them, so a partial `\/` doesn't
+/// flip the field state mid-stream.
+pub fn try_parse_substitute_partial(input: &str) -> Option<SubstitutePartial> {
+    let (scope, body) = if let Some(rest) = input.strip_prefix("%s/") {
+        (SubstitutePartialScope::Whole, rest)
+    } else if let Some(rest) = input.strip_prefix("s/") {
+        (SubstitutePartialScope::CurrentLine, rest)
+    } else {
+        return None;
+    };
+
+    let mut pattern = String::new();
+    let mut replacement: Option<String> = None;
+    let mut flags: Option<String> = None;
+    let mut state = 0u8; // 0 = pattern, 1 = replacement, 2 = flags
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                match state {
+                    0 => pattern.push(next),
+                    1 => replacement.get_or_insert_with(String::new).push(next),
+                    _ => flags.get_or_insert_with(String::new).push(next),
+                }
+            } else {
+                // Trailing `\` with nothing after -- mid-input.
+                // Treat as a literal in the current field so the
+                // user sees their typing reflected.
+                match state {
+                    0 => pattern.push('\\'),
+                    1 => replacement.get_or_insert_with(String::new).push('\\'),
+                    _ => flags.get_or_insert_with(String::new).push('\\'),
+                }
+            }
+            continue;
+        }
+        if c == '/' {
+            state += 1;
+            if state == 1 {
+                replacement = Some(String::new());
+            } else if state == 2 {
+                flags = Some(String::new());
+            }
+            // Extra `/` past the flags field is just absorbed into
+            // the flags string -- the full parser would reject it,
+            // but for a live preview we don't care.
+            if state > 2 {
+                flags.get_or_insert_with(String::new).push('/');
+                state = 2;
+            }
+            continue;
+        }
+        match state {
+            0 => pattern.push(c),
+            1 => replacement.get_or_insert_with(String::new).push(c),
+            _ => flags.get_or_insert_with(String::new).push(c),
+        }
+    }
+
+    Some(SubstitutePartial {
+        scope,
+        pattern,
+        replacement,
+        flags,
+    })
+}
+
 fn try_parse_substitute(
     input: &str,
     registry: &CommandRegistry,
@@ -360,6 +461,58 @@ mod tests {
             .lookup(inv.command)
             .map(|s| s.name.as_str())
             .unwrap_or("?")
+    }
+
+    // ---- Substitute live-preview parser ----
+
+    #[test]
+    fn partial_substitute_with_pattern_only() {
+        let p = try_parse_substitute_partial("s/foo").unwrap();
+        assert_eq!(p.scope, SubstitutePartialScope::CurrentLine);
+        assert_eq!(p.pattern, "foo");
+        assert_eq!(p.replacement, None);
+        assert_eq!(p.flags, None);
+    }
+
+    #[test]
+    fn partial_substitute_with_pattern_and_typed_delimiter() {
+        // Typed second `/` -- replacement is Some("") even before
+        // the user types any replacement chars.
+        let p = try_parse_substitute_partial("s/foo/").unwrap();
+        assert_eq!(p.pattern, "foo");
+        assert_eq!(p.replacement.as_deref(), Some(""));
+        assert_eq!(p.flags, None);
+    }
+
+    #[test]
+    fn partial_substitute_with_replacement_in_progress() {
+        let p = try_parse_substitute_partial("s/foo/bar").unwrap();
+        assert_eq!(p.pattern, "foo");
+        assert_eq!(p.replacement.as_deref(), Some("bar"));
+    }
+
+    #[test]
+    fn partial_substitute_with_flags() {
+        let p = try_parse_substitute_partial("%s/foo/bar/g").unwrap();
+        assert_eq!(p.scope, SubstitutePartialScope::Whole);
+        assert_eq!(p.pattern, "foo");
+        assert_eq!(p.replacement.as_deref(), Some("bar"));
+        assert_eq!(p.flags.as_deref(), Some("g"));
+    }
+
+    #[test]
+    fn partial_substitute_rejects_non_substitute_input() {
+        assert!(try_parse_substitute_partial("write").is_none());
+        assert!(try_parse_substitute_partial("/foo").is_none());
+        assert!(try_parse_substitute_partial("g/foo/d").is_none());
+    }
+
+    #[test]
+    fn partial_substitute_honors_backslash_escape_in_pattern() {
+        // `\/` is an escaped delimiter -- still part of the pattern.
+        let p = try_parse_substitute_partial(r"s/foo\/bar").unwrap();
+        assert_eq!(p.pattern, "foo/bar");
+        assert_eq!(p.replacement, None);
     }
 
     #[test]

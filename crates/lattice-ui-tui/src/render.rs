@@ -479,6 +479,24 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         {
             body = apply_match_overlay(body, overlay_start, overlay_end, match_style());
         }
+        // Substitute live preview overlay (DESIGN.md §5.9.10): paint
+        // the about-to-be-replaced ranges in a strike-through-ish
+        // style so the user sees what will change before they hit
+        // Enter. Distinct from hlsearch's plain match highlight.
+        if let Some(preview) = app.substitute_preview.as_ref() {
+            for &range in preview.matches.iter() {
+                if let Some((overlay_start, overlay_end)) =
+                    match_overlay_range(range, line_idx, line_len)
+                {
+                    body = apply_match_overlay(
+                        body,
+                        overlay_start,
+                        overlay_end,
+                        substitute_preview_style(),
+                    );
+                }
+            }
+        }
         out.push(combine(gutter, body));
     }
     out
@@ -489,6 +507,18 @@ fn hlsearch_style() -> TuiStyle {
     // as "another instance of what you're searching for" without
     // stealing attention from the cursor's match.
     TuiStyle::default().bg(Color::Cyan).fg(Color::Black)
+}
+
+/// Style for substitute live-preview matches. Magenta-bg with a
+/// strike-through reads as "this is going to be replaced if you
+/// hit Enter" -- distinct from hlsearch's "this is what your
+/// search is finding" cyan, and distinct from the current-match
+/// yellow.
+fn substitute_preview_style() -> TuiStyle {
+    TuiStyle::default()
+        .bg(Color::Magenta)
+        .fg(Color::Black)
+        .add_modifier(Modifier::CROSSED_OUT)
 }
 
 /// For blockwise Visual: the rectangle defined by the selection's

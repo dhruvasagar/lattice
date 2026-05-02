@@ -14,6 +14,7 @@
 
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
+use crate::cancel::CancellationToken;
 use crate::command::{CommandInvocation, CommandKind};
 use crate::effect::{Effect, YankKind};
 use crate::error::{CommandError, GrammarResult};
@@ -31,21 +32,34 @@ use lattice_core::Document;
 ///
 /// `cursor` is the position the modal engine considers "current" -- typically
 /// the primary selection's head.
+///
+/// `cancel` is the cooperative cancellation handle (DESIGN.md §5.2.5).
+/// Hot loops inside evaluators poll `cancel.check()?` between iterations;
+/// on a flipped token the dispatcher returns
+/// [`CommandError::Cancelled`] and commits no `Effect`. Callers that
+/// don't drive cancellation (tests, scripts) pass
+/// [`CancellationToken::never`].
 pub fn execute(
     registry: &CommandRegistry,
     document: &mut Document,
     cursor: Position,
     invocation: CommandInvocation,
+    cancel: &CancellationToken,
 ) -> GrammarResult<Effect> {
+    // Honor any pre-existing cancellation request before we start.
+    cancel.check()?;
+
     let entry = registry
         .entry(invocation.command)
         .ok_or(CommandError::UnknownCommand)?;
 
     match entry.spec.kind {
-        CommandKind::Motion => execute_motion(document, cursor, &invocation, entry),
-        CommandKind::TextObject => execute_text_object(document, cursor, &invocation, entry),
-        CommandKind::Operator => execute_operator(registry, document, cursor, &invocation, entry),
-        CommandKind::ExCommand => execute_ex_command(&invocation, entry),
+        CommandKind::Motion => execute_motion(document, cursor, &invocation, entry, cancel),
+        CommandKind::TextObject => execute_text_object(document, cursor, &invocation, entry, cancel),
+        CommandKind::Operator => {
+            execute_operator(registry, document, cursor, &invocation, entry, cancel)
+        }
+        CommandKind::ExCommand => execute_ex_command(&invocation, entry, cancel),
         CommandKind::Action => Err(CommandError::InvalidArgs(
             "free-form actions are not yet wired in Phase 1",
         )),
@@ -55,6 +69,7 @@ pub fn execute(
 fn execute_ex_command(
     invocation: &CommandInvocation,
     entry: &CommandEntry,
+    cancel: &CancellationToken,
 ) -> GrammarResult<Effect> {
     let spec = require_ex_command(entry)?;
     let ctx = ExCommandContext {
@@ -63,6 +78,7 @@ fn execute_ex_command(
         range: invocation.range.clone(),
         register: invocation.register_or_default(),
         count: invocation.count_or_default(),
+        cancel: cancel.clone(),
     };
     (spec.apply)(&ctx)
 }
@@ -72,6 +88,7 @@ fn execute_motion(
     cursor: Position,
     invocation: &CommandInvocation,
     entry: &CommandEntry,
+    cancel: &CancellationToken,
 ) -> GrammarResult<Effect> {
     let motion = require_motion(entry)?;
     let ctx = MotionContext {
@@ -79,6 +96,7 @@ fn execute_motion(
         from: cursor,
         count: invocation.count_or_default(),
         args: invocation.args.clone(),
+        cancel,
     };
     let result = (motion.apply)(&ctx)?;
     // Motions in Phase 1 don't mutate selections directly here; the modal
@@ -95,6 +113,7 @@ fn execute_text_object(
     cursor: Position,
     invocation: &CommandInvocation,
     entry: &CommandEntry,
+    cancel: &CancellationToken,
 ) -> GrammarResult<Effect> {
     let tobj = require_text_object(entry)?;
     let ctx = TextObjectContext {
@@ -102,6 +121,7 @@ fn execute_text_object(
         at: cursor,
         count: invocation.count_or_default(),
         args: invocation.args.clone(),
+        cancel,
     };
     let _range = (tobj.apply)(&ctx)?;
     // A text-object alone (no operator) is unusual; vim's behavior is to
@@ -116,6 +136,7 @@ fn execute_operator(
     cursor: Position,
     invocation: &CommandInvocation,
     entry: &CommandEntry,
+    cancel: &CancellationToken,
 ) -> GrammarResult<Effect> {
     let operator = require_operator(entry)?;
 
@@ -130,14 +151,14 @@ fn execute_operator(
             Some(lattice_protocol::selection::VisualMode::Blockwise)
         )
     {
-        return execute_operator_blockwise(operator, document, invocation);
+        return execute_operator_blockwise(operator, document, invocation, cancel);
     }
 
     let motion_count = invocation.count_or_default();
     let target_range: ProtoRange = match (&invocation.range, &invocation.target) {
         (Some(grammar_range), _) => resolve_grammar_range(document, grammar_range, cursor)?,
         (None, Some(target)) => {
-            resolve_target(registry, document, cursor, target, motion_count)?
+            resolve_target(registry, document, cursor, target, motion_count, cancel)?
         }
         (None, None) => return Err(CommandError::MissingTarget),
     };
@@ -159,6 +180,7 @@ fn execute_operator(
         register: invocation.register_or_default(),
         count: invocation.count_or_default(),
         args: invocation.args.clone(),
+        cancel,
     };
     (operator.apply)(&mut ctx)
 }
@@ -180,6 +202,7 @@ fn execute_operator_blockwise(
     operator: &crate::registry::OperatorSpec,
     document: &mut Document,
     invocation: &CommandInvocation,
+    cancel: &CancellationToken,
 ) -> GrammarResult<Effect> {
     let sel = document.selections().primary();
     let (top_line, bottom_line) = (sel.anchor.line.min(sel.head.line), sel.anchor.line.max(sel.head.line));
@@ -220,6 +243,10 @@ fn execute_operator_blockwise(
     let args = invocation.args.clone();
     let mut per_row_effects: Vec<Effect> = Vec::with_capacity(row_ranges.len());
     for r in row_ranges.iter().rev() {
+        // Per-row cancellation check: lets the user Esc out of a
+        // blockwise op spanning many rows even if a single row's
+        // apply doesn't poll.
+        cancel.check()?;
         let mut ctx = OperatorContext {
             document,
             range: *r,
@@ -227,6 +254,7 @@ fn execute_operator_blockwise(
             register,
             count,
             args: args.clone(),
+            cancel,
         };
         let eff = (operator.apply)(&mut ctx)?;
         per_row_effects.push(eff);
@@ -326,6 +354,7 @@ fn resolve_target(
     cursor: Position,
     target: &Target,
     count: crate::command::Count,
+    cancel: &CancellationToken,
 ) -> GrammarResult<ProtoRange> {
     match target {
         Target::Motion(motion_id, args) => {
@@ -338,6 +367,7 @@ fn resolve_target(
                 from: cursor,
                 count,
                 args: args.clone(),
+                cancel,
             };
             let r = (motion.apply)(&ctx)?;
             Ok(motion_to_range(cursor, r.target, motion.exclusive))
@@ -352,6 +382,7 @@ fn resolve_target(
                 at: cursor,
                 count,
                 args: args.clone(),
+                cancel,
             };
             (tobj.apply)(&ctx)
         }

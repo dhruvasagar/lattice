@@ -38,7 +38,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lattice_core::{Buffer, CoreError, Document};
-use lattice_grammar::{CommandInvocation, CommandRegistry, Effect, execute};
+use lattice_grammar::{CancellationToken, CommandInvocation, CommandRegistry, Effect, execute};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
 use lattice_protocol::selection::SelectionSet;
@@ -219,8 +219,19 @@ impl DocumentActor {
                 cursor,
                 reply,
             } => {
-                let result = execute(&self.registry, &mut self.document, cursor, invocation)
-                    .map_err(RuntimeError::Grammar);
+                // Default no-op cancellation token. Real cancellation
+                // (user Esc, deadline timer) plumbs through a separate
+                // ActorMsg::DispatchWithCancel variant added in the
+                // next runtime commit.
+                let token = CancellationToken::never();
+                let result = execute(
+                    &self.registry,
+                    &mut self.document,
+                    cursor,
+                    invocation,
+                    &token,
+                )
+                .map_err(RuntimeError::Grammar);
                 self.publish();
                 let _ = reply.send(result);
             }

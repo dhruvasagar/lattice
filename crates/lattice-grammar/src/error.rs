@@ -26,6 +26,13 @@ pub enum CommandError {
     #[error("invalid ex-command args: {0}")]
     BadArgs(String),
 
+    /// The evaluator observed a cancelled [`crate::CancellationToken`]
+    /// and returned early. By DESIGN.md §5.2.5, no `Effect` is
+    /// committed; the document is left at the version the keystroke
+    /// arrived at, exactly as if the user had not pressed the key.
+    #[error("operation cancelled")]
+    Cancelled,
+
     #[error(transparent)]
     Core(#[from] CoreError),
 

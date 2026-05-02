@@ -55,6 +55,12 @@ pub struct MotionContext<'a> {
     pub from: Position,
     pub count: Count,
     pub args: Args,
+    /// Cooperative cancellation handle (DESIGN.md §5.2.5). Hot
+    /// loops should poll `cancel.check()?` on each iteration; on a
+    /// flipped token the evaluator returns
+    /// [`crate::CommandError::Cancelled`] and the dispatcher
+    /// commits no effect.
+    pub cancel: &'a crate::CancellationToken,
 }
 
 /// What a motion's evaluator returned.
@@ -100,6 +106,11 @@ pub struct OperatorContext<'a> {
     pub register: Register,
     pub count: Count,
     pub args: Args,
+    /// Cooperative cancellation handle (DESIGN.md §5.2.5). Operators
+    /// that scan large ranges (`d_whole`, `gU` over a big visual
+    /// block) should poll `cancel.check()?` between rows; on a
+    /// flipped token return [`crate::CommandError::Cancelled`].
+    pub cancel: &'a crate::CancellationToken,
 }
 
 /// An operator's evaluator returns the full `Effect` it produced. Most
@@ -132,6 +143,11 @@ pub struct TextObjectContext<'a> {
     pub at: Position,
     pub count: Count,
     pub args: Args,
+    /// Cooperative cancellation handle (DESIGN.md §5.2.5). Most
+    /// text objects are O(line); polling rarely matters. Tag /
+    /// paragraph / sentence objects that walk further can poll
+    /// `cancel.check()?` on their inner loops.
+    pub cancel: &'a crate::CancellationToken,
 }
 
 type TextObjectFn = Box<dyn Fn(&TextObjectContext) -> GrammarResult<ProtoRange> + Send + Sync>;
@@ -153,12 +169,18 @@ impl std::fmt::Debug for TextObjectSpec {
 /// to motion / operator / text-object specs but adds the `bang` bit and
 /// drops direct document mutation: ex-commands describe their work by
 /// returning an [`crate::effect::Effect`], which the host applies.
+///
+/// Owns a [`crate::CancellationToken`] (not a borrow) so apply
+/// closures can hold it across `Box::new(move |ctx| ...)`
+/// boundaries without lifetime gymnastics. The actor flips a clone
+/// when cancellation arrives.
 pub struct ExCommandContext {
     pub bang: bool,
     pub args: Args,
     pub range: Option<crate::range::Range>,
     pub register: Register,
     pub count: Count,
+    pub cancel: crate::CancellationToken,
 }
 
 /// Parser callback for an ex-command. The host hands the rest of the

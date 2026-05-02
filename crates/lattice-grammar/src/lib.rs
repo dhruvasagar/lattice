@@ -23,6 +23,7 @@
 
 pub mod args;
 pub mod builtins;
+pub mod cancel;
 pub mod command;
 pub mod dispatcher;
 pub mod effect;
@@ -37,6 +38,7 @@ pub mod source;
 pub mod target;
 
 pub use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
+pub use crate::cancel::CancellationToken;
 pub use crate::introspect::{
     HelpSection, Introspectable, RenderedAnchor, RenderedIntrospection, SourceEntry, SourceLabel,
     render_introspection, render_introspection_lines,

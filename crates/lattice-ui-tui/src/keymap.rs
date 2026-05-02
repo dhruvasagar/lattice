@@ -65,6 +65,9 @@ pub enum BindingMode {
     AfterTextObject,
     /// While the §5.11 help overlay is active.
     Help,
+    /// After `<C-w>` -- waiting for the window-management
+    /// resolution key.
+    AfterCtrlW,
 }
 
 impl BindingMode {
@@ -88,6 +91,7 @@ impl BindingMode {
             BindingMode::AfterFindChar => "After-f/F/t/T",
             BindingMode::AfterTextObject => "After-i/a (text-object)",
             BindingMode::Help => "Help-overlay",
+            BindingMode::AfterCtrlW => "After-<C-w> (window-management)",
         }
     }
 }
@@ -314,6 +318,19 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: Normal, chord: "\"", doc: "Select register for next operator/paste (next key is register name)" },
         keymap_entry! { mode: Normal, chord: "q", doc: "Start macro recording (next key is register; press q again to stop)" },
         keymap_entry! { mode: Normal, chord: "@", doc: "Play macro from register (next key is register, or @ for last)" },
+        // ---- Normal: window management (DESIGN.md §5.9 -- B.1.b) ----
+        keymap_entry! { mode: Normal, chord: "<C-w>", doc: "Pending: window-management chord (split / close / navigate)" },
+        // ---- After-<C-w> sub-commands ----
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>s", doc: "Split active pane horizontally (new pane below)" },
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>v", doc: "Split active pane vertically (new pane right)" },
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>c", doc: "Close active pane" },
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>q", doc: "Close active pane (alias of <C-w>c)" },
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>h", doc: "Navigate to pane on the left" },
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>j", doc: "Navigate to pane below" },
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>k", doc: "Navigate to pane above" },
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>l", doc: "Navigate to pane on the right" },
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>w", doc: "Cycle to next pane" },
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>W", doc: "Cycle to previous pane" },
         // ---- After-g sub-commands ----
         keymap_entry! { mode: AfterG, chord: "gU", doc: "Uppercase operator -- prefix to motion/text-object; doubled = current line", cmd: "operator:upper" },
         keymap_entry! { mode: AfterG, chord: "gu", doc: "Lowercase operator", cmd: "operator:lower" },

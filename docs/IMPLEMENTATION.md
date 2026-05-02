@@ -564,8 +564,18 @@ Update this section when picking up the in-flight item.
      dispatch path that resolves a `CommandInvocation` against a bare
      `Buffer` -- no `Document` / undo / selections required, suitable for
      help and (later) file-tree / outline / diagnostics views.
-   - **B.1.b panes + splits**, **B.1.c multiple Document buffers**,
-     **B.1.d buffer-as-content kinds (file-tree, outline, diagnostics)** ⛔.
+   - **B.1.b pane tree + splits** ✅ done. Recursive binary-split
+     `PaneTree` with `<C-w>{s,v,c,q,h,j,k,l,w,W}` chord grammar. Each
+     leaf carries per-pane viewport stash (cursor + scroll); the
+     active pane's stash is hot-loaded into `App::cursor` /
+     `App::scroll` so motion code stays unchanged. Active-pane
+     switches snapshot back into the source pane's stash and load
+     from the destination's. Geometry-aware navigation
+     (`<C-w>{h,j,k,l}`) walks the spatial neighbour computed from
+     `compute_rects`. Inactive-pane rendering is a placeholder
+     until B.1.c brings meaningfully distinct buffer content.
+   - **B.1.c multiple Document buffers**, **B.1.d buffer-as-content
+     kinds (file-tree, outline, diagnostics)** ⛔.
 5. **Hover popup + inline completion popup polish** — completion popup
    is wired (vertico-style); hover popup needs the host scaffolding so
    LSP hover responses land.

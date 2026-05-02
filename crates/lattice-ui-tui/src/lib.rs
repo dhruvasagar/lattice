@@ -23,6 +23,7 @@ pub mod excommand;
 pub mod help;
 pub mod input;
 pub mod keymap;
+pub mod pane;
 pub mod render;
 pub mod runtime;
 
@@ -31,4 +32,5 @@ pub use buffers::{BufferId, BufferKind};
 pub use excommand::ExCommandError;
 pub use input::{TranslateContext, translate};
 pub use lattice_syntax::{Lang, Style, StyledSpan, Syntax};
+pub use pane::{PaneDirection, PaneId, PaneNode, PaneRect, PaneState, PaneTree, SplitOrientation};
 pub use runtime::run;

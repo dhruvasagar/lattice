@@ -41,10 +41,14 @@ use std::sync::Arc;
 use crate::buffers::{BufferId, BufferKind};
 use crate::excommand;
 use crate::help::{HelpBuffer, HelpDisplayMode, command_link, key_link};
+use crate::pane::{PaneDirection, PaneState, PaneTree, SplitOrientation};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pending {
     None,
+    /// First `<C-w>` of a window-management chord (split / close /
+    /// navigate). Resolves on the next key.
+    AfterCtrlW,
     /// First `g` of a `gg`-style two-key sequence.
     AfterG,
     /// Operator key pressed; awaiting motion or text-object.
@@ -499,6 +503,20 @@ pub enum Action {
     /// then cancels the command line.)
     CommandLineDismissCompletion,
 
+    // ---- Pane tree (DESIGN.md §5.9) ----
+    /// `<C-w>s` -- split the active pane horizontally (new pane below).
+    SplitPaneHorizontal,
+    /// `<C-w>v` -- split the active pane vertically (new pane right).
+    SplitPaneVertical,
+    /// `<C-w>c` / `<C-w>q` -- close the active pane.
+    ClosePane,
+    /// `<C-w>{h,j,k,l}` -- move the active pane cardinally.
+    NavigatePane(PaneDirection),
+    /// `<C-w>w` -- cycle to the next pane in declaration order.
+    NextPane,
+    /// `<C-w>W` -- cycle to the previous pane.
+    PrevPane,
+
     // ---- Help buffer (DESIGN.md §5.11, §5.9) ----
     //
     // Help is a regular buffer routed through the same Normal-mode
@@ -572,7 +590,16 @@ pub struct App {
     /// help overlay is open this is `Help`; otherwise `Document`.
     /// Motions, jumps, and `<C-o>` / `<C-i>` consult this to pick
     /// the cursor + buffer they operate on (DESIGN.md §5.9).
+    /// Denormalized from `pane_tree.active().buffer` -- updated in
+    /// lockstep with the active pane.
     pub active_buffer: BufferKind,
+    /// Pane tree (DESIGN.md §5.9). Holds one [`PaneState`] per
+    /// visible viewport plus the split layout. Always non-empty;
+    /// the active pane's cursor / scroll are stored on
+    /// [`Self::cursor`] / [`Self::scroll`] for hot-path code, and
+    /// snapshotted back into the pane tree on every active-pane
+    /// switch.
+    pub pane_tree: PaneTree,
     pub cursor: Position,
     /// First visible line in the viewport (0-based).
     pub scroll: u32,
@@ -580,6 +607,11 @@ pub struct App {
     /// Last height we were drawn at; used by motion clamping and viewport
     /// scrolling. Updated by the renderer before each frame.
     pub viewport_height: u32,
+    /// Last terminal width we were drawn at. Used by pane geometry
+    /// (DESIGN.md §5.9 navigation needs to know which pane is
+    /// horizontally adjacent). `None` until the renderer first
+    /// records it.
+    pub terminal_width: Option<u16>,
     pub modal: ModalState,
     pub pending: Pending,
     /// Grammar registry shared with the document actor by `Arc`. The
@@ -1038,14 +1070,25 @@ impl App {
         // actor and the App share it without lifetime gymnastics.
         let registry = Arc::new(registry);
         let document = spawn_document(document, registry.clone());
+        let document_buffer_id = BufferId::next();
+        let initial_pane = PaneState {
+            id: crate::pane::PaneId::next(),
+            buffer: BufferKind::Document,
+            buffer_id: document_buffer_id,
+            cursor: Position::ZERO,
+            scroll: 0,
+        };
+        let pane_tree = PaneTree::single(initial_pane);
         Self {
             document,
-            document_buffer_id: BufferId::next(),
+            document_buffer_id,
             active_buffer: BufferKind::Document,
+            pane_tree,
             cursor: Position::ZERO,
             scroll: 0,
             should_quit: false,
             viewport_height: 1,
+            terminal_width: None,
             modal: ModalState::Normal,
             pending: Pending::None,
             registry,
@@ -1582,6 +1625,19 @@ impl App {
                 self.dismiss_help();
             }
             Action::FollowLink => self.do_help_follow_link(),
+
+            Action::SplitPaneHorizontal => self.do_split_pane(SplitOrientation::Horizontal),
+            Action::SplitPaneVertical => self.do_split_pane(SplitOrientation::Vertical),
+            Action::ClosePane => self.do_close_pane(),
+            Action::NavigatePane(dir) => self.do_navigate_pane(dir),
+            Action::NextPane => {
+                let target = self.pane_tree.next_pane();
+                self.activate_pane(target);
+            }
+            Action::PrevPane => {
+                let target = self.pane_tree.prev_pane();
+                self.activate_pane(target);
+            }
 
             Action::EnterSearch(direction) => {
                 self.search_line = Some(SearchLine {
@@ -3448,6 +3504,114 @@ impl App {
             HelpBuffer::from_lines("keymap", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
         );
+    }
+
+    /// Split the active pane along `orientation`. The new sibling
+    /// inherits the active pane's content + cursor + scroll (so a
+    /// fresh `<C-w>s` shows the same view in both panes, vim's
+    /// default). Active stays on the original pane.
+    fn do_split_pane(&mut self, orientation: SplitOrientation) {
+        // Save the App's hot-path cursor/scroll into the active
+        // pane's stash so the new sibling clones a fresh snapshot.
+        self.snapshot_active_pane();
+        let _new_idx = self.pane_tree.split_active(orientation);
+    }
+
+    /// Close the active pane. The first surviving pane becomes
+    /// active. No-op when only one pane is open (vim leaves the
+    /// last window alone; closing it would mean closing the editor).
+    fn do_close_pane(&mut self) {
+        if self.pane_tree.len() <= 1 {
+            self.set_message(EchoLevel::Warn, "Already only one pane".to_string());
+            return;
+        }
+        // Save the active pane's state, then drop it.
+        self.snapshot_active_pane();
+        if !self.pane_tree.close_active() {
+            return;
+        }
+        self.load_active_pane();
+    }
+
+    /// Step cardinally to the spatial neighbour of the active pane.
+    /// Geometry comes from [`PaneTree::compute_rects`] so the walk
+    /// matches what the renderer drew.
+    fn do_navigate_pane(&mut self, direction: PaneDirection) {
+        let area = self.buffer_area_rect();
+        let Some(target) = self.pane_tree.navigate(direction, area) else {
+            return;
+        };
+        self.activate_pane(target);
+    }
+
+    /// Make pane `idx` the active one, swapping the App's hot-path
+    /// cursor / scroll with the target pane's stash.
+    fn activate_pane(&mut self, idx: usize) {
+        if idx == self.pane_tree.active_index() {
+            return;
+        }
+        self.snapshot_active_pane();
+        if !self.pane_tree.set_active(idx) {
+            return;
+        }
+        self.load_active_pane();
+    }
+
+    /// Copy the App's hot-path cursor / scroll into the active
+    /// pane's stash. Called before any operation that flips which
+    /// pane is active.
+    fn snapshot_active_pane(&mut self) {
+        let active = self.pane_tree.active_mut();
+        active.cursor = self.cursor;
+        active.scroll = self.scroll;
+        // Help cursor lives on `help_buffer.cursor`; if the active
+        // pane is a Help leaf, we mirror that into the stash for
+        // symmetry. (Useful when B.1.c lets a help buffer outlive
+        // its pane being deactivated.)
+        if matches!(self.active_buffer, BufferKind::Help)
+            && let Some(h) = self.help_buffer.as_ref()
+        {
+            active.cursor = h.cursor;
+            active.scroll = h.scroll as u32;
+        }
+    }
+
+    /// Inverse of [`Self::snapshot_active_pane`]: pull the freshly
+    /// activated pane's stashed cursor / scroll back into the
+    /// App's hot-path fields. `active_buffer` is denormalized from
+    /// the pane's `buffer` kind.
+    fn load_active_pane(&mut self) {
+        let pane = *self.pane_tree.active();
+        self.active_buffer = pane.buffer;
+        match pane.buffer {
+            BufferKind::Document => {
+                self.cursor = pane.cursor;
+                self.scroll = pane.scroll;
+            }
+            BufferKind::Help => {
+                if let Some(h) = self.help_buffer.as_mut() {
+                    h.cursor = pane.cursor;
+                    h.scroll = pane.scroll as usize;
+                }
+            }
+        }
+    }
+
+    /// Total area available to pane content in screen-cell units.
+    /// Currently the buffer area = full terminal minus the mode
+    /// line (1 row) and the echo / cmdline area (1 row). Width is
+    /// the terminal width; v1 doesn't track terminal width as
+    /// state, so we estimate from `viewport_height` and a constant
+    /// width that the renderer overrides with the real terminal
+    /// width before navigation. Good enough until B.1.c has the
+    /// per-frame terminal size cached on App.
+    fn buffer_area_rect(&self) -> crate::pane::PaneRect {
+        crate::pane::PaneRect {
+            x: 0,
+            y: 0,
+            width: self.terminal_width.unwrap_or(120),
+            height: self.viewport_height as u16,
+        }
     }
 
     /// Estimated help-overlay viewport height. The overlay is centred
@@ -9115,6 +9279,96 @@ mod tests {
     fn install_help(a: &mut App, h: HelpBuffer) {
         a.help_buffer = Some(h);
         a.active_buffer = BufferKind::Help;
+    }
+
+    // ---- Pane tree (DESIGN.md §5.9, B.1.b) ----
+
+    #[test]
+    fn fresh_app_has_one_document_pane() {
+        let a = app_with("xx", 10);
+        assert_eq!(a.pane_tree.len(), 1);
+        assert_eq!(a.active_buffer, BufferKind::Document);
+        let active = a.pane_tree.active();
+        assert_eq!(active.buffer, BufferKind::Document);
+        assert_eq!(active.buffer_id, a.document_buffer_id);
+    }
+
+    #[test]
+    fn split_pane_horizontal_creates_second_pane() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::SplitPaneHorizontal);
+        assert_eq!(a.pane_tree.len(), 2);
+        // Active stays on original.
+        assert_eq!(a.pane_tree.active_index(), 0);
+    }
+
+    #[test]
+    fn split_pane_vertical_creates_second_pane() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::SplitPaneVertical);
+        assert_eq!(a.pane_tree.len(), 2);
+    }
+
+    #[test]
+    fn close_pane_collapses_split() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::SplitPaneVertical);
+        a.apply(Action::ClosePane);
+        assert_eq!(a.pane_tree.len(), 1);
+    }
+
+    #[test]
+    fn close_last_pane_is_a_noop_with_warning() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::ClosePane);
+        assert_eq!(a.pane_tree.len(), 1);
+        let msg = a.last_message.as_ref().expect("warn echo");
+        assert!(msg.text.contains("only one pane"));
+    }
+
+    #[test]
+    fn next_pane_cycles_active() {
+        let mut a = app_with("first\nsecond\nthird", 10);
+        a.cursor = Position::new(2, 0);
+        a.apply(Action::SplitPaneVertical);
+        // After split: 2 panes, both seeded with cursor (2, 0).
+        // Move cursor in the active pane.
+        a.cursor = Position::new(0, 0);
+        a.apply(Action::NextPane);
+        assert_eq!(a.pane_tree.active_index(), 1);
+        // Pane 1 should still hold its stashed cursor (2, 0).
+        assert_eq!(a.cursor, Position::new(2, 0));
+        // Cycle back -- pane 0 holds (0, 0) per the in-active mutation.
+        a.apply(Action::NextPane);
+        assert_eq!(a.pane_tree.active_index(), 0);
+        assert_eq!(a.cursor, Position::new(0, 0));
+    }
+
+    #[test]
+    fn navigate_pane_walks_to_spatial_neighbour() {
+        let mut a = app_with("xx", 10);
+        a.terminal_width = Some(80);
+        a.apply(Action::SplitPaneVertical);
+        // Active=0 (left). Navigate Right -> active=1.
+        a.apply(Action::NavigatePane(PaneDirection::Right));
+        assert_eq!(a.pane_tree.active_index(), 1);
+        // Navigate Left -> active=0.
+        a.apply(Action::NavigatePane(PaneDirection::Left));
+        assert_eq!(a.pane_tree.active_index(), 0);
+    }
+
+    #[test]
+    fn split_inherits_cursor_and_scroll_from_active() {
+        let mut a = app_with("a\nb\nc\nd", 10);
+        a.cursor = Position::new(2, 0);
+        a.scroll = 1;
+        a.apply(Action::SplitPaneVertical);
+        // Both panes should have (line=2, scroll=1) initially.
+        let panes = a.pane_tree.leaves();
+        assert_eq!(panes[0].cursor.line, 2);
+        assert_eq!(panes[0].scroll, 1);
+        assert_eq!(panes[1].cursor.line, 2);
+        assert_eq!(panes[1].scroll, 1);
     }
 
     #[test]

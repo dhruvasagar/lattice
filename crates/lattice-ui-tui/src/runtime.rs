@@ -84,6 +84,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         let size = terminal.size().context("query terminal size")?;
         let buffer_height = size.height.saturating_sub(2) as u32;
         app.set_viewport_height(buffer_height);
+        app.terminal_width = Some(size.width);
         app.refresh_highlights();
 
         // Push the cursor shape only when modal changes -- terminals

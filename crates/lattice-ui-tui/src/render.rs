@@ -56,7 +56,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App) {
         .constraints(constraints)
         .split(frame.area());
 
-    draw_buffer(frame, chunks[0], app);
+    draw_panes(frame, chunks[0], app);
     draw_mode_line(frame, chunks[1], app);
     draw_command_or_echo(frame, chunks[2], app);
     // Help overlay paints over the buffer area.
@@ -282,6 +282,66 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         let col_off = (cursor.byte as usize).min(inner.width.saturating_sub(1) as usize);
         frame.set_cursor_position((inner.x + col_off as u16, inner.y + row_off as u16));
     }
+}
+
+/// Lay the pane tree out across `area` and draw each pane.
+/// (DESIGN.md §5.9.) The active pane gets the full
+/// [`draw_buffer`] rendering -- gutter, syntax highlighting,
+/// visual selection, hlsearch, terminal cursor placement. Inactive
+/// panes get [`draw_inactive_pane`], a simpler path that surfaces
+/// the buffer's identity + scroll position; full rendering for
+/// inactive panes lands with B.1.c (multiple distinct documents).
+fn draw_panes(frame: &mut Frame, area: Rect, app: &App) {
+    let pane_area = crate::pane::PaneRect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height,
+    };
+    let rects = app.pane_tree.compute_rects(pane_area);
+    let active = app.pane_tree.active_index();
+    for (idx, prect) in rects {
+        let rect = Rect {
+            x: prect.x,
+            y: prect.y,
+            width: prect.width,
+            height: prect.height,
+        };
+        if idx == active {
+            draw_buffer(frame, rect, app);
+        } else {
+            draw_inactive_pane(frame, rect, app, idx);
+        }
+    }
+}
+
+/// Render an inactive pane: a bordered placeholder showing the
+/// pane's buffer kind, id, and stashed cursor line. v1 doesn't
+/// duplicate the full text rendering for inactive panes (would
+/// require parameterizing the visual selection / search overlay
+/// pipeline which all read App.cursor / App.scroll). The data is
+/// there in `pane.cursor` / `pane.scroll`; the visuals will fill
+/// in with B.1.c when there are meaningfully distinct buffers.
+fn draw_inactive_pane(frame: &mut Frame, area: Rect, app: &App, pane_idx: usize) {
+    frame.render_widget(Clear, area);
+    let panes = app.pane_tree.leaves();
+    let Some(pane) = panes.get(pane_idx) else {
+        return;
+    };
+    let label = match pane.buffer {
+        crate::buffers::BufferKind::Document => format!(
+            " [doc #{} -- line {}, switch with <C-w>w] ",
+            pane.buffer_id.0,
+            pane.cursor.line + 1
+        ),
+        crate::buffers::BufferKind::Help => format!(
+            " [help #{} -- line {}, switch with <C-w>w] ",
+            pane.buffer_id.0,
+            pane.cursor.line + 1
+        ),
+    };
+    let block = Block::default().borders(Borders::ALL).title(label);
+    frame.render_widget(block, area);
 }
 
 fn draw_buffer(frame: &mut Frame, area: Rect, app: &App) {

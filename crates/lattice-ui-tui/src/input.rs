@@ -20,6 +20,7 @@ use lattice_grammar::registry::{MotionId, OperatorId};
 
 use crate::app::{Action, FindKind, Pending, ScrollPos, ViewportPos};
 use crate::buffers::BufferKind;
+use crate::pane::PaneDirection;
 
 pub struct TranslateContext<'a> {
     pub modal: ModalState,
@@ -294,6 +295,7 @@ fn translate_normal(
 ) -> Action {
     // Resolve any pending state first.
     match pending {
+        Pending::AfterCtrlW => return resolve_after_ctrl_w(event),
         Pending::AfterG => return resolve_after_g(event, builtins),
         Pending::AfterOperator(op) => return resolve_after_operator(event, builtins, op),
         Pending::AfterFindChar { kind, operator } => {
@@ -331,6 +333,10 @@ fn translate_normal(
             // so a hijacked Ctrl+V arrives as `Event::Paste` -- the
             // user's paste still works either way.
             KeyCode::Char('v') | KeyCode::Char('q') => Action::EnterVisual(VisualKind::Blockwise),
+            // `<C-w>` -- window-management chord prefix. The next
+            // key resolves to split / close / navigate (see
+            // `resolve_after_ctrl_w`).
+            KeyCode::Char('w') => Action::SetPending(Pending::AfterCtrlW),
             _ => Action::None,
         };
     }
@@ -491,6 +497,42 @@ fn translate_normal(
         KeyCode::PageUp => invoke_with_count(builtins.line_up, 10),
 
         _ => Action::None,
+    }
+}
+
+/// Resolve the second key of a `<C-w>...` window-management chord
+/// (DESIGN.md §5.9). vim keymap:
+/// - `<C-w>s` / `<C-w>S` -- horizontal split (new pane below).
+/// - `<C-w>v` -- vertical split (new pane right).
+/// - `<C-w>c` / `<C-w>q` -- close active pane.
+/// - `<C-w>h/j/k/l` -- navigate to spatial neighbour.
+/// - `<C-w>w` / `<C-w><C-w>` -- cycle to next pane.
+/// - `<C-w>W` -- cycle to previous pane.
+/// - Anything else: clear pending and no-op.
+fn resolve_after_ctrl_w(event: KeyEvent) -> Action {
+    if matches!(event.code, KeyCode::Esc) {
+        return Action::SetPending(Pending::None);
+    }
+    // Within the AfterCtrlW chord we accept either Ctrl-modified or
+    // bare keys -- vim is lenient because <C-w> is a sticky prefix
+    // (typing <C-w><C-w> for "next pane" is muscle memory).
+    if event.modifiers.contains(KeyModifiers::CONTROL) {
+        return match event.code {
+            KeyCode::Char('w') => Action::NextPane,
+            _ => Action::SetPending(Pending::None),
+        };
+    }
+    match event.code {
+        KeyCode::Char('s') | KeyCode::Char('S') => Action::SplitPaneHorizontal,
+        KeyCode::Char('v') => Action::SplitPaneVertical,
+        KeyCode::Char('c') | KeyCode::Char('q') => Action::ClosePane,
+        KeyCode::Char('h') | KeyCode::Left => Action::NavigatePane(PaneDirection::Left),
+        KeyCode::Char('j') | KeyCode::Down => Action::NavigatePane(PaneDirection::Down),
+        KeyCode::Char('k') | KeyCode::Up => Action::NavigatePane(PaneDirection::Up),
+        KeyCode::Char('l') | KeyCode::Right => Action::NavigatePane(PaneDirection::Right),
+        KeyCode::Char('w') => Action::NextPane,
+        KeyCode::Char('W') => Action::PrevPane,
+        _ => Action::SetPending(Pending::None),
     }
 }
 

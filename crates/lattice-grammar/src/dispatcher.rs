@@ -140,16 +140,18 @@ fn execute_operator(
 ) -> GrammarResult<Effect> {
     let operator = require_operator(entry)?;
 
-    // Blockwise visual is dispatched per-row: each row's column slice
-    // gets its own ProtoRange, the operator's apply runs once per row,
-    // and the returned per-row Effects are merged into a single
-    // Effect::Many with edits concatenated and yanks collapsed into a
-    // single Blockwise yank carrying the row contents joined by '\n'.
+    // Blockwise visual is dispatched per-row -- but only for
+    // operators that opted into it via `blockwise_per_row`. Rectangle
+    // ops (`d`, `y`, `c`) want each row's column slice; linewise-
+    // style ops (`>`, `<`, `gU`, `gu`, `g~`) want one contiguous
+    // range covering anchor..head so the whole change is a single
+    // undo unit, matching vim's behavior on visual selections.
     if let Some(Range::Selection) = invocation.range
         && matches!(
             document.selections().primary().visual,
             Some(lattice_protocol::selection::VisualMode::Blockwise)
         )
+        && operator.blockwise_per_row
     {
         return execute_operator_blockwise(operator, document, invocation, cancel);
     }

@@ -6715,8 +6715,11 @@ mod tests {
     }
 
     #[test]
-    fn count_with_indent_right_indents_n_lines() {
+    fn count_with_indent_right_indents_n_lines_as_single_undo() {
         // `2>>`: count=2 expands Range::CurrentLine to span 2 lines.
+        // The whole indent MUST land as a single undo unit -- the
+        // operator builds the per-line edits up front and commits
+        // via apply_edit_batch.
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
         a.apply(Action::PushDigit(2));
@@ -6724,7 +6727,23 @@ mod tests {
         let inv = CommandInvocation::of(a.builtins.indent_right.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
-        // Lines 0 and 1 indented; lines 2 and 3 untouched.
+        assert_eq!(a.document.text(), "    one\n    two\nthree\nfour");
+        // Single undo restores the original buffer.
+        let _ = a.undo_blocking();
+        assert_eq!(a.document.text(), "one\ntwo\nthree\nfour");
+    }
+
+    #[test]
+    fn count_with_indent_left_dedents_n_lines_as_single_undo() {
+        let mut a = app_with("    one\n    two\nthree\nfour", 10);
+        a.cursor = Position::new(0, 0);
+        a.apply(Action::PushDigit(2));
+        a.apply(Action::SetPending(Pending::AfterOperator(a.builtins.indent_left)));
+        let inv = CommandInvocation::of(a.builtins.indent_left.0)
+            .with_range(lattice_grammar::Range::CurrentLine);
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "one\ntwo\nthree\nfour");
+        let _ = a.undo_blocking();
         assert_eq!(a.document.text(), "    one\n    two\nthree\nfour");
     }
 
@@ -7073,7 +7092,10 @@ mod tests {
     fn block_visual_indent_right_indents_each_row_in_block() {
         // Indent operates on lines covered by the block. The
         // insertion goes at column 0 of each line (vim's behavior),
-        // not at the block's left column.
+        // not at the block's left column. Whole change must be one
+        // undo unit (operator opts out of per-row blockwise dispatch
+        // via blockwise_per_row=false; the indent operator's
+        // apply_edit_batch makes the multi-line indent atomic).
         let mut a = enter_block_visual(
             "abc\n123\nWXY",
             Position::new(0, 1),
@@ -7083,6 +7105,8 @@ mod tests {
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "    abc\n    123\n    WXY");
+        let _ = a.undo_blocking();
+        assert_eq!(a.document.text(), "abc\n123\nWXY");
     }
 
     #[test]

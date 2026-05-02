@@ -260,6 +260,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             repeatable: true,
             apply: Box::new(operator_delete),
             args_schema: vec![],
+            blockwise_per_row: true,
         },
     );
     let change = registry.register_operator(
@@ -269,6 +270,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             repeatable: true,
             apply: Box::new(operator_change),
             args_schema: vec![],
+            blockwise_per_row: true,
         },
     );
     let yank = registry.register_operator(
@@ -278,6 +280,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             repeatable: true,
             apply: Box::new(operator_yank),
             args_schema: vec![],
+            blockwise_per_row: true,
         },
     );
     let indent_left = registry.register_operator(
@@ -287,6 +290,9 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             repeatable: true,
             apply: Box::new(operator_indent_left),
             args_schema: vec![],
+            // Linewise effect -- one batched edit covers every line
+            // in the visual span, regardless of charwise / blockwise.
+            blockwise_per_row: false,
         },
     );
     let indent_right = registry.register_operator(
@@ -296,6 +302,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             repeatable: true,
             apply: Box::new(operator_indent_right),
             args_schema: vec![],
+            blockwise_per_row: false,
         },
     );
     let upper = registry.register_operator(
@@ -305,6 +312,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             repeatable: true,
             apply: Box::new(operator_upper),
             args_schema: vec![],
+            blockwise_per_row: false,
         },
     );
     let lower = registry.register_operator(
@@ -314,6 +322,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             repeatable: true,
             apply: Box::new(operator_lower),
             args_schema: vec![],
+            blockwise_per_row: false,
         },
     );
     let toggle_case = registry.register_operator(
@@ -323,6 +332,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             repeatable: true,
             apply: Box::new(operator_toggle_case),
             args_schema: vec![],
+            blockwise_per_row: false,
         },
     );
 
@@ -1892,39 +1902,50 @@ fn operator_yank(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
 const INDENT_UNIT: &str = "    ";
 
 /// Vim's `>` -- prepend INDENT_UNIT to each line in the range.
+///
+/// The whole indent operation lands as a single undo unit -- we
+/// build the per-line edits up front and commit via
+/// `apply_edit_batch` so `2>>` / visual-`>` over N lines is one
+/// `u` away from being undone, not N.
 fn operator_indent_right(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     if ctx.range.is_empty() {
         return Ok(Effect::None);
     }
     let first_line = ctx.range.start.line;
     let last_line = ctx.range.end.line;
-    let mut applied = Vec::new();
-    // Walk lines bottom-up so earlier inserts don't shift later positions.
-    for line in (first_line..=last_line).rev() {
-        let pos = Position::new(line, 0);
-        let edit = Edit::insert(pos, INDENT_UNIT);
-        applied.insert(0, ctx.document.apply_edit(edit)?);
-    }
+    // Bottom-up edit construction so earlier inserts don't shift
+    // later positions when the buffer applies the batch in order.
+    let edits: Vec<Edit> = (first_line..=last_line)
+        .rev()
+        .map(|line| Edit::insert(Position::new(line, 0), INDENT_UNIT))
+        .collect();
+    let applied = ctx.document.apply_edit_batch(edits)?;
+    // Restore top-down ordering for the returned AppliedEdits so
+    // downstream `handle_edits` lands the cursor on the topmost
+    // line, matching the previous one-edit-at-a-time behavior.
+    let mut applied = applied;
+    applied.reverse();
     Ok(Effect::Edits(applied))
 }
 
 /// Vim's `<` -- strip up to INDENT_UNIT bytes of leading whitespace from
 /// each line in the range. A leading tab also counts as one indent unit
-/// for v1.
+/// for v1. Whole operation lands as one undo unit (see
+/// [`operator_indent_right`]).
 fn operator_indent_left(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     if ctx.range.is_empty() {
         return Ok(Effect::None);
     }
     let first_line = ctx.range.start.line;
     let last_line = ctx.range.end.line;
-    let mut applied = Vec::new();
+    let buffer_text = ctx.document.text();
+    let lines: Vec<&str> = buffer_text.split_inclusive('\n').collect();
+    let mut edits: Vec<Edit> = Vec::new();
+    // Bottom-up so earlier deletes don't shift later positions
+    // when the batch applies in order.
     for line in (first_line..=last_line).rev() {
-        // Inspect the leading bytes: take up to INDENT_UNIT.len() spaces, OR
-        // a single leading tab, whichever applies.
-        let buffer_text = ctx.document.text();
-        let line_text = buffer_text
-            .split_inclusive('\n')
-            .nth(line as usize)
+        let line_text = lines
+            .get(line as usize)
             .map(|l| l.trim_end_matches('\n'))
             .unwrap_or("");
         let bytes = line_text.as_bytes();
@@ -1943,14 +1964,15 @@ fn operator_indent_left(ctx: &mut OperatorContext) -> Result<Effect, CommandErro
             Position::new(line, 0),
             Position::new(line, strip as u32),
         );
-        let edit = Edit::delete(range);
-        applied.insert(0, ctx.document.apply_edit(edit)?);
+        edits.push(Edit::delete(range));
     }
-    if applied.is_empty() {
-        Ok(Effect::None)
-    } else {
-        Ok(Effect::Edits(applied))
+    if edits.is_empty() {
+        return Ok(Effect::None);
     }
+    let applied = ctx.document.apply_edit_batch(edits)?;
+    let mut applied = applied;
+    applied.reverse();
+    Ok(Effect::Edits(applied))
 }
 
 // ---- Case operators (gU, gu, g~) ----

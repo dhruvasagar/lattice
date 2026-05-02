@@ -127,12 +127,23 @@ pub struct OperatorSpec {
     /// Per-positional-argument metadata (DESIGN.md §B.1). Empty for
     /// operators without args (the common case).
     pub args_schema: Vec<ArgSpec>,
+    /// Block-visual dispatch hint. `true` (the default for v1
+    /// rectangle ops -- `d`, `y`, `c`) means a blockwise visual
+    /// selection routes per-row: each row's column slice gets its
+    /// own ProtoRange and `apply` runs once per row, with results
+    /// merged into a single Blockwise yank + concatenated Edits.
+    /// `false` (linewise-style ops -- `>`, `<`, `gU`, `gu`, `g~`)
+    /// means a blockwise visual collapses to a single contiguous
+    /// range covering anchor..head; `apply` runs once. This keeps
+    /// the operator a single undo unit instead of N per-row units.
+    pub blockwise_per_row: bool,
 }
 
 impl std::fmt::Debug for OperatorSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OperatorSpec")
             .field("repeatable", &self.repeatable)
+            .field("blockwise_per_row", &self.blockwise_per_row)
             .finish_non_exhaustive()
     }
 }
@@ -649,6 +660,7 @@ mod tests {
                 repeatable: false,
                 apply: Box::new(|_| Ok(crate::effect::Effect::None)),
                 args_schema: vec![],
+                blockwise_per_row: false,
             },
         );
         let spec = r.lookup(id.0).unwrap();

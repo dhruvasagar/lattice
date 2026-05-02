@@ -241,6 +241,14 @@ fn execute_operator_blockwise(
         }
     }
 
+    // Snapshot the pre-state of the affected line span so we can
+    // collapse the per-row edits into a single batched edit at the
+    // end. Block-visual selections always span a contiguous line
+    // range, so we capture (top_line, 0) .. (bottom_line, EOL).
+    let pre_top = Position::new(top_line, 0);
+    let pre_bottom = Position::new(bottom_line, line_byte_len(document.buffer(), bottom_line));
+    let pre_range = ProtoRange::new(pre_top, pre_bottom);
+
     // Run apply per row, bottom-up. Collect every produced Effect.
     let register = invocation.register_or_default();
     let count = invocation.count_or_default();
@@ -269,11 +277,62 @@ fn execute_operator_blockwise(
     // their internal vec).
     per_row_effects.reverse();
 
+    // Coalesce the per-row edits into a single batched undo unit.
+    // Each row's `apply` may have called `apply_edit` once (delete /
+    // change) or zero times (yank); count the AppliedEdits, undo
+    // them, and re-emit a single `Edit::replace` covering the
+    // affected line span with the post-state text. The user's `u`
+    // then reverts the whole rectangle in one step, matching vim.
+    let edit_count: usize = per_row_effects
+        .iter()
+        .map(count_applied_edits)
+        .sum();
+    let collapsed_edit = if edit_count > 1 {
+        // Capture post-state of the same line span. Line numbers
+        // didn't shift -- block-visual operators only modify column
+        // slices within rows; they never delete whole rows.
+        let post_bottom = Position::new(bottom_line, line_byte_len(document.buffer(), bottom_line));
+        let post_range = ProtoRange::new(pre_top, post_bottom);
+        let post_text = document.buffer().slice(post_range)?;
+
+        // Rewind every per-row edit, then commit one batched
+        // Edit::replace covering the original span.
+        for _ in 0..edit_count {
+            // Undo errors here would mean the document's undo stack
+            // diverged from what we just pushed -- treat as a hard
+            // failure so callers see it rather than silently leaving
+            // the buffer in a half-rolled-back state.
+            document
+                .undo()
+                .map_err(|_| CommandError::InvalidArgs("blockwise undo coalesce failed"))?;
+        }
+        let edit = lattice_protocol::edit::Edit::replace(pre_range, &post_text);
+        let applied = document
+            .apply_edit(edit)
+            .map_err(|_| CommandError::InvalidArgs("blockwise batched apply failed"))?;
+        Some(applied)
+    } else {
+        None
+    };
+
     Ok(merge_blockwise_effects(
         per_row_effects,
         row_contents,
         register,
+        collapsed_edit,
     ))
+}
+
+/// Sum of the `AppliedEdit`s contained in an Effect (recursing into
+/// `Effect::Many`). Used to count how many `apply_edit` calls were
+/// made by a single per-row operator dispatch so the blockwise
+/// coalesce can rewind exactly that many.
+fn count_applied_edits(effect: &Effect) -> usize {
+    match effect {
+        Effect::Edits(v) => v.len(),
+        Effect::Many(inner) => inner.iter().map(count_applied_edits).sum(),
+        _ => 0,
+    }
 }
 
 /// Flatten the per-row Effects and merge:
@@ -287,6 +346,7 @@ fn merge_blockwise_effects(
     per_row_effects: Vec<Effect>,
     row_contents: Vec<String>,
     primary_register: crate::register::Register,
+    collapsed_edit: Option<lattice_core::buffer::AppliedEdit>,
 ) -> Effect {
     let mut flat: Vec<Effect> = Vec::new();
     for e in per_row_effects {
@@ -313,7 +373,15 @@ fn merge_blockwise_effects(
 
     let joined = row_contents.join("\n");
     let mut out: Vec<Effect> = Vec::new();
-    if !combined_edits.is_empty() {
+    // Prefer the dispatcher-supplied collapsed edit if it built one
+    // (multi-row case): the per-row AppliedEdits were rewound and
+    // re-emitted as a single batched edit; surfacing the per-row
+    // copies here would mislead the host's `handle_edits` cursor
+    // logic. Single-edit cases (one-row dispatch, yank-only) keep
+    // the per-row Edits.
+    if let Some(applied) = collapsed_edit {
+        out.push(Effect::Edits(vec![applied]));
+    } else if !combined_edits.is_empty() {
         out.push(Effect::Edits(combined_edits));
     }
     // Vim's blockwise paste reads the unnamed register; the operator

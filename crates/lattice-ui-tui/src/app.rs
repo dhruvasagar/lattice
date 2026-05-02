@@ -7035,6 +7035,45 @@ mod tests {
     }
 
     #[test]
+    fn block_delete_lands_as_single_undo_unit() {
+        // The whole rectangle delete must collapse into one undo
+        // entry -- the dispatcher coalesces the per-row AppliedEdits
+        // by snapshotting pre/post and replaying as one Edit::replace.
+        let mut a = enter_block_visual(
+            "abcd\n1234\nWXYZ",
+            Position::new(0, 1),
+            Position::new(2, 2),
+        );
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "ad\n14\nWZ");
+        let _ = a.undo_blocking();
+        assert_eq!(a.document.text(), "abcd\n1234\nWXYZ");
+    }
+
+    #[test]
+    fn block_change_lands_as_single_undo_unit() {
+        // Block-visual `c` deletes each row's column slice and enters
+        // Insert. The deletion piece must be one undo unit; future
+        // typed text would be batched separately by the I/A path.
+        let mut a = enter_block_visual(
+            "abcd\n1234\nWXYZ",
+            Position::new(0, 1),
+            Position::new(2, 2),
+        );
+        let inv = CommandInvocation::of(a.builtins.change.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "ad\n14\nWZ");
+        assert!(matches!(a.modal, ModalState::Insert));
+        // Exit Insert without typing anything to isolate the deletion.
+        a.apply(Action::EnterMode(ModalState::Normal));
+        let _ = a.undo_blocking();
+        assert_eq!(a.document.text(), "abcd\n1234\nWXYZ");
+    }
+
+    #[test]
     fn block_yank_stores_blockwise_content_in_unnamed_register() {
         // Yank a 3x2 rectangle: cols 1..=2 across three rows of "abcd\n1234\nWXYZ".
         let mut a = enter_block_visual(

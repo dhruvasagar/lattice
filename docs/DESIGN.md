@@ -1857,22 +1857,66 @@ Throughout: editor pane keeps rendering, LSP keeps running, no other UI work is 
 
 ### 8.2 Performance commitments per path
 
-| Operation | Target (p99) | Path |
-|---|---|---|
-| Keystroke to buffer mutation | <100us | All |
-| Keystroke to glyph (code) | <2ms | Monospace |
-| Keystroke to glyph (code w/ LSP) | <3ms | Monospace + decorations |
-| Keystroke to glyph (markdown) | <5ms | Shaped |
-| Frame render (code, 1080p) | <2ms | Monospace |
-| Frame render (markdown, 1080p) | <5ms | Shaped |
-| Open 100MB log (first paint) | <100ms | Monospace |
-| Open 100MB log (full ready) | <500ms | Monospace |
-| Open 10K-line markdown (full ready) | <500ms | Shaped (eager layout) |
-| Tree-sitter incremental reparse | <1ms | (50K-line file) |
-| Completion popup (first paint) | <10ms after LSP | Document |
-| Hover popup (first paint) | <15ms after LSP | Document |
-| Picker (first match shown) | <50ms | Document |
-| Status segment update | <500us | Document |
+The shape of the table is "what we commit to land at v1.0", not
+"what we have measured today". Where current benches (`docs/BENCHMARKS.md`)
+already show better than the listed target, we keep the conservative
+target as a published commitment but document the observed number in
+the bench doc -- the goal is to never regress *under* the target,
+not to be bound by past peak runs.
+
+The columns are:
+
+- **Target (p99):** the budget every implementation MUST hit. CI
+  fails on >10% regression vs. main on any benchmark.
+- **Stretch:** the credible "decisively better than vim/neovim"
+  target, achievable with the algorithms in `docs/BENCHMARKS.md`'s
+  improvement-paths section. Not gated; measured, tracked.
+- **vs neovim:** a rough qualitative note. Numbers come from
+  Appendix A's measurement methodology.
+
+| Operation | Target (p99) | Stretch | vs neovim |
+|---|---|---|---|
+| Keystroke to buffer mutation | <100us | <50us | neovim ~50–200us; we already meet the lower edge. Stretch via `Cache::load` snapshot path. |
+| Keystroke to glyph (code) | <2ms | <1ms | neovim ~3–10ms typical; we already commit faster. Stretch needs GPU renderer. |
+| Keystroke to glyph (code w/ LSP) | <3ms | <2ms | neovim 5–20ms with LSP; our actor + snapshot architecture lets the renderer skip mid-edit redraws. |
+| Keystroke to glyph (markdown) | <5ms | <3ms | neovim has no rich markdown render path. |
+| Frame render (code, 1080p) | <2ms | <500us | Sub-ms on warm cache; GPU path closes the gap. |
+| Frame render (markdown, 1080p) | <5ms | <2ms | Per-line cache + Fenwick height index. |
+| Open 100MB log (first paint) | <100ms | <30ms | neovim 1-3s; ropey load + immediate paint of viewport rows. |
+| Open 100MB log (full ready) | <500ms | <200ms | Background tree-sitter parse + lazy syntax. |
+| Open 10K-line markdown (full ready) | <500ms | <200ms | Eager layout on rayon pool. |
+| Tree-sitter incremental reparse | <1ms | <300us | 50K-line file, single-line edit. |
+| Search (literal substring, typical) | <100us | <10us | First-match-near-cursor: memmem on a single rope chunk -- already 200ns on 200k buffers. |
+| Search (literal substring, worst case) | <2ms | <500us | Full 200k-line walk; current ~1.2ms. Stretch via suffix-array index (post-1.0). |
+| Search regex (typical) | <2ms | <500us | `regex` crate's lazy DFA + SIMD prefilter. |
+| Completion popup (first paint) | <10ms after LSP | <5ms | LSP latency dominates; we just need the popup shell sync. |
+| Hover popup (first paint) | <15ms after LSP | <5ms | Same. |
+| Picker (first match shown) | <50ms | <10ms | Matcher is ours, not LSP -- wins the harder. |
+| Status segment update | <500us | <100us | Single arc-swap'd document snapshot read. |
+
+The stretch column is the **published goal**: we are deliberately
+willing to set targets faster than the established ceiling for the
+keystroke path, the open-large-file path, and search. The
+architecture decisions that enable this are concrete:
+
+- **Actor + arc-swap snapshots** decouple the renderer from the
+  edit path -- neovim's redraw is synchronous with the edit, so
+  big edits or slow plugins block paint. We don't.
+- **memmem-driven search on rope chunks** (B-α + B-β in this
+  codebase) replaces neovim's char-by-char `findstr.c` walk; we
+  measure 4700× wins on 200k-line buffers.
+- **Per-call WASM overhead budgeted in CI** (typed call <500ns
+  p99; grammar-extension round-trip <5µs p99) prevents
+  plugin-introduced regressions that vim plugins routinely cause.
+- **Latency classes** (§5.2.5) make per-call budgets enforceable;
+  unbudgeted code that wants to extend the keystroke path has to
+  declare which class it's claiming.
+
+When the architecture limits us below a stretch (e.g. true
+microsecond-class full-buffer search needs a suffix-array index,
+which has months of engineering and ~5× memory cost), the doc
+records that honestly in the per-row note rather than silently
+inflating the target.
 
 CI fails on >10% regression vs. main on any benchmark.
 

@@ -160,6 +160,14 @@ fn find_backward(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 /// (boundary bytes that might start a match continuing into the
 /// next chunk) and advance `window_start_abs`. Capacity-reuse
 /// across iterations keeps allocation bounded by chunk size.
+///
+/// Sequential is faster than rayon-parallel here: memmem's SIMD
+/// prefilter scans rare-prefix needles at ~30GB/s, which makes a
+/// 13MB sequential scan ~450µs -- inside rayon's spawn overhead
+/// (~500µs). Parallel partition scans were tried (B-γ) and
+/// regressed every bench measurably; reverted. Sub-millisecond
+/// full-buffer scans on 200k-line corpora would require a
+/// fundamentally different algorithm (suffix array, FM-index).
 fn find_forward_in_rope(rope: &ropey::Rope, needle: &[u8], from: usize) -> Option<usize> {
     let total = rope.len_bytes();
     if needle.is_empty() || total < needle.len() || from >= total {
@@ -213,8 +221,6 @@ fn find_backward_in_rope(rope: &ropey::Rope, needle: &[u8], from: usize) -> Opti
 
     for chunk in chunks.iter().rev() {
         let cb = chunk.as_bytes();
-        // Build search frame: this chunk + bridge bytes from the
-        // previously-processed (more-rightward) chunk.
         let mut frame = Vec::with_capacity(cb.len() + window.len());
         frame.extend_from_slice(cb);
         frame.extend_from_slice(&window);
@@ -222,10 +228,6 @@ fn find_backward_in_rope(rope: &ropey::Rope, needle: &[u8], from: usize) -> Opti
         if let Some(rel) = memchr::memmem::rfind(&frame, needle) {
             return Some(frame_start_abs + rel);
         }
-        // For the next (more-leftward) iteration, keep the first
-        // `bridge_keep` bytes of `frame` -- they're the boundary
-        // bytes that might end a match starting in the next chunk
-        // we'll process.
         let keep = frame.len().min(bridge_keep);
         window.clear();
         window.extend_from_slice(&frame[..keep]);

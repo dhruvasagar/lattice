@@ -34,9 +34,11 @@ arc-swap = "1.7"
 # `memchr::memmem::find` for ~2GB/s scans on AVX2.
 memchr = "2.7"
 
-# Data-parallel rope scans for full-buffer search paths
-# (no_match_with_wrap, forward_last_match). Workspace-wide so future
-# crates can reach for it too.
+# Reserved for future parallel paths (tree-sitter query batches,
+# index rebuilds, file-glob walks). Tried for `lattice-core::search`
+# in B-γ but reverted: memmem scans rare-prefix needles at ~30GB/s
+# sequentially, so a 13MB rope walk fits inside rayon's spawn
+# overhead. Keep the workspace dep documented but unused for now.
 rayon = "1.10"
 
 # Serialization (Phase 0 just uses serde for protocol type derives)

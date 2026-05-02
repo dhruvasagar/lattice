@@ -6690,8 +6690,10 @@ mod tests {
     }
 
     #[test]
-    fn count_with_dd_deletes_n_lines() {
+    fn count_with_dd_deletes_n_lines_as_single_undo() {
         // `2dd`: count=2 expands Range::CurrentLine to span 2 lines.
+        // The whole deletion MUST land as a single undo unit -- a
+        // single `u` should restore the original buffer.
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
         a.apply(Action::PushDigit(2));
@@ -6701,13 +6703,15 @@ mod tests {
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
         // Lines 0 and 1 ("one" and "two") deleted; line 2 ("three") survives.
-        // Note: `:d`/`dd` semantics for trailing newline are tracked in §14;
-        // here we assert the line text was removed.
         let text = a.document.text();
         assert!(!text.contains("one"));
         assert!(!text.contains("two"));
         assert!(text.contains("three"));
         assert!(text.contains("four"));
+
+        // One undo should fully restore.
+        let _ = a.undo_blocking();
+        assert_eq!(a.document.text(), "one\ntwo\nthree\nfour");
     }
 
     #[test]

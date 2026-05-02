@@ -47,11 +47,13 @@ rendering, and v1.0 polish.
 | 9     | Rich Buffer Rendering                 | ⛔ not started           | Per-line shaped path, Fenwick height index                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 10    | Polish + v1.0                         | ⛔ not started           | `*scratch:rust*` live-eval workflow (§10), accessibility, packaging, themes                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
-Active focus: **Phase 4 (LSP) is the next major chunk. It depends on the
-§5.2.1 async-dispatcher refactor (`execute → Pending<Effect>`) and the
-§5.6.8 render-snapshot model, neither of which is implemented yet --
-the TUI runs a synchronous dispatcher today. Those two together are
-the gating prerequisite for Phases 4-7.**
+Active focus: **Phase 4 (LSP) is the next major chunk. The §5.2.1
+async-dispatcher refactor (`Pending<T>`) and the §5.6.8 render-
+snapshot model now live in `lattice-runtime`; the actor + arc-swap
+publish/load contract is in place. LSP and the plugin host (Phase
+4 / 7) can register against the same `DocumentHandle` the App uses.
+Remaining work specific to Phase 4 is the LSP client itself
+(tower-lsp or hand-rolled) and protocol wiring.**
 
 ---
 
@@ -71,7 +73,7 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | Visual (Blockwise) | ✅ d/y/c + paste | §15:18    | Ctrl-V (or Ctrl-Q on terminals that hijack Ctrl-V) enters; render highlights the rectangle; `d` / `y` / `c` dispatch per-row in the dispatcher with merged Edits + one Blockwise yank. `YankKind::Blockwise` paste replays each row at the same column. `I` / `A` / `>` / `<` block forms still post-1.0. |
 | Operator-Pending   | ✅               | §5.2      | Resolved through translate_normal pending state                                                                                                                                                                                                                                                           |
 | Command (`:`)      | ✅               | §5.9.10   | Rich minibuffer scope is partial; full spec is post-Phase-1                                                                                                                                                                                                                                               |
-| Search (`/`, `?`)  | ✅               | §5.9.10   | Live preview decoration not yet wired                                                                                                                                                                                                                                                                     |
+| Search (`/`, `?`)  | ✅               | §5.9.10   | Live preview wired (hlsearch on every keystroke); fancy-regex backend                                                                                                                                                                                                                                     |
 | Replace (`R`)      | ✅               | §5.2      | Backspace-restore wired                                                                                                                                                                                                                                                                                   |
 
 ### Motions (Reflex-class)
@@ -426,13 +428,13 @@ race past their own commit.
 | `Pending<T>` returned by every mutating call               | ✅                   | §5.2.1 (`lattice-runtime::Pending`)     |
 | Bounded backpressure (`RuntimeError::Busy`)                | ✅                   | §5.2.1 (mailbox cap = 64)               |
 | `arc-swap` published `DocumentSnapshot`                    | ✅                   | §5.6.8 (`PublishedSnapshot`)            |
-| Renderer reads via single `Cache::load` per frame          | ✅                   | §5.6.8 (`render::draw_*`)               |
+| Renderer reads via single snapshot load per frame          | ✅                   | §5.6.8 (`render::draw_*`)               |
 | Publish-before-reply ordering                              | ✅                   | §5.6.8 (acquire/release contract)       |
 | Sync `lattice_grammar::execute` (runs inside actor)        | ✅                   | §5.2.1 (purity preserved)               |
+| Latency-class declarations (Reflex / Display / Background) | ✅ declarative        | §5.2.5 (`LatencyClass` field on `CommandSpec`; runtime enforcement deferred) |
 | Veto-class hooks (1ms p99)                                 | ⛔                   | §5.2.1 (needs §5.10 event bus)          |
-| Cancellation token contract                                | ⛔                   | §5.2.5 (needs `LatencyClass` field)     |
-| Latency-class declarations (Reflex / Display / Background) | ⛔                   | §5.2.5                                  |
-| Events-over-invocation rule                                | ⛔                   | §5.2.5                                  |
+| Cancellation token contract                                | ⛔                   | §5.2.5 (needs deadline-timer plumbing through `Pending`) |
+| Events-over-invocation rule                                | ⛔                   | §5.2.5 (needs §5.10 event bus)          |
 | Multi-pane selection transformation                        | n/a (single-pane v1) | §5.6.8                                  |
 
 This is **Phase 4 / 7's prerequisite** — LSP clients and the WASM
@@ -527,31 +529,38 @@ Update this section when picking up the in-flight item.
 
 ## Up next (priority order)
 
-1. **Block-visual `I` / `A` / `>` / `<`** — extend the per-row block
+1. **Per-search timeout / cancellation** — fancy-regex's pathological
+   backref patterns currently run to recursion limit (~169ms on the
+   benched pattern). Needs the §5.2.5 cancellation-token contract:
+   each Reflex command observes a deadline, aborts cleanly. Unlocks
+   safer regex search + future async I/O cancellation.
+2. **Block-visual `I` / `A` / `>` / `<`** — extend the per-row block
    dispatch with the remaining vim affordances: insert-at-block-start,
    append-at-block-end, indent-block-right/left.
-2. **Computed folds** (syntax-driven, indent-based) — manual folds via
+3. **Computed folds** (syntax-driven, indent-based) — manual folds via
    zf/zo/zc/za/zR/zM/zd are done; computed folds need tree-sitter integration
    and an indent-based fall-back.
-3. **`:set option=value` + typed options** (§5.12) — also unblocks
+4. **`:set option=value` + typed options** (§5.12) — also unblocks
    `:describe-option`.
-4. **Multi-buffer foundations** (§5.9) — the trigger for `HelpDisplayMode`
+5. **Multi-buffer foundations** (§5.9) — the trigger for `HelpDisplayMode`
    beyond `Popup`. Until this lands, all introspection is overlay-rendered.
-5. **Help major mode + tree-sitter grammar** — defines sections,
+6. **Help major mode + tree-sitter grammar** — defines sections,
    link-targets, code-blocks. Needs the help mode registered as a major
    mode, which depends on the modes registry (Phase 8) but the *grammar*
    can be drafted earlier.
-6. **Substitute live preview** — decorations on the target buffer while
+7. **Substitute live preview** — decorations on the target buffer while
    the user types `:s/foo/bar/...`. The hlsearch now lights up matches
    when the search minibuffer is open; substitute should do the same.
-7. **Promote `:g` body to a parsed CommandInvocation** — currently the
+8. **Promote `:g` body to a parsed CommandInvocation** — currently the
    body is `ArgValue::Raw(String)` and re-parsed per match.
-8. **Interactive arg-prompts via `args_schema`** (§B.1 phase 2) — `Chord`
+9. **Interactive arg-prompts via `args_schema`** (§B.1 phase 2) — `Chord`
    slot is done (chord-capture + auto-submit on `:describe-key<CR>`).
    Generalise to other kinds: drop the user into the minibuffer with
    the schema's prompt + completion source for any missing required arg.
-9. **Async dispatcher** — replace `execute(...) -> Effect` with `execute
-   -> Pending<Effect>` per §5.2.1.
+10. **Event bus + veto-class hooks** (§5.10 / §5.2.1) — typed event
+    subscriptions; pre-mutation hooks (`BeforeApplyEdit`) running inline
+    on the actor under a 1ms p99 budget. Unblocks autocmds, real LSP
+    didChange dispatch, and the §5.2.5 events-over-invocation rule.
 
 ---
 
@@ -560,7 +569,7 @@ Update this section when picking up the in-flight item.
 These are tracked in DESIGN.md §15. Items the implementation has resolved
 are crossed out there. Items that influence active tasks:
 
-- §15:18 Folds storage / interaction — feeds task #3 above.
+- §15:18 Folds storage / interaction — feeds the **Computed folds** task above.
 - §15:19 Replace mode dispatch (resolved by current Replace impl).
 - §15:20 Live evaluation (deferred per §10).
 - §15:21 File watcher / auto-revert — unaddressed.
@@ -575,18 +584,20 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-976 tests across the workspace as of the last commit. Coverage by crate:
+1035 tests across the workspace as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
 | lattice-protocol                 | 30    |
-| lattice-core (incl. integration) | 78    |
-| lattice-grammar                  | 174   |
-| lattice-completion               | 81    |
+| lattice-core (incl. integration) | 84    |
+| lattice-grammar                  | 179   |
+| lattice-completion               | 82    |
 | lattice-syntax                   | 23    |
-| lattice-ui-tui                   | 560   |
+| lattice-runtime                  | 20    |
+| lattice-ui-tui                   | 617   |
 
-Plus criterion benches for hot paths (search, buffer, motions, operators).
+Plus criterion benches for hot paths (search, buffer, motions, operators,
+runtime actor) — see `docs/BENCHMARKS.md` for the latest numbers.
 
 ---
 

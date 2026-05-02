@@ -27,22 +27,22 @@ directly.
 
 ## Topics
 
-| Topic | File | Status |
-|-------|------|--------|
-| Folding (manual + indent + markdown + tree-sitter, operator interaction, navigation, auto-open) | [folding.md](folding.md) | ✅ |
-| Modal editing (Normal / Insert / Visual / Op-pending / Command / Search / Replace, the chord grammar) | _planned_ | ⛔ |
-| Operators (`d` / `y` / `c` / `>` / `<` / `gU` / `gu` / `g~`) | _planned_ | ⛔ |
-| Motions (cursor, word, paragraph, sentence, viewport, find-char, search) | _planned_ | ⛔ |
-| Text objects (`iw` / `aw` / `ip` / `ap` / `i{` / `a{` etc.) | _planned_ | ⛔ |
-| Search and substitute (`/` / `?` / `:s` / live preview / regex syntax / backrefs) | _planned_ | ⛔ |
-| Registers and macros | _planned_ | ⛔ |
-| Marks and position history | _planned_ | ⛔ |
-| Block-visual mode (`Ctrl-V`, `I` / `A` / `>` / `<`, replicate-on-Esc) | _planned_ | ⛔ |
-| Ex-commands (`:w`, `:e`, `:s`, `:g`, `:d`, alias resolution, surface forms) | _planned_ | ⛔ |
-| Help system (`:describe-*`, `:apropos`, `:keymap`, missing-arg prompts) | _planned_ | ⛔ |
-| Configuration (TOML schema, options, customize buffer view) | _planned_ | ⛔ |
-| Plugins (WASM Component Model, capabilities, fuel) | _planned_ | ⛔ |
-| Performance posture (latency budgets, what's safe in a hot loop) | _planned_ | ⛔ |
+| Topic                                                                                                 | File                     | Status |
+|-------------------------------------------------------------------------------------------------------|--------------------------|--------|
+| Folding (manual + indent + markdown + tree-sitter, operator interaction, navigation, auto-open)       | [folding.md](folding.md) | ✅     |
+| Modal editing (Normal / Insert / Visual / Op-pending / Command / Search / Replace, the chord grammar) | _planned_                | ⛔     |
+| Operators (`d` / `y` / `c` / `>` / `<` / `gU` / `gu` / `g~`)                                          | _planned_                | ⛔     |
+| Motions (cursor, word, paragraph, sentence, viewport, find-char, search)                              | _planned_                | ⛔     |
+| Text objects (`iw` / `aw` / `ip` / `ap` / `i{` / `a{` etc.)                                           | _planned_                | ⛔     |
+| Search and substitute (`/` / `?` / `:s` / live preview / regex syntax / backrefs)                     | _planned_                | ⛔     |
+| Registers and macros                                                                                  | _planned_                | ⛔     |
+| Marks and position history                                                                            | _planned_                | ⛔     |
+| Block-visual mode (`Ctrl-V`, `I` / `A` / `>` / `<`, replicate-on-Esc)                                 | _planned_                | ⛔     |
+| Ex-commands (`:w`, `:e`, `:s`, `:g`, `:d`, alias resolution, surface forms)                           | _planned_                | ⛔     |
+| Help system (`:describe-*`, `:apropos`, `:keymap`, missing-arg prompts)                               | _planned_                | ⛔     |
+| Configuration (TOML schema, options, customize buffer view)                                           | _planned_                | ⛔     |
+| Plugins (WASM Component Model, capabilities, fuel)                                                    | _planned_                | ⛔     |
+| Performance posture (latency budgets, what's safe in a hot loop)                                      | _planned_                | ⛔     |
 
 Topics with `_planned_` aren't drafted yet — open an issue or send
 a PR if you want one prioritized.

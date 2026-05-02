@@ -73,6 +73,12 @@ tree-sitter-highlight = "0.24"
 tree-sitter-rust = "0.23"
 tree-sitter-python = "0.23"
 tree-sitter-javascript = "0.23"
+# Markdown's grammar is intentionally split into a block parser and an
+# inline parser -- one pass each, the block parser injects the inline
+# parser into paragraph content. tree-sitter-md exposes both behind one
+# crate; we register them as separate `HighlightConfiguration`s and the
+# block grammar's injections.scm wires them together.
+tree-sitter-md = "0.3"
 
 # Testing
 insta = "1.43"

@@ -22,6 +22,38 @@ pub enum Style {
     Operator,
     Punctuation,
     Attribute,
+    // ---- Markup styles (markdown / org / future rich-text modes) ----
+    /// `# Heading` -- level 1.
+    Heading1,
+    /// `## Heading` -- level 2.
+    Heading2,
+    /// `### Heading` -- level 3.
+    Heading3,
+    /// `#### Heading` -- level 4.
+    Heading4,
+    /// `##### Heading` -- level 5.
+    Heading5,
+    /// `###### Heading` -- level 6.
+    Heading6,
+    /// `**bold**` / `__bold__` text.
+    Bold,
+    /// `*italic*` / `_italic_` text.
+    Italic,
+    /// Link label / link text (`[label]`). Distinct from
+    /// [`Style::Url`] so the renderer can underline navigable
+    /// labels without underlining the URL itself.
+    Link,
+    /// Link destination (`(url)`) and autolinks.
+    Url,
+    /// Inline `` `code` ``, fenced code blocks without an info
+    /// string, link titles. Themed similar to comments today;
+    /// promoted to its own variant so a future theme can give it
+    /// a distinct background.
+    MarkupRaw,
+    /// List markers (`-`, `*`, `1.`), thematic breaks, blockquote
+    /// markers, and other markup punctuation that isn't a
+    /// programming-language operator.
+    Markup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +68,11 @@ pub struct StyledSpan {
 /// The capture-name table consumed by `HighlightConfiguration::configure`.
 /// Order matters only as far as it's consistent with the index-to-style
 /// mapping below.
+///
+/// The `text.*` family is the nvim-treesitter convention used by
+/// `tree-sitter-md`'s bundled queries (and most other markup
+/// grammars). Extending this list with `markup.*` entries lets newer
+/// queries fall through cleanly when we adopt them.
 pub(crate) const CAPTURE_NAMES: &[&str] = &[
     "comment.line",
     "comment",
@@ -58,11 +95,29 @@ pub(crate) const CAPTURE_NAMES: &[&str] = &[
     "variable",
     "operator",
     "punctuation.bracket",
+    "punctuation.special",
     "punctuation.delimiter",
     "punctuation",
     "attribute",
     "tag",
     "label",
+    // ---- Markup captures (markdown block + inline grammars) ----
+    // Per-level heading captures. The bundled tree-sitter-md queries
+    // emit `text.title` without level info -- our augmented markdown
+    // query (in `lang.rs`) adds the level-discriminated variants.
+    "text.title.1",
+    "text.title.2",
+    "text.title.3",
+    "text.title.4",
+    "text.title.5",
+    "text.title.6",
+    "text.title",
+    "text.strong",
+    "text.emphasis",
+    "text.uri",
+    "text.reference",
+    "text.literal",
+    "none",
 ];
 
 /// Map a capture index (the position in `CAPTURE_NAMES`) to a `Style`.
@@ -86,10 +141,31 @@ fn name_to_style(name: &str) -> Style {
         "constant" => Style::Constant,
         "variable" => Style::Variable,
         "operator" => Style::Operator,
+        "punctuation" if name == "punctuation.special" => Style::Markup,
         "punctuation" => Style::Punctuation,
         "attribute" => Style::Attribute,
         "tag" => Style::Type, // HTML/JSX tags display as types for now.
         "label" => Style::Constant,
+        // ---- Markup ----
+        "text" => match name {
+            "text.title.1" => Style::Heading1,
+            "text.title.2" => Style::Heading2,
+            "text.title.3" => Style::Heading3,
+            "text.title.4" => Style::Heading4,
+            "text.title.5" => Style::Heading5,
+            "text.title.6" => Style::Heading6,
+            "text.title" => Style::Heading1, // bundled query doesn't carry level
+            "text.strong" => Style::Bold,
+            "text.emphasis" => Style::Italic,
+            "text.uri" => Style::Url,
+            "text.reference" => Style::Link,
+            "text.literal" => Style::MarkupRaw,
+            _ => Style::Default,
+        },
+        // `@none` in bundled markdown queries: explicitly suppress
+        // highlight on a node so an injection can paint it. Mapped
+        // to Default so the node carries no style of its own.
+        "none" => Style::Default,
         _ => Style::Default,
     }
 }
@@ -141,5 +217,34 @@ mod tests {
         for &n in CAPTURE_NAMES {
             assert!(seen.insert(n), "duplicate capture name: {n}");
         }
+    }
+
+    #[test]
+    fn markup_heading_levels_are_distinct() {
+        assert_eq!(name_to_style("text.title.1"), Style::Heading1);
+        assert_eq!(name_to_style("text.title.2"), Style::Heading2);
+        assert_eq!(name_to_style("text.title.6"), Style::Heading6);
+        // Bundled query falls back to level 1 when no explicit
+        // level info is captured.
+        assert_eq!(name_to_style("text.title"), Style::Heading1);
+    }
+
+    #[test]
+    fn markup_emphasis_styles_resolve() {
+        assert_eq!(name_to_style("text.strong"), Style::Bold);
+        assert_eq!(name_to_style("text.emphasis"), Style::Italic);
+        assert_eq!(name_to_style("text.uri"), Style::Url);
+        assert_eq!(name_to_style("text.reference"), Style::Link);
+        assert_eq!(name_to_style("text.literal"), Style::MarkupRaw);
+    }
+
+    #[test]
+    fn punctuation_special_maps_to_markup() {
+        // `punctuation.special` covers list markers, heading
+        // markers, thematic breaks -- all "markup punctuation".
+        assert_eq!(name_to_style("punctuation.special"), Style::Markup);
+        // Generic punctuation stays Punctuation.
+        assert_eq!(name_to_style("punctuation"), Style::Punctuation);
+        assert_eq!(name_to_style("punctuation.bracket"), Style::Punctuation);
     }
 }

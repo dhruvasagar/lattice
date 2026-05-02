@@ -574,8 +574,19 @@ Update this section when picking up the in-flight item.
      (`<C-w>{h,j,k,l}`) walks the spatial neighbour computed from
      `compute_rects`. Inactive-pane rendering is a placeholder
      until B.1.c brings meaningfully distinct buffer content.
-   - **B.1.c multiple Document buffers**, **B.1.d buffer-as-content
-     kinds (file-tree, outline, diagnostics)** ⛔.
+   - **B.1.c multiple Document buffers** ✅ done. App holds a
+     `documents: HashMap<BufferId, DocumentEntry>` registry; each
+     entry carries the actor handle plus per-document tree-sitter
+     [`Syntax`] state. The active buffer's hot-path fields
+     ([`App::document`], [`App::syntax`],
+     [`App::last_parsed_text_version`]) mirror the active entry;
+     switching buffers snapshots the active state back into the
+     source entry and loads from the destination. `:e FILE` opens
+     a fresh buffer (or switches to it if already open); `:bn` /
+     `:bp` cycle, `:ls` / `:buffers` lists in a help view, `:bd[!]`
+     closes (the only-buffer case is rejected).
+   - **B.1.d buffer-as-content kinds (file-tree, outline,
+     diagnostics)** ⛔.
 5. **Hover popup + inline completion popup polish** — completion popup
    is wired (vertico-style); hover popup needs the host scaffolding so
    LSP hover responses land.

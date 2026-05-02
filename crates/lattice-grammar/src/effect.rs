@@ -155,6 +155,18 @@ pub enum Effect {
     /// `:keymap`. The host renders the full default keymap grouped by
     /// mode.
     ListKeymap,
+    /// `:bn[ext]` -- cycle to the next open document buffer.
+    BufferNext,
+    /// `:bp[rev]` -- cycle to the previous open document buffer.
+    BufferPrev,
+    /// `:ls` / `:buffers` -- render every open document buffer in a
+    /// help-style view.
+    ListBuffers,
+    /// `:bd[elete][!]` -- close the active document buffer.
+    /// `force = true` discards unsaved changes.
+    BufferDelete {
+        force: bool,
+    },
 
     Many(Vec<Effect>),
 }

@@ -184,6 +184,14 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("apropos", "ex:apropos"),
     ("describe-key", "ex:describe-key"),
     ("keymap", "ex:keymap"),
+    ("bn", "ex:bnext"),
+    ("bnext", "ex:bnext"),
+    ("bp", "ex:bprev"),
+    ("bprev", "ex:bprev"),
+    ("ls", "ex:buffers"),
+    ("buffers", "ex:buffers"),
+    ("bd", "ex:bdelete"),
+    ("bdelete", "ex:bdelete"),
 ];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests

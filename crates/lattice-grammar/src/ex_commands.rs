@@ -50,6 +50,10 @@ pub struct ExBuiltins {
     pub apropos: ExCommandId,
     pub describe_key: ExCommandId,
     pub list_keymap: ExCommandId,
+    pub buffer_next: ExCommandId,
+    pub buffer_prev: ExCommandId,
+    pub list_buffers: ExCommandId,
+    pub buffer_delete: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -342,6 +346,58 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let buffer_next = registry.register_ex_command(
+        "ex:bnext",
+        "Cycle to the next open document buffer (`:bn[ext]`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::BufferNext)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let buffer_prev = registry.register_ex_command(
+        "ex:bprev",
+        "Cycle to the previous open document buffer (`:bp[rev]`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::BufferPrev)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let list_buffers = registry.register_ex_command(
+        "ex:buffers",
+        "List every open document buffer (`:ls` / `:buffers`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::ListBuffers)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let buffer_delete = registry.register_ex_command(
+        "ex:bdelete",
+        "Close the active document buffer (`:bd[elete][!]`). `!` discards unsaved changes.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: true,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|ctx| Ok(Effect::BufferDelete { force: ctx.bang })),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     ExBuiltins {
         write,
         quit,
@@ -359,6 +415,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         apropos,
         describe_key,
         list_keymap,
+        buffer_next,
+        buffer_prev,
+        list_buffers,
+        buffer_delete,
     }
 }
 

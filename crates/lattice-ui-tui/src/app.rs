@@ -576,16 +576,42 @@ pub struct UnnamedRegister {
     pub kind: YankKind,
 }
 
+/// Per-document storage used by the App's buffer registry
+/// (DESIGN.md §5.9). Each open Document buffer has one of these:
+/// the actor handle, the per-document tree-sitter [`Syntax`]
+/// state, and the cached `text_version` last fed to
+/// `syntax.parse(...)`. The *active* buffer's fields are also
+/// mirrored on [`App`] for hot-path access; switching buffers
+/// snapshots the App's hot-path fields back into the source
+/// entry and loads from the destination's.
+#[derive(Debug)]
+pub struct DocumentEntry {
+    pub id: BufferId,
+    pub handle: DocumentHandle,
+    pub syntax: Option<Syntax>,
+    pub last_parsed_text_version: u64,
+}
+
 pub struct App {
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable [`Document`]; mutations route
     /// through it; reads load a versioned snapshot.
+    /// Denormalized from `documents[active_document_id].handle` for
+    /// hot-path access.
     pub document: DocumentHandle,
-    /// Stable id for the document buffer. Position-history entries
-    /// (§5.1.1) use this to identify the source buffer of a jump
-    /// when there are multiple buffers (Phase B.1.c). v1 has only
-    /// one, but the id is real.
+    /// Stable id for the *active* document buffer. Mirrors the
+    /// active pane's `buffer_id` whenever that pane holds a
+    /// Document leaf. Position-history entries (§5.1.1) and
+    /// per-pane state record this id; switching the active
+    /// document via `:bnext` / `:e FILE` rotates `Self::document` /
+    /// `Self::syntax` etc. to the new active.
     pub document_buffer_id: BufferId,
+    /// All currently-open Document buffers, keyed by [`BufferId`]
+    /// (DESIGN.md §5.9 buffer registry). The active buffer's
+    /// metadata also lives on hot-path fields ([`Self::document`],
+    /// [`Self::syntax`], etc.) -- switching saves the active fields
+    /// back into this map and loads from the destination's entry.
+    pub documents: HashMap<BufferId, DocumentEntry>,
     /// Which buffer the input pipeline currently routes to. When a
     /// help overlay is open this is `Help`; otherwise `Document`.
     /// Motions, jumps, and `<C-o>` / `<C-i>` consult this to pick
@@ -1079,9 +1105,28 @@ impl App {
             scroll: 0,
         };
         let pane_tree = PaneTree::single(initial_pane);
+        // Seed the buffer registry with the initial document. The
+        // hot-path `self.document` / `self.syntax` /
+        // `self.last_parsed_text_version` mirror what's stored
+        // here for the active buffer; switching buffers swaps
+        // them.
+        let mut documents: HashMap<BufferId, DocumentEntry> = HashMap::new();
+        documents.insert(
+            document_buffer_id,
+            DocumentEntry {
+                id: document_buffer_id,
+                handle: document.clone(),
+                // Active buffer's syntax lives on App.syntax for
+                // the hot path; the registry entry stores `None`
+                // until a switch saves the active state back.
+                syntax: None,
+                last_parsed_text_version: 0,
+            },
+        );
         Self {
             document,
             document_buffer_id,
+            documents,
             active_buffer: BufferKind::Document,
             pane_tree,
             cursor: Position::ZERO,
@@ -2418,6 +2463,12 @@ impl App {
     /// `force` is true. Registers, marks, and global state persist
     /// across the swap; cursor / scroll / search / syntax / undo /
     /// folds are reset to the new doc.
+    /// `:e[dit] FILE` (DESIGN.md §5.9 multi-buffer). If a buffer
+    /// for `path` is already open, switch to it; otherwise spawn
+    /// a fresh document actor, register it, and switch the active
+    /// pane to the new buffer. With no path, re-edit the current
+    /// buffer's path (force-reload from disk; `!` required when
+    /// dirty).
     fn do_edit(&mut self, path: Option<std::path::PathBuf>, force: bool) {
         let target = match path {
             Some(p) => p,
@@ -2429,13 +2480,67 @@ impl App {
                 }
             },
         };
-        if !force && self.document.dirty() {
-            self.set_message(
-                EchoLevel::Error,
-                "no write since last change (add ! to override)".to_string(),
-            );
+        // If `target` is already open, switch to it. The dirty
+        // check only applies when we'd discard the current buffer
+        // -- switching to a different *open* buffer leaves the
+        // current one alone, so dirtiness doesn't block.
+        if let Some(existing_id) = self.find_document_by_path(&target) {
+            if existing_id == self.document_buffer_id {
+                // Re-edit current: reload from disk (vim's `:e`).
+                if !force && self.document.dirty() {
+                    self.set_message(
+                        EchoLevel::Error,
+                        "no write since last change (add ! to override)".to_string(),
+                    );
+                    return;
+                }
+                let new_doc = match Document::open(&target) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        self.set_message(EchoLevel::Error, format!("open error: {e}"));
+                        return;
+                    }
+                };
+                let lang = Lang::detect_from_path(new_doc.path());
+                let mut syntax =
+                    Syntax::for_language_with_registry(lang, self.lang_registry.clone())
+                        .ok()
+                        .flatten();
+                if let Some(s) = syntax.as_mut() {
+                    s.parse(&new_doc.text());
+                }
+                self.last_parsed_text_version = new_doc.text_version();
+                self.syntax = syntax;
+                self.replace_document_blocking(new_doc);
+                self.cursor = Position::ZERO;
+                self.scroll = 0;
+                self.current_match = None;
+                self.all_matches.clear();
+                self.search_line = None;
+                self.last_search = None;
+                self.last_find = None;
+                self.last_change = None;
+                self.last_visual = None;
+                self.visual_anchor = None;
+                self.replace_history.clear();
+                self.position_history.clear();
+                self.position_history_cursor = 0;
+                self.folds.clear();
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("\"{}\" reloaded", target.display()),
+                );
+            } else {
+                // Different already-open buffer: switch to it.
+                self.activate_document(existing_id);
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("\"{}\" (already open)", target.display()),
+                );
+            }
             return;
         }
+        // Brand-new file: open a fresh actor and register it.
         let new_doc = match Document::open(&target) {
             Ok(d) => d,
             Err(e) => {
@@ -2443,9 +2548,6 @@ impl App {
                 return;
             }
         };
-        // Re-initialise syntax for the new doc's language. Reuses
-        // the App's shared `lang_registry` so re-loads don't rebuild
-        // the markdown / rust / etc. configs.
         let lang = Lang::detect_from_path(new_doc.path());
         let mut syntax = Syntax::for_language_with_registry(lang, self.lang_registry.clone())
             .ok()
@@ -2453,10 +2555,28 @@ impl App {
         if let Some(s) = syntax.as_mut() {
             s.parse(&new_doc.text());
         }
-        self.last_parsed_text_version = new_doc.text_version();
+        let new_handle = spawn_document(new_doc, self.registry.clone());
+        let new_id = BufferId::next();
+        self.documents.insert(
+            new_id,
+            DocumentEntry {
+                id: new_id,
+                handle: new_handle.clone(),
+                // Active buffer's syntax lives on App.syntax for
+                // the hot path; entry's slot stays None until a
+                // switch.
+                syntax: None,
+                last_parsed_text_version: 0,
+            },
+        );
+        // Save the currently-active buffer's hot-path state into
+        // its registry entry, then load the new buffer's into the
+        // hot path.
+        self.snapshot_active_document();
+        self.document_buffer_id = new_id;
+        self.document = new_handle;
         self.syntax = syntax;
-        self.replace_document_blocking(new_doc);
-        // Per-document state resets (vim's behavior).
+        self.last_parsed_text_version = self.document.text_version();
         self.cursor = Position::ZERO;
         self.scroll = 0;
         self.current_match = None;
@@ -2468,11 +2588,213 @@ impl App {
         self.last_visual = None;
         self.visual_anchor = None;
         self.replace_history.clear();
+        self.folds.clear();
+        // Position history follows the active buffer; a new buffer
+        // resets the ring so `<C-o>` from the new buffer doesn't
+        // walk into a stale buffer's positions immediately. (The
+        // entries-by-buffer-kind filter from B.1.a would also
+        // skip them, but emptying the ring is simpler.)
         self.position_history.clear();
         self.position_history_cursor = 0;
-        self.folds.clear();
-        // Registers, marks, macros, and view options persist.
+        // Mirror the new active buffer id onto the active pane's
+        // leaf so subsequent `<C-o>` / `<C-i>` walks record the
+        // right buffer.
+        self.pane_tree.active_mut().buffer = BufferKind::Document;
+        self.pane_tree.active_mut().buffer_id = new_id;
         self.set_message(EchoLevel::Info, format!("\"{}\" opened", target.display()));
+    }
+
+    /// Look up a buffer by file path. Used by `:e FILE` to detect
+    /// "already open"; later by `:b NAME` for completion.
+    fn find_document_by_path(&self, path: &std::path::Path) -> Option<BufferId> {
+        for (id, entry) in self.documents.iter() {
+            if entry.handle.path() == Some(path.to_path_buf()) {
+                return Some(*id);
+            }
+        }
+        None
+    }
+
+    /// Save the currently-active buffer's hot-path state
+    /// (`syntax`, `last_parsed_text_version`) into its
+    /// [`DocumentEntry`]. Called before switching the active
+    /// buffer so the rotation is round-trippable.
+    fn snapshot_active_document(&mut self) {
+        if let Some(entry) = self.documents.get_mut(&self.document_buffer_id) {
+            entry.syntax = self.syntax.take();
+            entry.last_parsed_text_version = self.last_parsed_text_version;
+        }
+    }
+
+    /// Switch the active document to `id`. Snapshots the current
+    /// active state into its entry, then loads from the
+    /// destination's entry. No-op if `id` is already active or
+    /// not registered.
+    pub fn activate_document(&mut self, id: BufferId) {
+        if id == self.document_buffer_id {
+            return;
+        }
+        if !self.documents.contains_key(&id) {
+            self.set_message(EchoLevel::Error, format!("buffer #{} not found", id.0));
+            return;
+        }
+        // Save active pane's cursor/scroll first; the active pane
+        // is the one whose buffer changed.
+        self.snapshot_active_pane();
+        self.snapshot_active_document();
+        // Load destination.
+        let entry = self
+            .documents
+            .get_mut(&id)
+            .expect("contains_key checked above");
+        self.document = entry.handle.clone();
+        self.syntax = entry.syntax.take();
+        self.last_parsed_text_version = entry.last_parsed_text_version;
+        self.document_buffer_id = id;
+        // The active pane now references this document.
+        let pane = self.pane_tree.active_mut();
+        pane.buffer = BufferKind::Document;
+        pane.buffer_id = id;
+        // Per-document transient state resets that should NOT
+        // persist across buffer switches.
+        self.current_match = None;
+        self.all_matches.clear();
+        self.search_line = None;
+        // Note: `last_search` / `last_find` / `last_change` /
+        // `last_visual` / marks / registers / macros / folds /
+        // replace_history / position_history all persist
+        // intentionally. Folds in particular are buffer-local;
+        // when B.1.c has per-buffer fold state we'll move them
+        // into `DocumentEntry`.
+        self.cursor = Position::ZERO;
+        self.scroll = 0;
+        self.load_active_pane();
+        self.set_message(
+            EchoLevel::Info,
+            format!(
+                "switched to buffer #{} {}",
+                id.0,
+                self.document
+                    .path()
+                    .map(|p| format!("\"{}\"", p.display()))
+                    .unwrap_or_else(|| "(no file)".into())
+            ),
+        );
+    }
+
+    /// `:bnext` / `:bn` -- cycle to the next open document buffer
+    /// in id order.
+    fn do_buffer_next(&mut self) {
+        let Some(target) = self.next_document_id() else {
+            self.set_message(EchoLevel::Info, "only one buffer".to_string());
+            return;
+        };
+        self.activate_document(target);
+    }
+
+    /// `:bprev` / `:bp` -- cycle to the previous open buffer.
+    fn do_buffer_prev(&mut self) {
+        let Some(target) = self.prev_document_id() else {
+            self.set_message(EchoLevel::Info, "only one buffer".to_string());
+            return;
+        };
+        self.activate_document(target);
+    }
+
+    /// Document buffer ids in stable ascending order (HashMap iter
+    /// is undefined; we sort by id for `:bnext` / `:bprev` to be
+    /// deterministic).
+    fn document_ids_sorted(&self) -> Vec<BufferId> {
+        let mut ids: Vec<BufferId> = self.documents.keys().copied().collect();
+        ids.sort_by_key(|id| id.0);
+        ids
+    }
+
+    fn next_document_id(&self) -> Option<BufferId> {
+        let ids = self.document_ids_sorted();
+        if ids.len() <= 1 {
+            return None;
+        }
+        let pos = ids.iter().position(|id| *id == self.document_buffer_id)?;
+        Some(ids[(pos + 1) % ids.len()])
+    }
+
+    fn prev_document_id(&self) -> Option<BufferId> {
+        let ids = self.document_ids_sorted();
+        if ids.len() <= 1 {
+            return None;
+        }
+        let pos = ids.iter().position(|id| *id == self.document_buffer_id)?;
+        Some(ids[if pos == 0 { ids.len() - 1 } else { pos - 1 }])
+    }
+
+    /// `:ls` / `:buffers` -- render every open Document buffer in
+    /// a help-style view. Each entry is a markdown link to that
+    /// buffer (`[#N path](command:buffer:N)`); future bindings
+    /// (`gf`-style follow) can dispatch via the same scheme.
+    fn do_list_buffers(&mut self) {
+        let ids = self.document_ids_sorted();
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("{} open document buffer(s):", ids.len()));
+        lines.push(String::new());
+        for id in ids {
+            let Some(entry) = self.documents.get(&id) else {
+                continue;
+            };
+            let path = entry
+                .handle
+                .path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(no file)".to_string());
+            let dirty = if entry.handle.dirty() { "[+]" } else { "   " };
+            let active = if id == self.document_buffer_id {
+                "%"
+            } else {
+                " "
+            };
+            lines.push(format!("  {active} #{:<3} {dirty} {path}", id.0));
+        }
+        self.open_help(
+            HelpBuffer::from_lines("buffers", lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        );
+    }
+
+    /// `:bd[elete]` -- close the active document buffer. v1 picks
+    /// any other buffer to activate; if no others remain, the close
+    /// is rejected (App is never bufferless). With `!` the dirty
+    /// check is bypassed.
+    fn do_buffer_delete(&mut self, force: bool) {
+        if self.documents.len() <= 1 {
+            self.set_message(
+                EchoLevel::Error,
+                "Cannot delete the only buffer".to_string(),
+            );
+            return;
+        }
+        if !force && self.document.dirty() {
+            self.set_message(
+                EchoLevel::Error,
+                "no write since last change (add ! to override)".to_string(),
+            );
+            return;
+        }
+        let to_remove = self.document_buffer_id;
+        // Pick a successor.
+        let Some(successor) = self.next_document_id() else {
+            return;
+        };
+        self.activate_document(successor);
+        self.documents.remove(&to_remove);
+        // If any pane still references the removed buffer, repoint
+        // it at the successor.
+        let new_id = self.document_buffer_id;
+        for pane in self.pane_tree.leaves_mut() {
+            if matches!(pane.buffer, BufferKind::Document) && pane.buffer_id == to_remove {
+                pane.buffer_id = new_id;
+            }
+        }
+        self.set_message(EchoLevel::Info, format!("buffer #{} deleted", to_remove.0));
     }
 
     /// Vim's `:set <option>`. v1 honors a tiny fixed set; everything
@@ -2999,6 +3321,10 @@ impl App {
             Effect::Apropos { pattern } => self.do_apropos(&pattern),
             Effect::DescribeKey { chord } => self.do_describe_key(&chord),
             Effect::ListKeymap => self.do_list_keymap(),
+            Effect::BufferNext => self.do_buffer_next(),
+            Effect::BufferPrev => self.do_buffer_prev(),
+            Effect::ListBuffers => self.do_list_buffers(),
+            Effect::BufferDelete { force } => self.do_buffer_delete(force),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -4926,7 +5252,11 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::DescribeBuffer
         | Effect::Apropos { .. }
         | Effect::DescribeKey { .. }
-        | Effect::ListKeymap => false,
+        | Effect::ListKeymap
+        | Effect::BufferNext
+        | Effect::BufferPrev
+        | Effect::ListBuffers
+        | Effect::BufferDelete { .. } => false,
     }
 }
 
@@ -4954,7 +5284,11 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::DescribeBuffer
         | Effect::Apropos { .. }
         | Effect::DescribeKey { .. }
-        | Effect::ListKeymap => false,
+        | Effect::ListKeymap
+        | Effect::BufferNext
+        | Effect::BufferPrev
+        | Effect::ListBuffers
+        | Effect::BufferDelete { .. } => false,
     }
 }
 
@@ -9369,6 +9703,128 @@ mod tests {
         assert_eq!(panes[0].scroll, 1);
         assert_eq!(panes[1].cursor.line, 2);
         assert_eq!(panes[1].scroll, 1);
+    }
+
+    // ---- Multiple Document buffers (DESIGN.md §5.9, B.1.c) ----
+
+    fn write_temp_file(name: &str, content: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("lattice-test-{}-{name}", std::process::id()));
+        std::fs::write(&path, content).expect("write temp file");
+        path
+    }
+
+    #[test]
+    fn fresh_app_registers_initial_document() {
+        let a = app_with("xx", 10);
+        assert_eq!(a.documents.len(), 1);
+        assert!(a.documents.contains_key(&a.document_buffer_id));
+    }
+
+    #[test]
+    fn edit_new_file_registers_a_second_buffer() {
+        let path = write_temp_file("a", "alpha\n");
+        let mut a = app_with("xx", 10);
+        let initial_id = a.document_buffer_id;
+        a.command_line = format!("e {}", path.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        // Both buffers exist; active switched to the new one.
+        assert_eq!(a.documents.len(), 2);
+        assert_ne!(a.document_buffer_id, initial_id);
+        assert_eq!(a.document.text(), "alpha\n");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn bnext_cycles_through_open_buffers() {
+        let path = write_temp_file("b", "one\n");
+        let mut a = app_with("xx", 10);
+        let first_id = a.document_buffer_id;
+        a.command_line = format!("e {}", path.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let second_id = a.document_buffer_id;
+        assert_ne!(first_id, second_id);
+        a.command_line = "bn".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.document_buffer_id, first_id);
+        a.command_line = "bn".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.document_buffer_id, second_id);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn ls_renders_help_with_every_open_buffer() {
+        let path = write_temp_file("c", "x\n");
+        let mut a = app_with("xx", 10);
+        a.command_line = format!("e {}", path.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        a.command_line = "ls".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("buffers help");
+        let body = h.content.as_string();
+        // Two buffers listed.
+        assert!(body.contains("2 open document buffer"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn editing_already_open_path_switches_back_to_it() {
+        let path = write_temp_file("d", "alpha\n");
+        let mut a = app_with("xx", 10);
+        let initial_id = a.document_buffer_id;
+        a.command_line = format!("e {}", path.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let new_id = a.document_buffer_id;
+        // Cycle back to first buffer.
+        a.command_line = "bn".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.document_buffer_id, initial_id);
+        // Re-editing the new file's path should switch to its
+        // existing buffer rather than spawning a third.
+        a.command_line = format!("e {}", path.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.document_buffer_id, new_id);
+        assert_eq!(a.documents.len(), 2);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn bdelete_closes_active_buffer_and_picks_a_successor() {
+        let path = write_temp_file("e", "alpha\n");
+        let mut a = app_with("xx", 10);
+        let initial_id = a.document_buffer_id;
+        a.command_line = format!("e {}", path.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        // Now active = new buffer; delete it. Successor should
+        // be initial_id.
+        a.command_line = "bd".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.document_buffer_id, initial_id);
+        assert_eq!(a.documents.len(), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn bdelete_only_buffer_is_rejected() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "bd".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.documents.len(), 1);
+        let msg = a.last_message.as_ref().expect("error echo");
+        assert!(msg.text.contains("only buffer"));
     }
 
     #[test]

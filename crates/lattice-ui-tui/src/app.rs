@@ -818,6 +818,11 @@ pub struct LastVisual {
 ///
 /// `A` differs only in `insert_col`: it lands one past the
 /// rightmost column of the block.
+///
+/// `live_edits` counts the edit calls made on the top row while
+/// the user typed; on Esc the App rewinds those via undo and
+/// re-applies the whole I/A change as one batched edit so the
+/// session lands as a single undo unit.
 #[derive(Debug, Clone, Copy)]
 pub struct PendingBlockInsert {
     /// First line in the block (top row -- edits flow here live).
@@ -830,6 +835,11 @@ pub struct PendingBlockInsert {
     /// are skipped (vim's behavior; trying to extend short lines
     /// is a known gap left for v2).
     pub insert_col: u32,
+    /// Number of `apply_edit_blocking` calls made during the live
+    /// Insert session (each typed char / backspace / paste). On
+    /// Esc the App rewinds these via `undo_blocking` to collapse
+    /// the entire I/A session into a single batched edit.
+    pub live_edits: u32,
 }
 
 impl std::fmt::Debug for App {
@@ -2642,6 +2652,12 @@ impl App {
             if let Some(rec) = self.recording_insert.as_mut() {
                 rec.push_str(s);
             }
+            // Block-visual I/A: count this edit so the Esc handler
+            // can rewind the whole session and re-emit it as a
+            // single batched undo unit.
+            if let Some(spec) = self.pending_block_insert.as_mut() {
+                spec.live_edits = spec.live_edits.saturating_add(1);
+            }
         }
     }
 
@@ -2952,6 +2968,9 @@ impl App {
         let range = ProtoRange::new(prev, self.cursor);
         if self.apply_edit_blocking(Edit::delete(range)).is_ok() {
             self.cursor = prev;
+            if let Some(spec) = self.pending_block_insert.as_mut() {
+                spec.live_edits = spec.live_edits.saturating_add(1);
+            }
         }
     }
 
@@ -3003,19 +3022,57 @@ impl App {
         }
     }
 
-    /// Replicate a block-visual insert prefix to every row in the
-    /// block other than the top one (the top row was edited live).
-    /// Skips lines whose length is below `insert_col` -- vim leaves
-    /// those unchanged rather than padding with spaces.
+    /// Commit a block-visual `I` / `A` session as a single undo unit.
+    ///
+    /// Vim's behavior: the typed prefix on the top row plus the
+    /// replicated text on the other rows land as one atomic
+    /// change. To honour that without restructuring Insert mode
+    /// to defer edits, we:
+    ///
+    /// 1. Roll back the live-typed edits via `undo_blocking` --
+    ///    `spec.live_edits` counts how many `apply_edit` calls
+    ///    happened on the top row during the Insert session.
+    /// 2. Build a batch: top-row insert at `insert_col` plus an
+    ///    insert at the same column on every line in
+    ///    `start_line+1..=end_line` whose length is at least
+    ///    `insert_col` (lines too short to hold the column are
+    ///    skipped, matching vim's behavior).
+    /// 3. Apply the batch via `apply_edit_batch_blocking` so the
+    ///    whole session is one undo / redo unit.
     fn replicate_block_insert(&mut self, spec: PendingBlockInsert, text: &str) {
+        // Rewind the live-typed edits. Each call decrements the
+        // top-row state by one; after `live_edits` calls the
+        // buffer is back to the pre-Insert state and we can
+        // build the batched edit list against it.
+        for _ in 0..spec.live_edits {
+            let _ = self.undo_blocking();
+        }
+
+        let buffer = self.document.snapshot().buffer.clone();
+        let mut edits = Vec::with_capacity((spec.end_line - spec.start_line + 1) as usize);
+
+        // Top row first. Note: we don't skip the top row even if
+        // its length is below insert_col (the user did type there
+        // live, so the buffer already has at least one valid
+        // insertion point at the line-end position they reached).
+        let top_len = line_byte_len(&buffer, spec.start_line);
+        let top_col = spec.insert_col.min(top_len);
+        edits.push(Edit::insert(Position::new(spec.start_line, top_col), text));
+
         for line in (spec.start_line + 1)..=spec.end_line {
-            let line_len = line_byte_len(&self.document.snapshot().buffer, line);
+            let line_len = line_byte_len(&buffer, line);
             if line_len < spec.insert_col {
                 continue;
             }
-            let pos = Position::new(line, spec.insert_col);
-            let _ = self.apply_edit_blocking(Edit::insert(pos, text));
+            edits.push(Edit::insert(Position::new(line, spec.insert_col), text));
         }
+
+        let _ = self.apply_edit_batch_blocking(edits);
+        // Cursor settles on the start of the inserted prefix on
+        // the top row -- vim's behavior. The previous cursor pos
+        // (one past the typed text on top row) is no longer
+        // accurate after the rewind.
+        self.cursor = Position::new(spec.start_line, top_col);
     }
 
     fn do_enter_append(&mut self) {
@@ -3051,6 +3108,7 @@ impl App {
             start_line,
             end_line,
             insert_col,
+            live_edits: 0,
         });
 
         // Move cursor to the top row's insert column. If the line
@@ -6632,6 +6690,41 @@ mod tests {
     }
 
     #[test]
+    fn count_with_dd_deletes_n_lines() {
+        // `2dd`: count=2 expands Range::CurrentLine to span 2 lines.
+        let mut a = app_with("one\ntwo\nthree\nfour", 10);
+        a.cursor = Position::new(0, 0);
+        a.apply(Action::PushDigit(2));
+        a.apply(Action::SetPending(Pending::AfterOperator(a.builtins.delete)));
+        assert_eq!(a.op_count, 2);
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_range(lattice_grammar::Range::CurrentLine);
+        a.apply(Action::Invoke(inv));
+        // Lines 0 and 1 ("one" and "two") deleted; line 2 ("three") survives.
+        // Note: `:d`/`dd` semantics for trailing newline are tracked in §14;
+        // here we assert the line text was removed.
+        let text = a.document.text();
+        assert!(!text.contains("one"));
+        assert!(!text.contains("two"));
+        assert!(text.contains("three"));
+        assert!(text.contains("four"));
+    }
+
+    #[test]
+    fn count_with_indent_right_indents_n_lines() {
+        // `2>>`: count=2 expands Range::CurrentLine to span 2 lines.
+        let mut a = app_with("one\ntwo\nthree\nfour", 10);
+        a.cursor = Position::new(0, 0);
+        a.apply(Action::PushDigit(2));
+        a.apply(Action::SetPending(Pending::AfterOperator(a.builtins.indent_right)));
+        let inv = CommandInvocation::of(a.builtins.indent_right.0)
+            .with_range(lattice_grammar::Range::CurrentLine);
+        a.apply(Action::Invoke(inv));
+        // Lines 0 and 1 indented; lines 2 and 3 untouched.
+        assert_eq!(a.document.text(), "    one\n    two\nthree\nfour");
+    }
+
+    #[test]
     fn count_zero_through_pending_count_is_ignored_by_motion() {
         // pending_count remains 0 after no digit; motion uses default 1.
         let mut a = app_with("hello world", 10);
@@ -6989,6 +7082,32 @@ mod tests {
     }
 
     #[test]
+    fn block_visual_capital_i_via_real_motions_not_explicit_selection() {
+        // Reproduces the path the actual user takes: Ctrl-V to enter
+        // blockwise, motions to extend the selection, capital I.
+        // No manual set_selections_blocking -- selections must be
+        // maintained by the SelectionChange effect from motions.
+        let mut a = app_with("abcd\n1234\nWXYZ", 10);
+        a.cursor = Position::new(0, 1);
+        a.apply(Action::EnterVisual(VisualKind::Blockwise));
+        // Move down 2 rows + right 1 column via motions.
+        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.builtins.char_right));
+        // Cursor should now be at (2, 2). visual_anchor was (0, 1).
+        assert_eq!(a.cursor, Position::new(2, 2));
+        assert_eq!(a.visual_anchor, Some(Position::new(0, 1)));
+
+        a.apply(Action::EnterBlockVisualInsert);
+        assert!(matches!(a.modal, ModalState::Insert));
+        // I should land at column 1 (block's left col) on the top row.
+        assert_eq!(a.cursor, Position::new(0, 1));
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.document.text(), "aXbcd\n1X234\nWXXYZ");
+    }
+
+    #[test]
     fn block_visual_capital_i_inserts_at_block_left_column_on_each_row() {
         // 3 rows, block at column 1. `I` enters Insert at (top_row, 1).
         // Type "X", Esc -> "X" lands at column 1 on every row.
@@ -7019,6 +7138,45 @@ mod tests {
         a.apply(Action::Insert("@".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
         assert_eq!(a.document.text(), "abc@d\n123@4\nWXY@Z");
+    }
+
+    #[test]
+    fn block_visual_capital_i_lands_as_single_undo_unit() {
+        // Type 3 chars during the I session, replicate to 2 other rows,
+        // then `u` once -- the buffer should fully revert. Without the
+        // batched-commit fix, undo would only roll back the last char
+        // on one row.
+        let mut a = enter_block_visual(
+            "abcd\n1234\nWXYZ",
+            Position::new(0, 1),
+            Position::new(2, 2),
+        );
+        a.apply(Action::EnterBlockVisualInsert);
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::Insert("Y".into()));
+        a.apply(Action::Insert("Z".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.document.text(), "aXYZbcd\n1XYZ234\nWXYZXYZ");
+
+        // One undo should restore the original buffer.
+        let _ = a.undo_blocking();
+        assert_eq!(a.document.text(), "abcd\n1234\nWXYZ");
+    }
+
+    #[test]
+    fn block_visual_capital_a_lands_as_single_undo_unit() {
+        let mut a = enter_block_visual(
+            "abcd\n1234\nWXYZ",
+            Position::new(0, 1),
+            Position::new(2, 2),
+        );
+        a.apply(Action::EnterBlockVisualAppend);
+        a.apply(Action::Insert("@".into()));
+        a.apply(Action::Insert("@".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.document.text(), "abc@@d\n123@@4\nWXY@@Z");
+        let _ = a.undo_blocking();
+        assert_eq!(a.document.text(), "abcd\n1234\nWXYZ");
     }
 
     #[test]

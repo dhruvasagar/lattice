@@ -156,7 +156,9 @@ fn execute_operator(
 
     let motion_count = invocation.count_or_default();
     let target_range: ProtoRange = match (&invocation.range, &invocation.target) {
-        (Some(grammar_range), _) => resolve_grammar_range(document, grammar_range, cursor)?,
+        (Some(grammar_range), _) => {
+            resolve_grammar_range(document, grammar_range, cursor, motion_count.get())?
+        }
         (None, Some(target)) => {
             resolve_target(registry, document, cursor, target, motion_count, cancel)?
         }
@@ -386,7 +388,9 @@ fn resolve_target(
             };
             (tobj.apply)(&ctx)
         }
-        Target::Range(grammar_range) => resolve_grammar_range(document, grammar_range, cursor),
+        Target::Range(grammar_range) => {
+            resolve_grammar_range(document, grammar_range, cursor, 1)
+        }
     }
 }
 
@@ -394,7 +398,9 @@ fn resolve_grammar_range(
     document: &Document,
     range: &Range,
     cursor: Position,
+    count: u32,
 ) -> GrammarResult<ProtoRange> {
+    let count = count.max(1);
     match range {
         Range::Whole => {
             let buffer = document.buffer();
@@ -404,11 +410,17 @@ fn resolve_grammar_range(
             Ok(ProtoRange::new(start, end))
         }
         Range::CurrentLine => {
+            // Vim's `2dd` / `2yy` / `2>>` / etc.: count expands the
+            // linewise extent. Range covers `cursor.line` ..
+            // `cursor.line + count - 1`, clamped to the buffer's
+            // last addressable line.
             let buffer = document.buffer();
-            let line = cursor.line;
+            let last = buffer.line_count().saturating_sub(1);
+            let start_line = cursor.line;
+            let end_line = start_line.saturating_add(count.saturating_sub(1)).min(last);
             Ok(ProtoRange::new(
-                Position::new(line, 0),
-                Position::new(line, line_byte_len(buffer, line)),
+                Position::new(start_line, 0),
+                Position::new(end_line, line_byte_len(buffer, end_line)),
             ))
         }
         Range::Selection => {

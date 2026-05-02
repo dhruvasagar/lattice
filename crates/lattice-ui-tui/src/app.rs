@@ -245,6 +245,15 @@ pub enum Action {
     EnterMode(ModalState),
     /// Vim's `a`: move cursor one byte right (clamped) and enter Insert.
     EnterAppend,
+    /// Vim's blockwise-visual `I`: move cursor to the leftmost
+    /// column of the block on the top line, enter Insert, and on
+    /// Esc replicate the typed text to every other line in the
+    /// block at the same column. Issued only from Visual(Blockwise).
+    EnterBlockVisualInsert,
+    /// Vim's blockwise-visual `A`: same as [`Self::EnterBlockVisualInsert`]
+    /// but the cursor lands one byte past the rightmost column of
+    /// the block on each line.
+    EnterBlockVisualAppend,
     /// Vim's `o`: open a new line below the current line and enter Insert.
     OpenLineBelow,
     /// Vim's `O`: open a new line above the current line and enter Insert.
@@ -607,6 +616,13 @@ pub struct App {
     /// Captured on Esc out of Insert; replayed by dot-repeat after the
     /// operator part. `None` if the last change had no insert phase.
     pub last_insert: Option<String>,
+    /// In-flight blockwise-visual `I` / `A` session. Captured at
+    /// mode-entry time (block extents + per-line insert column);
+    /// consumed when Insert exits, at which point the recorded
+    /// text is replicated to every line in the block other than
+    /// the top row (the top row's insert is the recording itself).
+    /// `None` outside a block-visual insert.
+    pub pending_block_insert: Option<PendingBlockInsert>,
     /// Text being captured during the *current* Insert session.
     /// Promoted into `last_insert` when leaving Insert.
     pub recording_insert: Option<String>,
@@ -791,6 +807,31 @@ pub struct LastVisual {
     pub kind: VisualKind,
 }
 
+/// In-flight blockwise-visual insert (`I` or `A`).
+///
+/// Vim's semantics: when the user enters `I` from blockwise visual,
+/// the typed prefix is replicated to every line in the block at
+/// the same column on Esc. We capture the rectangle's lines and
+/// the per-line insert column at entry time, then replay the
+/// recorded text to all lines except the top one (the top row was
+/// edited live during the Insert session).
+///
+/// `A` differs only in `insert_col`: it lands one past the
+/// rightmost column of the block.
+#[derive(Debug, Clone, Copy)]
+pub struct PendingBlockInsert {
+    /// First line in the block (top row -- edits flow here live).
+    pub start_line: u32,
+    /// Last line in the block (replication walks `start_line+1..=end_line`).
+    pub end_line: u32,
+    /// Byte column at which to insert on each line. For `I` this
+    /// is the block's left column; for `A` it's the right column
+    /// plus one. Lines whose end-of-line falls before this column
+    /// are skipped (vim's behavior; trying to extend short lines
+    /// is a known gap left for v2).
+    pub insert_col: u32,
+}
+
 impl std::fmt::Debug for App {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("App")
@@ -874,6 +915,7 @@ impl App {
             folds: Vec::new(),
             last_insert: None,
             recording_insert: None,
+            pending_block_insert: None,
             show_line_numbers: true,
             relative_line_numbers: false,
             command_history: Vec::new(),
@@ -1000,6 +1042,8 @@ impl App {
             Action::DeleteCharBackward => self.do_delete_char_backward(),
             Action::EnterMode(state) => self.enter_mode(state),
             Action::EnterAppend => self.do_enter_append(),
+            Action::EnterBlockVisualInsert => self.do_enter_block_visual_insert(false),
+            Action::EnterBlockVisualAppend => self.do_enter_block_visual_insert(true),
             Action::OpenLineBelow => self.do_open_line_below(),
             Action::OpenLineAbove => self.do_open_line_above(),
             Action::SetPending(p) => {
@@ -2928,9 +2972,24 @@ impl App {
         if was_insert_like
             && !entering_insert_like
             && let Some(rec) = self.recording_insert.take()
-            && !rec.is_empty()
         {
-            self.last_insert = Some(rec);
+            // Snapshot the recording before consuming the block-
+            // insert spec; we need both to replicate.
+            let block_spec = self.pending_block_insert.take();
+            if !rec.is_empty() {
+                self.last_insert = Some(rec.clone());
+            }
+            if let Some(spec) = block_spec
+                && !rec.is_empty()
+            {
+                self.replicate_block_insert(spec, &rec);
+            }
+        } else if was_insert_like && !entering_insert_like {
+            // Insert exited but recording_insert was already None
+            // (shouldn't happen given enter_mode pairs them, but
+            // belt-and-braces -- still clear any spec so a future
+            // I/A starts clean).
+            self.pending_block_insert = None;
         }
         self.modal = state;
         self.pending = Pending::None;
@@ -2944,6 +3003,21 @@ impl App {
         }
     }
 
+    /// Replicate a block-visual insert prefix to every row in the
+    /// block other than the top one (the top row was edited live).
+    /// Skips lines whose length is below `insert_col` -- vim leaves
+    /// those unchanged rather than padding with spaces.
+    fn replicate_block_insert(&mut self, spec: PendingBlockInsert, text: &str) {
+        for line in (spec.start_line + 1)..=spec.end_line {
+            let line_len = line_byte_len(&self.document.snapshot().buffer, line);
+            if line_len < spec.insert_col {
+                continue;
+            }
+            let pos = Position::new(line, spec.insert_col);
+            let _ = self.apply_edit_blocking(Edit::insert(pos, text));
+        }
+    }
+
     fn do_enter_append(&mut self) {
         let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
         if self.cursor.byte < len {
@@ -2951,6 +3025,46 @@ impl App {
         }
         self.modal = ModalState::Insert;
         self.pending = Pending::None;
+    }
+
+    /// Vim's blockwise-visual `I` (`append=false`) and `A`
+    /// (`append=true`). Captures the block extents from the active
+    /// selection, parks them in `pending_block_insert`, moves the
+    /// cursor to the top-row insert column, and switches to Insert.
+    /// The replication onto rows 2..N happens when Insert exits.
+    ///
+    /// No-op if the modal is not blockwise visual; called only
+    /// from translate_visual which guards on the mode.
+    fn do_enter_block_visual_insert(&mut self, append: bool) {
+        if !matches!(self.modal, ModalState::Visual(VisualKind::Blockwise)) {
+            return;
+        }
+        let sels = self.document.selections();
+        let sel = sels.primary();
+        let start_line = sel.anchor.line.min(sel.head.line);
+        let end_line = sel.anchor.line.max(sel.head.line);
+        let left_col = sel.anchor.byte.min(sel.head.byte);
+        let right_col = sel.anchor.byte.max(sel.head.byte);
+        let insert_col = if append { right_col + 1 } else { left_col };
+
+        self.pending_block_insert = Some(PendingBlockInsert {
+            start_line,
+            end_line,
+            insert_col,
+        });
+
+        // Move cursor to the top row's insert column. If the line
+        // is shorter than insert_col (e.g. `A` on a short line),
+        // clamp -- the user's edits land at end-of-line and the
+        // replay handles short lines per-row.
+        let line_len = line_byte_len(&self.document.snapshot().buffer, start_line);
+        let cursor_col = insert_col.min(line_len);
+        self.cursor = Position::new(start_line, cursor_col);
+
+        // Drop visual mode and enter Insert. enter_mode handles
+        // recording_insert so the typed prefix is captured.
+        self.visual_anchor = None;
+        self.enter_mode(ModalState::Insert);
     }
 
     fn do_open_line_below(&mut self) {
@@ -6856,6 +6970,84 @@ mod tests {
         let reg = a.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.content, "bc\n\nXY");
         assert_eq!(reg.kind, YankKind::Blockwise);
+    }
+
+    #[test]
+    fn block_visual_indent_right_indents_each_row_in_block() {
+        // Indent operates on lines covered by the block. The
+        // insertion goes at column 0 of each line (vim's behavior),
+        // not at the block's left column.
+        let mut a = enter_block_visual(
+            "abc\n123\nWXY",
+            Position::new(0, 1),
+            Position::new(2, 1),
+        );
+        let inv = CommandInvocation::of(a.builtins.indent_right.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "    abc\n    123\n    WXY");
+    }
+
+    #[test]
+    fn block_visual_capital_i_inserts_at_block_left_column_on_each_row() {
+        // 3 rows, block at column 1. `I` enters Insert at (top_row, 1).
+        // Type "X", Esc -> "X" lands at column 1 on every row.
+        let mut a = enter_block_visual(
+            "abcd\n1234\nWXYZ",
+            Position::new(0, 1),
+            Position::new(2, 2),
+        );
+        a.apply(Action::EnterBlockVisualInsert);
+        assert!(matches!(a.modal, ModalState::Insert));
+        assert_eq!(a.cursor, Position::new(0, 1));
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.document.text(), "aXbcd\n1X234\nWXXYZ");
+    }
+
+    #[test]
+    fn block_visual_capital_a_appends_after_block_right_column() {
+        // Block cols 1..=2 across 3 rows; `A` lands at col 3 on each row.
+        let mut a = enter_block_visual(
+            "abcd\n1234\nWXYZ",
+            Position::new(0, 1),
+            Position::new(2, 2),
+        );
+        a.apply(Action::EnterBlockVisualAppend);
+        assert!(matches!(a.modal, ModalState::Insert));
+        assert_eq!(a.cursor, Position::new(0, 3));
+        a.apply(Action::Insert("@".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert_eq!(a.document.text(), "abc@d\n123@4\nWXY@Z");
+    }
+
+    #[test]
+    fn block_visual_capital_i_skips_lines_shorter_than_insert_col() {
+        // Middle row "12" is too short for col 3 (insert_col). Vim skips it.
+        let mut a = enter_block_visual(
+            "abcd\n12\nWXYZ",
+            Position::new(0, 3),
+            Position::new(2, 3),
+        );
+        a.apply(Action::EnterBlockVisualInsert);
+        a.apply(Action::Insert("Q".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        // Top row gets the live edit; bottom row replays at col 3;
+        // middle row is too short and is left untouched.
+        assert_eq!(a.document.text(), "abcQd\n12\nWXYQZ");
+    }
+
+    #[test]
+    fn block_visual_indent_left_dedents_each_row_in_block() {
+        let mut a = enter_block_visual(
+            "    abc\n    123\n    WXY",
+            Position::new(0, 0),
+            Position::new(2, 0),
+        );
+        let inv = CommandInvocation::of(a.builtins.indent_left.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "abc\n123\nWXY");
     }
 
     #[test]

@@ -85,7 +85,7 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         ),
         ModalState::Command => translate_command(event, ctx.completion_open, ctx.chord_capture),
         ModalState::Search(_) => translate_search(event),
-        ModalState::Visual(_) => translate_visual(event, ctx.builtins),
+        ModalState::Visual(kind) => translate_visual(event, kind, ctx.builtins),
         ModalState::Replace => translate_replace(event),
         // OperatorPending routes to no-op (it's a transient resolution
         // state inside translate_normal, not a top-level reachable state).
@@ -135,9 +135,20 @@ fn translate_replace(event: KeyEvent) -> Action {
     }
 }
 
-fn translate_visual(event: KeyEvent, builtins: &Builtins) -> Action {
+fn translate_visual(event: KeyEvent, kind: VisualKind, builtins: &Builtins) -> Action {
     if event.modifiers.contains(KeyModifiers::CONTROL) {
         return Action::None;
+    }
+    // Block-visual-only: I / A enter Insert with multi-line replay
+    // wired in App::do_enter_block_visual_insert. In charwise /
+    // linewise we don't bind these (vim's behavior is also distinct
+    // there -- linewise `I` is a separate v2 feature).
+    if matches!(kind, VisualKind::Blockwise) {
+        match event.code {
+            KeyCode::Char('I') => return Action::EnterBlockVisualInsert,
+            KeyCode::Char('A') => return Action::EnterBlockVisualAppend,
+            _ => {}
+        }
     }
     match event.code {
         KeyCode::Esc => Action::ExitVisual,
@@ -179,6 +190,18 @@ fn translate_visual(event: KeyEvent, builtins: &Builtins) -> Action {
         ),
         KeyCode::Char('y') => Action::Invoke(
             CommandInvocation::of(builtins.yank.0)
+                .with_range(lattice_grammar::Range::Selection),
+        ),
+        // Indent / dedent the lines covered by the selection.
+        // Operator's range-walker iterates lines top-down so the
+        // selection kind (charwise / linewise / blockwise) doesn't
+        // change the result -- only the line span matters.
+        KeyCode::Char('>') => Action::Invoke(
+            CommandInvocation::of(builtins.indent_right.0)
+                .with_range(lattice_grammar::Range::Selection),
+        ),
+        KeyCode::Char('<') => Action::Invoke(
+            CommandInvocation::of(builtins.indent_left.0)
                 .with_range(lattice_grammar::Range::Selection),
         ),
 
@@ -3053,6 +3076,42 @@ mod tests {
                 assert_eq!(inv.range, Some(lattice_grammar::Range::Selection));
             }
             other => panic!("expected Invoke(change, Selection), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gt_in_visual_invokes_indent_right_with_selection_range() {
+        let (_, b) = fixture();
+        for kind in [VisualKind::Charwise, VisualKind::Linewise, VisualKind::Blockwise] {
+            let action = translate(
+                ctx(ModalState::Visual(kind), Pending::None, &b),
+                key(KeyCode::Char('>')),
+            );
+            match action {
+                Action::Invoke(inv) => {
+                    assert_eq!(inv.command, b.indent_right.0, "kind = {kind:?}");
+                    assert_eq!(inv.range, Some(lattice_grammar::Range::Selection));
+                }
+                other => panic!("kind = {kind:?}, expected Invoke(indent_right, Selection), got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn lt_in_visual_invokes_indent_left_with_selection_range() {
+        let (_, b) = fixture();
+        for kind in [VisualKind::Charwise, VisualKind::Linewise, VisualKind::Blockwise] {
+            let action = translate(
+                ctx(ModalState::Visual(kind), Pending::None, &b),
+                key(KeyCode::Char('<')),
+            );
+            match action {
+                Action::Invoke(inv) => {
+                    assert_eq!(inv.command, b.indent_left.0, "kind = {kind:?}");
+                    assert_eq!(inv.range, Some(lattice_grammar::Range::Selection));
+                }
+                other => panic!("kind = {kind:?}, expected Invoke(indent_left, Selection), got {other:?}"),
+            }
         }
     }
 

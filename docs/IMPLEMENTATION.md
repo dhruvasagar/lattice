@@ -36,7 +36,7 @@ rendering, and v1.0 polish.
 | Phase | Title                                 | Status                   | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 |-------|---------------------------------------|--------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | 0     | Foundation                            | ✅ done                  | Workspace, lattice-core, document/buffer/undo, file I/O, protocol enums                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| 1     | Modal Editing                         | ✅ done                  | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch) / folds / ex-commands (every command -- including `:s` / `:g` / `:v` via `Args::List` -- registered as `ExCommandSpec` peers, dispatched through unified `grammar::execute()` per §5.2.1, §B.2). Blockwise visual: per-row dispatch for `d` / `y` / `c` plus blockwise paste; `I` / `A` / `>` / `<` block forms still fall back to charwise. |
+| 1     | Modal Editing                         | ✅ done                  | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch) / folds / ex-commands (every command -- including `:s` / `:g` / `:v` via `Args::List` -- registered as `ExCommandSpec` peers, dispatched through unified `grammar::execute()` per §5.2.1, §B.2). Blockwise visual: per-row dispatch for `d` / `y` / `c` plus blockwise paste; `>` / `<` indent each line in the block; `I` / `A` enter Insert at the block's left/right column with the typed prefix replicated to every row on Esc.                |
 | 2     | Terminal UI Bootstrap                 | ✅ done                  | crossterm + ratatui; modal cursor; mode line; gutter                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | 3     | Tree-Sitter                           | ✅ done (Rust/Python/JS) | Highlights wired; grammar extension API used by builtins, not yet by plugins                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | 4     | LSP                                   | ⛔ not started           | Phase 4 still waiting; depends on async-actor work and the Pending->Effect plumbing in §5.2.1                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -70,7 +70,7 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | Insert             | ✅               | §5.2      | Plus bar cursor                                                                                                                                                                                                                                                                                           |
 | Visual (Charwise)  | ✅               | §5.2, B.1 | Selection extends, operators on Range::Selection                                                                                                                                                                                                                                                          |
 | Visual (Linewise)  | ✅               | §5.2      |                                                                                                                                                                                                                                                                                                           |
-| Visual (Blockwise) | ✅ d/y/c + paste | §15:18    | Ctrl-V (or Ctrl-Q on terminals that hijack Ctrl-V) enters; render highlights the rectangle; `d` / `y` / `c` dispatch per-row in the dispatcher with merged Edits + one Blockwise yank. `YankKind::Blockwise` paste replays each row at the same column. `I` / `A` / `>` / `<` block forms still post-1.0. |
+| Visual (Blockwise) | ✅ d/y/c/I/A/>/< + paste | §15:18    | Ctrl-V (or Ctrl-Q on terminals that hijack Ctrl-V) enters; render highlights the rectangle; `d` / `y` / `c` dispatch per-row in the dispatcher with merged Edits + one Blockwise yank. `>` / `<` indent each covered line. `I` / `A` enter Insert at the block's left / right column on the top row; on Esc the typed prefix is replicated to every other row at the same column (rows shorter than the column are skipped, vim's behavior). `YankKind::Blockwise` paste replays each row at the same column. |
 | Operator-Pending   | ✅               | §5.2      | Resolved through translate_normal pending state                                                                                                                                                                                                                                                           |
 | Command (`:`)      | ✅               | §5.9.10   | Rich minibuffer scope is partial; full spec is post-Phase-1                                                                                                                                                                                                                                               |
 | Search (`/`, `?`)  | ✅               | §5.9.10   | Live preview wired (hlsearch on every keystroke); fancy-regex backend                                                                                                                                                                                                                                     |
@@ -534,28 +534,25 @@ Update this section when picking up the in-flight item.
    benched pattern). Needs the §5.2.5 cancellation-token contract:
    each Reflex command observes a deadline, aborts cleanly. Unlocks
    safer regex search + future async I/O cancellation.
-2. **Block-visual `I` / `A` / `>` / `<`** — extend the per-row block
-   dispatch with the remaining vim affordances: insert-at-block-start,
-   append-at-block-end, indent-block-right/left.
-3. **Computed folds** (syntax-driven, indent-based) — manual folds via
+2. **Computed folds** (syntax-driven, indent-based) — manual folds via
    zf/zo/zc/za/zR/zM/zd are done; computed folds need tree-sitter integration
    and an indent-based fall-back.
-4. **`:set option=value` + typed options** (§5.12) — also unblocks
+3. **`:set option=value` + typed options** (§5.12) — also unblocks
    `:describe-option`.
-5. **Multi-buffer foundations** (§5.9) — the trigger for `HelpDisplayMode`
+4. **Multi-buffer foundations** (§5.9) — the trigger for `HelpDisplayMode`
    beyond `Popup`. Until this lands, all introspection is overlay-rendered.
-6. **Help major mode + tree-sitter grammar** — defines sections,
+5. **Help major mode + tree-sitter grammar** — defines sections,
    link-targets, code-blocks. Needs the help mode registered as a major
    mode, which depends on the modes registry (Phase 8) but the *grammar*
    can be drafted earlier.
-7. **Substitute live preview** — decorations on the target buffer while
+6. **Substitute live preview** — decorations on the target buffer while
    the user types `:s/foo/bar/...`. The hlsearch now lights up matches
    when the search minibuffer is open; substitute should do the same.
-8. **Interactive arg-prompts via `args_schema`** (§B.1 phase 2) — `Chord`
+7. **Interactive arg-prompts via `args_schema`** (§B.1 phase 2) — `Chord`
    slot is done (chord-capture + auto-submit on `:describe-key<CR>`).
    Generalise to other kinds: drop the user into the minibuffer with
    the schema's prompt + completion source for any missing required arg.
-9. **Veto-class hooks** (§5.10.2 / §5.2.1) — observation-only event bus
+8. **Veto-class hooks** (§5.10.2 / §5.2.1) — observation-only event bus
    is in place; pre-mutation hooks (`BeforeSave`, `BeforeQuit`) need
    the mutation/abort return path. Plus the actor wiring to publish
    events on edit / mode-change. Unblocks autocmds.

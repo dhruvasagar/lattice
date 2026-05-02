@@ -41,31 +41,29 @@ pub struct SearchHit {
 /// the positional ranges in left-to-right order. Returns an empty
 /// vector for empty patterns or buffers shorter than the pattern.
 ///
-/// Backed by [`memchr::memmem::find_iter`] for SIMD scans. v1 still
-/// materialises the rope to a `String` once per call (`as_string`);
-/// the chunked-walk path lands in B-β.
+/// Walks the rope's chunk iterator + memmem -- never allocates the
+/// whole buffer text. Per-call cost is dominated by the SIMD scan
+/// itself; ~2GB/s on AVX2.
 pub fn find_all(buffer: &Buffer, query: &str) -> CoreResult<Vec<Range>> {
     if query.is_empty() {
         return Ok(Vec::new());
     }
-    let text = buffer.as_string();
-    let bytes = text.as_bytes();
     let needle = query.as_bytes();
-    if needle.len() > bytes.len() {
+    let total = buffer.byte_len() as usize;
+    if needle.len() > total {
         return Ok(Vec::new());
     }
     let mut hits = Vec::new();
     let mut next = 0;
-    // memmem::find_iter yields overlapping starts; we manually
-    // skip past each match's end to preserve the v1 "no overlap"
-    // contract callers depend on.
-    while let Some(rel) = memchr::memmem::find(&bytes[next..], needle) {
-        let i = next + rel;
+    // Find each match by scanning the rope from the byte AFTER the
+    // previous match's end. Each call to `find_forward_in_rope` is
+    // a chunked memmem walk; we never materialise the whole buffer.
+    while let Some(i) = find_forward_in_rope(buffer.rope(), needle, next) {
         let start = buffer.byte_to_position(i)?;
         let end = buffer.byte_to_position(i + needle.len())?;
         hits.push(Range::new(start, end));
         next = i + needle.len();
-        if next > bytes.len() - needle.len() {
+        if next + needle.len() > total {
             break;
         }
     }
@@ -81,25 +79,28 @@ pub fn find(
     if query.is_empty() {
         return Ok(None);
     }
-    let text = buffer.as_string();
-    let bytes = text.as_bytes();
     let needle = query.as_bytes();
-    if needle.len() > bytes.len() {
+    let total = buffer.byte_len() as usize;
+    if needle.len() > total {
         return Ok(None);
     }
     let from_byte = buffer.position_to_byte(from)?;
+    let rope = buffer.rope();
 
     let (match_start, wrapped) = match direction {
-        Direction::Forward => match find_forward(bytes, needle, from_byte) {
+        Direction::Forward => match find_forward_in_rope(rope, needle, from_byte) {
             Some(p) => (Some(p), false),
-            None => (find_forward(bytes, needle, 0).filter(|&p| p < from_byte), true),
+            None => (
+                find_forward_in_rope(rope, needle, 0).filter(|&p| p < from_byte),
+                true,
+            ),
         },
-        Direction::Backward => match find_backward(bytes, needle, from_byte) {
+        Direction::Backward => match find_backward_in_rope(rope, needle, from_byte) {
             Some(p) => (Some(p), false),
             None => {
-                let last_start = bytes.len() - needle.len();
+                let last_start = total - needle.len();
                 (
-                    find_backward(bytes, needle, last_start).filter(|&p| p > from_byte),
+                    find_backward_in_rope(rope, needle, last_start).filter(|&p| p > from_byte),
                     true,
                 )
             }
@@ -120,9 +121,10 @@ pub fn find(
     }
 }
 
-/// Forward substring search via [`memchr::memmem`]. Two-Way + SIMD
-/// prefilter; ~2GB/s on AVX2-capable CPUs. Returns the first
-/// match-start byte at or after `from`, or `None`.
+/// In-memory substring search exposed to unit tests so the
+/// algorithm can be exercised independently of the rope traversal.
+/// The public `find` path uses [`find_forward_in_rope`].
+#[cfg(test)]
 fn find_forward(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     if needle.is_empty() || needle.len() > haystack.len() {
         return None;
@@ -133,11 +135,9 @@ fn find_forward(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     memchr::memmem::find(&haystack[from..], needle).map(|i| i + from)
 }
 
-/// Backward substring search via [`memchr::memmem::rfind`]. Returns
-/// the largest match-start byte that is `<= from`. Constructed
-/// over the prefix `haystack[..=from + needle.len()]` (clamped to
-/// haystack length) so a match starting at `from` itself is
-/// included.
+/// In-memory backward search exposed to unit tests; the public
+/// `find` path uses [`find_backward_in_rope`].
+#[cfg(test)]
 fn find_backward(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     if needle.is_empty() || needle.len() > haystack.len() {
         return None;
@@ -148,6 +148,90 @@ fn find_backward(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     // `from` is the rightmost one considered.
     let end = (from + needle.len()).min(haystack.len());
     memchr::memmem::rfind(&haystack[..end], needle)
+}
+
+/// Streaming forward search over a `ropey::Rope`. Walks the rope's
+/// chunk iterator; never materialises the whole buffer.
+///
+/// Algorithm: maintain a sliding `window: Vec<u8>` whose first byte
+/// has absolute offset `window_start_abs`. For each chunk, append
+/// it to the window, run `memmem::find` on the result. On miss,
+/// drain everything except the last `needle.len() - 1` bytes
+/// (boundary bytes that might start a match continuing into the
+/// next chunk) and advance `window_start_abs`. Capacity-reuse
+/// across iterations keeps allocation bounded by chunk size.
+fn find_forward_in_rope(rope: &ropey::Rope, needle: &[u8], from: usize) -> Option<usize> {
+    let total = rope.len_bytes();
+    if needle.is_empty() || total < needle.len() || from >= total {
+        return None;
+    }
+    let bridge_keep = needle.len() - 1;
+    let slice = rope.byte_slice(from..total);
+    let mut window: Vec<u8> = Vec::with_capacity(bridge_keep + 16 * 1024);
+    let mut window_start_abs = from;
+
+    for chunk in slice.chunks() {
+        window.extend_from_slice(chunk.as_bytes());
+        if let Some(rel) = memchr::memmem::find(&window, needle) {
+            return Some(window_start_abs + rel);
+        }
+        // Slide forward: keep only the last `bridge_keep` bytes so
+        // a match spanning the chunk boundary is caught next round.
+        let drain_n = window.len().saturating_sub(bridge_keep);
+        if drain_n > 0 {
+            window.drain(..drain_n);
+            window_start_abs += drain_n;
+        }
+    }
+    None
+}
+
+/// Streaming backward search. Returns the rightmost match whose
+/// start is `<= from`. Walks the rope's chunks right-to-left.
+///
+/// Each iteration's search window is `chunk + first_bridge_keep_of_window`
+/// where `window` carries the leading bytes from the
+/// just-processed (more-rightward) chunk. `memmem::rfind` returns
+/// the rightmost match in this window; on hit we return immediately.
+fn find_backward_in_rope(rope: &ropey::Rope, needle: &[u8], from: usize) -> Option<usize> {
+    let total = rope.len_bytes();
+    if needle.is_empty() || total < needle.len() {
+        return None;
+    }
+    let bridge_keep = needle.len() - 1;
+    let end = (from + needle.len()).min(total);
+    let slice = rope.byte_slice(0..end);
+
+    // ropey's `Chunks` is forward-only (not `DoubleEndedIterator`),
+    // so we collect a Vec of `&str` pointers and reverse-iterate
+    // it. The chunks themselves aren't copied -- only the pointer
+    // list. For a 200k-line buffer (~16KB chunks) this is ~800
+    // pointers (~13KB), allocated once per backward search.
+    let chunks: Vec<&str> = slice.chunks().collect();
+    let mut window: Vec<u8> = Vec::new();
+    let mut window_end_abs = end;
+
+    for chunk in chunks.iter().rev() {
+        let cb = chunk.as_bytes();
+        // Build search frame: this chunk + bridge bytes from the
+        // previously-processed (more-rightward) chunk.
+        let mut frame = Vec::with_capacity(cb.len() + window.len());
+        frame.extend_from_slice(cb);
+        frame.extend_from_slice(&window);
+        let frame_start_abs = window_end_abs - cb.len();
+        if let Some(rel) = memchr::memmem::rfind(&frame, needle) {
+            return Some(frame_start_abs + rel);
+        }
+        // For the next (more-leftward) iteration, keep the first
+        // `bridge_keep` bytes of `frame` -- they're the boundary
+        // bytes that might end a match starting in the next chunk
+        // we'll process.
+        let keep = frame.len().min(bridge_keep);
+        window.clear();
+        window.extend_from_slice(&frame[..keep]);
+        window_end_abs -= cb.len();
+    }
+    None
 }
 
 #[cfg(test)]

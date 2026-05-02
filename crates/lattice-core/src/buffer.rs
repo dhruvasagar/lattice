@@ -58,6 +58,16 @@ impl Buffer {
         self.rope.to_string()
     }
 
+    /// Borrow the underlying rope for crate-internal callers that
+    /// need streaming access (chunk iteration, byte slicing) without
+    /// the O(n) `as_string` allocation. Kept `pub(crate)` so the
+    /// rope abstraction stays internal -- if the storage ever
+    /// changes (sled, sumtree, ...) we want a single point of
+    /// adaptation.
+    pub(crate) fn rope(&self) -> &Rope {
+        &self.rope
+    }
+
     /// Materialise one logical line (without its trailing `\n`).
     /// Returns `None` if `line` is past the end. Locating the line
     /// is `O(log n)`; copying its bytes is `O(line_len)`.

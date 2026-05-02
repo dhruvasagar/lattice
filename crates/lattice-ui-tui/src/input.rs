@@ -60,9 +60,7 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
     }
 
     // Universal escape hatch.
-    if event.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(event.code, KeyCode::Char('c'))
-    {
+    if event.modifiers.contains(KeyModifiers::CONTROL) && matches!(event.code, KeyCode::Char('c')) {
         return Action::Quit;
     }
 
@@ -181,16 +179,13 @@ fn translate_visual(event: KeyEvent, kind: VisualKind, builtins: &Builtins) -> A
         // Operators on the selection. `Range::Selection` resolves to the
         // current document.selections().primary() in the dispatcher.
         KeyCode::Char('d') | KeyCode::Char('x') => Action::Invoke(
-            CommandInvocation::of(builtins.delete.0)
-                .with_range(lattice_grammar::Range::Selection),
+            CommandInvocation::of(builtins.delete.0).with_range(lattice_grammar::Range::Selection),
         ),
         KeyCode::Char('c') | KeyCode::Char('s') => Action::Invoke(
-            CommandInvocation::of(builtins.change.0)
-                .with_range(lattice_grammar::Range::Selection),
+            CommandInvocation::of(builtins.change.0).with_range(lattice_grammar::Range::Selection),
         ),
         KeyCode::Char('y') => Action::Invoke(
-            CommandInvocation::of(builtins.yank.0)
-                .with_range(lattice_grammar::Range::Selection),
+            CommandInvocation::of(builtins.yank.0).with_range(lattice_grammar::Range::Selection),
         ),
         // Indent / dedent the lines covered by the selection.
         // Operator's range-walker iterates lines top-down so the
@@ -221,11 +216,7 @@ fn translate_search(event: KeyEvent) -> Action {
     }
 }
 
-fn translate_command(
-    event: KeyEvent,
-    completion_open: bool,
-    _chord_capture: bool,
-) -> Action {
+fn translate_command(event: KeyEvent, completion_open: bool, _chord_capture: bool) -> Action {
     // Note: chord-capture is dispatched at the top-level
     // `translate()` (so it precedes the universal Ctrl-C quit).
     // This signature still takes the bit so call sites stay
@@ -352,9 +343,7 @@ fn translate_normal(
             // fallback. We also enable bracketed paste in `runtime.rs`,
             // so a hijacked Ctrl+V arrives as `Event::Paste` -- the
             // user's paste still works either way.
-            KeyCode::Char('v') | KeyCode::Char('q') => {
-                Action::EnterVisual(VisualKind::Blockwise)
-            }
+            KeyCode::Char('v') | KeyCode::Char('q') => Action::EnterVisual(VisualKind::Blockwise),
             _ => Action::None,
         };
     }
@@ -444,7 +433,8 @@ fn translate_normal(
                 .with_target(Target::Motion(builtins.line_end, Args::None)),
         ),
         KeyCode::Char('S') => Action::Invoke(
-            CommandInvocation::of(builtins.change.0).with_range(lattice_grammar::Range::CurrentLine),
+            CommandInvocation::of(builtins.change.0)
+                .with_range(lattice_grammar::Range::CurrentLine),
         ),
 
         // Line join.
@@ -539,11 +529,7 @@ fn resolve_after_g(event: KeyEvent, builtins: &Builtins) -> Action {
     }
 }
 
-fn resolve_after_operator(
-    event: KeyEvent,
-    builtins: &Builtins,
-    op: OperatorId,
-) -> Action {
+fn resolve_after_operator(event: KeyEvent, builtins: &Builtins, op: OperatorId) -> Action {
     if matches!(event.code, KeyCode::Esc) {
         return Action::SetPending(Pending::None);
     }
@@ -1038,7 +1024,10 @@ mod tests {
     #[test]
     fn capital_g_invokes_goto_last_line() {
         let (_, b) = fixture();
-        let action = translate(ctx(ModalState::Normal, Pending::None, &b), key(KeyCode::Char('G')));
+        let action = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('G')),
+        );
         assert_eq!(invocation_command(&action), Some(b.goto_last_line.0));
     }
 
@@ -1208,7 +1197,10 @@ mod tests {
     fn esc_in_insert_returns_to_normal() {
         let (_, b) = fixture();
         assert!(matches!(
-            translate(ctx(ModalState::Insert, Pending::None, &b), key(KeyCode::Esc)),
+            translate(
+                ctx(ModalState::Insert, Pending::None, &b),
+                key(KeyCode::Esc)
+            ),
             Action::EnterMode(ModalState::Normal)
         ));
     }
@@ -1317,7 +1309,10 @@ mod tests {
     fn esc_in_command_cancels() {
         let (_, b) = fixture();
         assert!(matches!(
-            translate(ctx(ModalState::Command, Pending::None, &b), key(KeyCode::Esc)),
+            translate(
+                ctx(ModalState::Command, Pending::None, &b),
+                key(KeyCode::Esc)
+            ),
             Action::CommandLineCancel
         ));
     }
@@ -1338,7 +1333,10 @@ mod tests {
     fn up_in_command_emits_history_prev() {
         let (_, b) = fixture();
         assert!(matches!(
-            translate(ctx(ModalState::Command, Pending::None, &b), key(KeyCode::Up)),
+            translate(
+                ctx(ModalState::Command, Pending::None, &b),
+                key(KeyCode::Up)
+            ),
             Action::CommandLineHistoryPrev
         ));
     }
@@ -2535,10 +2533,7 @@ mod tests {
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('m')),
         );
-        assert!(matches!(
-            action,
-            Action::SetPending(Pending::AfterSetMark)
-        ));
+        assert!(matches!(action, Action::SetPending(Pending::AfterSetMark)));
     }
 
     #[test]
@@ -2678,7 +2673,11 @@ mod tests {
     fn double_gt_resolves_to_indent_right_current_line() {
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.indent_right), &b),
+            ctx(
+                ModalState::Normal,
+                Pending::AfterOperator(b.indent_right),
+                &b,
+            ),
             key(KeyCode::Char('>')),
         );
         match action {
@@ -3082,7 +3081,11 @@ mod tests {
     #[test]
     fn gt_in_visual_invokes_indent_right_with_selection_range() {
         let (_, b) = fixture();
-        for kind in [VisualKind::Charwise, VisualKind::Linewise, VisualKind::Blockwise] {
+        for kind in [
+            VisualKind::Charwise,
+            VisualKind::Linewise,
+            VisualKind::Blockwise,
+        ] {
             let action = translate(
                 ctx(ModalState::Visual(kind), Pending::None, &b),
                 key(KeyCode::Char('>')),
@@ -3092,7 +3095,9 @@ mod tests {
                     assert_eq!(inv.command, b.indent_right.0, "kind = {kind:?}");
                     assert_eq!(inv.range, Some(lattice_grammar::Range::Selection));
                 }
-                other => panic!("kind = {kind:?}, expected Invoke(indent_right, Selection), got {other:?}"),
+                other => panic!(
+                    "kind = {kind:?}, expected Invoke(indent_right, Selection), got {other:?}"
+                ),
             }
         }
     }
@@ -3100,7 +3105,11 @@ mod tests {
     #[test]
     fn lt_in_visual_invokes_indent_left_with_selection_range() {
         let (_, b) = fixture();
-        for kind in [VisualKind::Charwise, VisualKind::Linewise, VisualKind::Blockwise] {
+        for kind in [
+            VisualKind::Charwise,
+            VisualKind::Linewise,
+            VisualKind::Blockwise,
+        ] {
             let action = translate(
                 ctx(ModalState::Visual(kind), Pending::None, &b),
                 key(KeyCode::Char('<')),
@@ -3110,7 +3119,9 @@ mod tests {
                     assert_eq!(inv.command, b.indent_left.0, "kind = {kind:?}");
                     assert_eq!(inv.range, Some(lattice_grammar::Range::Selection));
                 }
-                other => panic!("kind = {kind:?}, expected Invoke(indent_left, Selection), got {other:?}"),
+                other => panic!(
+                    "kind = {kind:?}, expected Invoke(indent_left, Selection), got {other:?}"
+                ),
             }
         }
     }

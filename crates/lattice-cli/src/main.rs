@@ -22,8 +22,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let document = match cli.file {
-        Some(path) => Document::open(&path)
-            .with_context(|| format!("opening {}", path.display()))?,
+        Some(path) => {
+            Document::open(&path).with_context(|| format!("opening {}", path.display()))?
+        }
         None => Document::empty(),
     };
 

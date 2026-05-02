@@ -1,7 +1,7 @@
 //! Async runtime for lattice (DESIGN.md §5.2.1, §5.6.8, §5.7).
 //!
 //! Sits between [`lattice_core`] (the synchronous data layer -- `Buffer`,
-//! `Document`, `Edit`) and [`lattice_ui_tui`] (rendering + input). Owns
+//! `Document`, `Edit`) and `lattice_ui_tui` (rendering + input). Owns
 //! three load-bearing async primitives:
 //!
 //! 1. **Document actor** ([`actor`]): one tokio task per open document.
@@ -36,7 +36,7 @@
 //! ## Tokio runtime
 //!
 //! A single multi-threaded runtime is created lazily on first use
-//! ([`runtime::shared`]) and shared across the process. Tests share
+//! ([`shared_runtime`]) and shared across the process. Tests share
 //! it but isolate at the actor-task level: each [`spawn_document`]
 //! call creates a fresh task with its own mailbox + snapshot.
 //!

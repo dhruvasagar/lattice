@@ -8,9 +8,7 @@ pub mod generators;
 pub mod matchers;
 pub mod rankers;
 
-use crate::registry::{
-    AnnotatorId, CompletionRegistry, GeneratorId, MatcherId, RankerId,
-};
+use crate::registry::{AnnotatorId, CompletionRegistry, GeneratorId, MatcherId, RankerId};
 
 /// Set of ids returned by [`populate`] -- mirrors `Builtins` /
 /// `ExBuiltins` in `lattice-grammar`. Lets the host wire defaults

@@ -88,7 +88,7 @@ fn name_to_style(name: &str) -> Style {
         "operator" => Style::Operator,
         "punctuation" => Style::Punctuation,
         "attribute" => Style::Attribute,
-        "tag" => Style::Type,    // HTML/JSX tags display as types for now.
+        "tag" => Style::Type, // HTML/JSX tags display as types for now.
         "label" => Style::Constant,
         _ => Style::Default,
     }

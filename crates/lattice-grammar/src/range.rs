@@ -37,10 +37,7 @@ pub enum RangeBound {
     /// Pattern-relative (`/foo/`, `?bar?`).
     Pattern(String),
     /// Offset from another bound (`+1`, `-3`, `.+5`).
-    Offset {
-        base: Box<RangeBound>,
-        delta: i32,
-    },
+    Offset { base: Box<RangeBound>, delta: i32 },
 }
 
 #[cfg(test)]

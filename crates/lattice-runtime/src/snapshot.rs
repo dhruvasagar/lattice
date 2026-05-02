@@ -27,7 +27,7 @@
 //! ## Publish discipline
 //!
 //! The actor (and only the actor) writes to the published cell via
-//! [`PublishedSnapshot::store`]. The runtime layer keeps that method
+//! `PublishedSnapshot::store`. The runtime layer keeps that method
 //! `pub(crate)` so external callers can't forge a snapshot.
 //! Renderers / readers use [`PublishedSnapshot::load`].
 
@@ -193,7 +193,8 @@ mod tests {
         let cell = PublishedSnapshot::new(DocumentSnapshot::from_document(&doc));
         let pinned = cell.load();
         let mut doc2 = Document::from_text("v2");
-        doc2.apply_edit(Edit::insert(Position::new(0, 2), "!")).unwrap();
+        doc2.apply_edit(Edit::insert(Position::new(0, 2), "!"))
+            .unwrap();
         cell.store(DocumentSnapshot::from_document(&doc2));
         // pinned still reflects the original.
         assert_eq!(pinned.text(), "v1");

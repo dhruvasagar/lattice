@@ -8,11 +8,8 @@ use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_ma
 
 use lattice_core::Document;
 use lattice_grammar::{
-    Args, CancellationToken, Range, Target,
-    builtins::populate,
-    command::CommandInvocation,
-    dispatcher::execute,
-    registry::CommandRegistry,
+    Args, CancellationToken, Range, Target, builtins::populate, command::CommandInvocation,
+    dispatcher::execute, registry::CommandRegistry,
 };
 use lattice_protocol::position::Position;
 
@@ -65,8 +62,7 @@ fn operator_dd(c: &mut Criterion) {
             bencher.iter_with_setup(
                 || Document::from_text(t),
                 |mut doc| {
-                    let inv =
-                        CommandInvocation::of(b.delete.0).with_range(Range::CurrentLine);
+                    let inv = CommandInvocation::of(b.delete.0).with_range(Range::CurrentLine);
                     let _ = execute(
                         &registry,
                         &mut doc,
@@ -123,7 +119,14 @@ fn operator_yw(c: &mut Criterion) {
                 |mut doc| {
                     let inv = CommandInvocation::of(b.yank.0)
                         .with_target(Target::Motion(b.word_forward, Args::None));
-                    let _ = execute(&registry, &mut doc, black_box(Position::ZERO), inv, &CancellationToken::never()).unwrap();
+                    let _ = execute(
+                        &registry,
+                        &mut doc,
+                        black_box(Position::ZERO),
+                        inv,
+                        &CancellationToken::never(),
+                    )
+                    .unwrap();
                 },
             );
         });
@@ -144,7 +147,14 @@ fn operator_cw(c: &mut Criterion) {
                 |mut doc| {
                     let inv = CommandInvocation::of(b.change.0)
                         .with_target(Target::Motion(b.word_forward, Args::None));
-                    let _ = execute(&registry, &mut doc, black_box(Position::ZERO), inv, &CancellationToken::never()).unwrap();
+                    let _ = execute(
+                        &registry,
+                        &mut doc,
+                        black_box(Position::ZERO),
+                        inv,
+                        &CancellationToken::never(),
+                    )
+                    .unwrap();
                 },
             );
         });

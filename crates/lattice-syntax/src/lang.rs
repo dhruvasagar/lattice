@@ -44,33 +44,63 @@ mod tests {
 
     #[test]
     fn detects_rust() {
-        assert_eq!(Lang::detect_from_path(Some(&PathBuf::from("foo.rs"))), Lang::Rust);
+        assert_eq!(
+            Lang::detect_from_path(Some(&PathBuf::from("foo.rs"))),
+            Lang::Rust
+        );
     }
 
     #[test]
     fn detects_python() {
-        assert_eq!(Lang::detect_from_path(Some(&PathBuf::from("foo.py"))), Lang::Python);
-        assert_eq!(Lang::detect_from_path(Some(&PathBuf::from("foo.pyw"))), Lang::Python);
+        assert_eq!(
+            Lang::detect_from_path(Some(&PathBuf::from("foo.py"))),
+            Lang::Python
+        );
+        assert_eq!(
+            Lang::detect_from_path(Some(&PathBuf::from("foo.pyw"))),
+            Lang::Python
+        );
     }
 
     #[test]
     fn detects_javascript() {
-        assert_eq!(Lang::detect_from_path(Some(&PathBuf::from("foo.js"))), Lang::JavaScript);
-        assert_eq!(Lang::detect_from_path(Some(&PathBuf::from("foo.mjs"))), Lang::JavaScript);
-        assert_eq!(Lang::detect_from_path(Some(&PathBuf::from("foo.cjs"))), Lang::JavaScript);
+        assert_eq!(
+            Lang::detect_from_path(Some(&PathBuf::from("foo.js"))),
+            Lang::JavaScript
+        );
+        assert_eq!(
+            Lang::detect_from_path(Some(&PathBuf::from("foo.mjs"))),
+            Lang::JavaScript
+        );
+        assert_eq!(
+            Lang::detect_from_path(Some(&PathBuf::from("foo.cjs"))),
+            Lang::JavaScript
+        );
     }
 
     #[test]
     fn falls_back_to_plain() {
         assert_eq!(Lang::detect_from_path(None), Lang::Plain);
-        assert_eq!(Lang::detect_from_path(Some(&PathBuf::from("README"))), Lang::Plain);
-        assert_eq!(Lang::detect_from_path(Some(&PathBuf::from("foo.unknown"))), Lang::Plain);
+        assert_eq!(
+            Lang::detect_from_path(Some(&PathBuf::from("README"))),
+            Lang::Plain
+        );
+        assert_eq!(
+            Lang::detect_from_path(Some(&PathBuf::from("foo.unknown"))),
+            Lang::Plain
+        );
     }
 
     #[test]
     fn detection_is_case_insensitive() {
-        assert_eq!(Lang::detect_from_path(Some(&PathBuf::from("FOO.RS"))), Lang::Rust);
-        assert_eq!(Lang::detect_from_path(Some(&PathBuf::from("Foo.PY"))), Lang::Python);
+        assert_eq!(
+            Lang::detect_from_path(Some(&PathBuf::from("FOO.RS"))),
+            Lang::Rust
+        );
+        assert_eq!(
+            Lang::detect_from_path(Some(&PathBuf::from("Foo.PY"))),
+            Lang::Python
+        );
     }
 
     #[test]

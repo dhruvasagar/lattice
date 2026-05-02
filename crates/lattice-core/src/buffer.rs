@@ -139,7 +139,9 @@ impl Buffer {
         match &edit.kind {
             EditKind::Replace { text } => {
                 if start_byte != end_byte {
-                    self.rope.remove(byte_to_char(&self.rope, start_byte)..byte_to_char(&self.rope, end_byte));
+                    self.rope.remove(
+                        byte_to_char(&self.rope, start_byte)..byte_to_char(&self.rope, end_byte),
+                    );
                 }
                 if !text.is_empty() {
                     let char_idx = byte_to_char(&self.rope, start_byte);
@@ -230,7 +232,8 @@ mod tests {
     #[test]
     fn insert_appends_at_end() {
         let mut b = Buffer::from_text("ab");
-        b.apply_edit(&Edit::insert(Position::new(0, 2), "cd")).unwrap();
+        b.apply_edit(&Edit::insert(Position::new(0, 2), "cd"))
+            .unwrap();
         assert_eq!(b.as_string(), "abcd");
     }
 
@@ -335,7 +338,8 @@ mod tests {
     #[test]
     fn unicode_insert_preserves_byte_count() {
         let mut b = Buffer::from_text("c");
-        b.apply_edit(&Edit::insert(Position::new(0, 1), "é")).unwrap();
+        b.apply_edit(&Edit::insert(Position::new(0, 1), "é"))
+            .unwrap();
         assert_eq!(b.as_string(), "cé");
         assert_eq!(b.byte_len(), 3);
     }
@@ -344,9 +348,7 @@ mod tests {
     fn cross_line_replace_works() {
         let mut b = Buffer::from_text("ab\ncd\nef");
         let range = Range::new(Position::new(0, 1), Position::new(2, 1));
-        let applied = b
-            .apply_edit(&Edit::replace(range, "X"))
-            .expect("replace");
+        let applied = b.apply_edit(&Edit::replace(range, "X")).expect("replace");
         assert_eq!(b.as_string(), "aXf");
         assert_eq!(applied.replaced_text, "b\ncd\ne");
         assert_eq!(applied.inserted_range.end, Position::new(0, 2));
@@ -404,12 +406,13 @@ mod tests {
         let original = "abcdef";
         let mut b = Buffer::from_text(original);
         let range = Range::new(Position::new(0, 1), Position::new(0, 4));
-        let applied = b
-            .apply_edit(&Edit::replace(range, "X"))
-            .expect("replace");
+        let applied = b.apply_edit(&Edit::replace(range, "X")).expect("replace");
         // Now apply: replace inserted_range with replaced_text.
-        b.apply_edit(&Edit::replace(applied.inserted_range, applied.replaced_text))
-            .expect("invert");
+        b.apply_edit(&Edit::replace(
+            applied.inserted_range,
+            applied.replaced_text,
+        ))
+        .expect("invert");
         assert_eq!(b.as_string(), original);
     }
 }

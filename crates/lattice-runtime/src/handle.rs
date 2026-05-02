@@ -64,14 +64,11 @@ pub struct DocumentHandle {
 /// The actor task survives until every clone of the returned
 /// handle is dropped; on the last drop the mailbox closes, the
 /// actor's `recv` loop exits, and the task returns.
-pub fn spawn_document(
-    document: Document,
-    registry: Arc<CommandRegistry>,
-) -> DocumentHandle {
+pub fn spawn_document(document: Document, registry: Arc<CommandRegistry>) -> DocumentHandle {
     let (tx, rx) = mpsc::channel(DEFAULT_MAILBOX_CAPACITY);
-    let snapshot_cell = Arc::new(PublishedSnapshot::new(
-        DocumentSnapshot::from_document(&document),
-    ));
+    let snapshot_cell = Arc::new(PublishedSnapshot::new(DocumentSnapshot::from_document(
+        &document,
+    )));
     let actor = DocumentActor::new(document, registry, rx, snapshot_cell.clone());
     shared_runtime().spawn(actor.run());
     DocumentHandle {

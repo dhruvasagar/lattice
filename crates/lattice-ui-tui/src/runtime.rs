@@ -54,8 +54,7 @@ fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     // editor was rendering.
     execute!(terminal.backend_mut(), SetCursorStyle::DefaultUserShape)
         .context("restore cursor style")?;
-    execute!(terminal.backend_mut(), DisableBracketedPaste)
-        .context("disable bracketed paste")?;
+    execute!(terminal.backend_mut(), DisableBracketedPaste).context("disable bracketed paste")?;
     disable_raw_mode().context("disable raw mode")?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen).context("leave alt screen")?;
     terminal.show_cursor().context("show cursor")?;

@@ -96,10 +96,9 @@ impl ArgValue {
 
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            ArgValue::String(s)
-            | ArgValue::Pattern(s)
-            | ArgValue::Chord(s)
-            | ArgValue::Raw(s) => Some(s),
+            ArgValue::String(s) | ArgValue::Pattern(s) | ArgValue::Chord(s) | ArgValue::Raw(s) => {
+                Some(s)
+            }
             _ => None,
         }
     }

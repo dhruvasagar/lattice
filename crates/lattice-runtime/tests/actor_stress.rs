@@ -28,9 +28,7 @@ use lattice_core::Document;
 use lattice_grammar::{CommandId, CommandInvocation, CommandRegistry};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
-use lattice_runtime::{
-    CancellationToken, RuntimeError, block_on, spawn_document,
-};
+use lattice_runtime::{CancellationToken, RuntimeError, block_on, spawn_document};
 
 fn empty_registry() -> Arc<CommandRegistry> {
     Arc::new(CommandRegistry::new())
@@ -213,14 +211,11 @@ async fn dropping_last_handle_with_queued_messages_drains_cleanly() {
     // If the actor leaked we'd hang here. tokio::time::timeout
     // wraps a no-op future so we can yield to the runtime
     // scheduler enough times for the task to finish.
-    let watchdog = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        async {
-            for _ in 0..1024 {
-                tokio::task::yield_now().await;
-            }
-        },
-    );
+    let watchdog = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        for _ in 0..1024 {
+            tokio::task::yield_now().await;
+        }
+    });
     watchdog.await.expect("actor did not shut down in time");
 }
 

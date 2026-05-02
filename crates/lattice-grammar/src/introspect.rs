@@ -297,11 +297,7 @@ mod tests {
             source: SourceLocation::builtin_file("a.rs", 1),
         };
         let result = render_introspection(&item);
-        let heading_idx = result
-            .lines
-            .iter()
-            .position(|l| l == "Arguments:")
-            .unwrap();
+        let heading_idx = result.lines.iter().position(|l| l == "Arguments:").unwrap();
         let arg_idx = result.lines.iter().position(|l| l == "  1. path").unwrap();
         let source_idx = result
             .lines
@@ -356,14 +352,14 @@ mod tests {
         assert_eq!(result.anchors.len(), 2);
         // First anchor's name + line points at "Arguments:".
         let args_anchor = result.anchors.iter().find(|a| a.name == "args").unwrap();
-        assert_eq!(
-            result.lines[args_anchor.line as usize], "Arguments:"
-        );
+        assert_eq!(result.lines[args_anchor.line as usize], "Arguments:");
         // Second anchor for the per-arg subsection.
-        let arg_path = result.anchors.iter().find(|a| a.name == "arg:path").unwrap();
-        assert_eq!(
-            result.lines[arg_path.line as usize], "  1. path: String"
-        );
+        let arg_path = result
+            .anchors
+            .iter()
+            .find(|a| a.name == "arg:path")
+            .unwrap();
+        assert_eq!(result.lines[arg_path.line as usize], "  1. path: String");
     }
 
     #[test]

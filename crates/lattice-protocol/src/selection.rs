@@ -162,13 +162,7 @@ mod tests {
     #[test]
     fn visual_modes_are_distinct() {
         // Documents the intent: charwise / linewise / blockwise are not equal.
-        assert_ne!(
-            Some(VisualMode::Charwise),
-            Some(VisualMode::Linewise)
-        );
-        assert_ne!(
-            Some(VisualMode::Linewise),
-            Some(VisualMode::Blockwise)
-        );
+        assert_ne!(Some(VisualMode::Charwise), Some(VisualMode::Linewise));
+        assert_ne!(Some(VisualMode::Linewise), Some(VisualMode::Blockwise));
     }
 }

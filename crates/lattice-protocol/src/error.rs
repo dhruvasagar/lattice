@@ -13,10 +13,7 @@ pub enum ProtocolError {
     UnknownDocument(DocumentId),
 
     #[error("position {position:?} is out of bounds (document has {line_count} lines)")]
-    PositionOutOfBounds {
-        position: Position,
-        line_count: u32,
-    },
+    PositionOutOfBounds { position: Position, line_count: u32 },
 
     #[error("stale version: client supplied {client}, document is at {actual}")]
     StaleVersion { client: u64, actual: u64 },

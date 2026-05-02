@@ -5,7 +5,7 @@
 //!
 //! 1. **Exclusive ownership** of one [`lattice_core::Document`]. No
 //!    other code path holds a `&mut Document`; mutations arrive as
-//!    [`ActorMsg`] variants on the bounded mailbox.
+//!    `ActorMsg` variants on the bounded mailbox.
 //! 2. **Snapshot publish** after every committed mutation. The
 //!    actor builds a [`DocumentSnapshot`] from the post-commit
 //!    state and writes it to the [`PublishedSnapshot`] cell with
@@ -203,10 +203,7 @@ impl DocumentActor {
                 let _ = reply.send(result);
             }
             ActorMsg::SaveAs { path, reply } => {
-                let result = self
-                    .document
-                    .save_as(path)
-                    .map_err(RuntimeError::Core);
+                let result = self.document.save_as(path).map_err(RuntimeError::Core);
                 self.publish();
                 let _ = reply.send(result);
             }

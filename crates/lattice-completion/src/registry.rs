@@ -14,13 +14,11 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use lattice_grammar::source::SourceLocation;
 use lattice_grammar::CommandId;
+use lattice_grammar::source::SourceLocation;
 
 use crate::cache::GeneratorCache;
-use crate::traits::{
-    CandidateAnnotator, CandidateGenerator, CandidateMatcher, CandidateRanker,
-};
+use crate::traits::{CandidateAnnotator, CandidateGenerator, CandidateMatcher, CandidateRanker};
 
 /// Strongly-typed handle to a registered completion generator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

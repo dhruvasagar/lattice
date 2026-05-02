@@ -55,7 +55,9 @@ pub fn execute(
 
     match entry.spec.kind {
         CommandKind::Motion => execute_motion(document, cursor, &invocation, entry, cancel),
-        CommandKind::TextObject => execute_text_object(document, cursor, &invocation, entry, cancel),
+        CommandKind::TextObject => {
+            execute_text_object(document, cursor, &invocation, entry, cancel)
+        }
         CommandKind::Operator => {
             execute_operator(registry, document, cursor, &invocation, entry, cancel)
         }
@@ -104,7 +106,9 @@ fn execute_motion(
     // the position via Effect::SelectionChange when the caller is the
     // dispatch (i.e., a top-level invocation).
     let mut selections = document.selections().clone();
-    selections.replace_primary(lattice_protocol::selection::Selection::cursor(result.target));
+    selections.replace_primary(lattice_protocol::selection::Selection::cursor(
+        result.target,
+    ));
     Ok(Effect::SelectionChange(selections))
 }
 
@@ -167,13 +171,11 @@ fn execute_operator(
         (None, None) => return Err(CommandError::MissingTarget),
     };
 
-    let visual_linewise = matches!(
-        invocation.range,
-        Some(Range::Selection)
-    ) && matches!(
-        document.selections().primary().visual,
-        Some(lattice_protocol::selection::VisualMode::Linewise)
-    );
+    let visual_linewise = matches!(invocation.range, Some(Range::Selection))
+        && matches!(
+            document.selections().primary().visual,
+            Some(lattice_protocol::selection::VisualMode::Linewise)
+        );
     let mut ctx = OperatorContext {
         document,
         range: target_range,
@@ -209,7 +211,10 @@ fn execute_operator_blockwise(
     cancel: &CancellationToken,
 ) -> GrammarResult<Effect> {
     let sel = document.selections().primary();
-    let (top_line, bottom_line) = (sel.anchor.line.min(sel.head.line), sel.anchor.line.max(sel.head.line));
+    let (top_line, bottom_line) = (
+        sel.anchor.line.min(sel.head.line),
+        sel.anchor.line.max(sel.head.line),
+    );
     let (left_col, right_col) = (
         sel.anchor.byte.min(sel.head.byte),
         sel.anchor.byte.max(sel.head.byte),
@@ -283,10 +288,7 @@ fn execute_operator_blockwise(
     // them, and re-emit a single `Edit::replace` covering the
     // affected line span with the post-state text. The user's `u`
     // then reverts the whole rectangle in one step, matching vim.
-    let edit_count: usize = per_row_effects
-        .iter()
-        .map(count_applied_edits)
-        .sum();
+    let edit_count: usize = per_row_effects.iter().map(count_applied_edits).sum();
     let collapsed_edit = if edit_count > 1 {
         // Capture post-state of the same line span. Line numbers
         // didn't shift -- block-visual operators only modify column
@@ -486,9 +488,7 @@ fn resolve_target(
             };
             (tobj.apply)(&ctx)
         }
-        Target::Range(grammar_range) => {
-            resolve_grammar_range(document, grammar_range, cursor, 1)
-        }
+        Target::Range(grammar_range) => resolve_grammar_range(document, grammar_range, cursor, 1),
     }
 }
 

@@ -11,7 +11,9 @@
 //! reparse stays correct.
 
 use thiserror::Error;
-use tree_sitter_highlight::{Error as TsHighlightError, HighlightConfiguration, HighlightEvent, Highlighter};
+use tree_sitter_highlight::{
+    Error as TsHighlightError, HighlightConfiguration, HighlightEvent, Highlighter,
+};
 
 use crate::lang::Lang;
 use crate::style::{CAPTURE_NAMES, Style, StyledSpan, capture_index_to_style};

@@ -9,7 +9,11 @@ pub struct ScoreRanker;
 
 impl CandidateRanker for ScoreRanker {
     fn rank(&self, scored: &mut Vec<ScoredCandidate>) {
-        scored.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.raw.text.cmp(&b.raw.text)));
+        scored.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| a.raw.text.cmp(&b.raw.text))
+        });
     }
 }
 

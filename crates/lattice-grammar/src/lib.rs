@@ -39,15 +39,14 @@ pub mod target;
 
 pub use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 pub use crate::cancel::{CancellationToken, CheckCancelled};
-pub use crate::introspect::{
-    HelpSection, Introspectable, RenderedAnchor, RenderedIntrospection, SourceEntry, SourceLabel,
-    render_introspection, render_introspection_lines,
-};
-pub use crate::source::{SourceKind, SourceLayer, SourceLocation};
 pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count, LatencyClass};
 pub use crate::dispatcher::execute;
 pub use crate::effect::{EchoLevel, Effect, SubstituteScope, YankKind};
 pub use crate::error::{CommandError, GrammarResult};
+pub use crate::introspect::{
+    HelpSection, Introspectable, RenderedAnchor, RenderedIntrospection, SourceEntry, SourceLabel,
+    render_introspection, render_introspection_lines,
+};
 pub use crate::modal::{ModalState, SearchDirection, VisualKind};
 pub use crate::range::{Range, RangeBound};
 pub use crate::register::Register;
@@ -56,6 +55,7 @@ pub use crate::registry::{
     OperatorContext, OperatorSpec, SurfaceForm, TextObjectSpec,
 };
 pub use crate::registry::{ExCommandId, MotionId, OperatorId, TextObjectId};
+pub use crate::source::{SourceKind, SourceLayer, SourceLocation};
 pub use crate::target::Target;
 
 /// Re-export the protocol's CommandId so callers don't need a second import.

@@ -117,7 +117,9 @@ impl RawCandidate {
 /// Score the matcher assigned. Higher is better; `0` means
 /// "doesn't match" (and the candidate is filtered out before it
 /// becomes a `ScoredCandidate`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct MatchScore(pub u32);
 
 impl MatchScore {

@@ -10,11 +10,11 @@
 //! locally on `App` because they're inherently a state-machine concern, not
 //! a buffer command. Phase 3+ migrates more of these to the grammar layer.
 
+use fancy_regex::Regex;
 use lattice_core::Buffer;
 use lattice_core::CoreError;
 use lattice_core::Document;
 use lattice_core::buffer::AppliedEdit;
-use fancy_regex::Regex;
 use lattice_core::search::{self, SearchHit};
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::ModalState;
@@ -29,9 +29,7 @@ use lattice_grammar::registry::OperatorId;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
-use lattice_runtime::{
-    CancellationToken, DocumentHandle, RuntimeError, block_on, spawn_document,
-};
+use lattice_runtime::{CancellationToken, DocumentHandle, RuntimeError, block_on, spawn_document};
 use lattice_syntax::{Lang, StyledSpan, Syntax};
 
 use std::collections::HashMap;
@@ -230,7 +228,6 @@ fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub enum Action {
     None,
@@ -285,10 +282,14 @@ pub enum Action {
     /// Vim's `J` (with-space) and `gJ` (no-space): join the current line
     /// with the next, replacing the joining newline with a single space
     /// (or nothing for `gJ`).
-    JoinLines { with_space: bool },
+    JoinLines {
+        with_space: bool,
+    },
     /// Vim's `;` (no-reverse) and `,` (reverse): repeat the last
     /// f/F/t/T find on the current line.
-    FindRepeat { reverse: bool },
+    FindRepeat {
+        reverse: bool,
+    },
     /// Vim's `zf` -- create a fold from the current Visual selection.
     CreateFoldFromVisual,
     /// Vim's `zo` -- open the fold containing the cursor.
@@ -442,7 +443,9 @@ pub enum Action {
     HelpCursorLineEnd,
     /// Half-page motion (Ctrl-D / Ctrl-U). `down = true` moves forward.
     /// Cursor follows; auto-scroll keeps it visible.
-    HelpHalfPage { down: bool },
+    HelpHalfPage {
+        down: bool,
+    },
     /// Jump to top (`gg`) / bottom (`G`) of the active help overlay.
     HelpJumpTop,
     HelpJumpBottom,
@@ -696,21 +699,17 @@ enum CompletionComputeError {
 impl CompletionComputeError {
     fn echo(&self) -> (EchoLevel, String) {
         match self {
-            Self::NoCompletionForArg(name) => (
-                EchoLevel::Info,
-                format!("no completion for arg `{name}`"),
-            ),
-            Self::NoCompletionAtCursor => {
-                (EchoLevel::Info, "no completion at cursor".to_string())
+            Self::NoCompletionForArg(name) => {
+                (EchoLevel::Info, format!("no completion for arg `{name}`"))
             }
+            Self::NoCompletionAtCursor => (EchoLevel::Info, "no completion at cursor".to_string()),
             Self::MissingSource(name) => (
                 EchoLevel::Error,
                 format!("completion source `{name}` not registered"),
             ),
             Self::PipelineUnconfigured => (
                 EchoLevel::Error,
-                "completion pipeline not configured (missing default matcher / ranker)"
-                    .to_string(),
+                "completion pipeline not configured (missing default matcher / ranker)".to_string(),
             ),
             Self::NoMatches { prefix } => {
                 (EchoLevel::Info, format!("no completions for `{prefix}`"))
@@ -1042,10 +1041,7 @@ impl App {
     /// future runtime that reads input on a separate task and flips
     /// the dispatch token on Esc; see `dispatch_with_cancel` on
     /// [`DocumentHandle`].
-    pub fn dispatch_blocking(
-        &self,
-        invocation: CommandInvocation,
-    ) -> Result<Effect, RuntimeError> {
+    pub fn dispatch_blocking(&self, invocation: CommandInvocation) -> Result<Effect, RuntimeError> {
         block_on(self.document.dispatch_with_cancel(
             invocation,
             self.cursor,
@@ -1217,9 +1213,7 @@ impl App {
             Action::EnterVisual(kind) => self.do_enter_visual(kind),
             Action::ExitVisual => self.do_exit_visual(),
             Action::ReselectLastVisual => self.do_reselect_visual(),
-            Action::SearchWordUnderCursor(direction) => {
-                self.do_search_word_under_cursor(direction)
-            }
+            Action::SearchWordUnderCursor(direction) => self.do_search_word_under_cursor(direction),
             Action::MatchBracket => self.do_match_bracket(),
             Action::ToggleCaseAtCursor => self.do_toggle_case_at_cursor(),
             Action::JoinLines { with_space } => self.do_join_lines(with_space),
@@ -1294,10 +1288,7 @@ impl App {
                         self.enter_mode(ModalState::Normal);
                     }
                 } else {
-                    self.set_message(
-                        EchoLevel::Error,
-                        "no previous change to repeat".to_string(),
-                    );
+                    self.set_message(EchoLevel::Error, "no previous change to repeat".to_string());
                 }
             }
 
@@ -1327,9 +1318,7 @@ impl App {
                     }
                 }
             }
-            Action::CommandLineDescribeUnderCursor => {
-                self.do_command_line_describe_under_cursor()
-            }
+            Action::CommandLineDescribeUnderCursor => self.do_command_line_describe_under_cursor(),
             Action::CommandLineAppendChord(token) => {
                 if matches!(self.modal, ModalState::Command) {
                     self.command_line.push_str(&token);
@@ -1586,7 +1575,10 @@ impl App {
             Ok(None) => {
                 self.current_match = None;
                 self.all_matches.clear();
-                self.set_message(EchoLevel::Error, format!("E486: Pattern not found: {}", line.pattern));
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("E486: Pattern not found: {}", line.pattern),
+                );
                 // Vim still records the pattern so `n`/`N` can retry later.
                 self.last_search = Some(LastSearch {
                     pattern: line.pattern,
@@ -1614,7 +1606,10 @@ impl App {
     /// (`n`); `reverse=true` flips it (`N`).
     fn repeat_search(&mut self, reverse: bool) {
         let Some(last) = self.last_search.clone() else {
-            self.set_message(EchoLevel::Error, "E35: no previous regular expression".to_string());
+            self.set_message(
+                EchoLevel::Error,
+                "E35: no previous regular expression".to_string(),
+            );
             return;
         };
         // Push pre-jump position so Ctrl-O can return.
@@ -1662,7 +1657,10 @@ impl App {
             }
             Ok(None) => {
                 self.current_match = None;
-                self.set_message(EchoLevel::Error, format!("E486: Pattern not found: {}", last.pattern));
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("E486: Pattern not found: {}", last.pattern),
+                );
             }
             Err(_) => {
                 self.current_match = None;
@@ -1693,12 +1691,7 @@ impl App {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
-        let slot = lattice_completion::current_slot(
-            &line,
-            cursor,
-            &self.registry,
-            &alias_resolver,
-        );
+        let slot = lattice_completion::current_slot(&line, cursor, &self.registry, &alias_resolver);
 
         // Word-at-cursor: try to resolve to a registered command.
         let word = slot.prefix();
@@ -1707,11 +1700,8 @@ impl App {
         } else {
             // Try alias resolution; fall through to direct registry
             // name lookup.
-            alias_resolver(word).or_else(|| {
-                self.registry
-                    .id_by_name(word)
-                    .and(Some(word.to_string()))
-            })
+            alias_resolver(word)
+                .or_else(|| self.registry.id_by_name(word).and(Some(word.to_string())))
         };
 
         if let Some(name) = canonical
@@ -1741,10 +1731,7 @@ impl App {
                         "type a command name then C-h for its help".to_string(),
                     );
                 } else {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("no command named `{prefix}`"),
-                    );
+                    self.set_message(EchoLevel::Error, format!("no command named `{prefix}`"));
                 }
             }
             _ => {
@@ -1794,8 +1781,10 @@ impl App {
         }
         let chosen = &state.candidates[state.selected];
         // Replace [replace_start, end) with the chosen text.
-        self.command_line
-            .replace_range(state.replace_start..self.command_line.len(), &chosen.raw.text);
+        self.command_line.replace_range(
+            state.replace_start..self.command_line.len(),
+            &chosen.raw.text,
+        );
     }
 
     /// On `Action::CommandLineSubmit`, decide whether the line is
@@ -1822,15 +1811,12 @@ impl App {
             return None;
         }
         let cmd = raw_cmd.strip_suffix('!').unwrap_or(raw_cmd);
-        let canonical = self
-            .registry
-            .id_by_name(cmd)
-            .or_else(|| {
-                crate::excommand::aliases()
-                    .get(cmd)
-                    .copied()
-                    .and_then(|c| self.registry.id_by_name(c))
-            })?;
+        let canonical = self.registry.id_by_name(cmd).or_else(|| {
+            crate::excommand::aliases()
+                .get(cmd)
+                .copied()
+                .and_then(|c| self.registry.id_by_name(c))
+        })?;
         let spec = self.registry.ex_command_spec(canonical)?;
         let first = spec.args_schema.first()?;
         if first.kind != lattice_grammar::ArgKind::Chord {
@@ -1862,12 +1848,8 @@ impl App {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
-        let slot = lattice_completion::current_slot(
-            line,
-            line.len(),
-            &self.registry,
-            &alias_resolver,
-        );
+        let slot =
+            lattice_completion::current_slot(line, line.len(), &self.registry, &alias_resolver);
         matches!(
             &slot,
             lattice_completion::CommandLineSlot::Arg { arg_spec, .. }
@@ -1948,7 +1930,11 @@ impl App {
                 let last = last_addressable_line(&buffer);
                 for line in 0..=last {
                     self.collect_substitute_matches_for_line(
-                        &buffer, &regex, line, global, &mut matches,
+                        &buffer,
+                        &regex,
+                        line,
+                        global,
+                        &mut matches,
                     );
                 }
             }
@@ -2025,9 +2011,7 @@ impl App {
     /// `set_message` side effects, so both the open and the refresh
     /// path can share it. Errors carry enough info for the open path
     /// to surface them via echo.
-    fn compute_completion_state(
-        &self,
-    ) -> Result<CompletionState, CompletionComputeError> {
+    fn compute_completion_state(&self) -> Result<CompletionState, CompletionComputeError> {
         let line = self.command_line.clone();
         let cursor = line.len();
         let alias_resolver = |short: &str| {
@@ -2035,12 +2019,7 @@ impl App {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
-        let slot = lattice_completion::current_slot(
-            &line,
-            cursor,
-            &self.registry,
-            &alias_resolver,
-        );
+        let slot = lattice_completion::current_slot(&line, cursor, &self.registry, &alias_resolver);
         let (source_name, prefix, replace_start) = match &slot {
             lattice_completion::CommandLineSlot::CommandName {
                 prefix,
@@ -2059,16 +2038,16 @@ impl App {
                     ));
                 }
             },
-            lattice_completion::CommandLineSlot::Empty => {
-                ("gen:commands", String::new(), 0)
-            }
+            lattice_completion::CommandLineSlot::Empty => ("gen:commands", String::new(), 0),
             _ => {
                 return Err(CompletionComputeError::NoCompletionAtCursor);
             }
         };
 
         let Some(generator) = self.completion_registry.generator_by_name(source_name) else {
-            return Err(CompletionComputeError::MissingSource(source_name.to_string()));
+            return Err(CompletionComputeError::MissingSource(
+                source_name.to_string(),
+            ));
         };
         let generator_id = generator.id;
         let Some(pipeline) = lattice_completion::CompletionPipeline::for_generator(
@@ -2208,10 +2187,7 @@ impl App {
         self.position_history_cursor = 0;
         self.folds.clear();
         // Registers, marks, macros, and view options persist.
-        self.set_message(
-            EchoLevel::Info,
-            format!("\"{}\" opened", target.display()),
-        );
+        self.set_message(EchoLevel::Info, format!("\"{}\" opened", target.display()));
     }
 
     /// Vim's `:set <option>`. v1 honors a tiny fixed set; everything
@@ -2270,11 +2246,7 @@ impl App {
 
     /// Vim's `:marks` -- list every set mark's name + position.
     fn do_list_marks(&mut self) {
-        let mut entries: Vec<(char, Position)> = self
-            .marks
-            .iter()
-            .map(|(c, p)| (*c, *p))
-            .collect();
+        let mut entries: Vec<(char, Position)> = self.marks.iter().map(|(c, p)| (*c, *p)).collect();
         entries.sort_by_key(|(c, _)| *c);
         if entries.is_empty() {
             self.set_message(EchoLevel::Info, "no marks set".to_string());
@@ -2310,7 +2282,10 @@ impl App {
             ProtoRange::new(Position::new(line, 0), Position::new(line, len))
         };
         if self.apply_edit_blocking(Edit::delete(r)).is_ok() {
-            self.cursor = Position::new(line.min(last_addressable_line(&self.document.snapshot().buffer)), 0);
+            self.cursor = Position::new(
+                line.min(last_addressable_line(&self.document.snapshot().buffer)),
+                0,
+            );
         }
     }
 
@@ -2343,7 +2318,10 @@ impl App {
         if targets.is_empty() {
             self.set_message(
                 EchoLevel::Error,
-                format!("no lines {} pattern: {pattern}", if inverted { "lacking" } else { "matching" }),
+                format!(
+                    "no lines {} pattern: {pattern}",
+                    if inverted { "lacking" } else { "matching" }
+                ),
             );
             return;
         }
@@ -2431,10 +2409,7 @@ impl App {
                 1
             };
             let line_len = line_text.len() as u32;
-            let r = ProtoRange::new(
-                Position::new(line, 0),
-                Position::new(line, line_len),
-            );
+            let r = ProtoRange::new(Position::new(line, 0), Position::new(line, line_len));
             let _ = self.apply_edit_blocking(Edit::replace(r, new_line.into_owned()));
             total += count_on_line;
         }
@@ -2453,7 +2428,9 @@ impl App {
 
     fn do_write(&mut self, path: Option<std::path::PathBuf>) {
         let result: Result<String, RuntimeError> = match path {
-            Some(p) => self.save_as_blocking(p.clone()).map(|()| p.display().to_string()),
+            Some(p) => self
+                .save_as_blocking(p.clone())
+                .map(|()| p.display().to_string()),
             None => self.save_blocking().map(|p| p.display().to_string()),
         };
         match result {
@@ -2608,10 +2585,7 @@ impl App {
                 self.current_match = None;
                 self.all_matches.clear();
             }
-            Effect::Echo {
-                level,
-                text,
-            } => self.set_message(echo_level_from_grammar(level), text),
+            Effect::Echo { level, text } => self.set_message(echo_level_from_grammar(level), text),
             Effect::EchoRegisters => self.do_list_registers(),
             Effect::EchoMarks => self.do_list_marks(),
             Effect::Substitute {
@@ -2854,11 +2828,7 @@ impl App {
         let lang = lattice_syntax::Lang::detect_from_path(snap.path());
         let line_count = snap.buffer.line_count();
         let byte_count = snap.buffer.as_string().len();
-        let dirty = if self.document.dirty() {
-            "yes"
-        } else {
-            "no"
-        };
+        let dirty = if self.document.dirty() { "yes" } else { "no" };
         lines.push(format!("path:           {path}"));
         lines.push(format!("language:       {lang:?}"));
         lines.push(format!("modal state:    {:?}", self.modal));
@@ -2949,11 +2919,7 @@ impl App {
         if hits.is_empty() {
             lines.push(format!("`{chord}` is not bound in any mode."));
         } else {
-            lines.push(format!(
-                "{} -- {} binding(s):",
-                key_link(chord),
-                hits.len()
-            ));
+            lines.push(format!("{} -- {} binding(s):", key_link(chord), hits.len()));
             // One render_introspection per entry, so each binding's
             // source (and any Action section) appears next to its
             // mode header. The blank line between renders keeps
@@ -2965,7 +2931,10 @@ impl App {
                 }
             }
         }
-        self.help_buffer = Some(HelpBuffer::from_lines(format!("describe-key {chord}"), lines));
+        self.help_buffer = Some(HelpBuffer::from_lines(
+            format!("describe-key {chord}"),
+            lines,
+        ));
     }
 
     fn do_list_keymap(&mut self) {
@@ -3307,7 +3276,10 @@ impl App {
 
     fn do_start_macro_record(&mut self, register: char) {
         if !is_valid_mark_name(register) {
-            self.set_message(EchoLevel::Error, format!("invalid macro register: {register}"));
+            self.set_message(
+                EchoLevel::Error,
+                format!("invalid macro register: {register}"),
+            );
             return;
         }
         if self.macro_recording.is_some() {
@@ -3332,7 +3304,10 @@ impl App {
 
     fn do_play_macro(&mut self, register: char) {
         if !is_valid_mark_name(register) {
-            self.set_message(EchoLevel::Error, format!("invalid macro register: {register}"));
+            self.set_message(
+                EchoLevel::Error,
+                format!("invalid macro register: {register}"),
+            );
             return;
         }
         let Some(actions) = self.macros.get(&register).cloned() else {
@@ -3370,13 +3345,15 @@ impl App {
         if self.position_history_cursor < self.position_history.len() {
             self.position_history.truncate(self.position_history_cursor);
         }
-        self.position_history.push(PositionEntry { position: pos, source });
+        self.position_history.push(PositionEntry {
+            position: pos,
+            source,
+        });
         if self.position_history.len() > POSITION_HISTORY_CAP {
             self.position_history.remove(0);
             // Truncating from the front shifts the cursor too; clamp
             // before we re-anchor it.
-            self.position_history_cursor =
-                self.position_history_cursor.saturating_sub(1);
+            self.position_history_cursor = self.position_history_cursor.saturating_sub(1);
         }
         self.position_history_cursor = self.position_history.len();
     }
@@ -3401,8 +3378,7 @@ impl App {
                 // After push the cursor==len. Step it one back so the
                 // walk finds the entry preceding our snapshot rather
                 // than the snapshot itself.
-                self.position_history_cursor =
-                    self.position_history.len().saturating_sub(1);
+                self.position_history_cursor = self.position_history.len().saturating_sub(1);
             }
         }
         self.do_walk_history(delta, |e| e.is_jump(), "jumps", "jump list");
@@ -3449,10 +3425,7 @@ impl App {
         };
         let Some(idx) = target_idx else {
             let bound = if delta < 0 { "start" } else { "end" };
-            self.set_message(
-                EchoLevel::Error,
-                format!("at {bound} of {bound_label}"),
-            );
+            self.set_message(EchoLevel::Error, format!("at {bound} of {bound_label}"));
             return;
         };
         self.position_history_cursor = idx;
@@ -3511,7 +3484,10 @@ impl App {
     /// line range. No-op outside Visual mode.
     fn do_create_fold_from_visual(&mut self) {
         if !matches!(self.modal, ModalState::Visual(_)) {
-            self.set_message(EchoLevel::Error, "zf requires a Visual selection".to_string());
+            self.set_message(
+                EchoLevel::Error,
+                "zf requires a Visual selection".to_string(),
+            );
             return;
         }
         let sels = self.document.selections();
@@ -3596,9 +3572,7 @@ impl App {
     /// Returns Some(fold) if `line` is the start of a closed fold; the
     /// renderer renders the summary header instead of the line content.
     pub fn fold_start_at(&self, line: u32) -> Option<&Fold> {
-        self.folds
-            .iter()
-            .find(|f| f.closed && f.start_line == line)
+        self.folds.iter().find(|f| f.closed && f.start_line == line)
     }
 
     /// Vim's `J` / `gJ`: join the current line with the next. With
@@ -3633,10 +3607,7 @@ impl App {
             0
         };
         // Range to replace covers `\n` + (optional) leading whitespace.
-        let range = ProtoRange::new(
-            Position::new(line, cur_len),
-            Position::new(next_line, trim),
-        );
+        let range = ProtoRange::new(Position::new(line, cur_len), Position::new(next_line, trim));
         let replacement = if with_space { " " } else { "" };
         if let Ok(applied) = self.apply_edit_blocking(Edit::replace(range, replacement)) {
             // Cursor lands at the end of the original first line (vim's
@@ -3671,8 +3642,8 @@ impl App {
         };
         // Don't update last_find on repeat -- the original direction
         // sticks (vim semantics: ; preserves direction even after ,).
-        let inv = CommandInvocation::of(motion_id.0)
-            .with_args(lattice_grammar::Args::Char(last.target));
+        let inv =
+            CommandInvocation::of(motion_id.0).with_args(lattice_grammar::Args::Char(last.target));
         // Bypass run_invocation's last_find recording by dispatching
         // directly. We still want the standard pending/count consumption.
         self.run_invocation(inv);
@@ -3716,7 +3687,12 @@ impl App {
         let pre_jump = self.cursor;
         let text = self.document.text();
         let bytes = text.as_bytes();
-        let cursor_byte = match self.document.snapshot().buffer.position_to_byte(self.cursor) {
+        let cursor_byte = match self
+            .document
+            .snapshot()
+            .buffer
+            .position_to_byte(self.cursor)
+        {
             Ok(b) => b,
             Err(_) => return,
         };
@@ -3753,8 +3729,12 @@ impl App {
         // Skip the current match: search from one byte past for forward,
         // one byte before for backward.
         let from = match direction {
-            SearchDirection::Forward => step_byte(&self.document.snapshot().buffer, self.cursor, direction),
-            SearchDirection::Backward => step_byte(&self.document.snapshot().buffer, self.cursor, direction),
+            SearchDirection::Forward => {
+                step_byte(&self.document.snapshot().buffer, self.cursor, direction)
+            }
+            SearchDirection::Backward => {
+                step_byte(&self.document.snapshot().buffer, self.cursor, direction)
+            }
         };
         // The word is a literal we want to find verbatim, not a
         // pattern. Escape regex metachars before compiling so words
@@ -3798,10 +3778,7 @@ impl App {
             Ok(None) => {
                 self.current_match = None;
                 self.all_matches.clear();
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("E486: Pattern not found: {word}"),
-                );
+                self.set_message(EchoLevel::Error, format!("E486: Pattern not found: {word}"));
             }
             Err(_) => {
                 self.current_match = None;
@@ -3821,7 +3798,12 @@ impl App {
     fn do_match_bracket(&mut self) {
         let text = self.document.text();
         let bytes = text.as_bytes();
-        let cursor_byte = match self.document.snapshot().buffer.position_to_byte(self.cursor) {
+        let cursor_byte = match self
+            .document
+            .snapshot()
+            .buffer
+            .position_to_byte(self.cursor)
+        {
             Ok(b) => b,
             Err(_) => return,
         };
@@ -3904,10 +3886,7 @@ impl App {
 
     fn do_reselect_visual(&mut self) {
         let Some(last) = self.last_visual else {
-            self.set_message(
-                EchoLevel::Error,
-                "no previous visual selection".to_string(),
-            );
+            self.set_message(EchoLevel::Error, "no previous visual selection".to_string());
             return;
         };
         // Restore the selection: cursor lands at `head`, anchor at `anchor`,
@@ -3946,8 +3925,7 @@ impl App {
                 } else {
                     self.cursor
                 };
-                if let Ok(applied) =
-                    self.apply_edit_blocking(Edit::insert(insert_at, &reg.content))
+                if let Ok(applied) = self.apply_edit_blocking(Edit::insert(insert_at, &reg.content))
                 {
                     // Vim leaves the cursor on the last char of the pasted text.
                     let end = applied.inserted_range.end;
@@ -3986,9 +3964,7 @@ impl App {
                         Position::new(self.cursor.line + 1, 0)
                     }
                 };
-                if let Ok(applied) =
-                    self.apply_edit_blocking(Edit::insert(insert_at, &payload))
-                {
+                if let Ok(applied) = self.apply_edit_blocking(Edit::insert(insert_at, &payload)) {
                     // Cursor lands at the start of the pasted block.
                     self.cursor = applied.inserted_range.start;
                 }
@@ -4027,10 +4003,7 @@ impl App {
                 // a newline at the end of the current last line.
                 let last = total_lines.saturating_sub(1);
                 let last_len = line_byte_len(&self.document.snapshot().buffer, last);
-                let _ = self.apply_edit_blocking(Edit::insert(
-                    Position::new(last, last_len),
-                    "\n",
-                ));
+                let _ = self.apply_edit_blocking(Edit::insert(Position::new(last, last_len), "\n"));
             }
             let target_len = line_byte_len(&self.document.snapshot().buffer, target_line);
             let insert_col = start_col.min(target_len);
@@ -4140,7 +4113,10 @@ fn is_valid_mark_name(c: char) -> bool {
 /// with newlines escaped). Used by `:reg`.
 fn preview_register(s: &str) -> String {
     const MAX: usize = 40;
-    let escaped: String = s.chars().map(|c| if c == '\n' { '\u{21B5}' } else { c }).collect();
+    let escaped: String = s
+        .chars()
+        .map(|c| if c == '\n' { '\u{21B5}' } else { c })
+        .collect();
     if escaped.chars().count() <= MAX {
         escaped
     } else {
@@ -6565,7 +6541,8 @@ mod tests {
         // gv:
         a.apply(Action::ReselectLastVisual);
         assert_eq!(a.modal, ModalState::Visual(VisualKind::Charwise));
-        let sels = a.document.selections(); let sel = sels.primary();
+        let sels = a.document.selections();
+        let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
         assert_eq!(sel.head, Position::new(0, 6));
         assert_eq!(a.cursor, Position::new(0, 6));
@@ -6578,13 +6555,14 @@ mod tests {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         a.apply(invoke_motion(a.builtins.word_forward));
-        let inv = CommandInvocation::of(a.builtins.yank.0)
-            .with_range(lattice_grammar::Range::Selection);
+        let inv =
+            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         assert_eq!(a.modal, ModalState::Normal);
         a.apply(Action::ReselectLastVisual);
         assert_eq!(a.modal, ModalState::Visual(VisualKind::Charwise));
-        let sels = a.document.selections(); let sel = sels.primary();
+        let sels = a.document.selections();
+        let sel = sels.primary();
         assert_eq!(sel.head, Position::new(0, 6));
     }
 
@@ -6726,7 +6704,8 @@ mod tests {
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         assert_eq!(a.modal, ModalState::Visual(VisualKind::Charwise));
         assert_eq!(a.visual_anchor, Some(Position::new(0, 1)));
-        let sels = a.document.selections(); let sel = sels.primary();
+        let sels = a.document.selections();
+        let sel = sels.primary();
         assert_eq!(sel.anchor, Position::new(0, 1));
         assert_eq!(sel.head, Position::new(0, 1));
         assert_eq!(sel.visual, Some(VisualMode::Charwise));
@@ -6737,7 +6716,8 @@ mod tests {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         a.apply(invoke_motion(a.builtins.word_forward));
-        let sels = a.document.selections(); let sel = sels.primary();
+        let sels = a.document.selections();
+        let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
         assert_eq!(sel.head, Position::new(0, 6));
         assert_eq!(a.cursor, Position::new(0, 6));
@@ -6775,8 +6755,8 @@ mod tests {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         a.apply(invoke_motion(a.builtins.word_forward));
-        let inv = CommandInvocation::of(a.builtins.yank.0)
-            .with_range(lattice_grammar::Range::Selection);
+        let inv =
+            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Charwise);
@@ -6805,8 +6785,8 @@ mod tests {
         a.apply(Action::EnterVisual(VisualKind::Linewise));
         // Selection is single line; yank captures the whole line
         // regardless of byte offsets.
-        let inv = CommandInvocation::of(a.builtins.yank.0)
-            .with_range(lattice_grammar::Range::Selection);
+        let inv =
+            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
@@ -6818,8 +6798,8 @@ mod tests {
         let mut a = app_with("aaa\nbbb\nccc\nddd", 10);
         a.apply(Action::EnterVisual(VisualKind::Linewise));
         a.apply(invoke_motion(a.builtins.line_down));
-        let inv = CommandInvocation::of(a.builtins.yank.0)
-            .with_range(lattice_grammar::Range::Selection);
+        let inv =
+            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
@@ -6833,7 +6813,8 @@ mod tests {
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         a.apply(Action::PushDigit(2));
         a.apply(invoke_motion(a.builtins.word_forward));
-        let sels = a.document.selections(); let sel = sels.primary();
+        let sels = a.document.selections();
+        let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
         // 2w from origin advances 2 word starts: "ONE two THREE" -> byte 8.
         assert_eq!(sel.head, Position::new(0, 8));
@@ -6877,7 +6858,9 @@ mod tests {
         let mut a = app_with("one two three four five", 10);
         a.apply(Action::PushDigit(2));
         // SetPending latches the count as op_count.
-        a.apply(Action::SetPending(Pending::AfterOperator(a.builtins.delete)));
+        a.apply(Action::SetPending(Pending::AfterOperator(
+            a.builtins.delete,
+        )));
         assert_eq!(a.op_count, 2);
         assert_eq!(a.pending_count, 0);
         let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
@@ -6894,7 +6877,9 @@ mod tests {
         // `2d3w`: op_count = 2, motion count = 3, final count = 6.
         let mut a = app_with("a b c d e f g h i j", 10);
         a.apply(Action::PushDigit(2));
-        a.apply(Action::SetPending(Pending::AfterOperator(a.builtins.delete)));
+        a.apply(Action::SetPending(Pending::AfterOperator(
+            a.builtins.delete,
+        )));
         assert_eq!(a.op_count, 2);
         a.apply(Action::PushDigit(3));
         let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
@@ -6913,7 +6898,9 @@ mod tests {
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
         a.apply(Action::PushDigit(2));
-        a.apply(Action::SetPending(Pending::AfterOperator(a.builtins.delete)));
+        a.apply(Action::SetPending(Pending::AfterOperator(
+            a.builtins.delete,
+        )));
         assert_eq!(a.op_count, 2);
         let inv = CommandInvocation::of(a.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
@@ -6939,7 +6926,9 @@ mod tests {
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
         a.apply(Action::PushDigit(2));
-        a.apply(Action::SetPending(Pending::AfterOperator(a.builtins.indent_right)));
+        a.apply(Action::SetPending(Pending::AfterOperator(
+            a.builtins.indent_right,
+        )));
         let inv = CommandInvocation::of(a.builtins.indent_right.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
@@ -6954,7 +6943,9 @@ mod tests {
         let mut a = app_with("    one\n    two\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
         a.apply(Action::PushDigit(2));
-        a.apply(Action::SetPending(Pending::AfterOperator(a.builtins.indent_left)));
+        a.apply(Action::SetPending(Pending::AfterOperator(
+            a.builtins.indent_left,
+        )));
         let inv = CommandInvocation::of(a.builtins.indent_left.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
@@ -7190,7 +7181,9 @@ mod tests {
     #[test]
     fn paste_text_in_search_appends_to_search_pattern() {
         let mut a = app_with("xx", 10);
-        a.apply(Action::EnterSearch(lattice_grammar::SearchDirection::Forward));
+        a.apply(Action::EnterSearch(
+            lattice_grammar::SearchDirection::Forward,
+        ));
         a.apply(Action::SearchAppend('a'));
         a.apply(Action::PasteText("bcd".into()));
         let line = a.search_line.as_ref().unwrap();
@@ -7239,11 +7232,8 @@ mod tests {
         // Three rows, columns 1..=2 deleted from each.
         // Initial:    "abcd\n1234\nWXYZ"
         // After d :   "ad\n14\nWZ"
-        let mut a = enter_block_visual(
-            "abcd\n1234\nWXYZ",
-            Position::new(0, 1),
-            Position::new(2, 2),
-        );
+        let mut a =
+            enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         let inv = CommandInvocation::of(a.builtins.delete.0)
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
@@ -7254,11 +7244,8 @@ mod tests {
     fn block_delete_lands_cursor_at_top_left_of_block() {
         // Vim's behavior: after a rectangle delete, the cursor sits
         // at the block's top-left column, not at column 0.
-        let mut a = enter_block_visual(
-            "abcd\n1234\nWXYZ",
-            Position::new(0, 1),
-            Position::new(2, 2),
-        );
+        let mut a =
+            enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         let inv = CommandInvocation::of(a.builtins.delete.0)
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
@@ -7272,11 +7259,8 @@ mod tests {
         // The whole rectangle delete must collapse into one undo
         // entry -- the dispatcher coalesces the per-row AppliedEdits
         // by snapshotting pre/post and replaying as one Edit::replace.
-        let mut a = enter_block_visual(
-            "abcd\n1234\nWXYZ",
-            Position::new(0, 1),
-            Position::new(2, 2),
-        );
+        let mut a =
+            enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         let inv = CommandInvocation::of(a.builtins.delete.0)
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
@@ -7290,11 +7274,8 @@ mod tests {
         // Block-visual `c` deletes each row's column slice and enters
         // Insert. The deletion piece must be one undo unit; future
         // typed text would be batched separately by the I/A path.
-        let mut a = enter_block_visual(
-            "abcd\n1234\nWXYZ",
-            Position::new(0, 1),
-            Position::new(2, 2),
-        );
+        let mut a =
+            enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         let inv = CommandInvocation::of(a.builtins.change.0)
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
@@ -7309,13 +7290,10 @@ mod tests {
     #[test]
     fn block_yank_stores_blockwise_content_in_unnamed_register() {
         // Yank a 3x2 rectangle: cols 1..=2 across three rows of "abcd\n1234\nWXYZ".
-        let mut a = enter_block_visual(
-            "abcd\n1234\nWXYZ",
-            Position::new(0, 1),
-            Position::new(2, 2),
-        );
-        let inv = CommandInvocation::of(a.builtins.yank.0)
-            .with_range(lattice_grammar::Range::Selection);
+        let mut a =
+            enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
+        let inv =
+            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         // Document untouched.
         assert_eq!(a.document.text(), "abcd\n1234\nWXYZ");
@@ -7330,13 +7308,9 @@ mod tests {
     fn block_yank_clamps_short_rows_to_intersection() {
         // Middle row "12" partially overlaps the rectangle: cols 1..=2,
         // line len 2, intersection is `[1, 2)` = "2".
-        let mut a = enter_block_visual(
-            "abcd\n12\nWXYZ",
-            Position::new(0, 1),
-            Position::new(2, 2),
-        );
-        let inv = CommandInvocation::of(a.builtins.yank.0)
-            .with_range(lattice_grammar::Range::Selection);
+        let mut a = enter_block_visual("abcd\n12\nWXYZ", Position::new(0, 1), Position::new(2, 2));
+        let inv =
+            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.content, "bc\n2\nXY");
@@ -7347,13 +7321,9 @@ mod tests {
     fn block_yank_with_row_entirely_left_of_rectangle_yields_empty_slice() {
         // Middle row is "" (empty). Visual cols 1..=2 fully outside;
         // intersection is empty.
-        let mut a = enter_block_visual(
-            "abcd\n\nWXYZ",
-            Position::new(0, 1),
-            Position::new(2, 2),
-        );
-        let inv = CommandInvocation::of(a.builtins.yank.0)
-            .with_range(lattice_grammar::Range::Selection);
+        let mut a = enter_block_visual("abcd\n\nWXYZ", Position::new(0, 1), Position::new(2, 2));
+        let inv =
+            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.content, "bc\n\nXY");
@@ -7368,11 +7338,7 @@ mod tests {
         // undo unit (operator opts out of per-row blockwise dispatch
         // via blockwise_per_row=false; the indent operator's
         // apply_edit_batch makes the multi-line indent atomic).
-        let mut a = enter_block_visual(
-            "abc\n123\nWXY",
-            Position::new(0, 1),
-            Position::new(2, 1),
-        );
+        let mut a = enter_block_visual("abc\n123\nWXY", Position::new(0, 1), Position::new(2, 1));
         let inv = CommandInvocation::of(a.builtins.indent_right.0)
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
@@ -7411,11 +7377,8 @@ mod tests {
     fn block_visual_capital_i_inserts_at_block_left_column_on_each_row() {
         // 3 rows, block at column 1. `I` enters Insert at (top_row, 1).
         // Type "X", Esc -> "X" lands at column 1 on every row.
-        let mut a = enter_block_visual(
-            "abcd\n1234\nWXYZ",
-            Position::new(0, 1),
-            Position::new(2, 2),
-        );
+        let mut a =
+            enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         a.apply(Action::EnterBlockVisualInsert);
         assert!(matches!(a.modal, ModalState::Insert));
         assert_eq!(a.cursor, Position::new(0, 1));
@@ -7427,11 +7390,8 @@ mod tests {
     #[test]
     fn block_visual_capital_a_appends_after_block_right_column() {
         // Block cols 1..=2 across 3 rows; `A` lands at col 3 on each row.
-        let mut a = enter_block_visual(
-            "abcd\n1234\nWXYZ",
-            Position::new(0, 1),
-            Position::new(2, 2),
-        );
+        let mut a =
+            enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         a.apply(Action::EnterBlockVisualAppend);
         assert!(matches!(a.modal, ModalState::Insert));
         assert_eq!(a.cursor, Position::new(0, 3));
@@ -7446,11 +7406,8 @@ mod tests {
         // then `u` once -- the buffer should fully revert. Without the
         // batched-commit fix, undo would only roll back the last char
         // on one row.
-        let mut a = enter_block_visual(
-            "abcd\n1234\nWXYZ",
-            Position::new(0, 1),
-            Position::new(2, 2),
-        );
+        let mut a =
+            enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         a.apply(Action::EnterBlockVisualInsert);
         a.apply(Action::Insert("X".into()));
         a.apply(Action::Insert("Y".into()));
@@ -7465,11 +7422,8 @@ mod tests {
 
     #[test]
     fn block_visual_capital_a_lands_as_single_undo_unit() {
-        let mut a = enter_block_visual(
-            "abcd\n1234\nWXYZ",
-            Position::new(0, 1),
-            Position::new(2, 2),
-        );
+        let mut a =
+            enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         a.apply(Action::EnterBlockVisualAppend);
         a.apply(Action::Insert("@".into()));
         a.apply(Action::Insert("@".into()));
@@ -7482,11 +7436,7 @@ mod tests {
     #[test]
     fn block_visual_capital_i_skips_lines_shorter_than_insert_col() {
         // Middle row "12" is too short for col 3 (insert_col). Vim skips it.
-        let mut a = enter_block_visual(
-            "abcd\n12\nWXYZ",
-            Position::new(0, 3),
-            Position::new(2, 3),
-        );
+        let mut a = enter_block_visual("abcd\n12\nWXYZ", Position::new(0, 3), Position::new(2, 3));
         a.apply(Action::EnterBlockVisualInsert);
         a.apply(Action::Insert("Q".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
@@ -7510,11 +7460,8 @@ mod tests {
 
     #[test]
     fn block_change_deletes_rectangle_and_enters_insert() {
-        let mut a = enter_block_visual(
-            "abcd\n1234\nWXYZ",
-            Position::new(0, 1),
-            Position::new(2, 2),
-        );
+        let mut a =
+            enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         let inv = CommandInvocation::of(a.builtins.change.0)
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
@@ -7532,8 +7479,8 @@ mod tests {
             Position::new(0, 1),
             Position::new(1, 2),
         );
-        let yank = CommandInvocation::of(a.builtins.yank.0)
-            .with_range(lattice_grammar::Range::Selection);
+        let yank =
+            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(yank));
         // Exit visual and move to a fresh paste site.
         a.apply(Action::ExitVisual);
@@ -7597,9 +7544,10 @@ mod tests {
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.help_buffer.as_ref().unwrap();
-        let source_link = h.links.iter().find(|l| {
-            matches!(l.target, crate::help::HelpLinkTarget::Source { .. })
-        });
+        let source_link = h
+            .links
+            .iter()
+            .find(|l| matches!(l.target, crate::help::HelpLinkTarget::Source { .. }));
         assert!(
             source_link.is_some(),
             "expected at least one HelpLink with Source target; got {:?}",
@@ -7785,8 +7733,18 @@ mod tests {
         // and `:ex:describe-command` parse correctly via the
         // dispatcher's two-stage resolution; the popup shows the
         // form a user actually types.
-        assert!(state.candidates.iter().any(|c| c.raw.text == "describe-command"));
-        assert!(state.candidates.iter().any(|c| c.raw.text == "describe-buffer"));
+        assert!(
+            state
+                .candidates
+                .iter()
+                .any(|c| c.raw.text == "describe-command")
+        );
+        assert!(
+            state
+                .candidates
+                .iter()
+                .any(|c| c.raw.text == "describe-buffer")
+        );
         assert_eq!(state.selected, 0);
     }
 
@@ -7820,8 +7778,7 @@ mod tests {
         // ranking) is one of the describe-* family.
         a.apply(Action::CommandLineAcceptCompletion);
         assert!(
-            a.command_line.starts_with("describe-")
-                || a.command_line == "apropos",
+            a.command_line.starts_with("describe-") || a.command_line == "apropos",
             "expected user-facing alias, got `{}`",
             a.command_line
         );
@@ -7883,7 +7840,10 @@ mod tests {
         for c in "zxqzxqzxq".chars() {
             a.apply(Action::CommandLineAppend(c));
         }
-        let state = a.completion_state.as_ref().expect("popup must stay open on no-match");
+        let state = a
+            .completion_state
+            .as_ref()
+            .expect("popup must stay open on no-match");
         assert!(state.candidates.is_empty());
         // Backspacing the noise restores matches.
         for _ in 0.."zxqzxqzxq".len() {
@@ -8085,9 +8045,16 @@ mod tests {
         a.apply(Action::CommandLineCompleteOrAdvance);
         let state = a.completion_state.as_ref().expect("popup");
         assert!(
-            state.candidates.iter().any(|c| c.raw.text.starts_with("motion:")),
+            state
+                .candidates
+                .iter()
+                .any(|c| c.raw.text.starts_with("motion:")),
             "expected motion:* candidates: {:?}",
-            state.candidates.iter().map(|c| &c.raw.text).collect::<Vec<_>>()
+            state
+                .candidates
+                .iter()
+                .map(|c| &c.raw.text)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -8182,7 +8149,10 @@ mod tests {
         // Q16: opening `:` dismisses help. The user can only focus
         // on one thing.
         let mut a = app_with("xx", 10);
-        a.help_buffer = Some(crate::help::HelpBuffer::from_lines("preexisting", vec!["x".into()]));
+        a.help_buffer = Some(crate::help::HelpBuffer::from_lines(
+            "preexisting",
+            vec!["x".into()],
+        ));
         a.apply(Action::EnterCommandLine);
         assert!(a.help_buffer.is_none());
     }
@@ -8533,13 +8503,9 @@ mod tests {
     fn block_paste_extends_buffer_when_below_eof() {
         // Yank 2 rows then paste at the bottom -- the missing row is
         // appended as a fresh line.
-        let mut a = enter_block_visual(
-            "abcd\n1234",
-            Position::new(0, 1),
-            Position::new(1, 2),
-        );
-        let yank = CommandInvocation::of(a.builtins.yank.0)
-            .with_range(lattice_grammar::Range::Selection);
+        let mut a = enter_block_visual("abcd\n1234", Position::new(0, 1), Position::new(1, 2));
+        let yank =
+            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(yank));
         a.apply(Action::ExitVisual);
         // Move to last line and paste with `P` (before-cursor) at col 0.

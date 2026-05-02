@@ -15,8 +15,8 @@ use lattice_protocol::position::{Position, Range as ProtoRange};
 use crate::effect::{Effect, YankKind};
 use crate::error::CommandError;
 use crate::registry::{
-    CommandRegistry, MotionContext, MotionResult, MotionSpec, OperatorContext, OperatorId,
-    OperatorSpec, MotionId, TextObjectContext, TextObjectId, TextObjectSpec,
+    CommandRegistry, MotionContext, MotionId, MotionResult, MotionSpec, OperatorContext,
+    OperatorId, OperatorSpec, TextObjectContext, TextObjectId, TextObjectSpec,
 };
 
 /// Register all Phase 1 built-ins. Returns the ids needed by the keystroke
@@ -763,7 +763,10 @@ fn motion_word_backward(ctx: &MotionContext) -> Result<MotionResult, CommandErro
         .buffer
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
-    Ok(MotionResult { target, linewise: false })
+    Ok(MotionResult {
+        target,
+        linewise: false,
+    })
 }
 
 // ---- Motion: word-end (vim's `e`) ----
@@ -802,7 +805,10 @@ fn motion_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
         .buffer
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
-    Ok(MotionResult { target, linewise: false })
+    Ok(MotionResult {
+        target,
+        linewise: false,
+    })
 }
 
 // ---- Paragraph motions (vim's `}`, `{`) ----
@@ -953,7 +959,10 @@ fn motion_sentence_forward(ctx: &MotionContext) -> Result<MotionResult, CommandE
         .buffer
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
-    Ok(MotionResult { target, linewise: false })
+    Ok(MotionResult {
+        target,
+        linewise: false,
+    })
 }
 
 fn motion_sentence_backward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
@@ -975,7 +984,10 @@ fn motion_sentence_backward(ctx: &MotionContext) -> Result<MotionResult, Command
         .buffer
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
-    Ok(MotionResult { target, linewise: false })
+    Ok(MotionResult {
+        target,
+        linewise: false,
+    })
 }
 
 fn text_object_inner_sentence(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
@@ -1060,7 +1072,10 @@ fn motion_big_word_forward(ctx: &MotionContext) -> Result<MotionResult, CommandE
         .buffer
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
-    Ok(MotionResult { target, linewise: false })
+    Ok(MotionResult {
+        target,
+        linewise: false,
+    })
 }
 
 fn motion_big_word_backward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
@@ -1088,7 +1103,10 @@ fn motion_big_word_backward(ctx: &MotionContext) -> Result<MotionResult, Command
         .buffer
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
-    Ok(MotionResult { target, linewise: false })
+    Ok(MotionResult {
+        target,
+        linewise: false,
+    })
 }
 
 fn motion_big_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
@@ -1121,7 +1139,10 @@ fn motion_big_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError
         .buffer
         .byte_to_position(idx)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
-    Ok(MotionResult { target, linewise: false })
+    Ok(MotionResult {
+        target,
+        linewise: false,
+    })
 }
 
 // ---- Motion: find-char / till-char (vim's f, F, t, T) ----
@@ -1264,7 +1285,10 @@ fn motion_char_left(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
         }
         pos.byte -= 1;
     }
-    Ok(MotionResult { target: pos, linewise: false })
+    Ok(MotionResult {
+        target: pos,
+        linewise: false,
+    })
 }
 
 // ---- Motion: char-right ----
@@ -1279,7 +1303,10 @@ fn motion_char_right(ctx: &MotionContext) -> Result<MotionResult, CommandError> 
         }
         pos.byte += 1;
     }
-    Ok(MotionResult { target: pos, linewise: false })
+    Ok(MotionResult {
+        target: pos,
+        linewise: false,
+    })
 }
 
 // ---- Motion: line-up / line-down ----
@@ -1399,13 +1426,19 @@ fn text_object_around_paragraph(ctx: &TextObjectContext) -> Result<ProtoRange, C
             end_line += 1;
         }
         let end_byte = line_byte_len(ctx.buffer, end_line);
-        Ok(ProtoRange::new(inner.start, Position::new(end_line, end_byte)))
+        Ok(ProtoRange::new(
+            inner.start,
+            Position::new(end_line, end_byte),
+        ))
     } else {
         while end_line < last_line && !line_is_blank(&text, end_line + 1) {
             end_line += 1;
         }
         let end_byte = line_byte_len(ctx.buffer, end_line);
-        Ok(ProtoRange::new(inner.start, Position::new(end_line, end_byte)))
+        Ok(ProtoRange::new(
+            inner.start,
+            Position::new(end_line, end_byte),
+        ))
     }
 }
 
@@ -1594,12 +1627,7 @@ fn text_object_around_quote(ctx: &TextObjectContext, q: char) -> Result<ProtoRan
     Ok(ProtoRange::new(start_pos, end_pos))
 }
 
-fn find_bracket_pair(
-    bytes: &[u8],
-    cursor: usize,
-    open: u8,
-    close: u8,
-) -> Option<(usize, usize)> {
+fn find_bracket_pair(bytes: &[u8], cursor: usize, open: u8, close: u8) -> Option<(usize, usize)> {
     if bytes.is_empty() {
         return None;
     }
@@ -2072,7 +2100,14 @@ mod tests {
     fn word_forward_advances_to_next_word_start() {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.word_forward.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => {
                 assert_eq!(s.primary().head, Position::new(0, 6));
@@ -2085,7 +2120,14 @@ mod tests {
     fn word_forward_with_count_advances_by_count() {
         let (registry, b, mut doc) = fixture("one two three four");
         let inv = CommandInvocation::of(b.word_forward.0).with_count(Count(2));
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => {
                 // "one two THREE four" -- two words forward from origin lands
@@ -2100,7 +2142,14 @@ mod tests {
     fn word_forward_across_newline() {
         let (registry, b, mut doc) = fixture("hello\nworld");
         let inv = CommandInvocation::of(b.word_forward.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => {
                 assert_eq!(s.primary().head, Position::new(1, 0));
@@ -2117,7 +2166,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::Many(parts) => {
                 assert_eq!(parts.len(), 2);
@@ -2145,7 +2201,14 @@ mod tests {
     fn delete_with_explicit_whole_range_deletes_buffer_and_yanks_linewise() {
         let (registry, b, mut doc) = fixture("a\nb\nc");
         let inv = CommandInvocation::of(b.delete.0).with_range(crate::range::Range::Whole);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::Many(parts) => {
                 assert!(matches!(parts[0], Effect::Edits(_)));
@@ -2164,7 +2227,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("aaa\nBBB\nccc");
         let cursor = Position::new(1, 0);
         let inv = CommandInvocation::of(b.delete.0).with_range(crate::range::Range::CurrentLine);
-        execute(&registry, &mut doc, cursor, inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // `CurrentLine` covers the line content but not its trailing newline
         // -- BBB is removed; the surrounding newlines stay.
         assert_eq!(doc.text(), "aaa\n\nccc");
@@ -2176,7 +2246,13 @@ mod tests {
         let bogus = lattice_protocol::ids::CommandId::new(99_999);
         let inv = CommandInvocation::of(bogus);
         assert!(matches!(
-            execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()),
+            execute(
+                &registry,
+                &mut doc,
+                Position::ZERO,
+                inv,
+                &CancellationToken::never()
+            ),
             Err(CommandError::UnknownCommand)
         ));
     }
@@ -2186,7 +2262,13 @@ mod tests {
         let (registry, b, mut doc) = fixture("abc");
         let inv = CommandInvocation::of(b.delete.0);
         assert!(matches!(
-            execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()),
+            execute(
+                &registry,
+                &mut doc,
+                Position::ZERO,
+                inv,
+                &CancellationToken::never()
+            ),
             Err(CommandError::MissingTarget)
         ));
     }
@@ -2195,7 +2277,14 @@ mod tests {
     fn char_left_at_origin_stays_put() {
         let (registry, b, mut doc) = fixture("abc");
         let inv = CommandInvocation::of(b.char_left.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2206,7 +2295,14 @@ mod tests {
     fn char_right_advances_one_byte() {
         let (registry, b, mut doc) = fixture("abc");
         let inv = CommandInvocation::of(b.char_right.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 1)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2217,7 +2313,14 @@ mod tests {
     fn char_right_at_end_of_line_stays_put() {
         let (registry, b, mut doc) = fixture("ab");
         let inv = CommandInvocation::of(b.char_right.0);
-        let effect = execute(&registry, &mut doc, Position::new(0, 2), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 2),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 2)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2228,7 +2331,14 @@ mod tests {
     fn line_down_moves_one_line_and_clamps_byte() {
         let (registry, b, mut doc) = fixture("hello\nhi");
         let inv = CommandInvocation::of(b.line_down.0);
-        let effect = execute(&registry, &mut doc, Position::new(0, 5), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 5),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(1, 2)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2239,7 +2349,14 @@ mod tests {
     fn line_up_at_top_stays_put() {
         let (registry, b, mut doc) = fixture("a\nb");
         let inv = CommandInvocation::of(b.line_up.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2250,7 +2367,14 @@ mod tests {
     fn line_start_resets_byte_to_zero() {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.line_start.0);
-        let effect = execute(&registry, &mut doc, Position::new(0, 7), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 7),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 0)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2261,7 +2385,14 @@ mod tests {
     fn line_end_jumps_to_line_byte_length() {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.line_end.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 11)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2272,7 +2403,14 @@ mod tests {
     fn goto_first_line_returns_to_origin() {
         let (registry, b, mut doc) = fixture("a\nb\nc");
         let inv = CommandInvocation::of(b.goto_first_line.0);
-        let effect = execute(&registry, &mut doc, Position::new(2, 0), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(2, 0),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2283,7 +2421,14 @@ mod tests {
     fn goto_last_line_jumps_to_last_addressable_line() {
         let (registry, b, mut doc) = fixture("a\nb\nc");
         let inv = CommandInvocation::of(b.goto_last_line.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(2, 0)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2296,7 +2441,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello");
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::Motion(b.char_right, crate::args::Args::None));
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::Many(parts) => {
                 assert!(matches!(parts[0], Effect::Edits(_)));
@@ -2314,7 +2466,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         // Cursor on 'r' of "world" (byte 8) -- vim's `b` lands on 'w' (byte 6).
         let inv = CommandInvocation::of(b.word_backward.0);
-        let effect = execute(&registry, &mut doc, Position::new(0, 8), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 8),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 6)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2326,7 +2485,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("one two three");
         // Cursor on 't' of "three" (byte 8). `b` -> 't' of "two" (byte 4).
         let inv = CommandInvocation::of(b.word_backward.0);
-        let effect = execute(&registry, &mut doc, Position::new(0, 8), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 8),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2337,7 +2503,14 @@ mod tests {
     fn word_backward_at_origin_stays_put() {
         let (registry, b, mut doc) = fixture("hello");
         let inv = CommandInvocation::of(b.word_backward.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2349,7 +2522,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("foo\nbar");
         // Cursor on 'b' (line 1 byte 0). `b` -> 'f' (line 0 byte 0).
         let inv = CommandInvocation::of(b.word_backward.0);
-        let effect = execute(&registry, &mut doc, Position::new(1, 0), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(1, 0),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2361,7 +2541,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("one two three four");
         // Cursor on 'f' of "four" (byte 14). `2b` -> 't' of "two" (byte 4).
         let inv = CommandInvocation::of(b.word_backward.0).with_count(Count(2));
-        let effect = execute(&registry, &mut doc, Position::new(0, 14), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 14),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2373,7 +2560,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("alpha, beta");
         // Cursor on 'b' of "beta" (byte 7). `b` -> 'a' of "alpha" (byte 0).
         let inv = CommandInvocation::of(b.word_backward.0);
-        let effect = execute(&registry, &mut doc, Position::new(0, 7), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 7),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2387,7 +2581,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         // From 'h' (byte 0) `e` -> 'o' of "hello" (byte 4).
         let inv = CommandInvocation::of(b.word_end.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2399,7 +2600,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         // From 'o' of "hello" (byte 4) `e` -> 'd' of "world" (byte 10).
         let inv = CommandInvocation::of(b.word_end.0);
-        let effect = execute(&registry, &mut doc, Position::new(0, 4), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 4),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 10)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2411,7 +2619,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hi");
         // From 'i' (byte 1) `e` -> stays at byte 1 (no further word).
         let inv = CommandInvocation::of(b.word_end.0);
-        let effect = execute(&registry, &mut doc, Position::new(0, 1), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 1),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 1)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2423,7 +2638,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("foo\nbar");
         // From 'o' of "foo" (line 0 byte 2) `e` -> 'r' of "bar" (line 1 byte 2).
         let inv = CommandInvocation::of(b.word_end.0);
-        let effect = execute(&registry, &mut doc, Position::new(0, 2), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 2),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(1, 2)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2435,7 +2657,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("one two three four");
         // From 'o' (byte 0) `2e` -> end of "two" = 'o' of "two" (byte 6).
         let inv = CommandInvocation::of(b.word_end.0).with_count(Count(2));
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 6)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2448,7 +2677,14 @@ mod tests {
     fn first_non_blank_skips_leading_spaces() {
         let (registry, b, mut doc) = fixture("    hello");
         let inv = CommandInvocation::of(b.first_non_blank.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2459,7 +2695,14 @@ mod tests {
     fn first_non_blank_skips_leading_tabs() {
         let (registry, b, mut doc) = fixture("\t\thello");
         let inv = CommandInvocation::of(b.first_non_blank.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 2)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2470,7 +2713,14 @@ mod tests {
     fn first_non_blank_on_already_non_blank_line_returns_zero() {
         let (registry, b, mut doc) = fixture("hello");
         let inv = CommandInvocation::of(b.first_non_blank.0);
-        let effect = execute(&registry, &mut doc, Position::new(0, 3), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 3),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2481,7 +2731,14 @@ mod tests {
     fn first_non_blank_on_blank_only_line_returns_end() {
         let (registry, b, mut doc) = fixture("    ");
         let inv = CommandInvocation::of(b.first_non_blank.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => {
                 // No non-blank chars; cursor lands at end of line (byte 4).
@@ -2496,7 +2753,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("a\n  bc");
         // Cursor on line 1; first non-blank is at byte 2 of line 1.
         let inv = CommandInvocation::of(b.first_non_blank.0);
-        let effect = execute(&registry, &mut doc, Position::new(1, 4), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(1, 4),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(1, 2)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2512,7 +2776,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::Motion(b.word_backward, crate::args::Args::None));
-        execute(&registry, &mut doc, Position::new(0, 11), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 11),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "hello ");
     }
 
@@ -2521,27 +2792,48 @@ mod tests {
     #[test]
     fn indent_right_current_line_prepends_four_spaces() {
         let (registry, b, mut doc) = fixture("hello");
-        let inv = CommandInvocation::of(b.indent_right.0)
-            .with_range(crate::range::Range::CurrentLine);
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let inv =
+            CommandInvocation::of(b.indent_right.0).with_range(crate::range::Range::CurrentLine);
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "    hello");
     }
 
     #[test]
     fn indent_left_current_line_strips_four_spaces() {
         let (registry, b, mut doc) = fixture("    hello");
-        let inv = CommandInvocation::of(b.indent_left.0)
-            .with_range(crate::range::Range::CurrentLine);
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let inv =
+            CommandInvocation::of(b.indent_left.0).with_range(crate::range::Range::CurrentLine);
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "hello");
     }
 
     #[test]
     fn indent_left_strips_partial_indent() {
         let (registry, b, mut doc) = fixture("  hello");
-        let inv = CommandInvocation::of(b.indent_left.0)
-            .with_range(crate::range::Range::CurrentLine);
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let inv =
+            CommandInvocation::of(b.indent_left.0).with_range(crate::range::Range::CurrentLine);
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // Only 2 spaces present; strips both.
         assert_eq!(doc.text(), "hello");
     }
@@ -2549,36 +2841,62 @@ mod tests {
     #[test]
     fn indent_left_strips_leading_tab() {
         let (registry, b, mut doc) = fixture("\thello");
-        let inv = CommandInvocation::of(b.indent_left.0)
-            .with_range(crate::range::Range::CurrentLine);
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let inv =
+            CommandInvocation::of(b.indent_left.0).with_range(crate::range::Range::CurrentLine);
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "hello");
     }
 
     #[test]
     fn indent_left_no_indent_is_no_op() {
         let (registry, b, mut doc) = fixture("hello");
-        let inv = CommandInvocation::of(b.indent_left.0)
-            .with_range(crate::range::Range::CurrentLine);
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let inv =
+            CommandInvocation::of(b.indent_left.0).with_range(crate::range::Range::CurrentLine);
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "hello");
     }
 
     #[test]
     fn indent_right_with_whole_range_indents_every_line() {
         let (registry, b, mut doc) = fixture("a\nb\nc");
-        let inv = CommandInvocation::of(b.indent_right.0)
-            .with_range(crate::range::Range::Whole);
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let inv = CommandInvocation::of(b.indent_right.0).with_range(crate::range::Range::Whole);
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "    a\n    b\n    c");
     }
 
     #[test]
     fn indent_left_with_whole_range_dedents_every_line() {
         let (registry, b, mut doc) = fixture("    a\n    b\n    c");
-        let inv = CommandInvocation::of(b.indent_left.0)
-            .with_range(crate::range::Range::Whole);
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let inv = CommandInvocation::of(b.indent_left.0).with_range(crate::range::Range::Whole);
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "a\nb\nc");
     }
 
@@ -2589,7 +2907,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.upper.0)
             .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // word_forward from 0 lands at byte 6 -> [0, 6) = "hello " -> "HELLO ".
         assert_eq!(doc.text(), "HELLO world");
     }
@@ -2598,7 +2923,14 @@ mod tests {
     fn lower_lowercases_range() {
         let (registry, b, mut doc) = fixture("HELLO WORLD");
         let inv = CommandInvocation::of(b.lower.0).with_range(crate::range::Range::Whole);
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "hello world");
     }
 
@@ -2606,7 +2938,14 @@ mod tests {
     fn toggle_case_inverts_each_letter() {
         let (registry, b, mut doc) = fixture("Hello World");
         let inv = CommandInvocation::of(b.toggle_case.0).with_range(crate::range::Range::Whole);
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "hELLO wORLD");
     }
 
@@ -2614,7 +2953,14 @@ mod tests {
     fn upper_with_no_letters_is_no_op() {
         let (registry, b, mut doc) = fixture("123 !@# 456");
         let inv = CommandInvocation::of(b.upper.0).with_range(crate::range::Range::Whole);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // No transformation needed -> Effect::None.
         assert!(matches!(effect, Effect::None));
         assert_eq!(doc.text(), "123 !@# 456");
@@ -2624,14 +2970,24 @@ mod tests {
     fn case_operators_preserve_non_letter_bytes() {
         let (registry, b, mut doc) = fixture("foo_bar.baz");
         let inv = CommandInvocation::of(b.upper.0).with_range(crate::range::Range::Whole);
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // Underscore and dot pass through unchanged.
         assert_eq!(doc.text(), "FOO_BAR.BAZ");
     }
 
     // ---- Text objects ----
 
-    fn invoke_textobj(op: crate::registry::OperatorId, tobj: crate::registry::TextObjectId) -> CommandInvocation {
+    fn invoke_textobj(
+        op: crate::registry::OperatorId,
+        tobj: crate::registry::TextObjectId,
+    ) -> CommandInvocation {
         CommandInvocation::of(op.0).with_target(Target::TextObject(tobj, crate::args::Args::None))
     }
 
@@ -2640,7 +2996,14 @@ mod tests {
         // d iw on "hello world" with cursor on 'l' (byte 2) deletes "hello".
         let (registry, b, mut doc) = fixture("hello world");
         let inv = invoke_textobj(b.delete, b.inner_word);
-        execute(&registry, &mut doc, Position::new(0, 2), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 2),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), " world");
     }
 
@@ -2648,7 +3011,14 @@ mod tests {
     fn iw_at_start_of_word_works() {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = invoke_textobj(b.delete, b.inner_word);
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), " world");
     }
 
@@ -2657,7 +3027,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = invoke_textobj(b.delete, b.inner_word);
         // Cursor on space at byte 5 -- not on a word.
-        execute(&registry, &mut doc, Position::new(0, 5), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 5),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "hello world");
     }
 
@@ -2665,7 +3042,14 @@ mod tests {
     fn aw_around_word_includes_trailing_whitespace() {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = invoke_textobj(b.delete, b.around_word);
-        execute(&registry, &mut doc, Position::new(0, 2), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 2),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // around_word: "hello" + trailing space deleted -> "world".
         assert_eq!(doc.text(), "world");
     }
@@ -2675,7 +3059,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = invoke_textobj(b.delete, b.around_word);
         // Cursor on 'w' at byte 6 -- no trailing whitespace, so leading.
-        execute(&registry, &mut doc, Position::new(0, 6), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 6),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "hello");
     }
 
@@ -2686,7 +3077,14 @@ mod tests {
         // non-whitespace -> part of the WORD.
         let (registry, b, mut doc) = fixture("foo.bar baz");
         let inv = invoke_textobj(b.delete, b.inner_big_word);
-        execute(&registry, &mut doc, Position::new(0, 2), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 2),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), " baz");
     }
 
@@ -2696,7 +3094,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = invoke_textobj(b.delete, b.inner_big_word);
         // Cursor on space at byte 5 -- not on a WORD.
-        execute(&registry, &mut doc, Position::new(0, 5), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 5),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "hello world");
     }
 
@@ -2705,7 +3110,14 @@ mod tests {
     fn aW_around_big_word_includes_trailing_whitespace() {
         let (registry, b, mut doc) = fixture("foo.bar baz");
         let inv = invoke_textobj(b.delete, b.around_big_word);
-        execute(&registry, &mut doc, Position::new(0, 0), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 0),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // around_big_word: "foo.bar" + trailing space -> "baz".
         assert_eq!(doc.text(), "baz");
     }
@@ -2715,7 +3127,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("Vec<String>");
         let inv = invoke_textobj(b.delete, b.inner_angle);
         // Cursor inside angles (byte 5 = 'S' in "String").
-        execute(&registry, &mut doc, Position::new(0, 5), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 5),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "Vec<>");
     }
 
@@ -2723,7 +3142,14 @@ mod tests {
     fn a_angle_covers_pair_including_brackets() {
         let (registry, b, mut doc) = fixture("Vec<String>");
         let inv = invoke_textobj(b.delete, b.around_angle);
-        execute(&registry, &mut doc, Position::new(0, 5), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 5),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "Vec");
     }
 
@@ -2732,7 +3158,14 @@ mod tests {
         let (registry, b, mut doc) = fixture(r#"foo "bar baz" qux"#);
         let inv = invoke_textobj(b.delete, b.inner_quote_double);
         // Cursor inside quotes (byte 6 = 'a' of "bar").
-        execute(&registry, &mut doc, Position::new(0, 6), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 6),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), r#"foo "" qux"#);
     }
 
@@ -2740,7 +3173,14 @@ mod tests {
     fn a_double_quote_covers_quoted_content_and_quotes() {
         let (registry, b, mut doc) = fixture(r#"foo "bar baz" qux"#);
         let inv = invoke_textobj(b.delete, b.around_quote_double);
-        execute(&registry, &mut doc, Position::new(0, 6), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 6),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "foo  qux");
     }
 
@@ -2748,7 +3188,14 @@ mod tests {
     fn i_single_quote_works() {
         let (registry, b, mut doc) = fixture("foo 'bar' baz");
         let inv = invoke_textobj(b.delete, b.inner_quote_single);
-        execute(&registry, &mut doc, Position::new(0, 6), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 6),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "foo '' baz");
     }
 
@@ -2757,7 +3204,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("call(arg1, arg2)");
         let inv = invoke_textobj(b.delete, b.inner_paren);
         // Cursor on 'a' of "arg2" at byte 11.
-        execute(&registry, &mut doc, Position::new(0, 11), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 11),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "call()");
     }
 
@@ -2765,7 +3219,14 @@ mod tests {
     fn a_paren_includes_brackets() {
         let (registry, b, mut doc) = fixture("call(arg1, arg2)");
         let inv = invoke_textobj(b.delete, b.around_paren);
-        execute(&registry, &mut doc, Position::new(0, 11), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 11),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "call");
     }
 
@@ -2774,7 +3235,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("a(b(c)d)e");
         let inv = invoke_textobj(b.delete, b.inner_paren);
         // Cursor at byte 4 ('c').
-        execute(&registry, &mut doc, Position::new(0, 4), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 4),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "a(b()d)e");
     }
 
@@ -2782,7 +3250,14 @@ mod tests {
     fn i_bracket_works_for_square_brackets() {
         let (registry, b, mut doc) = fixture("arr[1, 2, 3]");
         let inv = invoke_textobj(b.delete, b.inner_bracket);
-        execute(&registry, &mut doc, Position::new(0, 4), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 4),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "arr[]");
     }
 
@@ -2791,7 +3266,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("fn body { return 42; }");
         let inv = invoke_textobj(b.delete, b.inner_brace);
         // Cursor inside the braces.
-        execute(&registry, &mut doc, Position::new(0, 12), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 12),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "fn body {}");
     }
 
@@ -2799,7 +3281,14 @@ mod tests {
     fn unmatched_bracket_is_no_op() {
         let (registry, b, mut doc) = fixture("no brackets here");
         let inv = invoke_textobj(b.delete, b.inner_paren);
-        execute(&registry, &mut doc, Position::new(0, 5), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 5),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "no brackets here");
     }
 
@@ -2808,7 +3297,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.change.0)
             .with_target(Target::TextObject(b.inner_word, crate::args::Args::None));
-        let effect = execute(&registry, &mut doc, Position::new(0, 2), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 2),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::Many(parts) => {
                 assert!(matches!(
@@ -2829,7 +3325,14 @@ mod tests {
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::TextObject(b.inner_tag, crate::args::Args::None));
         // Cursor inside <p>: byte 5 ('e' of "hello").
-        execute(&registry, &mut doc, Position::new(0, 5), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 5),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "<p></p>");
     }
 
@@ -2838,7 +3341,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("<p>hello world</p>");
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::TextObject(b.around_tag, crate::args::Args::None));
-        execute(&registry, &mut doc, Position::new(0, 5), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 5),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "");
     }
 
@@ -2847,7 +3357,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("plain text");
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::TextObject(b.inner_tag, crate::args::Args::None));
-        execute(&registry, &mut doc, Position::new(0, 4), inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 4),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "plain text");
     }
 
@@ -2857,7 +3374,14 @@ mod tests {
     fn sentence_forward_advances_after_period_space() {
         let (registry, b, mut doc) = fixture("First sentence. Second sentence. Third.");
         let inv = CommandInvocation::of(b.sentence_forward.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => {
                 // After "First sentence. " -> 'S' of "Second" at byte 16.
@@ -2872,7 +3396,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("First. Second.");
         // Cursor on 'S' of "Second" at byte 7.
         let inv = CommandInvocation::of(b.sentence_backward.0);
-        let effect = execute(&registry, &mut doc, Position::new(0, 7), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 7),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2883,9 +3414,18 @@ mod tests {
     fn dis_deletes_inner_sentence() {
         let (registry, b, mut doc) = fixture("First sentence. Second sentence.");
         // Cursor on byte 5 (inside "First sentence").
-        let inv = CommandInvocation::of(b.delete.0)
-            .with_target(Target::TextObject(b.inner_sentence, crate::args::Args::None));
-        execute(&registry, &mut doc, Position::new(0, 5), inv, &CancellationToken::never()).unwrap();
+        let inv = CommandInvocation::of(b.delete.0).with_target(Target::TextObject(
+            b.inner_sentence,
+            crate::args::Args::None,
+        ));
+        execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 5),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // Inner stops before the period; period stays.
         assert!(doc.text().starts_with('.'));
     }
@@ -2896,7 +3436,14 @@ mod tests {
     fn paragraph_forward_lands_on_next_blank_line() {
         let (registry, b, mut doc) = fixture("foo\nbar\n\nbaz");
         let inv = CommandInvocation::of(b.paragraph_forward.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => {
                 // First blank line is line 2.
@@ -2910,7 +3457,14 @@ mod tests {
     fn paragraph_backward_lands_on_previous_blank_line() {
         let (registry, b, mut doc) = fixture("foo\n\nbar\nbaz");
         let inv = CommandInvocation::of(b.paragraph_backward.0);
-        let effect = execute(&registry, &mut doc, Position::new(3, 0), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(3, 0),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(1, 0)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2921,7 +3475,14 @@ mod tests {
     fn paragraph_forward_at_end_of_buffer_clamps() {
         let (registry, b, mut doc) = fixture("foo\nbar");
         let inv = CommandInvocation::of(b.paragraph_forward.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => {
                 // No blank line; lands at last addressable line.
@@ -2934,9 +3495,18 @@ mod tests {
     #[test]
     fn dap_deletes_paragraph_with_blank_lines() {
         let (registry, b, mut doc) = fixture("foo\nbar\n\nbaz");
-        let inv = CommandInvocation::of(b.delete.0)
-            .with_target(Target::TextObject(b.around_paragraph, crate::args::Args::None));
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let inv = CommandInvocation::of(b.delete.0).with_target(Target::TextObject(
+            b.around_paragraph,
+            crate::args::Args::None,
+        ));
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // Around paragraph: first non-blank run + trailing blank line.
         assert!(doc.text().contains("baz"));
     }
@@ -2944,9 +3514,18 @@ mod tests {
     #[test]
     fn dip_deletes_paragraph_only() {
         let (registry, b, mut doc) = fixture("foo\nbar\n\nbaz");
-        let inv = CommandInvocation::of(b.delete.0)
-            .with_target(Target::TextObject(b.inner_paragraph, crate::args::Args::None));
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let inv = CommandInvocation::of(b.delete.0).with_target(Target::TextObject(
+            b.inner_paragraph,
+            crate::args::Args::None,
+        ));
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // Inner paragraph: just the non-blank run, blank line preserved.
         assert!(doc.text().starts_with('\n') || doc.text().starts_with("\nbaz"));
     }
@@ -2958,7 +3537,14 @@ mod tests {
         // word_forward stops at punctuation; big_word_forward doesn't.
         let (registry, b, mut doc) = fixture("foo,bar baz");
         let inv = CommandInvocation::of(b.big_word_forward.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => {
                 // From byte 0, "foo,bar" is one WORD; next WORD is "baz" at byte 8.
@@ -2973,7 +3559,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("foo,bar baz");
         // From byte 8 ('b' of "baz") `B` -> byte 0 ('f' of "foo,bar").
         let inv = CommandInvocation::of(b.big_word_backward.0);
-        let effect = execute(&registry, &mut doc, Position::new(0, 8), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 8),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -2984,7 +3577,14 @@ mod tests {
     fn big_word_end_lands_at_last_byte_of_big_word() {
         let (registry, b, mut doc) = fixture("foo,bar baz");
         let inv = CommandInvocation::of(b.big_word_end.0);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => {
                 // End of "foo,bar" is byte 6 (the 'r').
@@ -3005,7 +3605,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         // From byte 0 ('h') `fo` -> 'o' of "hello" at byte 4.
         let inv = invoke_with_char(b.find_char_forward, 'o');
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -3017,7 +3624,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("oxox");
         // From 'o' at byte 0, `fo` -> next 'o' at byte 2.
         let inv = invoke_with_char(b.find_char_forward, 'o');
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 2)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -3028,7 +3642,14 @@ mod tests {
     fn find_char_forward_no_match_is_no_op() {
         let (registry, b, mut doc) = fixture("hello");
         let inv = invoke_with_char(b.find_char_forward, 'z');
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -3040,7 +3661,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello\nworld");
         // From byte 0, `fw` should NOT find 'w' on line 1.
         let inv = invoke_with_char(b.find_char_forward, 'w');
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -3052,7 +3680,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         // From byte 8 ('r' of "world") `Fo` -> 'o' of "world" at byte 7.
         let inv = invoke_with_char(b.find_char_backward, 'o');
-        let effect = execute(&registry, &mut doc, Position::new(0, 8), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 8),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 7)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -3063,7 +3698,14 @@ mod tests {
     fn find_char_backward_no_match_is_no_op() {
         let (registry, b, mut doc) = fixture("hello");
         let inv = invoke_with_char(b.find_char_backward, 'z');
-        let effect = execute(&registry, &mut doc, Position::new(0, 4), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 4),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -3075,7 +3717,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         // `tw` from byte 0 -> byte 5 (space, one before 'w' at byte 6).
         let inv = invoke_with_char(b.till_char_forward, 'w');
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 5)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -3087,7 +3736,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         // `Th` from byte 8 -> byte 1 (one after 'h' at byte 0).
         let inv = invoke_with_char(b.till_char_backward, 'h');
-        let effect = execute(&registry, &mut doc, Position::new(0, 8), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 8),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 1)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -3099,7 +3755,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello");
         // No Args::Char supplied -> InvalidArgs.
         let inv = CommandInvocation::of(b.find_char_forward.0);
-        let err = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap_err();
+        let err = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap_err();
         assert!(matches!(err, CommandError::InvalidArgs(_)));
     }
 
@@ -3108,7 +3771,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("café au lait");
         // `fé` from byte 0 -> byte 3 ('é' starts at byte 3 in "café").
         let inv = invoke_with_char(b.find_char_forward, 'é');
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 3)),
             other => panic!("expected SelectionChange, got {other:?}"),
@@ -3122,7 +3792,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.change.0)
             .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // Effect::Many([Edits, Yank, EnterMode(Insert)]).
         match effect {
             Effect::Many(parts) => {
@@ -3144,7 +3821,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("aaa\nBBB\nccc");
         let cursor = Position::new(1, 0);
         let inv = CommandInvocation::of(b.change.0).with_range(crate::range::Range::CurrentLine);
-        let effect = execute(&registry, &mut doc, cursor, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::Many(parts) => {
                 assert_eq!(parts.len(), 3);
@@ -3169,7 +3853,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.change.0)
             .with_target(Target::Motion(b.line_end, crate::args::Args::None));
-        let effect = execute(&registry, &mut doc, Position::new(0, 5), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(0, 5),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::Many(parts) => {
                 assert_eq!(parts.len(), 3);
@@ -3191,7 +3882,14 @@ mod tests {
         let original_text = doc.text();
         let inv = CommandInvocation::of(b.yank.0)
             .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // Yank does NOT touch the buffer.
         assert_eq!(doc.text(), original_text);
         // Yank emits Many([requested-register, "0]).
@@ -3199,7 +3897,11 @@ mod tests {
             Effect::Many(parts) => {
                 assert_eq!(parts.len(), 2);
                 match &parts[0] {
-                    Effect::Yank { content, kind, register } => {
+                    Effect::Yank {
+                        content,
+                        kind,
+                        register,
+                    } => {
                         assert_eq!(content, "hello ");
                         assert_eq!(*kind, YankKind::Charwise);
                         assert_eq!(*register, crate::register::Register::Unnamed);
@@ -3221,18 +3923,23 @@ mod tests {
     fn yank_with_current_line_range_emits_linewise_yank() {
         let (registry, b, mut doc) = fixture("aaa\nBBB\nccc");
         let inv = CommandInvocation::of(b.yank.0).with_range(crate::range::Range::CurrentLine);
-        let effect = execute(&registry, &mut doc, Position::new(1, 0), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(1, 0),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), "aaa\nBBB\nccc");
         match effect {
-            Effect::Many(parts) => {
-                match &parts[0] {
-                    Effect::Yank { content, kind, .. } => {
-                        assert_eq!(content, "BBB");
-                        assert_eq!(*kind, YankKind::Linewise);
-                    }
-                    other => panic!("expected Yank, got {other:?}"),
+            Effect::Many(parts) => match &parts[0] {
+                Effect::Yank { content, kind, .. } => {
+                    assert_eq!(content, "BBB");
+                    assert_eq!(*kind, YankKind::Linewise);
                 }
-            }
+                other => panic!("expected Yank, got {other:?}"),
+            },
             other => panic!("expected Many, got {other:?}"),
         }
     }
@@ -3241,7 +3948,14 @@ mod tests {
     fn yank_with_whole_range_emits_linewise_full_buffer() {
         let (registry, b, mut doc) = fixture("hello\nworld");
         let inv = CommandInvocation::of(b.yank.0).with_range(crate::range::Range::Whole);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::Many(parts) => match &parts[0] {
                 Effect::Yank { content, kind, .. } => {
@@ -3259,7 +3973,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("immutable text");
         let original = doc.text();
         let inv = CommandInvocation::of(b.yank.0).with_range(crate::range::Range::Whole);
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert_eq!(doc.text(), original);
     }
 
@@ -3267,7 +3988,14 @@ mod tests {
     fn yank_empty_range_returns_none() {
         let (registry, b, mut doc) = fixture("");
         let inv = CommandInvocation::of(b.yank.0).with_range(crate::range::Range::Whole);
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // Empty buffer / empty range -> Effect::None.
         assert!(matches!(effect, Effect::None));
     }
@@ -3279,7 +4007,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::Many(parts) => match &parts[1] {
                 Effect::Yank { kind, content, .. } => {
@@ -3296,7 +4031,14 @@ mod tests {
     fn delete_linewise_yanks_linewise() {
         let (registry, b, mut doc) = fixture("aaa\nBBB\nccc");
         let inv = CommandInvocation::of(b.delete.0).with_range(crate::range::Range::CurrentLine);
-        let effect = execute(&registry, &mut doc, Position::new(1, 0), inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::new(1, 0),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::Many(parts) => match &parts[1] {
                 Effect::Yank { kind, .. } => assert_eq!(*kind, YankKind::Linewise),
@@ -3312,7 +4054,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::Motion(b.word_forward, crate::args::Args::None));
-        let effect = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let effect = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match effect {
             Effect::Many(parts) => {
                 assert_eq!(parts.len(), 2);
@@ -3329,7 +4078,14 @@ mod tests {
         let (registry, b, mut doc) = fixture("hello world");
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::Motion(b.word_end, crate::args::Args::None));
-        execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         // word_end lands at byte 4 ('o' of "hello"). Our dispatcher uses
         // [start, end) ranges so the resulting deletion covers [0, 4) = "hell".
         // (This documents current dispatcher behavior; vim's inclusive
@@ -3347,7 +4103,14 @@ mod tests {
         let bogus = MotionId(b.delete.0);
         let inv = CommandInvocation::of(b.delete.0)
             .with_target(Target::Motion(bogus, crate::args::Args::None));
-        let err = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap_err();
+        let err = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap_err();
         assert!(matches!(err, CommandError::KindMismatch { .. }));
     }
 }

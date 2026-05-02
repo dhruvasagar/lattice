@@ -15,7 +15,7 @@
 //!   or [`SubscriptionTarget::Invocation`] (a `CommandInvocation`
 //!   the bus runs through the document actor's dispatch when the
 //!   App wires that path).
-//! - Plugin handler target ([`SubscriptionTarget::Plugin`] in
+//! - Plugin handler target (`SubscriptionTarget::Plugin` in
 //!   §5.10) is omitted -- WASM hosting isn't online in v1.
 //! - Indexed dispatch: subscriptions live in a
 //!   `HashMap<EventKind, Vec<Subscription>>`. Publish iterates the

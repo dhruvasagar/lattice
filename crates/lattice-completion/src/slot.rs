@@ -46,16 +46,10 @@ pub enum CommandLineSlot {
     /// returns this without slot specifics; the cmdline parser may
     /// special-case if it wants to (e.g. complete commands inside
     /// `:g` body). Default: no completion.
-    DelimiterBody {
-        command_name: String,
-        body: String,
-    },
+    DelimiterBody { command_name: String, body: String },
     /// Couldn't resolve the command word to a registered command.
     /// No completion possible (we don't know the schema).
-    UnknownCommand {
-        word: String,
-        replace_start: usize,
-    },
+    UnknownCommand { word: String, replace_start: usize },
     /// Empty cmdline. Treated as command-name slot with empty
     /// prefix.
     Empty,
@@ -137,9 +131,7 @@ pub fn current_slot(
     // command word from the rest.
     let leading_ws = line.bytes().take_while(|b| b.is_ascii_whitespace()).count();
     let after_ws = &line[leading_ws..];
-    let cmd_end = after_ws
-        .find(char::is_whitespace)
-        .unwrap_or(after_ws.len());
+    let cmd_end = after_ws.find(char::is_whitespace).unwrap_or(after_ws.len());
 
     if cmd_end == after_ws.len() {
         // Cursor is still in the command word (no whitespace yet).
@@ -209,16 +201,17 @@ pub fn current_slot(
     // If `arg_text` ends with whitespace, the user hasn't typed
     // anything yet for the next arg; that's still a valid slot
     // (with empty prefix).
-    let (current_prefix, prefix_offset) = if arg_text.ends_with(char::is_whitespace) || arg_text.is_empty() {
-        ("", arg_text.len())
-    } else {
-        // Find the last whitespace boundary before cursor.
-        let last_ws = arg_text
-            .rfind(char::is_whitespace)
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        (&arg_text[last_ws..], last_ws)
-    };
+    let (current_prefix, prefix_offset) =
+        if arg_text.ends_with(char::is_whitespace) || arg_text.is_empty() {
+            ("", arg_text.len())
+        } else {
+            // Find the last whitespace boundary before cursor.
+            let last_ws = arg_text
+                .rfind(char::is_whitespace)
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            (&arg_text[last_ws..], last_ws)
+        };
     let arg_index = if arg_text.ends_with(char::is_whitespace) || arg_text.is_empty() {
         arg_index // pointing at the next, untyped slot
     } else {
@@ -291,7 +284,10 @@ mod tests {
         let r = fixture();
         let slot = current_slot("descri", 6, &r, &aliases);
         match slot {
-            CommandLineSlot::CommandName { prefix, replace_start } => {
+            CommandLineSlot::CommandName {
+                prefix,
+                replace_start,
+            } => {
                 assert_eq!(prefix, "descri");
                 assert_eq!(replace_start, 0);
             }
@@ -375,10 +371,7 @@ mod tests {
         let line = "s/foo/bar/";
         let slot = current_slot(line, line.len(), &r, &aliases);
         match slot {
-            CommandLineSlot::DelimiterBody {
-                command_name,
-                body,
-            } => {
+            CommandLineSlot::DelimiterBody { command_name, body } => {
                 assert_eq!(command_name, "ex:substitute");
                 assert_eq!(body, "foo/bar/");
             }

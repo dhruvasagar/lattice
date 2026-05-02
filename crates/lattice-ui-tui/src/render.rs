@@ -8,7 +8,7 @@
 //! | gutter | buffer text                                           |
 //! | ...                                                            |
 //! +----------------------------------------------------------------+
-//! | mode line: [NORMAL]  path                  line:col   lang     |
+//! | mode line: \[NORMAL\]  path                line:col   lang     |
 //! +----------------------------------------------------------------+
 
 use ratatui::Frame;
@@ -39,10 +39,10 @@ pub fn draw_frame(frame: &mut Frame, app: &App) {
 
     let constraints: Vec<Constraint> = if popup_rows > 0 {
         vec![
-            Constraint::Min(1),                      // buffer
-            Constraint::Length(1),                   // mode line
-            Constraint::Length(1),                   // cmdline (above popup)
-            Constraint::Length(popup_rows as u16),   // popup (bottom)
+            Constraint::Min(1),                    // buffer
+            Constraint::Length(1),                 // mode line
+            Constraint::Length(1),                 // cmdline (above popup)
+            Constraint::Length(popup_rows as u16), // popup (bottom)
         ]
     } else {
         vec![
@@ -140,7 +140,9 @@ fn candidate_to_line<'a>(
     } else {
         TuiStyle::default()
     };
-    let match_style = TuiStyle::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let match_style = TuiStyle::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
 
     // Build spans: text with match-range highlighting, then padding,
     // then annotations on the right.
@@ -159,7 +161,10 @@ fn candidate_to_line<'a>(
     sorted_ranges.sort_by_key(|r| r.start);
     for range in sorted_ranges {
         if range.start > cursor {
-            spans.push(Span::styled(text[cursor..range.start].to_string(), row_style));
+            spans.push(Span::styled(
+                text[cursor..range.start].to_string(),
+                row_style,
+            ));
         }
         spans.push(Span::styled(
             text[range.start..range.end].to_string(),
@@ -260,9 +265,7 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App) {
     // In Command (`:`) and Search (`/`, `?`) modal states the cursor lives
     // in the bottom prompt row -- handled by `draw_command_or_echo`.
     let prompt_owns_cursor = matches!(app.modal, ModalState::Command | ModalState::Search(_));
-    if !prompt_owns_cursor
-        && let Some((screen_x, screen_y)) = cursor_screen_position(app, area)
-    {
+    if !prompt_owns_cursor && let Some((screen_x, screen_y)) = cursor_screen_position(app, area) {
         frame.set_cursor_position((screen_x, screen_y));
     }
 }
@@ -335,7 +338,9 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     let style = match msg.level {
         EchoLevel::Info => TuiStyle::default(),
         EchoLevel::Warn => TuiStyle::default().fg(Color::Yellow),
-        EchoLevel::Error => TuiStyle::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        EchoLevel::Error => TuiStyle::default()
+            .fg(Color::Red)
+            .add_modifier(Modifier::BOLD),
     };
     let para = Paragraph::new(Line::from(vec![Span::styled(msg.text.clone(), style)]));
     frame.render_widget(para, area);
@@ -439,8 +444,7 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         if let Some(fold) = app.fold_start_at(line_idx) {
             let n = fold.end_line - fold.start_line + 1;
             let summary = format!("+--- {n} lines ---");
-            let summary_span =
-                Span::styled(summary, TuiStyle::default().fg(Color::DarkGray));
+            let summary_span = Span::styled(summary, TuiStyle::default().fg(Color::DarkGray));
             out.push(combine(gutter, vec![summary_span]));
             continue;
         }
@@ -524,7 +528,10 @@ fn substitute_preview_style() -> TuiStyle {
 /// For blockwise Visual: the rectangle defined by the selection's
 /// `(anchor, head)` positions. Returns `None` if not in blockwise mode.
 fn visual_block_extents(app: &App) -> Option<BlockExtents> {
-    if !matches!(app.modal, ModalState::Visual(lattice_grammar::VisualKind::Blockwise)) {
+    if !matches!(
+        app.modal,
+        ModalState::Visual(lattice_grammar::VisualKind::Blockwise)
+    ) {
         return None;
     }
     let sels = app.document.selections();
@@ -647,8 +654,7 @@ fn apply_match_overlay(
                 let pre = s[..overlap_start - span_start].to_string();
                 out.push(Span::styled(pre, span.style));
             }
-            let mid =
-                s[overlap_start - span_start..overlap_end - span_start].to_string();
+            let mid = s[overlap_start - span_start..overlap_end - span_start].to_string();
             out.push(Span::styled(mid, overlay_style));
             if overlap_end < span_end {
                 let post = s[overlap_end - span_start..].to_string();
@@ -801,7 +807,8 @@ fn cursor_screen_position(app: &App, area: Rect) -> Option<(u16, u16)> {
     let col = gutter_w + display_col_for_byte(&snap.buffer, app.cursor);
     Some((
         area.x.saturating_add(col.try_into().unwrap_or(u16::MAX)),
-        area.y.saturating_add(row_in_view.try_into().unwrap_or(u16::MAX)),
+        area.y
+            .saturating_add(row_in_view.try_into().unwrap_or(u16::MAX)),
     ))
 }
 
@@ -832,7 +839,9 @@ fn display_col_for_byte(buffer: &lattice_core::Buffer, pos: lattice_protocol::Po
 fn style_to_tui(s: Style) -> TuiStyle {
     match s {
         Style::Default => TuiStyle::default(),
-        Style::Keyword => TuiStyle::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        Style::Keyword => TuiStyle::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
         Style::Type => TuiStyle::default().fg(Color::Cyan),
         Style::String => TuiStyle::default().fg(Color::Green),
         Style::Number => TuiStyle::default().fg(Color::Yellow),
@@ -842,9 +851,9 @@ fn style_to_tui(s: Style) -> TuiStyle {
         Style::Operator => TuiStyle::default().fg(Color::White),
         Style::Punctuation => TuiStyle::default().fg(Color::Gray),
         Style::Attribute => TuiStyle::default().fg(Color::LightMagenta),
-        Style::Comment | Style::LineComment => {
-            TuiStyle::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)
-        }
+        Style::Comment | Style::LineComment => TuiStyle::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC),
     }
 }
 
@@ -889,7 +898,10 @@ mod tests {
         let lines = compose_visible_lines(&app, 2, 80);
         // Line index 2 is "2"; expect that text in the rendered first line.
         let l0 = format!("{:?}", lines[0]);
-        assert!(l0.contains('2'), "first visible line should be '2', got {l0}");
+        assert!(
+            l0.contains('2'),
+            "first visible line should be '2', got {l0}"
+        );
     }
 
     #[test]

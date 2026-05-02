@@ -30,7 +30,7 @@ pub mod registry;
 pub mod slot;
 pub mod traits;
 
-pub use crate::builtins::{populate, CompletionBuiltins};
+pub use crate::builtins::{CompletionBuiltins, populate};
 pub use crate::cache::GeneratorCache;
 pub use crate::candidate::{
     CacheKey, CandidateData, CandidateKind, MatchScore, RawCandidate, RenderedCandidate,
@@ -41,7 +41,7 @@ pub use crate::registry::{
     AnnotatorId, CompletionRegistry, GeneratorId, MatcherId, RankerId, RegisteredAnnotator,
     RegisteredGenerator, RegisteredMatcher, RegisteredRanker,
 };
-pub use crate::slot::{current_slot, CommandLineSlot};
+pub use crate::slot::{CommandLineSlot, current_slot};
 pub use crate::traits::{
     CandidateAnnotator, CandidateGenerator, CandidateMatcher, CandidateRanker, GenerateContext,
 };

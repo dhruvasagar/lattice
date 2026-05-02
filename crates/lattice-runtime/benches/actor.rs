@@ -68,11 +68,8 @@ fn snapshot_publish_via_apply_edit(c: &mut Criterion) {
             // actor task's spinup.
             let _ = block_on(handle.apply_edit(Edit::insert(Position::ZERO, "x")));
             bencher.iter(|| {
-                let _ = block_on(handle.apply_edit(Edit::insert(
-                    Position::ZERO,
-                    black_box("y"),
-                )))
-                .unwrap();
+                let _ = block_on(handle.apply_edit(Edit::insert(Position::ZERO, black_box("y"))))
+                    .unwrap();
             });
         });
     }
@@ -114,11 +111,9 @@ fn apply_edit_round_trip(c: &mut Criterion) {
             // Warm.
             let _ = block_on(handle.apply_edit(Edit::insert(Position::ZERO, "x")));
             bencher.iter(|| {
-                let applied = block_on(handle.apply_edit(Edit::insert(
-                    Position::ZERO,
-                    black_box("z"),
-                )))
-                .unwrap();
+                let applied =
+                    block_on(handle.apply_edit(Edit::insert(Position::ZERO, black_box("z"))))
+                        .unwrap();
                 black_box(applied);
             });
         });

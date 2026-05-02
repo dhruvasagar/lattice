@@ -28,9 +28,7 @@ use crate::command::LatencyClass;
 use crate::effect::{Effect, SubstituteScope};
 use crate::error::{CommandError, GrammarResult};
 use crate::range::Range;
-use crate::registry::{
-    CommandRegistry, ExCommandContext, ExCommandId, ExCommandSpec, SurfaceForm,
-};
+use crate::registry::{CommandRegistry, ExCommandContext, ExCommandId, ExCommandSpec, SurfaceForm};
 
 /// Set of registered ex-command ids; mirrors the `Builtins` shape for
 /// motions / operators / text objects.
@@ -238,11 +236,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Box::new(parse_global_args_unreachable),
             apply: Box::new(apply_global),
             args_schema: vec![
-                ArgSpec::required(
-                    "pattern",
-                    ArgKind::Pattern,
-                    "Match pattern (literal in v1)",
-                ),
+                ArgSpec::required("pattern", ArgKind::Pattern, "Match pattern (literal in v1)"),
                 ArgSpec {
                     name: "inverted",
                     kind: ArgKind::Bool,
@@ -511,9 +505,7 @@ fn apply_describe_command(ctx: &ExCommandContext) -> GrammarResult<Effect> {
             name: s.clone(),
             anchor: None,
         }),
-        _ => Err(CommandError::BadArgs(
-            "expected command name string".into(),
-        )),
+        _ => Err(CommandError::BadArgs("expected command name string".into())),
     }
 }
 
@@ -554,7 +546,8 @@ fn apply_global(ctx: &ExCommandContext) -> GrammarResult<Effect> {
         .as_invocation()
         .ok_or_else(|| {
             CommandError::BadArgs(
-                "arg 2 (body) must be a parsed Invocation -- parser front-end is responsible".into(),
+                "arg 2 (body) must be a parsed Invocation -- parser front-end is responsible"
+                    .into(),
             )
         })?
         .clone();
@@ -570,8 +563,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use crate::CancellationToken;
-    use crate::dispatcher::execute;
     use crate::command::CommandInvocation;
+    use crate::dispatcher::execute;
     use lattice_core::Document;
     use lattice_protocol::position::Position;
 
@@ -586,7 +579,14 @@ mod tests {
     fn write_with_no_path_emits_save_buffer_none() {
         let (registry, ex, mut doc) = fixture();
         let inv = CommandInvocation::of(ex.write.0).with_args(Args::None);
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match eff {
             Effect::SaveBuffer { path } => assert!(path.is_none()),
             other => panic!("unexpected effect: {other:?}"),
@@ -597,9 +597,18 @@ mod tests {
     fn write_with_path_carries_path() {
         let (registry, ex, mut doc) = fixture();
         let inv = CommandInvocation::of(ex.write.0).with_args(Args::String("foo.txt".into()));
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match eff {
-            Effect::SaveBuffer { path: Some(p) } => assert_eq!(p, std::path::PathBuf::from("foo.txt")),
+            Effect::SaveBuffer { path: Some(p) } => {
+                assert_eq!(p, std::path::PathBuf::from("foo.txt"))
+            }
             other => panic!("unexpected effect: {other:?}"),
         }
     }
@@ -608,7 +617,14 @@ mod tests {
     fn quit_bang_propagates_to_force() {
         let (registry, ex, mut doc) = fixture();
         let inv = CommandInvocation::of(ex.quit.0).with_bang(true);
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match eff {
             Effect::QuitEditor { force } => assert!(force),
             other => panic!("unexpected effect: {other:?}"),
@@ -619,7 +635,14 @@ mod tests {
     fn quit_no_bang_is_not_forced() {
         let (registry, ex, mut doc) = fixture();
         let inv = CommandInvocation::of(ex.quit.0);
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match eff {
             Effect::QuitEditor { force } => assert!(!force),
             other => panic!("unexpected effect: {other:?}"),
@@ -630,7 +653,14 @@ mod tests {
     fn write_quit_emits_many_save_then_quit() {
         let (registry, ex, mut doc) = fixture();
         let inv = CommandInvocation::of(ex.write_quit.0).with_bang(true);
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match eff {
             Effect::Many(parts) => {
                 assert!(matches!(parts[0], Effect::SaveBuffer { .. }));
@@ -644,7 +674,14 @@ mod tests {
     fn nohlsearch_emits_clear_search_highlight() {
         let (registry, ex, mut doc) = fixture();
         let inv = CommandInvocation::of(ex.no_hlsearch.0);
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert!(matches!(eff, Effect::ClearSearchHighlight));
     }
 
@@ -652,7 +689,14 @@ mod tests {
     fn registers_emits_echo_registers() {
         let (registry, ex, mut doc) = fixture();
         let inv = CommandInvocation::of(ex.list_registers.0);
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert!(matches!(eff, Effect::EchoRegisters));
     }
 
@@ -660,7 +704,14 @@ mod tests {
     fn marks_emits_echo_marks() {
         let (registry, ex, mut doc) = fixture();
         let inv = CommandInvocation::of(ex.list_marks.0);
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert!(matches!(eff, Effect::EchoMarks));
     }
 
@@ -668,16 +719,30 @@ mod tests {
     fn delete_emits_delete_current_line() {
         let (registry, ex, mut doc) = fixture();
         let inv = CommandInvocation::of(ex.delete_line.0);
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert!(matches!(eff, Effect::DeleteCurrentLine));
     }
 
     #[test]
     fn describe_command_emits_describe_command_effect() {
         let (registry, ex, mut doc) = fixture();
-        let inv = CommandInvocation::of(ex.describe_command.0)
-            .with_args(Args::String("ex:write".into()));
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let inv =
+            CommandInvocation::of(ex.describe_command.0).with_args(Args::String("ex:write".into()));
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match eff {
             Effect::DescribeCommand { name, anchor } => {
                 assert_eq!(name, "ex:write");
@@ -691,7 +756,14 @@ mod tests {
     fn describe_buffer_emits_describe_buffer_effect() {
         let (registry, ex, mut doc) = fixture();
         let inv = CommandInvocation::of(ex.describe_buffer.0);
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         assert!(matches!(eff, Effect::DescribeBuffer));
     }
 
@@ -699,7 +771,14 @@ mod tests {
     fn apropos_emits_apropos_effect() {
         let (registry, ex, mut doc) = fixture();
         let inv = CommandInvocation::of(ex.apropos.0).with_args(Args::String("write".into()));
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match eff {
             Effect::Apropos { pattern } => assert_eq!(pattern, "write"),
             other => panic!("unexpected effect: {other:?}"),
@@ -727,7 +806,14 @@ mod tests {
     fn set_with_string_arg_carries_spec() {
         let (registry, ex, mut doc) = fixture();
         let inv = CommandInvocation::of(ex.set_option.0).with_args(Args::String("number".into()));
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match eff {
             Effect::SetOption { spec } => assert_eq!(spec, "number"),
             other => panic!("unexpected effect: {other:?}"),
@@ -741,7 +827,14 @@ mod tests {
         // by the parser front-end, not the dispatcher. apply with the
         // wrong Args variant errors instead.
         let inv = CommandInvocation::of(ex.set_option.0).with_args(Args::None);
-        let err = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap_err();
+        let err = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap_err();
         assert!(matches!(err, CommandError::BadArgs(_)));
     }
 
@@ -751,7 +844,14 @@ mod tests {
         let inv = CommandInvocation::of(ex.edit.0)
             .with_args(Args::String("/tmp/x".into()))
             .with_bang(true);
-        let eff = execute(&registry, &mut doc, Position::ZERO, inv, &CancellationToken::never()).unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
         match eff {
             Effect::OpenBuffer { path, force } => {
                 assert_eq!(path, Some(std::path::PathBuf::from("/tmp/x")));

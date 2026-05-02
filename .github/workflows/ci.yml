@@ -1,33 +1,39 @@
 # Continuous integration for lattice.
 #
-# Three concerns gated:
+# Concerns gated:
 #
 # 1. **Correctness.** `cargo test --workspace` -- the full suite on
-#    every push. Workspace currently runs ~1056 tests in <1s.
+#    every push, across the cross-platform matrix (Linux / macOS /
+#    Windows). Workspace currently runs ~1090+ tests in <1s.
 # 2. **Lint hygiene.** `cargo clippy --workspace --tests -- -D
 #    warnings`. The workspace lints in `Cargo.toml` ([workspace.lints])
 #    forbid `unsafe_code`, deny `unused_must_use`, and warn on
 #    `unwrap_used` / `panic` / `todo` -- so a missed `let _ = ...`
 #    on an unused `Pending` (DESIGN.md §5.2.1) is a CI failure.
-# 3. **Benchmark surface.** `cargo bench --no-run` per crate that
+# 3. **Format.** `cargo fmt --check`. Trivial gate; rejects PRs that
+#    skipped a local fmt run.
+# 4. **Docs.** `cargo doc --no-deps -D warnings`. Catches broken
+#    intra-doc links and missing trait references.
+# 5. **Benchmark surface.** `cargo bench --no-run` per crate that
 #    has benches. Fast (compile-only) -- catches bench rot when
 #    refactors break the criterion harness without anyone running
 #    `cargo bench` locally.
+# 6. **Bench baseline (main only).** Records criterion numbers as
+#    a build artifact for future regression tooling to diff against.
 #
 # What is NOT gated yet:
 #
-# - **Bench regression detection** (DESIGN.md §8.2: "CI fails on >10%
-#   regression vs. main"). Shared-tenant runners (the GitHub-hosted
-#   default) have ~20% bench variance; gating at 10% on those is
-#   noise. Honest path: stand up a self-hosted runner or adopt
-#   `bencher.dev` / `criterion-compare-action`, then enable the gate.
-#   The bench-baseline job below records numbers on every push to
-#   main as a build artifact so a future comparison step has data
-#   to diff against.
-# - **Cross-platform matrix** (DESIGN.md §A.6). Linux only for now;
-#   adding macOS / Windows is a one-line matrix expansion when the
-#   workspace is platform-clean (TUI uses crossterm which is
-#   cross-platform; nothing today blocks that).
+# - **Bench regression detection** (DESIGN.md §8.2: "CI fails on
+#   >10% regression vs. main"). Shared-tenant runners (the
+#   GitHub-hosted default) have ~20% bench variance; gating at 10%
+#   on those is noise. Honest path: stand up a self-hosted runner
+#   or adopt `bencher.dev` / `criterion-compare-action`, then
+#   enable the gate.
+# - **Alloc discipline check on the render hot path** (DESIGN.md
+#   §8.2). A `dhat`-based test that runs the renderer N times and
+#   asserts no allocations on steady-state frames is the spec; v1
+#   tracks the discipline via code review and bench numbers
+#   (snapshot_load is the canonical render-hot-path bench).
 
 name: ci
 
@@ -48,8 +54,12 @@ env:
 
 jobs:
   test:
-    name: test
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -62,9 +72,41 @@ jobs:
       - name: cargo clippy --workspace --tests -- -D warnings
         run: cargo clippy --workspace --tests --locked -- -D warnings
 
-  bench-compile:
-    name: bench-compile
+  fmt:
+    name: fmt
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  doc:
+    name: doc
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo doc --no-deps --workspace
+        # rustdoc warnings (broken intradoc links, missing types)
+        # become CI errors via RUSTDOCFLAGS above.
+        run: cargo doc --no-deps --workspace --locked
+
+  bench-compile:
+    name: bench-compile (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1

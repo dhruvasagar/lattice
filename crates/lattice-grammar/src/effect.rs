@@ -70,20 +70,32 @@ pub enum Effect {
     // --- Ex-command effects (DESIGN.md §5.2.1) ---
     /// `:w [path]` -- write the current buffer (to the given path, or the
     /// document's known path).
-    SaveBuffer { path: Option<PathBuf> },
+    SaveBuffer {
+        path: Option<PathBuf>,
+    },
     /// `:q` / `:q!` -- quit the editor. `force = true` ignores dirty state.
-    QuitEditor { force: bool },
+    QuitEditor {
+        force: bool,
+    },
     /// `:e[!] [path]` -- swap the current document for the file at `path`.
     /// With `path = None` reload from the document's existing path.
     /// `force = true` discards unsaved changes.
-    OpenBuffer { path: Option<PathBuf>, force: bool },
+    OpenBuffer {
+        path: Option<PathBuf>,
+        force: bool,
+    },
     /// `:set <option>` -- the host parses the option spec; the closure
     /// just hands the raw text through.
-    SetOption { spec: String },
+    SetOption {
+        spec: String,
+    },
     /// `:noh[lsearch]` -- clear the hlsearch overlay.
     ClearSearchHighlight,
     /// Display a one-line message in the echo area.
-    Echo { level: EchoLevel, text: String },
+    Echo {
+        level: EchoLevel,
+        text: String,
+    },
     /// `:reg[isters]` -- the host formats and displays its own register
     /// state.
     EchoRegisters,
@@ -130,12 +142,16 @@ pub enum Effect {
     /// `:apropos <pattern>`. The host runs a substring search over
     /// every registered `CommandSpec` (name + doc) and renders the
     /// matches.
-    Apropos { pattern: String },
+    Apropos {
+        pattern: String,
+    },
     /// `:describe-key <chord>` (DESIGN.md §5.11). The host queries
     /// its keymap registry for every binding of `chord` (a chord may
     /// appear in multiple modes -- Normal / Visual / Help, etc.) and
     /// renders them.
-    DescribeKey { chord: String },
+    DescribeKey {
+        chord: String,
+    },
     /// `:keymap`. The host renders the full default keymap grouped by
     /// mode.
     ListKeymap,
@@ -167,7 +183,11 @@ mod tests {
             kind: YankKind::Charwise,
         };
         match e {
-            Effect::Yank { register, content, kind } => {
+            Effect::Yank {
+                register,
+                content,
+                kind,
+            } => {
                 assert_eq!(register, Register::Unnamed);
                 assert_eq!(content, "hello");
                 assert_eq!(kind, YankKind::Charwise);

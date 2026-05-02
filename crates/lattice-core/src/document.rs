@@ -389,8 +389,10 @@ mod tests {
     fn multiple_undo_walks_back_to_origin() {
         let mut d = Document::empty();
         d.apply_edit(Edit::insert(Position::ZERO, "a")).unwrap();
-        d.apply_edit(Edit::insert(Position::new(0, 1), "b")).unwrap();
-        d.apply_edit(Edit::insert(Position::new(0, 2), "c")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 1), "b"))
+            .unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 2), "c"))
+            .unwrap();
         assert_eq!(d.text(), "abc");
         d.undo().unwrap();
         d.undo().unwrap();
@@ -405,11 +407,8 @@ mod tests {
         let mut d = Document::from_text("xxxxx");
         let r1 = Range::new(Position::new(0, 0), Position::new(0, 2));
         let r2 = Range::new(Position::new(0, 0), Position::new(0, 2));
-        d.apply_edit_batch(vec![
-            Edit::replace(r1, "AB"),
-            Edit::replace(r2, "CD"),
-        ])
-        .unwrap();
+        d.apply_edit_batch(vec![Edit::replace(r1, "AB"), Edit::replace(r2, "CD")])
+            .unwrap();
         assert_eq!(d.text(), "CDxxx");
         d.undo().unwrap();
         assert_eq!(d.text(), "xxxxx");
@@ -437,7 +436,8 @@ mod tests {
         assert_eq!(d.text_version(), tv0);
 
         // Edit bumps both.
-        d.apply_edit(Edit::insert(Position::new(0, 5), "!")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 5), "!"))
+            .unwrap();
         assert!(d.text_version() > tv0);
 
         // Undo also bumps text_version.
@@ -464,7 +464,8 @@ mod tests {
         let path = dir.join("a.txt");
         let mut d = Document::from_text("alpha");
         // dirty starts false; making an edit sets it.
-        d.apply_edit(Edit::insert(Position::new(0, 5), "!")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 5), "!"))
+            .unwrap();
         assert!(d.dirty());
         d.save_as(&path).unwrap();
         assert!(!d.dirty());
@@ -479,7 +480,8 @@ mod tests {
         let path = dir.join("b.txt");
         let mut d = Document::from_text("first");
         d.save_as(&path).unwrap();
-        d.apply_edit(Edit::insert(Position::new(0, 5), "!")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 5), "!"))
+            .unwrap();
         d.save().unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first!");
         cleanup(&dir);
@@ -509,7 +511,8 @@ mod tests {
     fn undo_back_to_initial_state_clears_dirty() {
         let mut d = Document::from_text("hi");
         assert!(!d.dirty());
-        d.apply_edit(Edit::insert(Position::new(0, 2), "!")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 2), "!"))
+            .unwrap();
         assert!(d.dirty());
         d.undo().unwrap();
         assert_eq!(d.text(), "hi");
@@ -520,7 +523,8 @@ mod tests {
     fn redoing_back_to_initial_state_keeps_dirty() {
         // Initial -> edit -> undo (clean) -> redo (dirty again).
         let mut d = Document::from_text("hi");
-        d.apply_edit(Edit::insert(Position::new(0, 2), "!")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 2), "!"))
+            .unwrap();
         d.undo().unwrap();
         assert!(!d.dirty());
         d.redo().unwrap();
@@ -534,7 +538,8 @@ mod tests {
         let mut d = Document::from_text("alpha");
         d.save_as(&path).unwrap();
         assert!(!d.dirty());
-        d.apply_edit(Edit::insert(Position::new(0, 5), "!")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 5), "!"))
+            .unwrap();
         assert!(d.dirty());
         d.undo().unwrap();
         assert_eq!(d.text(), "alpha");
@@ -549,11 +554,14 @@ mod tests {
         let dir = tempdir();
         let path = dir.join("v.txt");
         let mut d = Document::from_text("a");
-        d.apply_edit(Edit::insert(Position::new(0, 1), "b")).unwrap();
-        d.apply_edit(Edit::insert(Position::new(0, 2), "c")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 1), "b"))
+            .unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 2), "c"))
+            .unwrap();
         d.save_as(&path).unwrap();
         assert!(!d.dirty());
-        d.apply_edit(Edit::insert(Position::new(0, 3), "d")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 3), "d"))
+            .unwrap();
         assert!(d.dirty());
         d.undo().unwrap();
         assert_eq!(d.text(), "abc");
@@ -569,14 +577,16 @@ mod tests {
         let dir = tempdir();
         let path = dir.join("w.txt");
         let mut d = Document::from_text("x");
-        d.apply_edit(Edit::insert(Position::new(0, 1), "y")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 1), "y"))
+            .unwrap();
         d.save_as(&path).unwrap();
         assert!(!d.dirty());
         d.undo().unwrap();
         assert_eq!(d.text(), "x");
         assert!(d.dirty());
         // Apply a new edit that clears the redo entry containing clean.
-        d.apply_edit(Edit::insert(Position::new(0, 1), "z")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 1), "z"))
+            .unwrap();
         // Now we're at depth=1 again, but the buffer is "xz", not the
         // saved "xy". We can't reach clean by any undo/redo.
         assert!(d.dirty());
@@ -599,7 +609,8 @@ mod tests {
         let dir = tempdir();
         let path = dir.join("s.txt");
         let mut d = Document::from_text("a");
-        d.apply_edit(Edit::insert(Position::new(0, 1), "b")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 1), "b"))
+            .unwrap();
         d.save_as(&path).unwrap();
         // After save, dirty=false. Undo should now go past clean.
         d.undo().unwrap();

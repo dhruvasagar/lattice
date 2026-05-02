@@ -110,7 +110,8 @@ fn parse_invocation(
         return Err(ExCommandError::Unknown(raw_cmd.to_string()));
     }
 
-    let spec = ex_spec_for(registry, id).ok_or_else(|| ExCommandError::Unknown(raw_cmd.to_string()))?;
+    let spec =
+        ex_spec_for(registry, id).ok_or_else(|| ExCommandError::Unknown(raw_cmd.to_string()))?;
     // Surface-form check before parse_args. Commands flagged
     // `Delimiter` (`:ex:substitute`, `:ex:global`) are not
     // keyword-invocable; the front-end's delimiter-detection path
@@ -133,9 +134,7 @@ fn parse_invocation(
         other => ExCommandError::BadArgs(other.to_string()),
     })?;
 
-    Ok(CommandInvocation::of(id)
-        .with_args(args)
-        .with_bang(bang))
+    Ok(CommandInvocation::of(id).with_args(args).with_bang(bang))
 }
 
 /// Borrow the registered [`ExCommandSpec`] body by id. The registry's
@@ -261,13 +260,11 @@ fn try_parse_global(
     let id = registry
         .id_by_name("ex:global")
         .ok_or_else(|| ExCommandError::Unknown("ex:global".into()))?;
-    Ok(Some(
-        CommandInvocation::of(id).with_args(Args::List(vec![
-            ArgValue::Pattern(pattern),
-            ArgValue::Bool(inverted),
-            ArgValue::Invocation(Box::new(body_inv)),
-        ])),
-    ))
+    Ok(Some(CommandInvocation::of(id).with_args(Args::List(vec![
+        ArgValue::Pattern(pattern),
+        ArgValue::Bool(inverted),
+        ArgValue::Invocation(Box::new(body_inv)),
+    ]))))
 }
 
 /// Vim's `[%]s/pattern/replacement/[flags]`. Produces a
@@ -285,11 +282,11 @@ pub enum SubstitutePartialScope {
 
 /// Result of a best-effort parse of an in-progress substitute
 /// command line, used by the live-preview path
-/// (`refresh_substitute_preview` in App). Unlike
-/// [`try_parse_substitute`] this never errors on incomplete input
-/// -- a half-typed pattern or a missing second `/` is fine. Returns
-/// `None` only when the input doesn't look like a substitute at
-/// all.
+/// (`refresh_substitute_preview` in App). Unlike the full
+/// `try_parse_substitute` path, this never errors on incomplete
+/// input -- a half-typed pattern or a missing second `/` is fine.
+/// Returns `None` only when the input doesn't look like a
+/// substitute at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubstitutePartial {
     pub scope: SubstitutePartialScope,
@@ -429,15 +426,13 @@ fn try_parse_substitute(
     let id = registry
         .id_by_name("ex:substitute")
         .ok_or_else(|| ExCommandError::Unknown("ex:substitute".into()))?;
-    Ok(Some(
-        CommandInvocation::of(id)
-            .with_range(range)
-            .with_args(Args::List(vec![
-                ArgValue::Pattern(pattern),
-                ArgValue::String(replacement),
-                ArgValue::String(flags),
-            ])),
-    ))
+    Ok(Some(CommandInvocation::of(id).with_range(range).with_args(
+        Args::List(vec![
+            ArgValue::Pattern(pattern),
+            ArgValue::String(replacement),
+            ArgValue::String(flags),
+        ]),
+    )))
 }
 
 #[cfg(test)]
@@ -453,10 +448,7 @@ mod tests {
         registry
     }
 
-    fn invocation_name<'a>(
-        inv: &'a CommandInvocation,
-        registry: &'a CommandRegistry,
-    ) -> &'a str {
+    fn invocation_name<'a>(inv: &'a CommandInvocation, registry: &'a CommandRegistry) -> &'a str {
         registry
             .lookup(inv.command)
             .map(|s| s.name.as_str())
@@ -719,11 +711,7 @@ mod tests {
         let r = fixture();
         for s in ["noh", "nohl", "nohlsearch"] {
             let inv = parse(s, &r).unwrap();
-            assert_eq!(
-                invocation_name(&inv, &r),
-                "ex:nohlsearch",
-                "alias `{s}`"
-            );
+            assert_eq!(invocation_name(&inv, &r), "ex:nohlsearch", "alias `{s}`");
         }
     }
 

@@ -228,11 +228,12 @@ pub enum SurfaceForm {
 
 pub struct ExCommandSpec {
     /// Latency class declaration (DESIGN.md §5.2.5). Most ex-commands
-    /// stay [`LatencyClass::Reflex`] (the default) -- they're cheap
-    /// state mutations. File I/O (`:write`, `:edit`) and help-buffer
-    /// builders (`:describe-*`, `:apropos`, `:keymap`) declare
-    /// [`LatencyClass::Display`] so future cancellation / deadline
-    /// machinery treats them with the right budget.
+    /// stay [`crate::command::LatencyClass::Reflex`] (the default) --
+    /// they're cheap state mutations. File I/O (`:write`, `:edit`)
+    /// and help-buffer builders (`:describe-*`, `:apropos`,
+    /// `:keymap`) declare [`crate::command::LatencyClass::Display`]
+    /// so future cancellation / deadline machinery treats them with
+    /// the right budget.
     pub latency_class: crate::command::LatencyClass,
     /// Whether the parser should accept a trailing `!` after the command
     /// word. If `false`, `:cmd!` parses as an unknown command.
@@ -633,7 +634,10 @@ mod tests {
         let id = r.register_motion("test:sentinel", "", dummy_motion());
         let spec = r.lookup(id.0).unwrap();
         match &spec.source.kind {
-            SourceKind::File { path, line: Some(line) } => {
+            SourceKind::File {
+                path,
+                line: Some(line),
+            } => {
                 assert!(
                     path.to_string_lossy().contains("registry.rs"),
                     "expected path to contain `registry.rs`, got `{}`",
@@ -664,7 +668,10 @@ mod tests {
             },
         );
         let spec = r.lookup(id.0).unwrap();
-        if let SourceKind::File { line: Some(line), .. } = &spec.source.kind {
+        if let SourceKind::File {
+            line: Some(line), ..
+        } = &spec.source.kind
+        {
             // The literal ends 6 lines after the `expected_line`
             // assignment because of formatting -- track_caller records
             // the line of the call expression's *first* token.
@@ -682,17 +689,15 @@ mod tests {
             "test:sentinel-tobj",
             "",
             TextObjectSpec {
-                apply: Box::new(|_| {
-                    Ok(ProtoRange::new(
-                        Position::ZERO,
-                        Position::ZERO,
-                    ))
-                }),
+                apply: Box::new(|_| Ok(ProtoRange::new(Position::ZERO, Position::ZERO))),
                 args_schema: vec![],
             },
         );
         let spec = r.lookup(id.0).unwrap();
-        if let SourceKind::File { line: Some(line), .. } = &spec.source.kind {
+        if let SourceKind::File {
+            line: Some(line), ..
+        } = &spec.source.kind
+        {
             assert_eq!(*line, expected_line);
         } else {
             panic!("expected File source");
@@ -710,7 +715,10 @@ mod tests {
         let line_a = line_of(&r, id_a.0).expect("id_a has File source");
         let line_b = line_of(&r, id_b.0).expect("id_b has File source");
         assert_ne!(line_a, line_b);
-        assert!(line_b > line_a, "second call's line should follow the first");
+        assert!(
+            line_b > line_a,
+            "second call's line should follow the first"
+        );
     }
 
     #[test]

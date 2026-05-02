@@ -15,9 +15,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::candidate::{
-    CacheKey, CandidateData, CandidateKind, RawCandidate,
-};
+use crate::candidate::{CacheKey, CandidateData, CandidateKind, RawCandidate};
 use crate::traits::{CandidateGenerator, GenerateContext};
 
 /// `gen:commands`. Walks the `CommandRegistry` and emits one
@@ -215,7 +213,8 @@ mod tests {
         let mut registry = CommandRegistry::new();
         let _ = lattice_grammar::builtins::populate(&mut registry);
         let _ = lattice_grammar::ex_commands::populate(&mut registry);
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let g = CommandsGenerator;
         let candidates = g.generate(&ctx_for("", &buffer, &registry));
         assert!(candidates.len() > 50, "expected many built-in commands");
@@ -235,7 +234,8 @@ mod tests {
         let mut registry = CommandRegistry::new();
         let _ = lattice_grammar::builtins::populate(&mut registry);
         let _ = lattice_grammar::ex_commands::populate(&mut registry);
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let candidates = CommandsGenerator.generate(&ctx_for("", &buffer, &registry));
         assert!(
             !candidates.iter().any(|c| c.text == "ex:substitute"),
@@ -254,7 +254,8 @@ mod tests {
         let mut registry = CommandRegistry::new();
         let _ = lattice_grammar::builtins::populate(&mut registry);
         let _ = lattice_grammar::ex_commands::populate(&mut registry);
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let candidates = CommandsGenerator.generate(&ctx_for("", &buffer, &registry));
         let write = candidates.iter().find(|c| c.text == "ex:write").unwrap();
         match &write.data {
@@ -271,7 +272,8 @@ mod tests {
     #[test]
     fn commands_generator_caches_with_fixed_key() {
         let registry = CommandRegistry::new();
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let g = CommandsGenerator;
         let key = g.cache_key(&ctx_for("anything", &buffer, &registry));
         assert_eq!(key, Some(CacheKey::new("gen:commands:v1")));
@@ -283,7 +285,8 @@ mod tests {
         // matcher does the filtering against the cached set, so
         // typing more chars shouldn't invalidate.
         let registry = CommandRegistry::new();
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let g = CommandsGenerator;
         let k1 = g.cache_key(&ctx_for("", &buffer, &registry));
         let k2 = g.cache_key(&ctx_for("ex:wri", &buffer, &registry));
@@ -295,7 +298,8 @@ mod tests {
     #[test]
     fn files_generator_lists_current_directory_when_prefix_empty() {
         let registry = CommandRegistry::new();
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let g = FilesGenerator;
         // Run from the workspace root; the test harness's cwd is
         // the crate dir.
@@ -307,7 +311,8 @@ mod tests {
     #[test]
     fn files_generator_filters_by_basename_prefix() {
         let registry = CommandRegistry::new();
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let g = FilesGenerator;
         let candidates = g.generate(&ctx_for("Carg", &buffer, &registry));
         assert!(candidates.iter().any(|c| c.text.starts_with("Carg")));
@@ -316,7 +321,8 @@ mod tests {
     #[test]
     fn files_generator_marks_directories_with_trailing_slash() {
         let registry = CommandRegistry::new();
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let g = FilesGenerator;
         let candidates = g.generate(&ctx_for("", &buffer, &registry));
         let src_entry = candidates.iter().find(|c| c.display.starts_with("src"));
@@ -331,7 +337,8 @@ mod tests {
     #[test]
     fn files_generator_returns_empty_for_nonexistent_directory() {
         let registry = CommandRegistry::new();
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let g = FilesGenerator;
         let candidates = g.generate(&ctx_for("/this/path/should/not/exist/", &buffer, &registry));
         assert!(candidates.is_empty());
@@ -340,7 +347,8 @@ mod tests {
     #[test]
     fn files_generator_cache_key_is_per_directory() {
         let registry = CommandRegistry::new();
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let g = FilesGenerator;
         let k_a = g.cache_key(&ctx_for("/tmp/foo", &buffer, &registry));
         let k_b = g.cache_key(&ctx_for("/tmp/foo/", &buffer, &registry));

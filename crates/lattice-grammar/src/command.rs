@@ -260,13 +260,7 @@ impl crate::introspect::Introspectable for CommandSpec {
                     lines.push(format!("       {}", arg.doc));
                 }
                 sections.push(crate::introspect::HelpSection {
-                    heading: format!(
-                        "  {}. {}: {:?}  ({})",
-                        i + 1,
-                        arg.name,
-                        arg.kind,
-                        default
-                    ),
+                    heading: format!("  {}. {}: {:?}  ({})", i + 1, arg.name, arg.kind, default),
                     lines,
                     anchor: Some(format!("arg:{}", arg.name)),
                 });

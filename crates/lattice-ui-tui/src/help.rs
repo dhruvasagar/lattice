@@ -415,11 +415,7 @@ mod tests {
 
     #[test]
     fn scroll_to_unknown_anchor_returns_false_and_leaves_scroll_alone() {
-        let mut h = HelpBuffer::from_lines_and_anchors(
-            "t",
-            vec!["a".into(), "b".into()],
-            vec![],
-        );
+        let mut h = HelpBuffer::from_lines_and_anchors("t", vec!["a".into(), "b".into()], vec![]);
         h.scroll = 1;
         assert!(!h.scroll_to_anchor("nope"));
         assert_eq!(h.scroll, 1);

@@ -19,7 +19,7 @@ use crate::traits::{
 };
 
 /// One assembled pipeline for a single completion query. Built by
-/// [`CompletionPipeline::for_slot`] (or hand-built for tests).
+/// the registry's slot resolver (or hand-built for tests).
 pub struct CompletionPipeline {
     pub generators: Vec<Arc<dyn CandidateGenerator>>,
     pub matcher: Arc<dyn CandidateMatcher>,
@@ -76,8 +76,10 @@ impl CompletionPipeline {
         self.ranker.rank(&mut scored);
 
         // 4. Annotate.
-        let mut rendered: Vec<RenderedCandidate> =
-            scored.into_iter().map(RenderedCandidate::from_scored).collect();
+        let mut rendered: Vec<RenderedCandidate> = scored
+            .into_iter()
+            .map(RenderedCandidate::from_scored)
+            .collect();
         for a in &self.annotators {
             for c in rendered.iter_mut() {
                 a.annotate(c);
@@ -119,9 +121,7 @@ impl CompletionPipeline {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-    use crate::candidate::{
-        CacheKey, CandidateKind, MatchScore, RawCandidate,
-    };
+    use crate::candidate::{CacheKey, CandidateKind, MatchScore, RawCandidate};
     use lattice_core::{Buffer, Document};
     use lattice_grammar::CommandRegistry;
     use std::ops::Range;
@@ -206,7 +206,8 @@ mod tests {
 
     #[test]
     fn pipeline_runs_all_four_stages() {
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let registry = CommandRegistry::new();
         let cache = GeneratorCache::new();
         let p = CompletionPipeline {
@@ -227,7 +228,8 @@ mod tests {
 
     #[test]
     fn caching_prevents_regeneration_on_second_run() {
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let registry = CommandRegistry::new();
         let cache = GeneratorCache::new();
         let generator = Arc::new(CountingGen::new(vec!["x", "y"], Some("k1")));
@@ -246,7 +248,8 @@ mod tests {
 
     #[test]
     fn no_cache_key_means_no_caching() {
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let registry = CommandRegistry::new();
         let cache = GeneratorCache::new();
         let generator = Arc::new(CountingGen::new(vec!["x"], None));
@@ -263,7 +266,8 @@ mod tests {
 
     #[test]
     fn matcher_filters_non_matches() {
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let registry = CommandRegistry::new();
         let cache = GeneratorCache::new();
         let p = CompletionPipeline {
@@ -279,7 +283,8 @@ mod tests {
 
     #[test]
     fn match_ranges_propagate_to_rendered_candidates() {
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let registry = CommandRegistry::new();
         let cache = GeneratorCache::new();
         let p = CompletionPipeline {
@@ -294,7 +299,8 @@ mod tests {
 
     #[test]
     fn empty_query_with_prefix_matcher_matches_all() {
-        let document = Document::empty(); let buffer = document.buffer().clone();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
         let registry = CommandRegistry::new();
         let cache = GeneratorCache::new();
         let p = CompletionPipeline {

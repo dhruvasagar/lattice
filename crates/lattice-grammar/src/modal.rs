@@ -55,7 +55,11 @@ mod tests {
 
     #[test]
     fn visual_predicate_recognises_each_kind() {
-        for kind in [VisualKind::Charwise, VisualKind::Linewise, VisualKind::Blockwise] {
+        for kind in [
+            VisualKind::Charwise,
+            VisualKind::Linewise,
+            VisualKind::Blockwise,
+        ] {
             assert!(ModalState::Visual(kind).is_visual());
         }
     }

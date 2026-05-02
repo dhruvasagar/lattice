@@ -45,8 +45,14 @@ fn motion_word_forward(c: &mut Criterion) {
             let mut doc = Document::from_text(t);
             let inv = CommandInvocation::of(b.word_forward.0);
             bencher.iter(|| {
-                let _ =
-                    execute(&registry, &mut doc, black_box(Position::ZERO), inv.clone(), &CancellationToken::never()).unwrap();
+                let _ = execute(
+                    &registry,
+                    &mut doc,
+                    black_box(Position::ZERO),
+                    inv.clone(),
+                    &CancellationToken::never(),
+                )
+                .unwrap();
             });
         });
     }
@@ -91,8 +97,14 @@ fn motion_word_end(c: &mut Criterion) {
             let mut doc = Document::from_text(t);
             let inv = CommandInvocation::of(b.word_end.0);
             bencher.iter(|| {
-                let _ =
-                    execute(&registry, &mut doc, black_box(Position::ZERO), inv.clone(), &CancellationToken::never()).unwrap();
+                let _ = execute(
+                    &registry,
+                    &mut doc,
+                    black_box(Position::ZERO),
+                    inv.clone(),
+                    &CancellationToken::never(),
+                )
+                .unwrap();
             });
         });
     }
@@ -132,8 +144,14 @@ fn motion_word_forward_with_count(c: &mut Criterion) {
         let mut doc = Document::from_text(&text);
         let inv = CommandInvocation::of(b.word_forward.0).with_count(Count(50));
         bencher.iter(|| {
-            let _ =
-                execute(&registry, &mut doc, black_box(Position::ZERO), inv.clone(), &CancellationToken::never()).unwrap();
+            let _ = execute(
+                &registry,
+                &mut doc,
+                black_box(Position::ZERO),
+                inv.clone(),
+                &CancellationToken::never(),
+            )
+            .unwrap();
         });
     });
     g.finish();
@@ -152,7 +170,14 @@ fn motion_find_char_forward(c: &mut Criterion) {
         let inv = CommandInvocation::of(b.find_char_forward.0)
             .with_args(lattice_grammar::Args::Char('z'));
         bencher.iter(|| {
-            let _ = execute(&registry, &mut doc, black_box(Position::ZERO), inv.clone(), &CancellationToken::never()).unwrap();
+            let _ = execute(
+                &registry,
+                &mut doc,
+                black_box(Position::ZERO),
+                inv.clone(),
+                &CancellationToken::never(),
+            )
+            .unwrap();
         });
     });
     g.finish();

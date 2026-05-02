@@ -197,8 +197,14 @@ mod tests {
 
     #[test]
     fn plain_char_renders_unwrapped() {
-        assert_eq!(format_chord(&ev(KeyCode::Char('a'), KeyModifiers::NONE)), Some("a".into()));
-        assert_eq!(format_chord(&ev(KeyCode::Char('$'), KeyModifiers::NONE)), Some("$".into()));
+        assert_eq!(
+            format_chord(&ev(KeyCode::Char('a'), KeyModifiers::NONE)),
+            Some("a".into())
+        );
+        assert_eq!(
+            format_chord(&ev(KeyCode::Char('$'), KeyModifiers::NONE)),
+            Some("$".into())
+        );
     }
 
     #[test]
@@ -236,11 +242,26 @@ mod tests {
 
     #[test]
     fn special_keys_render_with_canonical_names() {
-        assert_eq!(format_chord(&ev(KeyCode::Esc, KeyModifiers::NONE)), Some("<Esc>".into()));
-        assert_eq!(format_chord(&ev(KeyCode::Tab, KeyModifiers::NONE)), Some("<Tab>".into()));
-        assert_eq!(format_chord(&ev(KeyCode::Enter, KeyModifiers::NONE)), Some("<CR>".into()));
-        assert_eq!(format_chord(&ev(KeyCode::Backspace, KeyModifiers::NONE)), Some("<BS>".into()));
-        assert_eq!(format_chord(&ev(KeyCode::Left, KeyModifiers::NONE)), Some("<Left>".into()));
+        assert_eq!(
+            format_chord(&ev(KeyCode::Esc, KeyModifiers::NONE)),
+            Some("<Esc>".into())
+        );
+        assert_eq!(
+            format_chord(&ev(KeyCode::Tab, KeyModifiers::NONE)),
+            Some("<Tab>".into())
+        );
+        assert_eq!(
+            format_chord(&ev(KeyCode::Enter, KeyModifiers::NONE)),
+            Some("<CR>".into())
+        );
+        assert_eq!(
+            format_chord(&ev(KeyCode::Backspace, KeyModifiers::NONE)),
+            Some("<BS>".into())
+        );
+        assert_eq!(
+            format_chord(&ev(KeyCode::Left, KeyModifiers::NONE)),
+            Some("<Left>".into())
+        );
     }
 
     #[test]
@@ -261,8 +282,14 @@ mod tests {
 
     #[test]
     fn function_keys_render_as_fn() {
-        assert_eq!(format_chord(&ev(KeyCode::F(1), KeyModifiers::NONE)), Some("<F1>".into()));
-        assert_eq!(format_chord(&ev(KeyCode::F(12), KeyModifiers::NONE)), Some("<F12>".into()));
+        assert_eq!(
+            format_chord(&ev(KeyCode::F(1), KeyModifiers::NONE)),
+            Some("<F1>".into())
+        );
+        assert_eq!(
+            format_chord(&ev(KeyCode::F(12), KeyModifiers::NONE)),
+            Some("<F12>".into())
+        );
     }
 
     #[test]

@@ -19,8 +19,8 @@
 pub mod app;
 pub mod chord;
 pub mod excommand;
-pub mod input;
 pub mod help;
+pub mod input;
 pub mod keymap;
 pub mod render;
 pub mod runtime;

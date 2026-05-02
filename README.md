@@ -130,7 +130,7 @@ The CLI opens the file in the TUI. Editing is full vim modal.
 **Run tests**
 
 ```sh
-cargo test --workspace        # ~1080 tests, sub-second
+cargo test --workspace        # ~1099 tests, sub-second
 cargo clippy --workspace      # workspace lints (deny unsafe outside opt-in)
 ```
 
@@ -223,8 +223,8 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] Block-visual `d` / `y` / `c` / `I` / `A` / `>` / `<` (per-row dispatch + replicate-on-Esc + single undo unit)
 - [x] Manual folds (`zf` / `zo` / `zc` / `za` / `zR` / `zM` / `zd`)
 - [x] Counts on linewise ops (`2dd`, `2>>`) collapse to one undo unit
+- [x] Substitute live preview (matches highlighted while typing `:s/pat/repl/...`)
 - [ ] Computed folds (tree-sitter + indent fallback)
-- [ ] Substitute live preview (decorations on the target buffer while typing)
 
 **Unified command / grammar dispatch** (DESIGN.md §5.2.1)
 
@@ -232,7 +232,7 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] `:` line is a parser front-end producing typed `CommandInvocation`s
 - [x] `:g/pat/body` and `:v/pat/body` parse `body` up front (no per-match re-parse)
 - [x] `Range::Selection` resolves to active visual selection
-- [ ] Generalized interactive arg-prompts via `args_schema` (Chord slot done; other kinds next)
+- [x] Interactive arg-prompts via `args_schema` (any required arg arms a prompt; Chord kind auto-submits on next chord)
 
 **Event system + hooks** (DESIGN.md §5.10)
 
@@ -290,9 +290,11 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 
 - [x] Workspace lint policy (`unsafe_code = "deny"`, opt-in per module)
 - [x] Criterion benches for runtime, motions, operators, search
-- [ ] Bench gate: regressions vs. baseline fail CI
-- [ ] Allocation-discipline checks on the render hot path
-- [ ] Cross-platform CI matrix (Linux / macOS / Windows)
+- [x] Cross-platform CI matrix (Linux / macOS / Windows) + fmt + doc gates
+- [x] Bench compile-check (catches bench-code rot per platform)
+- [x] Bench baseline artifact recorded on every push to main
+- [ ] Bench regression gate (needs stable runner; shared CI variance dwarfs signal)
+- [ ] Allocation-discipline checks on the render hot path (dhat-based)
 
 ---
 

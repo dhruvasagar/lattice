@@ -36,7 +36,7 @@ rendering, and v1.0 polish.
 | Phase | Title                                 | Status                   | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 |-------|---------------------------------------|--------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | 0     | Foundation                            | ✅ done                  | Workspace, lattice-core, document/buffer/undo, file I/O, protocol enums                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| 1     | Modal Editing                         | ✅ done                  | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch) / folds / ex-commands (every command -- including `:s` / `:g` / `:v` via `Args::List` -- registered as `ExCommandSpec` peers, dispatched through unified `grammar::execute()` per §5.2.1, §B.2). Blockwise visual: per-row dispatch for `d` / `y` / `c` plus blockwise paste; `>` / `<` indent each line in the block; `I` / `A` enter Insert at the block's left/right column with the typed prefix replicated to every row on Esc.                |
+| 1     | Modal Editing                         | ✅ done                  | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch + substitute live preview) / folds / ex-commands (every command -- including `:s` / `:g` / `:v` via `Args::List` -- registered as `ExCommandSpec` peers, dispatched through unified `grammar::execute()` per §5.2.1, §B.2). Blockwise visual: per-row dispatch for `d` / `y` / `c` plus blockwise paste; `>` / `<` indent each line in the block; `I` / `A` enter Insert at the block's left/right column with the typed prefix replicated to every row on Esc. Every operator lands as a single undo unit -- counts on linewise ops (`2dd`, `2>>`), block-visual rectangle ops, and I/A replications all collapse to one `u`. |
 | 2     | Terminal UI Bootstrap                 | ✅ done                  | crossterm + ratatui; modal cursor; mode line; gutter                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | 3     | Tree-Sitter                           | ✅ done (Rust/Python/JS) | Highlights wired; grammar extension API used by builtins, not yet by plugins                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | 4     | LSP                                   | ⛔ not started           | Phase 4 still waiting; depends on async-actor work and the Pending->Effect plumbing in §5.2.1                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -167,7 +167,9 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | Pattern backrefs (`/(\w+).*\1/`)           | ✅                    | fancy-regex NFA path; bounded by 1M-iteration recursion limit                                            |
 | Replacement backrefs (`:s/(a)(b)/$2$1/`)   | ✅                    | `$1` etc. via fancy-regex's `replace_all` template                                                       |
 | Search-as-you-type live preview (hlsearch) | ✅                    | every match highlighted; persists after submit; compile errors silenced during preview                  |
-| Per-search timeout / cancellation          | ⛔                    | DESIGN.md §5.2.5 cancellation token contract; pathological backref patterns currently run to recursion-limit (~169ms on benched pattern) |
+| Substitute-as-you-type live preview        | ✅                    | DESIGN.md §5.9.10; magenta strike-through overlay on matches as the user types `:s/pat/repl/...`; honours `/g` flag and `%s` scope |
+| Search cooperative cancellation            | ✅                    | DESIGN.md §5.2.5; search loops poll a `CancellationToken` per chunk + per match; flipped token returns `CoreError::Cancelled` |
+| Per-search deadline timer                  | ⛔                    | the cancellation seam is in place; the deadline-flipper (Reflex < 2 ms) is the remaining piece          |
 
 ### Ex commands
 
@@ -432,9 +434,11 @@ race past their own commit.
 | Publish-before-reply ordering                              | ✅                   | §5.6.8 (acquire/release contract)       |
 | Sync `lattice_grammar::execute` (runs inside actor)        | ✅                   | §5.2.1 (purity preserved)               |
 | Latency-class declarations (Reflex / Display / Background) | ✅ declarative        | §5.2.5 (`LatencyClass` field on `CommandSpec`; runtime enforcement deferred) |
-| Veto-class hooks (1ms p99)                                 | ⛔                   | §5.2.1 (needs §5.10 event bus)          |
-| Cancellation token contract                                | ⛔                   | §5.2.5 (needs deadline-timer plumbing through `Pending`) |
-| Events-over-invocation rule                                | ⛔                   | §5.2.5 (needs §5.10 event bus)          |
+| Cancellation token contract                                | ✅ user-Esc           | §5.2.5; `CancellationToken` (Arc<AtomicBool>) plumbed through `dispatch_with_cancel` → grammar dispatcher → operator/motion/text-object contexts → search loops. Deadline-timer flipper (Reflex < 2 ms, Display < 10 ms) is the remaining piece. |
+| Event bus (observation baseline)                           | ✅                   | §5.10; `EventBus` in lattice-runtime: kind-indexed dispatch, `SubscriptionTarget::Channel` (mpsc) + `Invocation` (queued via `drain_pending_invocations`). Actor publish hooks + Before-event veto seam are the next layer. |
+| Veto-class hooks (1ms p99)                                 | ⛔                   | §5.2.1 (needs Before-event mutation/veto path on top of the bus) |
+| Events-over-invocation rule                                | ⛔                   | §5.2.5 (needs the actor to publish edit / mode-change events) |
+| Interactive arg-prompts (§B.1 phase 2)                     | ✅                   | Submitting bare `:cmd<CR>` with a Required first arg arms a prompt: prefills `:cmd `, surfaces the schema's prompt in the echo area, and waits for typed input (Chord-kind args additionally auto-submit on the next captured chord). Optional-default args take the parser's normal path. |
 | Multi-pane selection transformation                        | n/a (single-pane v1) | §5.6.8                                  |
 
 This is **Phase 4 / 7's prerequisite** — LSP clients and the WASM
@@ -501,14 +505,20 @@ Default classifications:
 - **Background**: none yet -- the indexer / file-watcher / LSP
   debounce paths arrive in Phases 4-7.
 
-**CI** (`.github/workflows/ci.yml`) gates every push/PR on
-`cargo test --workspace --locked` and `cargo clippy --workspace
---tests --locked -- -D warnings`. A `bench-compile` job catches
-bench-code rot via `cargo bench --no-run`. A `bench-baseline` job on
-push-to-main runs the benches in `--quick` mode and uploads the
-criterion reports as artifacts -- groundwork for the regression
-gate when stable bench infrastructure (self-hosted runner or
-`bencher.dev`) lands.
+**CI** (`.github/workflows/ci.yml`) gates every push/PR on:
+
+- `cargo test --workspace --locked` + `cargo clippy --workspace
+  --tests --locked -- -D warnings` across a cross-platform matrix
+  (ubuntu-latest, macos-latest, windows-latest; `fail-fast: false`).
+- `cargo fmt --all -- --check` -- rejects unformatted code.
+- `cargo doc --no-deps --workspace` with `RUSTDOCFLAGS=-D warnings`
+  -- catches broken intra-doc links before merge.
+- `cargo bench --workspace --no-run` per platform -- bench-compile
+  rot detection.
+- `bench-baseline` on push-to-main runs the benches in `--quick`
+  mode and uploads the criterion reports as artifacts. Groundwork
+  for the regression gate when stable bench infrastructure
+  (self-hosted runner or `bencher.dev`) lands.
 
 Current bench coverage: motions (word_forward / backward / end /
 first_non_blank / counted), operators (dw / dd / d_whole / yw / cw / diw /
@@ -529,11 +539,11 @@ Update this section when picking up the in-flight item.
 
 ## Up next (priority order)
 
-1. **Per-search timeout / cancellation** — fancy-regex's pathological
-   backref patterns currently run to recursion limit (~169ms on the
-   benched pattern). Needs the §5.2.5 cancellation-token contract:
-   each Reflex command observes a deadline, aborts cleanly. Unlocks
-   safer regex search + future async I/O cancellation.
+1. **Phase 4: LSP** — diagnostics, completion, hover, go-to-definition,
+   references. The cancellation-token plumbing is in place
+   (`dispatch_with_cancel` + cooperative search cancellation), so LSP
+   request cancellation hooks into existing seams; the remaining work
+   is the LSP client (tower-lsp or hand-rolled) + per-server shims.
 2. **Computed folds** (syntax-driven, indent-based) — manual folds via
    zf/zo/zc/za/zR/zM/zd are done; computed folds need tree-sitter integration
    and an indent-based fall-back.
@@ -541,14 +551,26 @@ Update this section when picking up the in-flight item.
    `:describe-option`.
 4. **Multi-buffer foundations** (§5.9) — the trigger for `HelpDisplayMode`
    beyond `Popup`. Until this lands, all introspection is overlay-rendered.
-5. **Help major mode + tree-sitter grammar** — defines sections,
+5. **Hover popup + inline completion popup polish** — completion popup
+   is wired (vertico-style); hover popup needs the host scaffolding so
+   LSP hover responses land.
+6. **Help major mode + tree-sitter grammar** — defines sections,
    link-targets, code-blocks. Needs the help mode registered as a major
    mode, which depends on the modes registry (Phase 8) but the *grammar*
    can be drafted earlier.
-6. **Veto-class hooks** (§5.10.2 / §5.2.1) — observation-only event bus
-   is in place; pre-mutation hooks (`BeforeSave`, `BeforeQuit`) need
-   the mutation/abort return path. Plus the actor wiring to publish
-   events on edit / mode-change. Unblocks autocmds.
+7. **Veto-class hooks + actor event publish** (§5.10.2 / §5.2.1) —
+   observation-only event bus is in place; pre-mutation hooks
+   (`BeforeSave`, `BeforeQuit`) need the mutation/abort return path.
+   Actor wiring to publish `DocumentChanged` / `SelectionsChanged` /
+   `ModalModeChanged` events. Unblocks autocmds.
+8. **Per-`LatencyClass` deadline timers** — Reflex commands observe a
+   2 ms deadline, Display commands 10 ms, both via the cancellation
+   token already plumbed.
+9. **Bench regression gate** — needs a stable runner (self-hosted or
+   `bencher.dev`); shared GitHub runners have ~20% bench variance that
+   dwarfs a 10% regression signal.
+10. **Render-hot-path alloc discipline** — dhat-based assertion that
+    steady-state frames produce no allocations.
 
 ---
 

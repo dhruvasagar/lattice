@@ -29,6 +29,16 @@ tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] 
 futures = "0.3"
 arc-swap = "1.7"
 
+# SIMD-optimized substring search (lattice-core::search). Already a
+# transitive dep via tree-sitter; promoting it to direct gives us
+# `memchr::memmem::find` for ~2GB/s scans on AVX2.
+memchr = "2.7"
+
+# Data-parallel rope scans for full-buffer search paths
+# (no_match_with_wrap, forward_last_match). Workspace-wide so future
+# crates can reach for it too.
+rayon = "1.10"
+
 # Serialization (Phase 0 just uses serde for protocol type derives)
 serde = { version = "1.0", features = ["derive"] }
 

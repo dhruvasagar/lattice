@@ -603,6 +603,7 @@ dependencies = [
  "criterion",
  "insta",
  "lattice-protocol",
+ "memchr",
  "ropey",
  "serde",
  "thiserror 2.0.18",

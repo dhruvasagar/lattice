@@ -130,7 +130,7 @@ The CLI opens the file in the TUI. Editing is full vim modal.
 **Run tests**
 
 ```sh
-cargo test --workspace        # ~1099 tests, sub-second
+cargo test --workspace        # ~1115 tests, sub-second
 cargo clippy --workspace      # workspace lints (deny unsafe outside opt-in)
 ```
 
@@ -259,7 +259,9 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 
 - [x] TUI renderer (crossterm + ratatui) — first-class peer for headless / SSH
 - [x] Display-width-aware cursor placement (CJK / Latin / emoji)
-- [x] Tree-sitter highlight emission (Rust / Python / JS bundled)
+- [x] Tree-sitter highlight emission (Rust / Python / JS / Markdown bundled)
+- [x] Markdown grammar with fenced-code injections (` ```rust``` ` blocks highlight as rust)
+- [x] Markup `Style` variants for headings (1-6), bold / italic, links, raw — themable from day one
 - [ ] GPU compositor (GPUI preferred, wgpu fallback) — Phase 5
 - [ ] `EditorRenderer` + `DocumentRenderer` + `TuiRenderer` trait split — Phase 5/6
 - [ ] Sprite atlas for icons (file-type, severity, gutter, picker, status) — §5.6.7

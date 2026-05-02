@@ -111,7 +111,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         builtins: &app.builtins,
                         pending_count: app.pending_count,
                         recording_macro: app.macro_recording.is_some(),
-                        help_open: app.help_buffer.is_some(),
+                        active_buffer: app.active_buffer,
                         completion_open: app.completion_state.is_some(),
                         chord_capture: app.chord_capture_active(),
                     };

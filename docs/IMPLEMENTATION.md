@@ -552,6 +552,20 @@ Update this section when picking up the in-flight item.
    `:describe-option`.
 4. **Multi-buffer foundations** (§5.9) — the trigger for `HelpDisplayMode`
    beyond `Popup`. Until this lands, all introspection is overlay-rendered.
+   - **B.1.a buffer abstraction + active-buffer routing** ✅ done.
+     `BufferKind { Document, Help }` + `BufferId` newtype; `App::active_buffer`
+     decides which cursor a motion / page / scroll / `<C-o>` / `<C-i>`
+     action mutates. Help routes through the same `translate_normal` chord
+     grammar as document buffers; only three buffer-local bindings differ
+     (`Esc` / `q` dismiss, `<CR>` follows the link under the cursor). The
+     unified position-history ring carries `(buffer, buffer_id)` so jump-list
+     walks switch active_buffer cleanly when crossing buffer boundaries.
+     `lattice_grammar::execute_motion_only` exposes a read-only motion
+     dispatch path that resolves a `CommandInvocation` against a bare
+     `Buffer` -- no `Document` / undo / selections required, suitable for
+     help and (later) file-tree / outline / diagnostics views.
+   - **B.1.b panes + splits**, **B.1.c multiple Document buffers**,
+     **B.1.d buffer-as-content kinds (file-tree, outline, diagnostics)** ⛔.
 5. **Hover popup + inline completion popup polish** — completion popup
    is wired (vertico-style); hover popup needs the host scaffolding so
    LSP hover responses land.

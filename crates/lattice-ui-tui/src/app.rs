@@ -38,6 +38,7 @@ use lattice_syntax::{Lang, LangRegistry, StyledSpan, Syntax};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::buffers::{BufferId, BufferKind};
 use crate::excommand;
 use crate::help::{HelpBuffer, HelpDisplayMode, command_link, key_link};
 
@@ -221,6 +222,75 @@ fn delete_trailing_word(s: &mut String) {
     let last_ws = s.rfind(char::is_whitespace);
     let cut_to = last_ws.map(|i| i + 1).unwrap_or(0);
     s.truncate(cut_to);
+}
+
+/// Whether an action would mutate the document buffer (or the
+/// document's mode / selection / undo state). The help-buffer guard
+/// in [`App::apply`] short-circuits these when active_buffer ==
+/// Help so a stray `i` / `p` / `u` / `dd` while reading help
+/// doesn't fall through onto the underlying document.
+///
+/// Motions and scroll-class actions are NOT in this set -- they
+/// operate on whichever buffer is active (document or help) per the
+/// per-action active-buffer routing.
+fn action_is_document_mutation(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Insert(_)
+            | Action::DeleteCharBackward
+            | Action::EnterMode(ModalState::Insert)
+            | Action::EnterMode(ModalState::Replace)
+            | Action::EnterAppend
+            | Action::EnterBlockVisualInsert
+            | Action::EnterBlockVisualAppend
+            | Action::OpenLineBelow
+            | Action::OpenLineAbove
+            | Action::Undo
+            | Action::Redo
+            | Action::OverwriteChar(_)
+            | Action::ReplaceUndoLast
+            | Action::PasteAfter
+            | Action::PasteBefore
+            | Action::PasteText(_)
+            | Action::EnterVisual(_)
+            | Action::ExitVisual
+            | Action::ReselectLastVisual
+            | Action::JoinLines { .. }
+            | Action::ToggleCaseAtCursor
+            | Action::CreateFoldFromVisual
+            | Action::OpenFoldAtCursor
+            | Action::CloseFoldAtCursor
+            | Action::ToggleFoldAtCursor
+            | Action::OpenAllFolds
+            | Action::CloseAllFolds
+            | Action::DeleteFoldAtCursor
+            | Action::RepeatLastChange
+            | Action::StartMacroRecord(_)
+            | Action::StopMacroRecord
+            | Action::PlayMacro(_)
+            | Action::PlayLastMacro
+            // Search / search-word: targets the document; defer
+            // search-in-help to a later phase. Marks similarly
+            // resolve against the document; in help, the user's
+            // cursor isn't tied to a doc position.
+            | Action::EnterSearch(_)
+            | Action::SearchAppend(_)
+            | Action::SearchBackspace
+            | Action::SearchSubmit
+            | Action::SearchCancel
+            | Action::SearchNext
+            | Action::SearchPrevious
+            | Action::SearchWordUnderCursor(_)
+            | Action::MatchBracket
+            | Action::FindRepeat { .. }
+            | Action::SetMark(_)
+            | Action::JumpToMarkLine(_)
+            | Action::JumpToMarkExact(_)
+            | Action::WalkMarkHistoryBack
+            | Action::WalkMarkHistoryForward
+            | Action::GotoNextFold
+            | Action::GotoPrevFold
+    )
 }
 
 fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
@@ -429,38 +499,22 @@ pub enum Action {
     /// then cancels the command line.)
     CommandLineDismissCompletion,
 
-    // ---- Help overlay (DESIGN.md §5.11) ----
-    // The help overlay is a real buffer with cursor + motions. j/k/h/l/0/$
-    // move the cursor; the popup auto-scrolls to keep the cursor in view.
-    /// `j` -- cursor down one line.
-    HelpCursorDown,
-    /// `k` -- cursor up one line.
-    HelpCursorUp,
-    /// `h` -- cursor left one byte (clamps at line start).
-    HelpCursorLeft,
-    /// `l` -- cursor right one byte (clamps at line end).
-    HelpCursorRight,
-    /// `0` -- cursor to start of current line.
-    HelpCursorLineStart,
-    /// `$` -- cursor to end of current line (vim-style: last char).
-    HelpCursorLineEnd,
-    /// Half-page motion (Ctrl-D / Ctrl-U). `down = true` moves forward.
-    /// Cursor follows; auto-scroll keeps it visible.
-    HelpHalfPage {
-        down: bool,
-    },
-    /// Jump to top (`gg`) / bottom (`G`) of the active help overlay.
-    HelpJumpTop,
-    HelpJumpBottom,
-    /// Close the active help overlay (Esc / q).
+    // ---- Help buffer (DESIGN.md §5.11, §5.9) ----
+    //
+    // Help is a regular buffer routed through the same Normal-mode
+    // chord grammar as the document buffer (motions, page motions,
+    // viewport jumps, `<C-o>` / `<C-i>`, `gg` / `G`, etc.). The
+    // App's `active_buffer` field decides which cursor an action
+    // affects. Only two help-specific actions remain -- buffer-local
+    // bindings emitted by `translate()` when active_buffer == Help:
+    /// Close the active help overlay (`Esc` / `q`).
     HelpDismiss,
-    /// Follow the link under the cursor in the help overlay
-    /// (`<CR>`). Resolves the link's URL scheme and dispatches:
-    /// `command:NAME` re-runs `:describe-command NAME`,
-    /// `key:CHORD` re-runs `:describe-key CHORD`,
-    /// `file:PATH:LINE` opens the file at the line. Cursor not
-    /// on a link is a no-op.
-    HelpFollowLink,
+    /// Follow the link under the cursor (`<CR>`). Resolves the
+    /// link's URL scheme and dispatches: `command:NAME` re-runs
+    /// `:describe-command NAME`, `key:CHORD` re-runs
+    /// `:describe-key CHORD`, `file:PATH:LINE` opens the file at
+    /// the line. Cursor not on a link is a no-op.
+    FollowLink,
 
     // ---- Search (`/`, `?`, `n`, `N`) ----
     /// Pressed `/` (Forward) or `?` (Backward) -- enter Search modal with
@@ -509,6 +563,16 @@ pub struct App {
     /// The actor owns the writable [`Document`]; mutations route
     /// through it; reads load a versioned snapshot.
     pub document: DocumentHandle,
+    /// Stable id for the document buffer. Position-history entries
+    /// (§5.1.1) use this to identify the source buffer of a jump
+    /// when there are multiple buffers (Phase B.1.c). v1 has only
+    /// one, but the id is real.
+    pub document_buffer_id: BufferId,
+    /// Which buffer the input pipeline currently routes to. When a
+    /// help overlay is open this is `Help`; otherwise `Document`.
+    /// Motions, jumps, and `<C-o>` / `<C-i>` consult this to pick
+    /// the cursor + buffer they operate on (DESIGN.md §5.9).
+    pub active_buffer: BufferKind,
     pub cursor: Position,
     /// First visible line in the viewport (0-based).
     pub scroll: u32,
@@ -784,14 +848,23 @@ pub struct MacroRecording {
 
 const POSITION_HISTORY_CAP: usize = 100;
 
-/// One entry in the unified position history (§5.1.1). The `document`
-/// and `timestamp` fields the spec mentions are omitted in v1 since
-/// the TUI runs against a single document; they re-enter when
-/// multi-buffer support arrives.
+/// One entry in the unified position history (§5.1.1). v1 carries
+/// the originating [`BufferKind`] + [`BufferId`] so `<C-o>` /
+/// `<C-i>` walks across buffer boundaries cleanly (jumping from the
+/// document into a help buffer pops back into the document
+/// transparently). The `timestamp` field the spec mentions is
+/// omitted in v1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PositionEntry {
     pub position: Position,
     pub source: PositionSource,
+    /// Which buffer kind this entry was recorded in. Used to
+    /// switch [`App::active_buffer`] when the walk crosses kinds.
+    pub buffer: BufferKind,
+    /// Concrete buffer id at record time. Stale ids (e.g. an entry
+    /// recorded in a now-closed Help buffer) collapse to the
+    /// surviving buffer of the same kind via [`BufferKind`] alone.
+    pub buffer_id: BufferId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -967,6 +1040,8 @@ impl App {
         let document = spawn_document(document, registry.clone());
         Self {
             document,
+            document_buffer_id: BufferId::next(),
+            active_buffer: BufferKind::Document,
             cursor: Position::ZERO,
             scroll: 0,
             should_quit: false,
@@ -1199,6 +1274,21 @@ impl App {
         if !matches!(action, Action::SetPending(_)) {
             self.pending = Pending::None;
         }
+        // Read-only guard for help: when a help buffer holds focus
+        // (DESIGN.md §5.9 active-buffer routing), buffer-mutating
+        // actions (Insert / Delete / Paste / Undo / Redo / fold ops
+        // / etc.) silently no-op with a "read-only" echo. Motion-
+        // and scroll-class actions, the universal escape hatches
+        // (Quit, EnterCommandLine, HelpDismiss), and command-line
+        // editing actions all keep working -- the read-only set is
+        // narrow and explicit, so additions to `Action` default to
+        // working in help unless they're added to this list.
+        if matches!(self.active_buffer, BufferKind::Help) && action_is_document_mutation(&action) {
+            self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
+            self.ensure_cursor_visible();
+            self.maybe_reparse_syntax();
+            return;
+        }
         match action {
             Action::None => {}
             Action::Quit => {
@@ -1242,7 +1332,7 @@ impl App {
                 self.last_message = None;
                 // Q16: opening the cmdline dismisses any open help.
                 // The user can only focus on one thing.
-                self.help_buffer = None;
+                self.dismiss_help();
                 self.completion_state = None;
             }
             Action::CommandLineAppend(c) => {
@@ -1488,40 +1578,10 @@ impl App {
                 self.completion_state = None;
             }
 
-            Action::HelpCursorDown => self.do_help_move_cursor(0, 1),
-            Action::HelpCursorUp => self.do_help_move_cursor(0, -1),
-            Action::HelpCursorLeft => self.do_help_move_cursor(-1, 0),
-            Action::HelpCursorRight => self.do_help_move_cursor(1, 0),
-            Action::HelpCursorLineStart => {
-                if let Some(h) = self.help_buffer.as_mut() {
-                    h.cursor_line_start();
-                }
-            }
-            Action::HelpCursorLineEnd => {
-                if let Some(h) = self.help_buffer.as_mut() {
-                    h.cursor_line_end();
-                }
-            }
-            Action::HelpHalfPage { down } => self.do_help_half_page(down),
-            Action::HelpJumpTop => {
-                if let Some(h) = self.help_buffer.as_mut() {
-                    h.jump_top();
-                }
-            }
-            Action::HelpJumpBottom => {
-                let viewport = self.help_bufferport_height();
-                if let Some(h) = self.help_buffer.as_mut() {
-                    h.jump_bottom(viewport);
-                }
-            }
             Action::HelpDismiss => {
-                self.help_buffer = None;
-                // Help mode reuses Pending::AfterG for the gg
-                // chord; clear it on dismiss so a stranded `g`
-                // doesn't leak into Normal mode.
-                self.pending = Pending::None;
+                self.dismiss_help();
             }
-            Action::HelpFollowLink => self.do_help_follow_link(),
+            Action::FollowLink => self.do_help_follow_link(),
 
             Action::EnterSearch(direction) => {
                 self.search_line = Some(SearchLine {
@@ -2632,10 +2692,112 @@ impl App {
     // do_write + do_quit pair runs in sequence via apply_effect; the
     // quit's force-bit comes from the trailing `!` (DESIGN.md §5.2.1).
 
-    fn run_invocation(&mut self, mut inv: CommandInvocation) {
+    fn run_invocation(&mut self, inv: CommandInvocation) {
         // Pending state is consumed by the input layer that built `inv`; any
         // dispatch resets it.
         self.pending = Pending::None;
+        // Help is read-only; route motions through the help buffer
+        // path and reject operator-class invocations cleanly. Other
+        // CommandKind variants (text-objects, ex-commands) shouldn't
+        // reach Help -- ex-commands route through `execute_ex_line`,
+        // text-objects only resolve via operators -- but if they do
+        // they get the same read-only echo.
+        if matches!(self.active_buffer, BufferKind::Help) {
+            self.run_help_invocation(inv);
+            return;
+        }
+        self.run_document_invocation(inv);
+    }
+
+    /// Resolve a motion-class invocation against the active help
+    /// buffer. Operators / text-objects / ex-commands echo a "read-
+    /// only" message; the dispatcher in
+    /// [`Self::run_document_invocation`] is the only path that
+    /// commits buffer mutations.
+    ///
+    /// Counts compose the same way they do for the document path
+    /// (`pending_count` and `op_count` both fold in), so `5j` /
+    /// `3gg` work in help. Jump-class motions (`gg` / `G`) push to
+    /// the unified position-history ring -- with `active_buffer ==
+    /// Help` recorded on the entry -- so `<C-o>` walks back into
+    /// the document if the help session is shallow.
+    fn run_help_invocation(&mut self, mut inv: CommandInvocation) {
+        let Some(spec) = self.registry.lookup(inv.command) else {
+            return;
+        };
+        if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) {
+            // Operators (delete / change / paste / indent / case)
+            // and any other non-motion class can't run on a read-
+            // only buffer. Yank could in principle be allowed; v1
+            // routes it through the operator path which expects a
+            // mutable Document, so for B.1.a we echo and defer.
+            self.pending_count = 0;
+            self.op_count = 0;
+            self.pending_register = None;
+            self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
+            return;
+        }
+        // Jump-class motions push history before dispatch so `<C-o>`
+        // can return -- same contract as the document path.
+        if (inv.command == self.builtins.goto_first_line.0
+            || inv.command == self.builtins.goto_last_line.0)
+            && let Some(h) = self.help_buffer.as_ref()
+        {
+            let cur = h.cursor;
+            self.push_position_history(cur, PositionSource::AutoJump);
+        }
+        let motion_count = if self.pending_count > 0 {
+            self.pending_count
+        } else {
+            inv.count.map(|c| c.0).unwrap_or(1)
+        };
+        let final_count = if self.op_count > 0 {
+            self.op_count.saturating_mul(motion_count)
+        } else {
+            motion_count
+        };
+        if final_count > 1 {
+            inv = inv.with_count(lattice_grammar::command::Count(final_count));
+        }
+        self.pending_count = 0;
+        self.op_count = 0;
+        let viewport = self.help_bufferport_height();
+        let Some(h) = self.help_buffer.as_mut() else {
+            return;
+        };
+        let cancel = lattice_runtime::CancellationToken::never();
+        match lattice_grammar::execute_motion_only(
+            &self.registry,
+            &h.content,
+            h.cursor,
+            inv,
+            &cancel,
+        ) {
+            Ok(target) => {
+                let dx = target.byte as i32 - h.cursor.byte as i32;
+                let dy = target.line as i32 - h.cursor.line as i32;
+                // `move_cursor` re-clamps and adjusts scroll; pass
+                // the offsets so the same per-line clamping applies
+                // even if the motion landed on a column past the
+                // target line's length.
+                if dy != 0 {
+                    h.move_cursor(0, dy, viewport);
+                }
+                if dx != 0 {
+                    let cur_byte = h.cursor.byte as i32;
+                    h.move_cursor(target.byte as i32 - cur_byte, 0, viewport);
+                }
+            }
+            Err(_) => {
+                // Same swallow-error contract as the document path:
+                // motion failures (e.g. cancel, blocked) don't
+                // surface to the user yet -- DESIGN.md §5.10 error
+                // notification subsystem will route these.
+            }
+        }
+    }
+
+    fn run_document_invocation(&mut self, mut inv: CommandInvocation) {
         // Attach the pending register (from a `"a` prefix) to the
         // invocation if not already specified.
         if let Some(reg) = self.pending_register.take()
@@ -2801,6 +2963,10 @@ impl App {
     /// `M` -> middle, `L` -> bottom. Column is preserved (clamped to the
     /// destination line's length).
     fn do_jump_viewport(&mut self, vpos: ViewportPos) {
+        if matches!(self.active_buffer, BufferKind::Help) {
+            self.do_help_jump_viewport(vpos);
+            return;
+        }
         let height = self.viewport_height.max(1);
         let line = match vpos {
             ViewportPos::Top => self.scroll,
@@ -2814,9 +2980,37 @@ impl App {
         self.cursor = Position::new(line, byte);
     }
 
+    fn do_help_jump_viewport(&mut self, vpos: ViewportPos) {
+        let viewport = self.help_bufferport_height();
+        let Some(h) = self.help_buffer.as_mut() else {
+            return;
+        };
+        let scroll = h.scroll as u32;
+        let height = viewport.max(1) as u32;
+        let line = match vpos {
+            ViewportPos::Top => scroll,
+            ViewportPos::Middle => scroll + height / 2,
+            ViewportPos::Bottom => scroll + height.saturating_sub(1),
+        };
+        h.jump_cursor_to(line, viewport);
+    }
+
     /// Adjust scroll so the cursor lands at the requested viewport row.
     /// Cursor itself doesn't move (vim's `zt`/`zz`/`zb`).
     fn do_scroll_cursor_to(&mut self, spos: ScrollPos) {
+        if matches!(self.active_buffer, BufferKind::Help) {
+            let viewport = self.help_bufferport_height() as u32;
+            if let Some(h) = self.help_buffer.as_mut() {
+                h.scroll = match spos {
+                    ScrollPos::Top => h.cursor.line as usize,
+                    ScrollPos::Center => h.cursor.line.saturating_sub(viewport / 2) as usize,
+                    ScrollPos::Bottom => {
+                        h.cursor.line.saturating_sub(viewport.saturating_sub(1)) as usize
+                    }
+                };
+            }
+            return;
+        }
         let height = self.viewport_height.max(1);
         self.scroll = match spos {
             ScrollPos::Top => self.cursor.line,
@@ -2830,6 +3024,14 @@ impl App {
     /// `viewport_height - 2` lines and letting `ensure_cursor_visible`
     /// handle the scroll.
     fn do_page(&mut self, down: bool) {
+        if matches!(self.active_buffer, BufferKind::Help) {
+            let viewport = self.help_bufferport_height();
+            if let Some(h) = self.help_buffer.as_mut() {
+                let step = (viewport.saturating_sub(2)).max(1) as i32;
+                h.move_cursor(0, if down { step } else { -step }, viewport);
+            }
+            return;
+        }
         let height = self.viewport_height.max(1);
         let step = height.saturating_sub(2).max(1);
         let last = last_addressable_line(&self.document.snapshot().buffer);
@@ -2847,6 +3049,25 @@ impl App {
     /// pulling the next line into view); `down = false` -> Ctrl-Y.
     /// Cursor follows so it stays on-screen.
     fn do_scroll_line(&mut self, down: bool) {
+        if matches!(self.active_buffer, BufferKind::Help) {
+            let viewport = self.help_bufferport_height();
+            if let Some(h) = self.help_buffer.as_mut() {
+                let last = h.line_count().saturating_sub(1) as usize;
+                if down {
+                    h.scroll = h.scroll.saturating_add(1).min(last);
+                    if (h.cursor.line as usize) < h.scroll {
+                        h.cursor.line = h.scroll as u32;
+                    }
+                } else {
+                    h.scroll = h.scroll.saturating_sub(1);
+                    let bottom = h.scroll + viewport.saturating_sub(1);
+                    if h.cursor.line as usize > bottom {
+                        h.cursor.line = bottom as u32;
+                    }
+                }
+            }
+            return;
+        }
         let height = self.viewport_height.max(1);
         if down {
             let last = last_addressable_line(&self.document.snapshot().buffer);
@@ -2971,14 +3192,24 @@ impl App {
             self.set_message(EchoLevel::Info, "no link under cursor".to_string());
             return;
         };
-        // Clone the target so we can drop the &help borrow before
-        // calling do_describe_* (which takes &mut self).
+        // Clone the target + capture the current help cursor so we
+        // can drop the &help borrow before calling
+        // `push_position_history` (which needs &mut self).
         let target = link.target.clone();
+        let prev_help_cursor = help.cursor;
         match target {
             crate::help::HelpLinkTarget::Command(name) => {
+                // Help -> help transition: record where we were in
+                // the *current* help buffer so `<C-o>` brings us
+                // back to it. The subsequent `do_describe_command`
+                // replaces `help_buffer`, so the entry's
+                // `buffer_id` becomes "stale" -- the unified ring
+                // walker filters those out (see `do_walk_history`).
+                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
                 self.do_describe_command(&name, None);
             }
             crate::help::HelpLinkTarget::Chord(chord) => {
+                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
                 self.do_describe_key(&chord);
             }
             crate::help::HelpLinkTarget::Source { path, line } => {
@@ -3028,7 +3259,7 @@ impl App {
         if let Some(a) = anchor {
             buffer.scroll_to_anchor(a);
         }
-        self.help_buffer = Some(buffer);
+        self.open_help(buffer);
     }
 
     fn do_describe_buffer(&mut self) {
@@ -3065,7 +3296,7 @@ impl App {
             "options:        number={}  relativenumber={}",
             self.show_line_numbers, self.relative_line_numbers
         ));
-        self.help_buffer = Some(
+        self.open_help(
             HelpBuffer::from_lines("describe-buffer", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
         );
@@ -3120,7 +3351,7 @@ impl App {
                 ));
             }
         }
-        self.help_buffer = Some(
+        self.open_help(
             HelpBuffer::from_lines(format!("apropos {pattern}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
         );
@@ -3150,7 +3381,7 @@ impl App {
                 }
             }
         }
-        self.help_buffer = Some(
+        self.open_help(
             HelpBuffer::from_lines(format!("describe-key {chord}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
         );
@@ -3213,7 +3444,7 @@ impl App {
             }
             lines.push(String::new());
         }
-        self.help_buffer = Some(
+        self.open_help(
             HelpBuffer::from_lines("keymap", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
         );
@@ -3224,7 +3455,7 @@ impl App {
     /// the visible content rows are `buffer_rows - 2 - 4` (the outer
     /// 4 is the centring margin). Floor at 1 so scroll math is well-
     /// defined when the terminal is tiny.
-    fn help_bufferport_height(&self) -> usize {
+    pub fn help_bufferport_height(&self) -> usize {
         // Approximate: assume the popup fills ~70% of the buffer area
         // vertically (matches `draw_help_overlay`). The render layer
         // re-clamps if the terminal is smaller.
@@ -3233,22 +3464,36 @@ impl App {
         popup.max(1)
     }
 
-    fn do_help_move_cursor(&mut self, dx: i32, dy: i32) {
-        let viewport = self.help_bufferport_height();
-        if let Some(h) = self.help_buffer.as_mut() {
-            h.move_cursor(dx, dy, viewport);
+    /// Adopt a freshly-built help buffer as the active view. Records
+    /// the current document cursor on the position-history ring as
+    /// an `AutoJump` (so `<C-o>` from inside the help buffer returns
+    /// to the document spot the user opened from), then flips
+    /// `active_buffer` to `Help`. Used by every `:describe-*` /
+    /// `:apropos` / `:keymap` entry point.
+    fn open_help(&mut self, buffer: HelpBuffer) {
+        // Record the *document* cursor (we're still active=Document
+        // here, since open_help precedes the active_buffer flip).
+        // Skip the push if we're already in Help (a help->help
+        // re-open from a link follow); the inter-help transition
+        // is recorded by `do_help_follow_link` itself.
+        if matches!(self.active_buffer, BufferKind::Document) {
+            let cur = self.cursor;
+            self.push_position_history(cur, PositionSource::AutoJump);
         }
+        self.help_buffer = Some(buffer);
+        self.active_buffer = BufferKind::Help;
+        self.pending = Pending::None;
     }
 
-    fn do_help_half_page(&mut self, down: bool) {
-        let viewport = self.help_bufferport_height();
-        if let Some(h) = self.help_buffer.as_mut() {
-            if down {
-                h.half_page_down(viewport);
-            } else {
-                h.half_page_up(viewport);
-            }
-        }
+    /// Close the help overlay and route input back to the document.
+    /// Idempotent: closing when no help is open is a no-op.
+    fn dismiss_help(&mut self) {
+        self.help_buffer = None;
+        self.active_buffer = BufferKind::Document;
+        // Help mode reuses Pending::AfterG for the gg chord; clear
+        // it on dismiss so a stranded `g` doesn't leak into Normal
+        // mode.
+        self.pending = Pending::None;
     }
 
     /// Bracketed-paste handler. Routes the payload to the right target
@@ -3570,9 +3815,13 @@ impl App {
     /// semantics. Capped at POSITION_HISTORY_CAP entries; oldest dropped.
     /// Adjacent same-position-and-source duplicates are coalesced.
     pub fn push_position_history(&mut self, pos: Position, source: PositionSource) {
+        let buffer = self.active_buffer;
+        let buffer_id = self.active_buffer_id();
         if let Some(last) = self.position_history.last()
             && last.position == pos
             && last.source == source
+            && last.buffer == buffer
+            && last.buffer_id == buffer_id
         {
             return;
         }
@@ -3582,6 +3831,8 @@ impl App {
         self.position_history.push(PositionEntry {
             position: pos,
             source,
+            buffer,
+            buffer_id,
         });
         if self.position_history.len() > POSITION_HISTORY_CAP {
             self.position_history.remove(0);
@@ -3590,6 +3841,23 @@ impl App {
             self.position_history_cursor = self.position_history_cursor.saturating_sub(1);
         }
         self.position_history_cursor = self.position_history.len();
+    }
+
+    /// Id of whichever buffer is currently active. Used by
+    /// [`Self::push_position_history`] to tag entries with their
+    /// originating buffer.
+    pub fn active_buffer_id(&self) -> BufferId {
+        match self.active_buffer {
+            BufferKind::Document => self.document_buffer_id,
+            BufferKind::Help => self
+                .help_buffer
+                .as_ref()
+                .map(|h| h.id)
+                // Fallback: an active=Help with no help_buffer is
+                // an inconsistent transient -- return doc id so the
+                // history record at least typechecks.
+                .unwrap_or(self.document_buffer_id),
+        }
     }
 
     /// Step through the position history filtered to jump-class entries
@@ -3601,13 +3869,13 @@ impl App {
             && self.position_history_cursor == self.position_history.len()
             && self.position_history.iter().any(|e| e.is_jump())
         {
+            let cur = self.active_cursor();
             let already_there = self
                 .position_history
                 .last()
-                .map(|e| e.position == self.cursor)
+                .map(|e| e.position == cur && e.buffer == self.active_buffer)
                 .unwrap_or(false);
             if !already_there {
-                let cur = self.cursor;
                 self.push_position_history(cur, PositionSource::AutoJump);
                 // After push the cursor==len. Step it one back so the
                 // walk finds the entry preceding our snapshot rather
@@ -3632,6 +3900,14 @@ impl App {
     /// itself qualifies for the filter (so jumping back over named
     /// marks doesn't pollute the ring with AutoJump entries and vice
     /// versa).
+    ///
+    /// When the target entry was recorded in a different buffer
+    /// (e.g. the user pressed `<C-o>` from a help overlay back to a
+    /// document position), the walk also flips
+    /// [`Self::active_buffer`] and lands the cursor on the correct
+    /// buffer. Stale entries pointing at a closed Help buffer
+    /// (matching kind but different id) are skipped -- the history
+    /// outlives any one Help session.
     fn do_walk_history<F: Fn(&PositionEntry) -> bool>(
         &mut self,
         delta: i32,
@@ -3643,10 +3919,23 @@ impl App {
             self.set_message(EchoLevel::Error, format!("no {empty_label}"));
             return;
         }
+        // Reachable: same kind AND same id (so a stale Help entry
+        // doesn't surface after the help buffer has been replaced).
+        // Document ids are stable for the App lifetime, so document
+        // entries always pass.
+        let doc_id = self.document_buffer_id;
+        let help_id = self.help_buffer.as_ref().map(|h| h.id);
+        let reachable = |e: &PositionEntry| -> bool {
+            match e.buffer {
+                BufferKind::Document => e.buffer_id == doc_id,
+                BufferKind::Help => help_id == Some(e.buffer_id),
+            }
+        };
+        let combined = |e: &PositionEntry| pred(e) && reachable(e);
         let target_idx = if delta < 0 {
             self.position_history[..self.position_history_cursor]
                 .iter()
-                .rposition(&pred)
+                .rposition(&combined)
         } else {
             let from = self
                 .position_history_cursor
@@ -3654,7 +3943,7 @@ impl App {
                 .min(self.position_history.len());
             self.position_history[from..]
                 .iter()
-                .position(&pred)
+                .position(&combined)
                 .map(|i| i + from)
         };
         let Some(idx) = target_idx else {
@@ -3663,8 +3952,28 @@ impl App {
             return;
         };
         self.position_history_cursor = idx;
-        self.cursor = self.position_history[idx].position;
-        self.clamp_cursor_to_buffer();
+        let entry = self.position_history[idx];
+        // Cross-buffer landing: switch active_buffer and write the
+        // cursor onto the right buffer's tracking field.
+        match entry.buffer {
+            BufferKind::Document => {
+                self.active_buffer = BufferKind::Document;
+                self.cursor = entry.position;
+                self.clamp_cursor_to_buffer();
+            }
+            BufferKind::Help => {
+                let viewport = self.help_bufferport_height();
+                if let Some(h) = self.help_buffer.as_mut() {
+                    self.active_buffer = BufferKind::Help;
+                    h.jump_cursor_to(entry.position.line, viewport);
+                    let target_byte = entry.position.byte as i32;
+                    let cur_byte = h.cursor.byte as i32;
+                    if target_byte != cur_byte {
+                        h.move_cursor(target_byte - cur_byte, 0, viewport);
+                    }
+                }
+            }
+        }
     }
 
     /// Store a yank into the appropriate register slot. Vim's behavior:
@@ -4258,6 +4567,23 @@ impl App {
         }
         self.modal = ModalState::Insert;
         self.pending = Pending::None;
+    }
+
+    /// Cursor of the currently active buffer. Reads `App::cursor`
+    /// when the document is active or `help_buffer.cursor` when a
+    /// help overlay holds focus. Used by code that records jump
+    /// origins (where `<C-o>` would land if pressed right now)
+    /// without needing to know which buffer kind that origin came
+    /// from.
+    pub fn active_cursor(&self) -> Position {
+        match self.active_buffer {
+            BufferKind::Document => self.cursor,
+            BufferKind::Help => self
+                .help_buffer
+                .as_ref()
+                .map(|h| h.cursor)
+                .unwrap_or(self.cursor),
+        }
     }
 
     fn clamp_cursor_to_buffer(&mut self) {
@@ -8016,7 +8342,10 @@ mod tests {
 
     #[test]
     fn describe_key_each_binding_has_its_own_source_link() {
-        // `j` has 3 bindings (Normal, Visual, Help) -- each should
+        // `j` has 2 bindings -- Normal (line down) and Visual
+        // (extend down). Help inherits Normal's `j` via active-
+        // buffer routing (DESIGN.md §5.9), so it doesn't surface as
+        // a separate descriptor. Each remaining binding should
         // surface its own `(file:...)` link because every
         // KeymapEntry's source is captured at its own row.
         let mut a = app_with("xx", 10);
@@ -8031,8 +8360,8 @@ mod tests {
             .collect();
         assert_eq!(
             source_links.len(),
-            3,
-            "expected 3 source links (one per binding); got {}: {:?}",
+            2,
+            "expected 2 source links (one per binding); got {}: {:?}",
             source_links.len(),
             h.links
         );
@@ -8048,8 +8377,8 @@ mod tests {
         lines.dedup();
         assert_eq!(
             lines.len(),
-            3,
-            "expected 3 distinct source line numbers; got {lines:?}",
+            2,
+            "expected 2 distinct source line numbers; got {lines:?}",
         );
     }
 
@@ -8780,36 +9109,53 @@ mod tests {
         assert!(body.contains("no matches"));
     }
 
-    #[test]
-    fn help_dismiss_clears_overlay() {
-        let mut a = app_with("xx", 10);
-        a.help_buffer = Some(HelpBuffer::from_lines("test", vec!["a".into(), "b".into()]));
-        a.apply(Action::HelpDismiss);
-        assert!(a.help_buffer.is_none());
+    /// Wrap a freshly-built [`HelpBuffer`] as the active buffer the
+    /// way the App's `:describe-*` paths do. Used by every help-
+    /// navigation test below so they share the same setup.
+    fn install_help(a: &mut App, h: HelpBuffer) {
+        a.help_buffer = Some(h);
+        a.active_buffer = BufferKind::Help;
     }
 
     #[test]
-    fn help_cursor_down_advances_then_pulls_scroll() {
+    fn help_dismiss_clears_overlay_and_routes_back_to_document() {
+        let mut a = app_with("xx", 10);
+        install_help(
+            &mut a,
+            HelpBuffer::from_lines("test", vec!["a".into(), "b".into()]),
+        );
+        a.apply(Action::HelpDismiss);
+        assert!(a.help_buffer.is_none());
+        assert_eq!(a.active_buffer, BufferKind::Document);
+    }
+
+    #[test]
+    fn help_motion_routes_through_active_buffer() {
+        // `j` in help mode should resolve via the same chord grammar
+        // as a code buffer, but the apply layer routes the resulting
+        // motion to the help cursor (DESIGN.md §5.9 active-buffer
+        // routing). 3 line_down invocations -> help cursor line 3,
+        // scroll still 0 (viewport math is 10*7/10 - 2 = 5 rows).
         let mut a = app_with("xx", 10);
         let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
-        a.help_buffer = Some(HelpBuffer::from_lines("scroll-test", lines));
-        // viewport_height is 10; help viewport math caps at 10*7/10 - 2 = 5.
+        install_help(&mut a, HelpBuffer::from_lines("scroll-test", lines));
+        let line_down = a.builtins.line_down;
         for _ in 0..3 {
-            a.apply(Action::HelpCursorDown);
+            a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
         }
         let h = a.help_buffer.as_ref().unwrap();
         assert_eq!(h.cursor.line, 3);
-        // Cursor still inside the 5-row viewport -> no scroll yet.
         assert_eq!(h.scroll, 0);
     }
 
     #[test]
-    fn help_cursor_clamps_at_last_line() {
+    fn help_motion_clamps_to_last_line() {
         let mut a = app_with("xx", 10);
         let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
-        a.help_buffer = Some(HelpBuffer::from_lines("scroll-test", lines));
+        install_help(&mut a, HelpBuffer::from_lines("scroll-test", lines));
+        let line_down = a.builtins.line_down;
         for _ in 0..1000 {
-            a.apply(Action::HelpCursorDown);
+            a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
         }
         let h = a.help_buffer.as_ref().unwrap();
         assert_eq!(h.cursor.line, 49);
@@ -8818,11 +9164,15 @@ mod tests {
     }
 
     #[test]
-    fn help_cursor_up_clamps_at_zero() {
+    fn help_motion_up_clamps_at_zero() {
         let mut a = app_with("xx", 10);
-        a.help_buffer = Some(HelpBuffer::from_lines("scroll-test", vec!["a".into(); 30]));
+        install_help(
+            &mut a,
+            HelpBuffer::from_lines("scroll-test", vec!["a".into(); 30]),
+        );
+        let line_up = a.builtins.line_up;
         for _ in 0..1000 {
-            a.apply(Action::HelpCursorUp);
+            a.apply(Action::Invoke(CommandInvocation::of(line_up.0)));
         }
         let h = a.help_buffer.as_ref().unwrap();
         assert_eq!(h.cursor.line, 0);
@@ -8830,52 +9180,104 @@ mod tests {
     }
 
     #[test]
-    fn help_cursor_horizontal_motion_within_line() {
+    fn help_horizontal_motion_runs_through_grammar() {
         let mut a = app_with("xx", 10);
-        a.help_buffer = Some(HelpBuffer::from_lines(
-            "hl-test",
-            vec!["hello world".into()],
-        ));
-        a.apply(Action::HelpCursorRight);
-        a.apply(Action::HelpCursorRight);
-        a.apply(Action::HelpCursorRight);
+        install_help(
+            &mut a,
+            HelpBuffer::from_lines("hl-test", vec!["hello world".into()]),
+        );
+        let char_right = a.builtins.char_right;
+        let char_left = a.builtins.char_left;
+        let line_end = a.builtins.line_end;
+        let line_start = a.builtins.line_start;
+        for _ in 0..3 {
+            a.apply(Action::Invoke(CommandInvocation::of(char_right.0)));
+        }
         assert_eq!(a.help_buffer.as_ref().unwrap().cursor.byte, 3);
-        a.apply(Action::HelpCursorLeft);
+        a.apply(Action::Invoke(CommandInvocation::of(char_left.0)));
         assert_eq!(a.help_buffer.as_ref().unwrap().cursor.byte, 2);
-        a.apply(Action::HelpCursorLineEnd);
-        // vim `$`: last char index = len - 1 = 10.
-        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.byte, 10);
-        a.apply(Action::HelpCursorLineStart);
+        a.apply(Action::Invoke(CommandInvocation::of(line_end.0)));
+        // `motion:line-end` lands at `byte == line_len` (one past
+        // the last byte) -- the same convention as the document
+        // path. The grammar uses this position so operator targets
+        // (d$, c$, y$) take an exclusive end.
+        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.byte, 11);
+        a.apply(Action::Invoke(CommandInvocation::of(line_start.0)));
         assert_eq!(a.help_buffer.as_ref().unwrap().cursor.byte, 0);
     }
 
     #[test]
-    fn help_jump_top_and_bottom() {
+    fn help_gg_and_capital_g_route_through_grammar() {
         let mut a = app_with("xx", 10);
-        a.help_buffer = Some(HelpBuffer::from_lines("jt", vec!["x".into(); 30]));
-        a.apply(Action::HelpJumpBottom);
+        install_help(&mut a, HelpBuffer::from_lines("jt", vec!["x".into(); 30]));
+        let goto_first = a.builtins.goto_first_line;
+        let goto_last = a.builtins.goto_last_line;
+        a.apply(Action::Invoke(CommandInvocation::of(goto_last.0)));
         let h = a.help_buffer.as_ref().unwrap();
         assert_eq!(h.cursor.line, 29);
         assert!(h.scroll > 0);
-        a.apply(Action::HelpJumpTop);
+        a.apply(Action::Invoke(CommandInvocation::of(goto_first.0)));
         let h = a.help_buffer.as_ref().unwrap();
         assert_eq!(h.cursor.line, 0);
         assert_eq!(h.scroll, 0);
     }
 
     #[test]
-    fn help_half_page_motions_move_cursor() {
+    fn help_count_motions_compose() {
+        // `5j` -- the same count semantics as Normal mode.
         let mut a = app_with("xx", 10);
-        a.help_buffer = Some(HelpBuffer::from_lines(
-            "hp",
-            (0..30).map(|i| format!("l{i}")).collect(),
+        let lines: Vec<String> = (0..50).map(|i| format!("l{i}")).collect();
+        install_help(&mut a, HelpBuffer::from_lines("count", lines));
+        let line_down = a.builtins.line_down;
+        a.apply(Action::Invoke(
+            CommandInvocation::of(line_down.0).with_count(lattice_grammar::command::Count(5)),
         ));
-        a.apply(Action::HelpHalfPage { down: true });
-        let h = a.help_buffer.as_ref().unwrap();
-        // viewport = 5, so half-page = 2.
-        assert_eq!(h.cursor.line, 2);
-        a.apply(Action::HelpHalfPage { down: false });
-        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.line, 0);
+        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.line, 5);
+    }
+
+    #[test]
+    fn help_invoke_operator_echoes_read_only() {
+        // Operators on a help buffer are rejected with a "read-only"
+        // echo -- v1 doesn't model yank-against-help yet.
+        let mut a = app_with("xx", 10);
+        install_help(&mut a, HelpBuffer::from_lines("ro", vec!["abc".into(); 5]));
+        let yank = a.builtins.yank;
+        a.apply(Action::Invoke(
+            CommandInvocation::of(yank.0).with_range(lattice_grammar::Range::CurrentLine),
+        ));
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("read-only"), "got: {msg:?}");
+        assert!(a.unnamed_register.is_none());
+    }
+
+    #[test]
+    fn help_action_insert_blocked_with_echo() {
+        // The read-only guard short-circuits direct mutation
+        // actions so a stray Action::Insert while help is active
+        // doesn't fall through onto the document.
+        let mut a = app_with("xx", 10);
+        let original = a.document.text();
+        install_help(&mut a, HelpBuffer::from_lines("ro", vec!["abc".into()]));
+        a.apply(Action::Insert("PWNED".into()));
+        assert_eq!(a.document.text(), original);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("read-only"), "got: {msg:?}");
+    }
+
+    #[test]
+    fn ctrl_o_walks_back_to_document_from_help() {
+        // `<C-o>` from inside a help buffer should land back on the
+        // document spot the user opened the help from. That's the
+        // first user-visible win of active-buffer routing.
+        let mut a = app_with("first\nsecond\nthird\nfourth", 10);
+        a.cursor = Position::new(2, 0);
+        // Open help via the same path the App uses internally so
+        // the position-history entry is recorded.
+        a.open_help(HelpBuffer::from_lines("h", vec!["help body".into()]));
+        assert_eq!(a.active_buffer, BufferKind::Help);
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.active_buffer, BufferKind::Document);
+        assert_eq!(a.cursor.line, 2);
     }
 
     #[test]

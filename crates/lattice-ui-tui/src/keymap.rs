@@ -381,25 +381,17 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: Search, chord: "<Esc>", doc: "Cancel search" },
         keymap_entry! { mode: Search, chord: "<CR>", doc: "Submit search" },
         keymap_entry! { mode: Search, chord: "<BS>", doc: "Delete previous char" },
-        // ---- Help overlay (buffer-backed; behaves like a real buffer) ----
+        // ---- Help buffer (DESIGN.md §5.11, §5.9) ----
+        //
+        // Help is a regular buffer routed through Normal-mode chord
+        // grammar. Only three buffer-local bindings differ -- they
+        // appear here. Motions, page motions, viewport jumps, marks,
+        // `<C-o>` / `<C-i>`, etc. all inherit from the Normal-mode
+        // entries above; describe-key in Help mode reports them
+        // through the `Normal` rows.
         keymap_entry! { mode: Help, chord: "<Esc>", doc: "Dismiss help" },
         keymap_entry! { mode: Help, chord: "q", doc: "Dismiss help" },
-        keymap_entry! { mode: Help, chord: "j", doc: "Cursor down one line" },
-        keymap_entry! { mode: Help, chord: "k", doc: "Cursor up one line" },
-        keymap_entry! { mode: Help, chord: "h", doc: "Cursor left one byte" },
-        keymap_entry! { mode: Help, chord: "l", doc: "Cursor right one byte" },
-        keymap_entry! { mode: Help, chord: "<Down>", doc: "Cursor down one line" },
-        keymap_entry! { mode: Help, chord: "<Up>", doc: "Cursor up one line" },
-        keymap_entry! { mode: Help, chord: "<Left>", doc: "Cursor left one byte" },
-        keymap_entry! { mode: Help, chord: "<Right>", doc: "Cursor right one byte" },
-        keymap_entry! { mode: Help, chord: "0", doc: "Cursor to line start" },
-        keymap_entry! { mode: Help, chord: "$", doc: "Cursor to line end" },
-        keymap_entry! { mode: Help, chord: "<C-d>", doc: "Cursor half-page down" },
-        keymap_entry! { mode: Help, chord: "<C-u>", doc: "Cursor half-page up" },
-        keymap_entry! { mode: Help, chord: "<PageDown>", doc: "Cursor half-page down" },
-        keymap_entry! { mode: Help, chord: "<PageUp>", doc: "Cursor half-page up" },
-        keymap_entry! { mode: Help, chord: "g", doc: "Jump to top" },
-        keymap_entry! { mode: Help, chord: "G", doc: "Jump to bottom" },
+        keymap_entry! { mode: Help, chord: "<CR>", doc: "Follow link under cursor" },
     ]
 }
 
@@ -425,14 +417,14 @@ mod tests {
 
     #[test]
     fn lookup_returns_every_mode_a_chord_appears_in() {
-        // `j` is bound in Normal (line down), Visual (extend down),
-        // and Help (scroll down). lookup() returns all three.
+        // `j` is bound in Normal (line down) and Visual (extend
+        // down). Help inherits Normal's `j` via active-buffer
+        // routing, so it doesn't appear as a separate descriptor.
         let hits = lookup("j");
-        assert_eq!(hits.len(), 3);
+        assert_eq!(hits.len(), 2);
         let modes: HashSet<_> = hits.iter().map(|e| e.mode).collect();
         assert!(modes.contains(&BindingMode::Normal));
         assert!(modes.contains(&BindingMode::Visual));
-        assert!(modes.contains(&BindingMode::Help));
     }
 
     #[test]

@@ -50,6 +50,8 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 use lattice_syntax::{Lang, LangRegistry, Syntax};
 
+use crate::buffers::BufferId;
+
 /// Where a help buffer is displayed. Configured per-user; v1 only
 /// implements [`HelpDisplayMode::Popup`]. The other variants exist now
 /// to lock in the API shape -- when multi-buffer support arrives the
@@ -73,6 +75,14 @@ pub enum HelpDisplayMode {
 /// `Buffer` -- search, motions, syntax highlighting (once a help
 /// major mode + tree-sitter grammar lands).
 pub struct HelpBuffer {
+    /// Stable id assigned at creation. Position-history entries
+    /// (§5.1.1) carry this so `<C-o>` / `<C-i>` can route back to
+    /// the originating buffer when multiple Help buffers coexist
+    /// (Phase B.1.c). v1 only ever holds one Help buffer at a
+    /// time -- the id still matters because the position history
+    /// outlives any one Help session and a stale entry must not
+    /// land on a freshly-opened, unrelated Help.
+    pub id: BufferId,
     pub title: String,
     pub content: Buffer,
     /// First visible line index (the popup renderer uses this; a
@@ -115,6 +125,7 @@ pub struct HelpAnchor {
 impl std::fmt::Debug for HelpBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HelpBuffer")
+            .field("id", &self.id)
             .field("title", &self.title)
             .field("scroll", &self.scroll)
             .field("cursor", &self.cursor)
@@ -157,6 +168,7 @@ impl HelpBuffer {
             let _ = buffer.apply_edit(&Edit::insert(Position::ZERO, text));
         }
         Self {
+            id: BufferId::next(),
             title: title.into(),
             content: buffer,
             scroll: 0,

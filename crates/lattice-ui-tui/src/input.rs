@@ -19,6 +19,7 @@ use lattice_grammar::register::Register;
 use lattice_grammar::registry::{MotionId, OperatorId};
 
 use crate::app::{Action, FindKind, Pending, ScrollPos, ViewportPos};
+use crate::buffers::BufferKind;
 
 pub struct TranslateContext<'a> {
     pub modal: ModalState,
@@ -32,11 +33,14 @@ pub struct TranslateContext<'a> {
     /// this so `q` while recording stops, while `q` otherwise starts a
     /// new recording.
     pub recording_macro: bool,
-    /// True when a help overlay (DESIGN.md §5.11) is open. Input is
-    /// claimed by the overlay regardless of modal state -- the
-    /// overlay's own bindings (j/k/Ctrl-D/Ctrl-U/gg/G/Esc/q) take
-    /// priority.
-    pub help_open: bool,
+    /// Which buffer the App's input pipeline currently routes to.
+    /// Driven by [`crate::app::App::active_buffer`]; defaults to
+    /// [`BufferKind::Document`]. Help buffers route through the
+    /// same Normal-mode chord grammar (motions, `<C-o>` / `<C-i>`,
+    /// `gg` / `G`, etc.) -- only three buffer-local bindings
+    /// differ: `Esc` / `q` dismiss the help overlay, and `<CR>`
+    /// follows the link under the cursor.
+    pub active_buffer: BufferKind,
     /// True when the command-line completion popup is open
     /// (DESIGN.md §5.11.3). Tab / S-Tab / Enter / Esc are claimed
     /// by the popup before falling through to Command mode.
@@ -64,12 +68,24 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         return Action::Quit;
     }
 
-    // The help overlay claims input first. It maps a small fixed set
-    // of keys for navigation + dismiss; everything else is a no-op so
-    // accidental presses don't fall through to the underlying modal
-    // state (which is still tracked, but invisible while help is up).
-    if ctx.help_open {
-        return translate_help(event, ctx.pending);
+    // Buffer-local bindings for the active Help buffer (DESIGN.md
+    // §5.9 buffer-local keymap layer): a small fixed set of bindings
+    // unique to help (dismiss + link-follow) intercept first, then
+    // everything else flows through `translate_normal` so the chord
+    // grammar (`gg`, `<C-d>`, `<C-o>` / `<C-i>`, motions, viewport
+    // jumps) works identically to the document path. The cursor that
+    // those motions move is decided at apply time by
+    // `App::active_buffer`, not here.
+    if matches!(ctx.active_buffer, BufferKind::Help)
+        && matches!(ctx.modal, ModalState::Normal)
+        && matches!(ctx.pending, Pending::None)
+    {
+        match event.code {
+            KeyCode::Esc => return Action::HelpDismiss,
+            KeyCode::Char('q') if !ctx.recording_macro => return Action::HelpDismiss,
+            KeyCode::Enter => return Action::FollowLink,
+            _ => {}
+        }
     }
 
     match ctx.modal {
@@ -87,53 +103,6 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         ModalState::Replace => translate_replace(event),
         // OperatorPending routes to no-op (it's a transient resolution
         // state inside translate_normal, not a top-level reachable state).
-        _ => Action::None,
-    }
-}
-
-fn translate_help(event: KeyEvent, pending: Pending) -> Action {
-    // Ctrl chord first -- crossterm reports modifier flags
-    // independently of the key code.
-    if event.modifiers.contains(KeyModifiers::CONTROL) {
-        return match event.code {
-            KeyCode::Char('d') => Action::HelpHalfPage { down: true },
-            KeyCode::Char('u') => Action::HelpHalfPage { down: false },
-            // Universal Ctrl-c quit-or-cancel was already handled
-            // above; falling through here is "no-op", same as for the
-            // unknown-chord case.
-            _ => Action::None,
-        };
-    }
-    // Honor the chord-grammar pending state the same way Normal mode
-    // does. After `g`, only a second `g` resolves to jump-top; any
-    // other key clears pending and is otherwise ignored. This keeps
-    // the help popup vim-grammar-compatible -- a bare `g` no longer
-    // collapses to `gg`. Multi-buffer (§5.9) ultimately routes help
-    // through translate_normal entirely; until then this matches
-    // Normal mode's gg/G/etc. semantics within the help overlay.
-    if matches!(pending, Pending::AfterG)
-        && let KeyCode::Char('g') = event.code
-    {
-        return Action::HelpJumpTop;
-    }
-    match event.code {
-        KeyCode::Esc | KeyCode::Char('q') => Action::HelpDismiss,
-        KeyCode::Char('j') | KeyCode::Down => Action::HelpCursorDown,
-        KeyCode::Char('k') | KeyCode::Up => Action::HelpCursorUp,
-        KeyCode::Char('h') | KeyCode::Left => Action::HelpCursorLeft,
-        KeyCode::Char('l') | KeyCode::Right => Action::HelpCursorRight,
-        KeyCode::Char('0') => Action::HelpCursorLineStart,
-        KeyCode::Char('$') => Action::HelpCursorLineEnd,
-        // First `g` arms the AfterG pending state; only `gg` resolves
-        // to jump-top. Matches translate_normal's two-key resolution.
-        KeyCode::Char('g') => Action::SetPending(Pending::AfterG),
-        KeyCode::Char('G') => Action::HelpJumpBottom,
-        KeyCode::PageDown => Action::HelpHalfPage { down: true },
-        KeyCode::PageUp => Action::HelpHalfPage { down: false },
-        // <CR> follows the link under the cursor (if any) -- the
-        // App resolves the HelpLinkTarget and re-dispatches
-        // :describe-* / :edit / etc.
-        KeyCode::Enter => Action::HelpFollowLink,
         _ => Action::None,
     }
 }
@@ -913,7 +882,7 @@ mod tests {
             builtins: b,
             pending_count: 0,
             recording_macro: false,
-            help_open: false,
+            active_buffer: BufferKind::Document,
             completion_open: false,
             chord_capture: false,
         }
@@ -931,7 +900,7 @@ mod tests {
             builtins: b,
             pending_count,
             recording_macro: false,
-            help_open: false,
+            active_buffer: BufferKind::Document,
             completion_open: false,
             chord_capture: false,
         }
@@ -948,7 +917,7 @@ mod tests {
             builtins: b,
             pending_count: 0,
             recording_macro: true,
-            help_open: false,
+            active_buffer: BufferKind::Document,
             completion_open: false,
             chord_capture: false,
         }
@@ -961,7 +930,7 @@ mod tests {
             builtins: b,
             pending_count: 0,
             recording_macro: false,
-            help_open: false,
+            active_buffer: BufferKind::Document,
             completion_open: false,
             chord_capture: true,
         }
@@ -1858,9 +1827,16 @@ mod tests {
         }
     }
 
-    // ---- Help overlay (DESIGN.md §5.11) ----
+    // ---- Help buffer (DESIGN.md §5.11, §5.9) ----
+    //
+    // Help is a regular buffer routed through `translate_normal` via
+    // `App::active_buffer`. Only three buffer-local bindings differ
+    // from the document path: `Esc` / `q` dismiss, `<CR>` follows
+    // the link under the cursor. Everything else (motions, page
+    // motions, `<C-o>` / `<C-i>`, `gg` / `G`) flows through the same
+    // chord grammar -- the apply layer decides which cursor moves.
 
-    fn ctx_help_open<'a>(
+    fn ctx_help_active<'a>(
         modal: ModalState,
         pending: Pending,
         b: &'a Builtins,
@@ -1871,20 +1847,20 @@ mod tests {
             builtins: b,
             pending_count: 0,
             recording_macro: false,
-            help_open: true,
+            active_buffer: BufferKind::Help,
             completion_open: false,
             chord_capture: false,
         }
     }
 
     #[test]
-    fn help_open_intercepts_q_to_dismiss() {
+    fn help_active_intercepts_q_to_dismiss() {
         let (_, b) = fixture();
-        // While help is open, `q` dismisses (does NOT start macro
-        // recording, the usual Normal-mode meaning).
+        // While help is the active buffer, `q` dismisses (does NOT
+        // start macro recording, the usual Normal-mode meaning).
         assert!(matches!(
             translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                ctx_help_active(ModalState::Normal, Pending::None, &b),
                 key(KeyCode::Char('q'))
             ),
             Action::HelpDismiss
@@ -1892,11 +1868,11 @@ mod tests {
     }
 
     #[test]
-    fn help_open_intercepts_esc_to_dismiss() {
+    fn help_active_intercepts_esc_to_dismiss() {
         let (_, b) = fixture();
         assert!(matches!(
             translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                ctx_help_active(ModalState::Normal, Pending::None, &b),
                 key(KeyCode::Esc)
             ),
             Action::HelpDismiss
@@ -1904,133 +1880,81 @@ mod tests {
     }
 
     #[test]
-    fn help_open_routes_jk_to_cursor_motion() {
+    fn help_active_routes_enter_to_follow_link() {
         let (_, b) = fixture();
         assert!(matches!(
             translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('j'))
+                ctx_help_active(ModalState::Normal, Pending::None, &b),
+                key(KeyCode::Enter)
             ),
-            Action::HelpCursorDown
-        ));
-        assert!(matches!(
-            translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('k'))
-            ),
-            Action::HelpCursorUp
+            Action::FollowLink
         ));
     }
 
     #[test]
-    fn help_open_routes_hl_to_cursor_motion() {
+    fn help_active_routes_jk_through_normal_motions() {
+        // `j` in help is the *same* line_down motion as in Normal --
+        // active_buffer routing in the apply layer redirects which
+        // cursor moves; the chord grammar is unchanged.
+        let (_, b) = fixture();
+        let action = translate(
+            ctx_help_active(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('j')),
+        );
+        assert_eq!(invocation_command(&action), Some(b.line_down.0));
+    }
+
+    #[test]
+    fn help_active_routes_gg_through_chord_grammar() {
+        // First `g` arms AfterG (same as Normal); second resolves to
+        // goto_first_line. The buffer-local handler must NOT collapse
+        // a bare `g` into `gg` -- that was the bug fc872ec papered
+        // over with a help-specific chord engine.
+        let (_, b) = fixture();
+        let first = translate(
+            ctx_help_active(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('g')),
+        );
+        assert!(matches!(first, Action::SetPending(Pending::AfterG)));
+        let second = translate(
+            ctx_help_active(ModalState::Normal, Pending::AfterG, &b),
+            key(KeyCode::Char('g')),
+        );
+        assert_eq!(invocation_command(&second), Some(b.goto_first_line.0));
+    }
+
+    #[test]
+    fn help_active_routes_capital_g_to_goto_last_line() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx_help_active(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('G')),
+        );
+        assert_eq!(invocation_command(&action), Some(b.goto_last_line.0));
+    }
+
+    #[test]
+    fn help_active_routes_ctrl_o_to_jump_history_back() {
+        // `<C-o>` and `<C-i>` walk the unified position history --
+        // crossing the document <-> help boundary is what
+        // active_buffer routing makes possible.
         let (_, b) = fixture();
         assert!(matches!(
             translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('h'))
+                ctx_help_active(ModalState::Normal, Pending::None, &b),
+                ctrl(KeyCode::Char('o'))
             ),
-            Action::HelpCursorLeft
-        ));
-        assert!(matches!(
-            translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('l'))
-            ),
-            Action::HelpCursorRight
+            Action::JumpHistoryBack
         ));
     }
 
     #[test]
-    fn help_open_routes_zero_and_dollar_to_line_endpoints() {
-        let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('0'))
-            ),
-            Action::HelpCursorLineStart
-        ));
-        assert!(matches!(
-            translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('$'))
-            ),
-            Action::HelpCursorLineEnd
-        ));
-    }
-
-    #[test]
-    fn help_open_routes_ctrl_d_u_to_half_page() {
-        let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
-                ctrl(KeyCode::Char('d'))
-            ),
-            Action::HelpHalfPage { down: true }
-        ));
-        assert!(matches!(
-            translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
-                ctrl(KeyCode::Char('u'))
-            ),
-            Action::HelpHalfPage { down: false }
-        ));
-    }
-
-    #[test]
-    fn help_open_routes_gg_and_capital_g_to_jumps() {
-        // Help mode honors vim's chord grammar: bare `g` arms
-        // AfterG; `gg` resolves to jump-top; `G` is its own action.
-        let (_, b) = fixture();
-        // First `g` -- pending arm.
-        assert!(matches!(
-            translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('g'))
-            ),
-            Action::SetPending(Pending::AfterG)
-        ));
-        // Second `g` (with AfterG pending) -- HelpJumpTop.
-        assert!(matches!(
-            translate(
-                ctx_help_open(ModalState::Normal, Pending::AfterG, &b),
-                key(KeyCode::Char('g'))
-            ),
-            Action::HelpJumpTop
-        ));
-        // `G` is single-key.
-        assert!(matches!(
-            translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('G'))
-            ),
-            Action::HelpJumpBottom
-        ));
-    }
-
-    #[test]
-    fn help_open_swallows_unknown_keys() {
-        // While help is open, accidental keys (e.g., `i` -- which would
-        // normally enter Insert) become no-ops rather than fall through.
-        let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('i'))
-            ),
-            Action::None
-        ));
-    }
-
-    #[test]
-    fn ctrl_c_still_quits_when_help_is_open() {
+    fn ctrl_c_still_quits_when_help_is_active() {
         // The universal escape hatch sits above the help intercept.
         let (_, b) = fixture();
         assert!(matches!(
             translate(
-                ctx_help_open(ModalState::Normal, Pending::None, &b),
+                ctx_help_active(ModalState::Normal, Pending::None, &b),
                 ctrl(KeyCode::Char('c'))
             ),
             Action::Quit
@@ -2121,7 +2045,11 @@ mod tests {
             // translate() set the pending state mid-sequence.
             _ => ModalState::Normal,
         };
-        let help_open = matches!(mode, BindingMode::Help);
+        let active_buffer = if matches!(mode, BindingMode::Help) {
+            BufferKind::Help
+        } else {
+            BufferKind::Document
+        };
         let mut pending = Pending::None;
         let mut last = Action::None;
         for event in parse_chord_for_test(chord) {
@@ -2131,7 +2059,7 @@ mod tests {
                 builtins,
                 pending_count: 0,
                 recording_macro: false,
-                help_open,
+                active_buffer,
                 completion_open: false,
                 chord_capture: false,
             };

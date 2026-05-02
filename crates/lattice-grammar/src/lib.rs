@@ -40,7 +40,7 @@ pub mod target;
 pub use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 pub use crate::cancel::{CancellationToken, CheckCancelled};
 pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count, LatencyClass};
-pub use crate::dispatcher::execute;
+pub use crate::dispatcher::{execute, execute_motion_only};
 pub use crate::effect::{EchoLevel, Effect, SubstituteScope, YankKind};
 pub use crate::error::{CommandError, GrammarResult};
 pub use crate::introspect::{

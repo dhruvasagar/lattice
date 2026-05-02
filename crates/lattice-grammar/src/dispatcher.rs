@@ -25,7 +25,7 @@ use crate::registry::{
     TextObjectContext, require_ex_command, require_motion, require_operator, require_text_object,
 };
 use crate::target::Target;
-use lattice_core::Document;
+use lattice_core::{Buffer, Document};
 
 /// Execute a `CommandInvocation` against `document`, using `registry` to
 /// resolve motions / text-objects / operators.
@@ -66,6 +66,50 @@ pub fn execute(
             "free-form actions are not yet wired in Phase 1",
         )),
     }
+}
+
+/// Resolve a *motion-only* invocation against a bare [`Buffer`] +
+/// cursor, without a [`Document`] / undo stack / selections.
+///
+/// This is the read-only path used by buffer kinds that aren't
+/// document-shaped (today: help buffers; future: file-tree, outline,
+/// diagnostics views per DESIGN.md §5.9). The chord grammar is
+/// shared -- pressing `j` in a help buffer dispatches the same
+/// `line_down` motion as in a code buffer -- but the motion runs
+/// against a different rope.
+///
+/// Returns the resolved target [`Position`]. Operators / text-
+/// objects / ex-commands return [`CommandError::InvalidArgs`] --
+/// callers route those separately (yank possibly excepted, but yank
+/// is an operator not a motion). The motion's `linewise` flag is
+/// dropped: callers that need it (yank-by-motion, etc.) are not
+/// expected on read-only buffers.
+pub fn execute_motion_only(
+    registry: &CommandRegistry,
+    buffer: &Buffer,
+    cursor: Position,
+    invocation: CommandInvocation,
+    cancel: &CancellationToken,
+) -> GrammarResult<Position> {
+    cancel.check()?;
+    let entry = registry
+        .entry(invocation.command)
+        .ok_or(CommandError::UnknownCommand)?;
+    if !matches!(entry.spec.kind, CommandKind::Motion) {
+        return Err(CommandError::InvalidArgs(
+            "execute_motion_only only accepts motions",
+        ));
+    }
+    let motion = require_motion(entry)?;
+    let ctx = MotionContext {
+        buffer,
+        from: cursor,
+        count: invocation.count_or_default(),
+        args: invocation.args.clone(),
+        cancel,
+    };
+    let result = (motion.apply)(&ctx)?;
+    Ok(result.target)
 }
 
 fn execute_ex_command(

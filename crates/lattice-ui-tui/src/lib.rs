@@ -17,6 +17,7 @@
 //! hardcoded `Action` enum used here.
 
 pub mod app;
+pub mod buffers;
 pub mod chord;
 pub mod excommand;
 pub mod help;
@@ -26,6 +27,7 @@ pub mod render;
 pub mod runtime;
 
 pub use app::{Action, App, EchoLevel, EchoMessage, Pending};
+pub use buffers::{BufferId, BufferKind};
 pub use excommand::ExCommandError;
 pub use input::{TranslateContext, translate};
 pub use lattice_syntax::{Lang, Style, StyledSpan, Syntax};

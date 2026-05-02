@@ -228,7 +228,7 @@ mod tests {
         let result = render_introspection(&item);
         let last = result.lines.last().unwrap();
         assert!(last.contains("Defined at:"));
-        assert!(last.contains("[[file:a/b.rs:99]]"));
+        assert!(last.contains("[a/b.rs:99](file:a/b.rs:99)"));
         assert!(last.contains("(built-in)"));
     }
 

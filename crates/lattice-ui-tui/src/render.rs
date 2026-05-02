@@ -229,14 +229,24 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     // Pull the visible window out of the help buffer's rope text.
     // Allocates per frame, but only across the visible viewport
     // (~30 lines) -- well under any latency budget for a help
-    // surface.
+    // surface. Highlights were pre-computed at help-buffer build
+    // time via the markdown grammar; we just look them up by line
+    // and emit per-row styled spans.
     let viewport = inner.height as usize;
     let lines = help.lines();
     let visible: Vec<Line> = lines
         .iter()
         .skip(help.scroll)
         .take(viewport)
-        .map(|l| Line::from(l.as_str()))
+        .enumerate()
+        .map(|(i, l)| {
+            let line_idx = help.scroll + i;
+            let spans = help.highlights.get(line_idx);
+            Line::from(render_help_line(
+                l,
+                spans.map(|v| v.as_slice()).unwrap_or(&[]),
+            ))
+        })
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);
@@ -834,6 +844,52 @@ fn display_col_for_byte(buffer: &lattice_core::Buffer, pos: lattice_protocol::Po
         byte -= 1;
     }
     UnicodeWidthStr::width(&line[..byte]) as u32
+}
+
+/// Compose one help-buffer row into ratatui spans by:
+/// 1. Walking the markdown highlight `StyledSpan`s and emitting
+///    styled segments where they land.
+/// 2. Filling unstyled gaps with `TuiStyle::default()`.
+///
+/// Help-link `[label](scheme:value)` markup is highlighted by the
+/// markdown grammar's inline parser via `text.reference` -> `Style::Link`
+/// when the inline injection fires; the renderer doesn't need to do
+/// anything extra. (When the inline injection is silent on a given
+/// row the link still renders as plain text -- the underlying
+/// `[label]` and `(url)` characters stay visible, the navigation
+/// extracted by `parse_help_links` works regardless.)
+fn render_help_line<'a>(line: &'a str, spans: &[lattice_syntax::StyledSpan]) -> Vec<Span<'a>> {
+    if spans.is_empty() {
+        return vec![Span::raw(line)];
+    }
+    let bytes = line.as_bytes();
+    let mut out: Vec<Span<'a>> = Vec::with_capacity(spans.len() * 2 + 1);
+    let mut cursor = 0usize;
+    // Spans should arrive sorted by start; defensive sort + drop
+    // overlapping in case the highlighter emits an unusual order.
+    let mut sorted: Vec<lattice_syntax::StyledSpan> = spans.to_vec();
+    sorted.sort_by_key(|sp| (sp.start, sp.end));
+    for span in sorted {
+        if span.start < cursor || span.start >= bytes.len() {
+            continue;
+        }
+        if span.start > cursor {
+            out.push(Span::raw(line[cursor..span.start].to_string()));
+        }
+        let end = span.end.min(bytes.len());
+        if end <= span.start {
+            continue;
+        }
+        out.push(Span::styled(
+            line[span.start..end].to_string(),
+            style_to_tui(span.style),
+        ));
+        cursor = end;
+    }
+    if cursor < bytes.len() {
+        out.push(Span::raw(line[cursor..].to_string()));
+    }
+    out
 }
 
 fn style_to_tui(s: Style) -> TuiStyle {

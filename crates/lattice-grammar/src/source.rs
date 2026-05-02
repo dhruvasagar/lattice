@@ -100,24 +100,38 @@ impl SourceLocation {
         }
     }
 
-    /// Render as link markup for inclusion in a help body.
-    /// `parse_help_links` (in `lattice-ui-tui::help`) will pick it up
-    /// and produce a `HelpLink` with the corresponding target.
+    /// Render as a markdown link for inclusion in a help body.
+    /// Format: `[label](scheme:value)`. The link's URL portion is
+    /// what `parse_help_links` (in `lattice-ui-tui::help`)
+    /// classifies into a typed [`crate::HelpLinkTarget`]; the label
+    /// is what the user sees.
     pub fn as_link(&self) -> String {
         match &self.kind {
             SourceKind::File {
                 path,
                 line: Some(n),
-            } => format!("[[file:{}:{}]]", path.display(), n),
-            SourceKind::File { path, line: None } => format!("[[file:{}]]", path.display()),
+            } => {
+                let label = format!("{}:{}", path.display(), n);
+                format!("[{label}](file:{label})")
+            }
+            SourceKind::File { path, line: None } => {
+                let label = format!("{}", path.display());
+                format!("[{label}](file:{label})")
+            }
             SourceKind::CommandLine { history_index } => {
-                format!("[[history:command:{history_index}]]")
+                format!("[command:{history_index}](history:command:{history_index})")
             }
             SourceKind::MacroReplay { register, step } => {
-                format!("[[macro:{register}:step:{step}]]")
+                format!("[macro:{register}:{step}](macro:{register}:step:{step})")
             }
-            SourceKind::DotRepeat(inner) => format!("[[dot-repeat-of:{}]]", inner.as_link()),
-            SourceKind::Synthetic(tag) => format!("[[<{tag}>]]"),
+            SourceKind::DotRepeat(inner) => {
+                // The inner source already renders as a markdown link;
+                // wrap it as the label of an outer link whose URL is
+                // a synthetic dot-repeat-of: scheme. Consumers can
+                // peel one level off if they care.
+                format!("[dot-repeat-of:{}](dot-repeat-of:inner)", inner.as_link())
+            }
+            SourceKind::Synthetic(tag) => format!("[<{tag}>](synthetic:{tag})"),
         }
     }
 }
@@ -137,7 +151,7 @@ mod tests {
     #[test]
     fn builtin_file_renders_as_file_link_with_line() {
         let s = SourceLocation::builtin_file("src/foo.rs", 42);
-        assert_eq!(s.as_link(), "[[file:src/foo.rs:42]]");
+        assert_eq!(s.as_link(), "[src/foo.rs:42](file:src/foo.rs:42)");
     }
 
     #[test]
@@ -149,7 +163,7 @@ mod tests {
                 line: None,
             },
         };
-        assert_eq!(s.as_link(), "[[file:foo.rs]]");
+        assert_eq!(s.as_link(), "[foo.rs](file:foo.rs)");
     }
 
     #[test]
@@ -158,7 +172,7 @@ mod tests {
             layer: SourceLayer::Runtime,
             kind: SourceKind::CommandLine { history_index: 3 },
         };
-        assert_eq!(s.as_link(), "[[history:command:3]]");
+        assert_eq!(s.as_link(), "[command:3](history:command:3)");
     }
 
     #[test]
@@ -170,7 +184,7 @@ mod tests {
                 step: 5,
             },
         };
-        assert_eq!(s.as_link(), "[[macro:q:step:5]]");
+        assert_eq!(s.as_link(), "[macro:q:5](macro:q:step:5)");
     }
 
     #[test]
@@ -180,12 +194,15 @@ mod tests {
             layer: SourceLayer::Runtime,
             kind: SourceKind::DotRepeat(Box::new(inner)),
         };
-        assert_eq!(s.as_link(), "[[dot-repeat-of:[[file:src/foo.rs:7]]]]");
+        assert_eq!(
+            s.as_link(),
+            "[dot-repeat-of:[src/foo.rs:7](file:src/foo.rs:7)](dot-repeat-of:inner)"
+        );
     }
 
     #[test]
     fn synthetic_kind_renders_tagged_link() {
         let s = SourceLocation::synthetic("initial-load");
-        assert_eq!(s.as_link(), "[[<initial-load>]]");
+        assert_eq!(s.as_link(), "[<initial-load>](synthetic:initial-load)");
     }
 }

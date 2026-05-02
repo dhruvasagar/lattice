@@ -150,9 +150,9 @@ impl lattice_grammar::Introspectable for KeymapEntry {
     fn extra_sections(&self) -> Vec<lattice_grammar::HelpSection> {
         let mut lines = Vec::new();
         if let Some(name) = self.command {
-            // Cross-reference: `[[command:NAME]]` link follows to
-            // :describe-command.
-            lines.push(format!("Invokes: [[command:{name}]]"));
+            // Cross-reference: `[name](command:name)` markdown
+            // link follows to :describe-command.
+            lines.push(format!("Invokes: [{name}](command:{name})"));
         }
         if lines.is_empty() {
             return Vec::new();
@@ -558,8 +558,9 @@ mod tests {
     #[test]
     fn introspectable_render_includes_source_link_and_invokes_section() {
         // End-to-end: render an entry with a command through the
-        // generic renderer; verify the output has both the [[file:...]]
-        // source link and the [[command:NAME]] cross-reference.
+        // generic renderer; verify the output has both the
+        // `(file:...)` source link and the `(command:...)`
+        // cross-reference (markdown link form).
         let entries = default_keymap();
         let entry = entries
             .iter()
@@ -572,11 +573,11 @@ mod tests {
             "body missing source label: {body}"
         );
         assert!(
-            body.contains("[[file:") && body.contains("keymap.rs"),
+            body.contains("(file:") && body.contains("keymap.rs"),
             "body missing source link: {body}"
         );
         assert!(
-            body.contains("[[command:"),
+            body.contains("(command:"),
             "body missing command cross-reference: {body}"
         );
         assert!(

@@ -17,33 +17,38 @@
 //!    sitter grammar lands (Phase 6+8), motions and the highlighter
 //!    work over this content with no special-casing.
 //!
-//! 2. **Links are first-class** -- the formatter emits `[[…]]` markup
-//!    and we extract a `Vec<HelpLink>` listing every reference's byte
-//!    range within the rendered text plus its target ([command,
-//!    chord, source-location]). Today the renderer is dumb and the
-//!    links are inert; tomorrow's link-following motion uses this
-//!    same vec.
+//! 2. **Links are first-class, in standard markdown form** -- the
+//!    formatter emits `[label](scheme:value)` markdown links and we
+//!    extract a `Vec<HelpLink>` listing every reference's byte range
+//!    (the LABEL, what the user sees) plus its target ([command,
+//!    chord, source-location]). Standard markdown link syntax means
+//!    a help body renders correctly in any markdown viewer (GitHub,
+//!    docs.rs, this editor's markdown highlighter); navigation
+//!    inside the editor dispatches on the URL's scheme.
 //!
 //! 3. **Display target is a user preference** -- [`HelpDisplayMode`]
 //!    enumerates the surfaces a help buffer can be shown in. v1
 //!    implements `Popup` only; `Split` / `Tab` / `Window` arrive
 //!    behind multi-buffer.
 //!
-//! Markup convention for links inside a help body:
+//! Markup convention for links inside a help body
+//! (`[label](url)` -- standard markdown):
 //!
-//! - `[[command:NAME]]` -> [`HelpLinkTarget::Command`]
-//! - `[[key:CHORD]]`    -> [`HelpLinkTarget::Chord`]
-//! - `[[file:PATH:LINE]]` -> [`HelpLinkTarget::Source`]
+//! - `[ex:write](command:ex:write)` -> [`HelpLinkTarget::Command`]
+//! - `[zo](key:zo)`                 -> [`HelpLinkTarget::Chord`]
+//! - `[src/foo.rs:42](file:src/foo.rs:42)` -> [`HelpLinkTarget::Source`]
 //!
-//! Anything else inside `[[ ]]` parses as an unresolved link with the
-//! raw payload preserved -- forward-compat for future targets
-//! (option, event, mode, ...).
+//! Anything else (`scheme:value` with an unrecognized scheme) parses
+//! as an unresolved link with the raw URL preserved -- forward-compat
+//! for future targets (option, event, mode, ...).
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use lattice_core::Buffer;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
+use lattice_syntax::{Lang, LangRegistry, Syntax};
 
 /// Where a help buffer is displayed. Configured per-user; v1 only
 /// implements [`HelpDisplayMode::Popup`]. The other variants exist now
@@ -89,6 +94,14 @@ pub struct HelpBuffer {
     /// `scroll_to_anchor` and (post-Phase 6) by motion
     /// commands that walk anchor-by-anchor.
     pub anchors: Vec<HelpAnchor>,
+    /// Pre-computed per-line markdown highlight spans. Populated by
+    /// [`Self::with_markdown_syntax`]; empty when constructed
+    /// without a language registry (test paths). The renderer
+    /// indexes by line into this Vec, then applies the `Style`
+    /// mapping for terminal styling. Pre-computing avoids a
+    /// `&mut Syntax` borrow during the render pass which would
+    /// otherwise conflict with `&App`.
+    pub highlights: Vec<Vec<lattice_syntax::StyledSpan>>,
 }
 
 /// Named scroll target inside a help buffer's content.
@@ -113,10 +126,12 @@ impl std::fmt::Debug for HelpBuffer {
 }
 
 impl HelpBuffer {
-    /// Build a help buffer from a list of pre-formatted lines. Each
-    /// line may contain `[[…]]` link markup, which is preserved
-    /// verbatim in the buffer text and indexed into [`HelpBuffer::links`]
-    /// at the byte range it occupies in the joined output.
+    /// Build a help buffer from a list of pre-formatted lines.
+    /// Lines may contain `[label](scheme:value)` markdown links --
+    /// the parser indexes them into [`HelpBuffer::links`] at the
+    /// label's byte range in the joined output. No syntax
+    /// highlighting is attached -- use [`Self::with_markdown_syntax`]
+    /// to add it (the App always does; tests usually don't need to).
     pub fn from_lines(title: impl Into<String>, lines: Vec<String>) -> Self {
         Self::from_lines_and_anchors(title, lines, Vec::new())
     }
@@ -144,7 +159,32 @@ impl HelpBuffer {
             cursor: Position::ZERO,
             links,
             anchors,
+            highlights: Vec::new(),
         }
+    }
+
+    /// Pre-compute markdown highlight spans for the entire body
+    /// using the shared language registry. The help-overlay
+    /// renderer reads `self.highlights[line]` per visible row and
+    /// applies the `Style` mapping. Headings, fenced code blocks
+    /// (with per-language injection -- a ` ```rust``` ` block
+    /// carries rust highlights), and other markup land here.
+    ///
+    /// Builder-style so callers can chain:
+    /// `HelpBuffer::from_lines(title, lines).with_markdown_syntax(registry)`.
+    /// Failure to construct the syntax (e.g. registry doesn't have
+    /// markdown registered) leaves `highlights` empty -- the buffer
+    /// renders without color, no error.
+    pub fn with_markdown_syntax(mut self, registry: Arc<LangRegistry>) -> Self {
+        if let Ok(Some(mut s)) = Syntax::for_language_with_registry(Lang::Markdown, registry) {
+            let text = self.content.as_string();
+            s.parse(&text);
+            let total_lines = self.content.line_count();
+            if let Ok(rows) = s.highlight_lines(0, total_lines) {
+                self.highlights = rows;
+            }
+        }
+        self
     }
 
     /// Scroll the help view so the named anchor's heading row is at
@@ -290,63 +330,87 @@ pub enum HelpLinkTarget {
     Unresolved(String),
 }
 
-/// Helper for help-content formatters. Renders a chord-link.
+/// Helper for help-content formatters. Renders a chord link in
+/// standard markdown form: `[chord](key:chord)`.
 pub fn key_link(chord: &str) -> String {
-    format!("[[key:{chord}]]")
+    format!("[{chord}](key:{chord})")
 }
 
-/// Helper for help-content formatters. Renders a command-link.
+/// Helper for help-content formatters. Renders a command link in
+/// standard markdown form: `[name](command:name)`.
 pub fn command_link(name: &str) -> String {
-    format!("[[command:{name}]]")
+    format!("[{name}](command:{name})")
 }
 
-/// Helper for help-content formatters. Renders a source-link.
+/// Helper for help-content formatters. Renders a source link in
+/// standard markdown form: `[path:line](file:path:line)`.
 pub fn source_link(file_line: &str) -> String {
-    // file_line is conventionally "path:line"; we just reflect what
-    // the caller passed and let parse_help_links validate.
-    format!("[[file:{file_line}]]")
+    format!("[{file_line}](file:{file_line})")
 }
 
-/// Walk `text`, locating every `[[…]]` link and resolving its target.
-/// Byte offsets in the returned [`HelpLink`]s are 0-indexed within
-/// `text`, treating `text` as a flat byte stream and computing the
-/// `(line, byte_in_line)` pair lazily.
+/// Walk `text`, locating every `[label](url)` markdown link and
+/// resolving the URL's scheme into a typed [`HelpLinkTarget`]. Each
+/// returned [`HelpLink`]'s `range` covers the LABEL bytes (what the
+/// user sees as a clickable token) -- the surrounding `[`, `]`,
+/// `(`, `)`, and URL bytes aren't part of the highlighted range.
+///
+/// Forms recognized:
+/// - `[label](command:NAME)` -> [`HelpLinkTarget::Command`]
+/// - `[label](key:CHORD)`    -> [`HelpLinkTarget::Chord`]
+/// - `[label](file:PATH:LINE)` -> [`HelpLinkTarget::Source`]
+/// - any other URL -> [`HelpLinkTarget::Unresolved`]
+///
+/// The parser is intentionally simple (no nested-bracket support,
+/// no escaping). Help-content authors compose links via the
+/// helper functions [`command_link`] / [`key_link`] /
+/// [`source_link`] which always emit well-formed input.
 pub fn parse_help_links(text: &str) -> Vec<HelpLink> {
     let mut out = Vec::new();
     let bytes = text.as_bytes();
     let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
-            // Find the closing `]]`.
-            let inner_start = i + 2;
-            let mut j = inner_start;
-            while j + 1 < bytes.len() && !(bytes[j] == b']' && bytes[j + 1] == b']') {
-                j += 1;
-            }
-            if j + 1 < bytes.len() && bytes[j] == b']' && bytes[j + 1] == b']' {
-                let payload = &text[inner_start..j];
-                let target = classify_link_payload(payload);
-                let start_pos = byte_offset_to_position(text, inner_start);
-                let end_pos = byte_offset_to_position(text, j);
-                out.push(HelpLink {
-                    range: ProtoRange::new(start_pos, end_pos),
-                    target,
-                });
-                i = j + 2;
-                continue;
-            }
+    while i < bytes.len() {
+        if bytes[i] != b'[' {
+            i += 1;
+            continue;
         }
-        i += 1;
+        // Find `]` after the `[`.
+        let label_start = i + 1;
+        let Some(label_end_rel) = bytes[label_start..].iter().position(|&b| b == b']') else {
+            i += 1;
+            continue;
+        };
+        let label_end = label_start + label_end_rel;
+        // Must be followed by `(`.
+        if bytes.get(label_end + 1) != Some(&b'(') {
+            i = label_start;
+            continue;
+        }
+        let url_start = label_end + 2;
+        let Some(url_end_rel) = bytes[url_start..].iter().position(|&b| b == b')') else {
+            i = url_start;
+            continue;
+        };
+        let url_end = url_start + url_end_rel;
+
+        let url = &text[url_start..url_end];
+        let target = classify_link_url(url);
+        let start_pos = byte_offset_to_position(text, label_start);
+        let end_pos = byte_offset_to_position(text, label_end);
+        out.push(HelpLink {
+            range: ProtoRange::new(start_pos, end_pos),
+            target,
+        });
+        i = url_end + 1;
     }
     out
 }
 
-fn classify_link_payload(payload: &str) -> HelpLinkTarget {
-    if let Some(rest) = payload.strip_prefix("command:") {
+fn classify_link_url(url: &str) -> HelpLinkTarget {
+    if let Some(rest) = url.strip_prefix("command:") {
         HelpLinkTarget::Command(rest.to_string())
-    } else if let Some(rest) = payload.strip_prefix("key:") {
+    } else if let Some(rest) = url.strip_prefix("key:") {
         HelpLinkTarget::Chord(rest.to_string())
-    } else if let Some(rest) = payload.strip_prefix("file:") {
+    } else if let Some(rest) = url.strip_prefix("file:") {
         // `path:line` -- split at the LAST `:` so paths with colons
         // (Windows drives, URLs) survive.
         if let Some((path, line)) = rest.rsplit_once(':')
@@ -357,9 +421,12 @@ fn classify_link_payload(payload: &str) -> HelpLinkTarget {
                 line,
             };
         }
-        HelpLinkTarget::Unresolved(payload.to_string())
+        HelpLinkTarget::Source {
+            path: PathBuf::from(rest),
+            line: 0,
+        }
     } else {
-        HelpLinkTarget::Unresolved(payload.to_string())
+        HelpLinkTarget::Unresolved(url.to_string())
     }
 }
 
@@ -445,7 +512,7 @@ mod tests {
 
     #[test]
     fn parse_help_links_extracts_command_link() {
-        let links = parse_help_links("see [[command:ex:write]] for details");
+        let links = parse_help_links("see [ex:write](command:ex:write) for details");
         assert_eq!(links.len(), 1);
         assert!(matches!(
             &links[0].target,
@@ -455,7 +522,7 @@ mod tests {
 
     #[test]
     fn parse_help_links_extracts_chord_link() {
-        let links = parse_help_links("press [[key:<C-d>]] to scroll");
+        let links = parse_help_links("press [<C-d>](key:<C-d>) to scroll");
         assert_eq!(links.len(), 1);
         assert!(matches!(
             &links[0].target,
@@ -465,7 +532,7 @@ mod tests {
 
     #[test]
     fn parse_help_links_extracts_source_link() {
-        let links = parse_help_links("source: [[file:src/foo.rs:42]]");
+        let links = parse_help_links("source: [src/foo.rs:42](file:src/foo.rs:42)");
         assert_eq!(links.len(), 1);
         match &links[0].target {
             HelpLinkTarget::Source { path, line } => {
@@ -478,7 +545,7 @@ mod tests {
 
     #[test]
     fn parse_help_links_unknown_scheme_is_unresolved() {
-        let links = parse_help_links("see [[option:editor.line-numbers]]");
+        let links = parse_help_links("see [editor.line-numbers](option:editor.line-numbers)");
         assert_eq!(links.len(), 1);
         assert!(matches!(
             &links[0].target,
@@ -488,7 +555,7 @@ mod tests {
 
     #[test]
     fn parse_help_links_handles_multiple_on_one_line() {
-        let links = parse_help_links("[[command:a]] and [[key:b]]");
+        let links = parse_help_links("[a](command:a) and [b](key:b)");
         assert_eq!(links.len(), 2);
         assert!(matches!(&links[0].target, HelpLinkTarget::Command(s) if s == "a"));
         assert!(matches!(&links[1].target, HelpLinkTarget::Chord(s) if s == "b"));
@@ -496,18 +563,38 @@ mod tests {
 
     #[test]
     fn parse_help_links_unmatched_bracket_is_ignored() {
-        let links = parse_help_links("see [[command:no-close");
+        let links = parse_help_links("see [command](command:no-close");
+        // No closing `)` -- ignored.
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn parse_help_links_label_only_is_ignored() {
+        // Markdown link requires `(url)` after the label; a bare
+        // `[label]` (reference-style markdown) is currently unused in
+        // help bodies and gets ignored by the parser.
+        let links = parse_help_links("see [foo] for details");
         assert!(links.is_empty());
     }
 
     #[test]
     fn parse_help_links_records_byte_positions_across_lines() {
-        let text = "first\n[[command:x]]\nthird";
+        let text = "first\n[x](command:x)\nthird";
         let links = parse_help_links(text);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].range.start.line, 1);
-        // After "[[" on line 1 the inner payload starts at byte 2.
-        assert_eq!(links[0].range.start.byte, 2);
+        // The label `x` starts at byte 1 on line 1 (after the `[`).
+        assert_eq!(links[0].range.start.byte, 1);
+    }
+
+    #[test]
+    fn link_helpers_emit_standard_markdown() {
+        assert_eq!(command_link("ex:write"), "[ex:write](command:ex:write)");
+        assert_eq!(key_link("zo"), "[zo](key:zo)");
+        assert_eq!(
+            source_link("src/foo.rs:42"),
+            "[src/foo.rs:42](file:src/foo.rs:42)"
+        );
     }
 
     #[test]
@@ -608,16 +695,43 @@ mod tests {
 
     #[test]
     fn key_link_helper_renders_markup() {
-        assert_eq!(key_link("<C-d>"), "[[key:<C-d>]]");
+        assert_eq!(key_link("<C-d>"), "[<C-d>](key:<C-d>)");
     }
 
     #[test]
     fn command_link_helper_renders_markup() {
-        assert_eq!(command_link("ex:write"), "[[command:ex:write]]");
+        assert_eq!(command_link("ex:write"), "[ex:write](command:ex:write)");
     }
 
     #[test]
     fn display_mode_default_is_popup() {
         assert_eq!(HelpDisplayMode::default(), HelpDisplayMode::Popup);
+    }
+
+    #[test]
+    fn with_markdown_syntax_populates_highlights_for_headings() {
+        let registry = LangRegistry::standard().expect("registry");
+        let h = HelpBuffer::from_lines("t", vec!["# Configuration".into(), "body line".into()])
+            .with_markdown_syntax(registry);
+        // Line 0 (the heading) should carry a Heading1 span.
+        assert!(
+            h.highlights
+                .first()
+                .map(|spans| spans
+                    .iter()
+                    .any(|sp| sp.style == lattice_syntax::Style::Heading1))
+                .unwrap_or(false),
+            "expected Heading1 span on heading line, got {:?}",
+            h.highlights.first()
+        );
+    }
+
+    #[test]
+    fn with_markdown_syntax_is_optional() {
+        // The fallback path -- no registry means no highlights, but
+        // the buffer still works.
+        let h = HelpBuffer::from_lines("t", vec!["# title".into()]);
+        assert!(h.highlights.is_empty());
+        assert_eq!(h.content.line_count(), 1);
     }
 }

@@ -33,7 +33,7 @@ use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
 use lattice_runtime::{
     CancellationToken, DocumentHandle, EventBus, RuntimeError, block_on, spawn_document,
 };
-use lattice_syntax::{Lang, StyledSpan, Syntax};
+use lattice_syntax::{Lang, LangRegistry, StyledSpan, Syntax};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -524,6 +524,13 @@ pub struct App {
     /// Subscribers are external -- v1 nobody subscribes by default,
     /// but plugins / autocmd compat will wire up here.
     pub event_bus: Arc<EventBus>,
+    /// Shared language registry for tree-sitter highlighting. One
+    /// `Arc<LangRegistry>` services the document buffer's `Syntax`
+    /// AND every `HelpBuffer` constructed by `:describe-*` /
+    /// `:apropos` / `:keymap`. Help bodies render with markdown
+    /// highlighting (headings, fenced-block injections to the
+    /// language tag) sourced from this same registry.
+    pub lang_registry: Arc<LangRegistry>,
     pub builtins: Builtins,
     /// In-progress text in the `:` minibuffer. Populated only while
     /// `modal == ModalState::Command`.
@@ -931,8 +938,15 @@ impl App {
         // doc annotators).
         let mut completion_registry = lattice_completion::CompletionRegistry::new();
         let _completion_builtins = lattice_completion::populate(&mut completion_registry);
+        // One `LangRegistry` per App, shared between the document
+        // buffer's `Syntax` and every `HelpBuffer` we'll spin up
+        // for `:describe-*` / `:apropos` / `:keymap` (markdown
+        // highlighted with fenced-block language injection).
+        let lang_registry = LangRegistry::standard().expect("standard lang registry");
         let lang = Lang::detect_from_path(document.path());
-        let mut syntax = Syntax::for_language(lang).ok().flatten();
+        let mut syntax = Syntax::for_language_with_registry(lang, lang_registry.clone())
+            .ok()
+            .flatten();
         if let Some(s) = syntax.as_mut() {
             s.parse(&document.text());
         }
@@ -954,6 +968,7 @@ impl App {
             pending: Pending::None,
             registry,
             event_bus: Arc::new(EventBus::new()),
+            lang_registry,
             builtins,
             command_line: String::new(),
             last_message: None,
@@ -2300,9 +2315,13 @@ impl App {
                 return;
             }
         };
-        // Re-initialise syntax for the new doc's language.
+        // Re-initialise syntax for the new doc's language. Reuses
+        // the App's shared `lang_registry` so re-loads don't rebuild
+        // the markdown / rust / etc. configs.
         let lang = Lang::detect_from_path(new_doc.path());
-        let mut syntax = Syntax::for_language(lang).ok().flatten();
+        let mut syntax = Syntax::for_language_with_registry(lang, self.lang_registry.clone())
+            .ok()
+            .flatten();
         if let Some(s) = syntax.as_mut() {
             s.parse(&new_doc.text());
         }
@@ -2954,7 +2973,8 @@ impl App {
             format!("describe-command {name}"),
             rendered.lines,
             anchors,
-        );
+        )
+        .with_markdown_syntax(self.lang_registry.clone());
         if let Some(a) = anchor {
             buffer.scroll_to_anchor(a);
         }
@@ -2995,7 +3015,10 @@ impl App {
             "options:        number={}  relativenumber={}",
             self.show_line_numbers, self.relative_line_numbers
         ));
-        self.help_buffer = Some(HelpBuffer::from_lines("describe-buffer", lines));
+        self.help_buffer = Some(
+            HelpBuffer::from_lines("describe-buffer", lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        );
     }
 
     fn do_apropos(&mut self, pattern: &str) {
@@ -3047,7 +3070,10 @@ impl App {
                 ));
             }
         }
-        self.help_buffer = Some(HelpBuffer::from_lines(format!("apropos {pattern}"), lines));
+        self.help_buffer = Some(
+            HelpBuffer::from_lines(format!("apropos {pattern}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        );
     }
 
     /// Format `:describe-key <chord>` (DESIGN.md §5.11). A chord may
@@ -3074,10 +3100,10 @@ impl App {
                 }
             }
         }
-        self.help_buffer = Some(HelpBuffer::from_lines(
-            format!("describe-key {chord}"),
-            lines,
-        ));
+        self.help_buffer = Some(
+            HelpBuffer::from_lines(format!("describe-key {chord}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        );
     }
 
     fn do_list_keymap(&mut self) {
@@ -3137,7 +3163,10 @@ impl App {
             }
             lines.push(String::new());
         }
-        self.help_buffer = Some(HelpBuffer::from_lines("keymap", lines));
+        self.help_buffer = Some(
+            HelpBuffer::from_lines("keymap", lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        );
     }
 
     /// Estimated help-overlay viewport height. The overlay is centred
@@ -7760,7 +7789,7 @@ mod tests {
 
     #[test]
     fn describe_command_shows_source_link_to_registration_site() {
-        // §5.11: every :describe-* must surface a [[file:...]] link
+        // §5.11: every :describe-* must surface a `(file:...)` link
         // so the user can jump to where the thing was registered.
         // Built-in commands record their source via #[track_caller]
         // when populate() runs.
@@ -7774,7 +7803,7 @@ mod tests {
             "body should label the source: {body}"
         );
         assert!(
-            body.contains("[[file:") && body.contains("ex_commands.rs"),
+            body.contains("(file:") && body.contains("ex_commands.rs"),
             "body should contain a file link to ex_commands.rs: {body}"
         );
         assert!(
@@ -7786,9 +7815,9 @@ mod tests {
     #[test]
     fn describe_command_link_is_extracted_by_help_link_parser() {
         // The HelpBuffer constructor runs parse_help_links over the
-        // body so the [[file:...]] markup becomes a HelpLink with
-        // a Source target -- ready for the styled-link renderer +
-        // follow-link motion (post-1.0).
+        // body so the `[label](file:...)` markdown link becomes a
+        // HelpLink with a Source target -- ready for the styled-link
+        // renderer + follow-link motion (post-1.0).
         let mut a = app_with("xx", 10);
         a.command_line = "describe-command ex:quit".into();
         a.modal = ModalState::Command;
@@ -7890,7 +7919,7 @@ mod tests {
             "describe-key output missing `Bound at:`: {body}"
         );
         assert!(
-            body.contains("[[file:") && body.contains("keymap.rs"),
+            body.contains("(file:") && body.contains("keymap.rs"),
             "describe-key output missing source link: {body}"
         );
         assert!(
@@ -7902,23 +7931,23 @@ mod tests {
     #[test]
     fn describe_key_renders_command_cross_reference_links() {
         // For `j`, three Normal/Visual/Help bindings -- the first
-        // two have a `command` and should produce [[command:...]]
-        // cross-reference links.
+        // two have a `command` and should produce
+        // `[name](command:name)` markdown links.
         let mut a = app_with("xx", 10);
         a.command_line = "describe-key j".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.help_buffer.as_ref().unwrap().content.as_string();
         assert!(
-            body.contains("[[command:motion:line-down]]"),
-            "expected [[command:motion:line-down]] cross-reference: {body}"
+            body.contains("(command:motion:line-down)"),
+            "expected `(command:motion:line-down)` cross-reference: {body}"
         );
     }
 
     #[test]
     fn describe_key_each_binding_has_its_own_source_link() {
         // `j` has 3 bindings (Normal, Visual, Help) -- each should
-        // surface its own [[file:...]] line because every
+        // surface its own `(file:...)` link because every
         // KeymapEntry's source is captured at its own row.
         let mut a = app_with("xx", 10);
         a.command_line = "describe-key j".into();

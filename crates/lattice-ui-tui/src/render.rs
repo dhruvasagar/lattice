@@ -241,11 +241,28 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         .enumerate()
         .map(|(i, l)| {
             let line_idx = help.scroll + i;
-            let spans = help.highlights.get(line_idx);
-            Line::from(render_help_line(
-                l,
-                spans.map(|v| v.as_slice()).unwrap_or(&[]),
-            ))
+            let mut spans: Vec<lattice_syntax::StyledSpan> =
+                help.highlights.get(line_idx).cloned().unwrap_or_default();
+            // Layer Style::Link decoration on every link's label
+            // range that touches this line. tree-sitter-md 0.3.x's
+            // inline injection is unreliable so we paint link
+            // styling from the parsed HelpLinks (same hlsearch-
+            // style overlay model the buffer renderer uses).
+            for link in help.links.iter() {
+                if let Some((s, e)) = link_label_range_on_line(link, line_idx as u32) {
+                    let line_len = l.len();
+                    let s = s.min(line_len);
+                    let e = e.min(line_len);
+                    if s < e {
+                        spans.push(lattice_syntax::StyledSpan {
+                            start: s,
+                            end: e,
+                            style: lattice_syntax::Style::Link,
+                        });
+                    }
+                }
+            }
+            Line::from(render_help_line(l, &spans))
         })
         .collect();
     let para = Paragraph::new(visible);
@@ -844,6 +861,32 @@ fn display_col_for_byte(buffer: &lattice_core::Buffer, pos: lattice_protocol::Po
         byte -= 1;
     }
     UnicodeWidthStr::width(&line[..byte]) as u32
+}
+
+/// Project a link's label range onto a single rendered line.
+/// Returns `Some((start_byte, end_byte))` (line-relative) when the
+/// link covers any portion of the given line, `None` otherwise.
+/// Used by the help-overlay renderer to paint Style::Link on each
+/// link's label region.
+fn link_label_range_on_line(link: &crate::help::HelpLink, line_idx: u32) -> Option<(usize, usize)> {
+    let r = &link.range;
+    if line_idx < r.start.line || line_idx > r.end.line {
+        return None;
+    }
+    let start = if line_idx == r.start.line {
+        r.start.byte as usize
+    } else {
+        0
+    };
+    let end = if line_idx == r.end.line {
+        r.end.byte as usize
+    } else {
+        usize::MAX
+    };
+    if end <= start {
+        return None;
+    }
+    Some((start, end))
 }
 
 /// Compose one help-buffer row into ratatui spans by:

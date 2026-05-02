@@ -454,6 +454,13 @@ pub enum Action {
     HelpJumpBottom,
     /// Close the active help overlay (Esc / q).
     HelpDismiss,
+    /// Follow the link under the cursor in the help overlay
+    /// (`<CR>`). Resolves the link's URL scheme and dispatches:
+    /// `command:NAME` re-runs `:describe-command NAME`,
+    /// `key:CHORD` re-runs `:describe-key CHORD`,
+    /// `file:PATH:LINE` opens the file at the line. Cursor not
+    /// on a link is a no-op.
+    HelpFollowLink,
 
     // ---- Search (`/`, `?`, `n`, `N`) ----
     /// Pressed `/` (Forward) or `?` (Backward) -- enter Search modal with
@@ -1509,7 +1516,12 @@ impl App {
             }
             Action::HelpDismiss => {
                 self.help_buffer = None;
+                // Help mode reuses Pending::AfterG for the gg
+                // chord; clear it on dismiss so a stranded `g`
+                // doesn't leak into Normal mode.
+                self.pending = Pending::None;
             }
+            Action::HelpFollowLink => self.do_help_follow_link(),
 
             Action::EnterSearch(direction) => {
                 self.search_line = Some(SearchLine {
@@ -2947,6 +2959,44 @@ impl App {
     /// `anchor` (optional) scrolls the help buffer to a named
     /// anchor after rendering. Used by the cmdline's arg-aware
     /// `<C-h>` to jump to `arg:<name>`.
+    /// Follow the help link under the cursor (`<CR>` in help mode).
+    /// Looks up the link by cursor position, then dispatches based
+    /// on the link target's variant. Source links echo the
+    /// `path:line` for now -- full file-open lands with multi-buffer.
+    fn do_help_follow_link(&mut self) {
+        let Some(help) = self.help_buffer.as_ref() else {
+            return;
+        };
+        let Some(link) = help.link_at(help.cursor) else {
+            self.set_message(EchoLevel::Info, "no link under cursor".to_string());
+            return;
+        };
+        // Clone the target so we can drop the &help borrow before
+        // calling do_describe_* (which takes &mut self).
+        let target = link.target.clone();
+        match target {
+            crate::help::HelpLinkTarget::Command(name) => {
+                self.do_describe_command(&name, None);
+            }
+            crate::help::HelpLinkTarget::Chord(chord) => {
+                self.do_describe_key(&chord);
+            }
+            crate::help::HelpLinkTarget::Source { path, line } => {
+                self.set_message(
+                    EchoLevel::Info,
+                    format!(
+                        "source: {}:{} (file open arrives with multi-buffer)",
+                        path.display(),
+                        line
+                    ),
+                );
+            }
+            crate::help::HelpLinkTarget::Unresolved(url) => {
+                self.set_message(EchoLevel::Warn, format!("no handler for `{url}`"));
+            }
+        }
+    }
+
     fn do_describe_command(&mut self, name: &str, anchor: Option<&str>) {
         // Two-stage resolution mirrors `excommand::parse_invocation`:
         // try the typed text as a registry name first (canonical
@@ -7789,23 +7839,31 @@ mod tests {
 
     #[test]
     fn describe_command_shows_source_link_to_registration_site() {
-        // §5.11: every :describe-* must surface a `(file:...)` link
-        // so the user can jump to where the thing was registered.
-        // Built-in commands record their source via #[track_caller]
-        // when populate() runs.
+        // §5.11: every :describe-* must surface a file link to the
+        // registration site. The buffer text is the rendered label
+        // (`ex_commands.rs:LINE`) only -- the URL lives on the
+        // parsed HelpLink target. Built-in commands record their
+        // source via #[track_caller] when populate() runs.
         let mut a = app_with("xx", 10);
         a.command_line = "describe-command ex:write".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        let h = a.help_buffer.as_ref().unwrap();
+        let body = h.content.as_string();
         assert!(
             body.contains("Defined at:"),
             "body should label the source: {body}"
         );
         assert!(
-            body.contains("(file:") && body.contains("ex_commands.rs"),
-            "body should contain a file link to ex_commands.rs: {body}"
+            body.contains("ex_commands.rs"),
+            "body should contain the file path label: {body}"
         );
+        // The HelpLink target carries the URL's resolved type.
+        let has_source = h.links.iter().any(|l| {
+            matches!(&l.target, crate::help::HelpLinkTarget::Source { path, .. }
+                if path.to_string_lossy().contains("ex_commands.rs"))
+        });
+        assert!(has_source, "expected a Source HelpLink to ex_commands.rs");
         assert!(
             body.contains("(built-in)"),
             "body should label the source layer: {body}"
@@ -7913,15 +7971,21 @@ mod tests {
         a.command_line = "describe-key j".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        let h = a.help_buffer.as_ref().unwrap();
+        let body = h.content.as_string();
         assert!(
             body.contains("Bound at:"),
             "describe-key output missing `Bound at:`: {body}"
         );
         assert!(
-            body.contains("(file:") && body.contains("keymap.rs"),
-            "describe-key output missing source link: {body}"
+            body.contains("keymap.rs"),
+            "describe-key output missing source label: {body}"
         );
+        let has_source = h.links.iter().any(|l| {
+            matches!(&l.target, crate::help::HelpLinkTarget::Source { path, .. }
+                if path.to_string_lossy().contains("keymap.rs"))
+        });
+        assert!(has_source, "expected a Source HelpLink to keymap.rs");
         assert!(
             body.contains("(built-in)"),
             "describe-key output missing source-layer label: {body}"
@@ -7931,17 +7995,23 @@ mod tests {
     #[test]
     fn describe_key_renders_command_cross_reference_links() {
         // For `j`, three Normal/Visual/Help bindings -- the first
-        // two have a `command` and should produce
-        // `[name](command:name)` markdown links.
+        // two have a `command`. The buffer text shows the LABEL
+        // (`motion:line-down`); the URL is on the HelpLink target.
         let mut a = app_with("xx", 10);
         a.command_line = "describe-key j".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        let h = a.help_buffer.as_ref().unwrap();
+        let body = h.content.as_string();
         assert!(
-            body.contains("(command:motion:line-down)"),
-            "expected `(command:motion:line-down)` cross-reference: {body}"
+            body.contains("motion:line-down"),
+            "expected `motion:line-down` label: {body}"
         );
+        // The Command target carries the canonical command name.
+        let has_cmd_link = h.links.iter().any(|l| {
+            matches!(&l.target, crate::help::HelpLinkTarget::Command(c) if c == "motion:line-down")
+        });
+        assert!(has_cmd_link, "expected Command(motion:line-down) link");
     }
 
     #[test]

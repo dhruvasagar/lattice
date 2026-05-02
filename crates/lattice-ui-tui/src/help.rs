@@ -143,8 +143,12 @@ impl HelpBuffer {
         lines: Vec<String>,
         anchors: Vec<HelpAnchor>,
     ) -> Self {
-        let text = lines.join("\n");
-        let links = parse_help_links(&text);
+        let raw = lines.join("\n");
+        // Strip the markdown link wrapper down to its label so the
+        // user reads `ex:write` instead of `[ex:write](command:ex:write)`.
+        // Links are indexed against the CLEANED text so cursor / scroll
+        // / navigation all line up with what's on screen.
+        let (text, links) = extract_links_and_clean(&raw);
         let mut buffer = Buffer::empty();
         if !text.is_empty() {
             // One-shot fill of the rope. We ignore the AppliedEdit
@@ -185,6 +189,31 @@ impl HelpBuffer {
             }
         }
         self
+    }
+
+    /// Find the link whose label range contains `pos`. Used by the
+    /// help-mode link-following handler -- when the user presses
+    /// `<CR>` the App calls this on the cursor's position and
+    /// dispatches based on the target's variant.
+    pub fn link_at(&self, pos: Position) -> Option<&HelpLink> {
+        self.links.iter().find(|link| {
+            let r = &link.range;
+            // Same-line check first (the common case).
+            if pos.line == r.start.line && pos.line == r.end.line {
+                return pos.byte >= r.start.byte && pos.byte < r.end.byte;
+            }
+            // Multi-line label (rare; still cover it).
+            if pos.line < r.start.line || pos.line > r.end.line {
+                return false;
+            }
+            if pos.line == r.start.line {
+                return pos.byte >= r.start.byte;
+            }
+            if pos.line == r.end.line {
+                return pos.byte < r.end.byte;
+            }
+            true
+        })
     }
 
     /// Scroll the help view so the named anchor's heading row is at
@@ -348,11 +377,76 @@ pub fn source_link(file_line: &str) -> String {
     format!("[{file_line}](file:{file_line})")
 }
 
+/// Strip every `[label](url)` markdown link in `text` down to just
+/// its label and return the cleaned-up text plus a [`HelpLink`] per
+/// link with its byte range computed against the CLEANED text. This
+/// is what the help-buffer constructor uses so the user reads
+/// `ex:write` instead of `[ex:write](command:ex:write)`. The link's
+/// URL still drives navigation -- it's stored on the returned
+/// [`HelpLink::target`] but the URL bytes don't appear in the
+/// rendered output.
+pub fn extract_links_and_clean(text: &str) -> (String, Vec<HelpLink>) {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut links: Vec<HelpLink> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            // Try to match `[label](url)` starting at i. On any
+            // failure (no `]`, no `(`, no `)`) fall through and copy
+            // the `[` byte literally.
+            let label_start = i + 1;
+            if let Some(label_end_rel) = bytes[label_start..].iter().position(|&b| b == b']')
+                && bytes.get(label_start + label_end_rel + 1) == Some(&b'(')
+            {
+                let label_end = label_start + label_end_rel;
+                let url_start = label_end + 2;
+                if let Some(url_end_rel) = bytes[url_start..].iter().position(|&b| b == b')') {
+                    let url_end = url_start + url_end_rel;
+                    let label = &text[label_start..label_end];
+                    let url = &text[url_start..url_end];
+                    let target = classify_link_url(url);
+                    let label_byte_start = out.len();
+                    out.push_str(label);
+                    let label_byte_end = out.len();
+                    let start_pos = byte_offset_to_position(&out, label_byte_start);
+                    let end_pos = byte_offset_to_position(&out, label_byte_end);
+                    links.push(HelpLink {
+                        range: ProtoRange::new(start_pos, end_pos),
+                        target,
+                    });
+                    i = url_end + 1;
+                    continue;
+                }
+            }
+        }
+        // Copy one UTF-8 codepoint.
+        let ch_end = next_char_boundary(text, i);
+        out.push_str(&text[i..ch_end]);
+        i = ch_end;
+    }
+    (out, links)
+}
+
+fn next_char_boundary(s: &str, byte: usize) -> usize {
+    let mut j = byte + 1;
+    while j < s.len() && !s.is_char_boundary(j) {
+        j += 1;
+    }
+    j
+}
+
 /// Walk `text`, locating every `[label](url)` markdown link and
 /// resolving the URL's scheme into a typed [`HelpLinkTarget`]. Each
 /// returned [`HelpLink`]'s `range` covers the LABEL bytes (what the
 /// user sees as a clickable token) -- the surrounding `[`, `]`,
 /// `(`, `)`, and URL bytes aren't part of the highlighted range.
+///
+/// Unlike [`extract_links_and_clean`] this preserves the input text
+/// verbatim and returns ranges in the ORIGINAL text. Useful when the
+/// caller wants to keep the markdown source visible (markdown editor
+/// mode); the help-buffer constructor uses `extract_links_and_clean`
+/// to render labels-only.
 ///
 /// Forms recognized:
 /// - `[label](command:NAME)` -> [`HelpLinkTarget::Command`]

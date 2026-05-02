@@ -69,7 +69,7 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
     // accidental presses don't fall through to the underlying modal
     // state (which is still tracked, but invisible while help is up).
     if ctx.help_open {
-        return translate_help(event);
+        return translate_help(event, ctx.pending);
     }
 
     match ctx.modal {
@@ -91,7 +91,7 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
     }
 }
 
-fn translate_help(event: KeyEvent) -> Action {
+fn translate_help(event: KeyEvent, pending: Pending) -> Action {
     // Ctrl chord first -- crossterm reports modifier flags
     // independently of the key code.
     if event.modifiers.contains(KeyModifiers::CONTROL) {
@@ -104,6 +104,18 @@ fn translate_help(event: KeyEvent) -> Action {
             _ => Action::None,
         };
     }
+    // Honor the chord-grammar pending state the same way Normal mode
+    // does. After `g`, only a second `g` resolves to jump-top; any
+    // other key clears pending and is otherwise ignored. This keeps
+    // the help popup vim-grammar-compatible -- a bare `g` no longer
+    // collapses to `gg`. Multi-buffer (§5.9) ultimately routes help
+    // through translate_normal entirely; until then this matches
+    // Normal mode's gg/G/etc. semantics within the help overlay.
+    if matches!(pending, Pending::AfterG)
+        && let KeyCode::Char('g') = event.code
+    {
+        return Action::HelpJumpTop;
+    }
     match event.code {
         KeyCode::Esc | KeyCode::Char('q') => Action::HelpDismiss,
         KeyCode::Char('j') | KeyCode::Down => Action::HelpCursorDown,
@@ -112,10 +124,16 @@ fn translate_help(event: KeyEvent) -> Action {
         KeyCode::Char('l') | KeyCode::Right => Action::HelpCursorRight,
         KeyCode::Char('0') => Action::HelpCursorLineStart,
         KeyCode::Char('$') => Action::HelpCursorLineEnd,
-        KeyCode::Char('g') => Action::HelpJumpTop,
+        // First `g` arms the AfterG pending state; only `gg` resolves
+        // to jump-top. Matches translate_normal's two-key resolution.
+        KeyCode::Char('g') => Action::SetPending(Pending::AfterG),
         KeyCode::Char('G') => Action::HelpJumpBottom,
         KeyCode::PageDown => Action::HelpHalfPage { down: true },
         KeyCode::PageUp => Action::HelpHalfPage { down: false },
+        // <CR> follows the link under the cursor (if any) -- the
+        // App resolves the HelpLinkTarget and re-dispatches
+        // :describe-* / :edit / etc.
+        KeyCode::Enter => Action::HelpFollowLink,
         _ => Action::None,
     }
 }
@@ -1963,14 +1981,26 @@ mod tests {
 
     #[test]
     fn help_open_routes_gg_and_capital_g_to_jumps() {
+        // Help mode honors vim's chord grammar: bare `g` arms
+        // AfterG; `gg` resolves to jump-top; `G` is its own action.
         let (_, b) = fixture();
+        // First `g` -- pending arm.
         assert!(matches!(
             translate(
                 ctx_help_open(ModalState::Normal, Pending::None, &b),
                 key(KeyCode::Char('g'))
             ),
+            Action::SetPending(Pending::AfterG)
+        ));
+        // Second `g` (with AfterG pending) -- HelpJumpTop.
+        assert!(matches!(
+            translate(
+                ctx_help_open(ModalState::Normal, Pending::AfterG, &b),
+                key(KeyCode::Char('g'))
+            ),
             Action::HelpJumpTop
         ));
+        // `G` is single-key.
         assert!(matches!(
             translate(
                 ctx_help_open(ModalState::Normal, Pending::None, &b),

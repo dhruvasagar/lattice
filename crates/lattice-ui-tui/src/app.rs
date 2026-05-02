@@ -7035,6 +7035,23 @@ mod tests {
     }
 
     #[test]
+    fn block_delete_lands_cursor_at_top_left_of_block() {
+        // Vim's behavior: after a rectangle delete, the cursor sits
+        // at the block's top-left column, not at column 0.
+        let mut a = enter_block_visual(
+            "abcd\n1234\nWXYZ",
+            Position::new(0, 1),
+            Position::new(2, 2),
+        );
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_range(lattice_grammar::Range::Selection);
+        a.apply(Action::Invoke(inv));
+        // Top-left of block was (0, 1); after the delete column 1
+        // is the new content's start on the top row.
+        assert_eq!(a.cursor, Position::new(0, 1));
+    }
+
+    #[test]
     fn block_delete_lands_as_single_undo_unit() {
         // The whole rectangle delete must collapse into one undo
         // entry -- the dispatcher coalesces the per-row AppliedEdits

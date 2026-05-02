@@ -315,11 +315,27 @@ fn execute_operator_blockwise(
         None
     };
 
+    // After a rectangle op the cursor should land at the block's
+    // top-left corner -- vim's behavior. The collapsed Edit's
+    // `original_range.start` is `(top_line, 0)` (we replace full
+    // lines), which would otherwise drag the cursor to column 0.
+    // Emit a SelectionChange in the merged effect so the App's
+    // apply_effect overrides the handle_edits column. Skip if the
+    // operator was yank-only (no edits, cursor untouched).
+    let cursor_target = if edit_count > 0 {
+        let line_len = line_byte_len(document.buffer(), top_line);
+        Some(Position::new(top_line, left_col.min(line_len)))
+    } else {
+        None
+    };
+
     Ok(merge_blockwise_effects(
         per_row_effects,
         row_contents,
         register,
         collapsed_edit,
+        cursor_target,
+        document,
     ))
 }
 
@@ -347,6 +363,8 @@ fn merge_blockwise_effects(
     row_contents: Vec<String>,
     primary_register: crate::register::Register,
     collapsed_edit: Option<lattice_core::buffer::AppliedEdit>,
+    cursor_target: Option<Position>,
+    document: &Document,
 ) -> Effect {
     let mut flat: Vec<Effect> = Vec::new();
     for e in per_row_effects {
@@ -400,6 +418,16 @@ fn merge_blockwise_effects(
         // Defensive: if no yank surfaced (e.g. operator that doesn't
         // yank) but we have content, do nothing.
         let _ = primary_register;
+    }
+    // Override the cursor to the block's top-left corner (post-edit)
+    // so vim's "cursor lands at the start of the visual selection"
+    // semantic holds. The collapsed Edit's original_range.start is
+    // (top_line, 0) -- without this override the host's handle_edits
+    // would drag the cursor to column 0.
+    if let Some(pos) = cursor_target {
+        let mut sels = document.selections().clone();
+        sels.replace_primary(lattice_protocol::selection::Selection::cursor(pos));
+        out.push(Effect::SelectionChange(sels));
     }
     if let Some(m) = enter_mode {
         out.push(Effect::EnterMode(m));

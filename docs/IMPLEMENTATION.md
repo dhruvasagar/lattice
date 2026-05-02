@@ -545,11 +545,7 @@ Update this section when picking up the in-flight item.
    link-targets, code-blocks. Needs the help mode registered as a major
    mode, which depends on the modes registry (Phase 8) but the *grammar*
    can be drafted earlier.
-6. **Interactive arg-prompts via `args_schema`** (§B.1 phase 2) — `Chord`
-   slot is done (chord-capture + auto-submit on `:describe-key<CR>`).
-   Generalise to other kinds: drop the user into the minibuffer with
-   the schema's prompt + completion source for any missing required arg.
-7. **Veto-class hooks** (§5.10.2 / §5.2.1) — observation-only event bus
+6. **Veto-class hooks** (§5.10.2 / §5.2.1) — observation-only event bus
    is in place; pre-mutation hooks (`BeforeSave`, `BeforeQuit`) need
    the mutation/abort return path. Plus the actor wiring to publish
    events on edit / mode-change. Unblocks autocmds.

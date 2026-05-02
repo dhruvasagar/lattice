@@ -837,6 +837,23 @@ pub struct SubstitutePreview {
     pub global: bool,
 }
 
+/// Result of resolving a missing-arg prompt (DESIGN.md §B.1).
+/// Returned by [`App::try_resolve_missing_arg_prompt`] when the
+/// user submits a bare command with a required first arg empty.
+struct MissingArgPrompt {
+    /// New value for `command_line`. Already contains the command
+    /// word + bang + a trailing space; the cursor lands at end-of-
+    /// line, in the first arg slot.
+    prefill: String,
+    /// Kind of the first arg. Drives whether the App arms the
+    /// chord-capture overlay (kind == Chord) or just leaves the
+    /// cmdline open for typed input.
+    kind: lattice_grammar::ArgKind,
+    /// Prompt text for the echo area, taken from the schema's
+    /// `prompt` field (or `"<name>:"` when empty).
+    prompt: String,
+}
+
 /// In-flight blockwise-visual insert (`I` or `A`).
 ///
 /// Vim's semantics: when the user enters `I` from blockwise visual,
@@ -1148,21 +1165,21 @@ impl App {
             Action::CommandLineSubmit => {
                 if matches!(self.modal, ModalState::Command) {
                     // Missing-arg prompt path (DESIGN.md §B.1):
-                    // if the user submitted with a Chord-required
-                    // arg empty (`:describe-key<CR>`), don't fail
-                    // -- prefill the cmdline with the command
-                    // word + space (cursor lands in the chord-arg
-                    // slot, chord-capture auto-activates) and arm
-                    // a one-shot auto-submit. The very next
-                    // captured chord runs the lookup, no second
-                    // <CR> required.
-                    if let Some(prefill) = self.try_arm_missing_chord_prompt() {
-                        self.command_line = prefill;
-                        self.auto_submit_after_chord = true;
-                        self.set_message(
-                            EchoLevel::Info,
-                            "key: press the chord to look up".to_string(),
-                        );
+                    // if the user submitted with a required first
+                    // arg empty (`:describe-key<CR>`, `:write<CR>`,
+                    // `:edit<CR>`, ...), don't fail -- prefill the
+                    // cmdline with the command word + space, set
+                    // the cursor in the arg slot, and surface the
+                    // schema's prompt in the echo area. For Chord
+                    // args we additionally arm a one-shot auto-
+                    // submit so the very next captured chord runs
+                    // the lookup with no second <CR>; for other
+                    // kinds the user types and submits normally.
+                    if let Some(info) = self.try_resolve_missing_arg_prompt() {
+                        let is_chord = info.kind == lattice_grammar::ArgKind::Chord;
+                        self.command_line = info.prefill;
+                        self.auto_submit_after_chord = is_chord;
+                        self.set_message(EchoLevel::Info, info.prompt);
                         return;
                     }
                     let line = std::mem::take(&mut self.command_line);
@@ -1793,7 +1810,22 @@ impl App {
     /// cmdline (`<command-word> ` -- with trailing space) so the
     /// caller can transition into a chord-capture prompt.
     /// `None` means submit normally.
-    fn try_arm_missing_chord_prompt(&self) -> Option<String> {
+    /// Generalized missing-arg detection (DESIGN.md §B.1).
+    ///
+    /// When the user submits a bare command with a required first
+    /// arg empty -- e.g. `:write<CR>` (path required), `:edit<CR>`
+    /// (path required), `:describe-command<CR>` (name required) --
+    /// resolve the spec, look up the schema's first required arg,
+    /// and return enough info for the App to prefill the cmdline
+    /// + show a prompt.
+    ///
+    /// Returns `None` when:
+    /// - The cmdline is empty.
+    /// - The user already supplied an arg (parser handles it).
+    /// - The command is unknown (parser errors anyway).
+    /// - There's no first arg or it's not Required.
+    /// - The command's args use the delimiter form (`:s/.../.../`).
+    fn try_resolve_missing_arg_prompt(&self) -> Option<MissingArgPrompt> {
         let line = self.command_line.trim();
         if line.is_empty() {
             return None;
@@ -1818,19 +1850,34 @@ impl App {
                 .and_then(|c| self.registry.id_by_name(c))
         })?;
         let spec = self.registry.ex_command_spec(canonical)?;
+        // Delimiter-form commands (`:s`, `:g`, `:v`) don't go
+        // through the keyword arg-prompt path -- their syntax is
+        // its own UX.
+        if matches!(
+            spec.surface_form,
+            lattice_grammar::SurfaceForm::Delimiter { .. }
+        ) {
+            return None;
+        }
         let first = spec.args_schema.first()?;
-        if first.kind != lattice_grammar::ArgKind::Chord {
-            return None;
-        }
         if !matches!(first.default, lattice_grammar::ArgDefault::Required) {
-            // Non-required chord arg has a fallback; let the
-            // parser take the default path.
+            // Non-required arg has a fallback; let the parser take
+            // the default path.
             return None;
         }
-        // Preserve the user's spelling (alias vs canonical) plus
-        // any bang they typed; just append the trailing space so
-        // the cursor lands in the chord-arg slot.
-        Some(format!("{raw_cmd} "))
+        let prompt = if first.prompt.is_empty() {
+            format!("{}:", first.name)
+        } else {
+            first.prompt.to_string()
+        };
+        Some(MissingArgPrompt {
+            // Preserve the user's spelling (alias vs canonical) plus
+            // any bang they typed; append a trailing space so the
+            // cursor lands in the arg slot.
+            prefill: format!("{raw_cmd} "),
+            kind: first.kind,
+            prompt,
+        })
     }
 
     /// True when the cmdline cursor is on an `ArgKind::Chord` arg
@@ -8006,14 +8053,44 @@ mod tests {
     }
 
     #[test]
-    fn empty_submit_of_describe_command_does_not_arm_prompt() {
-        // describe-command's arg is String, not Chord -- normal
-        // missing-arg behaviour (parser errors).
+    fn empty_submit_of_describe_command_arms_prompt_without_chord_capture() {
+        // describe-command's first arg is String (Required) -- the
+        // generalized missing-arg path arms a prompt, prefills the
+        // cmdline, and leaves the user in Command mode to type the
+        // arg. Auto-submit is OFF (only Chord-kind args auto-submit
+        // on the next keystroke).
         let mut a = app_in_command_mode("describe-command");
         a.apply(Action::CommandLineSubmit);
+        assert!(matches!(a.modal, ModalState::Command));
         assert!(!a.auto_submit_after_chord);
-        // Cmdline submitted (and errored); modal is back to Normal.
+        // Prefilled with the command word + space; cursor in arg slot.
+        assert_eq!(a.command_line, "describe-command ");
+        // Echo area carries the arg's prompt.
+        assert!(a.last_message.is_some());
+    }
+
+    #[test]
+    fn empty_submit_of_optional_arg_command_does_not_arm_prompt() {
+        // `:write` (alias for `ex:write`) has an OPTIONAL path arg
+        // (default = `None` -- absent means "use current path").
+        // Submitting bare runs the command normally; no prompt arm.
+        let mut a = app_in_command_mode("w");
+        a.apply(Action::CommandLineSubmit);
+        // Cmdline closed -- the missing-arg prompt path skipped this
+        // command because its schema's first arg is Optional.
         assert!(matches!(a.modal, ModalState::Normal));
+        assert!(!a.auto_submit_after_chord);
+    }
+
+    #[test]
+    fn missing_arg_prompt_preserves_user_alias() {
+        // User typed the alias `apropos`; prefill must preserve the
+        // alias rather than normalising to the canonical
+        // `ex:apropos`. (Apropos's `pattern` arg is Required.)
+        let mut a = app_in_command_mode("apropos");
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.command_line, "apropos ");
+        assert!(matches!(a.modal, ModalState::Command));
     }
 
     #[test]

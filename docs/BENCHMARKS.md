@@ -35,8 +35,8 @@ better.
 
 | §8.2 row                                     | Target (v1) | Today            | Bench                                                 | Status                                               |
 |----------------------------------------------|-------------|------------------|-------------------------------------------------------|------------------------------------------------------|
-| Snapshot load (`load_full`)                  | <20ns       | **16ns**         | `runtime::snapshot_load`                              | ✅ at floor for `load_full` semantics                 |
-| Snapshot load (`Cache::load`, steady)        | <500ps      | **305ps**        | `runtime::snapshot_load_cached`                       | ✅ ~50× faster than `load_full`; sub-nanosecond       |
+| Snapshot load (`load_full`)                  | <20ns       | **16ns**         | `runtime::snapshot_load`                              | ✅ at floor for `load_full` semantics                |
+| Snapshot load (`Cache::load`, steady)        | <500ps      | **305ps**        | `runtime::snapshot_load_cached`                       | ✅ ~50× faster than `load_full`; sub-nanosecond      |
 | Snapshot publish standalone                  | <500ns      | **101ns**        | `runtime::snapshot_publish_standalone`                | ✅ at the floor (~80ns)                              |
 | Status segment update                        | <100ns      | **56ns**         | `runtime::status_segment_update`                      | ✅ at the floor                                      |
 | Apply-edit round-trip                        | <100µs      | 85µs             | `runtime::apply_edit_round_trip`                      | ✅ scheduler-bound; sync fast-path is the next lever |
@@ -54,16 +54,16 @@ better.
 
 The load-bearing async primitives (DESIGN.md §5.2.1, §5.6.8, §5.7).
 
-| Benchmark                              | 10 lines   | 1k lines   | 50k lines  | Floor / Target         | Improvement target                                                                            |
-|----------------------------------------|------------|------------|------------|------------------------|-----------------------------------------------------------------------------------------------|
-| **Snapshot publish standalone** (new)  | **~101ns** | **~101ns** | **~97ns**  | ~80ns / <500ns         | ⏹️ at the practical floor (Arc::new + atomic). Constant across sizes -- buffer clone is O(1).  |
-| `apply_edit` round-trip (block_on)     | 83.1µs     | 82.6µs     | 84.0µs     | ~50µs / <100µs         | 🔼 sync edit fast-path drops to ~5µs (DESIGN.md §8.2 stretch).                                |
-| **Dispatch round-trip** (motion) (new) | **~78µs**  | **~86µs**  | **~513µs** | ~50µs / <100µs (small) | ⏹️ scheduler-bound on small bufs; large-buf cost is the motion walk itself.                    |
-| Snapshot publish via apply_edit        | 85.5µs     | 86.3µs     | 85.6µs     | same as apply_edit     | (envelope, not standalone publish)                                                            |
-| Snapshot load (`load_full`)            | **~16ns**  | --         | --         | ~16ns / <20ns          | ⏹️ at the floor (atomic acquire + Arc bump).                                                   |
-| **Snapshot load (`Cache::load`, steady)** (new) | **~305ps** | --   | --         | ~300ps / <500ps        | ⏹️ sub-nanosecond. Per-thread cached; ~50× faster than `load_full`. Renderer's per-frame read. |
-| Snapshot post-publish read             | 91.1ns     | 18.8ns     | 20.8ns     | --                     | 🔼 same path                                                                                  |
-| **Status segment update** (new)        | **~56ns**  | --         | --         | ~50ns / <100ns         | ⏹️ at the floor (snapshot load + small format).                                                |
+| Benchmark                                       | 10 lines   | 1k lines   | 50k lines  | Floor / Target         | Improvement target                                                                             |
+|-------------------------------------------------|------------|------------|------------|------------------------|------------------------------------------------------------------------------------------------|
+| **Snapshot publish standalone** (new)           | **~101ns** | **~101ns** | **~97ns**  | ~80ns / <500ns         | ⏹️ at the practical floor (Arc::new + atomic). Constant across sizes -- buffer clone is O(1).   |
+| `apply_edit` round-trip (block_on)              | 83.1µs     | 82.6µs     | 84.0µs     | ~50µs / <100µs         | 🔼 sync edit fast-path drops to ~5µs (DESIGN.md §8.2 stretch).                                 |
+| **Dispatch round-trip** (motion) (new)          | **~78µs**  | **~86µs**  | **~513µs** | ~50µs / <100µs (small) | ⏹️ scheduler-bound on small bufs; large-buf cost is the motion walk itself.                     |
+| Snapshot publish via apply_edit                 | 85.5µs     | 86.3µs     | 85.6µs     | same as apply_edit     | (envelope, not standalone publish)                                                             |
+| Snapshot load (`load_full`)                     | **~16ns**  | --         | --         | ~16ns / <20ns          | ⏹️ at the floor (atomic acquire + Arc bump).                                                    |
+| **Snapshot load (`Cache::load`, steady)** (new) | **~305ps** | --         | --         | ~300ps / <500ps        | ⏹️ sub-nanosecond. Per-thread cached; ~50× faster than `load_full`. Renderer's per-frame read.  |
+| Snapshot post-publish read                      | 91.1ns     | 18.8ns     | 20.8ns     | --                     | 🔼 same path                                                                                   |
+| **Status segment update** (new)                 | **~56ns**  | --         | --         | ~50ns / <100ns         | ⏹️ at the floor (snapshot load + small format).                                                 |
 
 **Round-trip is constant across buffer sizes** -- mailbox + oneshot
 + Arc clone, not a buffer walk. The ~85µs publish-via-apply-edit is

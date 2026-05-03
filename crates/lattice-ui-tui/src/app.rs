@@ -1948,14 +1948,61 @@ impl App {
 
     /// Recompute the per-line styled spans for the current viewport.
     /// Called by the runtime before each `terminal.draw`.
+    ///
+    /// The end of the highlight window stretches with closed folds:
+    /// each closed fold collapses N buffer lines onto one viewport
+    /// row, so a viewport of `height` rows can cover well over
+    /// `scroll + height` buffer lines. Highlighting only the naive
+    /// range left lines below folds without spans -- the symptom
+    /// the user sees as "syntax highlighting drops out further
+    /// down". The visible-buffer-line walk here mirrors what
+    /// `compose_visible_lines` does in the renderer.
     pub fn refresh_highlights(&mut self) {
-        let height = self.viewport_height;
         let start = self.scroll;
-        let end = start.saturating_add(height);
+        let end = self
+            .visible_buffer_line_extent(start, self.viewport_height)
+            .saturating_add(1);
         self.visible_highlights = match self.syntax.as_mut() {
             Some(syntax) => syntax.highlight_lines(start, end).unwrap_or_default(),
             None => Vec::new(),
         };
+    }
+
+    /// Last buffer-line index that ends up rendered when the
+    /// viewport draws `height` rows starting at `scroll`,
+    /// accounting for closed folds collapsing multiple buffer
+    /// lines onto one row. Returns `scroll` itself when the
+    /// viewport has zero height or the buffer is empty -- the
+    /// caller's `+1` then yields a non-empty range so
+    /// `highlight_lines` doesn't short-circuit.
+    fn visible_buffer_line_extent(&self, scroll: u32, height: u32) -> u32 {
+        let total_lines = self.document.snapshot().buffer.line_count();
+        if total_lines == 0 {
+            return scroll;
+        }
+        let mut buf_line = scroll;
+        let mut row: u32 = 0;
+        let mut last = scroll;
+        while row < height && buf_line < total_lines {
+            // Hidden interior of a closed fold -- still part of the
+            // window the user is looking at (its content gets shown
+            // via the fold heading), so include it in the highlight
+            // range.
+            if self.line_inside_closed_fold(buf_line) {
+                last = buf_line;
+                buf_line += 1;
+                continue;
+            }
+            last = buf_line;
+            if let Some(fold) = self.fold_start_at(buf_line) {
+                last = fold.end_line;
+                buf_line = fold.end_line + 1;
+            } else {
+                buf_line += 1;
+            }
+            row += 1;
+        }
+        last
     }
 
     /// Recompute per-pane highlights for inactive Document panes.
@@ -7575,6 +7622,48 @@ mod tests {
             "w must not leave cursor inside a hidden fold body \
              (cursor.line = {})",
             a.cursor.line
+        );
+    }
+
+    #[test]
+    fn refresh_highlights_covers_buffer_lines_below_a_closed_fold() {
+        // Regression: with a closed fold inside the viewport, the
+        // highlight window must stretch to include lines that
+        // appear *below* the fold's collapsed row but are still in
+        // the visible region. Otherwise spans drop to empty and
+        // syntax styling visibly disappears for content under
+        // every fold.
+        let mut a = app_with(
+            "fn a() {\n    1;\n    2;\n    3;\n    4;\n}\nfn b() {\n    5;\n}\n",
+            5, // viewport = 5 rows
+        );
+        // Wire up a real syntax instance so highlight_lines runs.
+        a.syntax = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust).unwrap();
+        if let Some(s) = a.syntax.as_mut() {
+            s.parse(&a.document.text());
+        }
+        // Close the first fn (lines 0..=5, 6 buffer lines collapsed
+        // onto one row). With a 5-row viewport that means `fn b`
+        // (line 6) and its body (lines 7, 8) all sit in the visible
+        // region.
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 5,
+            closed: true,
+            identity: None,
+        });
+        a.refresh_highlights();
+        // Without the fix: visible_highlights is sized 5 (height),
+        // so line 6 (offset 6) returns &[] -> no syntax. Now: the
+        // highlight window stretches to cover line 8, so line 6's
+        // spans are populated.
+        assert!(
+            !a.highlights_for_buffer_line(6).is_empty(),
+            "fn b heading must be highlighted under a closed fold"
+        );
+        assert!(
+            !a.highlights_for_buffer_line(7).is_empty(),
+            "fn b body must be highlighted under a closed fold"
         );
     }
 

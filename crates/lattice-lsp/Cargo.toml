@@ -1,0 +1,29 @@
+[package]
+name = "lattice-lsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-core = { path = "../lattice-core" }
+lattice-runtime = { path = "../lattice-runtime" }
+tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros", "process", "io-util", "time"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+lsp-types = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "time"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "lsp"
+harness = false
+
+[lints]
+workspace = true

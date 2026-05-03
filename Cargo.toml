@@ -7,6 +7,7 @@ members = [
 	"crates/lattice-completion",
 	"crates/lattice-syntax",
 	"crates/lattice-runtime",
+	"crates/lattice-lsp",
 	"crates/lattice-ui-tui",
 	"crates/lattice-cli",
 ]
@@ -55,6 +56,13 @@ rayon = "1.10"
 
 # Serialization (Phase 0 just uses serde for protocol type derives)
 serde = { version = "1.0", features = ["derive"] }
+
+# LSP (Phase 4 -- lattice-lsp). `lsp-types` models the LSP 3.17
+# wire types; we hand-roll the JSON-RPC client + framing per
+# DESIGN.md §5.4 (tower-lsp is server-side). `serde_json` is the
+# JSON codec on the wire.
+lsp-types = "0.97"
+serde_json = "1.0"
 
 # Logging
 tracing = "0.1"

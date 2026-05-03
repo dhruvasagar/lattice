@@ -365,6 +365,10 @@ pub enum HelpLinkTarget {
     Chord(String),
     /// `[[file:PATH:LINE]]` -- opens PATH at LINE.
     Source { path: PathBuf, line: u32 },
+    /// `[[help:TOPIC]]` -- re-dispatches `:help TOPIC`. Used by
+    /// `:describe-*` cross-references and by topic body content
+    /// itself so a topic can link to a sibling topic.
+    Topic(String),
     /// `[[…]]` whose payload didn't match a known scheme. Preserved
     /// verbatim for forward-compat -- a plugin / future scheme can
     /// inspect the raw payload.
@@ -387,6 +391,13 @@ pub fn command_link(name: &str) -> String {
 /// standard markdown form: `[path:line](file:path:line)`.
 pub fn source_link(file_line: &str) -> String {
     format!("[{file_line}](file:{file_line})")
+}
+
+/// Helper for help-content formatters. Renders a topic link in
+/// standard markdown form: `[name](help:name)`. Used by
+/// `:describe-*` cross-references.
+pub fn topic_link(name: &str) -> String {
+    format!("[{name}](help:{name})")
 }
 
 /// Strip every `[label](url)` markdown link in `text` down to just
@@ -516,6 +527,8 @@ fn classify_link_url(url: &str) -> HelpLinkTarget {
         HelpLinkTarget::Command(rest.to_string())
     } else if let Some(rest) = url.strip_prefix("key:") {
         HelpLinkTarget::Chord(rest.to_string())
+    } else if let Some(rest) = url.strip_prefix("help:") {
+        HelpLinkTarget::Topic(rest.to_string())
     } else if let Some(rest) = url.strip_prefix("file:") {
         // `path:line` -- split at the LAST `:` so paths with colons
         // (Windows drives, URLs) survive.

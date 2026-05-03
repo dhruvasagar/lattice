@@ -190,6 +190,14 @@ pub enum Effect {
     },
     /// `:HoverClose` -- dismiss the active hover popup.
     CloseHover,
+    /// `:help [topic]` -- open a free-form help topic. With no
+    /// topic the host renders the index (`docs/help/README.md`
+    /// equivalent); with a topic the host looks it up in its
+    /// help-topic registry and surfaces the body in a help
+    /// buffer. Unknown topics echo an error.
+    OpenHelpTopic {
+        topic: Option<String>,
+    },
 
     Many(Vec<Effect>),
 }

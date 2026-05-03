@@ -24,6 +24,7 @@ pub mod excommand;
 pub mod file_tree;
 pub mod folds;
 pub mod help;
+pub mod help_topics;
 pub mod hover;
 pub mod input;
 pub mod keymap;

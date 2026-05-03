@@ -199,6 +199,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("options", "ex:options"),
     ("hover", "ex:hover"),
     ("HoverClose", "ex:hover-close"),
+    ("h", "ex:help"),
+    ("help", "ex:help"),
 ];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests

@@ -162,6 +162,7 @@ In the running editor:
 - `:bn` / `:bp` / `:ls` / `:bd` — cycle, list, or close any open buffer (document or tree)
 - `:set foldmethod=indent` — auto-fold indented blocks; `zo` / `zc` to open / close
 - `:set ui.dim_inactive=off` — turn off the inactive-pane DIM overlay
+- `:help` — open the topic index; `:help folding` / `:help buffers` for deep-dive docs (`<Tab>` completes)
 
 ---
 
@@ -255,6 +256,7 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] Every command / option / mode / keybinding carries metadata at registration time
 - [x] `:describe-command`, `:describe-buffer`, `:describe-key`, `:keymap`, `:apropos`
 - [x] `:describe-option`, `:options` (typed options registry)
+- [x] `:help [topic]` -- free-form topic surface with `<Tab>` completion; built-ins embedded via `include_str!` from `docs/help/*.md`; `Dynamic` body variant is the seam for LSP / plugin-supplied topics; `:describe-*` views emit "See also" topic cross-links
 - [ ] `:describe-event`, `:describe-mode` (each lands when its registry does)
 
 **Configuration** (DESIGN.md §5.12)

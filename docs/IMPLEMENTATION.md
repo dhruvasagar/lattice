@@ -629,6 +629,21 @@ Update this section when picking up the in-flight item.
    otherwise). `:hover [text]` opens manually for now (Phase 4 LSP
    will source `text` from `textDocument/hover`); `:HoverClose`
    dismisses.
+5b. **Help topic surface (`:help`)** ✅ done.
+    `lattice-ui-tui::help_topics` defines a `HelpTopicRegistry`
+    keyed by name; bodies are either `Static(&'static str)`
+    (built-ins are sourced from `docs/help/*.md` via
+    `include_str!` so the binary is self-contained) or
+    `Dynamic(closure)` -- the seam for LSP / plugin / config-
+    supplied topics. `:help` with no arg opens the registry's
+    `index` topic (the README content); `:help <topic>` opens the
+    named topic; `:h` is an alias. `<Tab>` enumerates topics via a
+    new `gen:help-topics` completion source. `:describe-*`
+    appends `See also: [topic](help:topic)` cross-links when a
+    topic's `related_command_patterns` substring-matches the
+    described command. New `HelpLinkTarget::Topic(name)` variant
+    + `help:` URL scheme so topic links are first-class everywhere
+    a help body can render.
 6. **Help major mode + tree-sitter grammar** — defines sections,
    link-targets, code-blocks. Needs the help mode registered as a major
    mode, which depends on the modes registry (Phase 8) but the *grammar*

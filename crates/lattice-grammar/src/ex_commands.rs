@@ -60,6 +60,7 @@ pub struct ExBuiltins {
     pub list_options: ExCommandId,
     pub hover: ExCommandId,
     pub hover_close: ExCommandId,
+    pub help: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -521,6 +522,32 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let help = registry.register_ex_command(
+        "ex:help",
+        "Open the topic index or a named help topic (`:help [topic]`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| {
+                let topic = match &ctx.args {
+                    Args::String(s) if !s.is_empty() => Some(s.to_string()),
+                    _ => None,
+                };
+                Ok(Effect::OpenHelpTopic { topic })
+            }),
+            args_schema: vec![ArgSpec {
+                name: "topic",
+                kind: ArgKind::String,
+                doc: "Topic name (`folding`, `buffers`, ...). Absent = index.",
+                prompt: "topic:",
+                default: ArgDefault::None,
+                completion: Some("gen:help-topics"),
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     ExBuiltins {
         write,
         quit,
@@ -548,6 +575,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         list_options,
         hover,
         hover_close,
+        help,
     }
 }
 

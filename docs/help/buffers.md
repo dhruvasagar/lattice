@@ -143,6 +143,20 @@ lists every registered option and its current value.
   entries are filtered out by the `<C-o>` / `<C-i>` walker --
   reachability is checked against the live registry.
 
+## Discovering more
+
+- `:help` (no arg) -- open the topic index.
+- `:help <topic>` -- open a free-form doc. `<Tab>` lists registered
+  topics. The index page links every topic via `[name](help:name)`
+  markdown links so `<CR>` jumps.
+- `:describe-command name` -- introspection-driven doc for a
+  registered command. Cross-links to `:help <topic>` when a topic
+  covers the command.
+- `:describe-key chord` -- bindings for a chord across modes.
+- `:describe-option name` -- typed option metadata + current value.
+- `:apropos pattern` -- substring search across all command
+  metadata.
+
 ## Anchors in DESIGN.md
 
 - §5.9 -- everything-is-a-buffer principle and the pane / window

@@ -801,6 +801,11 @@ pub struct App {
     /// Typed options registry (DESIGN.md §5.12). `:set` parses
     /// against this; `:describe-option` reads from it.
     pub options: std::sync::Arc<crate::options::OptionRegistry>,
+    /// Free-form help topic registry (DESIGN.md §5.11). `:help`
+    /// reads from this; built-ins are sourced from `docs/help/*.md`
+    /// at build time. Plugins / future LSP integrations register
+    /// additional topics through the same registry.
+    pub help_topics: std::sync::Arc<crate::help_topics::HelpTopicRegistry>,
     /// UI styling knobs (DESIGN.md §5.6). Carries per-pane status
     /// line colors, the inactive-pane dim overlay, separator
     /// characters, etc. Customizable via `:set ui.*` options.
@@ -1124,6 +1129,19 @@ impl App {
         // doc annotators).
         let mut completion_registry = lattice_completion::CompletionRegistry::new();
         let _completion_builtins = lattice_completion::populate(&mut completion_registry);
+        // Help-topic registry + its completion generator
+        // (`gen:help-topics`). Registering here lets `:help <Tab>`
+        // enumerate built-in + plugin-supplied topics through the
+        // same pipeline `:e <Tab>` and `:describe-command <Tab>`
+        // use.
+        let help_topics = crate::help_topics::builtin_topics();
+        completion_registry.register_generator(
+            "gen:help-topics",
+            "Every registered free-form help topic (`:help <topic>`).",
+            crate::help_topics::HelpTopicsGenerator {
+                topics: help_topics.clone(),
+            },
+        );
         // One `LangRegistry` per App, shared between the document
         // buffer's `Syntax` and every `HelpBuffer` we'll spin up
         // for `:describe-*` / `:apropos` / `:keymap` (markdown
@@ -1227,6 +1245,7 @@ impl App {
             scrolloff: 0,
             foldmethod: FoldMethod::Manual,
             options: std::sync::Arc::new(crate::options::builtin_options()),
+            help_topics,
             theme: crate::theme::Theme::default(),
             pane_highlights: HashMap::new(),
             command_history: Vec::new(),
@@ -3162,6 +3181,32 @@ impl App {
         self.hover_popup = None;
     }
 
+    /// `:help [topic]` (DESIGN.md §5.11). With no topic the index
+    /// is rendered (the topic registered as `index`); with a
+    /// topic name the registry is queried and the topic body is
+    /// rendered into a help buffer through the same markdown-
+    /// highlighting path `:describe-command` uses. Unknown topic
+    /// surfaces as a clear echo error so completion + typo
+    /// recovery work.
+    fn do_open_help_topic(&mut self, topic: Option<&str>) {
+        let name = topic.unwrap_or("index").to_string();
+        let registry = self.help_topics.clone();
+        let Some(t) = registry.lookup(&name) else {
+            self.set_message(EchoLevel::Error, format!("no help topic: {name}"));
+            return;
+        };
+        let body = t.body.render();
+        let lines: Vec<String> = body.split('\n').map(|s| s.to_string()).collect();
+        let title = if name == "index" {
+            "help".to_string()
+        } else {
+            format!("help {name}")
+        };
+        self.open_help(
+            HelpBuffer::from_lines(title, lines).with_markdown_syntax(self.lang_registry.clone()),
+        );
+    }
+
     /// `:options` -- list every registered option in a help view.
     fn do_list_options(&mut self) {
         let mut lines: Vec<String> = Vec::new();
@@ -3756,6 +3801,7 @@ impl App {
             Effect::ListOptions => self.do_list_options(),
             Effect::OpenHover { markdown } => self.do_open_hover(&markdown),
             Effect::CloseHover => self.do_close_hover(),
+            Effect::OpenHelpTopic { topic } => self.do_open_help_topic(topic.as_deref()),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -4025,6 +4071,10 @@ impl App {
                 self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
                 self.do_describe_key(&chord);
             }
+            crate::help::HelpLinkTarget::Topic(name) => {
+                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
+                self.do_open_help_topic(Some(&name));
+            }
             crate::help::HelpLinkTarget::Source { path, line } => {
                 self.set_message(
                     EchoLevel::Info,
@@ -4063,12 +4113,24 @@ impl App {
                 line: a.line,
             })
             .collect();
-        let mut buffer = HelpBuffer::from_lines_and_anchors(
-            format!("describe-command {name}"),
-            rendered.lines,
-            anchors,
-        )
-        .with_markdown_syntax(self.lang_registry.clone());
+        let mut lines = rendered.lines;
+        // Cross-link: append `See also: [topic](help:topic)` for
+        // every help topic whose `related_command_patterns`
+        // matches this command's name. Lets a user reading
+        // `:describe-command operator:fold-create` jump to the
+        // `folding` topic via `<CR>` on the link.
+        let topics: Vec<String> = self
+            .help_topics
+            .topics_for_command(&spec.name)
+            .map(|t| crate::help::topic_link(&t.name))
+            .collect();
+        if !topics.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("See also: {}", topics.join(", ")));
+        }
+        let mut buffer =
+            HelpBuffer::from_lines_and_anchors(format!("describe-command {name}"), lines, anchors)
+                .with_markdown_syntax(self.lang_registry.clone());
         if let Some(a) = anchor {
             buffer.scroll_to_anchor(a);
         }
@@ -5869,7 +5931,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::DescribeOption { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
-        | Effect::CloseHover => false,
+        | Effect::CloseHover
+        | Effect::OpenHelpTopic { .. } => false,
     }
 }
 
@@ -5907,7 +5970,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::DescribeOption { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
-        | Effect::CloseHover => false,
+        | Effect::CloseHover
+        | Effect::OpenHelpTopic { .. } => false,
     }
 }
 
@@ -10658,6 +10722,99 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let h = a.hover_popup.as_ref().expect("hover open");
         assert!(h.markdown.contains("empty"));
+    }
+
+    // ---- :help (DESIGN.md §5.11) ----
+
+    #[test]
+    fn help_with_no_arg_opens_index() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "help".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("help open");
+        assert_eq!(h.title, "help");
+        let body = h.content.as_string();
+        // Index page advertises the topic table.
+        assert!(body.contains("Topic"), "got: {body}");
+    }
+
+    #[test]
+    fn help_with_topic_opens_that_topic() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "help folding".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("help open");
+        assert_eq!(h.title, "help folding");
+        let body = h.content.as_string();
+        assert!(
+            body.to_lowercase().contains("fold"),
+            "expected fold-related content"
+        );
+    }
+
+    #[test]
+    fn help_unknown_topic_errors() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "help nonexistent".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.help_buffer.is_none());
+        let msg = a.last_message.as_ref().expect("error");
+        assert!(msg.text.contains("no help topic"), "got: {}", msg.text);
+    }
+
+    #[test]
+    fn h_alias_resolves_to_help() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "h folding".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("help open");
+        assert_eq!(h.title, "help folding");
+    }
+
+    #[test]
+    fn describe_buffer_command_emits_topic_cross_link() {
+        // `:buffers` (registered as `ex:buffers`) matches the
+        // buffers topic's `buffer` pattern, so the describe view
+        // should append a `[buffers](help:buffers)` cross-link.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:buffers".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("describe-command open");
+        assert!(
+            h.links
+                .iter()
+                .any(|l| matches!(&l.target, crate::help::HelpLinkTarget::Topic(name) if name == "buffers")),
+            "expected `Topic(buffers)` link"
+        );
+    }
+
+    #[test]
+    fn help_topic_link_follow_dispatches_to_help() {
+        // Open describe-command for a buffers cmd (which appends a
+        // topic link), then follow that link via FollowLink.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:buffers".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("describe open");
+        let link = h
+            .links
+            .iter()
+            .find(|l| matches!(&l.target, crate::help::HelpLinkTarget::Topic(_)))
+            .expect("topic link present")
+            .clone();
+        let target_pos = link.range.start;
+        if let Some(h) = a.help_buffer.as_mut() {
+            h.cursor = target_pos;
+        }
+        a.apply(Action::FollowLink);
+        let h = a.help_buffer.as_ref().expect("help reopen");
+        assert_eq!(h.title, "help buffers");
     }
 
     #[test]

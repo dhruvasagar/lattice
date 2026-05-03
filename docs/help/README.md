@@ -9,10 +9,14 @@ This is **user documentation**, not internal notes. For the design
 spec see [`../DESIGN.md`](../DESIGN.md); for current build status
 see [`../IMPLEMENTATION.md`](../IMPLEMENTATION.md).
 
-In-editor lookup will eventually surface these via
-`:help <topic>` (rendered into a help buffer the same way
-`:describe-command` works today). For now, browse the markdown
-directly.
+In-editor lookup is `:help [topic]` -- with no arg it opens this
+index page; with a topic name it opens the matching doc rendered
+through the same markdown-highlighting path `:describe-command`
+uses. `<Tab>` after `:help ` lists registered topics. The bodies
+are embedded into the binary at build time, so no filesystem
+dependency is needed at runtime; the registry is also pluggable
+(future LSP-driven and plugin-supplied topics flow through the
+same surface).
 
 ## Conventions
 

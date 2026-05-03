@@ -2834,7 +2834,13 @@ impl App {
     fn do_list_buffers(&mut self) {
         let ids = self.document_ids_sorted();
         let mut lines: Vec<String> = Vec::new();
-        lines.push(format!("{} open document buffer(s):", ids.len()));
+        let panel_count = if self.file_tree.is_some() { 1 } else { 0 };
+        lines.push(format!(
+            "{} open buffer(s) ({} document, {} panel):",
+            ids.len() + panel_count,
+            ids.len(),
+            panel_count
+        ));
         lines.push(String::new());
         for id in ids {
             let Some(entry) = self.documents.get(&id) else {
@@ -2846,12 +2852,26 @@ impl App {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "(no file)".to_string());
             let dirty = if entry.handle.dirty() { "[+]" } else { "   " };
-            let active = if id == self.document_buffer_id {
+            let active = if id == self.document_buffer_id
+                && matches!(self.active_buffer, BufferKind::Document)
+            {
                 "%"
             } else {
                 " "
             };
-            lines.push(format!("  {active} #{:<3} {dirty} {path}", id.0));
+            lines.push(format!("  {active} #{:<3} doc  {dirty} {path}", id.0));
+        }
+        if let Some(t) = self.file_tree.as_ref() {
+            let active = if matches!(self.active_buffer, BufferKind::FileTree) {
+                "%"
+            } else {
+                " "
+            };
+            lines.push(format!(
+                "  {active} #{:<3} tree     {}",
+                t.id.0,
+                t.root.display()
+            ));
         }
         self.open_help(
             HelpBuffer::from_lines("buffers", lines)
@@ -10210,7 +10230,8 @@ mod tests {
         let h = a.help_buffer.as_ref().expect("buffers help");
         let body = h.content.as_string();
         // Two buffers listed.
-        assert!(body.contains("2 open document buffer"));
+        assert!(body.contains("2 open buffer"));
+        assert!(body.contains("2 document"));
         let _ = std::fs::remove_file(path);
     }
 

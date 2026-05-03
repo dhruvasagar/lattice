@@ -21,11 +21,14 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use lsp_types::PositionEncodingKind;
 use serde_json::json;
 
+use std::sync::Arc;
+
 use lattice_lsp::framing::parse_header_block;
 use lattice_lsp::jsonrpc::{Message, Notification, Request, RequestId};
 use lattice_lsp::position::{
     byte_to_lsp_character, utf8_byte_to_utf16_column, utf16_column_to_utf8_byte,
 };
+use lattice_lsp::{LogLevel, LogSource, LspLogger};
 
 /// Header parse: ASCII-only, ≤200 byte block. Should be deep
 /// in nanoseconds.
@@ -172,6 +175,58 @@ fn position_utf16_to_byte_cjk(c: &mut Criterion) {
     });
 }
 
+/// Logger throughput in the production path: one Info record
+/// per call (Trace toggle off; level passes default Info
+/// filter). Models per-event cost at the actor boundary.
+fn logging_log_info(c: &mut Criterion) {
+    let logger = LspLogger::with_defaults();
+    let server_id: Arc<str> = Arc::from("rust");
+    c.bench_function("lsp::logging::log_info", |b| {
+        b.iter(|| {
+            logger.log(
+                Some(black_box(&server_id)),
+                LogLevel::Info,
+                LogSource::Client,
+                black_box("server attached"),
+            );
+        });
+    });
+}
+
+/// Same shape but Trace-level with the toggle OFF -- the
+/// short-circuit path. Should be a HashSet lookup + return.
+fn logging_log_trace_off(c: &mut Criterion) {
+    let logger = LspLogger::with_defaults();
+    let server_id: Arc<str> = Arc::from("rust");
+    c.bench_function("lsp::logging::log_trace_off", |b| {
+        b.iter(|| {
+            logger.log(
+                Some(black_box(&server_id)),
+                LogLevel::Trace,
+                LogSource::Trace,
+                black_box("trace text"),
+            );
+        });
+    });
+}
+
+/// Same shape with the toggle ON -- includes the ring push.
+fn logging_log_trace_on(c: &mut Criterion) {
+    let logger = LspLogger::new(LogLevel::Trace, 100_000);
+    let server_id: Arc<str> = Arc::from("rust");
+    logger.enable_trace(Arc::clone(&server_id));
+    c.bench_function("lsp::logging::log_trace_on", |b| {
+        b.iter(|| {
+            logger.log(
+                Some(black_box(&server_id)),
+                LogLevel::Trace,
+                LogSource::Trace,
+                black_box("trace text"),
+            );
+        });
+    });
+}
+
 criterion_group!(
     benches,
     framing_parse_header,
@@ -182,5 +237,8 @@ criterion_group!(
     position_utf8_passthrough,
     position_utf16_cjk_line,
     position_utf16_to_byte_cjk,
+    logging_log_info,
+    logging_log_trace_off,
+    logging_log_trace_on,
 );
 criterion_main!(benches);

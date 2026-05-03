@@ -349,6 +349,9 @@ itself never appears next to editor work in a flame graph.
 | `lsp::position::utf8_passthrough`     | **1.0ns**  | ~1ns / <5ns    | utf-8 negotiated mode short-circuits to a branch + return.                                         |
 | `lsp::position::utf16_cjk_line`       | **23ns**   | ~20ns / <500ns | Worst case: 64-char CJK-only line, mid-line offset. Walks prefix counting utf-16 code units.       |
 | `lsp::position::utf16_to_byte_cjk`    | **43ns**   | ~30ns / <500ns | Reverse direction: utf-16 column → utf-8 byte. Used for ranges arriving FROM the server.           |
+| `lsp::logging::log_info`              | **91ns**   | ~80ns / <500ns | Per-record cost: lock + push + format + tracing fan-out. Background-class.                         |
+| `lsp::logging::log_trace_off`         | **9ns**    | ~5ns / <50ns   | Trace toggle off short-circuit -- a HashSet lookup + return. Hot path when trace stays disabled.  |
+| `lsp::logging::log_trace_on`          | **99ns**   | ~80ns / <500ns | Trace toggle on -- includes the ring push. Negligible at editor pace; perceptible at indexer bursts. |
 
 The full LSP feature matrix (per-method status) lives in
 [`lsp-features.md`](lsp-features.md); the architecture in

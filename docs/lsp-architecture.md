@@ -293,6 +293,140 @@ the late response, if any, is logged and discarded.
 
 ---
 
+## 7a. Logging (`logging` module)
+
+Layered to mirror emacs's `*lsp-log*` / `*<server> stderr*`
+convention on lattice's everything-is-a-buffer surface
+(§5.9). One [`LspLogger`] per LSP subsystem; the App holds it,
+each actor gets a clone.
+
+### Records and rings
+
+```rust
+pub enum LogLevel { Trace, Debug, Info, Warn, Error }
+pub enum LogSource { Client, Stderr, LspMessage, LspShowMessage, Trace }
+
+pub struct LogRecord {
+    pub timestamp: SystemTime,
+    pub server_id: Option<Arc<str>>,  // None = subsystem-wide
+    pub level: LogLevel,
+    pub source: LogSource,
+    pub message: String,
+}
+```
+
+[`LogRing`] is a bounded `VecDeque<LogRecord>` (default 10 000
+records / ring; eviction on push when full). The
+[`LspLogger`] holds:
+
+- one global ring (subsystem-wide, `server_id == None`);
+- one per-server ring keyed by `Arc<str>`;
+- per-server min-level overrides (default `Info`);
+- per-server trace toggle (default off).
+
+### Routing rules
+
+`logger.log(server_id, level, source, msg)` routes by:
+
+1. **Trace gate.** If `level == Trace` and `server_id` is set,
+   the per-server trace toggle decides:
+   - **on**: skip the level filter (deliberate opt-in) and
+     append.
+   - **off**: short-circuit and return -- no allocation, no
+     ring touch.
+   Subsystem-wide (`server_id == None`) Trace records honour
+   the level filter normally.
+2. **Level filter.** Drop iff `level < effective_min(server_id)`
+   where `effective_min` is the per-server override (if set) or
+   the subsystem default.
+3. **Tracing fan-out.** Emit a `tracing::*` event at the
+   matching level. Always fires; survives without a subscriber.
+4. **Ring push.** Append to the global ring (server_id None) or
+   the per-server ring (creating the ring on first emission).
+
+### Where records come from in the actor
+
+| Record source | Where in `actor.rs` | Level | Notes |
+|---|---|---|---|
+| `Client` -- spawn / handshake / shutdown | `spawn_with_io` (Info: spawn + handshake-complete) | Info | `server_id = None` for spawn (precedes negotiation), then per-server. |
+| `Client` -- read_loop / write_loop errors | `read_loop`, `write_loop` | Error | Pipe close, decode failures. |
+| `Client` -- decode of `publishDiagnostics` / unhandled methods | `handle_server_notification`, `handle_server_request` | Debug / Warn | Routed through logger; no `tracing::warn!` left. |
+| `Stderr` | `stderr_drain` | Warn | One record per stderr line. Yellow in the rendered buffer. |
+| `LspMessage` | `window/logMessage` handler | severity from server's `type` field | LSP severity 1=Error, 2=Warning, 3=Info, 4/5=Debug. |
+| `LspShowMessage` | `window/showMessage` handler | same as above | Distinct source for differentiation in the buffer view. |
+| `Trace` | `read_loop`, `write_loop` interceptors | Trace | Gated by `is_tracing(server_id)`. Body truncated at 240 chars. |
+
+### Trace interceptor
+
+In `read_loop`:
+
+```rust
+if logger.is_tracing(&server_id) {
+    logger.log(
+        Some(&server_id),
+        LogLevel::Trace,
+        LogSource::Trace,
+        format!("← {}", trace_render(&msg)),
+    );
+}
+```
+
+`trace_render` formats the message as
+`Request id=... method=... body=...` /
+`Notification method=... body=...` /
+`Response id=... OK|ERR ...` plus a body excerpt. Cheap; only
+runs when trace is on.
+
+`is_tracing` is a single `HashSet<Arc<str>>::contains` --
+benchmarked at ~9 ns when the toggle is off. Trace-on emission
+costs ~100 ns / record (the lock + push + format dominate).
+
+### Editor consumption
+
+The buffer-backed views (`*lsp*` /
+`*lsp:<server>*` / `*lsp:<server>:trace*`) snapshot the rings
+on demand:
+
+```rust
+let records = logger.snapshot_global();           // for *lsp*
+let records = logger.snapshot_server(&server_id); // for per-server
+```
+
+`snapshot_*` clones the records (cheap -- only the message
+String is heavy; everything else is `Arc` or `Copy`). The
+buffer view is a normal lattice ReadOnly buffer; standard
+motions, search, yank all work. The trace buffer benefits
+from a custom highlighter (4.1.g): JSON syntax + leading `→`
+/ `←` markers picked out.
+
+### Configuration surface
+
+Documented in [`help/lsp.md`](help/lsp.md). Wire-level keys:
+
+```toml
+[lsp]
+log_level    = "info"
+log_capacity = 10000
+
+[server.rust]
+log_level = "debug"
+trace_io  = true
+```
+
+`lattice-lsp` doesn't read these; the App's config layer does
+and calls `logger.set_default_level(...)` / `set_server_level(
+..., Some(level))` / `enable_trace(...)` at startup.
+
+### Why two pipelines (rings + tracing)
+
+In-memory rings serve buffer-backed log views and survive
+without any external subscriber. The `tracing` fan-out lets
+power users drive `RUST_LOG`-style filtering, JSON log
+shipping, OpenTelemetry, etc. Independent: turning one off
+doesn't affect the other.
+
+---
+
 ## 8. Crash recovery (4.1.b sketch; full impl 4.4)
 
 Today's actor handles a clean shutdown but doesn't auto-restart

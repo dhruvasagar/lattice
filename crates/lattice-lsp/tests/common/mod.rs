@@ -30,8 +30,8 @@ use tokio::io::duplex;
 use tokio::sync::Mutex;
 
 use lattice_lsp::{
-    LspReader, LspWriter, Message, Notification, Request, Response, ResponseError, ServerConfig,
-    ServerHandle, jsonrpc::RequestId, spawn_with_io,
+    LspLogger, LspReader, LspWriter, Message, Notification, Request, Response, ResponseError,
+    ServerConfig, ServerHandle, jsonrpc::RequestId, spawn_with_io,
 };
 
 /// Per-method mock-response handler. Returns either a result
@@ -132,7 +132,22 @@ impl MockServer {
         Self::start_with_capabilities(default_server_capabilities()).await
     }
 
+    /// Start with a caller-supplied logger so the test can
+    /// inspect the per-server / global rings.
+    pub async fn start_with_logger(logger: LspLogger) -> Self {
+        Self::start_with_caps_and_logger(default_server_capabilities(), logger).await
+    }
+
     pub async fn start_with_capabilities(caps: ServerCapabilities) -> Self {
+        Self::start_with_caps_and_logger(caps, LspLogger::with_defaults()).await
+    }
+
+    /// Inner helper -- both `start_with_capabilities` and
+    /// `start_with_logger` route here.
+    pub async fn start_with_caps_and_logger(
+        caps: ServerCapabilities,
+        logger: LspLogger,
+    ) -> Self {
         // The actor side reads from `actor_read` and writes to
         // `actor_write`; the mock side reads from `mock_read` and
         // writes to `mock_write`. The duplex pipe ties the two
@@ -179,6 +194,7 @@ impl MockServer {
             LspWriter::new(actor_write),
             None,
             None,
+            logger,
         )
         .await
         .expect("mock spawn handshake should succeed");

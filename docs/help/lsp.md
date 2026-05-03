@@ -195,6 +195,127 @@ well below human-perceptible latency.
 
 ---
 
+## Debugging & logs
+
+LSP integration ships with a layered logging surface modelled
+after emacs's `*lsp-log*` / `*<server> stderr*` buffers, on
+top of lattice's everything-is-a-buffer foundation.
+
+### Log buffers
+
+| Buffer | Contents | Open with |
+|---|---|---|
+| `*lsp*` | Subsystem-wide events: server spawn / handshake / crash / restart, supervisor decisions. | `:lsp-log` |
+| `*lsp:<server-id>*` | Per-server: stderr lines, `window/logMessage` and `window/showMessage` notifications at the server-requested severity, lifecycle events, decode failures, capability gating decisions. | `:lsp-log <server>` |
+| `*lsp:<server-id>:trace*` | Full JSON-RPC wire trace -- every inbound (`←`) and outbound (`→`) message, body truncated at ~240 chars. Off by default. | `:lsp-trace <server>` toggles + opens. |
+
+Each buffer is read-only, auto-scrolls to tail when you're at
+the bottom, and keeps a bounded ring (10 000 records / server
+by default; oldest evicts first).
+
+### Log levels
+
+Five levels, matching `tracing` / `RUST_LOG` conventions:
+
+| Level | What it captures |
+|---|---|
+| `error` | Unrecoverable failures (server died, framing rejected, decode totally broken). |
+| `warn` | Recoverable problems: stderr lines, unexpected protocol behaviour, malformed payloads dropped. |
+| `info` | **Default.** Lifecycle milestones (handshake done, server attached). |
+| `debug` | Per-message detail: `publishDiagnostics` summaries, `$/progress` events, telemetry. |
+| `trace` | JSON-RPC wire trace. Only emitted when trace mode is on for the server (otherwise short-circuited cheaply -- ~9 ns/call when off). |
+
+The default min level is `info`; per-server overrides allowed.
+
+### Commands
+
+| Command | Effect |
+|---|---|
+| `:lsp-log` | Open `*lsp*`. |
+| `:lsp-log <server>` | Open `*lsp:<server>*` (e.g. `:lsp-log rust`). |
+| `:lsp-trace <server>` | Toggle JSON-RPC trace + open the trace buffer. |
+| `:lsp-status` | Show every running server (id, root, pid, uptime, restart count). |
+| `:lsp-restart <server>` | Force-restart a server; re-issues `didOpen` for every attached buffer. |
+| `:lsp-log-level <level>` | Subsystem-wide default min level. |
+| `:lsp-log-level <server> <level>` | Per-server min level override. |
+| `:lsp-log-clear [server]` | Drop the buffer's records. |
+
+### Configuration
+
+`lsp.toml` (workspace) + `~/.config/lattice/lsp.toml` (user)
+accept these logging keys:
+
+```toml
+[lsp]
+log_level    = "info"   # subsystem-wide default
+log_capacity = 10000    # records per ring (per server + global)
+
+[server.rust]
+log_level = "debug"     # override for this server
+trace_io  = true        # turn on JSON-RPC trace at startup
+```
+
+Every key is optional; defaults are conservative
+(`info` / `10000` / no trace).
+
+### Tracing-crate fall-through
+
+Every record `LspLogger` emits also fires a `tracing::*` event
+at the matching level. Two consequences:
+
+- Users who run `RUST_LOG=lattice_lsp=debug ./lattice` see the
+  same events on stderr as in the buffer views.
+- Custom `tracing_subscriber` setups (JSON logs, OpenTelemetry,
+  ...) work without further wiring.
+
+The two paths are independent: in-memory rings survive even
+when no `tracing` subscriber is installed; `tracing` users see
+the same events whether or not buffer views are open.
+
+### Debugging workflows
+
+**"Server isn't returning hover."**
+
+1. `:lsp-log rust` -- look for handshake errors or "server
+   request unhandled" entries.
+2. `:lsp-status` shows the server's advertised capability set.
+   If `hoverProvider` isn't there, the server doesn't support it.
+3. `:lsp-trace rust` -- watch for
+   `→ Request method=textDocument/hover` then the matching
+   `← Response id=...`. A request without a response means the
+   server is stuck.
+
+**"Diagnostics are stale."**
+
+1. `:lsp-trace rust` then look for
+   `← Notification method=textDocument/publishDiagnostics`.
+   Compare its `version` field against lattice's `DocSync`
+   version -- stale publishes are correctly dropped.
+2. `*lsp:rust*` shows `publishDiagnostics: N diag(s) for <uri>`
+   summaries -- spot when the server stopped reporting.
+
+**"Server keeps crashing."**
+
+1. `*lsp:rust*` has stderr lines (warn-level) and lifecycle
+   `read_loop terminating` errors. Server stderr captures the
+   panic / exit reason verbatim.
+2. `:lsp-status` shows restart counts.
+3. The supervisor restarts with exponential backoff (100ms →
+   5s) and re-issues `didOpen` for every attached buffer.
+
+**"Editor feels slow when LSP attached."**
+
+1. The §8.2 commitment is that LSP plumbing never blocks the
+   UI. If it does, that's a bug -- file an issue with
+   `cargo bench -p lattice-lsp` numbers.
+2. `*lsp:rust*` may show a flood of `$/progress` -- a runaway
+   indexer.
+3. Trace mode itself adds ~100 ns per traced message.
+   Negligible at editor pace, perceptible only at indexer
+   bursts.
+
+---
+
 ## Troubleshooting
 
 ### "rust-analyzer: command not found" in the modeline

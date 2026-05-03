@@ -66,7 +66,7 @@ Capability columns:
 
 | Method                            | Phase | Status | Notes                                                                                                                                                  |
 |-----------------------------------|-------|--------|--------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `textDocument/publishDiagnostics` | 4.1   | ✅     | `DiagnosticsBus` broadcast; subscribers via `ServerHandle::subscribe_diagnostics()`. Decoration layer + gutter + `:diagnostics` buffer in 4.1.d.ii–iv. |
+| `textDocument/publishDiagnostics` | 4.1   | ✅     | `DiagnosticsBus` broadcast (4.1.d.i) + `DiagnosticsLayer` per-URI state with version gating + multi-server merge (4.1.d.ii). Renderer overlay + `:diagnostics` buffer in 4.1.d.iii–iv. |
 | `window/showMessage`              | 4.4   | 🚧     | Logged today; routed into a non-blocking minibuffer notification in 4.4.                                                                               |
 | `window/showMessageRequest`       | 4.4   | ⏹️      | Modal picker (action-button list) -- 4.4.                                                                                                              |
 | `window/showDocument`             | 4.4   | ⏹️      | Open the requested URI (file or external) in a buffer / browser.                                                                                       |
@@ -155,7 +155,7 @@ Capability columns:
 
 | Method                                    | Phase | Status | Notes |
 |-------------------------------------------|-------|--------|-------|
-| `textDocument/publishDiagnostics`         | 4.1   | 🚧     | Routing done (4.1.d.i); decoration layer + gutter + `:diagnostics` buffer in 4.1.d.ii–iv. |
+| `textDocument/publishDiagnostics`         | 4.1   | 🚧     | Routing done (4.1.d.i); per-URI state with version gating + multi-server merge done (4.1.d.ii). Renderer + `:diagnostics` buffer view in 4.1.d.iii–iv. |
 | `textDocument/diagnostic`                 | 4.4   | ⏹️    | Pull-based diagnostics (LSP 3.17). Used when server prefers pull over push. |
 | `workspace/diagnostic`                    | 4.4   | ⏹️    | Workspace-wide pull. |
 | `textDocument/inlayHint`                  | 4.4   | ⏹️    | Renderer overlay; type/parameter hints inline. |
@@ -214,7 +214,7 @@ Counts as of 2026-05-04:
 
 Phase rollup:
 
-- **4.1** Foundation: 11/15 done (4 still in flight under 4.1.d–e: decoration layer, gutter, `:diagnostics` buffer, doc completion).
+- **4.1** Foundation: 12/15 done (3 still in flight under 4.1.d–e: renderer integration / gutter, `:diagnostics` buffer view, doc completion).
 - **4.2** Navigation: 0/12 -- queued.
 - **4.3** Edits: 0/9 -- queued.
 - **4.4** Polish: 0/19 -- queued.

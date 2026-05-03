@@ -575,14 +575,31 @@ Update this section when picking up the in-flight item.
    (`dispatch_with_cancel` + cooperative search cancellation), so LSP
    request cancellation hooks into existing seams; the remaining work
    is the LSP client (tower-lsp or hand-rolled) + per-server shims.
-2. **Computed folds** (syntax-driven, indent-based) — manual folds via
-   zf/zo/zc/za/zR/zM/zd are done; **indent fallback ✅ done** via the
-   typed `foldmethod` option (`:set foldmethod=indent`) and the
-   `compute_indent_folds` algorithm in `lattice-ui-tui::folds`.
-   Closed-state survives reparse for unchanged ranges. Tree-sitter-
-   driven folds (function bodies, classes, blocks via `folds.scm`)
-   are queued -- the `Fold` data type is shared so a tree-sitter
-   pass and the indent fallback both produce the same shape.
+2. **Computed folds** (per `docs/help/folding.md`) — **✅ done for
+   all v1 providers except tree-sitter syntax queries.** Manual
+   `zf` / `zo` / `zc` / `za` / `zR` / `zM` / `zd` / `zj` / `zk`,
+   plus the new `zi` (`:set foldenable!`). Two computed providers:
+   `compute_indent_folds` (universal) and `compute_markdown_folds`
+   (ATX heading nesting, code-fence aware for both ``` and ~~~).
+   `:set foldmethod=manual|indent|markdown|syntax` parses; `Syntax`
+   is a v1 cascade (markdown for `.md`, indent otherwise) until the
+   tree-sitter scope-query provider lands.
+
+   Beyond storage, the user-facing pieces from `docs/help/folding.md`:
+   identity-hash recompute (heading text + indent depth) preserves
+   closed-state across edits in unrelated sections; closed folds
+   render heading-preserved with a dim ` ┄ N lines folded` suffix
+   (no `+--- N lines ---` line replacement); gutter glyphs ▾ open
+   / ▸ closed; `dd` / `yy` / `cc` / `>>` on a closed fold expand
+   to the full fold range as a single undo unit; jump-class motions
+   (search, gg / G, H / M / L, marks, Ctrl-O / Ctrl-I, `%`) auto-
+   open the destination fold; `:set foldenable` + `zi` short-circuit
+   every fold-aware path while preserving closed-state.
+
+   Tree-sitter-driven folds (function bodies, classes, blocks via
+   `folds.scm`) remain queued. The `Fold` data type is shared, so
+   a tree-sitter provider drops into the existing recompute /
+   identity / render plumbing without a redesign.
 3. **`:set option=value` + typed options** (§5.12) ✅ done. Typed
    `OptionRegistry` keyed by name + alias; each spec carries a
    getter / setter pair, type, default, and doc. `:set` parses

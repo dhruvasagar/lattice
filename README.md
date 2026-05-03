@@ -69,8 +69,11 @@ Three deliberate deviations from vim and emacs:
   via splits. The unified `BufferRegistry` already holds documents and
   file trees today; `:bn` / `:bp` / `:ls` / `:bd` work across kinds. No
   fixed sidebar or bottom-panel concept. (§5.9.)
-- **TOML config + WASM extensions.** No vimscript, no elisp, no Lua. One
-  extension substrate.
+- **One extension substrate, two config layers.** `options.toml` for static
+  data; `init.rs` (compiled to WASM, auto-built on first boot, cached) for
+  programmable config. `init.rs` is a plugin with `boot` capability — the
+  same WIT, same toolchain, same host as third-party plugins. No vimscript,
+  no elisp, no Lua, no embedded scripting language. See DESIGN.md §5.12.
 
 ---
 
@@ -264,7 +267,11 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] Typed options registry: `name, type, default, doc, aliases, get/set closures`
 - [x] `:set name=value`, `:set name`, `:set noname` parser front-end
 - [x] `ui.*` options for theming the renderer (separator char/color, status line colors, dim-inactive toggle)
-- [ ] Customize-as-buffer-view writes back to user TOML
+- [ ] `options.toml` deserializer (static settings layer)
+- [ ] `init.rs` plugin loader (Rust → WASM, auto-built on first boot, cached) — depends on Phase 7 plugin host
+- [ ] Customize-as-buffer-view writes back to `options.toml`
+- [ ] `lattice config build` diagnostic CLI subcommand
+- [ ] Project-local `.lattice/options.toml` (project-local `init.rs` deferred behind a per-directory trust prompt)
 
 **Rendering** (DESIGN.md §5.6)
 

@@ -1621,9 +1621,11 @@ Host-state generators (`gen:chords`, `gen:registers`, `gen:marks`, `gen:buffers`
 
 **Vertico-style rendering** (post-popup work): a vertical list of candidates, one per row, with the matched byte ranges from `ScoredCandidate.match_ranges` painted with a distinct style. Annotations rendered right-aligned. Selected row marked. Renderer is replaceable -- when the rich minibuffer (§5.9.10) lands, the popup graduates to a tree-sitter-styled buffer view; the underlying `RenderedCandidate` shape doesn't change.
 
-### 5.12 Configuration System (typed options + customize)
+### 5.12 Configuration System (typed options + code-as-config)
 
-Vim's `:set option=value` is a string-bag with no typing or validation. Emacs's `customize` is a typed system bridged awkwardly to `setq` for non-curated variables. We unify into one typed option registry.
+Vim's `:set option=value` is a string-bag with no typing or validation, and vimscript fills the gaps with a string-shaped scripting language users have to learn separately. Emacs's `customize` is a typed system bridged awkwardly to `setq` for non-curated variables, and elisp fills the gaps with a second authoring environment plugin authors must also master. We unify both halves: a typed option registry for **data**, and the Rust→WASM plugin substrate (§5.5) reused as the **code** layer. There is no third surface and no second language.
+
+#### 5.12.1 The typed option registry
 
 ```rust
 pub struct OptionSpec {
@@ -1648,18 +1650,99 @@ pub enum OptionType {
 }
 ```
 
-#### 5.12.1 Sources and precedence
+The registry is the single source of truth: every option's name, type, default, doc, group, validator, scope, and on-change event live here. `:set`, `:describe-option`, the customize buffer, the TOML deserializer, and any plugin / `init.rs` call all read from and write to the same `OptionSpec`.
+
+#### 5.12.2 Two layers, both optional
+
+User configuration lives in two layered files at `~/.config/lattice/`:
+
+```
+~/.config/lattice/
+├── options.toml      # static option overrides; data only; no toolchain needed
+└── init.rs           # Rust source, compiled to WASM, loaded as a plugin with `boot` capability
+```
+
+| Layer | Format | Toolchain | Loaded | What it expresses |
+|---|---|---|---|---|
+| `options.toml` | TOML | none | deserialized into the option registry | typed option overrides; static keymap entries (chord → invocation string); static autocmds (event + filter + invocation string) |
+| `init.rs` | Rust → WASM Component | rustup + cargo-component (auto-detected; banner if absent) | loaded as a plugin via the §5.5 host with the `boot` capability | everything `options.toml` can express, plus closures, conditionals, custom command/motion/operator registration, autocmd handlers with logic, and any other plugin-shaped extension |
+
+Either, both, or neither can be present. Both fall back to defaults when absent. Both reach the same internal state through the same functional API -- TOML via deserialize-then-call-the-setter, `init.rs` via WASM-call-into-the-host-which-calls-the-setter. There is no functional gap between them; the cost difference is "instant data load" vs. "5-15s first-boot compile, then cached".
+
+The intended progression: a new user copies an `options.toml` example. When they outgrow declaration -- a keymap that needs context, a hook that does real work -- they migrate the affected piece into `init.rs`. The graduation cost is "learn the same API the plugin SDK exposes", because **`init.rs` is a plugin** -- the only thing distinguishing it from a third-party plugin is the `boot` capability and the well-known load path.
+
+#### 5.12.3 The `init.rs` plugin
+
+`init.rs` is a single source file. The host wraps it in a small generated crate (`Cargo.toml`, `src/lib.rs` shim, `[package.metadata.component]` entry) under `~/.cache/lattice/init-build/` and compiles it through `cargo-component build` against the published `lattice-config-api` crate, which re-exports the §5.5 / §9 WIT bindings under an ergonomic Rust-native shape.
+
+```rust
+// ~/.config/lattice/init.rs
+
+use lattice::config::*;
+
+#[lattice::init]
+fn init(c: &mut Config) {
+	// Static settings (could equally live in options.toml).
+	c.set("editor.tabstop", 4);
+	c.set("editor.relativenumber", true);
+
+	// Programmatic -- the bit TOML can't do.
+	c.keymap("normal", "<C-s>", "write()");
+	c.keymap("normal", "<leader>fe", |ctx| {
+		let path = ctx.active_buffer().path()?;
+		ctx.invoke(format!("Tree(\"{}\")", path.parent().unwrap().display()))
+	});
+
+	c.autocmd("BeforeSave", "*.rs", "format()");
+
+	// Custom command registration -- same API third-party plugins use.
+	c.register_motion("motion:my-fancy-jump", "Jump to next paragraph header", |mctx| {
+		/* ... */
+	});
+}
+```
+
+`Config` is the WIT-defined facet of the host plugins use, scoped to operations sensible at boot time: option setting, keymap registration, command registration, autocmd subscription, event-bus subscription, and the `invoke(CommandInvocation)` host call. Capabilities beyond `boot` (filesystem, network) are declared in the manifest the same way they would be for a third-party plugin and require the user's explicit acknowledgement; the `boot` capability alone is bounded.
+
+#### 5.12.4 Auto-build on first boot
+
+The user does not run a build command manually. Boot sequence:
+
+1. Read `options.toml` if present -- pure data; deserialize and apply.
+2. Look for `~/.config/lattice/init.rs` (or escalate to `init/` if the user has split into a multi-file crate).
+3. Compute cache key: `sha256(source + lattice_version + wit_revision)`.
+4. Probe `~/.cache/lattice/init-<key>.wasm`.
+   - **Hit:** load via the §5.5 plugin host with the `boot` capability set; run `init(...)`.
+   - **Miss:** spawn a background tokio task that materialises the build scaffold, runs `cargo-component build`, places the artifact at `~/.cache/lattice/init-<key>.wasm`, then loads it. The UI shows a "Compiling config..." splash if the build doesn't complete within ~200 ms; cargo's stdout streams to `:messages`.
+5. If toolchain is missing (rustup / cargo-component), boot continues with defaults and a non-fatal banner: *init.rs found but no Rust toolchain detected; install rustup + cargo-component to enable, or run `lattice config build --help`.*
+6. If the build fails, boot continues with defaults; the compile error is rendered in a help-style buffer (Rust syntax-highlighted) reachable via `:describe-config-error` and surfaced as a non-fatal banner.
+
+Subsequent boots are dominated by the `dlopen`-equivalent of the cached WASM artifact -- in the high-tens-of-microseconds range. The compile cost is one-time per source change or editor version.
+
+A filesystem watcher on `init.rs` triggers an in-background recompile when the user saves; on success the host hot-swaps the loaded module (the §5.5 host already supports plugin reload). Live config feedback without restart, with the same compile-then-load pipeline; just incremental.
+
+The `lattice config build` CLI subcommand is **not** on the user's critical path -- it exists as a debugging / scripting tool. Use cases:
+
+- Pre-warming a cache on a fresh machine before first launch (dotfile-bootstrap scripts).
+- Diagnosing "config didn't load" with full verbose cargo output.
+- CI-checking a config (validate it compiles before pushing dotfiles changes).
+- Cross-compiling and shipping a pre-built `init.wasm` alongside the source for sharing -- the host loads the pre-built artifact when its hash matches the source.
+
+#### 5.12.5 Sources and precedence
 
 Values come from layered sources, resolved in this order (later wins):
 
 1. Built-in defaults (`OptionSpec::default`).
 2. Bundled config files (default keymap, theme).
-3. User config (`~/.config/lattice/config.toml`).
-4. Project config (`.lattice/config.toml` at workspace root).
-5. Per-buffer overrides (modeline-style `:setlocal`).
-6. Programmatic / `:set` invocations during a session.
+3. User options (`~/.config/lattice/options.toml`).
+4. User init module (`~/.config/lattice/init.rs`, compiled to WASM, run with `boot` capability).
+5. Project options (`.lattice/options.toml` at workspace root).
+6. Per-buffer overrides (modeline-style `:setlocal`).
+7. Programmatic / `:set` invocations during a session.
 
-#### 5.12.2 The `:set` parser front-end
+`init.rs` runs after `options.toml` is applied so it can read what TOML did and override or extend. Project-level `init.rs` is **deferred** -- arbitrary code execution by virtue of `cd`-ing into a directory is a real attack surface; the eventual mechanism is a per-directory trust prompt with a hashed allowlist (vim's `:set exrc` with explicit trust). Until that lands, project-local code-config is unsupported.
+
+#### 5.12.6 The `:set` parser front-end
 
 `:set option=value`, `:set option!`, `:set option+=value`, `:set option^=value` are all parsed by the `:set` command's `parse_args` into a typed `SetOption` invocation:
 
@@ -1674,18 +1757,30 @@ struct SetOption {
 
 Validation runs at the dispatcher; type errors surface as a parse error in the `command-line` minibuffer (live error indicator -- §5.9.10).
 
-#### 5.12.3 Customize as a buffer-backed view
+`:set` is itself a registered command that dispatches through `execute(...)`; `init.rs`'s `c.set(name, value)` call lowers to the same invocation. There is one path that mutates an option, and it publishes the option's `on_change` event so subscribers (autocmds, `:customize` redraw, dependent options) react uniformly regardless of source.
 
-A built-in command (`:customize`, or the `customize` major mode) opens a buffer that lists every registered option grouped by `group`. The view is rendered with type-aware widgets: bools are checkboxes, enums are dropdowns, paths are completable strings, lists are addable-removable. Edits write back to the user TOML file; in-session value changes happen immediately. Filtering (`/`) and folding (`za`) work because it is a buffer.
+#### 5.12.7 Customize as a buffer-backed view
 
-#### 5.12.4 Options are addressable from every entry point
+A built-in command (`:customize`, or the `customize` major mode) opens a buffer that lists every registered option grouped by `group`. The view is rendered with type-aware widgets: bools are checkboxes, enums are dropdowns, paths are completable strings, lists are addable-removable. Edits dispatch the same `:set` invocations described above. Saved customizations are written back to `options.toml` -- which the user can then move into `init.rs` if they need code around them. Filtering (`/`) and folding (`za`) work because it is a buffer.
+
+#### 5.12.8 Options are addressable from every entry point
 
 - The `:set` line.
 - `:describe-option <name>` (introspection).
 - The customize buffer.
-- A plugin's WIT call (`config.set` / `config.get`).
+- `options.toml` (deserializer-driven).
+- `init.rs` (WIT host call: `config.set` / `config.get`).
+- A third-party plugin (same WIT call as `init.rs`).
 
-All four entry points produce or consume the same typed `Value` against the same `OptionSpec`.
+All six entry points produce or consume the same typed `Value` against the same `OptionSpec`. `init.rs` and third-party plugins use *literally the same call*; the only thing that distinguishes them is the capability set the host loaded them with.
+
+#### 5.12.9 Invariants
+
+- **No second config language, ever.** TOML for data, Rust-WASM for code. Lua / vimscript / elisp / Rhai / Janet / a custom config DSL are all out of scope -- the doubling of API surface, binding maintenance, ecosystem fragmentation, and learning cost is the explicit cost we refuse. Users who want a no-toolchain logic surface use TOML's static keymap / autocmd entries; users who want logic install a Rust toolchain like every other Rust author. The graduation step from "config" to "third-party plugin" is purely packaging.
+- **`init.rs` is a plugin.** It is loaded by the §5.5 host, declared in WIT, capability-gated, fuel-limited, crash-isolated. The only thing privileging it is the `boot` capability and the well-known load path. A bug in `init.rs` cannot crash the editor; it surfaces as a banner and falls back to defaults.
+- **Exactly one path per concern.** One option mutation path (`:set` → `execute(...)`), one `CommandInvocation` shape, one `Effect` wire format, one cancellation token, one event bus. Config is a consumer of these surfaces, not a parallel surface.
+- **Project-local code-config is gated on a trust mechanism.** Until that mechanism ships, project-level overrides are TOML-only; project-level `init.rs` is unsupported.
+- **The compile cost is paid once per source change.** Auto-build is a one-time event amortised across many boots; the user never types a build command on the happy path.
 
 ---
 
@@ -2169,7 +2264,8 @@ lattice/
 |   |-- lattice-plugin-host/           # wasmtime + Component Model + WIT bindings
 |   |-- lattice-modes/                 # major / minor mode registry
 |   |-- lattice-protocol/              # Command / Event enums; serde + msgpack
-|   |-- lattice-config/                # TOML config parsing
+|   |-- lattice-config/                # options.toml deserializer + init.rs build / load orchestration
+|   |-- lattice-config-api/            # WIT-bindings reexport consumed by user `init.rs`
 |   |-- lattice-render/                # Renderer trait, atlas, frame, fonts
 |   |-- lattice-render-editor/         # EditorRenderer (all paths)
 |   |-- lattice-render-document/       # DocumentRenderer (taffy-based)

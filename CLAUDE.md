@@ -35,7 +35,9 @@ A modal, GPU-accelerated, plugin-first text editor written in Rust. Combines vim
 
 ## Tech stack
 
-Rust + tokio (multi-thread) + ropey + tree-sitter + GPUI (preferred) or wgpu fallback + cosmic-text/parley + wasmtime (Component Model + WASI) + taffy + serde/MessagePack + TOML + Lua (mlua, tier-2 config).
+Rust + tokio (multi-thread) + ropey + tree-sitter + GPUI (preferred) or wgpu fallback + cosmic-text/parley + wasmtime (Component Model + WASI) + taffy + serde/MessagePack + TOML.
+
+**One extension substrate.** No Lua, no vimscript, no elisp, no embedded Scheme. WASM (Rust today; any Component-Model language tomorrow) is the single substrate for plugins *and* user configuration. The user's `init.rs` is compiled to WASM and loaded by the plugin host with a boot-capability set. TOML covers static option overrides only; anything programmable (keymaps, autocmds, hooks, custom commands) lives in the Rust-WASM init module. Static settings stay declarative; logic stays code; one toolchain.
 
 ## Where to look in docs/DESIGN.md
 

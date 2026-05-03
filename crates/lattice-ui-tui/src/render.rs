@@ -866,16 +866,26 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         // O(line_len) materialisation).
         let line_text = snap.buffer.line(line_idx).unwrap_or_default();
         let gutter = render_gutter_for(app, line_idx, gutter_w);
-        // Fold summary: show "+--- N lines ---" instead of the line body.
-        if let Some(fold) = app.fold_start_at(line_idx) {
-            let n = fold.end_line - fold.start_line + 1;
-            let summary = format!("+--- {n} lines ---");
-            let summary_span = Span::styled(summary, TuiStyle::default().fg(Color::DarkGray));
-            out.push(combine(gutter, vec![summary_span]));
-            continue;
-        }
         let spans = app.highlights_for_viewport_row(i);
         let mut body = render_styled_line(&line_text, spans, buffer_w);
+        // Heading-preserved fold render (`docs/help/folding.md`):
+        // when a closed fold starts here, keep the line's syntax-
+        // highlighted body and append a dim ` ┄ N lines folded`
+        // suffix. Skips overlay / cursor / etc. processing for the
+        // hidden body lines (they were filtered out of `visible`
+        // above).
+        if let Some(fold) = app.fold_start_at(line_idx)
+            && fold.closed
+        {
+            let n = fold.end_line - fold.start_line + 1;
+            let suffix = format!(" ┄ {n} lines folded");
+            body.push(Span::styled(
+                suffix,
+                TuiStyle::default().fg(Color::DarkGray),
+            ));
+            out.push(combine(gutter, body));
+            continue;
+        }
         let line_len = line_text.len();
         // Blockwise visual: per-line column band [min_col, max_col].
         // Charwise / Linewise visual go through `visual_range` instead.
@@ -1105,26 +1115,45 @@ fn gutter_width(line_count: u32) -> u32 {
     digits + 2
 }
 
-fn render_gutter(line_idx: u32, width: u32) -> Span<'static> {
+/// Pick the gutter fold glyph for a buffer line: ▸ when the line
+/// begins a closed fold, ▾ when it begins an open fold, or `None`
+/// when the line is unaffiliated with any fold start.
+/// (`docs/help/folding.md`).
+fn fold_glyph_for(app: &App, line_idx: u32) -> Option<char> {
+    let f = app.fold_start_at_any(line_idx)?;
+    Some(if f.closed { '▸' } else { '▾' })
+}
+
+fn render_gutter(line_idx: u32, width: u32, glyph: Option<char>) -> Span<'static> {
     let n = (line_idx + 1).to_string();
-    // " 12 " for a 4-wide gutter.
+    // Gutter layout: "{pad}{n}{glyph}" -- the trailing cell is the
+    // fold glyph slot. When no fold starts on this line, fill with a
+    // plain space so column alignment is preserved.
     let pad = (width as usize).saturating_sub(n.len() + 1);
-    let s = format!("{:pad$}{n} ", "", pad = pad);
+    let g = glyph.unwrap_or(' ');
+    let s = format!("{:pad$}{n}{g}", "", pad = pad);
     Span::styled(s, TuiStyle::default().fg(Color::DarkGray))
 }
 
 fn render_gutter_for(app: &App, line_idx: u32, width: u32) -> Span<'static> {
+    let glyph = fold_glyph_for(app, line_idx);
     if !app.show_line_numbers {
-        // Pure padding so the buffer doesn't run flush against the edge.
-        return Span::raw(" ".repeat(width as usize));
+        // Glyph still rendered when foldcolumn would normally show
+        // it; otherwise pure padding so the buffer doesn't run flush
+        // against the edge.
+        let g = glyph.unwrap_or(' ');
+        let mut s = " ".repeat((width as usize).saturating_sub(1));
+        s.push(g);
+        return Span::styled(s, TuiStyle::default().fg(Color::DarkGray));
     }
     if !app.relative_line_numbers || line_idx == app.cursor.line {
-        return render_gutter(line_idx, width);
+        return render_gutter(line_idx, width, glyph);
     }
     let dist = line_idx.abs_diff(app.cursor.line);
     let n = dist.to_string();
     let pad = (width as usize).saturating_sub(n.len() + 1);
-    let s = format!("{:pad$}{n} ", "", pad = pad);
+    let g = glyph.unwrap_or(' ');
+    let s = format!("{:pad$}{n}{g}", "", pad = pad);
     Span::styled(s, TuiStyle::default().fg(Color::DarkGray))
 }
 
@@ -1403,6 +1432,10 @@ mod tests {
         a.set_viewport_height(viewport);
         a.refresh_highlights();
         a
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
     #[test]
@@ -1718,5 +1751,101 @@ mod tests {
         // verify the line still contains the original text after overlay.
         assert!(dump.contains("hello"));
         assert!(dump.contains("world"));
+    }
+
+    // --- Heading-preserved fold render -------------------------
+
+    #[test]
+    fn closed_fold_preserves_heading_and_appends_summary() {
+        let mut app = app_with("# Heading\nbody one\nbody two\nafter\n", 5);
+        app.foldmethod = crate::app::FoldMethod::Markdown;
+        app.recompute_folds();
+        // Close the heading fold.
+        let idx = app
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("heading fold");
+        app.folds[idx].closed = true;
+        let lines = compose_visible_lines(&app, 5, 80);
+        let row0 = line_text(&lines[0]);
+        // Heading text is preserved.
+        assert!(row0.contains("# Heading"), "row0 = {row0:?}");
+        // Summary suffix appended.
+        assert!(row0.contains("lines folded"), "row0 = {row0:?}");
+    }
+
+    #[test]
+    fn closed_fold_hides_interior_lines() {
+        let mut app = app_with("# H\nhidden1\nhidden2\nshown\n", 5);
+        app.foldmethod = crate::app::FoldMethod::Markdown;
+        app.recompute_folds();
+        let idx = app
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("heading fold");
+        app.folds[idx].closed = true;
+        let lines = compose_visible_lines(&app, 5, 80);
+        let blob: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(!blob.contains("hidden1"), "interior leaked: {blob}");
+        assert!(!blob.contains("hidden2"), "interior leaked: {blob}");
+    }
+
+    #[test]
+    fn open_fold_renders_lines_normally_without_summary() {
+        let mut app = app_with("# H\nbody\n", 5);
+        app.foldmethod = crate::app::FoldMethod::Markdown;
+        app.recompute_folds();
+        // Leave the fold open (default).
+        let lines = compose_visible_lines(&app, 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(row0.contains("# H"), "row0 = {row0:?}");
+        assert!(
+            !row0.contains("lines folded"),
+            "summary should only appear on closed folds: {row0:?}"
+        );
+    }
+
+    // --- Fold gutter glyphs ------------------------------------
+
+    #[test]
+    fn open_fold_gutter_shows_down_glyph() {
+        let mut app = app_with("# H\nbody\n", 5);
+        app.foldmethod = crate::app::FoldMethod::Markdown;
+        app.recompute_folds();
+        let lines = compose_visible_lines(&app, 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(row0.contains('▾'), "expected ▾ glyph on open fold: {row0:?}");
+        assert!(!row0.contains('▸'), "did not expect ▸ glyph: {row0:?}");
+    }
+
+    #[test]
+    fn closed_fold_gutter_shows_right_glyph() {
+        let mut app = app_with("# H\nbody\n", 5);
+        app.foldmethod = crate::app::FoldMethod::Markdown;
+        app.recompute_folds();
+        let idx = app
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("heading fold");
+        app.folds[idx].closed = true;
+        let lines = compose_visible_lines(&app, 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(row0.contains('▸'), "expected ▸ glyph on closed fold: {row0:?}");
+        assert!(!row0.contains('▾'), "did not expect ▾ glyph: {row0:?}");
+    }
+
+    #[test]
+    fn lines_without_fold_start_have_no_glyph() {
+        let mut app = app_with("# H\nbody one\nbody two\nafter\n", 5);
+        app.foldmethod = crate::app::FoldMethod::Markdown;
+        app.recompute_folds();
+        let lines = compose_visible_lines(&app, 5, 80);
+        // Row 1 (body one) is inside the fold, not a fold start.
+        let row1 = line_text(&lines[1]);
+        assert!(!row1.contains('▸'), "row1: {row1:?}");
+        assert!(!row1.contains('▾'), "row1: {row1:?}");
     }
 }

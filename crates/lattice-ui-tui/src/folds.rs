@@ -1,22 +1,52 @@
-//! Computed folds (DESIGN.md §5.1, §15:18).
+//! Computed folds (DESIGN.md §5.1, §15:18; user-facing reference
+//! at `docs/help/folding.md`).
 //!
 //! Folds derived automatically from the buffer's structure. v1
-//! status (C.2): indent-based fallback only -- a fold spans any
-//! line whose successor indents deeper, ending at the last line
-//! whose indent is strictly greater than the start. Tree-sitter-
-//! driven folds (function bodies, classes, blocks via `folds.scm`)
-//! are queued as a follow-up; the data type ([`crate::app::Fold`])
-//! is shared so a tree-sitter pass and the indent fallback both
-//! produce the same shape.
+//! providers:
+//!
+//! 1. **Indent** -- fold spans any line whose successor indents
+//!    deeper, ending at the last line whose indent is strictly
+//!    greater than the start. Universal across languages.
+//! 2. **Markdown** -- `^#+ ` headings define the fold tree.
+//!    A `# H1` folds until the next `# H1`; a `## H2` folds until
+//!    the next same-or-higher heading. Triggers automatically on
+//!    `*.md` buffers when `foldmethod = syntax` cascades.
+//! 3. **Syntax (cascade)** -- tree-sitter scope queries are queued
+//!    as a follow-up; until that lands, the `Syntax` foldmethod
+//!    cascades to `Markdown` for `.md` buffers and `Indent`
+//!    otherwise.
 //!
 //! Manual folds (created via `zf` from a Visual selection) and
 //! computed folds coexist in [`crate::app::App::folds`] with no
 //! distinction at the storage layer; the `:set foldmethod` option
 //! decides which side feeds in.
+//!
+//! Fold identity (`Fold::identity`) is the SHA-style hash of the
+//! trimmed start-line text plus indent depth. When the buffer
+//! changes and folds recompute, we match new folds to old ones by
+//! identity and transfer the closed-state -- so adding a line to
+//! one section doesn't reopen the closed section above. Manual
+//! folds carry `identity = None` (their stable identity is the
+//! line range itself).
+
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use lattice_core::Buffer;
 
 use crate::app::Fold;
+
+/// Compute the stable identity hash for a computed fold.
+///
+/// Inputs are `(trimmed start-line text, indent depth)` -- enough
+/// to keep a heading distinct from sibling headings while ignoring
+/// trailing-line additions. Used by [`crate::app::App::recompute_folds`]
+/// to carry the closed/open state across edits.
+pub(crate) fn fold_identity(start_line_text: &str, indent_depth: usize) -> u64 {
+    let mut h = DefaultHasher::new();
+    start_line_text.trim().hash(&mut h);
+    indent_depth.hash(&mut h);
+    h.finish()
+}
 
 /// Run the indent-based fold algorithm against `buffer` and return
 /// every fold range it discovers. All produced folds are open
@@ -83,10 +113,12 @@ pub fn compute_indent_folds(buffer: &Buffer) -> Vec<Fold> {
                 }
             }
         }
+        let identity = fold_identity(lines[i], start_indent);
         folds.push(Fold {
             start_line: i as u32,
             end_line: end as u32,
             closed: false,
+            identity: Some(identity),
         });
     }
     folds
@@ -100,6 +132,105 @@ pub fn compute_indent_folds(buffer: &Buffer) -> Vec<Fold> {
 /// follow-up.)
 fn leading_indent(line: &str) -> usize {
     line.chars().take_while(|c| c.is_whitespace()).count()
+}
+
+/// Markdown heading-based fold provider (DESIGN.md §15:18,
+/// `docs/help/folding.md`). Walks the buffer for ATX headings
+/// (`^#+\s`) and emits one fold per heading whose body has at
+/// least one row. Heading depth (the number of `#`s) determines
+/// nesting: a `## H2` ends at the next same-or-shallower heading
+/// (`# H1` or another `## H2` or end-of-buffer).
+///
+/// Code-fence aware: `^```` lines toggle a "in fenced block" state;
+/// `#`-prefixed lines inside a fenced block are not headings. The
+/// fence itself is included in whichever fold contains it.
+///
+/// Lines inside fenced code blocks of the form `~~~` are also
+/// excluded from heading detection, mirroring CommonMark §4.5.
+pub fn compute_markdown_folds(buffer: &Buffer) -> Vec<Fold> {
+    let text = buffer.as_string();
+    let lines: Vec<&str> = text.split('\n').collect();
+    let line_count = lines.len();
+    if line_count <= 1 {
+        return Vec::new();
+    }
+
+    // First pass: find every heading line and its depth, skipping
+    // those inside fenced code blocks.
+    let mut headings: Vec<(usize, u32)> = Vec::new(); // (line_idx, depth)
+    let mut in_fence = false;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if let Some(depth) = atx_heading_depth(line) {
+            headings.push((i, depth));
+        }
+    }
+    if headings.is_empty() {
+        return Vec::new();
+    }
+
+    // Second pass: each heading folds from its row to the row
+    // before the next same-or-shallower heading, or end-of-buffer.
+    // Single-line "headings" (next heading on the very next row)
+    // are skipped because the body would be empty.
+    let mut folds: Vec<Fold> = Vec::new();
+    for (h_idx, &(start, depth)) in headings.iter().enumerate() {
+        let end = headings
+            .iter()
+            .skip(h_idx + 1)
+            .find(|(_, d)| *d <= depth)
+            .map(|(line_idx, _)| line_idx.saturating_sub(1))
+            .unwrap_or(line_count.saturating_sub(1));
+        if end <= start {
+            // Empty body (next sibling heading immediately follows).
+            continue;
+        }
+        // Identity uses the heading line + depth so headings with
+        // identical text at different depths (`# Foo` vs `## Foo`)
+        // get different identities.
+        let identity = fold_identity(lines[start], depth as usize);
+        folds.push(Fold {
+            start_line: start as u32,
+            end_line: end as u32,
+            closed: false,
+            identity: Some(identity),
+        });
+    }
+    folds
+}
+
+/// Recognise an ATX heading line (`#` to `######` followed by at
+/// least one whitespace) per CommonMark §4.2. Returns the heading
+/// depth (1-6) on match, `None` otherwise. Leading whitespace is
+/// allowed but capped at 3 spaces (CommonMark's "up to 3 leading
+/// spaces" rule); 4+ leading spaces means the line is part of an
+/// indented code block.
+fn atx_heading_depth(line: &str) -> Option<u32> {
+    let lead = line.chars().take_while(|c| *c == ' ').count();
+    if lead > 3 {
+        return None;
+    }
+    let rest = &line[lead..];
+    let hashes = rest.chars().take_while(|c| *c == '#').count() as u32;
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    let after = &rest[hashes as usize..];
+    // CommonMark requires at least one whitespace between hashes
+    // and content (or the line ends, e.g. `#` alone is a valid
+    // heading with empty content).
+    if after.is_empty() || after.starts_with([' ', '\t']) {
+        Some(hashes)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -179,5 +310,137 @@ mod tests {
         let b = buf("a:\n    b\n");
         let folds = compute_indent_folds(&b);
         assert!(!folds[0].closed);
+    }
+
+    // --- Markdown provider --------------------------------------
+
+    #[test]
+    fn markdown_empty_buffer_yields_no_folds() {
+        let b = buf("");
+        assert!(compute_markdown_folds(&b).is_empty());
+    }
+
+    #[test]
+    fn markdown_no_headings_yields_no_folds() {
+        let b = buf("just\nsome\nbody text\n");
+        assert!(compute_markdown_folds(&b).is_empty());
+    }
+
+    #[test]
+    fn markdown_single_heading_with_body_folds_to_eob() {
+        let b = buf("# Title\nbody line one\nbody line two\n");
+        let folds = compute_markdown_folds(&b);
+        assert_eq!(folds.len(), 1);
+        let f = &folds[0];
+        assert_eq!(f.start_line, 0);
+        // Trailing newline produces an empty 4th line (idx 3); the
+        // fold spans through the last *real* line (idx 2).
+        assert!(f.end_line >= 2);
+        assert!(!f.closed);
+    }
+
+    #[test]
+    fn markdown_single_line_heading_skipped() {
+        // Two H1s back-to-back: the first has no body, so no fold.
+        let b = buf("# A\n# B\nbody\n");
+        let folds = compute_markdown_folds(&b);
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0].start_line, 1);
+    }
+
+    #[test]
+    fn markdown_h1_then_h2_nests() {
+        let b = buf("# Outer\nlead\n## Inner\nbody\n");
+        let folds = compute_markdown_folds(&b);
+        // Outer (line 0) folds to end; Inner (line 2) folds inside it.
+        assert!(folds.iter().any(|f| f.start_line == 0));
+        assert!(folds.iter().any(|f| f.start_line == 2));
+    }
+
+    #[test]
+    fn markdown_h2_ends_at_next_h1() {
+        let b = buf("# A\n## A.1\na1 body\n# B\nb body\n");
+        let folds = compute_markdown_folds(&b);
+        // ## A.1 fold should end at line 2 (line before # B).
+        let inner = folds
+            .iter()
+            .find(|f| f.start_line == 1)
+            .expect("expected ## fold");
+        assert_eq!(inner.end_line, 2);
+    }
+
+    #[test]
+    fn markdown_hash_inside_code_fence_not_a_heading() {
+        let b = buf("# Real\nbody\n```\n# inside fence\n```\nafter\n");
+        let folds = compute_markdown_folds(&b);
+        // Only one heading (line 0) should be detected.
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0].start_line, 0);
+    }
+
+    #[test]
+    fn markdown_tilde_fence_also_protects_hashes() {
+        let b = buf("# Real\n~~~\n# inside\n~~~\nafter\n");
+        let folds = compute_markdown_folds(&b);
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0].start_line, 0);
+    }
+
+    #[test]
+    fn markdown_indented_4_spaces_is_not_a_heading() {
+        // 4+ leading spaces means indented code block, not heading.
+        let b = buf("body\n    # not heading\nmore body\n");
+        let folds = compute_markdown_folds(&b);
+        assert!(folds.is_empty());
+    }
+
+    #[test]
+    fn markdown_3_leading_spaces_still_a_heading() {
+        let b = buf("   # Heading\nbody\n");
+        let folds = compute_markdown_folds(&b);
+        assert_eq!(folds.len(), 1);
+    }
+
+    #[test]
+    fn markdown_seven_hashes_not_a_heading() {
+        // CommonMark caps at 6 hashes.
+        let b = buf("####### nope\nbody\n");
+        let folds = compute_markdown_folds(&b);
+        assert!(folds.is_empty());
+    }
+
+    #[test]
+    fn markdown_hash_without_space_not_a_heading() {
+        let b = buf("#nospace\nbody\n");
+        let folds = compute_markdown_folds(&b);
+        assert!(folds.is_empty());
+    }
+
+    #[test]
+    fn markdown_open_by_default() {
+        let b = buf("# H\nbody\n");
+        let folds = compute_markdown_folds(&b);
+        assert!(!folds[0].closed);
+    }
+
+    #[test]
+    fn atx_depth_recognises_levels_one_through_six() {
+        for n in 1..=6u32 {
+            let prefix: String = "#".repeat(n as usize);
+            let line = format!("{prefix} text");
+            assert_eq!(atx_heading_depth(&line), Some(n));
+        }
+    }
+
+    #[test]
+    fn atx_depth_rejects_zero_or_seven() {
+        assert_eq!(atx_heading_depth("nothing"), None);
+        assert_eq!(atx_heading_depth("####### too deep"), None);
+    }
+
+    #[test]
+    fn atx_depth_accepts_hash_alone() {
+        // CommonMark: "# " or just "#" both valid.
+        assert_eq!(atx_heading_depth("#"), Some(1));
     }
 }

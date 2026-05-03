@@ -917,22 +917,38 @@ pub struct CompletionState {
 
 const COMMAND_HISTORY_CAP: usize = 100;
 
+/// One contiguous fold range in a document buffer.
+///
+/// `identity` is the stable handle used to carry closed-state across
+/// recomputes. Computed providers (indent / markdown) hash the
+/// trimmed start-line text together with the leading-indent depth
+/// so that adding or removing lines elsewhere in the buffer doesn't
+/// reopen this fold. Manual folds (`zf`) leave it `None` -- their
+/// stable identity is the line range itself.
 #[derive(Debug, Clone, Copy)]
 pub struct Fold {
     pub start_line: u32,
     pub end_line: u32,
     pub closed: bool,
+    pub identity: Option<u64>,
 }
 
-/// `:set foldmethod=...` (DESIGN.md §15:18, C.2). Decides whether
-/// folds come from user `zf` operations (`Manual`), buffer
-/// indentation (`Indent`), or future tree-sitter queries
-/// (`TreeSitter`, queued).
+/// `:set foldmethod=...` (DESIGN.md §15:18, C.2; `docs/help/folding.md`).
+/// Decides which provider feeds [`App::folds`]:
+///
+/// - `Manual` -- only user `zf` ranges, no auto-recompute.
+/// - `Indent` -- universal indent walker.
+/// - `Markdown` -- ATX heading nesting (`*.md`).
+/// - `Syntax` -- tree-sitter scope queries (queued); cascades to
+///   `Markdown` for `.md` buffers and `Indent` otherwise until the
+///   tree-sitter provider lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FoldMethod {
     #[default]
     Manual,
     Indent,
+    Markdown,
+    Syntax,
 }
 
 impl FoldMethod {
@@ -940,6 +956,8 @@ impl FoldMethod {
         match self {
             FoldMethod::Manual => "manual",
             FoldMethod::Indent => "indent",
+            FoldMethod::Markdown => "markdown",
+            FoldMethod::Syntax => "syntax",
         }
     }
 }
@@ -1828,28 +1846,86 @@ impl App {
     }
 
     /// Refresh [`Self::folds`] from the active [`FoldMethod`].
-    /// `manual` -- no-op (preserves user `zf` folds). `indent` --
-    /// run the indent-based fold computer over the document buffer
-    /// and replace `folds` with the result. Preserves the closed/
-    /// open state of any existing fold whose range matches a
-    /// recomputed one (so `zc` survives a reparse).
+    /// `manual` -- no-op (preserves user `zf` folds). The other
+    /// providers (`indent` / `markdown` / `syntax` cascade) replace
+    /// `folds` with the recomputed set, preserving the closed/open
+    /// state of any existing fold whose range matches a recomputed
+    /// one (so `zc` survives a reparse).
+    ///
+    /// `Syntax` is a cascade until the tree-sitter scope-query
+    /// provider lands: for `.md` buffers it runs the markdown
+    /// provider, otherwise the indent provider. This keeps
+    /// `:set foldmethod=syntax` useful in v1 without claiming
+    /// tree-sitter coverage.
     pub fn recompute_folds(&mut self) {
         if matches!(self.foldmethod, FoldMethod::Manual) {
             return;
         }
         let snapshot = self.document.snapshot();
-        let mut next = crate::folds::compute_indent_folds(&snapshot.buffer);
-        // Carry over closed-state for matching fold ranges.
+        let provider = self.effective_fold_provider();
+        let mut next = match provider {
+            FoldMethod::Manual => return,
+            FoldMethod::Indent => crate::folds::compute_indent_folds(&snapshot.buffer),
+            FoldMethod::Markdown => crate::folds::compute_markdown_folds(&snapshot.buffer),
+            // Cascade resolution above guarantees we never land here.
+            FoldMethod::Syntax => crate::folds::compute_indent_folds(&snapshot.buffer),
+        };
+        // Carry over closed-state. Identity hash (heading text +
+        // depth) is the primary key so that adding a line to one
+        // section doesn't reopen the closed section above. Falls
+        // back to (start_line, end_line) when identity is missing.
         for nf in next.iter_mut() {
-            if let Some(prev) = self
-                .folds
-                .iter()
-                .find(|f| f.start_line == nf.start_line && f.end_line == nf.end_line)
-            {
+            let prev = nf
+                .identity
+                .and_then(|id| self.folds.iter().find(|f| f.identity == Some(id)))
+                .or_else(|| {
+                    self.folds
+                        .iter()
+                        .find(|f| f.start_line == nf.start_line && f.end_line == nf.end_line)
+                });
+            if let Some(prev) = prev {
                 nf.closed = prev.closed;
             }
         }
+        // Manual folds (identity = None) coexist with computed
+        // folds; recomputed providers don't produce them, so carry
+        // them over verbatim.
+        for prev in &self.folds {
+            if prev.identity.is_none() {
+                next.push(*prev);
+            }
+        }
+        next.sort_by(|a, b| {
+            a.start_line
+                .cmp(&b.start_line)
+                .then_with(|| b.end_line.cmp(&a.end_line))
+        });
         self.folds = next;
+    }
+
+    /// Resolve [`Self::foldmethod`] to a concrete provider after
+    /// applying the syntax-cascade rule (markdown for `.md`, indent
+    /// otherwise). `Manual` stays `Manual`; `Indent` and `Markdown`
+    /// pass through unchanged.
+    fn effective_fold_provider(&self) -> FoldMethod {
+        match self.foldmethod {
+            FoldMethod::Syntax => {
+                let is_md = match self.document.path() {
+                    Some(p) => p
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|ext| ext.eq_ignore_ascii_case("md"))
+                        .unwrap_or(false),
+                    None => false,
+                };
+                if is_md {
+                    FoldMethod::Markdown
+                } else {
+                    FoldMethod::Indent
+                }
+            }
+            other => other,
+        }
     }
 
     /// Recompute the per-line styled spans for the current viewport.
@@ -5200,6 +5276,7 @@ impl App {
             start_line,
             end_line,
             closed: true,
+            identity: None,
         });
         // Exit Visual back to Normal at the fold start.
         self.cursor = Position::new(start_line, 0);
@@ -5270,6 +5347,13 @@ impl App {
     /// renderer renders the summary header instead of the line content.
     pub fn fold_start_at(&self, line: u32) -> Option<&Fold> {
         self.folds.iter().find(|f| f.closed && f.start_line == line)
+    }
+
+    /// Returns Some(fold) if `line` is the start of any fold (open or
+    /// closed). Used by the renderer to draw the gutter glyph
+    /// (▾ open / ▸ closed) regardless of state.
+    pub fn fold_start_at_any(&self, line: u32) -> Option<&Fold> {
+        self.folds.iter().find(|f| f.start_line == line)
     }
 
     /// Vim's `J` / `gJ`: join the current line with the next. With
@@ -6862,6 +6946,7 @@ mod tests {
             start_line: 0,
             end_line: 2,
             closed: true,
+            identity: None,
         });
         a.apply(Action::OpenFoldAtCursor);
         assert!(!a.folds[0].closed);
@@ -6874,6 +6959,7 @@ mod tests {
             start_line: 0,
             end_line: 2,
             closed: false,
+            identity: None,
         });
         a.apply(Action::CloseFoldAtCursor);
         assert!(a.folds[0].closed);
@@ -6886,6 +6972,7 @@ mod tests {
             start_line: 0,
             end_line: 2,
             closed: false,
+            identity: None,
         });
         a.apply(Action::ToggleFoldAtCursor);
         assert!(a.folds[0].closed);
@@ -6900,11 +6987,13 @@ mod tests {
             start_line: 0,
             end_line: 1,
             closed: true,
+            identity: None,
         });
         a.folds.push(Fold {
             start_line: 2,
             end_line: 3,
             closed: true,
+            identity: None,
         });
         a.apply(Action::OpenAllFolds);
         assert!(a.folds.iter().all(|f| !f.closed));
@@ -6917,11 +7006,13 @@ mod tests {
             start_line: 0,
             end_line: 1,
             closed: false,
+            identity: None,
         });
         a.folds.push(Fold {
             start_line: 2,
             end_line: 3,
             closed: false,
+            identity: None,
         });
         a.apply(Action::CloseAllFolds);
         assert!(a.folds.iter().all(|f| f.closed));
@@ -6934,6 +7025,7 @@ mod tests {
             start_line: 0,
             end_line: 2,
             closed: true,
+            identity: None,
         });
         a.cursor = Position::new(1, 0);
         a.apply(Action::DeleteFoldAtCursor);
@@ -6947,11 +7039,13 @@ mod tests {
             start_line: 2,
             end_line: 3,
             closed: false,
+            identity: None,
         });
         a.folds.push(Fold {
             start_line: 5,
             end_line: 5,
             closed: false,
+            identity: None,
         });
         a.cursor = Position::ZERO;
         a.apply(Action::GotoNextFold);
@@ -6965,6 +7059,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             closed: false,
+            identity: None,
         });
         a.cursor = Position::new(5, 0);
         a.apply(Action::GotoPrevFold);
@@ -6986,6 +7081,7 @@ mod tests {
             start_line: 1,
             end_line: 3,
             closed: true,
+            identity: None,
         });
         assert!(!a.line_inside_closed_fold(0));
         // Start line is the summary, NOT inside.
@@ -10685,6 +10781,74 @@ mod tests {
         let mut a = app_with("def f():\n    pass\n", 10);
         a.recompute_folds();
         assert!(a.folds.is_empty());
+    }
+
+    #[test]
+    fn foldmethod_markdown_populates_folds_from_atx_headings() {
+        let mut a = app_with("# H1\nbody\nmore body\n", 10);
+        a.command_line = "set foldmethod=markdown".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.foldmethod, FoldMethod::Markdown);
+        assert!(!a.folds.is_empty());
+        let f = a.folds.iter().find(|f| f.start_line == 0).expect("fold");
+        assert!(f.end_line >= 2);
+    }
+
+    #[test]
+    fn foldmethod_syntax_cascades_to_indent_when_no_md_extension() {
+        let mut a = app_with("def f():\n    pass\n    pass\n", 10);
+        a.command_line = "set foldmethod=syntax".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.foldmethod, FoldMethod::Syntax);
+        // Cascade: no .md extension → indent provider → indent fold present.
+        assert!(a.folds.iter().any(|f| f.start_line == 0 && f.end_line == 2));
+    }
+
+    #[test]
+    fn foldmethod_indent_identity_preserves_closed_state_after_unrelated_insert() {
+        // Two sibling functions; close the *second* fold; insert a
+        // new line into the *first* function (shifting line numbers
+        // for the second fold). Identity-based matching should keep
+        // the second fold closed despite its (start_line, end_line)
+        // having shifted.
+        let initial = "first:\n    a\n    b\nsecond:\n    x\n    y\n";
+        let mut a = app_with(initial, 10);
+        a.foldmethod = FoldMethod::Indent;
+        a.recompute_folds();
+        // Find and close the `second:` fold.
+        let second_idx = a
+            .folds
+            .iter()
+            .position(|f| f.start_line == 3)
+            .expect("second: fold exists");
+        a.folds[second_idx].closed = true;
+        // Insert a new line inside the first function (between `a` and `b`).
+        a.apply_edit_blocking(Edit::insert(Position::new(2, 0), "    extra\n"))
+            .unwrap();
+        a.recompute_folds();
+        // The recomputed `second:` fold has start_line = 4 now, but
+        // its identity (heading text "second:" + indent 0) matches.
+        let new_second = a
+            .folds
+            .iter()
+            .find(|f| f.start_line == 4)
+            .expect("second: fold survived insertion");
+        assert!(
+            new_second.closed,
+            "closed-state should survive line shift via identity match"
+        );
+    }
+
+    #[test]
+    fn foldmethod_rejects_unknown_value() {
+        let mut a = app_with("a\n", 10);
+        a.command_line = "set foldmethod=bogus".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.foldmethod, FoldMethod::Manual);
+        assert!(a.last_message.is_some());
     }
 
     // ---- Hover popup (DESIGN.md §5.9.6, B.3) ----

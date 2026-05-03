@@ -293,7 +293,9 @@ pub fn builtin_options() -> OptionRegistry {
     r.register(OptionSpec {
         name: "foldmethod",
         aliases: &["fdm"],
-        doc: "How folds are produced: `manual` (zf only) or `indent` (auto from indentation).",
+        doc: "How folds are produced: `manual` (zf only), `indent` (auto from \
+              indentation), `markdown` (ATX heading nesting), or `syntax` (tree-sitter \
+              cascade -- markdown for `.md`, indent otherwise).",
         kind: OptionKind::String,
         default: OptionValue::String("manual".into()),
         get: Box::new(|app| OptionValue::String(app.foldmethod.label().into())),
@@ -308,7 +310,19 @@ pub fn builtin_options() -> OptionRegistry {
                     app.recompute_folds();
                     Ok(())
                 }
-                other => Err(format!("expected `manual` or `indent`, got `{other}`")),
+                "markdown" => {
+                    app.foldmethod = crate::app::FoldMethod::Markdown;
+                    app.recompute_folds();
+                    Ok(())
+                }
+                "syntax" => {
+                    app.foldmethod = crate::app::FoldMethod::Syntax;
+                    app.recompute_folds();
+                    Ok(())
+                }
+                other => Err(format!(
+                    "expected `manual`, `indent`, `markdown`, or `syntax`, got `{other}`"
+                )),
             },
             other => Err(format!("expected string, got {other:?}")),
         }),

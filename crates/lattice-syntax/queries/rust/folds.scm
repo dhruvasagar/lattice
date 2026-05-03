@@ -7,6 +7,7 @@
 ; reparses.
 
 [
+  ; Item-level (top-of-file constructs).
   (function_item)
   (struct_item)
   (enum_item)
@@ -19,6 +20,22 @@
   (macro_definition)
   (macro_invocation)
 
+  ; Expression-level constructs that span multiple lines and read
+  ; as a single semantic unit. Listing the wrapper expression
+  ; (e.g. `if_expression`) alongside its inner `block` lets the
+  ; user fold the *whole* if/else as one step after first folding
+  ; the then- or else-block individually -- without these, the
+  ; outer construct has no fold range and a sequence of `zc`s
+  ; stops at the inner block.
+  (if_expression)
+  (match_expression)
+  (while_expression)
+  (for_expression)
+  (loop_expression)
+  (let_declaration)
+
+  ; Block-shaped nodes -- each pair of braces / brackets / parens
+  ; that may span multiple lines.
   (block)
   (match_block)
   (declaration_list)

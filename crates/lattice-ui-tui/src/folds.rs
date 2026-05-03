@@ -704,6 +704,32 @@ impl Buffer {
     }
 
     #[test]
+    fn rust_syntax_folds_let_with_if_else_expression() {
+        // The user's exact scenario: a `let` binding with an
+        // if-else expression body. Three folds must be available --
+        // the then-block, the else-block, AND the surrounding
+        // if_expression -- so progressive `zc`s walk inner → outer.
+        let src = "let len = if cond {\n    a\n} else {\n    b\n};\n";
+        let syntax = rust_syntax_with(src);
+        let folds = compute_syntax_folds(&syntax).expect("rust folds");
+        // then-block: lines 0..=2 (`{` on line 0, `}` on line 2).
+        assert!(
+            folds.iter().any(|f| f.start_line == 0 && f.end_line == 2),
+            "expected then-block fold at 0..=2: {folds:?}"
+        );
+        // else-block: lines 2..=4 (`{` on line 2, `}` on line 4).
+        assert!(
+            folds.iter().any(|f| f.start_line == 2 && f.end_line == 4),
+            "expected else-block fold at 2..=4: {folds:?}"
+        );
+        // if_expression: lines 0..=4.
+        assert!(
+            folds.iter().any(|f| f.start_line == 0 && f.end_line == 4),
+            "expected if_expression fold at 0..=4: {folds:?}"
+        );
+    }
+
+    #[test]
     fn rust_syntax_folds_block_comments() {
         // Multi-line `/* ... */` comments fall under the
         // `block_comment` capture in folds.scm.

@@ -183,6 +183,36 @@ emit `Effect` variants (`SaveBuffer`, `QuitEditor`, `OpenBuffer`,
 `SetOption`, `Substitute`, `Global`, `Echo`, ...); `App::apply_effect`
 owns the side effects.
 
+**Kind-prefix form on `:` (§5.2.1 closure)** ✅. Every command --
+motion, operator, text-object, ex-command, plugin contribution -- is
+reachable from `:` by the `:<kind> <name>` form. Three kind words
+(`motion`, `operator`, `text-object`) are reserved on the `:` line
+and disambiguate the namespace; ex-commands keep their bare alias
+surface unchanged.
+
+```
+:motion goto-first-line               # naked motion
+:operator delete word-forward         # operator + bare target (motion)
+:operator delete inner-word           # operator + bare target (text-object)
+:operator delete motion:word-forward  # full canonical form (disambig)
+:text-object inner-word               # errors helpfully
+:write foo.txt                        # ex-command, vim alias surface
+```
+
+Operator targets resolve via implicit-namespace lookup: the bare tail
+is tried as `motion:<tail>`, then `text-object:<tail>`, then as a full
+canonical name. Plugin-registered names (e.g.
+`motion:my-plugin:fancy-jump`) are reachable via
+`:motion my-plugin:fancy-jump` -- the second-word colon is part of
+the tail, not adjacent to the cmdline colon. See
+`crates/lattice-ui-tui/src/excommand.rs::parse_kind_prefixed`.
+
+**`:` surface invariant.** DESIGN.md §2.2 explicitly excludes a
+function-call / palette / scripting syntax on `:`. The `:` line is
+vim's ex-syntax DSL; code paths (plugins, `init.rs`, the Rust
+functional API) construct `CommandInvocation` directly via the WIT
+host. Two input surfaces, one dispatcher.
+
 **Surface-form gating.** Each `ExCommandSpec` carries a
 `surface_form: SurfaceForm` (`Keyword` or `Delimiter { hint }`).
 Delimiter-form commands (`ex:substitute`, `ex:global`) are routed by
@@ -562,6 +592,30 @@ Update this section when picking up the in-flight item.
    ignorecase / tabstop / scrolloff -- adding a new option is a
    spec entry plus (if needed) an App field. Multi-option `:set`
    syntax (`:set ic hls scs`) deferred.
+
+   **§5.12 amendment landed in DESIGN.md (no code yet).** Two-layer
+   config codified: `~/.config/lattice/options.toml` for static
+   data; `~/.config/lattice/init.rs` compiled to WASM Component,
+   loaded by the §5.5 plugin host with a `boot` capability, for
+   programmable config. Auto-build on first boot (cargo-component
+   under `~/.cache/lattice/`); cache by source hash + lattice
+   version + WIT revision. `lattice config build` exists as a
+   diagnostic CLI. Project-local code-config deferred behind a
+   future per-directory trust prompt; project-local
+   `options.toml` supported. Implementation depends on Phase 7
+   (plugin host); `lattice-config-api` crate added to the project
+   layout as the WIT-bindings reexport user `init.rs` consumes.
+
+3a. **§5.2.1 closure: kind-prefix form on `:`** ✅ done. The legacy
+   parser-kind rejection is gone; every command (motion, operator,
+   text-object, ex-command, plugin contribution) is reachable from
+   `:` via `:<kind> <name>` syntax. Three reserved kind words on
+   `:` (`motion`, `operator`, `text-object`); ex-commands keep
+   their bare alias surface. Operator targets resolve via
+   implicit-namespace lookup. DESIGN.md §2.2 codifies the
+   no-function-call-syntax-on-`:` invariant; §5.2.1 specifies the
+   kind-prefix grammar. See
+   `crates/lattice-ui-tui/src/excommand.rs::parse_kind_prefixed`.
 4. **Multi-buffer foundations** (§5.9) — the trigger for `HelpDisplayMode`
    beyond `Popup`. Until this lands, all introspection is overlay-rendered.
    - **B.1.a buffer abstraction + active-buffer routing** ✅ done.

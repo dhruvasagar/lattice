@@ -63,7 +63,12 @@ Three deliberate deviations from vim and emacs:
 
 - **Unified command / grammar dispatch.** Vim's `:` ex-command world and
   the functional / plugin world are merged into one `CommandRegistry` with
-  one dispatcher. The `:`-line is a parser front-end. (DESIGN.md §5.2.1.)
+  one dispatcher. The `:` line stays vim DSL (no function-call / palette
+  syntax — explicit non-goal); plugins / `init.rs` / Rust callers
+  construct `CommandInvocation` directly via the WIT host. Two input
+  surfaces, one substrate. Every command is reachable from `:` via the
+  kind-prefix form (`:motion goto-first-line`, `:operator delete word-
+  forward`). (DESIGN.md §2.2 + §5.2.1.)
 - **Everything is a buffer.** File tree, outline, diagnostics, search
   results, terminal, REPL — all are buffers placed by the user into panes
   via splits. The unified `BufferRegistry` already holds documents and
@@ -160,6 +165,8 @@ In the running editor:
 - `/foo<CR> n N` — incremental search (regex with backrefs)
 - `:%s/foo/bar/g` — substitute (`$1`, `${name}` template syntax)
 - `:describe-command write` — every primitive carries help metadata
+- `:motion goto-first-line` — invoke any motion / operator / text-object by name (chord grammar still preferred for typing)
+- `:operator delete word-forward` — operator + bare target (motion / text-object resolved implicitly)
 - `<C-w>v` then `<C-w>l` — split vertically and focus the right pane
 - `:Tree .` (or `:e some-folder`) — open a folder as a file-tree buffer; `<CR>` toggles directories or opens files
 - `:bn` / `:bp` / `:ls` / `:bd` — cycle, list, or close any open buffer (document or tree)

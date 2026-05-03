@@ -225,7 +225,7 @@ impl LangRegistry {
     /// Internal lookup that returns the full per-language config
     /// (includes the raw `Language` plus -- after Step 2 -- the
     /// compiled folds / textobjects / indents queries).
-    fn lookup(&self, name: &str) -> Option<&LangConfig> {
+    pub(crate) fn lookup(&self, name: &str) -> Option<&LangConfig> {
         let canonical = match name {
             "rs" => "rust",
             "py" => "python",

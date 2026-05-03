@@ -258,25 +258,158 @@ impl Syntax {
     /// indents, etc.) instead of the streaming highlighter's parallel
     /// reparse.
     ///
-    /// Step 3a covers the non-injected case: `highlights.scm` only.
-    /// Markdown's block→inline injection (and language-fenced code
-    /// blocks) lands in Step 3b. Until then, this method falls back
-    /// to the legacy path for languages whose registered injections
-    /// query is non-empty -- so the user-visible behaviour is
-    /// unchanged on markdown buffers regardless of which method
-    /// callers invoke.
+    /// As of Step 3b this method also recursively highlights ranges
+    /// captured by `injections.scm`: markdown's block→inline path
+    /// (so `**bold**` inside a paragraph picks up Bold styling) and
+    /// fenced-code blocks (so ` ```rust ... ``` ` inside a markdown
+    /// buffer reuses the rust highlights). Recursion is bounded
+    /// (one level deep per call site -- markdown_inline has no
+    /// further injections we honour today).
     pub fn highlight_lines_native(
         &mut self,
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<Vec<StyledSpan>>, SyntaxError> {
-        // Languages with injections still go through the legacy
-        // streaming highlighter for now -- the native path doesn't
-        // recurse yet. Step 3b lifts this branch.
-        if self.registry.injections_query(self.lang.name()).is_some() {
-            return self.highlight_lines(start_line, end_line);
-        }
         self.highlight_lines_via_query(start_line, end_line)
+    }
+
+    /// Highlight one injection, returning a per-byte `Option<Style>`
+    /// vector aligned with `inj.range` (slot 0 = inj.range.start).
+    /// Returns `None` when the injected language has no registered
+    /// config -- the caller leaves the parent's styling in place.
+    fn highlight_injection(&self, inj: &Injection) -> Option<Vec<Option<Style>>> {
+        let lang_config = self.registry.lookup(&inj.language)?;
+        // Parse the injected content range with the target
+        // language's parser. We slice the source bytes so byte
+        // offsets in the resulting tree are RELATIVE to the
+        // injection (slot 0 = inj.range.start in our caller).
+        let content = &self.source[inj.range.clone()];
+        let mut parser = Parser::new();
+        parser.set_language(&lang_config.language).ok()?;
+        let tree = parser.parse(content, None)?;
+
+        // Run the injected language's highlights query. Capture
+        // resolution mirrors the parent path (later pattern wins,
+        // smaller range tie-breaks).
+        let query = &lang_config.highlights;
+        let styles = &lang_config.highlight_styles;
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), content);
+        let mut captures: Vec<(usize, usize, Style, usize)> = Vec::new();
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let style = styles
+                    .get(cap.index as usize)
+                    .copied()
+                    .unwrap_or(Style::Default);
+                let n = cap.node;
+                captures.push((n.start_byte(), n.end_byte(), style, m.pattern_index));
+            }
+        }
+        captures.sort_by(|a, b| {
+            b.3.cmp(&a.3)
+                .then_with(|| {
+                    let len_a = a.1.saturating_sub(a.0);
+                    let len_b = b.1.saturating_sub(b.0);
+                    len_a.cmp(&len_b)
+                })
+                .then_with(|| a.0.cmp(&b.0))
+        });
+
+        let len = content.len();
+        let mut out: Vec<Option<Style>> = vec![None; len];
+        for (s, e, style, _) in &captures {
+            let s = (*s).min(len);
+            let e = (*e).min(len);
+            for slot in &mut out[s..e] {
+                if slot.is_none() {
+                    *slot = Some(*style);
+                }
+            }
+        }
+        // Recursive injections (e.g. markdown_block emitting
+        // markdown_inline content) -- if the injected language
+        // itself has an injections query, recurse one more level.
+        if let Some(inj_query) = lang_config.injections.as_ref() {
+            // The "source" for nested injection is the slice we
+            // just parsed; call the standalone collector with
+            // window=[0, len).
+            let nested = collect_injections(inj_query, &tree, content, 0, len);
+            for n_inj in nested {
+                // Copy the slice into a fresh Vec for the recursive
+                // helper; we synthesise a one-shot Syntax-like view
+                // by reusing self.registry (the parser+tree are
+                // local to this fn).
+                if let Some(inner) = self.highlight_injection_in(content, &n_inj) {
+                    let s = n_inj.range.start.min(len);
+                    let e = n_inj.range.end.min(len);
+                    let inner_len = inner.len();
+                    for (i, slot) in out[s..e].iter_mut().enumerate() {
+                        if i >= inner_len {
+                            break;
+                        }
+                        if let Some(st) = inner[i] {
+                            *slot = Some(st);
+                        }
+                    }
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// Inner-injection helper. Same shape as
+    /// [`Self::highlight_injection`] but takes an explicit byte
+    /// slice rather than slicing into `self.source`. Used only by
+    /// the recursive injection path so a markdown paragraph that
+    /// injects markdown_inline can see further injections (rare
+    /// but possible).
+    fn highlight_injection_in(
+        &self,
+        outer_source: &[u8],
+        inj: &Injection,
+    ) -> Option<Vec<Option<Style>>> {
+        let lang_config = self.registry.lookup(&inj.language)?;
+        let content = &outer_source[inj.range.clone()];
+        let mut parser = Parser::new();
+        parser.set_language(&lang_config.language).ok()?;
+        let tree = parser.parse(content, None)?;
+        let query = &lang_config.highlights;
+        let styles = &lang_config.highlight_styles;
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), content);
+        let mut captures: Vec<(usize, usize, Style, usize)> = Vec::new();
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let style = styles
+                    .get(cap.index as usize)
+                    .copied()
+                    .unwrap_or(Style::Default);
+                let n = cap.node;
+                captures.push((n.start_byte(), n.end_byte(), style, m.pattern_index));
+            }
+        }
+        captures.sort_by(|a, b| {
+            b.3.cmp(&a.3)
+                .then_with(|| {
+                    let len_a = a.1.saturating_sub(a.0);
+                    let len_b = b.1.saturating_sub(b.0);
+                    len_a.cmp(&len_b)
+                })
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        let len = content.len();
+        let mut out: Vec<Option<Style>> = vec![None; len];
+        for (s, e, style, _) in &captures {
+            let s = (*s).min(len);
+            let e = (*e).min(len);
+            for slot in &mut out[s..e] {
+                if slot.is_none() {
+                    *slot = Some(*style);
+                }
+            }
+        }
+        Some(out)
     }
 
     /// The native query-cursor pipeline. Separated so Step 3b can
@@ -385,6 +518,35 @@ impl Syntax {
             }
         }
 
+        // Step 3b: recursively process injection captures and
+        // overwrite the parent's per-byte styles within the
+        // injected ranges. Outer markdown captures inside a
+        // ` ```rust { ... } ``` ` block get replaced by the rust
+        // pipeline's spans; same for `markdown_inline` injected
+        // into paragraph content.
+        if let Some(inj_query) = self.registry.injections_query(self.lang.name()) {
+            let injections =
+                collect_injections(inj_query, tree, self.source.as_slice(), window_start, window_end);
+            for inj in injections {
+                if let Some(inner_styles) = self.highlight_injection(&inj) {
+                    let s_local = inj.range.start.saturating_sub(window_start).min(win_len);
+                    let e_local = inj.range.end.saturating_sub(window_start).min(win_len);
+                    let inner_len = inner_styles.len();
+                    for (i, slot) in byte_styles[s_local..e_local].iter_mut().enumerate() {
+                        if i >= inner_len {
+                            break;
+                        }
+                        // Injected spans always override -- once a
+                        // language injection claims a byte, it owns
+                        // the styling there.
+                        if let Some(style) = inner_styles[i] {
+                            *slot = Some(style);
+                        }
+                    }
+                }
+            }
+        }
+
         // Walk byte_styles, emitting (start, end, style) runs and
         // distributing each across the line slices the renderer
         // expects. Default-claimed slots (`Some(Style::Default)`)
@@ -417,6 +579,81 @@ impl Syntax {
         }
         Ok(result)
     }
+}
+
+/// One injection candidate from `injections.scm`: a byte range of
+/// content + the target language's name. Markdown produces these
+/// in two shapes -- `(@injection.content @injection.language)`
+/// pairs (fenced code blocks) and `@injection.content` alone with
+/// `#set! injection.language "..."` directives (paragraphs →
+/// markdown_inline).
+struct Injection {
+    range: std::ops::Range<usize>,
+    language: String,
+}
+
+/// Walk every match of the injections query, extract `(content,
+/// language)` pairs, and clip them to the visible window so we
+/// don't re-parse content outside the requested viewport.
+fn collect_injections(
+    query: &tree_sitter::Query,
+    tree: &Tree,
+    source: &[u8],
+    window_start: usize,
+    window_end: usize,
+) -> Vec<Injection> {
+    let mut cursor = QueryCursor::new();
+    cursor.set_byte_range(window_start..window_end);
+    let mut matches = cursor.matches(query, tree.root_node(), source);
+    let names = query.capture_names();
+    let mut out = Vec::new();
+    while let Some(m) = matches.next() {
+        // Find the content + (optional) language captures within
+        // this match. Content is required; language can come from
+        // either a `@injection.language` capture or a `#set!
+        // injection.language "..."` directive on the pattern.
+        let mut content_range: Option<std::ops::Range<usize>> = None;
+        let mut explicit_lang: Option<String> = None;
+        for cap in m.captures {
+            let name = names[cap.index as usize];
+            match name {
+                "injection.content" => {
+                    let n = cap.node;
+                    content_range = Some(n.start_byte()..n.end_byte());
+                }
+                "injection.language" => {
+                    let n = cap.node;
+                    if let Ok(text) = std::str::from_utf8(&source[n.start_byte()..n.end_byte()]) {
+                        explicit_lang = Some(text.trim().to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(content_range) = content_range else {
+            continue;
+        };
+        // Skip injections that don't intersect the visible window
+        // -- their spans wouldn't appear in the result anyway.
+        if content_range.end <= window_start || content_range.start >= window_end {
+            continue;
+        }
+        // Resolve the target language: explicit capture wins; else
+        // walk the pattern's `#set!` directives.
+        let language = explicit_lang.or_else(|| {
+            query
+                .property_settings(m.pattern_index)
+                .iter()
+                .find(|p| p.key.as_ref() == "injection.language")
+                .and_then(|p| p.value.as_ref().map(|v| v.to_string()))
+        });
+        let Some(language) = language else { continue };
+        out.push(Injection {
+            range: content_range,
+            language,
+        });
+    }
+    out
 }
 
 /// Compute the byte offset where each line starts. The returned vec has
@@ -587,11 +824,35 @@ mod tests {
 
     // ---- Step 3a: native pipeline parity tests ----------------
 
+    /// Coalesce adjacent same-style spans into one. The legacy
+    /// streaming highlighter emits per-capture spans (`(` and `)`
+    /// each get their own Punctuation span), while the native
+    /// pipeline merges contiguous same-style runs during paint.
+    /// Visual output is identical; for parity we normalise both
+    /// to the merged form before comparing.
+    fn merge_adjacent_spans(line: &[StyledSpan]) -> Vec<StyledSpan> {
+        let mut sorted: Vec<StyledSpan> = line.to_vec();
+        sorted.sort_by_key(|s| (s.start, s.end));
+        let mut out: Vec<StyledSpan> = Vec::with_capacity(sorted.len());
+        for span in sorted {
+            if let Some(last) = out.last_mut()
+                && last.style == span.style
+                && last.end == span.start
+            {
+                last.end = span.end;
+                continue;
+            }
+            out.push(span);
+        }
+        out
+    }
+
     /// Helper for the parity tests: run both pipelines on the same
-    /// source and assert their per-line span output is byte-equal.
-    /// Spans within a line are sorted before comparison so any
-    /// ordering difference between the streaming and query
-    /// pipelines doesn't trigger spurious mismatches.
+    /// source and assert their per-line span output covers
+    /// identical byte ranges with identical styles. Adjacent
+    /// same-style spans are merged on both sides before
+    /// comparison so per-capture vs per-run granularity doesn't
+    /// flag spurious mismatches.
     fn assert_native_parity(lang: Lang, source: &str) {
         let mut a = Syntax::for_language(lang).unwrap().unwrap();
         let mut b = Syntax::for_language(lang).unwrap().unwrap();
@@ -608,13 +869,11 @@ mod tests {
             native.len()
         );
         for (i, (l, n)) in legacy.iter().zip(native.iter()).enumerate() {
-            let mut l = l.clone();
-            let mut n = n.clone();
-            l.sort_by_key(|s| (s.start, s.end, s.style as u32));
-            n.sort_by_key(|s| (s.start, s.end, s.style as u32));
+            let l_norm = merge_adjacent_spans(l);
+            let n_norm = merge_adjacent_spans(n);
             assert_eq!(
-                l, n,
-                "{lang:?} line {i}: span mismatch.\n  legacy: {l:?}\n  native: {n:?}"
+                l_norm, n_norm,
+                "{lang:?} line {i}: span mismatch (after merge).\n  legacy: {l_norm:?}\n  native: {n_norm:?}"
             );
         }
     }
@@ -665,7 +924,38 @@ mod tests {
         );
     }
 
-    // Remove the diagnostic dump tests now that the algorithm is
-    // green -- they were strictly for debugging the mismatch and
-    // would only add noise to the suite if kept.
+    #[test]
+    fn native_markdown_fenced_rust_block_emits_rust_spans() {
+        // Native markdown injection recurses into the fenced
+        // language. Strict parity with the legacy streaming
+        // highlighter doesn't hold here -- tree-sitter-highlight
+        // and our hand-rolled injection pipeline differ in how
+        // they distribute outer markdown captures inside the
+        // fenced range. The user-visible contract is "rust
+        // keywords / function names get styled inside `\`\`\`rust`
+        // blocks", which we verify directly.
+        let mut s = Syntax::for_language(Lang::Markdown).unwrap().unwrap();
+        let src = "# Title\n\n```rust\nfn main() {}\n```\n";
+        s.parse(src);
+        let lines = s.highlight_lines_native(0, 6).unwrap();
+        // Line 3 is the rust body (`fn main() {}`).
+        let rust_line = &lines[3];
+        assert!(
+            rust_line.iter().any(|sp| sp.style == Style::Keyword),
+            "expected rust Keyword span on fenced line, got {rust_line:?}"
+        );
+        assert!(
+            rust_line.iter().any(|sp| sp.style == Style::Function),
+            "expected rust Function span on fenced line, got {rust_line:?}"
+        );
+    }
+
+    #[test]
+    fn native_parity_markdown_headings_only() {
+        assert_native_parity(
+            Lang::Markdown,
+            "# H1\n\n## H2\n\n### H3\n\nbody paragraph\n",
+        );
+    }
+
 }

@@ -3846,6 +3846,15 @@ impl App {
         // uses).
         let is_vertical_jump = inv.command == self.builtins.goto_first_line.0
             || inv.command == self.builtins.goto_last_line.0;
+        // Linear vertical motions (j / k) skip closed-fold interiors
+        // per `docs/help/folding.md`: a `j` from a closed fold's
+        // heading lands on the line *after* the fold, not inside its
+        // hidden body. The grammar's motion is fold-naive (it just
+        // adds 1 to the line index); we post-process here so the
+        // grammar stays free of fold state.
+        let is_linear_vertical = inv.command == self.builtins.line_down.0
+            || inv.command == self.builtins.line_up.0;
+        let prev_cursor_line = self.cursor.line;
         match self.dispatch_blocking(inv) {
             Ok(effect) => {
                 // Visual exits on any operator-class effect (mutation OR
@@ -3857,6 +3866,8 @@ impl App {
                 self.apply_effect(effect);
                 if is_vertical_jump {
                     self.auto_open_folds_at_cursor();
+                } else if is_linear_vertical {
+                    self.skip_closed_fold_for_linear_motion(prev_cursor_line);
                 }
             }
             Err(_) => {
@@ -5500,6 +5511,56 @@ impl App {
             return None;
         }
         self.folds.iter().find(|f| f.start_line == line)
+    }
+
+    /// Skip past a closed fold's interior after a linear vertical
+    /// motion (`j` / `k`). Per `docs/help/folding.md`, j/k count
+    /// visible lines, not buffer lines: pressing `j` from a closed
+    /// fold's heading lands the cursor on the line *after* the
+    /// fold, not inside its hidden body.
+    ///
+    /// `prev_line` is the cursor line before dispatch. The motion's
+    /// outcome (`self.cursor.line`) is examined: if it lands inside
+    /// a closed fold's body (`fold.start_line < new_line <= fold.end_line`,
+    /// or any line of an enclosing closed fold), the cursor is
+    /// snapped:
+    ///
+    /// - moving down (`prev_line < new_line`) → `fold.end_line + 1`,
+    ///   clamped to the buffer's last addressable line;
+    /// - moving up (`prev_line > new_line`) → `fold.start_line`.
+    ///
+    /// `foldenable = false` suppresses the skip entirely, mirroring
+    /// the spec's "every line visible" guarantee.
+    fn skip_closed_fold_for_linear_motion(&mut self, prev_line: u32) {
+        if !self.foldenable {
+            return;
+        }
+        let new_line = self.cursor.line;
+        if new_line == prev_line {
+            return;
+        }
+        let going_down = new_line > prev_line;
+        // A closed fold "captures" `new_line` when the line is
+        // inside it -- specifically, anywhere the renderer would
+        // hide. The fold's start line is visible (the heading); the
+        // body lines aren't. From a closed fold's heading, moving
+        // down lands inside the fold body, which is what we skip.
+        let containing = self
+            .folds
+            .iter()
+            .find(|f| f.closed && new_line > f.start_line && new_line <= f.end_line);
+        let Some(fold) = containing.copied() else {
+            return;
+        };
+        let last = last_addressable_line(&self.document.snapshot().buffer);
+        let snapped = if going_down {
+            (fold.end_line + 1).min(last)
+        } else {
+            fold.start_line
+        };
+        let len = line_byte_len(&self.document.snapshot().buffer, snapped);
+        let byte = self.cursor.byte.min(len);
+        self.cursor = Position::new(snapped, byte);
     }
 
     /// Open every closed fold whose range contains the current
@@ -7329,6 +7390,115 @@ mod tests {
         // The inner (start=2) fold is gone; outer remains.
         assert!(a.folds.iter().any(|f| f.start_line == 0));
         assert!(!a.folds.iter().any(|f| f.start_line == 2));
+    }
+
+    // --- Linear j/k skip closed folds (`docs/help/folding.md`) ---
+
+    #[test]
+    fn line_down_from_closed_fold_heading_skips_to_after_fold() {
+        // 12-line buffer with a closed fold spanning lines 1..=4.
+        // From line 1 (heading), `j` should land on line 5, not 2.
+        let mut a = app_with(&"x\n".repeat(12), 10);
+        a.folds.push(Fold {
+            start_line: 1,
+            end_line: 4,
+            closed: true,
+            identity: None,
+        });
+        a.cursor = Position::new(1, 0);
+        a.apply(invoke_motion(a.builtins.line_down));
+        assert_eq!(
+            a.cursor.line, 5,
+            "j from closed-fold heading must skip to fold.end_line + 1"
+        );
+    }
+
+    #[test]
+    fn line_up_into_closed_fold_snaps_to_heading() {
+        // From line 5, `k` lands on 4 -- inside a closed fold (1..=4).
+        // Snap to fold.start_line (1).
+        let mut a = app_with(&"x\n".repeat(12), 10);
+        a.folds.push(Fold {
+            start_line: 1,
+            end_line: 4,
+            closed: true,
+            identity: None,
+        });
+        a.cursor = Position::new(5, 0);
+        a.apply(invoke_motion(a.builtins.line_up));
+        assert_eq!(
+            a.cursor.line, 1,
+            "k into a closed fold must snap to its heading line"
+        );
+    }
+
+    #[test]
+    fn linear_j_into_open_fold_does_not_skip() {
+        // Open folds don't hide content; j moves one line as usual.
+        let mut a = app_with(&"x\n".repeat(12), 10);
+        a.folds.push(Fold {
+            start_line: 1,
+            end_line: 4,
+            closed: false,
+            identity: None,
+        });
+        a.cursor = Position::new(1, 0);
+        a.apply(invoke_motion(a.builtins.line_down));
+        assert_eq!(a.cursor.line, 2);
+    }
+
+    #[test]
+    fn linear_motion_with_nofoldenable_does_not_skip() {
+        // `:set nofoldenable` / `zi` should make every line visible
+        // for navigation, including closed-fold interiors.
+        let mut a = app_with(&"x\n".repeat(12), 10);
+        a.folds.push(Fold {
+            start_line: 1,
+            end_line: 4,
+            closed: true,
+            identity: None,
+        });
+        a.foldenable = false;
+        a.cursor = Position::new(1, 0);
+        a.apply(invoke_motion(a.builtins.line_down));
+        assert_eq!(a.cursor.line, 2);
+    }
+
+    #[test]
+    fn zc_on_sibling_fold_after_navigating_with_j_closes_sibling_not_parent() {
+        // Regression: with one inner fold already closed, `j` from
+        // its heading must put the cursor on the sibling's heading
+        // (line 5), not inside the closed fold's body. Then `zc`
+        // on the sibling closes the sibling -- not the outer.
+        let mut a = app_with(&"x\n".repeat(12), 10);
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 10,
+            closed: false,
+            identity: None,
+        });
+        a.folds.push(Fold {
+            start_line: 1,
+            end_line: 4,
+            closed: true,
+            identity: None,
+        });
+        a.folds.push(Fold {
+            start_line: 5,
+            end_line: 9,
+            closed: false,
+            identity: None,
+        });
+        a.cursor = Position::new(1, 0);
+        // Move to the sibling's heading.
+        a.apply(invoke_motion(a.builtins.line_down));
+        assert_eq!(a.cursor.line, 5, "cursor should land on sibling, not interior");
+        // Close the sibling.
+        a.apply(Action::CloseFoldAtCursor);
+        let sibling = a.folds.iter().find(|f| f.start_line == 5).unwrap();
+        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
+        assert!(sibling.closed, "sibling should close, not the outer");
+        assert!(!outer.closed, "outer must remain open");
     }
 
     #[test]

@@ -69,7 +69,6 @@ crossterm = "0.28"
 
 # Syntax (tree-sitter)
 tree-sitter = "0.24"
-tree-sitter-highlight = "0.24"
 # Re-exported by tree-sitter for `QueryCursor::matches`. Direct dep
 # so consumers (lattice-ui-tui's fold provider, future textobjects)
 # can `use streaming_iterator::StreamingIterator` without going

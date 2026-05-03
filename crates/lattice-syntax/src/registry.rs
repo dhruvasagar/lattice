@@ -22,9 +22,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tree_sitter::{Language, Query};
-use tree_sitter_highlight::HighlightConfiguration;
 
-use crate::style::CAPTURE_NAMES;
 use crate::syntax::SyntaxError;
 
 // Embedded folds.scm queries. Files live at
@@ -49,11 +47,6 @@ const MARKDOWN_FOLDS_QUERY: &str = include_str!("../queries/markdown/folds.scm")
 /// highlight field.
 pub(crate) struct LangConfig {
     pub(crate) language: Language,
-    /// Legacy streaming-highlighter config. Kept while Step 3 of
-    /// the Option B migration runs the hand-rolled native pipeline
-    /// in parallel; dropped in Step 4 along with the
-    /// `tree-sitter-highlight` dep.
-    pub(crate) highlight: HighlightConfiguration,
     /// Compiled `folds.scm` query, when the language ships one.
     /// `None` means the syntax fold provider falls through to the
     /// indent / markdown cascades for buffers in this language --
@@ -209,19 +202,6 @@ impl LangRegistry {
         self.lookup(name).map(|c| c.language.clone())
     }
 
-    /// Look up a config by language name as it appears in tree-sitter
-    /// queries (the `(language)` capture in `(fenced_code_block ...)`,
-    /// or the `injection.language` `#set!` value). Returns `None` for
-    /// unregistered languages -- the highlighter then leaves the span
-    /// unhighlighted, which is the correct fallback.
-    ///
-    /// Aliases are folded here so users can write the language tag
-    /// they expect (`rs` ≡ `rust`, `py` ≡ `python`, `js` ≡
-    /// `javascript`, `md` ≡ `markdown`).
-    pub fn config(&self, name: &str) -> Option<&HighlightConfiguration> {
-        self.lookup(name).map(|c| &c.highlight)
-    }
-
     /// Internal lookup that returns the full per-language config
     /// (includes the raw `Language` plus -- after Step 2 -- the
     /// compiled folds / textobjects / indents queries).
@@ -238,7 +218,7 @@ impl LangRegistry {
 
     /// True if a config exists for the given canonical language name.
     pub fn has_lang(&self, name: &str) -> bool {
-        self.config(name).is_some()
+        self.lookup(name).is_some()
     }
 
     /// Iterate the registered language names. Useful for tests + the
@@ -256,10 +236,6 @@ fn build_config(
     locals: &str,
     folds: Option<&str>,
 ) -> Result<LangConfig, SyntaxError> {
-    let mut highlight =
-        HighlightConfiguration::new(language.clone(), name, highlights, injections, locals)
-            .map_err(|e| SyntaxError::Language(e.to_string()))?;
-    highlight.configure(CAPTURE_NAMES);
     let folds = match folds {
         Some(src) => Some(
             Query::new(&language, src).map_err(|e| {
@@ -268,9 +244,6 @@ fn build_config(
         ),
         None => None,
     };
-    // Compile the same highlights string into a `Query` for the
-    // hand-rolled native pipeline. Same source → same captures, so
-    // the legacy + native paths share the underlying mapping.
     let highlights_query = Query::new(&language, highlights).map_err(|e| {
         SyntaxError::Language(format!("compile {name} highlights.scm: {e}"))
     })?;
@@ -294,7 +267,6 @@ fn build_config(
     let _ = locals; // locals.scm support deferred to a follow-up commit.
     Ok(LangConfig {
         language,
-        highlight,
         folds,
         highlights: highlights_query,
         highlight_styles,
@@ -354,7 +326,7 @@ mod tests {
     #[test]
     fn unregistered_language_returns_none() {
         let r = LangRegistry::standard().unwrap();
-        assert!(r.config("zig").is_none());
-        assert!(r.config("").is_none());
+        assert!(!r.has_lang("zig"));
+        assert!(!r.has_lang(""));
     }
 }

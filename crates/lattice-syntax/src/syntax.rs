@@ -27,19 +27,15 @@ use std::sync::Arc;
 use streaming_iterator::StreamingIterator;
 use thiserror::Error;
 use tree_sitter::{Parser, QueryCursor, Tree};
-use tree_sitter_highlight::{Error as TsHighlightError, HighlightEvent, Highlighter};
 
 use crate::lang::Lang;
 use crate::registry::LangRegistry;
-use crate::style::{Style, StyledSpan, capture_index_to_style};
+use crate::style::{Style, StyledSpan};
 
 #[derive(Debug, Error)]
 pub enum SyntaxError {
     #[error("tree-sitter language error: {0}")]
     Language(String),
-
-    #[error("highlighter error: {0}")]
-    Highlight(#[from] TsHighlightError),
 
     #[error("language not registered: {0}")]
     UnregisteredLang(String),
@@ -48,7 +44,6 @@ pub enum SyntaxError {
 pub struct Syntax {
     lang: Lang,
     registry: Arc<LangRegistry>,
-    highlighter: Highlighter,
     /// Owned tree-sitter parser. `parse()` reuses it across edits and
     /// passes `tree.as_ref()` so tree-sitter's incremental reparser
     /// kicks in. The parser instance itself is cheap to keep around;
@@ -112,7 +107,6 @@ impl Syntax {
         Ok(Some(Self {
             lang,
             registry,
-            highlighter: Highlighter::new(),
             parser,
             tree: None,
             source: Vec::new(),
@@ -177,96 +171,16 @@ impl Syntax {
     /// use line-relative byte offsets (consistent with the renderer's
     /// existing assumption).
     ///
-    /// Step 3c flipped this method's body to the hand-rolled native
-    /// pipeline ([`Self::highlight_lines_native`]). The legacy
-    /// `tree_sitter_highlight::Highlighter`-based implementation
-    /// remains under [`Self::highlight_lines_legacy`] as an escape
-    /// hatch / parity reference until Step 4 drops the dependency
-    /// entirely.
+    /// As of Step 4 this is a thin pass-through to the hand-rolled
+    /// native pipeline ([`Self::highlight_lines_native`]); the
+    /// legacy `tree_sitter_highlight::Highlighter`-based path was
+    /// removed when its dependency was dropped from the workspace.
     pub fn highlight_lines(
         &mut self,
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<Vec<StyledSpan>>, SyntaxError> {
         self.highlight_lines_native(start_line, end_line)
-    }
-
-    /// The pre-Step-3 streaming-highlighter pipeline. Retained
-    /// while `tree_sitter_highlight` is still in our dep tree so
-    /// parity tests can compare against the previous behaviour.
-    /// Dropped in Step 4 alongside the dependency.
-    pub fn highlight_lines_legacy(
-        &mut self,
-        start_line: u32,
-        end_line: u32,
-    ) -> Result<Vec<Vec<StyledSpan>>, SyntaxError> {
-        if end_line <= start_line {
-            return Ok(Vec::new());
-        }
-
-        let line_starts = compute_line_starts(&self.source);
-        let total_lines = line_starts.len().saturating_sub(1).max(1) as u32;
-        let end_line = end_line.min(total_lines + 1);
-        if start_line >= end_line {
-            return Ok(Vec::new());
-        }
-
-        let mut result: Vec<Vec<StyledSpan>> =
-            (0..(end_line - start_line)).map(|_| Vec::new()).collect();
-
-        // Split-borrow self so the highlighter (mut) and the registry
-        // (immut) can be live in the same call. The injection callback
-        // closes over `&registry` and looks up sibling configs at the
-        // highlighter's borrow lifetime.
-        let Self {
-            lang,
-            registry,
-            highlighter,
-            source,
-            ..
-        } = self;
-        let primary = registry.config(lang.name()).ok_or_else(|| {
-            // Should not happen -- for_language_with_registry only
-            // constructs Self when the lang's config is present. If
-            // the registry was hot-swapped underneath us, surface the
-            // error rather than panicking.
-            SyntaxError::UnregisteredLang(lang.name().to_string())
-        })?;
-
-        let highlights = highlighter.highlight(primary, source, None, |inject_lang| {
-            registry.config(inject_lang)
-        })?;
-
-        // Walk the highlight event stream maintaining a stack of active
-        // styles. Each `Source { start, end }` event produces styled spans
-        // distributed across the lines it covers.
-        let mut stack: Vec<Style> = Vec::with_capacity(8);
-        for event in highlights {
-            match event? {
-                HighlightEvent::HighlightStart(h) => {
-                    stack.push(capture_index_to_style(h.0));
-                }
-                HighlightEvent::HighlightEnd => {
-                    stack.pop();
-                }
-                HighlightEvent::Source { start, end } => {
-                    let style = stack.last().copied().unwrap_or(Style::Default);
-                    if matches!(style, Style::Default) {
-                        continue;
-                    }
-                    distribute_span_across_lines(
-                        start,
-                        end,
-                        style,
-                        &line_starts,
-                        start_line,
-                        end_line,
-                        &mut result,
-                    );
-                }
-            }
-        }
-        Ok(result)
     }
 
     /// Hand-rolled highlighter that runs `highlights.scm` directly
@@ -843,103 +757,62 @@ mod tests {
 
     // ---- Step 3a: native pipeline parity tests ----------------
 
-    /// Coalesce adjacent same-style spans into one. The legacy
-    /// streaming highlighter emits per-capture spans (`(` and `)`
-    /// each get their own Punctuation span), while the native
-    /// pipeline merges contiguous same-style runs during paint.
-    /// Visual output is identical; for parity we normalise both
-    /// to the merged form before comparing.
-    fn merge_adjacent_spans(line: &[StyledSpan]) -> Vec<StyledSpan> {
-        let mut sorted: Vec<StyledSpan> = line.to_vec();
-        sorted.sort_by_key(|s| (s.start, s.end));
-        let mut out: Vec<StyledSpan> = Vec::with_capacity(sorted.len());
-        for span in sorted {
-            if let Some(last) = out.last_mut()
-                && last.style == span.style
-                && last.end == span.start
-            {
-                last.end = span.end;
-                continue;
-            }
-            out.push(span);
-        }
-        out
-    }
-
-    /// Helper for the parity tests: run both pipelines on the same
-    /// source and assert their per-line span output covers
-    /// identical byte ranges with identical styles. Adjacent
-    /// same-style spans are merged on both sides before
-    /// comparison so per-capture vs per-run granularity doesn't
-    /// flag spurious mismatches.
-    fn assert_native_parity(lang: Lang, source: &str) {
-        let mut a = Syntax::for_language(lang).unwrap().unwrap();
-        let mut b = Syntax::for_language(lang).unwrap().unwrap();
-        a.parse(source);
-        b.parse(source);
+    /// Helper: parse + highlight `source` through the native
+    /// pipeline and assert that at least one span of `expected`
+    /// style appears somewhere in the output. Used by the
+    /// per-language smoke tests below.
+    fn assert_has_style(lang: Lang, source: &str, expected: Style) {
+        let mut s = Syntax::for_language(lang).unwrap().unwrap();
+        s.parse(source);
         let line_count = source.split('\n').count() as u32;
-        let legacy = a.highlight_lines_legacy(0, line_count).unwrap();
-        let native = b.highlight_lines_native(0, line_count).unwrap();
-        assert_eq!(
-            legacy.len(),
-            native.len(),
-            "{lang:?}: line count mismatch (legacy {} vs native {})",
-            legacy.len(),
-            native.len()
+        let lines = s.highlight_lines(0, line_count).unwrap();
+        let found = lines
+            .iter()
+            .any(|l| l.iter().any(|sp| sp.style == expected));
+        assert!(
+            found,
+            "{lang:?}: expected at least one {expected:?} span in {source:?}, got {lines:?}"
         );
-        for (i, (l, n)) in legacy.iter().zip(native.iter()).enumerate() {
-            let l_norm = merge_adjacent_spans(l);
-            let n_norm = merge_adjacent_spans(n);
-            assert_eq!(
-                l_norm, n_norm,
-                "{lang:?} line {i}: span mismatch (after merge).\n  legacy: {l_norm:?}\n  native: {n_norm:?}"
-            );
-        }
     }
 
     #[test]
-    fn native_parity_rust_simple_function() {
-        // tree-sitter-rust ships an INJECTIONS_QUERY (for embedded
-        // SQL / regex etc.), so the native path falls back to the
-        // legacy streaming highlighter. The parity test still
-        // serves as a tripwire if that fallback breaks.
-        assert_native_parity(Lang::Rust, "fn main() {\n    let x = 1;\n}\n");
+    fn native_rust_simple_function_produces_keyword_and_function_spans() {
+        assert_has_style(Lang::Rust, "fn main() {\n    let x = 1;\n}\n", Style::Keyword);
+        assert_has_style(Lang::Rust, "fn main() {\n    let x = 1;\n}\n", Style::Function);
     }
 
     #[test]
-    fn native_parity_python_simple_function() {
-        // Python has no injections.scm, so this exercises the new
-        // QueryCursor path end-to-end.
-        assert_native_parity(
+    fn native_python_def_produces_keyword_and_function_spans() {
+        assert_has_style(
             Lang::Python,
             "def f(x):\n    return x + 1\n\nclass Foo:\n    pass\n",
+            Style::Keyword,
         );
-    }
-
-    #[test]
-    fn native_parity_python_with_strings_and_comments() {
-        assert_native_parity(
+        assert_has_style(
             Lang::Python,
-            "# comment\ns = \"hello world\"\nn = 42\nb = True\n",
+            "def f(x):\n    return x + 1\n\nclass Foo:\n    pass\n",
+            Style::Function,
         );
     }
 
     #[test]
-    fn native_parity_python_class_with_methods() {
-        assert_native_parity(
-            Lang::Python,
-            "class Foo:\n    def bar(self):\n        return self.x\n\n    def baz(self, n):\n        return n * 2\n",
-        );
+    fn native_python_strings_and_comments_resolve_to_proper_styles() {
+        let src = "# comment\ns = \"hello world\"\nn = 42\nb = True\n";
+        // Python's `# comment` is captured as `@comment` (not
+        // `@comment.line`), so it lands on `Style::Comment` rather
+        // than `Style::LineComment`. Both are visible distinct
+        // colours; the test pins the actual mapping.
+        assert_has_style(Lang::Python, src, Style::Comment);
+        assert_has_style(Lang::Python, src, Style::String);
+        assert_has_style(Lang::Python, src, Style::Number);
     }
 
     #[test]
-    fn native_parity_rust_struct_and_impl() {
-        // Rust has injections.scm so this currently exercises the
-        // legacy fallback inside `highlight_lines_native`. The
-        // parity test still serves as a tripwire.
-        assert_native_parity(
+    fn native_rust_struct_and_impl_emit_keyword_spans() {
+        assert_has_style(
             Lang::Rust,
-            "struct Buffer {\n    rope: Rope,\n    len: usize,\n}\n\nimpl Buffer {\n    fn new() -> Self {\n        Self { rope: Rope::new(), len: 0 }\n    }\n}\n",
+            "struct Buffer {\n    rope: Rope,\n}\n\nimpl Buffer {\n    fn new() -> Self {\n        Self { rope: Rope::new() }\n    }\n}\n",
+            Style::Keyword,
         );
     }
 
@@ -970,11 +843,11 @@ mod tests {
     }
 
     #[test]
-    fn native_parity_markdown_headings_only() {
-        assert_native_parity(
+    fn native_markdown_headings_emit_heading_styles() {
+        assert_has_style(
             Lang::Markdown,
             "# H1\n\n## H2\n\n### H3\n\nbody paragraph\n",
+            Style::Heading1,
         );
     }
-
 }

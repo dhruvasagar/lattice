@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 tree-sitter = { workspace = true }
-tree-sitter-highlight = { workspace = true }
 streaming-iterator = { workspace = true }
 tree-sitter-rust = { workspace = true }
 tree-sitter-python = { workspace = true }

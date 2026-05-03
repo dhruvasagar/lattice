@@ -120,20 +120,10 @@ pub(crate) const CAPTURE_NAMES: &[&str] = &[
     "none",
 ];
 
-/// Map a capture index (the position in `CAPTURE_NAMES`) to a `Style`.
-pub(crate) fn capture_index_to_style(idx: usize) -> Style {
-    match CAPTURE_NAMES.get(idx).copied() {
-        Some(name) => name_to_style(name),
-        None => Style::Default,
-    }
-}
-
-/// Public re-export of the capture-name → Style mapping for the
-/// hand-rolled native highlighter (Step 3 of Option B). The
-/// streaming highlighter consumes capture indices from the
-/// pre-configured CAPTURE_NAMES list; the native path runs the
-/// raw query and looks up styles by capture *name*, so it needs
-/// direct access to this resolver.
+/// Public re-export of the capture-name → Style mapping. The
+/// native highlighter runs each language's compiled
+/// `tree_sitter::Query` and looks up styles by capture *name*
+/// (using the dot-prefix walk implemented in [`name_to_style`]).
 pub fn name_to_style_pub(name: &str) -> Style {
     name_to_style(name)
 }
@@ -243,14 +233,6 @@ mod tests {
     fn unknown_names_fall_back_to_default() {
         assert_eq!(name_to_style("unknown"), Style::Default);
         assert_eq!(name_to_style(""), Style::Default);
-    }
-
-    #[test]
-    fn capture_index_rounds_to_style() {
-        // The first entry in CAPTURE_NAMES is "comment.line".
-        assert_eq!(capture_index_to_style(0), Style::LineComment);
-        // Out of range -> Default.
-        assert_eq!(capture_index_to_style(10_000), Style::Default);
     }
 
     #[test]

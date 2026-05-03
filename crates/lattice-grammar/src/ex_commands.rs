@@ -54,6 +54,8 @@ pub struct ExBuiltins {
     pub buffer_prev: ExCommandId,
     pub list_buffers: ExCommandId,
     pub buffer_delete: ExCommandId,
+    pub file_tree: ExCommandId,
+    pub file_tree_close: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -398,6 +400,45 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let file_tree = registry.register_ex_command(
+        "ex:tree",
+        "Open a file-tree buffer (`:Tree [path]`). Absent = current dir.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| {
+                let root = match &ctx.args {
+                    Args::String(p) if !p.is_empty() => Some(std::path::PathBuf::from(p.as_str())),
+                    _ => None,
+                };
+                Ok(Effect::OpenFileTree { root })
+            }),
+            args_schema: vec![ArgSpec {
+                name: "root",
+                kind: ArgKind::String,
+                doc: "Directory to open as the tree root. Absent = current dir.",
+                prompt: "root:",
+                default: ArgDefault::None,
+                completion: Some("gen:files"),
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let file_tree_close = registry.register_ex_command(
+        "ex:tree-close",
+        "Dismiss the file-tree buffer (`:TreeClose`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::CloseFileTree)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     ExBuiltins {
         write,
         quit,
@@ -419,6 +460,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         buffer_prev,
         list_buffers,
         buffer_delete,
+        file_tree,
+        file_tree_close,
     }
 }
 

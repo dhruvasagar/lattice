@@ -308,10 +308,64 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App) {
             height: prect.height,
         };
         if idx == active {
-            draw_buffer(frame, rect, app);
+            // Active pane: dispatch on the buffer kind. The
+            // document path is fully featured (gutter, syntax,
+            // visual selections, cursor); file-tree gets a
+            // simpler text-only path.
+            match app.pane_tree.active().buffer {
+                crate::buffers::BufferKind::Document => draw_buffer(frame, rect, app),
+                crate::buffers::BufferKind::Help => {
+                    // Help renders via popup overlay (drawn after
+                    // panes); the active pane's underlying
+                    // document still draws here.
+                    draw_buffer(frame, rect, app);
+                }
+                crate::buffers::BufferKind::FileTree => draw_file_tree_pane(frame, rect, app),
+            }
         } else {
             draw_inactive_pane(frame, rect, app, idx);
         }
+    }
+}
+
+/// Render the file-tree buffer inside its pane. v1 path: dump the
+/// `FileTreeBuffer.content` rope's visible window, prefixed by a
+/// thin border carrying the root path, with the terminal cursor
+/// placed on the cursor line. No syntax highlighting yet.
+fn draw_file_tree_pane(frame: &mut Frame, area: Rect, app: &App) {
+    frame.render_widget(Clear, area);
+    let Some(tree) = app.file_tree.as_ref() else {
+        return;
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" tree: {} ", tree.root.display()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let viewport = inner.height as usize;
+    let lines: Vec<Line> = tree
+        .content
+        .as_string()
+        .split('\n')
+        .skip(tree.scroll)
+        .take(viewport)
+        .enumerate()
+        .map(|(i, l)| {
+            let line_idx = tree.scroll + i;
+            let style = if line_idx == tree.cursor.line as usize {
+                TuiStyle::default().add_modifier(Modifier::REVERSED)
+            } else {
+                TuiStyle::default()
+            };
+            Line::from(Span::styled(l.to_string(), style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+    if inner.height > 0 && inner.width > 0 {
+        let row_off = (tree.cursor.line as usize).saturating_sub(tree.scroll);
+        let row_off = row_off.min(inner.height.saturating_sub(1) as usize);
+        let col_off = (tree.cursor.byte as usize).min(inner.width.saturating_sub(1) as usize);
+        frame.set_cursor_position((inner.x + col_off as u16, inner.y + row_off as u16));
     }
 }
 
@@ -328,18 +382,12 @@ fn draw_inactive_pane(frame: &mut Frame, area: Rect, app: &App, pane_idx: usize)
     let Some(pane) = panes.get(pane_idx) else {
         return;
     };
-    let label = match pane.buffer {
-        crate::buffers::BufferKind::Document => format!(
-            " [doc #{} -- line {}, switch with <C-w>w] ",
-            pane.buffer_id.0,
-            pane.cursor.line + 1
-        ),
-        crate::buffers::BufferKind::Help => format!(
-            " [help #{} -- line {}, switch with <C-w>w] ",
-            pane.buffer_id.0,
-            pane.cursor.line + 1
-        ),
-    };
+    let label = format!(
+        " [{} #{} -- line {}, switch with <C-w>w] ",
+        pane.buffer.label(),
+        pane.buffer_id.0,
+        pane.cursor.line + 1
+    );
     let block = Block::default().borders(Borders::ALL).title(label);
     frame.render_widget(block, area);
 }

@@ -69,15 +69,15 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         return Action::Quit;
     }
 
-    // Buffer-local bindings for the active Help buffer (DESIGN.md
-    // §5.9 buffer-local keymap layer): a small fixed set of bindings
-    // unique to help (dismiss + link-follow) intercept first, then
-    // everything else flows through `translate_normal` so the chord
-    // grammar (`gg`, `<C-d>`, `<C-o>` / `<C-i>`, motions, viewport
-    // jumps) works identically to the document path. The cursor that
-    // those motions move is decided at apply time by
-    // `App::active_buffer`, not here.
-    if matches!(ctx.active_buffer, BufferKind::Help)
+    // Buffer-local bindings for read-only buffers (Help / FileTree;
+    // DESIGN.md §5.9 buffer-local keymap layer): a small fixed set
+    // of bindings unique to those kinds (dismiss + follow-link)
+    // intercept first, then everything else flows through
+    // `translate_normal` so the chord grammar (`gg`, `<C-d>`,
+    // `<C-o>` / `<C-i>`, motions, viewport jumps) works identically
+    // to the document path. The cursor that those motions move is
+    // decided at apply time by `App::active_buffer`, not here.
+    if matches!(ctx.active_buffer, BufferKind::Help | BufferKind::FileTree)
         && matches!(ctx.modal, ModalState::Normal)
         && matches!(ctx.pending, Pending::None)
     {

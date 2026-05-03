@@ -20,10 +20,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Which kind of buffer the App's input pipeline currently routes
 /// to. The chord grammar, motions, and position history are shared;
-/// kind only matters at three discrete decision points: which cursor
-/// a motion mutates, whether mutating actions are accepted (Help is
-/// read-only), and which buffer-local bindings apply (Help binds
-/// `<CR>` to follow-link, `Esc` / `q` to dismiss).
+/// kind only matters at a few discrete decision points: which cursor
+/// a motion mutates, whether mutating actions are accepted (most
+/// non-document kinds are read-only), and which buffer-local
+/// bindings apply (Help binds `<CR>` to follow-link, FileTree binds
+/// `<CR>` to follow-entry, etc.).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BufferKind {
     /// The user's edit-target -- one [`Document`] today.
@@ -34,14 +35,20 @@ pub enum BufferKind {
     /// A `:describe-*` / `:apropos` / `:keymap` view. Read-only;
     /// motions / yank work, edits don't.
     Help,
+    /// Filesystem hierarchy view (DESIGN.md §5.9 buffer-as-content).
+    /// Rope-backed with one rendered line per visible entry; `<CR>`
+    /// on a directory toggles expansion, on a file opens it as a
+    /// new Document buffer.
+    FileTree,
 }
 
 impl BufferKind {
     /// Whether mutating operators (delete, change, paste, insert)
-    /// are accepted on this kind. Help is read-only; yank still
-    /// works (it's not a mutation).
+    /// are accepted on this kind. Only [`BufferKind::Document`] is
+    /// writable; help and panel kinds are read-only (yank still
+    /// works -- it's not a mutation).
     pub fn is_read_only(self) -> bool {
-        matches!(self, BufferKind::Help)
+        !matches!(self, BufferKind::Document)
     }
 
     /// Short label for echo-area diagnostics.
@@ -49,6 +56,7 @@ impl BufferKind {
         match self {
             BufferKind::Document => "document",
             BufferKind::Help => "help",
+            BufferKind::FileTree => "file-tree",
         }
     }
 }
@@ -83,6 +91,11 @@ mod tests {
     #[test]
     fn help_is_read_only() {
         assert!(BufferKind::Help.is_read_only());
+    }
+
+    #[test]
+    fn file_tree_is_read_only() {
+        assert!(BufferKind::FileTree.is_read_only());
     }
 
     #[test]

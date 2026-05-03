@@ -40,6 +40,7 @@ use std::sync::Arc;
 
 use crate::buffers::{BufferId, BufferKind};
 use crate::excommand;
+use crate::file_tree::{FileTreeBuffer, FileTreeEntryKind};
 use crate::help::{HelpBuffer, HelpDisplayMode, command_link, key_link};
 use crate::pane::{PaneDirection, PaneState, PaneTree, SplitOrientation};
 
@@ -806,6 +807,12 @@ pub struct App {
     /// centred popup; [`Self::help_display_mode`] picks between
     /// surfaces.
     pub help_buffer: Option<HelpBuffer>,
+    /// Active file-tree buffer (DESIGN.md §5.9 buffer-as-content).
+    /// `Some` while `:Tree` has opened a hierarchy view; `<CR>` on
+    /// a directory toggles expansion, on a file opens it via the
+    /// standard `:e FILE` path. v1 holds at most one tree at a
+    /// time.
+    pub file_tree: Option<FileTreeBuffer>,
     /// Where the active help buffer is rendered. v1 only implements
     /// `Popup`; the other variants are reserved for the multi-buffer
     /// phase. Configurable per-user (eventually via `:set
@@ -1176,6 +1183,7 @@ impl App {
             command_history_cursor: None,
             command_history_pending: None,
             help_buffer: None,
+            file_tree: None,
             help_display_mode: HelpDisplayMode::default(),
             completion_registry,
             completion_state: None,
@@ -1666,10 +1674,16 @@ impl App {
                 self.completion_state = None;
             }
 
-            Action::HelpDismiss => {
-                self.dismiss_help();
-            }
-            Action::FollowLink => self.do_help_follow_link(),
+            Action::HelpDismiss => match self.active_buffer {
+                BufferKind::Help => self.dismiss_help(),
+                BufferKind::FileTree => self.dismiss_file_tree(),
+                BufferKind::Document => {}
+            },
+            Action::FollowLink => match self.active_buffer {
+                BufferKind::Help => self.do_help_follow_link(),
+                BufferKind::FileTree => self.do_file_tree_follow(),
+                BufferKind::Document => {}
+            },
 
             Action::SplitPaneHorizontal => self.do_split_pane(SplitOrientation::Horizontal),
             Action::SplitPaneVertical => self.do_split_pane(SplitOrientation::Vertical),
@@ -3084,7 +3098,60 @@ impl App {
             self.run_help_invocation(inv);
             return;
         }
+        if matches!(self.active_buffer, BufferKind::FileTree) {
+            self.run_file_tree_invocation(inv);
+            return;
+        }
         self.run_document_invocation(inv);
+    }
+
+    /// Resolve a motion against the active file tree's content.
+    /// Same shape as [`Self::run_help_invocation`] but mutates
+    /// the tree's cursor instead of the help buffer's.
+    fn run_file_tree_invocation(&mut self, mut inv: CommandInvocation) {
+        let Some(spec) = self.registry.lookup(inv.command) else {
+            return;
+        };
+        if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) {
+            self.pending_count = 0;
+            self.op_count = 0;
+            self.pending_register = None;
+            self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
+            return;
+        }
+        let motion_count = if self.pending_count > 0 {
+            self.pending_count
+        } else {
+            inv.count.map(|c| c.0).unwrap_or(1)
+        };
+        let final_count = if self.op_count > 0 {
+            self.op_count.saturating_mul(motion_count)
+        } else {
+            motion_count
+        };
+        if final_count > 1 {
+            inv = inv.with_count(lattice_grammar::command::Count(final_count));
+        }
+        self.pending_count = 0;
+        self.op_count = 0;
+        let viewport = self.viewport_height as usize;
+        let Some(t) = self.file_tree.as_mut() else {
+            return;
+        };
+        let cancel = lattice_runtime::CancellationToken::never();
+        if let Ok(target) =
+            lattice_grammar::execute_motion_only(&self.registry, &t.content, t.cursor, inv, &cancel)
+        {
+            let dx = target.byte as i32 - t.cursor.byte as i32;
+            let dy = target.line as i32 - t.cursor.line as i32;
+            if dy != 0 {
+                t.move_cursor(0, dy, viewport);
+            }
+            if dx != 0 {
+                let cur_byte = t.cursor.byte as i32;
+                t.move_cursor(target.byte as i32 - cur_byte, 0, viewport);
+            }
+        }
     }
 
     /// Resolve a motion-class invocation against the active help
@@ -3325,6 +3392,8 @@ impl App {
             Effect::BufferPrev => self.do_buffer_prev(),
             Effect::ListBuffers => self.do_list_buffers(),
             Effect::BufferDelete { force } => self.do_buffer_delete(force),
+            Effect::OpenFileTree { root } => self.do_open_file_tree(root),
+            Effect::CloseFileTree => self.dismiss_file_tree(),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -3920,6 +3989,12 @@ impl App {
                     h.scroll = pane.scroll as usize;
                 }
             }
+            BufferKind::FileTree => {
+                if let Some(t) = self.file_tree.as_mut() {
+                    t.cursor = pane.cursor;
+                    t.scroll = pane.scroll as usize;
+                }
+            }
         }
     }
 
@@ -3984,6 +4059,97 @@ impl App {
         // it on dismiss so a stranded `g` doesn't leak into Normal
         // mode.
         self.pending = Pending::None;
+    }
+
+    /// `:Tree [path]`. Opens a [`FileTreeBuffer`] rooted at `path`
+    /// (or the current document's parent dir / cwd if absent),
+    /// flips the active pane to file-tree mode. Failure to read
+    /// the directory surfaces as an echo error.
+    fn do_open_file_tree(&mut self, root: Option<std::path::PathBuf>) {
+        let root = match root {
+            Some(p) => p,
+            None => match self
+                .document
+                .path()
+                .and_then(|p| p.parent().map(Into::into))
+            {
+                Some(parent) => parent,
+                None => match std::env::current_dir() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.set_message(EchoLevel::Error, format!("cwd error: {e}"));
+                        return;
+                    }
+                },
+            },
+        };
+        let tree = match FileTreeBuffer::open(&root) {
+            Ok(t) => t,
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("tree open error: {}: {e}", root.display()),
+                );
+                return;
+            }
+        };
+        // Record current cursor on the position-history ring so
+        // `<C-o>` from inside the tree returns to the document spot.
+        if matches!(self.active_buffer, BufferKind::Document) {
+            let cur = self.cursor;
+            self.push_position_history(cur, PositionSource::AutoJump);
+        }
+        self.file_tree = Some(tree);
+        self.active_buffer = BufferKind::FileTree;
+        // The active pane now points at the file tree.
+        let pane = self.pane_tree.active_mut();
+        pane.buffer = BufferKind::FileTree;
+        pane.buffer_id = self
+            .file_tree
+            .as_ref()
+            .map(|t| t.id)
+            .unwrap_or(self.document_buffer_id);
+        pane.cursor = Position::ZERO;
+        pane.scroll = 0;
+        self.pending = Pending::None;
+        self.set_message(EchoLevel::Info, format!("tree: {}", root.display()));
+    }
+
+    /// Inverse of [`Self::do_open_file_tree`]: drop the file tree
+    /// and route input back to the document. Idempotent.
+    fn dismiss_file_tree(&mut self) {
+        self.file_tree = None;
+        self.active_buffer = BufferKind::Document;
+        let pane = self.pane_tree.active_mut();
+        pane.buffer = BufferKind::Document;
+        pane.buffer_id = self.document_buffer_id;
+        self.pending = Pending::None;
+    }
+
+    /// `<CR>` while a file tree is active: if the cursor is on a
+    /// directory, toggle expansion; if on a file, open it via the
+    /// standard `:e FILE` path. Replaces the Help-only `<CR>`
+    /// follow-link binding when active_buffer == FileTree.
+    fn do_file_tree_follow(&mut self) {
+        let Some(tree) = self.file_tree.as_mut() else {
+            return;
+        };
+        let idx = tree.cursor.line as usize;
+        let Some(entry) = tree.entries.get(idx).cloned() else {
+            return;
+        };
+        match entry.kind {
+            FileTreeEntryKind::Directory { .. } => {
+                if let Err(e) = tree.toggle_at(idx) {
+                    self.set_message(EchoLevel::Error, format!("toggle error: {e}"));
+                }
+            }
+            FileTreeEntryKind::File => {
+                let path = entry.path.clone();
+                self.dismiss_file_tree();
+                self.do_edit(Some(path), false);
+            }
+        }
     }
 
     /// Bracketed-paste handler. Routes the payload to the right target
@@ -4347,6 +4513,11 @@ impl App {
                 // an inconsistent transient -- return doc id so the
                 // history record at least typechecks.
                 .unwrap_or(self.document_buffer_id),
+            BufferKind::FileTree => self
+                .file_tree
+                .as_ref()
+                .map(|t| t.id)
+                .unwrap_or(self.document_buffer_id),
         }
     }
 
@@ -4415,10 +4586,12 @@ impl App {
         // entries always pass.
         let doc_id = self.document_buffer_id;
         let help_id = self.help_buffer.as_ref().map(|h| h.id);
+        let tree_id = self.file_tree.as_ref().map(|t| t.id);
         let reachable = |e: &PositionEntry| -> bool {
             match e.buffer {
                 BufferKind::Document => e.buffer_id == doc_id,
                 BufferKind::Help => help_id == Some(e.buffer_id),
+                BufferKind::FileTree => tree_id == Some(e.buffer_id),
             }
         };
         let combined = |e: &PositionEntry| pred(e) && reachable(e);
@@ -4461,6 +4634,13 @@ impl App {
                     if target_byte != cur_byte {
                         h.move_cursor(target_byte - cur_byte, 0, viewport);
                     }
+                }
+            }
+            BufferKind::FileTree => {
+                let viewport = self.viewport_height as usize;
+                if let Some(t) = self.file_tree.as_mut() {
+                    self.active_buffer = BufferKind::FileTree;
+                    t.jump_cursor_to(entry.position.line, viewport);
                 }
             }
         }
@@ -5073,6 +5253,11 @@ impl App {
                 .as_ref()
                 .map(|h| h.cursor)
                 .unwrap_or(self.cursor),
+            BufferKind::FileTree => self
+                .file_tree
+                .as_ref()
+                .map(|t| t.cursor)
+                .unwrap_or(self.cursor),
         }
     }
 
@@ -5256,7 +5441,9 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::BufferNext
         | Effect::BufferPrev
         | Effect::ListBuffers
-        | Effect::BufferDelete { .. } => false,
+        | Effect::BufferDelete { .. }
+        | Effect::OpenFileTree { .. }
+        | Effect::CloseFileTree => false,
     }
 }
 
@@ -5288,7 +5475,9 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::BufferNext
         | Effect::BufferPrev
         | Effect::ListBuffers
-        | Effect::BufferDelete { .. } => false,
+        | Effect::BufferDelete { .. }
+        | Effect::OpenFileTree { .. }
+        | Effect::CloseFileTree => false,
     }
 }
 
@@ -9825,6 +10014,74 @@ mod tests {
         assert_eq!(a.documents.len(), 1);
         let msg = a.last_message.as_ref().expect("error echo");
         assert!(msg.text.contains("only buffer"));
+    }
+
+    // ---- File-tree buffer (DESIGN.md §5.9, B.1.d) ----
+
+    #[test]
+    fn tree_open_makes_filetree_active() {
+        let dir = std::env::temp_dir().join(format!("lattice-tree-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        std::fs::write(dir.join("a.txt"), "alpha").ok();
+        let mut a = app_with("xx", 10);
+        a.command_line = format!("Tree {}", dir.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.active_buffer, BufferKind::FileTree);
+        assert!(a.file_tree.is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tree_close_returns_to_document() {
+        let dir = std::env::temp_dir().join(format!("lattice-tree-close-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let mut a = app_with("xx", 10);
+        a.command_line = format!("Tree {}", dir.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        a.apply(Action::HelpDismiss);
+        assert_eq!(a.active_buffer, BufferKind::Document);
+        assert!(a.file_tree.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tree_motion_routes_through_active_buffer() {
+        let dir = std::env::temp_dir().join(format!("lattice-tree-motion-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        std::fs::write(dir.join("a.txt"), "x").ok();
+        std::fs::write(dir.join("b.txt"), "y").ok();
+        let mut a = app_with("xx", 10);
+        a.command_line = format!("Tree {}", dir.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let line_down = a.builtins.line_down;
+        a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
+        let t = a.file_tree.as_ref().expect("tree open");
+        assert_eq!(t.cursor.line, 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tree_follow_on_file_opens_document_buffer() {
+        let dir = std::env::temp_dir().join(format!("lattice-tree-follow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        std::fs::write(dir.join("alpha.txt"), "hello").ok();
+        let mut a = app_with("xx", 10);
+        a.command_line = format!("Tree {}", dir.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        // Move cursor to the alpha.txt entry (row 1).
+        let line_down = a.builtins.line_down;
+        a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
+        // Follow.
+        a.apply(Action::FollowLink);
+        // Tree dismissed; alpha.txt now active.
+        assert_eq!(a.active_buffer, BufferKind::Document);
+        assert!(a.file_tree.is_none());
+        assert_eq!(a.document.text(), "hello");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

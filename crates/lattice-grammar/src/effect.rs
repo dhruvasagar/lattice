@@ -167,6 +167,13 @@ pub enum Effect {
     BufferDelete {
         force: bool,
     },
+    /// `:Tree [path]` -- open a file-tree buffer rooted at `path`.
+    /// Absent = the document's parent directory.
+    OpenFileTree {
+        root: Option<PathBuf>,
+    },
+    /// `:TreeClose` -- dismiss the file-tree buffer.
+    CloseFileTree,
 
     Many(Vec<Effect>),
 }

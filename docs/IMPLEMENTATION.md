@@ -585,8 +585,17 @@ Update this section when picking up the in-flight item.
      a fresh buffer (or switches to it if already open); `:bn` /
      `:bp` cycle, `:ls` / `:buffers` lists in a help view, `:bd[!]`
      closes (the only-buffer case is rejected).
-   - **B.1.d buffer-as-content kinds (file-tree, outline,
-     diagnostics)** ⛔.
+   - **B.1.d buffer-as-content kinds: file-tree** ✅ done. New
+     `BufferKind::FileTree` variant + `FileTreeBuffer` (rope-backed,
+     same shape as `HelpBuffer`). `:Tree [path]` opens a tree
+     rooted at `path` (or the document's parent dir / cwd);
+     `:TreeClose` (or `Esc` / `q` while active) dismisses. Standard
+     motions route via the same active-buffer dispatch as Help --
+     `j` / `k` move the tree cursor through the chord grammar.
+     `<CR>` on a directory toggles expansion; on a file opens it
+     via the standard `:e FILE` path.
+   - **B.1.d outline + diagnostics** ⛔ -- queued behind a
+     dedicated outline / LSP integration phase.
 5. **Hover popup + inline completion popup polish** — completion popup
    is wired (vertico-style); hover popup needs the host scaffolding so
    LSP hover responses land.

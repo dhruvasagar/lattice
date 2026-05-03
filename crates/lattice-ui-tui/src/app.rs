@@ -7711,6 +7711,37 @@ mod tests {
     }
 
     #[test]
+    fn syntax_fold_zc_on_let_with_if_else_reports_five_lines() {
+        // Full-pipeline regression for the user's scenario: a top-
+        // level `let` binding wrapping an if/else expression. With
+        // foldmethod=syntax, the cursor on the `let` line gets
+        // `zc` to close the entire 5-line form and the rendered
+        // summary shows "5 lines folded".
+        let src = "let len = if cond {\n    bytes - 1\n} else {\n    bytes\n}\n";
+        let mut a = app_with(src, 10);
+        a.syntax = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+            .unwrap();
+        if let Some(s) = a.syntax.as_mut() {
+            s.parse(&a.document.text());
+        }
+        a.foldmethod = FoldMethod::Syntax;
+        a.recompute_folds();
+        // Cursor on line 0 (the `let` line). zc must pick the
+        // outermost fold starting at line 0 -- the if_expression /
+        // let_declaration spanning (0, 4) -- and close it.
+        a.cursor = Position::new(0, 0);
+        a.apply(Action::CloseFoldAtCursor);
+        let fold = a
+            .fold_start_at(0)
+            .expect("a closed fold should start at line 0 after zc");
+        let count = fold.end_line - fold.start_line + 1;
+        assert_eq!(
+            count, 5,
+            "fold at line 0 must span 5 lines (got {count}; fold = {fold:?})"
+        );
+    }
+
+    #[test]
     fn paragraph_motion_snaps_out_of_closed_fold_body() {
         // `}` (paragraph forward) from inside a fold can land
         // cursor on a hidden paragraph break. Snap must apply.

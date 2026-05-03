@@ -753,6 +753,29 @@ impl Buffer {
     }
 
     #[test]
+    fn rust_syntax_top_level_let_with_if_else_emits_five_line_fold() {
+        // The literal snippet from the user's report -- no
+        // surrounding fn, no semicolon. tree-sitter recovers and
+        // emits the if_expression node; folds.scm captures it. The
+        // outermost fold starting at line 0 must span the full 5
+        // lines so `zc` on the `let` line collapses the entire
+        // form in one step and the renderer reports "5 lines
+        // folded".
+        let src = "let len = if has_trailing_newline {\n    bytes - 1\n} else {\n    bytes\n}\n";
+        let syntax = rust_syntax_with(src);
+        let folds = compute_syntax_folds(&syntax).expect("rust folds");
+        let widest_at_zero = folds
+            .iter()
+            .filter(|f| f.start_line == 0)
+            .max_by_key(|f| f.end_line)
+            .expect("a fold must start at line 0");
+        assert_eq!(
+            widest_at_zero.end_line, 4,
+            "outermost fold at line 0 must end at line 4 (5 lines): {folds:?}"
+        );
+    }
+
+    #[test]
     fn rust_syntax_folds_block_comments() {
         // Multi-line `/* ... */` comments fall under the
         // `block_comment` capture in folds.scm.

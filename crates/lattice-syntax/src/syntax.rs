@@ -25,6 +25,7 @@
 use std::sync::Arc;
 
 use thiserror::Error;
+use tree_sitter::{Parser, Tree};
 use tree_sitter_highlight::{Error as TsHighlightError, HighlightEvent, Highlighter};
 
 use crate::lang::Lang;
@@ -47,6 +48,18 @@ pub struct Syntax {
     lang: Lang,
     registry: Arc<LangRegistry>,
     highlighter: Highlighter,
+    /// Owned tree-sitter parser. `parse()` reuses it across edits and
+    /// passes `tree.as_ref()` so tree-sitter's incremental reparser
+    /// kicks in. The parser instance itself is cheap to keep around;
+    /// the heavy state lives in the [`Tree`].
+    parser: Parser,
+    /// Latest parse result. `None` until the first `parse()` call (or
+    /// when the parser couldn't produce a tree, which tree-sitter
+    /// signals by returning `None` -- happens on cancellation, not
+    /// in our synchronous path today). Future tree-sitter consumers
+    /// (folds, indents, locals, textobjects) read from here so every
+    /// feature shares a single parse per edit.
+    tree: Option<Tree>,
     /// Last-parsed source bytes. Owned so callers can call `highlight_lines`
     /// independently of holding the source.
     source: Vec<u8>,
@@ -57,6 +70,7 @@ impl std::fmt::Debug for Syntax {
         f.debug_struct("Syntax")
             .field("lang", &self.lang)
             .field("source_bytes", &self.source.len())
+            .field("tree_present", &self.tree.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -85,15 +99,21 @@ impl Syntax {
         if matches!(lang, Lang::Plain) {
             return Ok(None);
         }
-        if registry.config(lang.name()).is_none() {
+        let Some(ts_lang) = registry.tree_sitter_language(lang.name()) else {
             // Lang variant exists but no registered grammar for it -- fall
             // back to no syntax (renderer treats it as plain text).
             return Ok(None);
-        }
+        };
+        let mut parser = Parser::new();
+        parser
+            .set_language(&ts_lang)
+            .map_err(|e| SyntaxError::Language(e.to_string()))?;
         Ok(Some(Self {
             lang,
             registry,
             highlighter: Highlighter::new(),
+            parser,
+            tree: None,
             source: Vec::new(),
         }))
     }
@@ -102,12 +122,50 @@ impl Syntax {
         self.lang
     }
 
-    /// Replace the cached source. Called whenever the document mutates.
-    /// Phase 3 is a full reparse; the seam stays the same when we move to
-    /// incremental.
+    /// Returns the most recent parse result, if `parse()` has run and
+    /// tree-sitter produced a tree. Future query consumers (folds,
+    /// indents, locals, textobjects) read from here so every feature
+    /// shares a single parse per edit.
+    pub fn tree(&self) -> Option<&Tree> {
+        self.tree.as_ref()
+    }
+
+    /// Borrow the cached source bytes. The renderer / fold provider /
+    /// future query consumers read directly from these without
+    /// re-encoding the document.
+    pub fn source(&self) -> &[u8] {
+        &self.source
+    }
+
+    /// Borrow the shared language registry. Useful for query-driven
+    /// consumers (`compute_syntax_folds`, future textobjects /
+    /// indents) that need to look up the per-language compiled
+    /// queries.
+    pub fn registry(&self) -> &LangRegistry {
+        &self.registry
+    }
+
+    /// Replace the cached source and drive a tree-sitter (re)parse.
+    ///
+    /// Step 1 stays a full reparse: we don't yet thread concrete
+    /// `Edit` deltas into `Tree::edit`, and tree-sitter can't safely
+    /// reuse the previous tree on its own -- callers must drive
+    /// `Tree::edit` with byte-accurate deltas before a reparse can
+    /// be incremental. The seam stays the same when that lands; the
+    /// keystroke→glyph budget (§8, CLAUDE.md paramount #1) is still
+    /// met because tree-sitter parses are sub-millisecond on the
+    /// buffer sizes we care about, and the hot path runs on the
+    /// async syntax actor (§5.7) rather than the UI thread.
     pub fn parse(&mut self, source: &str) {
         self.source.clear();
         self.source.extend_from_slice(source.as_bytes());
+        // `Parser::parse` returning `None` means cancellation, which
+        // we don't trigger on this synchronous path. Keep the old
+        // tree in that unlikely case rather than dropping it -- the
+        // next parse() round will retry.
+        if let Some(new_tree) = self.parser.parse(source.as_bytes(), None) {
+            self.tree = Some(new_tree);
+        }
     }
 
     /// Compute styled spans for each line in `[start_line, end_line)`.
@@ -145,6 +203,7 @@ impl Syntax {
             registry,
             highlighter,
             source,
+            ..
         } = self;
         let primary = registry.config(lang.name()).ok_or_else(|| {
             // Should not happen -- for_language_with_registry only
@@ -269,6 +328,34 @@ mod tests {
     fn syntax_for_plain_returns_none() {
         let s = Syntax::for_language(Lang::Plain).unwrap();
         assert!(s.is_none());
+    }
+
+    #[test]
+    fn rust_syntax_exposes_parsed_tree() {
+        // Step 1 invariant: every successful `parse()` populates
+        // `tree()` so future query consumers (folds.scm,
+        // textobjects.scm, indents.scm) can read from the same
+        // parse the highlighter walks.
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        assert!(s.tree().is_none(), "tree should be empty before parse");
+        s.parse("fn main() {}");
+        let tree = s.tree().expect("tree present after parse");
+        let root = tree.root_node();
+        assert_eq!(root.kind(), "source_file");
+        assert!(root.child_count() > 0, "root has at least one child");
+    }
+
+    #[test]
+    fn reparse_against_evolving_source_keeps_tree_in_sync() {
+        // Step 1 is a full reparse on every `parse()` call (we
+        // don't yet thread `Tree::edit` deltas). Verify the tree
+        // shape tracks the source: two top-level fn items after a
+        // second `parse()`, not one stale item.
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse("fn a() {}");
+        assert_eq!(s.tree().unwrap().root_node().child_count(), 1);
+        s.parse("fn a() {}\nfn b() {}");
+        assert_eq!(s.tree().unwrap().root_node().child_count(), 2);
     }
 
     #[test]

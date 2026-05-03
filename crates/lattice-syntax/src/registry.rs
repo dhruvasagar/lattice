@@ -21,16 +21,32 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tree_sitter::Language;
 use tree_sitter_highlight::HighlightConfiguration;
 
 use crate::style::CAPTURE_NAMES;
 use crate::syntax::SyntaxError;
 
+/// Per-language compiled state held by the shared registry.
+///
+/// Phase note: `highlight` is the legacy `tree_sitter_highlight`
+/// configuration that the streaming highlighter consumes; it stays
+/// in place during Step 1. `language` is the raw `tree_sitter::Language`
+/// that downstream owners (`Syntax::parse`, future query consumers
+/// like `folds.scm`, `textobjects.scm`, `indents.scm`) feed into
+/// their own `Parser` instances. Step 2 adds optional compiled
+/// queries (folds, etc.) to this struct without touching the
+/// highlight field.
+pub(crate) struct LangConfig {
+    pub(crate) language: Language,
+    pub(crate) highlight: HighlightConfiguration,
+}
+
 /// Catalog of every supported language's parser + highlight + injection
 /// configuration. Construct once via [`Self::standard`] and share by
 /// `Arc` clone.
 pub struct LangRegistry {
-    configs: HashMap<&'static str, HighlightConfiguration>,
+    configs: HashMap<&'static str, LangConfig>,
 }
 
 impl std::fmt::Debug for LangRegistry {
@@ -46,7 +62,7 @@ impl LangRegistry {
     /// (block + inline). Returns an `Arc` so the App / multiple
     /// `Syntax` instances can share one allocation.
     pub fn standard() -> Result<Arc<Self>, SyntaxError> {
-        let mut configs: HashMap<&'static str, HighlightConfiguration> = HashMap::new();
+        let mut configs: HashMap<&'static str, LangConfig> = HashMap::new();
 
         configs.insert(
             "rust",
@@ -111,6 +127,14 @@ impl LangRegistry {
         Ok(Arc::new(Self { configs }))
     }
 
+    /// Resolve the `tree_sitter::Language` for `name` (with the same
+    /// alias mapping as [`Self::config`]). Returned by value because
+    /// `Language` is a cheap `Arc`-equivalent handle in tree-sitter
+    /// 0.24+.
+    pub fn tree_sitter_language(&self, name: &str) -> Option<Language> {
+        self.lookup(name).map(|c| c.language.clone())
+    }
+
     /// Look up a config by language name as it appears in tree-sitter
     /// queries (the `(language)` capture in `(fenced_code_block ...)`,
     /// or the `injection.language` `#set!` value). Returns `None` for
@@ -121,6 +145,13 @@ impl LangRegistry {
     /// they expect (`rs` ≡ `rust`, `py` ≡ `python`, `js` ≡
     /// `javascript`, `md` ≡ `markdown`).
     pub fn config(&self, name: &str) -> Option<&HighlightConfiguration> {
+        self.lookup(name).map(|c| &c.highlight)
+    }
+
+    /// Internal lookup that returns the full per-language config
+    /// (includes the raw `Language` plus -- after Step 2 -- the
+    /// compiled folds / textobjects / indents queries).
+    fn lookup(&self, name: &str) -> Option<&LangConfig> {
         let canonical = match name {
             "rs" => "rust",
             "py" => "python",
@@ -149,11 +180,15 @@ fn build_config(
     highlights: &str,
     injections: &str,
     locals: &str,
-) -> Result<HighlightConfiguration, SyntaxError> {
-    let mut config = HighlightConfiguration::new(language, name, highlights, injections, locals)
-        .map_err(|e| SyntaxError::Language(e.to_string()))?;
-    config.configure(CAPTURE_NAMES);
-    Ok(config)
+) -> Result<LangConfig, SyntaxError> {
+    let mut highlight =
+        HighlightConfiguration::new(language.clone(), name, highlights, injections, locals)
+            .map_err(|e| SyntaxError::Language(e.to_string()))?;
+    highlight.configure(CAPTURE_NAMES);
+    Ok(LangConfig {
+        language,
+        highlight,
+    })
 }
 
 #[cfg(test)]

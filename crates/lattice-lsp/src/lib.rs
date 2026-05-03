@@ -57,6 +57,7 @@ pub mod jsonrpc;
 pub mod logging;
 pub mod pending;
 pub mod position;
+pub mod supervisor;
 pub mod sync;
 pub mod transport;
 
@@ -71,5 +72,6 @@ pub use logging::{LogLevel, LogRecord, LogRing, LogSource, LspLogger};
 pub use framing::{FrameError, FrameHeader};
 pub use jsonrpc::{Message, Notification, Request, RequestId, Response, ResponseError};
 pub use pending::{InvocationId, Pending};
+pub use supervisor::LspSupervisor;
 pub use sync::{DocSync, uri_from_str};
 pub use transport::{ChildTransport, TransportError};

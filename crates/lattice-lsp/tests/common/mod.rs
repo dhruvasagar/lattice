@@ -142,11 +142,27 @@ impl MockServer {
         Self::start_with_caps_and_logger(caps, LspLogger::with_defaults()).await
     }
 
+    /// Start with a custom server id (e.g. so two mocks
+    /// running side-by-side don't collide in a `(uri,
+    /// server_id)`-keyed layer).
+    pub async fn start_with_id(id: impl Into<String>, logger: LspLogger) -> Self {
+        Self::start_with_caps_logger_id(default_server_capabilities(), logger, id.into()).await
+    }
+
     /// Inner helper -- both `start_with_capabilities` and
     /// `start_with_logger` route here.
     pub async fn start_with_caps_and_logger(
         caps: ServerCapabilities,
         logger: LspLogger,
+    ) -> Self {
+        Self::start_with_caps_logger_id(caps, logger, "mock".into()).await
+    }
+
+    /// Innermost helper. Lets a test customise everything.
+    pub async fn start_with_caps_logger_id(
+        caps: ServerCapabilities,
+        logger: LspLogger,
+        id: String,
     ) -> Self {
         // The actor side reads from `actor_read` and writes to
         // `actor_write`; the mock side reads from `mock_read` and
@@ -184,7 +200,7 @@ impl MockServer {
         // the test runner -- doesn't matter for in-process tests
         // since we don't spawn a real binary.
         let config =
-            ServerConfig::new("mock", std::path::PathBuf::from("mock-server"), "rust");
+            ServerConfig::new(id, std::path::PathBuf::from("mock-server"), "rust");
         let workspace_root = std::env::current_dir().expect("cwd");
 
         let handle = spawn_with_io(

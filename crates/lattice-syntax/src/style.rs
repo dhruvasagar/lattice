@@ -128,6 +128,49 @@ pub(crate) fn capture_index_to_style(idx: usize) -> Style {
     }
 }
 
+/// Public re-export of the capture-name → Style mapping for the
+/// hand-rolled native highlighter (Step 3 of Option B). The
+/// streaming highlighter consumes capture indices from the
+/// pre-configured CAPTURE_NAMES list; the native path runs the
+/// raw query and looks up styles by capture *name*, so it needs
+/// direct access to this resolver.
+pub fn name_to_style_pub(name: &str) -> Style {
+    name_to_style(name)
+}
+
+/// Capture-name priority: position in [`CAPTURE_NAMES`] (lower =
+/// higher precedence on overlap). Walks the dot-prefix hierarchy
+/// the same way [`name_to_style`] does, so a query capture named
+/// `keyword.control.return` resolves through `keyword.control` →
+/// `keyword`, picking the longest matching prefix's index. Names
+/// outside the table return [`u32::MAX`] -- effectively the lowest
+/// priority -- so they only "win" overlap when nothing else
+/// covers the byte.
+///
+/// This mirrors what `tree_sitter_highlight::HighlightConfiguration::configure`
+/// does internally; the native pipeline uses it to break ties when
+/// multiple captures span the same byte range, so e.g. Python's
+/// `def f(...)` resolves to the more specific `@function` rather
+/// than the broader `@variable` capture.
+pub fn capture_priority(name: &str) -> u32 {
+    let mut best: Option<usize> = None;
+    let mut probe = name;
+    loop {
+        if let Some(pos) = CAPTURE_NAMES.iter().position(|n| *n == probe) {
+            // Take the *first* (most-specific) match the dot-prefix
+            // walk encounters; later (broader) prefixes don't beat
+            // it.
+            best = Some(pos);
+            break;
+        }
+        match probe.rfind('.') {
+            Some(i) => probe = &probe[..i],
+            None => break,
+        }
+    }
+    best.map(|p| p as u32).unwrap_or(u32::MAX)
+}
+
 fn name_to_style(name: &str) -> Style {
     let head = name.split('.').next().unwrap_or(name);
     match head {

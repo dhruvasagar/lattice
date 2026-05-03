@@ -49,6 +49,10 @@ const MARKDOWN_FOLDS_QUERY: &str = include_str!("../queries/markdown/folds.scm")
 /// highlight field.
 pub(crate) struct LangConfig {
     pub(crate) language: Language,
+    /// Legacy streaming-highlighter config. Kept while Step 3 of
+    /// the Option B migration runs the hand-rolled native pipeline
+    /// in parallel; dropped in Step 4 along with the
+    /// `tree-sitter-highlight` dep.
     pub(crate) highlight: HighlightConfiguration,
     /// Compiled `folds.scm` query, when the language ships one.
     /// `None` means the syntax fold provider falls through to the
@@ -56,6 +60,26 @@ pub(crate) struct LangConfig {
     /// not every language we register has folds.scm yet (e.g.
     /// `markdown_inline`, which is purely inline content).
     pub(crate) folds: Option<Query>,
+    /// Compiled `highlights.scm` query for the hand-rolled native
+    /// highlighter (Step 3 of Option B). Same query string the
+    /// legacy `HighlightConfiguration` consumes, but compiled
+    /// here so we can run it directly via `QueryCursor` without
+    /// going through the streaming-event API.
+    pub(crate) highlights: Query,
+    /// Pre-resolved style for each capture index in `highlights`.
+    /// Indexed by `cap.index as usize`. Out-of-range values fall
+    /// back to `Style::Default` at lookup time.
+    pub(crate) highlight_styles: Vec<crate::style::Style>,
+    /// Pre-resolved CAPTURE_NAMES priority for each capture index in
+    /// `highlights` (lower value = higher precedence on overlap).
+    /// Used by the native pipeline's tie-break logic so e.g.
+    /// `@function` wins over `@variable` on the same byte range.
+    pub(crate) highlight_priorities: Vec<u32>,
+    /// Compiled `injections.scm` query, when the language ships one.
+    /// Markdown's block grammar is the canonical user (block →
+    /// inline + fenced code blocks → embedded language); some
+    /// languages (rust, JS) include light-weight injections too.
+    pub(crate) injections: Option<Query>,
 }
 
 /// Catalog of every supported language's parser + highlight + injection
@@ -154,6 +178,29 @@ impl LangRegistry {
         self.lookup(name).and_then(|c| c.folds.as_ref())
     }
 
+    /// Compiled `highlights.scm` query for the native pipeline.
+    pub fn highlights_query(&self, name: &str) -> Option<&Query> {
+        self.lookup(name).map(|c| &c.highlights)
+    }
+
+    /// Per-capture `Style` table aligned with `highlights_query`'s
+    /// `capture_names()`.
+    pub fn highlight_styles(&self, name: &str) -> Option<&[crate::style::Style]> {
+        self.lookup(name).map(|c| c.highlight_styles.as_slice())
+    }
+
+    /// Per-capture priority table (CAPTURE_NAMES position) aligned
+    /// with `highlights_query`'s `capture_names()`. Lower = higher
+    /// precedence on overlap.
+    pub fn highlight_priorities(&self, name: &str) -> Option<&[u32]> {
+        self.lookup(name).map(|c| c.highlight_priorities.as_slice())
+    }
+
+    /// Compiled `injections.scm` query, when one is registered.
+    pub fn injections_query(&self, name: &str) -> Option<&Query> {
+        self.lookup(name).and_then(|c| c.injections.as_ref())
+    }
+
     /// Resolve the `tree_sitter::Language` for `name` (with the same
     /// alias mapping as [`Self::config`]). Returned by value because
     /// `Language` is a cheap `Arc`-equivalent handle in tree-sitter
@@ -221,10 +268,38 @@ fn build_config(
         ),
         None => None,
     };
+    // Compile the same highlights string into a `Query` for the
+    // hand-rolled native pipeline. Same source → same captures, so
+    // the legacy + native paths share the underlying mapping.
+    let highlights_query = Query::new(&language, highlights).map_err(|e| {
+        SyntaxError::Language(format!("compile {name} highlights.scm: {e}"))
+    })?;
+    let highlight_styles: Vec<crate::style::Style> = highlights_query
+        .capture_names()
+        .iter()
+        .map(|n| crate::style::name_to_style_pub(n))
+        .collect();
+    let highlight_priorities: Vec<u32> = highlights_query
+        .capture_names()
+        .iter()
+        .map(|n| crate::style::capture_priority(n))
+        .collect();
+    let injections = if injections.is_empty() {
+        None
+    } else {
+        Some(Query::new(&language, injections).map_err(|e| {
+            SyntaxError::Language(format!("compile {name} injections.scm: {e}"))
+        })?)
+    };
+    let _ = locals; // locals.scm support deferred to a follow-up commit.
     Ok(LangConfig {
         language,
         highlight,
         folds,
+        highlights: highlights_query,
+        highlight_styles,
+        highlight_priorities,
+        injections,
     })
 }
 

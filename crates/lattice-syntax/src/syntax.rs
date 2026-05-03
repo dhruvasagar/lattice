@@ -24,8 +24,9 @@
 
 use std::sync::Arc;
 
+use streaming_iterator::StreamingIterator;
 use thiserror::Error;
-use tree_sitter::{Parser, Tree};
+use tree_sitter::{Parser, QueryCursor, Tree};
 use tree_sitter_highlight::{Error as TsHighlightError, HighlightEvent, Highlighter};
 
 use crate::lang::Lang;
@@ -248,6 +249,174 @@ impl Syntax {
         }
         Ok(result)
     }
+
+    /// Hand-rolled highlighter that runs `highlights.scm` directly
+    /// against `Self::tree()` via `tree_sitter::QueryCursor`,
+    /// bypassing `tree_sitter_highlight::Highlighter`. This is the
+    /// Step 3 deliverable of the Option B migration: one parse per
+    /// keystroke (the parser already feeds folds, future textobjects,
+    /// indents, etc.) instead of the streaming highlighter's parallel
+    /// reparse.
+    ///
+    /// Step 3a covers the non-injected case: `highlights.scm` only.
+    /// Markdown's block→inline injection (and language-fenced code
+    /// blocks) lands in Step 3b. Until then, this method falls back
+    /// to the legacy path for languages whose registered injections
+    /// query is non-empty -- so the user-visible behaviour is
+    /// unchanged on markdown buffers regardless of which method
+    /// callers invoke.
+    pub fn highlight_lines_native(
+        &mut self,
+        start_line: u32,
+        end_line: u32,
+    ) -> Result<Vec<Vec<StyledSpan>>, SyntaxError> {
+        // Languages with injections still go through the legacy
+        // streaming highlighter for now -- the native path doesn't
+        // recurse yet. Step 3b lifts this branch.
+        if self.registry.injections_query(self.lang.name()).is_some() {
+            return self.highlight_lines(start_line, end_line);
+        }
+        self.highlight_lines_via_query(start_line, end_line)
+    }
+
+    /// The native query-cursor pipeline. Separated so Step 3b can
+    /// call it recursively for injected ranges with a per-call
+    /// language override.
+    fn highlight_lines_via_query(
+        &self,
+        start_line: u32,
+        end_line: u32,
+    ) -> Result<Vec<Vec<StyledSpan>>, SyntaxError> {
+        if end_line <= start_line {
+            return Ok(Vec::new());
+        }
+        let Some(tree) = self.tree.as_ref() else {
+            return Ok((0..(end_line - start_line)).map(|_| Vec::new()).collect());
+        };
+        let line_starts = compute_line_starts(&self.source);
+        let total_lines = line_starts.len().saturating_sub(1).max(1) as u32;
+        let end_line = end_line.min(total_lines + 1);
+        if start_line >= end_line {
+            return Ok(Vec::new());
+        }
+        let mut result: Vec<Vec<StyledSpan>> =
+            (0..(end_line - start_line)).map(|_| Vec::new()).collect();
+        let query = self.registry.highlights_query(self.lang.name()).ok_or_else(|| {
+            SyntaxError::UnregisteredLang(self.lang.name().to_string())
+        })?;
+        let styles = self
+            .registry
+            .highlight_styles(self.lang.name())
+            .ok_or_else(|| SyntaxError::UnregisteredLang(self.lang.name().to_string()))?;
+        let priorities = self
+            .registry
+            .highlight_priorities(self.lang.name())
+            .ok_or_else(|| SyntaxError::UnregisteredLang(self.lang.name().to_string()))?;
+
+        // Restrict the query to the byte window we'll actually use.
+        // tree-sitter's `QueryCursor::set_byte_range` is a hint; the
+        // cursor still returns matches that overlap the window, so
+        // captures whose ranges straddle the window get clipped at
+        // distribute time (`distribute_span_across_lines` already
+        // filters by line range).
+        let window_start = line_starts.get(start_line as usize).copied().unwrap_or(0);
+        let window_end = line_starts
+            .get(end_line as usize)
+            .copied()
+            .unwrap_or(self.source.len());
+        let mut cursor = QueryCursor::new();
+        cursor.set_byte_range(window_start..window_end);
+
+        // Collect captures into (start, end, style, pattern_index).
+        // Overlap resolution: later pattern wins -- the convention
+        // tree-sitter highlights queries follow (more specific
+        // patterns come later in the file; `(class_definition
+        // name: (identifier) @constructor)` lives below the
+        // generic `(identifier) @variable`). This matches what
+        // `tree_sitter_highlight` does, including the case where
+        // the winning capture's name isn't in CAPTURE_NAMES (e.g.
+        // `@constructor`): the slot is "claimed" with Style::Default
+        // and no visible span is emitted, which suppresses the
+        // generic `@variable` capture too.
+        let mut captures: Vec<(usize, usize, Style, usize)> = Vec::new();
+        let mut matches = cursor.matches(query, tree.root_node(), self.source.as_slice());
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let style = styles
+                    .get(cap.index as usize)
+                    .copied()
+                    .unwrap_or(Style::Default);
+                let n = cap.node;
+                captures.push((n.start_byte(), n.end_byte(), style, m.pattern_index));
+            }
+        }
+        // Sort so the FIRST-write-wins paint loop produces the
+        // intended overrides: highest pattern_index first (later
+        // patterns more specific). Tie-break by smallest range
+        // first (a child capture inside a same-pattern parent
+        // should still claim its own bytes), then by start byte
+        // for determinism.
+        captures.sort_by(|a, b| {
+            b.3.cmp(&a.3) // pattern_index DESC
+                .then_with(|| {
+                    let len_a = a.1.saturating_sub(a.0);
+                    let len_b = b.1.saturating_sub(b.0);
+                    len_a.cmp(&len_b) // range size ASC
+                })
+                .then_with(|| a.0.cmp(&b.0)) // start byte ASC
+        });
+        let _ = priorities; // priority table unused for now; kept
+                            // on the registry for the eventual
+                            // tie-break refinement / locals work.
+
+        // Per-byte style array for the window, then convert to
+        // line-relative spans. The array is at most O(window_bytes)
+        // memory, which is bounded by `viewport_height * line_width`
+        // in the renderer's typical call shape.
+        let win_len = window_end.saturating_sub(window_start);
+        let mut byte_styles: Vec<Option<Style>> = vec![None; win_len];
+        for (s, e, style, _) in &captures {
+            let s_local = s.saturating_sub(window_start).min(win_len);
+            let e_local = e.saturating_sub(window_start).min(win_len);
+            for slot in &mut byte_styles[s_local..e_local] {
+                if slot.is_none() {
+                    *slot = Some(*style);
+                }
+            }
+        }
+
+        // Walk byte_styles, emitting (start, end, style) runs and
+        // distributing each across the line slices the renderer
+        // expects. Default-claimed slots (`Some(Style::Default)`)
+        // count as "no visible span" -- the legacy highlighter
+        // emits no event for them.
+        let mut i = 0usize;
+        while i < byte_styles.len() {
+            let Some(style) = byte_styles[i] else {
+                i += 1;
+                continue;
+            };
+            if matches!(style, Style::Default) {
+                i += 1;
+                continue;
+            }
+            let mut j = i + 1;
+            while j < byte_styles.len() && byte_styles[j] == Some(style) {
+                j += 1;
+            }
+            distribute_span_across_lines(
+                window_start + i,
+                window_start + j,
+                style,
+                &line_starts,
+                start_line,
+                end_line,
+                &mut result,
+            );
+            i = j;
+        }
+        Ok(result)
+    }
 }
 
 /// Compute the byte offset where each line starts. The returned vec has
@@ -415,4 +584,88 @@ mod tests {
     // upgrading to tree-sitter-md 0.5+. For day-to-day markdown
     // editing the heading / list / code-block highlighting is the
     // load-bearing part.
+
+    // ---- Step 3a: native pipeline parity tests ----------------
+
+    /// Helper for the parity tests: run both pipelines on the same
+    /// source and assert their per-line span output is byte-equal.
+    /// Spans within a line are sorted before comparison so any
+    /// ordering difference between the streaming and query
+    /// pipelines doesn't trigger spurious mismatches.
+    fn assert_native_parity(lang: Lang, source: &str) {
+        let mut a = Syntax::for_language(lang).unwrap().unwrap();
+        let mut b = Syntax::for_language(lang).unwrap().unwrap();
+        a.parse(source);
+        b.parse(source);
+        let line_count = source.split('\n').count() as u32;
+        let legacy = a.highlight_lines(0, line_count).unwrap();
+        let native = b.highlight_lines_native(0, line_count).unwrap();
+        assert_eq!(
+            legacy.len(),
+            native.len(),
+            "{lang:?}: line count mismatch (legacy {} vs native {})",
+            legacy.len(),
+            native.len()
+        );
+        for (i, (l, n)) in legacy.iter().zip(native.iter()).enumerate() {
+            let mut l = l.clone();
+            let mut n = n.clone();
+            l.sort_by_key(|s| (s.start, s.end, s.style as u32));
+            n.sort_by_key(|s| (s.start, s.end, s.style as u32));
+            assert_eq!(
+                l, n,
+                "{lang:?} line {i}: span mismatch.\n  legacy: {l:?}\n  native: {n:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_parity_rust_simple_function() {
+        // tree-sitter-rust ships an INJECTIONS_QUERY (for embedded
+        // SQL / regex etc.), so the native path falls back to the
+        // legacy streaming highlighter. The parity test still
+        // serves as a tripwire if that fallback breaks.
+        assert_native_parity(Lang::Rust, "fn main() {\n    let x = 1;\n}\n");
+    }
+
+    #[test]
+    fn native_parity_python_simple_function() {
+        // Python has no injections.scm, so this exercises the new
+        // QueryCursor path end-to-end.
+        assert_native_parity(
+            Lang::Python,
+            "def f(x):\n    return x + 1\n\nclass Foo:\n    pass\n",
+        );
+    }
+
+    #[test]
+    fn native_parity_python_with_strings_and_comments() {
+        assert_native_parity(
+            Lang::Python,
+            "# comment\ns = \"hello world\"\nn = 42\nb = True\n",
+        );
+    }
+
+    #[test]
+    fn native_parity_python_class_with_methods() {
+        assert_native_parity(
+            Lang::Python,
+            "class Foo:\n    def bar(self):\n        return self.x\n\n    def baz(self, n):\n        return n * 2\n",
+        );
+    }
+
+    #[test]
+    fn native_parity_rust_struct_and_impl() {
+        // Rust has injections.scm so this currently exercises the
+        // legacy fallback inside `highlight_lines_native`. The
+        // parity test still serves as a tripwire.
+        assert_native_parity(
+            Lang::Rust,
+            "struct Buffer {\n    rope: Rope,\n    len: usize,\n}\n\nimpl Buffer {\n    fn new() -> Self {\n        Self { rope: Rope::new(), len: 0 }\n    }\n}\n",
+        );
+    }
+
+    // Remove the diagnostic dump tests now that the algorithm is
+    // green -- they were strictly for debugging the mismatch and
+    // would only add noise to the suite if kept.
 }

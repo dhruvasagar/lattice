@@ -315,6 +315,27 @@ mod tests {
     }
 
     #[test]
+    fn rust_function_produces_an_indent_fold() {
+        // Smoke test for the common case: `fn foo() { ... }` should
+        // produce a fold spanning the body. Default `foldmethod = manual`
+        // produces no folds; users need `:set foldmethod=indent` (or
+        // `=syntax` cascading to indent) for `zc` to have something
+        // to operate on.
+        let src = "fn outer() {\n    let x = 1;\n    if x > 0 {\n        println!(\"yes\");\n    }\n}\n";
+        let b = buf(src);
+        let folds = compute_indent_folds(&b);
+        assert!(
+            folds.iter().any(|f| f.start_line == 0 && f.end_line >= 4),
+            "outer fn fold missing: {folds:?}"
+        );
+        // Inner `if` block also folds.
+        assert!(
+            folds.iter().any(|f| f.start_line == 2),
+            "inner if fold missing: {folds:?}"
+        );
+    }
+
+    #[test]
     fn computed_folds_are_open_by_default() {
         let b = buf("a:\n    b\n");
         let folds = compute_indent_folds(&b);

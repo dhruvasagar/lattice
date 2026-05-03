@@ -5337,8 +5337,12 @@ impl App {
                 return;
             }
         }
-        // No fold here: if state was an explicit close-request, that's
-        // a no-op (vim says "No fold found" -- we silently ignore).
+        // No fold at cursor. Default `foldmethod = manual` produces
+        // none until the user runs `zf`, so the most common cause of
+        // "zc does nothing" is forgetting to `:set foldmethod=indent`
+        // (or `markdown` / `syntax`). Vim's E490 message points at
+        // exactly this -- surface it so the gap is discoverable.
+        self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
     }
 
     fn do_set_all_folds(&mut self, closed: bool) {

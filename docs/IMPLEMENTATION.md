@@ -586,28 +586,41 @@ Update this section when picking up the in-flight item.
      (`<C-w>{h,j,k,l}`) walks the spatial neighbour computed from
      `compute_rects`. Inactive-pane rendering is a placeholder
      until B.1.c brings meaningfully distinct buffer content.
-   - **B.1.c multiple Document buffers** ✅ done. App holds a
-     `documents: HashMap<BufferId, DocumentEntry>` registry; each
-     entry carries the actor handle plus per-document tree-sitter
-     [`Syntax`] state. The active buffer's hot-path fields
-     ([`App::document`], [`App::syntax`],
-     [`App::last_parsed_text_version`]) mirror the active entry;
-     switching buffers snapshots the active state back into the
-     source entry and loads from the destination. `:e FILE` opens
-     a fresh buffer (or switches to it if already open); `:bn` /
-     `:bp` cycle, `:ls` / `:buffers` lists in a help view, `:bd[!]`
-     closes (the only-buffer case is rejected).
+   - **B.1.c multiple Document buffers** ✅ done. Replaced by the
+     unified registry below; original implementation used a
+     dedicated `documents: HashMap<BufferId, DocumentEntry>`.
    - **B.1.d buffer-as-content kinds: file-tree** ✅ done. New
-     `BufferKind::FileTree` variant + `FileTreeBuffer` (rope-backed,
-     same shape as `HelpBuffer`). `:Tree [path]` opens a tree
-     rooted at `path` (or the document's parent dir / cwd);
-     `:TreeClose` (or `Esc` / `q` while active) dismisses. Standard
-     motions route via the same active-buffer dispatch as Help --
-     `j` / `k` move the tree cursor through the chord grammar.
-     `<CR>` on a directory toggles expansion; on a file opens it
-     via the standard `:e FILE` path.
-   - **B.1.d outline + diagnostics** ⛔ -- queued behind a
-     dedicated outline / LSP integration phase.
+     `BufferKind::FileTree` variant + `FileTreeBuffer` (rope-
+     backed, same shape as `HelpBuffer`). `:Tree [path]` opens a
+     tree buffer rooted at `path` (or the document's parent dir /
+     cwd); same path de-dups (already-open trees are switched to,
+     not duplicated). Multiple trees coexist (one per
+     distinct root). `:TreeClose` removes from the registry.
+     Standard motions route via the same active-buffer dispatch
+     as Help. `<CR>` on a directory toggles expansion; on a file
+     opens it via the standard `:e FILE` path. Outline + diagnostics
+     panels queue behind their own integrations.
+   - **Unified `BufferRegistry`** ✅ done. Documents and file trees
+     live in a single keyspace under `App.buffers`
+     (`HashMap<BufferId, BufferEntry>` with `BufferData::Document |
+     FileTree` discriminant). `:bn` / `:bp` / `:ls` / `:bd` /
+     `:b N` operate on the registry uniformly -- cycling between a
+     document and a tree feels the same as cycling between two
+     documents. Each entry carries `BufferFlags { listed, hidden }`;
+     unlisted buffers are skipped by `:bn` / `:bp`. `:e folder`
+     defers to `:Tree folder` (vim's `:Explore` semantics). Help
+     stays overlay-rendered for now -- moving it into the registry
+     is a follow-up that doesn't require structural change.
+   - **Pane visuals** ✅ done. Each pane gets a vim-style status
+     line (active reverse-videoed via theme, inactive dim);
+     `│` separator drawn between vertically split panes. Inactive
+     Document panes keep their tree-sitter syntax highlights
+     (refreshed lazily by `App::refresh_pane_highlights`); a
+     `Theme::inactive_pane_overlay` modifier (default `DIM`)
+     layers on top so focus stays unambiguous without losing
+     color. Customizable via `:set ui.dim_inactive`,
+     `ui.separator`, `ui.separator_color`,
+     `ui.statusline_active_fg`, `ui.statusline_inactive_fg`.
 5. **Hover popup + inline completion popup polish** — completion popup
    is wired (vertico-style); hover popup scaffolding ✅ done. New
    `HoverPopup` type with markdown body + buffer-position anchor;

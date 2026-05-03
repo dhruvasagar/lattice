@@ -65,8 +65,10 @@ Three deliberate deviations from vim and emacs:
   the functional / plugin world are merged into one `CommandRegistry` with
   one dispatcher. The `:`-line is a parser front-end. (DESIGN.md §5.2.1.)
 - **Everything is a buffer.** File tree, outline, diagnostics, search
-  results, terminal, REPL — all are buffers placed by the user into panes.
-  No fixed sidebar or bottom-panel concept. (§5.9.)
+  results, terminal, REPL — all are buffers placed by the user into panes
+  via splits. The unified `BufferRegistry` already holds documents and
+  file trees today; `:bn` / `:bp` / `:ls` / `:bd` work across kinds. No
+  fixed sidebar or bottom-panel concept. (§5.9.)
 - **TOML config + WASM extensions.** No vimscript, no elisp, no Lua. One
   extension substrate.
 
@@ -155,6 +157,11 @@ In the running editor:
 - `/foo<CR> n N` — incremental search (regex with backrefs)
 - `:%s/foo/bar/g` — substitute (`$1`, `${name}` template syntax)
 - `:describe-command write` — every primitive carries help metadata
+- `<C-w>v` then `<C-w>l` — split vertically and focus the right pane
+- `:Tree .` (or `:e some-folder`) — open a folder as a file-tree buffer; `<CR>` toggles directories or opens files
+- `:bn` / `:bp` / `:ls` / `:bd` — cycle, list, or close any open buffer (document or tree)
+- `:set foldmethod=indent` — auto-fold indented blocks; `zo` / `zc` to open / close
+- `:set ui.dim_inactive=off` — turn off the inactive-pane DIM overlay
 
 ---
 
@@ -224,7 +231,7 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] Manual folds (`zf` / `zo` / `zc` / `za` / `zR` / `zM` / `zd`)
 - [x] Counts on linewise ops (`2dd`, `2>>`) collapse to one undo unit
 - [x] Substitute live preview (matches highlighted while typing `:s/pat/repl/...`)
-- [ ] Computed folds (tree-sitter + indent fallback)
+- [x] Computed folds — indent fallback (`:set foldmethod=indent`); tree-sitter folds queued
 
 **Unified command / grammar dispatch** (DESIGN.md §5.2.1)
 
@@ -247,12 +254,14 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 
 - [x] Every command / option / mode / keybinding carries metadata at registration time
 - [x] `:describe-command`, `:describe-buffer`, `:describe-key`, `:keymap`, `:apropos`
-- [ ] `:describe-option`, `:describe-event`, `:describe-mode` (each lands when its registry does)
+- [x] `:describe-option`, `:options` (typed options registry)
+- [ ] `:describe-event`, `:describe-mode` (each lands when its registry does)
 
 **Configuration** (DESIGN.md §5.12)
 
-- [ ] Typed options registry: `name, type, default, doc, group, validator`
-- [ ] `:set name=value` parser front-end
+- [x] Typed options registry: `name, type, default, doc, aliases, get/set closures`
+- [x] `:set name=value`, `:set name`, `:set noname` parser front-end
+- [x] `ui.*` options for theming the renderer (separator char/color, status line colors, dim-inactive toggle)
 - [ ] Customize-as-buffer-view writes back to user TOML
 
 **Rendering** (DESIGN.md §5.6)
@@ -282,11 +291,16 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 
 **Multi-buffer + UI components** (DESIGN.md §5.9) — Phase 6
 
-- [ ] Multi-buffer foundations (the trigger for `HelpDisplayMode` beyond `Popup`)
-- [ ] Pane tree + split / window operations
+- [x] **B.1.a** Buffer abstraction + active-buffer routing (help is a regular buffer; `<C-o>` / `<C-i>` walk across buffers)
+- [x] **B.1.b** Pane tree + `<C-w>{s,v,c,h,j,k,l,w,W}` window-management chord grammar (incl. `<C-w><C-l>` form)
+- [x] **B.1.c** Multiple Document buffers + `:bn` / `:bp` / `:ls` / `:bd` / `:b N`
+- [x] **B.1.d** File-tree buffer (`:Tree path`); multiple roots coexist; `:e folder` defers to `:Tree folder`
+- [x] Unified `BufferRegistry`: documents and trees in one keyspace; per-buffer `BufferFlags { listed, hidden }` skeleton
+- [x] Vim-style pane visuals: per-pane status line (active reverse-videoed, inactive dim), `│` separator between vertical splits, inactive panes keep syntax highlighting with `DIM` overlay; all customizable via `:set ui.*`
+- [x] Hover popup scaffolding (`:hover [text]` / `:HoverClose`); LSP-driven hover wiring queues with Phase 4
+- [x] Inline completion popup (vertico-style, wired)
 - [ ] Picker primitive (file picker as first user)
-- [ ] Hover popup; inline completion popup
-- [ ] Buffer-backed views: file-tree, outline, diagnostics-list, scratch, messages, compilation
+- [ ] Buffer-backed views: outline, diagnostics-list, scratch, messages, compilation (file-tree shipped)
 
 **CI / engineering** (DESIGN.md §8)
 

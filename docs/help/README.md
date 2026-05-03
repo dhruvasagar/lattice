@@ -30,6 +30,7 @@ directly.
 | Topic                                                                                                 | File                     | Status |
 |-------------------------------------------------------------------------------------------------------|--------------------------|--------|
 | Folding (manual + indent + markdown + tree-sitter, operator interaction, navigation, auto-open)       | [folding.md](folding.md) | ✅     |
+| Buffers and panes (registry, splits, file tree, navigation, theme)                                    | [buffers.md](buffers.md) | ✅     |
 | Modal editing (Normal / Insert / Visual / Op-pending / Command / Search / Replace, the chord grammar) | _planned_                | ⛔     |
 | Operators (`d` / `y` / `c` / `>` / `<` / `gU` / `gu` / `g~`)                                          | _planned_                | ⛔     |
 | Motions (cursor, word, paragraph, sentence, viewport, find-char, search)                              | _planned_                | ⛔     |
@@ -40,7 +41,7 @@ directly.
 | Block-visual mode (`Ctrl-V`, `I` / `A` / `>` / `<`, replicate-on-Esc)                                 | _planned_                | ⛔     |
 | Ex-commands (`:w`, `:e`, `:s`, `:g`, `:d`, alias resolution, surface forms)                           | _planned_                | ⛔     |
 | Help system (`:describe-*`, `:apropos`, `:keymap`, missing-arg prompts)                               | _planned_                | ⛔     |
-| Configuration (TOML schema, options, customize buffer view)                                           | _planned_                | ⛔     |
+| Options and theme (`:set name=value`, `:describe-option`, `ui.*` styling)                             | _planned_                | ⛔     |
 | Plugins (WASM Component Model, capabilities, fuel)                                                    | _planned_                | ⛔     |
 | Performance posture (latency budgets, what's safe in a hot loop)                                      | _planned_                | ⛔     |
 

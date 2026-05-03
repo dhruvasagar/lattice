@@ -5443,16 +5443,22 @@ impl App {
 
     /// Toggle / open / close the fold containing the cursor.
     ///
-    /// Picks the right nested-level per vim semantics:
+    /// Selection rules per vim semantics, refined for the
+    /// "cursor on a line that opens multiple folds" case:
     ///
-    /// - `Some(true)` (`zc`): closes the **innermost open** fold
-    ///   containing the cursor. Subsequent `zc`s walk outward.
+    /// - `Some(true)` (`zc`): if the cursor sits on `start_line` of
+    ///   any open fold, close the **outermost** such fold (the
+    ///   user's mental model when their cursor is on the `if` /
+    ///   `let` / `impl` line is "fold the entire form"). Otherwise
+    ///   close the **innermost open** fold containing the cursor
+    ///   (the cursor is in a fold's body and they want the tightest
+    ///   enclosing structure). Subsequent `zc`s from the same line
+    ///   walk outward as each layer closes.
     /// - `Some(false)` (`zo`): opens the **outermost closed** fold
     ///   containing the cursor. Subsequent `zo`s walk inward as
     ///   each layer reveals the next.
     /// - `None` (`za`): if any closed fold contains the cursor,
-    ///   acts like `zo` (open outermost closed); otherwise acts
-    ///   like `zc` (close innermost open).
+    ///   acts like `zo`; otherwise acts like `zc`.
     ///
     /// Innermost = max start_line, then min end_line on ties.
     /// Outermost = min start_line, then max end_line on ties.
@@ -5461,7 +5467,7 @@ impl App {
     fn do_set_fold_state_at_cursor(&mut self, state: Option<bool>) {
         let line = self.cursor.line;
         let target = match state {
-            Some(true) => innermost_fold_idx(&self.folds, line, |f| !f.closed),
+            Some(true) => fold_to_close_at(&self.folds, line),
             Some(false) => outermost_fold_idx(&self.folds, line, |f| f.closed),
             None => {
                 let any_closed = self
@@ -5471,7 +5477,7 @@ impl App {
                 if any_closed {
                     outermost_fold_idx(&self.folds, line, |f| f.closed)
                 } else {
-                    innermost_fold_idx(&self.folds, line, |f| !f.closed)
+                    fold_to_close_at(&self.folds, line)
                 }
             }
         };
@@ -6308,6 +6314,43 @@ fn innermost_fold_idx<F: Fn(&Fold) -> bool>(
         .iter()
         .enumerate()
         .filter(|(_, f)| pred(f) && line >= f.start_line && line <= f.end_line)
+        .max_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
+        .map(|(i, _)| i)
+}
+
+/// Pick the fold that `zc` (or `za`'s close branch) should target
+/// when the cursor is on `line`.
+///
+/// If any open fold *starts* at `line`, the user is positioned on
+/// the line that opens one or more folds (e.g. the `let len = if
+/// cond {` line that simultaneously opens the let_declaration, the
+/// if_expression, and the then-block). Their natural intent is to
+/// fold the *largest* of those constructs in one step -- the
+/// "fold the entire form" reading of `zc`. Pick the outermost
+/// (largest end_line) among the open folds whose start_line equals
+/// the cursor.
+///
+/// Otherwise the cursor is in a fold's body and the inverse rule
+/// applies: pick the innermost open fold containing the cursor, so
+/// progressive `zc`s walk inside-out as the user closes one
+/// enclosing layer at a time.
+fn fold_to_close_at(folds: &[Fold], line: u32) -> Option<usize> {
+    // Strict-start match: outermost open fold whose `start_line == line`.
+    let starts_here = folds
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| !f.closed && f.start_line == line)
+        .max_by_key(|(_, f)| f.end_line)
+        .map(|(i, _)| i);
+    if starts_here.is_some() {
+        return starts_here;
+    }
+    // Body match: innermost open fold strictly containing the
+    // cursor (cursor not on the start_line of an open fold here).
+    folds
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| !f.closed && line > f.start_line && line <= f.end_line)
         .max_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
         .map(|(i, _)| i)
 }

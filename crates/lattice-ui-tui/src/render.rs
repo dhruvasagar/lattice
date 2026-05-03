@@ -1150,17 +1150,20 @@ fn fold_glyph_for(app: &App, line_idx: u32) -> Option<char> {
 }
 
 /// Format the gutter cell text for a numbered line.
-/// Layout: `[leading_pad][digits][glyph_or_space][trailing_spaces]`.
-/// `glyph_or_space` is the fold glyph (▾ open / ▸ closed) when this
-/// line begins a fold, otherwise a plain space; `trailing_spaces`
-/// fills the rest of [`GUTTER_TRAILING_PAD`] so digits don't run
-/// flush against the buffer column.
+/// Layout: `[leading_pad][label][separator][glyph_or_space]`.
+/// The separator is one plain space sitting between the line
+/// number and the rightmost cell so digits don't run flush against
+/// the fold glyph; the glyph (or a plain space when no fold starts
+/// on this line) occupies the rightmost cell, immediately
+/// adjacent to the buffer column. This mirrors vim's
+/// `signcolumn`-on-the-right convention -- e.g. ` 99 ▸` for a
+/// closed fold's heading.
 fn format_gutter_cell(label: &str, width: u32, glyph: Option<char>) -> String {
-    let trailing = GUTTER_TRAILING_PAD as usize;
-    let leading = (width as usize).saturating_sub(label.len() + trailing);
+    // Rightmost cell is the glyph; one separator space sits before
+    // the label. Leading pad fills the rest.
+    let leading = (width as usize).saturating_sub(label.len() + 2);
     let g = glyph.unwrap_or(' ');
-    let extra_pad = trailing.saturating_sub(1);
-    format!("{:lead$}{label}{g}{:pad$}", "", "", lead = leading, pad = extra_pad)
+    format!("{:lead$}{label} {g}", "", lead = leading)
 }
 
 fn render_gutter(line_idx: u32, width: u32, glyph: Option<char>) -> Span<'static> {
@@ -1557,25 +1560,27 @@ mod tests {
     }
 
     #[test]
-    fn render_gutter_emits_two_trailing_cells_after_number() {
-        // The fold-glyph slot + an extra plain space cell keep the
-        // line number visually separated from buffer content.
+    fn render_gutter_separates_number_from_buffer_with_two_cells() {
+        // Layout: `[lead][digits][space][glyph_or_space]`. With no
+        // fold the rightmost cell is a plain space, so output ends
+        // in two spaces -- one separator between digits and glyph
+        // slot, one empty glyph slot.
         let span = render_gutter(0, gutter_width(1), None);
         let s = span.content.as_ref();
-        // Content shape: " 1  " — leading pad, "1", glyph slot
-        // (space), trailing pad (space).
         assert!(s.ends_with("  "), "expected two trailing spaces, got {s:?}");
         assert!(s.contains('1'), "line number missing: {s:?}");
     }
 
     #[test]
-    fn render_gutter_keeps_glyph_adjacent_to_number() {
-        // Closed fold ▸ sits in the cell immediately after the
-        // number, with one trailing space before the buffer column.
+    fn render_gutter_places_glyph_at_rightmost_cell() {
+        // Closed fold ▸ sits at the inner edge of the gutter (next
+        // to the buffer column) with a separator space between the
+        // line number and the glyph -- the `[ 1 ▸]` layout.
         let span = render_gutter(0, gutter_width(1), Some('▸'));
         let s = span.content.as_ref();
-        assert!(s.contains("1▸ "), "expected '1▸ ' substring, got {s:?}");
-        assert!(s.ends_with(' '), "expected trailing pad cell: {s:?}");
+        assert!(s.contains(" 1 ▸"), "expected ' 1 ▸' shape, got {s:?}");
+        // Glyph is the last grapheme.
+        assert!(s.ends_with('▸'), "glyph must be the rightmost cell: {s:?}");
     }
 
     #[test]

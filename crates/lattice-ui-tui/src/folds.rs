@@ -709,23 +709,46 @@ impl Buffer {
         // if-else expression body. Three folds must be available --
         // the then-block, the else-block, AND the surrounding
         // if_expression -- so progressive `zc`s walk inner → outer.
-        let src = "let len = if cond {\n    a\n} else {\n    b\n};\n";
+        // Wrap in a fn body so tree-sitter parses it cleanly even
+        // without a trailing `;` -- the original report omitted it.
+        let src = "fn outer() {\n    let len = if cond {\n        a\n    } else {\n        b\n    };\n}\n";
         let syntax = rust_syntax_with(src);
         let folds = compute_syntax_folds(&syntax).expect("rust folds");
-        // then-block: lines 0..=2 (`{` on line 0, `}` on line 2).
+        // then-block fold: starts on line 1 (the `{` after `if cond`).
         assert!(
-            folds.iter().any(|f| f.start_line == 0 && f.end_line == 2),
-            "expected then-block fold at 0..=2: {folds:?}"
+            folds.iter().any(|f| f.start_line == 1 && f.end_line == 3),
+            "expected then-block fold at 1..=3: {folds:?}"
         );
-        // else-block: lines 2..=4 (`{` on line 2, `}` on line 4).
+        // else-block fold: starts on line 3 (the `} else {`).
         assert!(
-            folds.iter().any(|f| f.start_line == 2 && f.end_line == 4),
-            "expected else-block fold at 2..=4: {folds:?}"
+            folds.iter().any(|f| f.start_line == 3 && f.end_line == 5),
+            "expected else-block fold at 3..=5: {folds:?}"
         );
-        // if_expression: lines 0..=4.
+        // if_expression covers lines 1..=5 (`if ... else { ... }`).
         assert!(
-            folds.iter().any(|f| f.start_line == 0 && f.end_line == 4),
-            "expected if_expression fold at 0..=4: {folds:?}"
+            folds.iter().any(|f| f.start_line == 1 && f.end_line == 5),
+            "expected if_expression fold at 1..=5: {folds:?}"
+        );
+    }
+
+    #[test]
+    fn rust_syntax_folds_if_else_without_trailing_semicolon() {
+        // The literal no-semicolon shape the user shared. A `let`
+        // without `;` is not a valid Rust statement but tree-sitter
+        // still recovers and the if_expression node exists. Verify
+        // it produces a fold so progressive `zc` can reach the
+        // outer if/else as one unit.
+        let src = "fn outer() -> u32 {\n    let len = if cond {\n        bytes - 1\n    } else {\n        bytes\n    }\n}\n";
+        let syntax = rust_syntax_with(src);
+        let folds = compute_syntax_folds(&syntax).expect("rust folds");
+        // if_expression fold (the user's "fold the if part" target)
+        // starts on line 1 and runs through line 5 (the closing `}`
+        // of the else branch).
+        assert!(
+            folds
+                .iter()
+                .any(|f| f.start_line == 1 && f.end_line == 5),
+            "expected if_expression fold at 1..=5: {folds:?}"
         );
     }
 

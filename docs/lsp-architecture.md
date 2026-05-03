@@ -427,6 +427,131 @@ doesn't affect the other.
 
 ---
 
+## 7b. Multi-buffer / multi-server topology
+
+Two scenarios deserve explicit treatment:
+
+1. **Multiple buffers, separate servers per language.** The
+   user has `main.rs`, `main.py`, `main.go` open
+   simultaneously; rust-analyzer / pyright / gopls each run
+   as their own actor. `:cnext` while in the Python buffer
+   walks Python diagnostics, never the Rust ones.
+2. **Multiple servers attached to one buffer.** A `.cpp`
+   file with both `clangd` (semantic) and a custom linter
+   bridge (style); a `.rs` file with rust-analyzer + a
+   separate type-narrowing helper. Both servers publish
+   diagnostics, both contribute completions, both can
+   answer `goto-definition`.
+
+### How buffer isolation is structural
+
+Every piece of LSP state is keyed by URI or by
+`(URI, server_id)`. There's no "active buffer" mutable
+register that features rewrite -- queries always pass an
+explicit URI down. So "no conflict between buffers" is a
+property of the data model, not a discipline each feature
+must enforce.
+
+| State | Keyed by | Lives in |
+|---|---|---|
+| Diagnostics | `(Uri, Arc<str>)` server id | `DiagnosticsLayer` |
+| Document mirror + version | `Uri` | `DocSync.docs` |
+| Pending change queue | `Uri` | `DocSync.docs[uri].pending` |
+| Pending requests | JSON-RPC id (server-scoped) | actor's `pending` map |
+| Log records | `Option<Arc<str>>` server id (None = subsystem) | `LspLogger` rings |
+| Server actors | `(WorkspaceRoot, server_id)` | `LspSupervisor.actors` |
+| Per-buffer attachments | `BufferId` | `LspSupervisor.attachments` |
+
+### Per-buffer navigation: `]d` / `[d` vs `:cnext`
+
+| Command | Scope | Implementation |
+|---|---|---|
+| `]d` / `[d` | Active buffer only. | `layer.diagnostics_for(active_uri)` -> sort by `(line, char)` -> find next past cursor; wrap. |
+| `:diagnostics` | Workspace-wide list (everything-is-a-buffer). | `layer.snapshot()` rendered as `<uri>:<line>:<col> <severity> <message>`. |
+| `:cnext` / `:cprev` | Walks `:diagnostics`. Vim-style quickfix; jumps across files. | Reuses the `:diagnostics` buffer's cursor. Wraps. |
+| `:diagnostics buffer` | Filtered view: active buffer's URI only. | `snapshot()` filtered by URI. |
+
+Per-pane "last-walked" cursor lives on the `PaneState`, not
+the supervisor. Two side-by-side panes on different files
+have independent navigation positions even when the underlying
+diagnostic list is the same.
+
+### Multiple servers per buffer: per-feature merge strategy
+
+The supervisor keeps
+`attachments: HashMap<BufferId, Vec<Arc<ServerHandle>>>`. On
+buffer open, every `ServerConfig` whose `file_patterns` match
+the buffer's path adds itself to the list. Each attached
+server gets its own `DocSync` for that buffer, so didOpen /
+didChange / didClose fire per server.
+
+When the editor invokes a feature, the supervisor consults
+the buffer's attachments and merges per the table:
+
+| Feature | Merge strategy | Rationale |
+|---|---|---|
+| **Diagnostics** | Layer keyed by `(uri, server_id)`; readers merge across servers via `diagnostics_for(uri)`. (Shipped, 4.1.d.ii.) | Different servers report different problem classes -- semantic vs lint vs spell-check. Show all. |
+| **Hover** | `futures::join_all` over attached servers; non-empty responses concatenated, each prefixed with the `server_id`. | Each server may know different things (rust-analyzer knows types, a doc-bridge knows examples). |
+| **Goto-definition / declaration / typeDefinition / implementation** | Race to first response; if empty, fall through. Server priority breaks ties. | Definition is single-valued. |
+| **References** | Union from every server's response, deduped by `(uri, range)`. | Same reference may show from semantic + syntactic servers. |
+| **Document symbols / Workspace symbols** | Union, deduped by `(name, kind, range)`. | -- |
+| **Completion** | Each server registers as `gen:lsp:<server-id>` in `lattice-completion`'s pipeline. Score-merging across generators. | The completion engine's existing seam. |
+| **Signature help** | First non-empty wins. | Signatures are usually language-specific; merging rarely useful. |
+| **Code actions** | Union; each picker entry prefixed `[server-id]`. Captured `server_id` routes resolve / execute back. | User picks; resolve must go to the right server. |
+| **Rename** | Each server returns a `WorkspaceEdit`; supervisor merges. Conflicts (same URI + range from two servers) -> keep higher-priority server, log Warn. | Multi-server rename is rare; conflict resolution is a fail-safe. |
+| **Formatting** | Single winner: highest-priority server with `documentFormattingProvider` advertised. | Two formatters can't agree on whitespace. |
+| **Semantic tokens** | Single server per buffer (highest-priority with `semanticTokensProvider`). Multi-server merging deferred until a real use case appears. | Token-stream merging across servers is hard (overlap rules vary). |
+| **Inlay hints** | Union; each hint carries server provenance for tooltip resolution. | Hints rarely conflict on the same anchor; both render if they do. |
+| **Folding ranges** | Union deduped by `(start_line, end_line, kind)`; merges with tree-sitter's fold provider via existing `FoldMethod` priority. | Independent sources usually agree on natural blocks; dedup is cheap. |
+
+### Server priority
+
+Single integer per `ServerConfig`. Used by formatting, rename
+conflict resolution, and "race to first" features where
+multiple non-empty responses tie.
+
+```toml
+[server.rust]
+priority = 100  # higher = wins ties
+
+[server.clippy-bridge]
+priority = 50
+```
+
+Default priority 100 if unset. Lattice's curated registry
+sets sensible priorities so users typically don't touch them.
+
+### Cancellation in multi-server
+
+Each request to a server gets its own `CancellationToken`.
+Superseding (cursor moves -> stale hover request, etc.)
+cancels every in-flight request for that buffer; per-server
+`$/cancelRequest` notifications fly out in parallel; the
+local `Pending<T>`s resolve with `LspError::Cancelled`.
+The supervisor's superseding logic doesn't care which servers
+are attached -- it cancels them all and issues fresh
+requests.
+
+### Crash isolation
+
+A crashed server affects only its own actor + its own
+entries in `DiagnosticsLayer` (cleared via
+`layer.clear_server(&id)`). Other servers attached to the
+same buffer keep working. Supervisor restart-with-backoff
+replays `didOpen` only for that server's attachments.
+
+### Why this falls out cleanly
+
+`lattice-lsp`'s primitives are intentionally per-server
+(actor + handle + bus + DocSync). Multi-server is a
+supervisor concern, not a primitive concern. Adding a
+second server for the same language doesn't change any
+of the lower layers -- it adds another actor, another
+attachment entry, and feature dispatch fans out one
+more way.
+
+---
+
 ## 8. Crash recovery (4.1.b sketch; full impl 4.4)
 
 Today's actor handles a clean shutdown but doesn't auto-restart

@@ -366,20 +366,68 @@ you expect is the one actually attached.
 
 ## Power-user flows
 
+### Per-buffer navigation vs workspace quickfix
+
+Three navigation surfaces, each with a clear scope:
+
+- **`]d` / `[d`** -- walk diagnostics in the **active buffer
+  only**. Wraps top/bottom. Same diagnostic list two panes can
+  share; the cursor "where am I in the walk" lives on the
+  pane, so two panes on the same file walk independently.
+- **`:diagnostics`** -- opens the **workspace-wide** list as a
+  buffer (every URI with diagnostics, sorted alphabetically;
+  diagnostics within each URI sorted by line then column).
+- **`:cnext` / `:cprev`** -- walk **the `:diagnostics`
+  buffer's list**, vim-quickfix-style. Hits the bottom →
+  wraps to top. Jumps across files. The cursor on the
+  `:diagnostics` buffer is the iteration state, so opening
+  it explicitly and using `]d` over there does the same
+  thing.
+- **`:diagnostics buffer`** -- a filtered view: only the
+  active buffer's diagnostics. Useful when you want
+  `:cnext`-style navigation but limited to one file.
+
+When `]d` says "no more diagnostics in this buffer" and
+`:cnext` would jump to a different file, the model is
+deliberate: per-buffer navigation never surprises you by
+switching files; workspace navigation does so on purpose.
+
+### One buffer, multiple servers
+
+A `.cpp` file with both `clangd` (semantics) and a custom
+linter bridge (style) attached. Each is its own actor; both
+publish diagnostics. lattice merges per feature:
+
+| Feature | What happens with two servers |
+|---|---|
+| Diagnostics | Both lists shown in the gutter / inline overlay / `:diagnostics` buffer. The most severe wins per-line for the gutter glyph. |
+| Hover | Both responses concatenated, each section labelled with its `server_id`. |
+| Goto-definition | Higher-priority server's response wins. If empty, falls through to the next. |
+| References | Union of all servers' results, deduped. |
+| Code actions | Picker shows entries from each server, prefixed `[server-id]` so you can tell them apart. |
+| Formatting | Single winner: highest-priority server with `documentFormattingProvider`. Avoids two formatters fighting. |
+| Rename | `WorkspaceEdit`s from each server merged; conflicts (same range edited by two servers) resolve to the higher-priority one. |
+
+Server priority is configurable in `lsp.toml`:
+
+```toml
+[server.rust]
+priority = 100  # default; higher wins ties
+
+[server.clippy-bridge]
+priority = 50
+```
+
+A crashed server affects only its own diagnostics + its own
+running task; other servers attached to the same buffer keep
+working.
+
 ### One server, multiple workspaces
 
 Open files from two unrelated Cargo workspaces. lattice spawns
 two `rust-analyzer` actors, one per workspace root. Each
 maintains its own indexed view; cross-workspace navigation is
 not yet supported (multi-root workspace folders are post-1.0).
-
-### Two servers, one buffer
-
-A `.cpp` file with both `clangd` (semantics) and a custom
-linter bridge (style) attached. Each is its own actor; both
-publish diagnostics; the renderer merges them per-line, sorted
-by severity. Code actions from each appear in the picker
-prefixed with their `server_id`.
 
 ### Toggling features off
 

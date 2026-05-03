@@ -264,6 +264,7 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: Normal, chord: "<C-o>", doc: "Jump-list back (previous AutoJump position)" },
         keymap_entry! { mode: Normal, chord: "<C-i>", doc: "Jump-list forward" },
         keymap_entry! { mode: Normal, chord: "<Tab>", doc: "Jump-list forward (terminal alias for Ctrl-I)" },
+        keymap_entry! { mode: Normal, chord: "<C-l>", doc: "Force redraw (clear terminal, reparse syntax, reset highlight cache)" },
         // ---- Normal: pending-key prefixes ----
         keymap_entry! { mode: Normal, chord: "g", doc: "Pending: second key resolves to gg/gU/gu/g~/gv/gJ/g;/g," },
         keymap_entry! { mode: Normal, chord: "z", doc: "Pending: scroll/fold sub-commands" },

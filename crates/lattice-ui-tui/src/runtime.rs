@@ -85,6 +85,14 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         let buffer_height = size.height.saturating_sub(2) as u32;
         app.set_viewport_height(buffer_height);
         app.terminal_width = Some(size.width);
+        // `<C-l>` (RedrawScreen) sets `pending_redraw`; honour it
+        // by clearing the terminal buffer so the next draw repaints
+        // every cell instead of letting ratatui's diff engine
+        // assume the previous frame's contents are intact.
+        if app.pending_redraw {
+            terminal.clear().context("clear terminal for redraw")?;
+            app.pending_redraw = false;
+        }
         app.refresh_highlights();
         app.refresh_pane_highlights();
 

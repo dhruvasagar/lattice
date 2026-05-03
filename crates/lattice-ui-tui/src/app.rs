@@ -397,6 +397,13 @@ pub enum Action {
     JumpHistoryBack,
     /// Vim's `Ctrl-I` (Tab) -- step forward.
     JumpHistoryForward,
+    /// Vim's `Ctrl-L` -- force a full redraw. Reparses the syntax
+    /// tree, recomputes folds, clears the visible-highlight cache,
+    /// and tells the runtime to clear the terminal screen on the
+    /// next frame. Intended escape hatch for any visual glitch
+    /// (stale highlights, leftover ANSI escape sequences from a
+    /// crashed external program, terminal-resize race).
+    RedrawScreen,
     /// Vim's `g;` -- step backward through `NamedMark` entries in the
     /// unified position history.
     WalkMarkHistoryBack,
@@ -660,6 +667,11 @@ pub struct App {
     /// Most recent transient status / error message, displayed in the echo
     /// area until replaced.
     pub last_message: Option<EchoMessage>,
+    /// Set by [`Action::RedrawScreen`] (`<C-l>`); the runtime
+    /// clears this on its next frame after issuing a full
+    /// terminal-clear so any leftover ANSI / stale glyph state
+    /// gets repainted from scratch.
+    pub pending_redraw: bool,
     /// Per-document tree-sitter state. `None` when the document's language
     /// is `Plain` (no grammar bundled).
     pub syntax: Option<Syntax>,
@@ -1249,6 +1261,7 @@ impl App {
             builtins,
             command_line: String::new(),
             last_message: None,
+            pending_redraw: false,
             syntax,
             last_parsed_text_version,
             visible_highlights: Vec::new(),
@@ -1660,6 +1673,7 @@ impl App {
             }
             Action::JumpHistoryBack => self.do_jump_history(-1),
             Action::JumpHistoryForward => self.do_jump_history(1),
+            Action::RedrawScreen => self.do_redraw_screen(),
             Action::WalkMarkHistoryBack => self.do_mark_history(-1),
             Action::WalkMarkHistoryForward => self.do_mark_history(1),
 
@@ -2982,11 +2996,23 @@ impl App {
         self.buffers.document_with_path(path)
     }
 
-    /// Save the currently-active buffer's hot-path state
+    /// Save the currently-active document's hot-path state
     /// (`syntax`, `last_parsed_text_version`) into its
     /// [`DocumentEntry`]. Called before switching the active
     /// buffer so the rotation is round-trippable.
+    ///
+    /// Guarded by `active_buffer == Document`: when the active
+    /// buffer is a file tree or help, `self.syntax` was already
+    /// moved into the document entry on the *previous* transition
+    /// (when we left the document). Calling this again would
+    /// `take()` an already-None value and overwrite the entry's
+    /// stashed syntax, dropping the highlight state on the floor
+    /// (the visible symptom: opening `:Tree` and pressing `q`
+    /// returned to the document with no syntax colours).
     fn snapshot_active_document(&mut self) {
+        if !matches!(self.active_buffer, BufferKind::Document) {
+            return;
+        }
         if let Some(entry) = self.buffers.document_mut(self.document_buffer_id) {
             entry.syntax = self.syntax.take();
             entry.last_parsed_text_version = self.last_parsed_text_version;
@@ -5269,6 +5295,36 @@ impl App {
                 .unwrap_or(self.document_buffer_id),
             BufferKind::Document | BufferKind::FileTree => self.pane_tree.active().buffer_id,
         }
+    }
+
+    /// Vim's `<C-l>` -- force a fresh redraw to recover from any
+    /// visual glitch. Concretely:
+    ///
+    /// - bumps the parsed-version mirror so the next
+    ///   `maybe_reparse_syntax` actually re-runs the parser even if
+    ///   the document version hasn't changed (covers the rare case
+    ///   where a fold or syntax cache went stale);
+    /// - clears the cached `visible_highlights` and pane highlights
+    ///   so the next frame's `refresh_highlights` repopulates from
+    ///   scratch;
+    /// - sets `pending_redraw` so the runtime clears the terminal
+    ///   on the next frame, scrubbing leftover ANSI sequences from
+    ///   crashed external programs / partial repaints.
+    fn do_redraw_screen(&mut self) {
+        // Force a syntax reparse on the next frame.
+        self.last_parsed_text_version = u64::MAX;
+        // Drop cached spans so refresh_highlights can't return
+        // stale data for a single frame.
+        self.visible_highlights.clear();
+        self.pane_highlights.clear();
+        // Recompute folds in case the fold set drifted from the
+        // current document state (paranoia; the seam already runs
+        // on every reparse, but `<C-l>` is the explicit "reset"
+        // hook so we err on the side of re-running it).
+        self.recompute_folds();
+        // Tell the runtime to clear the terminal on next frame.
+        self.pending_redraw = true;
+        self.set_message(EchoLevel::Info, "redraw".to_string());
     }
 
     /// Step through the position history filtered to jump-class entries
@@ -11624,6 +11680,75 @@ mod tests {
         // Navigate Left -> active=0.
         a.apply(Action::NavigatePane(PaneDirection::Left));
         assert_eq!(a.pane_tree.active_index(), 0);
+    }
+
+    #[test]
+    fn ctrl_l_redraws_screen_and_invalidates_caches() {
+        // `<C-l>` is the user-visible escape hatch for visual
+        // glitches. The action must:
+        // - clear the visible-highlight + pane-highlight caches so
+        //   the next frame repopulates from scratch;
+        // - flag the runtime to clear the terminal on next frame;
+        // - force a fresh parser run inside this same `apply` (the
+        //   end-of-apply `maybe_reparse_syntax` re-syncs against
+        //   the bumped version mirror, so by the time the user
+        //   sees the next frame the tree matches the document).
+        let mut a = app_with("fn main() {}\n", 10);
+        a.pane_highlights.insert(0, vec![Vec::new(); 1]);
+        a.pending_redraw = false;
+        a.apply(Action::RedrawScreen);
+        assert!(a.pending_redraw, "runtime should clear terminal next frame");
+        assert!(
+            a.pane_highlights.is_empty(),
+            "pane highlights cache must reset (so next frame repopulates from scratch)"
+        );
+        // Post-apply, the version mirror equals the document's
+        // version because the end-of-apply reparse already ran.
+        // The intermediate `u64::MAX` value is gone; that's the
+        // desired flow -- a single keystroke produces an
+        // already-fresh tree.
+        assert_eq!(
+            a.last_parsed_text_version,
+            a.document.text_version(),
+            "post-apply reparse must have synced the version mirror"
+        );
+        let msg = a.last_message.as_ref().expect("info echo");
+        assert!(msg.text.contains("redraw"), "user-visible echo: {msg:?}");
+    }
+
+    #[test]
+    fn dismissing_tree_preserves_document_syntax_state() {
+        // Regression: opening `:Tree` and pressing `q` to dismiss
+        // it returned to the document with `self.syntax = None`,
+        // so the renderer fell back to plain text (no
+        // colours). Cause: the on-tree-open snapshot moved syntax
+        // into the document entry, then activate_document on
+        // dismiss called snapshot_active_document again and
+        // overwrote the entry's stashed syntax with None.
+        let dir = std::env::temp_dir().join(format!("lattice-tree-syntax-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let mut a = app_with("fn main() {}\n", 10);
+        a.terminal_width = Some(80);
+        // Wire up a Rust syntax instance so there's something to lose.
+        a.syntax = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust).unwrap();
+        if let Some(s) = a.syntax.as_mut() {
+            s.parse(&a.document.text());
+        }
+        // Open the tree, then dismiss.
+        a.command_line = format!("Tree {}", dir.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(matches!(a.active_buffer, crate::buffers::BufferKind::FileTree));
+        // `:TreeClose` (the path `q` takes in the tree).
+        a.command_line = "TreeClose".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(matches!(a.active_buffer, crate::buffers::BufferKind::Document));
+        assert!(
+            a.syntax.is_some(),
+            "syntax must survive the tree round-trip"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

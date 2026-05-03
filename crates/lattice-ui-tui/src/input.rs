@@ -325,6 +325,12 @@ fn translate_normal(
             KeyCode::Char('r') => Action::Redo,
             KeyCode::Char('o') => Action::JumpHistoryBack,
             KeyCode::Char('i') => Action::JumpHistoryForward,
+            // `<C-l>` -- vim's "redraw screen" key. Reparses syntax
+            // and tells the runtime to clear the terminal so any
+            // visual glitch (stale highlight cache, leftover ANSI
+            // from a crashed sub-process, terminal-resize race)
+            // gets repainted from scratch.
+            KeyCode::Char('l') => Action::RedrawScreen,
             // Ctrl+V and Ctrl+Q both enter blockwise Visual. Vim binds
             // both for the same reason: many terminals (Konsole, Windows
             // Terminal, tmux paste-key) hijack Ctrl+V for clipboard
@@ -2280,6 +2286,18 @@ mod tests {
                 ctrl(KeyCode::Char('i'))
             ),
             Action::JumpHistoryForward
+        ));
+    }
+
+    #[test]
+    fn ctrl_l_emits_redraw_screen() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                ctrl(KeyCode::Char('l'))
+            ),
+            Action::RedrawScreen
         ));
     }
 

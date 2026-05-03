@@ -697,8 +697,10 @@ dependencies = [
  "lattice-runtime",
  "lattice-syntax",
  "ratatui",
+ "streaming-iterator",
  "thiserror 2.0.18",
  "tokio",
+ "tree-sitter",
  "unicode-width 0.2.0",
 ]
 

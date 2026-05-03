@@ -1859,28 +1859,29 @@ impl App {
 
     /// Refresh [`Self::folds`] from the active [`FoldMethod`].
     /// `manual` -- no-op (preserves user `zf` folds). The other
-    /// providers (`indent` / `markdown` / `syntax` cascade) replace
-    /// `folds` with the recomputed set, preserving the closed/open
-    /// state of any existing fold whose range matches a recomputed
-    /// one (so `zc` survives a reparse).
+    /// providers (`indent` / `markdown` / `syntax`) replace `folds`
+    /// with the recomputed set, preserving the closed/open state of
+    /// any existing fold whose identity matches a recomputed one
+    /// (so `zc` survives a reparse).
     ///
-    /// `Syntax` is a cascade until the tree-sitter scope-query
-    /// provider lands: for `.md` buffers it runs the markdown
-    /// provider, otherwise the indent provider. This keeps
-    /// `:set foldmethod=syntax` useful in v1 without claiming
-    /// tree-sitter coverage.
+    /// `Syntax` runs the language's tree-sitter `folds.scm` query
+    /// against the live parse tree and emits one fold per `@fold`
+    /// capture spanning more than one line. When the buffer's
+    /// language doesn't ship a `folds.scm` (or the parse tree
+    /// hasn't been built yet), the syntax provider cascades to the
+    /// markdown / indent providers based on the file extension --
+    /// so `:set foldmethod=syntax` is useful even on a plain-text
+    /// buffer.
     pub fn recompute_folds(&mut self) {
         if matches!(self.foldmethod, FoldMethod::Manual) {
             return;
         }
         let snapshot = self.document.snapshot();
-        let provider = self.effective_fold_provider();
-        let mut next = match provider {
+        let mut next = match self.foldmethod {
             FoldMethod::Manual => return,
             FoldMethod::Indent => crate::folds::compute_indent_folds(&snapshot.buffer),
             FoldMethod::Markdown => crate::folds::compute_markdown_folds(&snapshot.buffer),
-            // Cascade resolution above guarantees we never land here.
-            FoldMethod::Syntax => crate::folds::compute_indent_folds(&snapshot.buffer),
+            FoldMethod::Syntax => self.recompute_syntax_folds(&snapshot.buffer),
         };
         // Carry over closed-state. Identity hash (heading text +
         // depth) is the primary key so that adding a line to one
@@ -1915,28 +1916,33 @@ impl App {
         self.folds = next;
     }
 
-    /// Resolve [`Self::foldmethod`] to a concrete provider after
-    /// applying the syntax-cascade rule (markdown for `.md`, indent
-    /// otherwise). `Manual` stays `Manual`; `Indent` and `Markdown`
-    /// pass through unchanged.
-    fn effective_fold_provider(&self) -> FoldMethod {
-        match self.foldmethod {
-            FoldMethod::Syntax => {
-                let is_md = match self.document.path() {
-                    Some(p) => p
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|ext| ext.eq_ignore_ascii_case("md"))
-                        .unwrap_or(false),
-                    None => false,
-                };
-                if is_md {
-                    FoldMethod::Markdown
-                } else {
-                    FoldMethod::Indent
-                }
-            }
-            other => other,
+    /// Run the tree-sitter folds.scm provider against the live
+    /// `Syntax`, falling back to markdown / indent when the syntax
+    /// provider returns `None` (no `folds.scm` for this language,
+    /// or no parse tree yet).
+    fn recompute_syntax_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
+        if let Some(syntax) = self.syntax.as_ref()
+            && let Some(folds) = crate::folds::compute_syntax_folds(syntax)
+        {
+            return folds;
+        }
+        // Cascade: markdown for `.md`, indent otherwise. Used when
+        // the buffer's language doesn't ship a folds.scm yet (e.g.
+        // plain text) or before the first parse has run.
+        let is_md = self
+            .document
+            .path()
+            .map(|p| {
+                p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("md"))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if is_md {
+            crate::folds::compute_markdown_folds(buffer)
+        } else {
+            crate::folds::compute_indent_folds(buffer)
         }
     }
 
@@ -11141,13 +11147,48 @@ mod tests {
 
     #[test]
     fn foldmethod_syntax_cascades_to_indent_when_no_md_extension() {
+        // Plain-text buffer (no `Syntax`): syntax provider returns
+        // None and we cascade to indent.
         let mut a = app_with("def f():\n    pass\n    pass\n", 10);
         a.command_line = "set foldmethod=syntax".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod, FoldMethod::Syntax);
-        // Cascade: no .md extension → indent provider → indent fold present.
         assert!(a.folds.iter().any(|f| f.start_line == 0 && f.end_line == 2));
+    }
+
+    #[test]
+    fn foldmethod_syntax_uses_tree_sitter_for_rust_buffer() {
+        // With Syntax set up for Rust, `:set foldmethod=syntax`
+        // should produce tree-sitter folds (struct, fn, impl) rather
+        // than indent folds.
+        let mut a = app_with(
+            "struct B {\n    x: u8,\n}\n\nimpl B {\n    fn n() -> Self {\n        Self { x: 0 }\n    }\n}\n",
+            10,
+        );
+        // Wire up Rust syntax + parse the document so the fold
+        // provider has a tree to query.
+        a.syntax = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+            .unwrap();
+        if let Some(s) = a.syntax.as_mut() {
+            s.parse(&a.document.text());
+        }
+        a.command_line = "set foldmethod=syntax".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.foldmethod, FoldMethod::Syntax);
+        // Tree-sitter fold for the struct (lines 0..=2).
+        assert!(
+            a.folds.iter().any(|f| f.start_line == 0 && f.end_line >= 2),
+            "expected struct fold from tree-sitter: {:?}",
+            a.folds
+        );
+        // Tree-sitter fold for the impl (starts at line 4).
+        assert!(
+            a.folds.iter().any(|f| f.start_line == 4),
+            "expected impl fold from tree-sitter: {:?}",
+            a.folds
+        );
     }
 
     #[test]

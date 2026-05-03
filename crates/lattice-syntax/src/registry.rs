@@ -21,11 +21,21 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tree_sitter::Language;
+use tree_sitter::{Language, Query};
 use tree_sitter_highlight::HighlightConfiguration;
 
 use crate::style::CAPTURE_NAMES;
 use crate::syntax::SyntaxError;
+
+// Embedded folds.scm queries. Files live at
+// `crates/lattice-syntax/queries/<lang>/folds.scm`; we ship them in
+// the binary via `include_str!` (no runtime path lookup, parity with
+// the embedded HIGHLIGHTS_QUERY constants exposed by the
+// tree-sitter-* crates).
+const RUST_FOLDS_QUERY: &str = include_str!("../queries/rust/folds.scm");
+const PYTHON_FOLDS_QUERY: &str = include_str!("../queries/python/folds.scm");
+const JAVASCRIPT_FOLDS_QUERY: &str = include_str!("../queries/javascript/folds.scm");
+const MARKDOWN_FOLDS_QUERY: &str = include_str!("../queries/markdown/folds.scm");
 
 /// Per-language compiled state held by the shared registry.
 ///
@@ -40,6 +50,12 @@ use crate::syntax::SyntaxError;
 pub(crate) struct LangConfig {
     pub(crate) language: Language,
     pub(crate) highlight: HighlightConfiguration,
+    /// Compiled `folds.scm` query, when the language ships one.
+    /// `None` means the syntax fold provider falls through to the
+    /// indent / markdown cascades for buffers in this language --
+    /// not every language we register has folds.scm yet (e.g.
+    /// `markdown_inline`, which is purely inline content).
+    pub(crate) folds: Option<Query>,
 }
 
 /// Catalog of every supported language's parser + highlight + injection
@@ -72,6 +88,7 @@ impl LangRegistry {
                 tree_sitter_rust::HIGHLIGHTS_QUERY,
                 tree_sitter_rust::INJECTIONS_QUERY,
                 "",
+                Some(RUST_FOLDS_QUERY),
             )?,
         );
         configs.insert(
@@ -82,6 +99,7 @@ impl LangRegistry {
                 tree_sitter_python::HIGHLIGHTS_QUERY,
                 "",
                 "",
+                Some(PYTHON_FOLDS_QUERY),
             )?,
         );
         configs.insert(
@@ -92,6 +110,7 @@ impl LangRegistry {
                 tree_sitter_javascript::HIGHLIGHT_QUERY,
                 tree_sitter_javascript::INJECTIONS_QUERY,
                 tree_sitter_javascript::LOCALS_QUERY,
+                Some(JAVASCRIPT_FOLDS_QUERY),
             )?,
         );
 
@@ -111,6 +130,7 @@ impl LangRegistry {
                 tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
                 tree_sitter_md::INJECTION_QUERY_BLOCK,
                 "",
+                Some(MARKDOWN_FOLDS_QUERY),
             )?,
         );
         configs.insert(
@@ -121,10 +141,17 @@ impl LangRegistry {
                 tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
                 tree_sitter_md::INJECTION_QUERY_INLINE,
                 "",
+                None,
             )?,
         );
 
         Ok(Arc::new(Self { configs }))
+    }
+
+    /// The compiled `folds.scm` `Query` for `name`, when the language
+    /// ships one. Used by `lattice-ui-tui::folds::compute_syntax_folds`.
+    pub fn folds_query(&self, name: &str) -> Option<&Query> {
+        self.lookup(name).and_then(|c| c.folds.as_ref())
     }
 
     /// Resolve the `tree_sitter::Language` for `name` (with the same
@@ -180,14 +207,24 @@ fn build_config(
     highlights: &str,
     injections: &str,
     locals: &str,
+    folds: Option<&str>,
 ) -> Result<LangConfig, SyntaxError> {
     let mut highlight =
         HighlightConfiguration::new(language.clone(), name, highlights, injections, locals)
             .map_err(|e| SyntaxError::Language(e.to_string()))?;
     highlight.configure(CAPTURE_NAMES);
+    let folds = match folds {
+        Some(src) => Some(
+            Query::new(&language, src).map_err(|e| {
+                SyntaxError::Language(format!("compile {name} folds.scm: {e}"))
+            })?,
+        ),
+        None => None,
+    };
     Ok(LangConfig {
         language,
         highlight,
+        folds,
     })
 }
 
@@ -213,6 +250,30 @@ mod tests {
         assert!(r.has_lang("py"));
         assert!(r.has_lang("js"));
         assert!(r.has_lang("md"));
+    }
+
+    #[test]
+    fn folds_query_compiled_for_each_language_with_folds_scm() {
+        let r = LangRegistry::standard().unwrap();
+        assert!(r.folds_query("rust").is_some(), "rust folds.scm");
+        assert!(r.folds_query("python").is_some(), "python folds.scm");
+        assert!(r.folds_query("javascript").is_some(), "javascript folds.scm");
+        assert!(r.folds_query("markdown").is_some(), "markdown folds.scm");
+        // Inline grammar is purely inline content; no folds.scm is
+        // appropriate. The block grammar handles markdown folding.
+        assert!(
+            r.folds_query("markdown_inline").is_none(),
+            "markdown_inline should not ship a folds.scm"
+        );
+    }
+
+    #[test]
+    fn folds_query_resolves_aliases() {
+        let r = LangRegistry::standard().unwrap();
+        assert!(r.folds_query("rs").is_some());
+        assert!(r.folds_query("py").is_some());
+        assert!(r.folds_query("js").is_some());
+        assert!(r.folds_query("md").is_some());
     }
 
     #[test]

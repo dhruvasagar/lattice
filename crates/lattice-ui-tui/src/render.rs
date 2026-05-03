@@ -379,8 +379,8 @@ fn draw_pane_status_line(
 ) {
     let label = match pane.buffer {
         crate::buffers::BufferKind::Document => app
-            .documents
-            .get(&pane.buffer_id)
+            .buffers
+            .document(pane.buffer_id)
             .map(|e| {
                 let path = e
                     .handle
@@ -397,8 +397,8 @@ fn draw_pane_status_line(
             .map(|h| format!("[help] {}", h.title))
             .unwrap_or_else(|| "[help]".to_string()),
         crate::buffers::BufferKind::FileTree => app
-            .file_tree
-            .as_ref()
+            .buffers
+            .file_tree(pane.buffer_id)
             .map(|t| format!("[tree] {}", t.root.display()))
             .unwrap_or_else(|| "[tree]".to_string()),
     };
@@ -432,7 +432,7 @@ fn draw_pane_status_line(
 /// panes; deferred until the user focuses the pane (full rendering
 /// kicks in via [`draw_buffer`] then). Long lines truncate to fit.
 fn draw_inactive_document(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pane::PaneState) {
-    let Some(entry) = app.documents.get(&pane.buffer_id) else {
+    let Some(entry) = app.buffers.document(pane.buffer_id) else {
         return;
     };
     let snap = entry.handle.snapshot();
@@ -567,7 +567,7 @@ fn draw_file_tree_pane(
     pane: &crate::pane::PaneState,
     is_active: bool,
 ) {
-    let Some(tree) = app.file_tree.as_ref() else {
+    let Some(tree) = app.buffers.file_tree(pane.buffer_id) else {
         return;
     };
     // Inactive file-tree panes use the pane's stashed cursor /

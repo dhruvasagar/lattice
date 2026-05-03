@@ -38,7 +38,8 @@ use lattice_syntax::{Lang, LangRegistry, StyledSpan, Syntax};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::buffers::{BufferId, BufferKind};
+use crate::buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
+use crate::buffers::{BufferFlags, BufferId, BufferKind};
 use crate::excommand;
 use crate::file_tree::{FileTreeBuffer, FileTreeEntryKind};
 use crate::help::{HelpBuffer, HelpDisplayMode, command_link, key_link};
@@ -577,22 +578,6 @@ pub struct UnnamedRegister {
     pub kind: YankKind,
 }
 
-/// Per-document storage used by the App's buffer registry
-/// (DESIGN.md §5.9). Each open Document buffer has one of these:
-/// the actor handle, the per-document tree-sitter [`Syntax`]
-/// state, and the cached `text_version` last fed to
-/// `syntax.parse(...)`. The *active* buffer's fields are also
-/// mirrored on [`App`] for hot-path access; switching buffers
-/// snapshots the App's hot-path fields back into the source
-/// entry and loads from the destination's.
-#[derive(Debug)]
-pub struct DocumentEntry {
-    pub id: BufferId,
-    pub handle: DocumentHandle,
-    pub syntax: Option<Syntax>,
-    pub last_parsed_text_version: u64,
-}
-
 pub struct App {
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable [`Document`]; mutations route
@@ -607,12 +592,16 @@ pub struct App {
     /// document via `:bnext` / `:e FILE` rotates `Self::document` /
     /// `Self::syntax` etc. to the new active.
     pub document_buffer_id: BufferId,
-    /// All currently-open Document buffers, keyed by [`BufferId`]
-    /// (DESIGN.md §5.9 buffer registry). The active buffer's
-    /// metadata also lives on hot-path fields ([`Self::document`],
-    /// [`Self::syntax`], etc.) -- switching saves the active fields
-    /// back into this map and loads from the destination's entry.
-    pub documents: HashMap<BufferId, DocumentEntry>,
+    /// Unified buffer registry (DESIGN.md §5.9). Holds every open
+    /// buffer regardless of kind -- documents, file trees, future
+    /// outline / diagnostics views -- under one [`BufferId`]
+    /// keyspace. `:bn` / `:bp` / `:ls` / `:bd` operate on this
+    /// registry; `:e FILE` and `:Tree path` insert into it. The
+    /// *active* document's hot-path state mirrors fields on App
+    /// directly ([`Self::document`], [`Self::syntax`], etc.); the
+    /// matching registry entry's `syntax` slot stays `None` until
+    /// a switch saves the active state back.
+    pub buffers: BufferRegistry,
     /// Which buffer the input pipeline currently routes to. When a
     /// help overlay is open this is `Help`; otherwise `Document`.
     /// Motions, jumps, and `<C-o>` / `<C-i>` consult this to pick
@@ -829,12 +818,6 @@ pub struct App {
     /// centred popup; [`Self::help_display_mode`] picks between
     /// surfaces.
     pub help_buffer: Option<HelpBuffer>,
-    /// Active file-tree buffer (DESIGN.md §5.9 buffer-as-content).
-    /// `Some` while `:Tree` has opened a hierarchy view; `<CR>` on
-    /// a directory toggles expansion, on a file opens it via the
-    /// standard `:e FILE` path. v1 holds at most one tree at a
-    /// time.
-    pub file_tree: Option<FileTreeBuffer>,
     /// Active hover popup (DESIGN.md §5.9.6, §5.11.4). `Some` while
     /// a transient floating panel is anchored at a buffer position
     /// (LSP hover, manual `:hover`, future plugin contributions).
@@ -1165,10 +1148,11 @@ impl App {
         // `self.last_parsed_text_version` mirror what's stored
         // here for the active buffer; switching buffers swaps
         // them.
-        let mut documents: HashMap<BufferId, DocumentEntry> = HashMap::new();
-        documents.insert(
-            document_buffer_id,
-            DocumentEntry {
+        let mut buffers = BufferRegistry::new();
+        buffers.insert(BufferEntry {
+            id: document_buffer_id,
+            flags: BufferFlags::default(),
+            data: BufferData::Document(DocumentEntry {
                 id: document_buffer_id,
                 handle: document.clone(),
                 // Active buffer's syntax lives on App.syntax for
@@ -1176,12 +1160,12 @@ impl App {
                 // until a switch saves the active state back.
                 syntax: None,
                 last_parsed_text_version: 0,
-            },
-        );
+            }),
+        });
         Self {
             document,
             document_buffer_id,
-            documents,
+            buffers,
             active_buffer: BufferKind::Document,
             pane_tree,
             cursor: Position::ZERO,
@@ -1237,7 +1221,6 @@ impl App {
             command_history_cursor: None,
             command_history_pending: None,
             help_buffer: None,
-            file_tree: None,
             hover_popup: None,
             help_display_mode: HelpDisplayMode::default(),
             completion_registry,
@@ -2579,6 +2562,18 @@ impl App {
                 }
             },
         };
+        // Directories defer to `:Tree path` so `:e folder` opens
+        // the file-tree buffer (vim's `:Explore` semantics --
+        // editing a directory shows its contents). Probe the path
+        // before parsing it as a file; if the metadata read fails
+        // we fall through and let `Document::open` produce the
+        // right error.
+        if let Ok(meta) = std::fs::metadata(&target)
+            && meta.is_dir()
+        {
+            self.do_open_file_tree(Some(target));
+            return;
+        }
         // If `target` is already open, switch to it. The dirty
         // check only applies when we'd discard the current buffer
         // -- switching to a different *open* buffer leaves the
@@ -2656,9 +2651,10 @@ impl App {
         }
         let new_handle = spawn_document(new_doc, self.registry.clone());
         let new_id = BufferId::next();
-        self.documents.insert(
-            new_id,
-            DocumentEntry {
+        self.buffers.insert(BufferEntry {
+            id: new_id,
+            flags: BufferFlags::default(),
+            data: BufferData::Document(DocumentEntry {
                 id: new_id,
                 handle: new_handle.clone(),
                 // Active buffer's syntax lives on App.syntax for
@@ -2666,12 +2662,14 @@ impl App {
                 // switch.
                 syntax: None,
                 last_parsed_text_version: 0,
-            },
-        );
+            }),
+        });
         // Save the currently-active buffer's hot-path state into
         // its registry entry, then load the new buffer's into the
         // hot path.
+        self.snapshot_active_pane();
         self.snapshot_active_document();
+        self.active_buffer = BufferKind::Document;
         self.document_buffer_id = new_id;
         self.document = new_handle;
         self.syntax = syntax;
@@ -2706,12 +2704,7 @@ impl App {
     /// Look up a buffer by file path. Used by `:e FILE` to detect
     /// "already open"; later by `:b NAME` for completion.
     fn find_document_by_path(&self, path: &std::path::Path) -> Option<BufferId> {
-        for (id, entry) in self.documents.iter() {
-            if entry.handle.path() == Some(path.to_path_buf()) {
-                return Some(*id);
-            }
-        }
-        None
+        self.buffers.document_with_path(path)
     }
 
     /// Save the currently-active buffer's hot-path state
@@ -2719,7 +2712,7 @@ impl App {
     /// [`DocumentEntry`]. Called before switching the active
     /// buffer so the rotation is round-trippable.
     fn snapshot_active_document(&mut self) {
-        if let Some(entry) = self.documents.get_mut(&self.document_buffer_id) {
+        if let Some(entry) = self.buffers.document_mut(self.document_buffer_id) {
             entry.syntax = self.syntax.take();
             entry.last_parsed_text_version = self.last_parsed_text_version;
         }
@@ -2730,11 +2723,11 @@ impl App {
     /// destination's entry. No-op if `id` is already active or
     /// not registered.
     pub fn activate_document(&mut self, id: BufferId) {
-        if id == self.document_buffer_id {
+        if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
             return;
         }
-        if !self.documents.contains_key(&id) {
-            self.set_message(EchoLevel::Error, format!("buffer #{} not found", id.0));
+        if self.buffers.document(id).is_none() {
+            self.set_message(EchoLevel::Error, format!("buffer #{} not a document", id.0));
             return;
         }
         // Save active pane's cursor/scroll first; the active pane
@@ -2743,9 +2736,9 @@ impl App {
         self.snapshot_active_document();
         // Load destination.
         let entry = self
-            .documents
-            .get_mut(&id)
-            .expect("contains_key checked above");
+            .buffers
+            .document_mut(id)
+            .expect("document() lookup above succeeded");
         self.document = entry.handle.clone();
         self.syntax = entry.syntax.take();
         self.last_parsed_text_version = entry.last_parsed_text_version;
@@ -2781,97 +2774,103 @@ impl App {
         );
     }
 
-    /// `:bnext` / `:bn` -- cycle to the next open document buffer
-    /// in id order.
+    /// `:bnext` / `:bn` -- cycle to the next listed buffer in id
+    /// order, regardless of kind. Skips unlisted buffers; if every
+    /// other buffer is unlisted, no-op.
     fn do_buffer_next(&mut self) {
-        let Some(target) = self.next_document_id() else {
-            self.set_message(EchoLevel::Info, "only one buffer".to_string());
+        let Some(target) = self.next_listed_buffer_id() else {
+            self.set_message(EchoLevel::Info, "only one listed buffer".to_string());
             return;
         };
-        self.activate_document(target);
+        self.activate_buffer(target);
     }
 
-    /// `:bprev` / `:bp` -- cycle to the previous open buffer.
+    /// `:bprev` / `:bp` -- cycle to the previous listed buffer.
     fn do_buffer_prev(&mut self) {
-        let Some(target) = self.prev_document_id() else {
-            self.set_message(EchoLevel::Info, "only one buffer".to_string());
+        let Some(target) = self.prev_listed_buffer_id() else {
+            self.set_message(EchoLevel::Info, "only one listed buffer".to_string());
             return;
         };
-        self.activate_document(target);
+        self.activate_buffer(target);
     }
 
-    /// Document buffer ids in stable ascending order (HashMap iter
-    /// is undefined; we sort by id for `:bnext` / `:bprev` to be
-    /// deterministic).
-    fn document_ids_sorted(&self) -> Vec<BufferId> {
-        let mut ids: Vec<BufferId> = self.documents.keys().copied().collect();
-        ids.sort_by_key(|id| id.0);
-        ids
+    /// Listed buffer ids in ascending order across kinds. `:bn` /
+    /// `:bp` cycle through this; unlisted buffers (vim
+    /// `nobuflisted`) are filtered out.
+    fn listed_buffer_ids_sorted(&self) -> Vec<BufferId> {
+        self.buffers.listed_ids_sorted()
     }
 
-    fn next_document_id(&self) -> Option<BufferId> {
-        let ids = self.document_ids_sorted();
+    /// What `:bn` / `:bp` consider the "current" buffer for
+    /// stepping. The active pane's buffer_id is the source of
+    /// truth (the active pane is what the user sees).
+    fn active_pane_buffer_id(&self) -> BufferId {
+        self.pane_tree.active().buffer_id
+    }
+
+    fn next_listed_buffer_id(&self) -> Option<BufferId> {
+        let ids = self.listed_buffer_ids_sorted();
         if ids.len() <= 1 {
             return None;
         }
-        let pos = ids.iter().position(|id| *id == self.document_buffer_id)?;
+        let cur = self.active_pane_buffer_id();
+        let pos = ids.iter().position(|id| *id == cur)?;
         Some(ids[(pos + 1) % ids.len()])
     }
 
-    fn prev_document_id(&self) -> Option<BufferId> {
-        let ids = self.document_ids_sorted();
+    fn prev_listed_buffer_id(&self) -> Option<BufferId> {
+        let ids = self.listed_buffer_ids_sorted();
         if ids.len() <= 1 {
             return None;
         }
-        let pos = ids.iter().position(|id| *id == self.document_buffer_id)?;
+        let cur = self.active_pane_buffer_id();
+        let pos = ids.iter().position(|id| *id == cur)?;
         Some(ids[if pos == 0 { ids.len() - 1 } else { pos - 1 }])
     }
 
-    /// `:ls` / `:buffers` -- render every open Document buffer in
-    /// a help-style view. Each entry is a markdown link to that
-    /// buffer (`[#N path](command:buffer:N)`); future bindings
-    /// (`gf`-style follow) can dispatch via the same scheme.
+    /// `:ls` / `:buffers` -- render every open buffer (regardless
+    /// of kind) in a help-style view. The `%` marker points at
+    /// whichever buffer the active pane is currently showing.
     fn do_list_buffers(&mut self) {
-        let ids = self.document_ids_sorted();
+        let ids = self.buffers.sorted_ids();
+        let active_id = self.active_pane_buffer_id();
+        let doc_count = self.buffers.document_ids_sorted().len();
+        let tree_count = self.buffers.file_tree_ids_sorted().len();
         let mut lines: Vec<String> = Vec::new();
-        let panel_count = if self.file_tree.is_some() { 1 } else { 0 };
         lines.push(format!(
-            "{} open buffer(s) ({} document, {} panel):",
-            ids.len() + panel_count,
+            "{} open buffer(s) ({} document, {} tree):",
             ids.len(),
-            panel_count
+            doc_count,
+            tree_count
         ));
         lines.push(String::new());
         for id in ids {
-            let Some(entry) = self.documents.get(&id) else {
+            let Some(entry) = self.buffers.get(id) else {
                 continue;
             };
-            let path = entry
-                .handle
-                .path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "(no file)".to_string());
-            let dirty = if entry.handle.dirty() { "[+]" } else { "   " };
-            let active = if id == self.document_buffer_id
-                && matches!(self.active_buffer, BufferKind::Document)
-            {
-                "%"
-            } else {
-                " "
-            };
-            lines.push(format!("  {active} #{:<3} doc  {dirty} {path}", id.0));
-        }
-        if let Some(t) = self.file_tree.as_ref() {
-            let active = if matches!(self.active_buffer, BufferKind::FileTree) {
-                "%"
-            } else {
-                " "
-            };
-            lines.push(format!(
-                "  {active} #{:<3} tree     {}",
-                t.id.0,
-                t.root.display()
-            ));
+            let active_marker = if id == active_id { "%" } else { " " };
+            let listed_marker = if entry.flags.listed { " " } else { "u" };
+            match &entry.data {
+                BufferData::Document(d) => {
+                    let path = d
+                        .handle
+                        .path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "(no file)".to_string());
+                    let dirty = if d.handle.dirty() { "[+]" } else { "   " };
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} doc  {dirty} {path}",
+                        id.0
+                    ));
+                }
+                BufferData::FileTree(t) => {
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} tree     {}",
+                        id.0,
+                        t.root.display()
+                    ));
+                }
+            }
         }
         self.open_help(
             HelpBuffer::from_lines("buffers", lines)
@@ -2879,41 +2878,98 @@ impl App {
         );
     }
 
-    /// `:bd[elete]` -- close the active document buffer. v1 picks
-    /// any other buffer to activate; if no others remain, the close
-    /// is rejected (App is never bufferless). With `!` the dirty
-    /// check is bypassed.
+    /// `:bd[elete]` -- close the active buffer (whichever the
+    /// active pane shows). v1 picks any other buffer to activate;
+    /// if no others remain, the close is rejected. For document
+    /// buffers `!` bypasses the dirty check; tree buffers are
+    /// always read-only and skip the dirty guard.
     fn do_buffer_delete(&mut self, force: bool) {
-        if self.documents.len() <= 1 {
+        if self.buffers.len() <= 1 {
             self.set_message(
                 EchoLevel::Error,
                 "Cannot delete the only buffer".to_string(),
             );
             return;
         }
-        if !force && self.document.dirty() {
+        let to_remove = self.active_pane_buffer_id();
+        // Dirty check applies to documents only.
+        if let Some(d) = self.buffers.document(to_remove)
+            && !force
+            && d.handle.dirty()
+        {
             self.set_message(
                 EchoLevel::Error,
                 "no write since last change (add ! to override)".to_string(),
             );
             return;
         }
-        let to_remove = self.document_buffer_id;
-        // Pick a successor.
-        let Some(successor) = self.next_document_id() else {
+        // Pick a successor (any other buffer in id order).
+        let ids = self.buffers.sorted_ids();
+        let Some(successor) = ids.iter().copied().find(|id| *id != to_remove) else {
             return;
         };
-        self.activate_document(successor);
-        self.documents.remove(&to_remove);
-        // If any pane still references the removed buffer, repoint
-        // it at the successor.
-        let new_id = self.document_buffer_id;
+        self.activate_buffer(successor);
+        self.buffers.remove(to_remove);
+        // Re-point any pane still referencing the removed buffer.
+        let new_id = self.active_pane_buffer_id();
+        let new_kind = self.active_buffer;
         for pane in self.pane_tree.leaves_mut() {
-            if matches!(pane.buffer, BufferKind::Document) && pane.buffer_id == to_remove {
+            if pane.buffer_id == to_remove {
                 pane.buffer_id = new_id;
+                pane.buffer = new_kind;
             }
         }
         self.set_message(EchoLevel::Info, format!("buffer #{} deleted", to_remove.0));
+    }
+
+    /// Switch the active pane to whatever buffer `id` references,
+    /// regardless of kind. Document buffers route through
+    /// [`Self::activate_document`]; tree buffers update the active
+    /// pane + load the tree's stash.
+    pub fn activate_buffer(&mut self, id: BufferId) {
+        let kind = match self.buffers.get(id) {
+            Some(entry) => entry.kind(),
+            None => {
+                self.set_message(EchoLevel::Error, format!("buffer #{} not found", id.0));
+                return;
+            }
+        };
+        match kind {
+            BufferKind::Document => self.activate_document(id),
+            BufferKind::FileTree => self.activate_file_tree(id),
+            BufferKind::Help => {
+                // Help isn't in the registry yet; ignore.
+            }
+        }
+    }
+
+    /// Switch the active pane to the file-tree buffer with `id`.
+    /// Snapshots the current active state first; the pane's
+    /// stashed cursor / scroll load into the tree's hot fields
+    /// via [`Self::load_active_pane`].
+    pub fn activate_file_tree(&mut self, id: BufferId) {
+        if self.buffers.file_tree(id).is_none() {
+            self.set_message(EchoLevel::Error, format!("buffer #{} not a tree", id.0));
+            return;
+        }
+        if id == self.active_pane_buffer_id() && matches!(self.active_buffer, BufferKind::FileTree)
+        {
+            return;
+        }
+        self.snapshot_active_pane();
+        self.snapshot_active_document();
+        self.active_buffer = BufferKind::FileTree;
+        let pane = self.pane_tree.active_mut();
+        pane.buffer = BufferKind::FileTree;
+        pane.buffer_id = id;
+        // Restore the tree's last-known cursor / scroll so the
+        // active hot path agrees with what the registry stored.
+        if let Some(t) = self.buffers.file_tree(id) {
+            let stash_cursor = t.cursor;
+            let stash_scroll = t.scroll as u32;
+            self.pane_tree.active_mut().cursor = stash_cursor;
+            self.pane_tree.active_mut().scroll = stash_scroll;
+        }
     }
 
     /// `:set [option | option=value | nooption]`. Parses against
@@ -3357,12 +3413,14 @@ impl App {
         self.pending_count = 0;
         self.op_count = 0;
         let viewport = self.viewport_height as usize;
-        let Some(t) = self.file_tree.as_mut() else {
+        let active_id = self.active_pane_buffer_id();
+        let registry = self.registry.clone();
+        let Some(t) = self.buffers.file_tree_mut(active_id) else {
             return;
         };
         let cancel = lattice_runtime::CancellationToken::never();
         if let Ok(target) =
-            lattice_grammar::execute_motion_only(&self.registry, &t.content, t.cursor, inv, &cancel)
+            lattice_grammar::execute_motion_only(&registry, &t.content, t.cursor, inv, &cancel)
         {
             let dx = target.byte as i32 - t.cursor.byte as i32;
             let dy = target.line as i32 - t.cursor.line as i32;
@@ -4159,19 +4217,13 @@ impl App {
 
     /// Drop singleton non-document buffers (currently: file tree)
     /// when no pane still references them. Document buffers are
-    /// not GC'd here -- they stay in the registry so `:bn` can
-    /// reach them after a pane close. Called from
-    /// [`Self::do_close_pane`].
-    fn gc_unreferenced_panel_buffers(&mut self) {
-        let any_tree = self
-            .pane_tree
-            .leaves()
-            .iter()
-            .any(|p| matches!(p.buffer, BufferKind::FileTree));
-        if !any_tree {
-            self.file_tree = None;
-        }
-    }
+    /// no-op stub left in for backwards compatibility with the
+    /// pre-registry refactor. Trees now live in the unified buffer
+    /// registry alongside documents (DESIGN.md §5.9), so closing
+    /// the only pane that referenced a tree leaves the tree in the
+    /// registry where `:bn` / `:bp` can reach it. Use `:bd` to
+    /// actually drop a tree buffer.
+    fn gc_unreferenced_panel_buffers(&mut self) {}
 
     /// Step cardinally to the spatial neighbour of the active pane.
     /// Geometry comes from [`PaneTree::compute_rects`] so the walk
@@ -4201,18 +4253,29 @@ impl App {
     /// pane's stash. Called before any operation that flips which
     /// pane is active.
     fn snapshot_active_pane(&mut self) {
-        let active = self.pane_tree.active_mut();
-        active.cursor = self.cursor;
-        active.scroll = self.scroll;
-        // Help cursor lives on `help_buffer.cursor`; if the active
-        // pane is a Help leaf, we mirror that into the stash for
-        // symmetry. (Useful when B.1.c lets a help buffer outlive
-        // its pane being deactivated.)
-        if matches!(self.active_buffer, BufferKind::Help)
-            && let Some(h) = self.help_buffer.as_ref()
-        {
-            active.cursor = h.cursor;
-            active.scroll = h.scroll as u32;
+        match self.active_buffer {
+            BufferKind::Document => {
+                let active = self.pane_tree.active_mut();
+                active.cursor = self.cursor;
+                active.scroll = self.scroll;
+            }
+            BufferKind::Help => {
+                if let Some(h) = self.help_buffer.as_ref() {
+                    let active = self.pane_tree.active_mut();
+                    active.cursor = h.cursor;
+                    active.scroll = h.scroll as u32;
+                }
+            }
+            BufferKind::FileTree => {
+                let active_id = self.pane_tree.active().buffer_id;
+                if let Some(t) = self.buffers.file_tree(active_id) {
+                    let cursor = t.cursor;
+                    let scroll = t.scroll as u32;
+                    let active = self.pane_tree.active_mut();
+                    active.cursor = cursor;
+                    active.scroll = scroll;
+                }
+            }
         }
     }
 
@@ -4235,7 +4298,7 @@ impl App {
                 }
             }
             BufferKind::FileTree => {
-                if let Some(t) = self.file_tree.as_mut() {
+                if let Some(t) = self.buffers.file_tree_mut(pane.buffer_id) {
                     t.cursor = pane.cursor;
                     t.scroll = pane.scroll as usize;
                 }
@@ -4306,10 +4369,14 @@ impl App {
         self.pending = Pending::None;
     }
 
-    /// `:Tree [path]`. Opens a [`FileTreeBuffer`] rooted at `path`
-    /// (or the current document's parent dir / cwd if absent),
-    /// flips the active pane to file-tree mode. Failure to read
-    /// the directory surfaces as an echo error.
+    /// `:Tree [path]` (DESIGN.md §5.9 buffer-as-content). Opens a
+    /// [`FileTreeBuffer`] rooted at `path` (or the current
+    /// document's parent dir / cwd if absent) and inserts it into
+    /// the unified buffer registry. If a tree at the same root is
+    /// already open, the active pane switches to it instead of
+    /// spawning a duplicate -- matching `:e FILE`'s "already open"
+    /// semantics. The active pane flips to the new (or existing)
+    /// tree buffer.
     fn do_open_file_tree(&mut self, root: Option<std::path::PathBuf>) {
         let root = match root {
             Some(p) => p,
@@ -4328,6 +4395,15 @@ impl App {
                 },
             },
         };
+        // De-dup: if the same root is already open, just switch.
+        if let Some(existing_id) = self.buffers.file_tree_with_root(&root) {
+            self.activate_file_tree(existing_id);
+            self.set_message(
+                EchoLevel::Info,
+                format!("tree: {} (already open)", root.display()),
+            );
+            return;
+        }
         let tree = match FileTreeBuffer::open(&root) {
             Ok(t) => t,
             Err(e) => {
@@ -4338,45 +4414,71 @@ impl App {
                 return;
             }
         };
-        // Record current cursor on the position-history ring so
-        // `<C-o>` from inside the tree returns to the document spot.
+        // Record the current cursor on the position-history ring
+        // so `<C-o>` from inside the tree returns to the document
+        // spot.
         if matches!(self.active_buffer, BufferKind::Document) {
             let cur = self.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
-        self.file_tree = Some(tree);
+        let new_id = tree.id;
+        self.buffers.insert(BufferEntry {
+            id: new_id,
+            flags: BufferFlags::default(),
+            data: BufferData::FileTree(tree),
+        });
+        // Snapshot whichever buffer was active so its hot-path
+        // state lands in the registry, then point the active pane
+        // at the new tree.
+        self.snapshot_active_pane();
+        self.snapshot_active_document();
         self.active_buffer = BufferKind::FileTree;
-        // The active pane now points at the file tree.
         let pane = self.pane_tree.active_mut();
         pane.buffer = BufferKind::FileTree;
-        pane.buffer_id = self
-            .file_tree
-            .as_ref()
-            .map(|t| t.id)
-            .unwrap_or(self.document_buffer_id);
+        pane.buffer_id = new_id;
         pane.cursor = Position::ZERO;
         pane.scroll = 0;
         self.pending = Pending::None;
         self.set_message(EchoLevel::Info, format!("tree: {}", root.display()));
     }
 
-    /// Inverse of [`Self::do_open_file_tree`]: drop the file tree
-    /// and route input back to the document. Idempotent.
+    /// `:TreeClose` -- close the active pane's tree by swapping
+    /// the active pane back to a Document buffer (the original
+    /// document if available; whichever document is registered
+    /// otherwise) and dropping the tree from the registry.
     fn dismiss_file_tree(&mut self) {
-        self.file_tree = None;
-        self.active_buffer = BufferKind::Document;
-        let pane = self.pane_tree.active_mut();
-        pane.buffer = BufferKind::Document;
-        pane.buffer_id = self.document_buffer_id;
+        if !matches!(self.active_buffer, BufferKind::FileTree) {
+            return;
+        }
+        let tree_id = self.active_pane_buffer_id();
+        // Pick a successor: prefer any document buffer.
+        let successor = self
+            .buffers
+            .document_ids_sorted()
+            .first()
+            .copied()
+            .unwrap_or(self.document_buffer_id);
+        self.activate_buffer(successor);
+        self.buffers.remove(tree_id);
+        // Re-point any other panes that referenced the closed tree.
+        let new_kind = self.active_buffer;
+        let new_id = self.active_pane_buffer_id();
+        for pane in self.pane_tree.leaves_mut() {
+            if pane.buffer_id == tree_id {
+                pane.buffer = new_kind;
+                pane.buffer_id = new_id;
+            }
+        }
         self.pending = Pending::None;
     }
 
-    /// `<CR>` while a file tree is active: if the cursor is on a
-    /// directory, toggle expansion; if on a file, open it via the
-    /// standard `:e FILE` path. Replaces the Help-only `<CR>`
-    /// follow-link binding when active_buffer == FileTree.
+    /// `<CR>` while the active pane shows a file-tree buffer: if
+    /// the cursor is on a directory row, toggle expansion; if on
+    /// a file, open it via the standard `:e FILE` path (which now
+    /// switches to / spawns a Document buffer in the active pane).
     fn do_file_tree_follow(&mut self) {
-        let Some(tree) = self.file_tree.as_mut() else {
+        let active_id = self.active_pane_buffer_id();
+        let Some(tree) = self.buffers.file_tree_mut(active_id) else {
             return;
         };
         let idx = tree.cursor.line as usize;
@@ -4391,7 +4493,9 @@ impl App {
             }
             FileTreeEntryKind::File => {
                 let path = entry.path.clone();
-                self.dismiss_file_tree();
+                // Open the file in the active pane (replaces the
+                // tree). The user can split first (`<C-w>v`) if
+                // they want to keep the tree visible.
                 self.do_edit(Some(path), false);
             }
         }
@@ -4744,25 +4848,20 @@ impl App {
         self.position_history_cursor = self.position_history.len();
     }
 
-    /// Id of whichever buffer is currently active. Used by
-    /// [`Self::push_position_history`] to tag entries with their
-    /// originating buffer.
+    /// Id of whichever buffer is currently active. The active
+    /// pane's `buffer_id` is the source of truth -- documents and
+    /// trees both live in [`Self::buffers`] under one id space.
+    /// Help still lives outside the registry as a transient
+    /// overlay; while help is active we return its id, otherwise
+    /// the active pane's id.
     pub fn active_buffer_id(&self) -> BufferId {
         match self.active_buffer {
-            BufferKind::Document => self.document_buffer_id,
             BufferKind::Help => self
                 .help_buffer
                 .as_ref()
                 .map(|h| h.id)
-                // Fallback: an active=Help with no help_buffer is
-                // an inconsistent transient -- return doc id so the
-                // history record at least typechecks.
                 .unwrap_or(self.document_buffer_id),
-            BufferKind::FileTree => self
-                .file_tree
-                .as_ref()
-                .map(|t| t.id)
-                .unwrap_or(self.document_buffer_id),
+            BufferKind::Document | BufferKind::FileTree => self.pane_tree.active().buffer_id,
         }
     }
 
@@ -4825,18 +4924,16 @@ impl App {
             self.set_message(EchoLevel::Error, format!("no {empty_label}"));
             return;
         }
-        // Reachable: same kind AND same id (so a stale Help entry
-        // doesn't surface after the help buffer has been replaced).
-        // Document ids are stable for the App lifetime, so document
-        // entries always pass.
-        let doc_id = self.document_buffer_id;
+        // Reachable: the registry still holds an entry for the
+        // recorded buffer id (or, for the transient Help overlay,
+        // the singleton id matches). Document and tree buffers
+        // both live in `self.buffers` now -- one lookup covers
+        // both kinds.
         let help_id = self.help_buffer.as_ref().map(|h| h.id);
-        let tree_id = self.file_tree.as_ref().map(|t| t.id);
         let reachable = |e: &PositionEntry| -> bool {
             match e.buffer {
-                BufferKind::Document => e.buffer_id == doc_id,
+                BufferKind::Document | BufferKind::FileTree => self.buffers.contains(e.buffer_id),
                 BufferKind::Help => help_id == Some(e.buffer_id),
-                BufferKind::FileTree => tree_id == Some(e.buffer_id),
             }
         };
         let combined = |e: &PositionEntry| pred(e) && reachable(e);
@@ -4883,9 +4980,11 @@ impl App {
             }
             BufferKind::FileTree => {
                 let viewport = self.viewport_height as usize;
-                if let Some(t) = self.file_tree.as_mut() {
+                if let Some(t) = self.buffers.file_tree_mut(entry.buffer_id) {
                     self.active_buffer = BufferKind::FileTree;
                     t.jump_cursor_to(entry.position.line, viewport);
+                    self.pane_tree.active_mut().buffer = BufferKind::FileTree;
+                    self.pane_tree.active_mut().buffer_id = entry.buffer_id;
                 }
             }
         }
@@ -5499,8 +5598,8 @@ impl App {
                 .map(|h| h.cursor)
                 .unwrap_or(self.cursor),
             BufferKind::FileTree => self
-                .file_tree
-                .as_ref()
+                .buffers
+                .file_tree(self.active_pane_buffer_id())
                 .map(|t| t.cursor)
                 .unwrap_or(self.cursor),
         }
@@ -10134,7 +10233,11 @@ mod tests {
     }
 
     #[test]
-    fn close_tree_pane_garbage_collects_file_tree() {
+    fn close_tree_pane_keeps_tree_in_registry() {
+        // Trees now live in the unified buffer registry; closing
+        // the only pane that referenced one leaves the tree
+        // accessible via `:bn` / `:bp` / `:b N`. Use `:bd` to
+        // actually drop it.
         let dir = std::env::temp_dir().join(format!("lattice-tree-gc-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         let mut a = app_with("xx", 10);
@@ -10144,10 +10247,10 @@ mod tests {
         a.command_line = format!("Tree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.file_tree.is_some());
-        // Close the tree pane via <C-w>c. Tree should be GC'd.
+        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
         a.apply(Action::ClosePane);
-        assert!(a.file_tree.is_none());
+        // Tree stays in the registry post-close.
+        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -10177,8 +10280,8 @@ mod tests {
     #[test]
     fn fresh_app_registers_initial_document() {
         let a = app_with("xx", 10);
-        assert_eq!(a.documents.len(), 1);
-        assert!(a.documents.contains_key(&a.document_buffer_id));
+        assert_eq!(a.buffers.document_ids_sorted().len(), 1);
+        assert!(a.buffers.document(a.document_buffer_id).is_some());
     }
 
     #[test]
@@ -10190,7 +10293,7 @@ mod tests {
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Both buffers exist; active switched to the new one.
-        assert_eq!(a.documents.len(), 2);
+        assert_eq!(a.buffers.document_ids_sorted().len(), 2);
         assert_ne!(a.document_buffer_id, initial_id);
         assert_eq!(a.document.text(), "alpha\n");
         let _ = std::fs::remove_file(path);
@@ -10255,7 +10358,7 @@ mod tests {
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, new_id);
-        assert_eq!(a.documents.len(), 2);
+        assert_eq!(a.buffers.document_ids_sorted().len(), 2);
         let _ = std::fs::remove_file(path);
     }
 
@@ -10273,7 +10376,7 @@ mod tests {
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, initial_id);
-        assert_eq!(a.documents.len(), 1);
+        assert_eq!(a.buffers.document_ids_sorted().len(), 1);
         let _ = std::fs::remove_file(path);
     }
 
@@ -10283,7 +10386,7 @@ mod tests {
         a.command_line = "bd".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.documents.len(), 1);
+        assert_eq!(a.buffers.document_ids_sorted().len(), 1);
         let msg = a.last_message.as_ref().expect("error echo");
         assert!(msg.text.contains("only buffer"));
     }
@@ -10300,7 +10403,7 @@ mod tests {
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.active_buffer, BufferKind::FileTree);
-        assert!(a.file_tree.is_some());
+        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -10314,7 +10417,7 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         a.apply(Action::HelpDismiss);
         assert_eq!(a.active_buffer, BufferKind::Document);
-        assert!(a.file_tree.is_none());
+        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 0);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -10330,7 +10433,8 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let line_down = a.builtins.line_down;
         a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
-        let t = a.file_tree.as_ref().expect("tree open");
+        let active_id = a.pane_tree.active().buffer_id;
+        let t = a.buffers.file_tree(active_id).expect("tree open");
         assert_eq!(t.cursor.line, 1);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -10505,9 +10609,10 @@ mod tests {
         a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
         // Follow.
         a.apply(Action::FollowLink);
-        // Tree dismissed; alpha.txt now active.
+        // Active pane now shows the file's Document buffer; the
+        // tree stays in the registry (reachable via :bn / :b).
         assert_eq!(a.active_buffer, BufferKind::Document);
-        assert!(a.file_tree.is_none());
+        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
         assert_eq!(a.document.text(), "hello");
         std::fs::remove_dir_all(&dir).ok();
     }

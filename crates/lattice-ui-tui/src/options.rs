@@ -291,6 +291,23 @@ pub fn builtin_options() -> OptionRegistry {
         }),
     });
     r.register(OptionSpec {
+        name: "foldenable",
+        aliases: &["fen"],
+        doc: "When false (`:set nofoldenable`, `zi`), every fold renders as open \
+              regardless of its closed flag. Closed-state is preserved -- toggling \
+              back restores the previous distribution.",
+        kind: OptionKind::Bool,
+        default: OptionValue::Bool(true),
+        get: Box::new(|app| OptionValue::Bool(app.foldenable)),
+        set: Box::new(|app, v| match v {
+            OptionValue::Bool(b) => {
+                app.foldenable = b;
+                Ok(())
+            }
+            other => Err(format!("expected bool, got {other:?}")),
+        }),
+    });
+    r.register(OptionSpec {
         name: "foldmethod",
         aliases: &["fdm"],
         doc: "How folds are produced: `manual` (zf only), `indent` (auto from \

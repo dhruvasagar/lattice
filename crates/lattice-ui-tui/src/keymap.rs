@@ -355,6 +355,7 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: AfterZ, chord: "zd", doc: "Delete fold at cursor" },
         keymap_entry! { mode: AfterZ, chord: "zj", doc: "Jump to next fold" },
         keymap_entry! { mode: AfterZ, chord: "zk", doc: "Jump to previous fold" },
+        keymap_entry! { mode: AfterZ, chord: "zi", doc: "Toggle foldenable" },
         // ---- Visual mode (motions extend, operators dispatch on Range::Selection) ----
         keymap_entry! { mode: Visual, chord: "<Esc>", doc: "Exit to Normal" },
         keymap_entry! { mode: Visual, chord: "v", doc: "Toggle: exit Visual" },

@@ -150,8 +150,17 @@ fn leading_indent(line: &str) -> usize {
 pub fn compute_markdown_folds(buffer: &Buffer) -> Vec<Fold> {
     let text = buffer.as_string();
     let lines: Vec<&str> = text.split('\n').collect();
-    let line_count = lines.len();
-    if line_count <= 1 {
+    // `split('\n')` on a string ending in `\n` produces a trailing
+    // empty element; that empty element isn't an addressable buffer
+    // line and a fold extending to it would over-delete in the
+    // fold-aware operator path. Use the last addressable index
+    // instead.
+    let last_addressable = if lines.last().is_some_and(|s| s.is_empty()) && lines.len() > 1 {
+        lines.len() - 2
+    } else {
+        lines.len().saturating_sub(1)
+    };
+    if last_addressable == 0 {
         return Vec::new();
     }
 
@@ -187,7 +196,7 @@ pub fn compute_markdown_folds(buffer: &Buffer) -> Vec<Fold> {
             .skip(h_idx + 1)
             .find(|(_, d)| *d <= depth)
             .map(|(line_idx, _)| line_idx.saturating_sub(1))
-            .unwrap_or(line_count.saturating_sub(1));
+            .unwrap_or(last_addressable);
         if end <= start {
             // Empty body (next sibling heading immediately follows).
             continue;

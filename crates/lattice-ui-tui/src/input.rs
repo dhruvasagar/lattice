@@ -743,6 +743,7 @@ fn resolve_after_z(event: KeyEvent) -> Action {
         KeyCode::Char('d') => Action::DeleteFoldAtCursor,
         KeyCode::Char('j') => Action::GotoNextFold,
         KeyCode::Char('k') => Action::GotoPrevFold,
+        KeyCode::Char('i') => Action::ToggleFoldEnable,
         _ => Action::SetPending(Pending::None),
     }
 }

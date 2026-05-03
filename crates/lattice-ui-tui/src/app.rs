@@ -387,6 +387,9 @@ pub enum Action {
     GotoNextFold,
     /// Vim's `zk` -- move cursor to the end of the previous fold.
     GotoPrevFold,
+    /// Vim's `zi` -- toggle [`App::foldenable`]. With folds disabled
+    /// every line renders flat regardless of any closed flag.
+    ToggleFoldEnable,
     /// `"<reg>` prefix -- stash the named register for the next operator
     /// / paste invocation.
     SelectRegister(Register),
@@ -798,6 +801,13 @@ pub struct App {
     /// (`indent`). Tree-sitter-driven folds queue as a follow-up
     /// (DESIGN.md §15:18).
     pub foldmethod: FoldMethod,
+    /// `:set foldenable` / `:set nofoldenable`, toggled by `zi`
+    /// (`docs/help/folding.md`). When `false`, every fold renders
+    /// as open regardless of [`Fold::closed`], and the fold-aware
+    /// operator / auto-open logic short-circuits. The closed-state
+    /// flags themselves are preserved -- `zi` flipping back to
+    /// enabled restores the previous closed/open distribution.
+    pub foldenable: bool,
     /// Typed options registry (DESIGN.md §5.12). `:set` parses
     /// against this; `:describe-option` reads from it.
     pub options: std::sync::Arc<crate::options::OptionRegistry>,
@@ -1262,6 +1272,7 @@ impl App {
             tabstop: 8,
             scrolloff: 0,
             foldmethod: FoldMethod::Manual,
+            foldenable: true,
             options: std::sync::Arc::new(crate::options::builtin_options()),
             help_topics,
             theme: crate::theme::Theme::default(),
@@ -1631,6 +1642,7 @@ impl App {
             Action::DeleteFoldAtCursor => self.do_delete_fold_at_cursor(),
             Action::GotoNextFold => self.do_goto_fold(true),
             Action::GotoPrevFold => self.do_goto_fold(false),
+            Action::ToggleFoldEnable => self.foldenable = !self.foldenable,
             Action::SelectRegister(reg) => {
                 self.pending_register = Some(reg);
             }
@@ -2122,6 +2134,7 @@ impl App {
                     pattern: line.pattern,
                     direction: line.direction,
                 });
+                self.auto_open_folds_at_cursor();
             }
             Ok(None) => {
                 self.current_match = None;
@@ -2205,6 +2218,7 @@ impl App {
                     };
                     self.set_message(EchoLevel::Warn, text.to_string());
                 }
+                self.auto_open_folds_at_cursor();
             }
             Ok(None) => {
                 self.current_match = None;
@@ -3768,14 +3782,36 @@ impl App {
         } else {
             motion_count
         };
-        if final_count > 1 {
-            inv = inv.with_count(lattice_grammar::command::Count(final_count));
+        let mut effective_count = final_count;
+        // Fold-aware operator expansion (`docs/help/folding.md`):
+        // when the cursor sits on the heading line of a closed fold
+        // and the operator's range is `CurrentLine` (the `dd` / `yy`
+        // / `cc` / `>>` family), grow the count so the operator
+        // covers the whole fold. The operator stays a single edit /
+        // single undo unit because the dispatcher composes one
+        // `Effect::Edits` from the expanded range.
+        if self.foldenable
+            && matches!(inv.range, Some(lattice_grammar::range::Range::CurrentLine))
+            && let Some(fold) = self.fold_start_at(self.cursor.line)
+        {
+            let span = fold.end_line.saturating_sub(fold.start_line) + 1;
+            effective_count = effective_count.max(span);
+        }
+        if effective_count > 1 {
+            inv = inv.with_count(lattice_grammar::command::Count(effective_count));
         }
         self.pending_count = 0;
         self.op_count = 0;
         let was_visual = matches!(self.modal, ModalState::Visual(_));
         let mut should_exit_visual = false;
         let inv_for_repeat = inv.clone();
+        // Vertical-jump motions auto-open folds the cursor lands in
+        // (`docs/help/folding.md`). Linear motions don't -- this set
+        // is intentionally narrow: `gg`, `G`, and counted `numberG`
+        // (the same builtins the jump-list `<C-o>`/`<C-i>` walk
+        // uses).
+        let is_vertical_jump = inv.command == self.builtins.goto_first_line.0
+            || inv.command == self.builtins.goto_last_line.0;
         match self.dispatch_blocking(inv) {
             Ok(effect) => {
                 // Visual exits on any operator-class effect (mutation OR
@@ -3785,6 +3821,9 @@ impl App {
                     self.last_change = Some(inv_for_repeat);
                 }
                 self.apply_effect(effect);
+                if is_vertical_jump {
+                    self.auto_open_folds_at_cursor();
+                }
             }
             Err(_) => {
                 // TODO(error-surface): publish to a notification once that
@@ -3913,6 +3952,7 @@ impl App {
         let len = line_byte_len(&self.document.snapshot().buffer, line);
         let byte = self.cursor.byte.min(len);
         self.cursor = Position::new(line, byte);
+        self.auto_open_folds_at_cursor();
     }
 
     fn do_help_jump_viewport(&mut self, vpos: ViewportPos) {
@@ -5181,6 +5221,7 @@ impl App {
                 self.active_buffer = BufferKind::Document;
                 self.cursor = entry.position;
                 self.clamp_cursor_to_buffer();
+                self.auto_open_folds_at_cursor();
             }
             BufferKind::Help => {
                 let viewport = self.help_bufferport_height();
@@ -5336,8 +5377,13 @@ impl App {
 
     /// Returns true if `line` is inside a closed fold (and not the fold
     /// start, which is rendered as the summary). The renderer uses this
-    /// to skip lines.
+    /// to skip lines. When `foldenable` is false, returns `false`
+    /// regardless of fold state -- `zi` / `:set nofoldenable` makes
+    /// every line visible.
     pub fn line_inside_closed_fold(&self, line: u32) -> bool {
+        if !self.foldenable {
+            return false;
+        }
         self.folds
             .iter()
             .any(|f| f.closed && line > f.start_line && line <= f.end_line)
@@ -5345,15 +5391,45 @@ impl App {
 
     /// Returns Some(fold) if `line` is the start of a closed fold; the
     /// renderer renders the summary header instead of the line content.
+    /// `foldenable = false` short-circuits this -- nothing renders
+    /// folded.
     pub fn fold_start_at(&self, line: u32) -> Option<&Fold> {
+        if !self.foldenable {
+            return None;
+        }
         self.folds.iter().find(|f| f.closed && f.start_line == line)
     }
 
     /// Returns Some(fold) if `line` is the start of any fold (open or
     /// closed). Used by the renderer to draw the gutter glyph
-    /// (▾ open / ▸ closed) regardless of state.
+    /// (▾ open / ▸ closed) regardless of state. With
+    /// `foldenable = false` the gutter glyph is suppressed too --
+    /// every line renders flat.
     pub fn fold_start_at_any(&self, line: u32) -> Option<&Fold> {
+        if !self.foldenable {
+            return None;
+        }
         self.folds.iter().find(|f| f.start_line == line)
+    }
+
+    /// Open every closed fold whose range contains the current
+    /// cursor line. Called by jump-class motions (search hits,
+    /// gg / G / numberG, H / M / L, mark jumps, Ctrl-O / Ctrl-I,
+    /// `%` bracket-match) so the cursor never lands inside a hidden
+    /// region. Linear motions (j / k / h / l / w / b) do NOT call
+    /// this -- vim's "next visible line" skip behaviour still
+    /// applies to them. When `foldenable = false` this is a no-op.
+    /// (`docs/help/folding.md`).
+    pub fn auto_open_folds_at_cursor(&mut self) {
+        if !self.foldenable {
+            return;
+        }
+        let line = self.cursor.line;
+        for fold in self.folds.iter_mut() {
+            if fold.closed && line >= fold.start_line && line <= fold.end_line {
+                fold.closed = false;
+            }
+        }
     }
 
     /// Vim's `J` / `gJ`: join the current line with the next. With
@@ -5622,6 +5698,7 @@ impl App {
                 if let Ok(pos) = self.document.snapshot().buffer.byte_to_position(t) {
                     self.push_position_history(pre_jump, PositionSource::AutoJump);
                     self.cursor = pos;
+                    self.auto_open_folds_at_cursor();
                 }
             }
             None => {
@@ -5663,6 +5740,7 @@ impl App {
             self.cursor = Position::new(pos.line, col as u32);
         }
         self.clamp_cursor_to_buffer();
+        self.auto_open_folds_at_cursor();
     }
 
     fn do_reselect_visual(&mut self) {
@@ -8999,6 +9077,245 @@ mod tests {
     fn dd_populates_register_linewise_via_delete() {
         // delete also yanks; register kind is linewise for dd.
         let mut a = app_with("aaa\nBBB\nccc", 10);
+        a.cursor = Position::new(1, 0);
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_range(lattice_grammar::Range::CurrentLine);
+        a.apply(Action::Invoke(inv));
+        let reg = a.unnamed_register.as_ref().unwrap();
+        assert_eq!(reg.kind, YankKind::Linewise);
+        assert_eq!(reg.content, "BBB");
+    }
+
+    #[test]
+    fn dd_on_closed_fold_heading_deletes_whole_fold() {
+        // `docs/help/folding.md`: dd on a closed fold deletes the
+        // entire fold range as a single undo unit. Use a sibling
+        // # H2 heading so the # H1 fold has a bounded end.
+        let initial = "# H1\nbody one\nbody two\n# H2\nafter\n";
+        let mut a = app_with(initial, 10);
+        a.foldmethod = FoldMethod::Markdown;
+        a.recompute_folds();
+        // Close the H1 fold (lines 0..=2).
+        let idx = a
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("H1 fold");
+        a.folds[idx].closed = true;
+        a.cursor = Position::new(0, 0);
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_range(lattice_grammar::Range::CurrentLine);
+        a.apply(Action::Invoke(inv));
+        let text = a.document.text();
+        assert!(!text.contains("# H1"), "H1 not deleted: {text:?}");
+        assert!(!text.contains("body one"), "body one not deleted: {text:?}");
+        assert!(!text.contains("body two"), "body two not deleted: {text:?}");
+        assert!(text.contains("# H2"), "H2 lost: {text:?}");
+        assert!(text.contains("after"), "after lost: {text:?}");
+    }
+
+    #[test]
+    fn yy_on_closed_fold_heading_yanks_whole_fold() {
+        let initial = "# H1\nbody one\nbody two\n# H2\nafter\n";
+        let mut a = app_with(initial, 10);
+        a.foldmethod = FoldMethod::Markdown;
+        a.recompute_folds();
+        let idx = a
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("H1 fold");
+        a.folds[idx].closed = true;
+        a.cursor = Position::new(0, 0);
+        let inv = CommandInvocation::of(a.builtins.yank.0)
+            .with_range(lattice_grammar::Range::CurrentLine);
+        a.apply(Action::Invoke(inv));
+        let reg = a.unnamed_register.as_ref().unwrap();
+        assert_eq!(reg.kind, YankKind::Linewise);
+        assert!(reg.content.contains("# H1"), "register content: {:?}", reg.content);
+        assert!(
+            reg.content.contains("body one"),
+            "register content: {:?}",
+            reg.content
+        );
+        assert!(
+            reg.content.contains("body two"),
+            "register content: {:?}",
+            reg.content
+        );
+        assert!(
+            !reg.content.contains("# H2"),
+            "yank should not include sibling heading: {:?}",
+            reg.content
+        );
+    }
+
+    #[test]
+    fn dd_on_open_fold_heading_deletes_only_one_line() {
+        // Operator expansion only applies when the fold is *closed*;
+        // an open fold leaves the heading visible to be edited like
+        // any other line.
+        let initial = "# H1\nbody one\nbody two\n# H2\nafter\n";
+        let mut a = app_with(initial, 10);
+        a.foldmethod = FoldMethod::Markdown;
+        a.recompute_folds();
+        // Leave open (default).
+        a.cursor = Position::new(0, 0);
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_range(lattice_grammar::Range::CurrentLine);
+        a.apply(Action::Invoke(inv));
+        let text = a.document.text();
+        assert!(!text.contains("# H1"), "heading should be gone: {text:?}");
+        assert!(text.contains("body one"), "body one should remain: {text:?}");
+    }
+
+    #[test]
+    fn search_into_closed_fold_auto_opens_it() {
+        // `docs/help/folding.md`: search hits open the fold the
+        // cursor lands in.
+        let initial = "# H1\nbody one needle\nbody two\n# H2\nafter\n";
+        let mut a = app_with(initial, 10);
+        a.foldmethod = FoldMethod::Markdown;
+        a.recompute_folds();
+        let idx = a
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("H1 fold");
+        a.folds[idx].closed = true;
+        // Submit a forward search from the top of the buffer.
+        a.search_line = Some(SearchLine {
+            origin: Position::ZERO,
+            pattern: "needle".into(),
+            direction: SearchDirection::Forward,
+        });
+        a.modal = ModalState::Search(SearchDirection::Forward);
+        a.apply(Action::SearchSubmit);
+        // The fold containing `body one` should now be open.
+        let fold = a
+            .folds
+            .iter()
+            .find(|f| f.start_line == 0)
+            .expect("H1 fold still present");
+        assert!(!fold.closed, "search should have auto-opened the fold");
+    }
+
+    #[test]
+    fn goto_first_line_into_closed_fold_auto_opens() {
+        let initial = "# H1\nbody\nbody2\n# H2\nafter\n";
+        let mut a = app_with(initial, 10);
+        a.foldmethod = FoldMethod::Markdown;
+        a.recompute_folds();
+        let idx = a
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("H1 fold");
+        a.folds[idx].closed = true;
+        // Move cursor away first (so gg is a non-trivial jump).
+        a.cursor = Position::new(4, 0);
+        let inv = CommandInvocation::of(a.builtins.goto_first_line.0);
+        a.apply(Action::Invoke(inv));
+        let fold = a
+            .folds
+            .iter()
+            .find(|f| f.start_line == 0)
+            .expect("H1 fold still present");
+        assert!(!fold.closed, "gg should auto-open the destination fold");
+    }
+
+    #[test]
+    fn zi_toggles_foldenable_and_renders_folds_open() {
+        let mut a = app_with("# H\nbody\n# H2\n", 10);
+        a.foldmethod = FoldMethod::Markdown;
+        a.recompute_folds();
+        let idx = a
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("H1 fold");
+        a.folds[idx].closed = true;
+        // Sanity: the fold is closed and visible to the renderer.
+        assert!(a.line_inside_closed_fold(1));
+        assert!(a.fold_start_at(0).is_some());
+        // zi disables.
+        a.apply(Action::ToggleFoldEnable);
+        assert!(!a.foldenable);
+        // With foldenable=false, the renderer sees no closed folds.
+        assert!(!a.line_inside_closed_fold(1));
+        assert!(a.fold_start_at(0).is_none());
+        // zi again re-enables and the closed-state is preserved.
+        a.apply(Action::ToggleFoldEnable);
+        assert!(a.foldenable);
+        assert!(a.line_inside_closed_fold(1));
+        assert!(a.fold_start_at(0).is_some());
+    }
+
+    #[test]
+    fn nofoldenable_disables_fold_aware_operators() {
+        let initial = "# H1\nbody one\nbody two\n# H2\nafter\n";
+        let mut a = app_with(initial, 10);
+        a.foldmethod = FoldMethod::Markdown;
+        a.recompute_folds();
+        let idx = a
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("H1 fold");
+        a.folds[idx].closed = true;
+        a.foldenable = false;
+        a.cursor = Position::new(0, 0);
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_range(lattice_grammar::Range::CurrentLine);
+        a.apply(Action::Invoke(inv));
+        // With foldenable=false, dd should affect just one line.
+        let text = a.document.text();
+        assert!(!text.contains("# H1"), "heading should be deleted: {text:?}");
+        assert!(text.contains("body one"), "body one should remain: {text:?}");
+    }
+
+    #[test]
+    fn linear_j_does_not_auto_open_fold() {
+        // `docs/help/folding.md`: linear motions (j/k/h/l/w/b) do
+        // NOT trigger auto-open. The cursor "skips" over closed
+        // folds via `line_inside_closed_fold` filtering -- but the
+        // fold itself stays closed. Here we simulate a synthetic
+        // cursor move into the fold range to verify the rule.
+        let initial = "# H1\nbody\nbody2\n# H2\nafter\n";
+        let mut a = app_with(initial, 10);
+        a.foldmethod = FoldMethod::Markdown;
+        a.recompute_folds();
+        let idx = a
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("H1 fold");
+        a.folds[idx].closed = true;
+        // Direct cursor move (not via auto-open path).
+        a.cursor = Position::new(1, 0);
+        let still_closed = a
+            .folds
+            .iter()
+            .find(|f| f.start_line == 0)
+            .expect("H1 fold still present");
+        assert!(
+            still_closed.closed,
+            "merely setting cursor should not open folds"
+        );
+    }
+
+    #[test]
+    fn dd_on_non_fold_line_uses_count_one() {
+        // Sanity: the fold-expansion only kicks in when the cursor
+        // is on a closed-fold heading. A normal `dd` outside any
+        // fold operates on just one line. (The standard `delete`
+        // operator's CurrentLine range preserves the trailing
+        // newline, leaving an empty line; that's an existing app
+        // contract, not something fold-aware expansion should
+        // change.)
+        let mut a = app_with("aaa\nBBB\nccc", 10);
+        a.foldmethod = FoldMethod::Indent;
+        a.recompute_folds();
         a.cursor = Position::new(1, 0);
         let inv = CommandInvocation::of(a.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);

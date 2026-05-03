@@ -113,6 +113,20 @@ pub fn compute_indent_folds(buffer: &Buffer) -> Vec<Fold> {
                 }
             }
         }
+        // "Closer" inclusion: many languages dedent the closing
+        // delimiter back to the parent indent (Rust / C / JS `}`,
+        // Python triple-quote close, etc.). When the next non-blank
+        // line after `end` is a "closer" line at indent == start_indent
+        // and contains only close-brackets / whitespace, swallow it
+        // so the visible fold-summary line ends with the brace
+        // instead of leaving an orphan `}` below the fold.
+        if let Some(closer) = next_non_blank_line(&indents, end + 1)
+            && let Some(ind) = indents[closer]
+            && ind == start_indent
+            && is_closer_line(lines[closer])
+        {
+            end = closer;
+        }
         let identity = fold_identity(lines[i], start_indent);
         folds.push(Fold {
             start_line: i as u32,
@@ -132,6 +146,31 @@ pub fn compute_indent_folds(buffer: &Buffer) -> Vec<Fold> {
 /// follow-up.)
 fn leading_indent(line: &str) -> usize {
     line.chars().take_while(|c| c.is_whitespace()).count()
+}
+
+/// Find the next non-blank line in `indents` starting at `from`.
+/// Returns the index, or `None` if every line from `from` onward is
+/// blank.
+fn next_non_blank_line(indents: &[Option<usize>], from: usize) -> Option<usize> {
+    indents.iter().enumerate().skip(from).find_map(|(i, ind)| {
+        if ind.is_some() { Some(i) } else { None }
+    })
+}
+
+/// True when `line` is a pure closing-bracket line (matched by the
+/// indent fold's "closer inclusion" heuristic). The line must
+/// consist only of whitespace plus one or more of `)`, `]`, `}`,
+/// optionally followed by `,` / `;` -- this catches the common Rust
+/// / C / JS / Go shapes (`}`, `};`, `})`, `})?;`, etc.) without
+/// pulling in the next statement.
+fn is_closer_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    trimmed
+        .chars()
+        .all(|c| matches!(c, ')' | ']' | '}' | ',' | ';' | '?'))
 }
 
 /// Markdown heading-based fold provider (DESIGN.md §15:18,
@@ -320,18 +359,26 @@ mod tests {
         // produce a fold spanning the body. Default `foldmethod = manual`
         // produces no folds; users need `:set foldmethod=indent` (or
         // `=syntax` cascading to indent) for `zc` to have something
-        // to operate on.
+        // to operate on. Closer-line inclusion swallows the trailing
+        // `}` so the fold extends to the closing brace line.
         let src = "fn outer() {\n    let x = 1;\n    if x > 0 {\n        println!(\"yes\");\n    }\n}\n";
         let b = buf(src);
         let folds = compute_indent_folds(&b);
-        assert!(
-            folds.iter().any(|f| f.start_line == 0 && f.end_line >= 4),
-            "outer fn fold missing: {folds:?}"
+        let outer = folds
+            .iter()
+            .find(|f| f.start_line == 0)
+            .expect("outer fn fold missing");
+        assert_eq!(
+            outer.end_line, 5,
+            "outer fold should swallow the final `}}` line: {outer:?}"
         );
-        // Inner `if` block also folds.
-        assert!(
-            folds.iter().any(|f| f.start_line == 2),
-            "inner if fold missing: {folds:?}"
+        let inner = folds
+            .iter()
+            .find(|f| f.start_line == 2)
+            .expect("inner if fold missing");
+        assert_eq!(
+            inner.end_line, 4,
+            "inner fold should swallow its `}}` at indent 4: {inner:?}"
         );
     }
 

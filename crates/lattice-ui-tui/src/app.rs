@@ -2020,9 +2020,32 @@ impl App {
 
     /// Spans for the line at `viewport_row` (0-based, relative to the top of
     /// the viewport). Empty slice if no syntax or the row is past EOF.
+    ///
+    /// Prefer [`Self::highlights_for_buffer_line`] when the renderer
+    /// is iterating the visible-line list under closed folds, since
+    /// `viewport_row` no longer maps to `scroll + row` once folds
+    /// hide interior lines.
     pub fn highlights_for_viewport_row(&self, viewport_row: u32) -> &[StyledSpan] {
         self.visible_highlights
             .get(viewport_row as usize)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Spans for a specific buffer line. `refresh_highlights` populates
+    /// `visible_highlights` for the contiguous window
+    /// `[scroll, scroll + viewport_height)`; lines outside that window
+    /// (or far enough that the slot is missing) return an empty slice.
+    /// The renderer uses this for the active pane so closed folds
+    /// don't desync syntax styling -- viewport row 5 might be buffer
+    /// line 12 once a fold collapses lines 5..=11.
+    pub fn highlights_for_buffer_line(&self, line: u32) -> &[StyledSpan] {
+        if line < self.scroll {
+            return &[];
+        }
+        let offset = (line - self.scroll) as usize;
+        self.visible_highlights
+            .get(offset)
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }

@@ -866,27 +866,23 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         // O(line_len) materialisation).
         let line_text = snap.buffer.line(line_idx).unwrap_or_default();
         let gutter = render_gutter_for(app, line_idx, gutter_w);
-        let spans = app.highlights_for_viewport_row(i);
+        // Highlight slot is keyed by buffer-line offset from
+        // `scroll`, NOT by viewport row -- once closed folds skip
+        // interior lines, viewport row `i` no longer corresponds
+        // to buffer line `scroll + i`, and using the row index
+        // would paint a post-fold line with stale spans for the
+        // hidden interior.
+        let spans = app.highlights_for_buffer_line(line_idx);
         let mut body = render_styled_line(&line_text, spans, buffer_w);
-        // Heading-preserved fold render (`docs/help/folding.md`):
-        // when a closed fold starts here, keep the line's syntax-
-        // highlighted body and append a dim ` ┄ N lines folded`
-        // suffix. Skips overlay / cursor / etc. processing for the
-        // hidden body lines (they were filtered out of `visible`
-        // above).
-        if let Some(fold) = app.fold_start_at(line_idx)
-            && fold.closed
-        {
-            let n = fold.end_line - fold.start_line + 1;
-            let suffix = format!(" ┄ {n} lines folded");
-            body.push(Span::styled(
-                suffix,
-                TuiStyle::default().fg(Color::DarkGray),
-            ));
-            out.push(combine(gutter, body));
-            continue;
-        }
         let line_len = line_text.len();
+        // Whether this line begins a closed fold. Used to append the
+        // ` ┄ N lines folded` suffix AFTER overlay processing, so
+        // visual selection / hlsearch / current_match still paint
+        // the heading correctly.
+        let closed_fold_at_start = app
+            .fold_start_at(line_idx)
+            .filter(|f| f.closed)
+            .map(|f| f.end_line - f.start_line + 1);
         // Blockwise visual: per-line column band [min_col, max_col].
         // Charwise / Linewise visual go through `visual_range` instead.
         if let Some(b) = block
@@ -936,6 +932,16 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
                     );
                 }
             }
+        }
+        // Heading-preserved fold render (`docs/help/folding.md`):
+        // append the ` ┄ N lines folded` suffix AFTER all overlays
+        // so the heading's syntax / visual / search styling is
+        // preserved, with the dim summary trailing off the right.
+        if let Some(n) = closed_fold_at_start {
+            body.push(Span::styled(
+                format!(" ┄ {n} lines folded"),
+                TuiStyle::default().fg(Color::DarkGray),
+            ));
         }
         out.push(combine(gutter, body));
     }
@@ -1835,6 +1841,123 @@ mod tests {
         let row0 = line_text(&lines[0]);
         assert!(row0.contains('▸'), "expected ▸ glyph on closed fold: {row0:?}");
         assert!(!row0.contains('▾'), "did not expect ▾ glyph: {row0:?}");
+    }
+
+    #[test]
+    fn line_after_closed_fold_keeps_correct_syntax_highlighting() {
+        // Reproduces a user-reported regression: with a closed fold
+        // hiding interior lines, the next visible line was being
+        // styled with stale spans from `visible_highlights[viewport_row]`
+        // because the row index assumed `visible[i] == scroll + i`.
+        // The fix indexes into `visible_highlights` by buffer-line
+        // delta instead of viewport row.
+        //
+        // The struct fold now also swallows the trailing `}` (closer
+        // inclusion), so the "next visible line" is the trailing
+        // statement, not the brace.
+        let src = "pub struct Buffer {\n    rope: Rope,\n}\nlet trailing = 1;\n";
+        let mut app = app_with(src, 10);
+        app.foldmethod = crate::app::FoldMethod::Indent;
+        app.recompute_folds();
+        let idx = app
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("struct fold");
+        app.folds[idx].closed = true;
+        let lines = compose_visible_lines(&app, 4, 80);
+        // Row 0: heading + " ┄ N lines folded".
+        // Row 1: the post-fold statement -- correct content, not
+        //        leaking interior spans.
+        let row1 = line_text(&lines[1]);
+        assert!(
+            row1.contains("let trailing"),
+            "row1 should be the post-fold statement: {row1:?}"
+        );
+        assert!(!row1.contains("rope"), "interior leaked: {row1:?}");
+        assert!(!row1.contains('}'), "closer should be inside the fold: {row1:?}");
+    }
+
+    #[test]
+    fn closed_indent_fold_swallows_trailing_close_brace() {
+        // Vim's `foldmethod=indent` strictly excludes lines whose
+        // indent isn't > start. We extend that with closer-line
+        // inclusion: a `}` / `]` / `)` line at the same indent as
+        // the fold start gets pulled in, so the user doesn't see an
+        // orphan brace below `... ┄ N lines folded`.
+        let src = "pub struct Buffer {\n    rope: Rope,\n}\n";
+        let mut app = app_with(src, 5);
+        app.foldmethod = crate::app::FoldMethod::Indent;
+        app.recompute_folds();
+        let f = app.folds.iter().find(|f| f.start_line == 0).expect("fold");
+        assert_eq!(f.end_line, 2, "expected `}}` swallowed: {f:?}");
+    }
+
+    #[test]
+    fn linewise_visual_highlights_closed_fold_heading() {
+        // Regression: previously the closed-fold heading branch in
+        // compose_visible_lines emitted the summary suffix and
+        // `continue`'d before the visual overlay ran -- so V on a
+        // closed-fold heading appeared unhighlighted. The summary
+        // suffix is now appended AFTER overlay processing.
+        let src = "pub struct Buffer {\n    rope: Rope,\n}\n";
+        let mut app = app_with(src, 5);
+        app.foldmethod = crate::app::FoldMethod::Indent;
+        app.recompute_folds();
+        let idx = app
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("fold");
+        app.folds[idx].closed = true;
+        app.cursor = lattice_protocol::position::Position::new(0, 0);
+        app.apply(crate::app::Action::EnterVisual(VisualKind::Linewise));
+        let sel = Selection {
+            anchor: pos(0, 0),
+            head: pos(0, 0),
+            visual: Some(VisualMode::Linewise),
+        };
+        app.set_selections_blocking(SelectionSet::single(sel));
+        let lines = compose_visible_lines(&app, 5, 80);
+        let visual_bg = visual_style().bg;
+        let row0 = &lines[0];
+        let has_visual_span = row0.spans.iter().any(|s| s.style.bg == visual_bg);
+        assert!(
+            has_visual_span,
+            "linewise visual on a closed-fold heading must still overlay: {row0:?}"
+        );
+        // Summary suffix is still present.
+        let row0_text = line_text(row0);
+        assert!(
+            row0_text.contains("lines folded"),
+            "summary suffix lost: {row0_text:?}"
+        );
+    }
+
+    #[test]
+    fn linewise_visual_overlays_full_line_after_fold_change() {
+        // After the v-line key, a line outside any fold should still
+        // overlay correctly. This is a guard against the fold work
+        // accidentally breaking line-visual on plain documents.
+        let mut app = app_with("alpha\nbeta\ngamma\n", 5);
+        app.cursor = lattice_protocol::position::Position::new(1, 0);
+        app.apply(crate::app::Action::EnterVisual(VisualKind::Linewise));
+        let sel = Selection {
+            anchor: pos(1, 0),
+            head: pos(1, 0),
+            visual: Some(VisualMode::Linewise),
+        };
+        app.set_selections_blocking(SelectionSet::single(sel));
+        let lines = compose_visible_lines(&app, 5, 80);
+        // Verify the second visible line ("beta") has at least one
+        // span styled with the visual color.
+        let visual_bg = visual_style().bg;
+        let row1 = &lines[1];
+        let has_visual_span = row1.spans.iter().any(|s| s.style.bg == visual_bg);
+        assert!(
+            has_visual_span,
+            "linewise visual should overlay the selected line: {row1:?}"
+        );
     }
 
     #[test]

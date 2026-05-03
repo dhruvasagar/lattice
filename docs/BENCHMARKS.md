@@ -20,7 +20,7 @@ via known engineering paths". The target column states the
 
 ## Environment
 
-- Date: 2026-05-02 (post B-α + B-β; B-γ tried + reverted)
+- Date: 2026-05-03 (post Option B migration: tree-sitter parse + highlight on a single owned Tree; folds benchmarks added)
 - Host: WSL2 (Ubuntu) on x86_64
 - Toolchain: Rust 1.94.0 stable
 - Build profile: `bench` (`opt-level = 3`)
@@ -182,6 +182,59 @@ single-call optimisation in ropey would help.
 
 ---
 
+## Folds (`crates/lattice-ui-tui/benches/folds.rs`)
+
+Three computed fold providers; each measured across small / medium /
+large corpora so a regression on either small-file ergonomics or
+large-file scaling surfaces. Folds recompute on every reparse, so
+the budget is "stay sub-frame on realistic buffers."
+
+| Provider                  | small   | medium    | large    | Improvement target                                                                                                              |
+|---------------------------|---------|-----------|----------|---------------------------------------------------------------------------------------------------------------------------------|
+| `compute_indent`          | 2.4µs (10 fns) | 33µs (200) | 326µs (2000) | ⏹️ linear in line count; pure rust, no allocations beyond the result vec                                                         |
+| `compute_markdown`        | 0.96µs (10) | 6.3µs (100) | 37µs (500) | ⏹️ linear; ATX-heading scan + nesting walk                                                                                       |
+| `compute_syntax_rust`     | 70µs (10) | 3.9ms (200) | 323ms (2000) | 🔼 `QueryCursor::matches` traversal; sub-linear past 200 fns. Phase 5/9 incremental reparse + per-pattern caching is the lever. |
+
+**The syntax provider's 200-fn time (3.9ms) is the relevant ceiling**
+for real-world Rust files (typical ≤500 LOC). 2000-fn buffers are an
+outlier (~50kloc in one file). The bench pre-parses the source into a
+`Syntax` instance so the timing measures only fold-query work, not the
+underlying tree-sitter parse.
+
+`compute_syntax_rust` covers `function_item`, `struct_item`,
+`impl_item`, `if_expression`, `match_expression`, `block`, etc. (see
+`queries/rust/folds.scm`). The query traversal cost grows with the
+number of pattern alternatives; pruning the captures we don't fold
+visibly (e.g. `parameters`, `arguments` for very-short ranges) is the
+next available optimization if 3.9ms ever pushes uncomfortable.
+
+---
+
+## Tree-sitter consolidation (Option B migration)
+
+**Architectural change, 2026-05-03.** `lattice-syntax` previously ran
+`tree_sitter_highlight::Highlighter` (which parses internally) AND a
+separate `tree_sitter::Parser` for the folds query — two parses per
+edit on every recognised buffer. The Option B migration ([Steps 1–4](../docs/IMPLEMENTATION.md))
+collapsed both onto a single `Parser` + `Tree` owned by `Syntax`:
+
+- One parse per edit. Highlight, folds, and any future query consumer
+  (textobjects.scm, indents.scm, locals.scm) all walk the same `Tree`.
+- `tree-sitter-highlight` dropped from the dep tree; the hand-rolled
+  pipeline reads `highlights.scm` directly via `QueryCursor` with
+  later-pattern-wins overlap resolution.
+- Markdown injections (block→inline + fenced code blocks) recurse one
+  level: a `\`\`\`rust ... \`\`\`` block inside markdown reuses the rust
+  highlights query.
+
+The user-visible win lands when the document/syntax actor (§5.7) is
+threaded through with `Tree::edit` deltas — the seam exists today, and
+incremental reparse will further reduce per-keystroke cost on large
+buffers. A dedicated highlight bench is on the "what's NOT here" list
+below.
+
+---
+
 ## Buffer ops (`crates/lattice-core/benches/buffer.rs`)
 
 Direct rope mutations.
@@ -245,7 +298,15 @@ be reset by deleting `target/criterion/`.
    command set.
 
 5. **🔼 Tree-sitter incremental reparse bench.** §8.2 commits to
-   <1ms p99 on a 50k-line file -- unmeasured today.
+   <1ms p99 on a 50k-line file -- unmeasured today. Now that the
+   parser is owned by `Syntax` (post Option B), the seam for
+   `Parser::parse(.., Some(&old_tree))` exists; need to thread
+   `Tree::edit` deltas from the document actor first.
+
+5a. **🔼 Native highlighter bench.** `Syntax::highlight_lines_native`
+   isn't measured directly. Worth adding a per-language bench that
+   isolates parse + query traversal so future regressions on the
+   single-parse architecture surface in CI.
 
 6. **🔼 Open-100MB-log file bench.** §8.2 commits to <100ms first
    paint, <500ms full ready -- unmeasured.
@@ -271,4 +332,5 @@ be reset by deleting `target/criterion/`.
 
 Benches we'd want before claiming §8.2 coverage but haven't built
 yet (marked 🔼 above): frame render, completion popup, tree-sitter
-reparse, file open, dispatch round-trip.
+incremental reparse, native highlighter per-language timing, file
+open, dispatch round-trip.

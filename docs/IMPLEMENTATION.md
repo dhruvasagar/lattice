@@ -546,8 +546,13 @@ Update this section when picking up the in-flight item.
    request cancellation hooks into existing seams; the remaining work
    is the LSP client (tower-lsp or hand-rolled) + per-server shims.
 2. **Computed folds** (syntax-driven, indent-based) — manual folds via
-   zf/zo/zc/za/zR/zM/zd are done; computed folds need tree-sitter integration
-   and an indent-based fall-back.
+   zf/zo/zc/za/zR/zM/zd are done; **indent fallback ✅ done** via the
+   typed `foldmethod` option (`:set foldmethod=indent`) and the
+   `compute_indent_folds` algorithm in `lattice-ui-tui::folds`.
+   Closed-state survives reparse for unchanged ranges. Tree-sitter-
+   driven folds (function bodies, classes, blocks via `folds.scm`)
+   are queued -- the `Fold` data type is shared so a tree-sitter
+   pass and the indent fallback both produce the same shape.
 3. **`:set option=value` + typed options** (§5.12) ✅ done. Typed
    `OptionRegistry` keyed by name + alias; each spec carries a
    getter / setter pair, type, default, and doc. `:set` parses

@@ -803,6 +803,12 @@ pub struct App {
     /// `:set scrolloff=N`. Minimum visual lines kept above + below
     /// the cursor while scrolling. Default 0.
     pub scrolloff: u32,
+    /// `:set foldmethod=manual|indent`. Controls whether
+    /// [`Self::folds`] is populated by user `zf` operations
+    /// (`manual`) or recomputed from the buffer's indentation
+    /// (`indent`). Tree-sitter-driven folds queue as a follow-up
+    /// (DESIGN.md §15:18).
+    pub foldmethod: FoldMethod,
     /// Typed options registry (DESIGN.md §5.12). `:set` parses
     /// against this; `:describe-option` reads from it.
     pub options: std::sync::Arc<crate::options::OptionRegistry>,
@@ -918,6 +924,26 @@ pub struct Fold {
     pub start_line: u32,
     pub end_line: u32,
     pub closed: bool,
+}
+
+/// `:set foldmethod=...` (DESIGN.md §15:18, C.2). Decides whether
+/// folds come from user `zf` operations (`Manual`), buffer
+/// indentation (`Indent`), or future tree-sitter queries
+/// (`TreeSitter`, queued).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FoldMethod {
+    #[default]
+    Manual,
+    Indent,
+}
+
+impl FoldMethod {
+    pub fn label(self) -> &'static str {
+        match self {
+            FoldMethod::Manual => "manual",
+            FoldMethod::Indent => "indent",
+        }
+    }
 }
 
 /// Capture of the most recent find/till for `;`/`,` repeat.
@@ -1205,6 +1231,7 @@ impl App {
             ignorecase: false,
             tabstop: 8,
             scrolloff: 0,
+            foldmethod: FoldMethod::Manual,
             options: std::sync::Arc::new(crate::options::builtin_options()),
             command_history: Vec::new(),
             command_history_cursor: None,
@@ -1779,6 +1806,36 @@ impl App {
             syntax.parse(&self.document.text());
         }
         self.last_parsed_text_version = tv;
+        // Recompute computed folds in lockstep with the syntax
+        // reparse so `foldmethod=indent` stays in sync with the
+        // document. Manual foldmethod skips the recompute (the
+        // user's `zf` ranges are authoritative).
+        self.recompute_folds();
+    }
+
+    /// Refresh [`Self::folds`] from the active [`FoldMethod`].
+    /// `manual` -- no-op (preserves user `zf` folds). `indent` --
+    /// run the indent-based fold computer over the document buffer
+    /// and replace `folds` with the result. Preserves the closed/
+    /// open state of any existing fold whose range matches a
+    /// recomputed one (so `zc` survives a reparse).
+    pub fn recompute_folds(&mut self) {
+        if matches!(self.foldmethod, FoldMethod::Manual) {
+            return;
+        }
+        let snapshot = self.document.snapshot();
+        let mut next = crate::folds::compute_indent_folds(&snapshot.buffer);
+        // Carry over closed-state for matching fold ranges.
+        for nf in next.iter_mut() {
+            if let Some(prev) = self
+                .folds
+                .iter()
+                .find(|f| f.start_line == nf.start_line && f.end_line == nf.end_line)
+            {
+                nf.closed = prev.closed;
+            }
+        }
+        self.folds = next;
     }
 
     /// Recompute the per-line styled spans for the current viewport.
@@ -10290,6 +10347,40 @@ mod tests {
         assert!(body.contains("tabstop"));
         assert!(body.contains("integer"));
         assert!(body.contains("default"));
+    }
+
+    // ---- Computed folds (DESIGN.md §15:18, C.2) ----
+
+    #[test]
+    fn foldmethod_indent_populates_folds_from_indentation() {
+        let mut a = app_with("def f():\n    pass\n    pass\n", 10);
+        a.command_line = "set foldmethod=indent".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.foldmethod, FoldMethod::Indent);
+        assert!(!a.folds.is_empty());
+        let f = a.folds.iter().find(|f| f.start_line == 0).expect("fold");
+        assert_eq!(f.end_line, 2);
+    }
+
+    #[test]
+    fn foldmethod_indent_preserves_closed_state_across_reparse() {
+        let mut a = app_with("a:\n    b\n    c\n", 10);
+        a.foldmethod = FoldMethod::Indent;
+        a.recompute_folds();
+        assert_eq!(a.folds.len(), 1);
+        // Close the fold.
+        a.folds[0].closed = true;
+        // Recompute should preserve closed state (same range).
+        a.recompute_folds();
+        assert!(a.folds[0].closed);
+    }
+
+    #[test]
+    fn foldmethod_manual_default_does_not_recompute() {
+        let mut a = app_with("def f():\n    pass\n", 10);
+        a.recompute_folds();
+        assert!(a.folds.is_empty());
     }
 
     // ---- Hover popup (DESIGN.md §5.9.6, B.3) ----

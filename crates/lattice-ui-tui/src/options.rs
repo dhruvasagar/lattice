@@ -291,6 +291,29 @@ pub fn builtin_options() -> OptionRegistry {
         }),
     });
     r.register(OptionSpec {
+        name: "foldmethod",
+        aliases: &["fdm"],
+        doc: "How folds are produced: `manual` (zf only) or `indent` (auto from indentation).",
+        kind: OptionKind::String,
+        default: OptionValue::String("manual".into()),
+        get: Box::new(|app| OptionValue::String(app.foldmethod.label().into())),
+        set: Box::new(|app, v| match v {
+            OptionValue::String(s) => match s.as_str() {
+                "manual" => {
+                    app.foldmethod = crate::app::FoldMethod::Manual;
+                    Ok(())
+                }
+                "indent" => {
+                    app.foldmethod = crate::app::FoldMethod::Indent;
+                    app.recompute_folds();
+                    Ok(())
+                }
+                other => Err(format!("expected `manual` or `indent`, got `{other}`")),
+            },
+            other => Err(format!("expected string, got {other:?}")),
+        }),
+    });
+    r.register(OptionSpec {
         name: "scrolloff",
         aliases: &["so"],
         doc: "Minimum visual lines kept above and below the cursor when scrolling.",

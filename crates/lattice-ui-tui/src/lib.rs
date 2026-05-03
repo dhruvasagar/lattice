@@ -21,6 +21,7 @@ pub mod buffers;
 pub mod chord;
 pub mod excommand;
 pub mod file_tree;
+pub mod folds;
 pub mod help;
 pub mod hover;
 pub mod input;

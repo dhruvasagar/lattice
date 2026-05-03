@@ -9,12 +9,12 @@ how to add support for a new language -- both the common case
 
 ## Quick reference
 
-| Goal                                       | What to do                         |
-|--------------------------------------------|------------------------------------|
-| Add a tree-sitter language to **core**     | [Section 1](#1-tree-sitter-core)   |
-| Add a language as a **plugin**             | [Section 2](#2-tree-sitter-plugin) |
-| Add a language **without tree-sitter**     | [Section 3](#3-non-tree-sitter)    |
-| Update queries when a grammar version bumps | [Section 4](#4-grammar-bumps)     |
+| Goal                                        | What to do                         |
+|---------------------------------------------|------------------------------------|
+| Add a tree-sitter language to **core**      | [Section 1](#1-tree-sitter-core)   |
+| Add a language as a **plugin**              | [Section 2](#2-tree-sitter-plugin) |
+| Add a language **without tree-sitter**      | [Section 3](#3-non-tree-sitter)    |
+| Update queries when a grammar version bumps | [Section 4](#4-grammar-bumps)      |
 
 ## Currently bundled
 
@@ -22,12 +22,12 @@ The default `LangRegistry` ships with these tree-sitter grammars
 plus their `highlights.scm` / `injections.scm` / `folds.scm` (and
 `locals.scm` for JavaScript):
 
-| Language        | Extensions    | Highlights | Injections | Folds | Locals |
-|-----------------|---------------|------------|------------|-------|--------|
-| Rust            | `rs`          | ✅          | ✅          | ✅     | —      |
-| Python          | `py`          | ✅          | —          | ✅     | —      |
-| JavaScript      | `js`/`mjs`/`cjs` | ✅       | ✅          | ✅     | ✅      |
-| Markdown        | `md`          | ✅          | ✅ (block→inline, fenced code) | ✅ | — |
+| Language   | Extensions       | Highlights | Injections                     | Folds | Locals |
+|------------|------------------|------------|--------------------------------|-------|--------|
+| Rust       | `rs`             | ✅         | ✅                             | ✅    | —      |
+| Python     | `py`             | ✅         | —                              | ✅    | —      |
+| JavaScript | `js`/`mjs`/`cjs` | ✅         | ✅                             | ✅    | ✅     |
+| Markdown   | `md`             | ✅         | ✅ (block→inline, fenced code) | ✅    | —      |
 
 Plain text and any unrecognised extension fall through to the
 `Plain` language: no parse, no styled spans. The renderer treats

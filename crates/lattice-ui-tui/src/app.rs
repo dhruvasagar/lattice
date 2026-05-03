@@ -3316,13 +3316,18 @@ impl App {
         };
         let body = t.body.render();
         let lines: Vec<String> = body.split('\n').map(|s| s.to_string()).collect();
+        // Auto-generate anchors from `#` / `##` / ... headings so
+        // intra-doc `[label](#slug)` links route to the right
+        // section without authors hand-maintaining anchor tables.
+        let anchors = crate::help::generate_heading_anchors(&lines);
         let title = if name == "index" {
             "help".to_string()
         } else {
             format!("help {name}")
         };
         self.open_help(
-            HelpBuffer::from_lines(title, lines).with_markdown_syntax(self.lang_registry.clone()),
+            HelpBuffer::from_lines_and_anchors(title, lines, anchors)
+                .with_markdown_syntax(self.lang_registry.clone()),
         );
     }
 
@@ -4219,6 +4224,25 @@ impl App {
             crate::help::HelpLinkTarget::Topic(name) => {
                 self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
                 self.do_open_help_topic(Some(&name));
+            }
+            crate::help::HelpLinkTarget::Anchor(slug) => {
+                // Intra-doc jump: scroll the *current* help buffer to
+                // the anchor line and move the cursor there. Push
+                // history so `<C-o>` returns to the link site.
+                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
+                let viewport = self.help_bufferport_height();
+                if let Some(h) = self.help_buffer.as_mut() {
+                    if h.scroll_to_anchor(&slug) {
+                        if let Some(a) = h.anchors.iter().find(|a| a.name == slug) {
+                            h.jump_cursor_to(a.line, viewport);
+                        }
+                    } else {
+                        self.set_message(
+                            EchoLevel::Warn,
+                            format!("anchor not found: #{slug}"),
+                        );
+                    }
+                }
             }
             crate::help::HelpLinkTarget::Source { path, line } => {
                 self.set_message(
@@ -11364,6 +11388,56 @@ mod tests {
         a.apply(Action::FollowLink);
         let h = a.help_buffer.as_ref().expect("help reopen");
         assert_eq!(h.title, "help buffers");
+    }
+
+    #[test]
+    fn help_anchor_link_scrolls_within_current_topic() {
+        // `:help languages` ships intra-doc anchor links of the form
+        // `[Section 1](#1-tree-sitter-core)`. Following one should
+        // scroll the *current* help buffer to the matching heading,
+        // not raise "no handler" / not switch topics.
+        let mut a = app_with("xx", 10);
+        a.command_line = "help languages".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("languages help open");
+        // Find the anchor link to "#1-tree-sitter-core" (which the
+        // languages topic ships in its quick-reference table).
+        let link = h
+            .links
+            .iter()
+            .find(|l| {
+                matches!(
+                    &l.target,
+                    crate::help::HelpLinkTarget::Anchor(s) if s == "1-tree-sitter-core"
+                )
+            })
+            .expect("anchor link to #1-tree-sitter-core present")
+            .clone();
+        let target_anchor_line = h
+            .anchors
+            .iter()
+            .find(|a| a.name == "1-tree-sitter-core")
+            .expect("anchor generated for `## 1. Tree-sitter, core`")
+            .line;
+        // Position the cursor on the link, then follow.
+        if let Some(h) = a.help_buffer.as_mut() {
+            h.cursor = link.range.start;
+        }
+        a.apply(Action::FollowLink);
+        let h = a.help_buffer.as_ref().expect("help still open");
+        assert_eq!(
+            h.title, "help languages",
+            "follow-link must NOT swap topics for an anchor jump"
+        );
+        assert_eq!(
+            h.cursor.line, target_anchor_line,
+            "cursor should land on the heading line"
+        );
+        assert_eq!(
+            h.scroll as u32, target_anchor_line,
+            "scroll should follow the anchor"
+        );
     }
 
     #[test]

@@ -24,18 +24,18 @@ detection.
 
 ## Quick reference
 
-| Keystroke / command       | Meaning                                                                  |
-|---------------------------|--------------------------------------------------------------------------|
-| `zf` (visual)             | Create a manual fold over the visual selection                            |
-| `za`                      | Toggle the fold under cursor (open ↔ closed)                              |
-| `zo`                      | Open the fold under cursor                                                |
-| `zc`                      | Close the fold under cursor                                               |
-| `zR`                      | Open every fold in the buffer                                             |
-| `zM`                      | Close every fold in the buffer                                            |
-| `zd`                      | Delete the fold under cursor (manual folds only; computed folds re-emerge) |
-| `zj` / `zk`               | Jump to the next / previous fold start                                    |
-| `:set foldmethod=X`       | Pick the fold provider: `manual` / `indent` / `markdown` / `syntax`        |
-| `:set nofoldenable`       | Hide all fold affordances (folds still exist, all lines render)            |
+| Keystroke / command | Meaning                                                                    |
+|---------------------|----------------------------------------------------------------------------|
+| `zf` (visual)       | Create a manual fold over the visual selection                             |
+| `za`                | Toggle the fold under cursor (open ↔ closed)                               |
+| `zo`                | Open the fold under cursor                                                 |
+| `zc`                | Close the fold under cursor                                                |
+| `zR`                | Open every fold in the buffer                                              |
+| `zM`                | Close every fold in the buffer                                             |
+| `zd`                | Delete the fold under cursor (manual folds only; computed folds re-emerge) |
+| `zj` / `zk`         | Jump to the next / previous fold start                                     |
+| `:set foldmethod=X` | Pick the fold provider: `manual` / `indent` / `markdown` / `syntax`        |
+| `:set nofoldenable` | Hide all fold affordances (folds still exist, all lines render)            |
 
 ---
 
@@ -175,18 +175,18 @@ feel like a hack. The principle:
 The cursor is on the heading row of a closed fold. The fold
 extends from `start_line` to `end_line`.
 
-| Keystroke   | Behavior                                                              | Range affected                  |
-|-------------|-----------------------------------------------------------------------|---------------------------------|
-| `dd`        | Delete the entire fold                                                | `[start..=end]`                  |
-| `yy`        | Yank the entire fold's content (with newlines)                        | `[start..=end]`                  |
-| `cc`        | Delete the fold's content, enter Insert at `(start, 0)`               | `[start..=end]`                  |
-| `>>`        | Indent every line in the fold                                         | `[start..=end]`, batched         |
-| `<<`        | Dedent every line in the fold                                         | `[start..=end]`, batched         |
-| `gUU`       | Uppercase every byte in the fold                                      | `[start..=end]`                  |
-| `guu`       | Lowercase every byte in the fold                                      | `[start..=end]`                  |
-| `g~~`       | Toggle case in the fold                                               | `[start..=end]`                  |
-| `2dd`       | Delete the fold + 1 more **visible** line                             | fold + next visible              |
-| `3yy`       | Yank the fold + 2 more visible lines (each fold counts as 1)          | fold + next 2 visible            |
+| Keystroke | Behavior                                                     | Range affected           |
+|-----------|--------------------------------------------------------------|--------------------------|
+| `dd`      | Delete the entire fold                                       | `[start..=end]`          |
+| `yy`      | Yank the entire fold's content (with newlines)               | `[start..=end]`          |
+| `cc`      | Delete the fold's content, enter Insert at `(start, 0)`      | `[start..=end]`          |
+| `>>`      | Indent every line in the fold                                | `[start..=end]`, batched |
+| `<<`      | Dedent every line in the fold                                | `[start..=end]`, batched |
+| `gUU`     | Uppercase every byte in the fold                             | `[start..=end]`          |
+| `guu`     | Lowercase every byte in the fold                             | `[start..=end]`          |
+| `g~~`     | Toggle case in the fold                                      | `[start..=end]`          |
+| `2dd`     | Delete the fold + 1 more **visible** line                    | fold + next visible      |
+| `3yy`     | Yank the fold + 2 more visible lines (each fold counts as 1) | fold + next 2 visible    |
 
 The whole operation lands as **one undo unit** (same guarantee
 as `2>>` / `2dd` over multiple regular lines).
@@ -207,13 +207,13 @@ boundaries.
 
 ### Cursor placement after operations
 
-| Operation            | Where the cursor lands                                |
-|----------------------|-------------------------------------------------------|
-| `dd` on a fold       | The line that was after the fold (now at `start_line`) |
-| `cc` on a fold       | `(start_line, 0)`, then Insert mode                    |
-| `yy` on a fold       | Stays on the fold's heading                           |
-| `>>` / `<<`          | Stays on the fold's heading                           |
-| `gUU` / `guu` / `g~~`| Stays on the fold's heading                           |
+| Operation             | Where the cursor lands                                 |
+|-----------------------|--------------------------------------------------------|
+| `dd` on a fold        | The line that was after the fold (now at `start_line`) |
+| `cc` on a fold        | `(start_line, 0)`, then Insert mode                    |
+| `yy` on a fold        | Stays on the fold's heading                            |
+| `>>` / `<<`           | Stays on the fold's heading                            |
+| `gUU` / `guu` / `g~~` | Stays on the fold's heading                            |
 
 ---
 
@@ -259,23 +259,23 @@ regardless of fold state.
 
 ## Motions
 
-| Motion                | Behavior with closed folds                                                   |
-|-----------------------|------------------------------------------------------------------------------|
-| `j` / `k`             | Step to next / previous **visible** line. Skip closed-fold body.              |
-| `h` / `l`             | Same line, ignore folds.                                                       |
-| `0` / `$` / `^`       | Same line, ignore folds.                                                       |
+| Motion                | Behavior with closed folds                                                               |
+|-----------------------|------------------------------------------------------------------------------------------|
+| `j` / `k`             | Step to next / previous **visible** line. Skip closed-fold body.                         |
+| `h` / `l`             | Same line, ignore folds.                                                                 |
+| `0` / `$` / `^`       | Same line, ignore folds.                                                                 |
 | `w` / `b` / `e`       | Word motions on the current line. Cross-line word motion lands on the next visible line. |
-| `gg`                  | Buffer line 1. **Opens** the containing fold if line 1 is hidden.              |
-| `G`                   | Last line. **Opens** the containing fold if needed.                             |
-| `5G` / `:5`           | Buffer line 5. **Opens** the containing fold if needed.                         |
-| `H` / `M` / `L`       | Viewport top / middle / bottom — counted in visible rows. Never lands inside a fold. |
-| `Ctrl-D` / `Ctrl-U`   | Half-page; counts visible rows.                                                |
-| `n` / `N`             | Search next / prev. **Opens** the containing fold on a match.                   |
-| `*` / `#`             | Word search. **Opens** on a match.                                              |
-| `f` / `F` / `t` / `T` | Find-char on the current line; folds irrelevant.                                |
-| `%`                   | Match-bracket. **Opens** the containing fold if the match is hidden.            |
-| `Ctrl-O` / `Ctrl-I`   | Position history. **Opens** the containing fold on jump.                        |
-| `gd` / `gD`           | Goto-definition (LSP, planned). Will **open** the containing fold.              |
+| `gg`                  | Buffer line 1. **Opens** the containing fold if line 1 is hidden.                        |
+| `G`                   | Last line. **Opens** the containing fold if needed.                                      |
+| `5G` / `:5`           | Buffer line 5. **Opens** the containing fold if needed.                                  |
+| `H` / `M` / `L`       | Viewport top / middle / bottom — counted in visible rows. Never lands inside a fold.     |
+| `Ctrl-D` / `Ctrl-U`   | Half-page; counts visible rows.                                                          |
+| `n` / `N`             | Search next / prev. **Opens** the containing fold on a match.                            |
+| `*` / `#`             | Word search. **Opens** on a match.                                                       |
+| `f` / `F` / `t` / `T` | Find-char on the current line; folds irrelevant.                                         |
+| `%`                   | Match-bracket. **Opens** the containing fold if the match is hidden.                     |
+| `Ctrl-O` / `Ctrl-I`   | Position history. **Opens** the containing fold on jump.                                 |
+| `gd` / `gD`           | Goto-definition (LSP, planned). Will **open** the containing fold.                       |
 
 ### Auto-open semantics
 

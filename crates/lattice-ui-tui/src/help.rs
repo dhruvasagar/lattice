@@ -369,6 +369,12 @@ pub enum HelpLinkTarget {
     /// `:describe-*` cross-references and by topic body content
     /// itself so a topic can link to a sibling topic.
     Topic(String),
+    /// `[label](#slug)` -- intra-document jump. Auto-generated from
+    /// markdown headings (GitHub-style slug: lowercase, non-alnum
+    /// runs collapsed to `-`, leading/trailing `-` trimmed). The
+    /// follow-link handler scrolls the *current* help buffer to
+    /// the matching anchor's line; no buffer swap.
+    Anchor(String),
     /// `[[…]]` whose payload didn't match a known scheme. Preserved
     /// verbatim for forward-compat -- a plugin / future scheme can
     /// inspect the raw payload.
@@ -529,6 +535,11 @@ fn classify_link_url(url: &str) -> HelpLinkTarget {
         HelpLinkTarget::Chord(rest.to_string())
     } else if let Some(rest) = url.strip_prefix("help:") {
         HelpLinkTarget::Topic(rest.to_string())
+    } else if let Some(rest) = url.strip_prefix('#') {
+        // Markdown intra-document anchor (`[label](#slug)`). Matches
+        // the GitHub-style slug auto-generated from headings by
+        // [`generate_heading_anchors`].
+        HelpLinkTarget::Anchor(rest.to_string())
     } else if let Some(rest) = url.strip_prefix("file:") {
         // `path:line` -- split at the LAST `:` so paths with colons
         // (Windows drives, URLs) survive.
@@ -547,6 +558,90 @@ fn classify_link_url(url: &str) -> HelpLinkTarget {
     } else {
         HelpLinkTarget::Unresolved(url.to_string())
     }
+}
+
+/// Convert a markdown heading line ("## 1. Tree-sitter, core") into
+/// the GitHub-style slug ("1-tree-sitter-core") used for intra-doc
+/// anchor links. Algorithm:
+///
+/// 1. Strip the leading `#`s + any whitespace.
+/// 2. Lowercase.
+/// 3. Drop any non-alphanumeric / non-hyphen / non-space character
+///    (punctuation, fences, parens, periods, etc.).
+/// 4. Collapse whitespace runs to a single hyphen; collapse hyphen
+///    runs to a single hyphen.
+/// 5. Trim leading / trailing hyphens.
+///
+/// Matches the slugs GitHub renders for `# Heading` blocks so links
+/// authored against rendered docs work in-editor too.
+pub fn slugify_heading(text: &str) -> String {
+    let mut s = text.trim().to_lowercase();
+    // Strip leading `#`s + whitespace.
+    s = s.trim_start_matches('#').trim_start().to_string();
+    let mut out = String::with_capacity(s.len());
+    let mut prev_hyphen = false;
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            prev_hyphen = false;
+        } else if (ch == '-' || ch.is_whitespace()) && !prev_hyphen && !out.is_empty() {
+            out.push('-');
+            prev_hyphen = true;
+        }
+        // Anything else (punctuation, backticks, parens, slashes...)
+        // is dropped, mirroring GitHub.
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+/// Walk `lines` for ATX-style markdown headings (`#`, `##`, ...) and
+/// emit a [`HelpAnchor`] per heading whose name is the GitHub-style
+/// slug. Used by the help-topic loader so authors can write
+/// `[label](#slug)` in markdown bodies and have the link route in-
+/// editor without manually-managed anchor lists.
+///
+/// Skips heading-shaped lines inside fenced code blocks
+/// (` ``` ` / ` ~~~ `) so a `# foo` line in a Rust example doesn't
+/// register as an anchor.
+pub fn generate_heading_anchors(lines: &[String]) -> Vec<HelpAnchor> {
+    let mut anchors = Vec::new();
+    let mut in_fence = false;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if !trimmed.starts_with('#') {
+            continue;
+        }
+        // Count leading `#`s; ATX cap is 6.
+        let depth = trimmed.chars().take_while(|c| *c == '#').count();
+        if !(1..=6).contains(&depth) {
+            continue;
+        }
+        // Require at least one whitespace between hashes and content
+        // (CommonMark §4.2). Bare `###foo` is not a heading.
+        let after = &trimmed[depth..];
+        if !after.is_empty() && !after.starts_with(|c: char| c.is_whitespace()) {
+            continue;
+        }
+        let slug = slugify_heading(trimmed);
+        if slug.is_empty() {
+            continue;
+        }
+        anchors.push(HelpAnchor {
+            name: slug,
+            line: i as u32,
+        });
+    }
+    anchors
 }
 
 /// Convert a flat byte offset in `text` into a `(line, byte_in_line)`
@@ -852,5 +947,80 @@ mod tests {
         let h = HelpBuffer::from_lines("t", vec!["# title".into()]);
         assert!(h.highlights.is_empty());
         assert_eq!(h.content.line_count(), 1);
+    }
+
+    // --- Anchor links + heading slugs ---------------------------
+
+    #[test]
+    fn slugify_heading_matches_github_style() {
+        assert_eq!(slugify_heading("# Quick reference"), "quick-reference");
+        assert_eq!(slugify_heading("## 1. Tree-sitter, core"), "1-tree-sitter-core");
+        assert_eq!(
+            slugify_heading("### Step 1 -- pin the grammar crate"),
+            "step-1-pin-the-grammar-crate"
+        );
+        assert_eq!(slugify_heading("### What you lose"), "what-you-lose");
+        assert_eq!(slugify_heading("##  Trailing   space  "), "trailing-space");
+        assert_eq!(slugify_heading("# `code` ignored?"), "code-ignored");
+    }
+
+    #[test]
+    fn classify_link_url_routes_anchor_form() {
+        match classify_link_url("#1-tree-sitter-core") {
+            HelpLinkTarget::Anchor(s) => assert_eq!(s, "1-tree-sitter-core"),
+            other => panic!("expected Anchor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn generate_heading_anchors_emits_one_per_heading() {
+        let lines = vec![
+            "# Title".into(),
+            "body".into(),
+            "## 1. Tree-sitter, core".into(),
+            "more".into(),
+            "### Step 1 -- pin".into(),
+            "## 2. Plugin".into(),
+        ];
+        let anchors = generate_heading_anchors(&lines);
+        let names: Vec<&str> = anchors.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["title", "1-tree-sitter-core", "step-1-pin", "2-plugin"]
+        );
+        assert_eq!(anchors[1].line, 2);
+        assert_eq!(anchors[3].line, 5);
+    }
+
+    #[test]
+    fn generate_heading_anchors_skips_inside_fenced_code_blocks() {
+        // A `# foo` line inside a code fence is example content, not
+        // a real heading.
+        let lines = vec![
+            "# Real Title".into(),
+            "```".into(),
+            "# not a heading".into(),
+            "```".into(),
+            "## After".into(),
+        ];
+        let anchors = generate_heading_anchors(&lines);
+        let names: Vec<&str> = anchors.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["real-title", "after"]);
+    }
+
+    #[test]
+    fn from_lines_parses_anchor_link_target() {
+        // A markdown link `[Section 1](#1-tree-sitter-core)` should
+        // produce a HelpLink with the Anchor target so follow-link
+        // routes to scroll_to_anchor instead of "no handler".
+        let h = HelpBuffer::from_lines(
+            "t",
+            vec!["see [Section 1](#1-tree-sitter-core) for details".into()],
+        );
+        assert_eq!(h.links.len(), 1);
+        match &h.links[0].target {
+            HelpLinkTarget::Anchor(slug) => assert_eq!(slug, "1-tree-sitter-core"),
+            other => panic!("expected Anchor target, got {other:?}"),
+        }
     }
 }

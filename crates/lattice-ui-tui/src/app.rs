@@ -5516,21 +5516,27 @@ impl App {
     /// Skip past a closed fold's interior after a linear vertical
     /// motion (`j` / `k`). Per `docs/help/folding.md`, j/k count
     /// visible lines, not buffer lines: pressing `j` from a closed
-    /// fold's heading lands the cursor on the line *after* the
-    /// fold, not inside its hidden body.
+    /// fold's heading lands the cursor on the next visible content
+    /// line, not inside the fold's hidden body.
     ///
-    /// `prev_line` is the cursor line before dispatch. The motion's
-    /// outcome (`self.cursor.line`) is examined: if it lands inside
-    /// a closed fold's body (`fold.start_line < new_line <= fold.end_line`,
-    /// or any line of an enclosing closed fold), the cursor is
-    /// snapped:
+    /// The snap is iterative so a sequence of consecutive closed
+    /// folds is jumped over in one keypress, mirroring vim's
+    /// "next visible line" semantics. After exiting a fold
+    /// downward, trailing blank lines that sit between this fold
+    /// and the next sibling are *also* swallowed -- vim's
+    /// `foldmethod=indent` treats those blanks as visually part of
+    /// the fold so j lands on real content (the next sibling's
+    /// heading), not on a blank between siblings. Without this,
+    /// repeated `j` over fold A landed cursor on a blank, and then
+    /// `zc` resolved "innermost open fold" to the *parent* because
+    /// no inner fold contained the blank line -- the
+    /// folding-folds-the-parent regression.
     ///
-    /// - moving down (`prev_line < new_line`) → `fold.end_line + 1`,
-    ///   clamped to the buffer's last addressable line;
-    /// - moving up (`prev_line > new_line`) → `fold.start_line`.
+    /// Going up never blank-skips: the user is moving toward
+    /// content above and the closed fold's heading is the right
+    /// landing spot.
     ///
-    /// `foldenable = false` suppresses the skip entirely, mirroring
-    /// the spec's "every line visible" guarantee.
+    /// `foldenable = false` suppresses the skip entirely.
     fn skip_closed_fold_for_linear_motion(&mut self, prev_line: u32) {
         if !self.foldenable {
             return;
@@ -5540,25 +5546,39 @@ impl App {
             return;
         }
         let going_down = new_line > prev_line;
-        // A closed fold "captures" `new_line` when the line is
-        // inside it -- specifically, anywhere the renderer would
-        // hide. The fold's start line is visible (the heading); the
-        // body lines aren't. From a closed fold's heading, moving
-        // down lands inside the fold body, which is what we skip.
-        let containing = self
-            .folds
-            .iter()
-            .find(|f| f.closed && new_line > f.start_line && new_line <= f.end_line);
-        let Some(fold) = containing.copied() else {
+        let snap = self.document.snapshot();
+        let last = last_addressable_line(&snap.buffer);
+        let mut snapped = new_line;
+        let mut exited_a_fold = false;
+        loop {
+            let in_closed = self
+                .folds
+                .iter()
+                .find(|f| f.closed && snapped > f.start_line && snapped <= f.end_line)
+                .copied();
+            if let Some(fold) = in_closed {
+                snapped = if going_down {
+                    (fold.end_line + 1).min(last)
+                } else {
+                    fold.start_line
+                };
+                exited_a_fold = true;
+                continue;
+            }
+            if exited_a_fold
+                && going_down
+                && snapped < last
+                && is_blank_line(&snap.buffer, snapped)
+            {
+                snapped += 1;
+                continue;
+            }
+            break;
+        }
+        if snapped == new_line {
             return;
-        };
-        let last = last_addressable_line(&self.document.snapshot().buffer);
-        let snapped = if going_down {
-            (fold.end_line + 1).min(last)
-        } else {
-            fold.start_line
-        };
-        let len = line_byte_len(&self.document.snapshot().buffer, snapped);
+        }
+        let len = line_byte_len(&snap.buffer, snapped);
         let byte = self.cursor.byte.min(len);
         self.cursor = Position::new(snapped, byte);
     }
@@ -6207,6 +6227,17 @@ fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
         VisualKind::Linewise => VisualMode::Linewise,
         VisualKind::Blockwise => VisualMode::Blockwise,
     }
+}
+
+/// True if `line_idx` is empty or whitespace-only. Used by the
+/// fold-aware j/k snap to swallow trailing blanks between sibling
+/// folds (so `j` from a closed fold's heading lands on the next
+/// sibling's heading, not on the blank between them).
+fn is_blank_line(buffer: &lattice_core::Buffer, line_idx: u32) -> bool {
+    buffer
+        .line(line_idx)
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
 }
 
 /// Index of the *innermost* fold containing `line` that satisfies
@@ -7462,6 +7493,122 @@ mod tests {
         a.cursor = Position::new(1, 0);
         a.apply(invoke_motion(a.builtins.line_down));
         assert_eq!(a.cursor.line, 2);
+    }
+
+    fn line_down_lands_on_next_fold_heading_when_consecutive() {
+        // Three closed folds back-to-back: 1..=3, 4..=6, 7..=9.
+        // Each `j` moves one visible line; a closed fold's heading
+        // IS a visible line. So:
+        //   line 1 (fold A heading) --j--> line 4 (fold B heading)
+        //   line 4 (fold B heading) --j--> line 7 (fold C heading)
+        //   line 7 (fold C heading) --j--> line 10 (after fold C)
+        let mut a = app_with(&"x\n".repeat(12), 10);
+        a.folds.push(Fold {
+            start_line: 1,
+            end_line: 3,
+            closed: true,
+            identity: None,
+        });
+        a.folds.push(Fold {
+            start_line: 4,
+            end_line: 6,
+            closed: true,
+            identity: None,
+        });
+        a.folds.push(Fold {
+            start_line: 7,
+            end_line: 9,
+            closed: true,
+            identity: None,
+        });
+        a.cursor = Position::new(1, 0);
+        a.apply(invoke_motion(a.builtins.line_down));
+        assert_eq!(a.cursor.line, 4, "first j → fold B heading");
+        a.apply(invoke_motion(a.builtins.line_down));
+        assert_eq!(a.cursor.line, 7, "second j → fold C heading");
+        a.apply(invoke_motion(a.builtins.line_down));
+        assert_eq!(a.cursor.line, 10, "third j → past fold C");
+    }
+
+    #[test]
+    fn line_down_skips_consecutive_closed_folds_in_one_keypress() {
+        // Wrapper / dummy: superseded by
+        // `line_down_lands_on_next_fold_heading_when_consecutive`.
+        // The historical name preserved so anyone re-running an
+        // older test list spots the rename.
+        line_down_lands_on_next_fold_heading_when_consecutive();
+    }
+
+    #[test]
+    fn line_down_swallows_blanks_between_sibling_folds_for_zc_targeting() {
+        // Reproduces the user's "third form" regression: with a
+        // blank line between two closed folds, j from the first
+        // fold's heading must land on the *next sibling's heading*,
+        // not on the blank between them. Otherwise zc on the blank
+        // resolves to "innermost open fold containing this line" =
+        // the parent.
+        //
+        // Buffer (impl with three fns separated by blank lines):
+        //   line 0: impl B {
+        //   line 1:   fn a() {
+        //   line 2:   }
+        //   line 3:   <blank>
+        //   line 4:   fn b() {
+        //   line 5:   }
+        //   line 6:   <blank>
+        //   line 7:   fn c() {
+        //   line 8:   }
+        //   line 9: }
+        let src = "impl B {\n    fn a() {\n    }\n\n    fn b() {\n    }\n\n    fn c() {\n    }\n}\n";
+        let mut a = app_with(src, 20);
+        // Outer impl + three function folds (skip blank-line 3 / 6).
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 9,
+            closed: false,
+            identity: None,
+        });
+        a.folds.push(Fold {
+            start_line: 1,
+            end_line: 2,
+            closed: true,
+            identity: None,
+        });
+        a.folds.push(Fold {
+            start_line: 4,
+            end_line: 5,
+            closed: false,
+            identity: None,
+        });
+        a.folds.push(Fold {
+            start_line: 7,
+            end_line: 8,
+            closed: false,
+            identity: None,
+        });
+        a.cursor = Position::new(1, 0);
+        // j from fn a's heading: snap over fn a's body, swallow the
+        // blank, land on fn b's heading (line 4).
+        a.apply(invoke_motion(a.builtins.line_down));
+        assert_eq!(
+            a.cursor.line, 4,
+            "j after fold A must skip the blank and land on fn b"
+        );
+        // Close fn b, j again, land on fn c's heading (line 7).
+        a.apply(Action::CloseFoldAtCursor);
+        let fnb = a.folds.iter().find(|f| f.start_line == 4).unwrap();
+        assert!(fnb.closed, "zc on fn b heading closes fn b");
+        a.apply(invoke_motion(a.builtins.line_down));
+        assert_eq!(
+            a.cursor.line, 7,
+            "j after fold B must skip the blank and land on fn c"
+        );
+        // Close fn c. The outer impl must remain open.
+        a.apply(Action::CloseFoldAtCursor);
+        let fnc = a.folds.iter().find(|f| f.start_line == 7).unwrap();
+        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
+        assert!(fnc.closed, "zc on fn c heading closes fn c, not outer");
+        assert!(!outer.closed, "outer impl must remain open through the sequence");
     }
 
     #[test]

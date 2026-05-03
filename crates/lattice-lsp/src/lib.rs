@@ -45,12 +45,22 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::panic))]
 
+pub mod actor;
+pub mod capabilities;
 pub mod codec;
+pub mod config;
+pub mod error;
 pub mod framing;
 pub mod jsonrpc;
+pub mod pending;
 pub mod transport;
 
+pub use actor::{ServerHandle, spawn, spawn_with_io};
+pub use capabilities::{Capabilities, client_capabilities};
 pub use codec::{LspReader, LspWriter};
+pub use config::{ServerConfig, builtin_servers, resolve_workspace_root};
+pub use error::{LspError, LspResult};
 pub use framing::{FrameError, FrameHeader};
 pub use jsonrpc::{Message, Notification, Request, RequestId, Response, ResponseError};
+pub use pending::{InvocationId, Pending};
 pub use transport::{ChildTransport, TransportError};

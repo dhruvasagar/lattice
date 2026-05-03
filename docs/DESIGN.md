@@ -108,7 +108,8 @@ The four paramount goals -- in priority order when they conflict -- are **perfor
 - **Pluggable editing paradigms in v1.** No emacs/readline-style alternative to vim modal editing in v1. The command API is paradigm-agnostic so an alternative can be added post-1.0 without redesign.
 - **Fixed dock layout.** No left/right sidebar or bottom-panel as a first-class concept. Panels-as-buffers compose via the pane tree.
 - **In-process scripting language / sub-keystroke REPL.** No Lua, no embedded Scheme, no `M-x ielm`. WASM (Rust today; any component-model language tomorrow) is the single extension substrate. Live evaluation is the `*scratch:rust*` plugin-authoring workflow described in §10, with 1-3 s compile latency, not a sub-keystroke evaluator. A community-shipped plugin can offer the latter as an extension; the host does not.
-- **Backwards-compatible config syntax** beyond TOML. Lua / vimscript / elisp config files are not supported; config is TOML, extensions are WASM.
+- **Backwards-compatible config syntax** beyond TOML. Lua / vimscript / elisp config files are not supported; config is TOML for static data and Rust→WASM (`init.rs`, §5.12) for code. Extensions are WASM. There is one extension substrate.
+- **A function-call / palette / scripting syntax on the `:` line.** The `:` line is vim's ex-syntax DSL, full stop -- a parser front-end that produces typed `CommandInvocation`s for the unified dispatcher (§5.2.1). Code paths (plugins, `init.rs`, the Rust functional API) construct `CommandInvocation` values directly via the WIT host, which is the canonical typed surface for non-typing input. Two input surfaces (vim DSL for users, typed `CommandInvocation` for code), one dispatcher. We deliberately do *not* attempt to fold typing-into-`:` and code-construction into a single shape; the cost (a sugar layer that re-implements vim DSL inside a function-call parser, plus the cognitive overhead of "is this a function or a vim shorthand?") outweighs the gain (a unification we already have at `CommandInvocation`).
 
 ---
 
@@ -321,6 +322,18 @@ The vim user experience is preserved exactly:
 5. **No vimscript residue.** `:call`, `:execute`, `:function`, `:return` distinctions die. Plugins call the dispatcher directly.
 
 **What lives in the parser, not the dispatcher.** Vim's syntactic oddities -- `:set wrap!`, `:set lcs=tab:>·`, `:s/foo/bar/g` flag parsing, range pattern syntax -- are handled by the `:`-line parser, which produces typed args. Each weird-looking command resolves to a normal `(command_id, args)` pair. The dispatcher knows nothing about the input syntax.
+
+**Two input surfaces, one substrate.** The vim DSL on `:` is the canonical surface for *user typing*; constructing a `CommandInvocation` directly via the WIT host is the canonical surface for *code* (plugins, `init.rs`, the Rust functional API, future scripting-shaped extensions). They meet at `CommandInvocation` -- byte-identical from `execute(...)`'s perspective regardless of origin. The DSL stays vim-shaped because vim users have decades of muscle memory and many idioms (`:%s/.../.../g`, `:1,5d`, `:wq!`) don't map cleanly to function-call syntax without re-implementing the DSL as a sugar layer; the typed surface stays typed because plugins want signatures, not strings. We deliberately do not unify the *input surface* -- only the *dispatch substrate*. (The corresponding non-goal is in §2.2.)
+
+**Every command is reachable from `:` via a small kind-prefix form.** Ex-commands keep the bare alias surface (`:wq`, `:write foo.txt`, `:set number` -- vim-shaped DSL, unchanged). Motions, operators, text-objects, and any plugin contribution registered as one of those kinds are reachable from `:` through a kind-prefix word + the registered name's tail (the part after the canonical `motion:` / `operator:` / `text-object:` namespace prefix):
+
+- `:motion goto-first-line` runs the same `gg` motion the chord grammar reaches.
+- `:operator delete word-forward` runs the operator over the named motion (or text-object) target.
+- `:text-object inner-word` errors helpfully -- text-objects are operator targets, so they need an operator.
+
+The kind word disambiguates the namespace cleanly without forcing colons to repeat (`:motion:goto-first-line` reads as two `:`s on the cmdline -- visual noise). The three kind words (`motion`, `operator`, `text-object`) are reserved on the `:` line; no ex-command may shadow them. Targets after the operator name are themselves looked up first as motions, then as text-objects; the bare tail (without prefix) is sufficient because the dispatch context fixes the namespace.
+
+This kind-prefix reachability is what closes the long-standing parser gap that otherwise contradicted "every command is reachable from `:`" while motions / operators / text-objects were silently rejected. The `:` form is meant for palette / discovery / scripting use; the chord grammar (`5dw`, `daw`, `gg`) remains the natural surface for power-typing.
 
 **Keymaps bind chord sequences to `CommandInvocation`s.** The default vim keymap is itself a config file: `"dw"` binds to a `delete` invocation with a `WordForward` target. Users and plugins override or compose without recompiling.
 

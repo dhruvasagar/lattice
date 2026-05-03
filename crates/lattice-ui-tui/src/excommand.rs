@@ -20,8 +20,8 @@ use std::collections::HashMap;
 
 use thiserror::Error;
 
-use lattice_grammar::registry::CommandRegistry;
-use lattice_grammar::{ArgValue, Args, CommandInvocation, Range};
+use lattice_grammar::registry::{CommandRegistry, MotionId, TextObjectId};
+use lattice_grammar::{ArgValue, Args, CommandInvocation, CommandKind, Range, Target};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ExCommandError {
@@ -83,6 +83,20 @@ fn parse_invocation(
         (raw_cmd, false)
     };
 
+    // DESIGN.md §5.2.1 kind-prefix form: `:motion <name>`,
+    // `:operator <name> [target]`, `:text-object <name>`. The
+    // bare kind word reserves the namespace; the next token is
+    // looked up as `kind:<name>` in the registry. This is the
+    // canonical surface for invoking non-ex-command primitives
+    // from `:`. Bang on the kind word itself is rejected (it'd be
+    // ambiguous which side it applied to).
+    if let Some(kind) = parse_kind_word(cmd) {
+        if bang {
+            return Err(ExCommandError::BangNotAllowed(raw_cmd.to_string()));
+        }
+        return parse_kind_prefixed(registry, kind, rest);
+    }
+
     // Resolution order: try the typed text directly as a registry
     // name first (so canonical names like `ex:describe-command`
     // resolve), then fall back to alias expansion (so user-friendly
@@ -104,12 +118,98 @@ fn parse_invocation(
     let entry = registry
         .lookup(id)
         .ok_or_else(|| ExCommandError::Unknown(raw_cmd.to_string()))?;
-    if entry.kind != lattice_grammar::CommandKind::ExCommand {
-        // Only ex-commands are reachable from `:`. Motions / operators /
-        // text objects are addressed through chord syntax, not `:cmd`.
-        return Err(ExCommandError::Unknown(raw_cmd.to_string()));
-    }
 
+    // The bare-word path handles ex-commands only (`:write`, `:wq`,
+    // `:set ...`). Motions / operators / text-objects are reached
+    // from `:` via the explicit kind-prefix form
+    // (`:motion goto-first-line`, `:operator delete word-forward`,
+    // `:text-object inner-word`) -- handled in `parse_invocation`'s
+    // kind-prefix branch above. If we land here with a non-ex
+    // command, the user typed the registered canonical name (e.g.
+    // `:motion:goto-first-line`) -- supported as a fallback for
+    // tooling / scripts but not the canonical user surface; we
+    // dispatch but don't accept args because the kind-prefix form
+    // is the right place for that.
+    match entry.kind {
+        CommandKind::ExCommand => parse_ex_command(registry, id, entry, raw_cmd, rest, bang),
+        CommandKind::Motion => parse_naked_motion(id, raw_cmd, rest, bang),
+        CommandKind::Operator => parse_operator_with_target(registry, id, raw_cmd, rest, bang),
+        CommandKind::TextObject => Err(ExCommandError::BadArgs(format!(
+            "`{cmd}` is a text-object; pair it with an operator \
+             (`:operator delete {cmd}`) or use chord grammar"
+        ))),
+        CommandKind::Action => Err(ExCommandError::Unknown(raw_cmd.to_string())),
+    }
+}
+
+/// Match a bare command word against the reserved kind-prefix set
+/// (`motion`, `operator`, `text-object`). Returns the matching
+/// [`CommandKind`] or `None` for any other word -- which falls
+/// through to ex-command resolution.
+fn parse_kind_word(s: &str) -> Option<CommandKind> {
+    match s {
+        "motion" => Some(CommandKind::Motion),
+        "operator" => Some(CommandKind::Operator),
+        "text-object" => Some(CommandKind::TextObject),
+        _ => None,
+    }
+}
+
+/// Resolve the kind-prefix form: the leading kind word fixes the
+/// namespace; the next whitespace-delimited token is the command
+/// tail (the part after `motion:` / `operator:` / `text-object:`
+/// in the canonical name). Subsequent tokens, if any, feed each
+/// kind's specific parser (operators take a target).
+fn parse_kind_prefixed(
+    registry: &CommandRegistry,
+    kind: CommandKind,
+    rest: &str,
+) -> Result<CommandInvocation, ExCommandError> {
+    let trimmed = rest.trim();
+    let (tail, more) = match trimmed.find(char::is_whitespace) {
+        Some(i) => (&trimmed[..i], trimmed[i..].trim()),
+        None => (trimmed, ""),
+    };
+    if tail.is_empty() {
+        return Err(ExCommandError::BadArgs(format!(
+            "`{}` requires a name (e.g. `:{} <name>`)",
+            kind.label(),
+            kind.label()
+        )));
+    }
+    let canonical = format!("{}:{}", kind.label(), tail);
+    let id = registry
+        .id_by_name(&canonical)
+        .ok_or_else(|| ExCommandError::Unknown(canonical.clone()))?;
+    // Defensive: the lookup should match the kind we asserted via
+    // the prefix. Mismatch means a registry inconsistency, not
+    // user error.
+    let entry = registry
+        .lookup(id)
+        .ok_or_else(|| ExCommandError::Unknown(canonical.clone()))?;
+    debug_assert_eq!(entry.kind, kind, "kind-prefix lookup inconsistency");
+    let _ = entry;
+    match kind {
+        CommandKind::Motion => parse_naked_motion(id, &canonical, more, false),
+        CommandKind::Operator => parse_operator_with_target(registry, id, &canonical, more, false),
+        CommandKind::TextObject => Err(ExCommandError::BadArgs(format!(
+            "`{tail}` is a text-object; pair it with an operator \
+             (`:operator delete {tail}`) or use chord grammar"
+        ))),
+        CommandKind::ExCommand | CommandKind::Action => unreachable!(),
+    }
+}
+
+/// Run the ex-command-specific parsing path: surface-form check,
+/// bang validation, then the spec's `parse_args` callback.
+fn parse_ex_command(
+    registry: &CommandRegistry,
+    id: lattice_grammar::CommandId,
+    entry: &lattice_grammar::CommandSpec,
+    raw_cmd: &str,
+    rest: &str,
+    bang: bool,
+) -> Result<CommandInvocation, ExCommandError> {
     let spec =
         ex_spec_for(registry, id).ok_or_else(|| ExCommandError::Unknown(raw_cmd.to_string()))?;
     // Surface-form check before parse_args. Commands flagged
@@ -135,6 +235,83 @@ fn parse_invocation(
     })?;
 
     Ok(CommandInvocation::of(id).with_args(args).with_bang(bang))
+}
+
+/// `:motion:NAME` -- run the motion against the active cursor. v1
+/// accepts the naked form only (Args::None); motions that need a
+/// char arg (`f`, `t`, etc.) error from inside the motion's
+/// evaluator with `CommandError::InvalidArgs`. Bang is rejected --
+/// motions don't carry a force flag.
+fn parse_naked_motion(
+    id: lattice_grammar::CommandId,
+    raw_cmd: &str,
+    rest: &str,
+    bang: bool,
+) -> Result<CommandInvocation, ExCommandError> {
+    if bang {
+        return Err(ExCommandError::BangNotAllowed(raw_cmd.to_string()));
+    }
+    if !rest.is_empty() {
+        return Err(ExCommandError::TrailingArgs);
+    }
+    Ok(CommandInvocation::of(id))
+}
+
+/// `:operator <name> [target]` -- run the operator against a motion
+/// or text-object whose tail name follows. The target lives in
+/// `CommandInvocation::target`; the dispatcher's existing
+/// resolve-target path handles the rest.
+///
+/// Target resolution uses the kind-prefix form's implicit-namespace
+/// rule: a bare tail like `word-forward` is tried as `motion:word-
+/// forward` first, then `text-object:word-forward`. The user can
+/// also type the full canonical name (`motion:word-forward`) for
+/// disambiguation; that path resolves directly. v1 accepts only
+/// the trailing-name form -- explicit ranges
+/// (`:operator delete .`, `:operator delete %`) are queued because
+/// they overlap vim's existing range-prefix syntax (`:1,5d`) and we
+/// want a single canonical surface.
+fn parse_operator_with_target(
+    registry: &CommandRegistry,
+    id: lattice_grammar::CommandId,
+    raw_cmd: &str,
+    rest: &str,
+    bang: bool,
+) -> Result<CommandInvocation, ExCommandError> {
+    if bang {
+        return Err(ExCommandError::BangNotAllowed(raw_cmd.to_string()));
+    }
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        return Err(ExCommandError::BadArgs(format!(
+            "`{raw_cmd}` requires a target; use chord grammar (e.g. `dw`) \
+             or pass a motion / text-object name \
+             (`:operator delete word-forward`)"
+        )));
+    }
+    // Resolution attempts (later wins out only if earlier fails):
+    //   1. Direct canonical: user typed `motion:word-forward`.
+    //   2. Implicit motion: prefix with `motion:`.
+    //   3. Implicit text-object: prefix with `text-object:`.
+    let target_id = registry
+        .id_by_name(trimmed)
+        .or_else(|| registry.id_by_name(&format!("motion:{trimmed}")))
+        .or_else(|| registry.id_by_name(&format!("text-object:{trimmed}")))
+        .ok_or_else(|| ExCommandError::Unknown(trimmed.to_string()))?;
+    let target_entry = registry
+        .lookup(target_id)
+        .ok_or_else(|| ExCommandError::Unknown(trimmed.to_string()))?;
+    let target = match target_entry.kind {
+        CommandKind::Motion => Target::Motion(MotionId(target_id), Args::None),
+        CommandKind::TextObject => Target::TextObject(TextObjectId(target_id), Args::None),
+        _ => {
+            return Err(ExCommandError::BadArgs(format!(
+                "`{trimmed}` is not a motion or text-object \
+                 (operators take motion/text-object targets only)"
+            )));
+        }
+    };
+    Ok(CommandInvocation::of(id).with_target(target))
 }
 
 /// Borrow the registered [`ExCommandSpec`] body by id. The registry's
@@ -613,6 +790,140 @@ mod tests {
         // `:q please` -- parse_no_args rejects via BadArgs.
         let err = parse("q please", &r).unwrap_err();
         assert!(matches!(err, ExCommandError::BadArgs(_)));
+    }
+
+    // ---- §5.2.1 kind-prefix form: every command reachable from `:` ----
+
+    #[test]
+    fn motion_kind_prefix_dispatches_naked() {
+        let r = fixture();
+        let inv = parse("motion goto-first-line", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "motion:goto-first-line");
+        assert_eq!(inv.target, None);
+        assert!(matches!(inv.args, Args::None));
+        assert!(!inv.bang);
+    }
+
+    #[test]
+    fn motion_kind_prefix_with_trailing_text_errors() {
+        let r = fixture();
+        let err = parse("motion goto-first-line nonsense", &r).unwrap_err();
+        assert!(matches!(err, ExCommandError::TrailingArgs));
+    }
+
+    #[test]
+    fn motion_kind_prefix_without_name_errors_helpfully() {
+        let r = fixture();
+        let err = parse("motion", &r).unwrap_err();
+        let msg = match err {
+            ExCommandError::BadArgs(m) => m,
+            other => panic!("expected BadArgs, got {other:?}"),
+        };
+        assert!(msg.contains("requires a name"), "got: {msg}");
+    }
+
+    #[test]
+    fn kind_prefix_with_unknown_tail_errors_unknown() {
+        let r = fixture();
+        let err = parse("motion no-such-thing", &r).unwrap_err();
+        match err {
+            ExCommandError::Unknown(name) => {
+                assert_eq!(name, "motion:no-such-thing");
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn kind_prefix_rejects_bang_on_kind_word() {
+        let r = fixture();
+        let err = parse("motion! goto-first-line", &r).unwrap_err();
+        assert!(matches!(err, ExCommandError::BangNotAllowed(_)));
+    }
+
+    #[test]
+    fn operator_with_bare_motion_target_resolves_via_implicit_namespace() {
+        let r = fixture();
+        // `:operator delete word-forward` -- target tail looked up
+        // as `motion:word-forward` implicitly.
+        let inv = parse("operator delete word-forward", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "operator:delete");
+        match inv.target {
+            Some(Target::Motion(_, _)) => {}
+            other => panic!("expected motion target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn operator_with_full_canonical_target_also_resolves() {
+        let r = fixture();
+        // `:operator delete motion:word-forward` -- canonical form
+        // also accepted for disambiguation.
+        let inv = parse("operator delete motion:word-forward", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "operator:delete");
+        match inv.target {
+            Some(Target::Motion(_, _)) => {}
+            other => panic!("expected motion target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn operator_with_text_object_target_via_implicit_namespace() {
+        let r = fixture();
+        let inv = parse("operator delete inner-word", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "operator:delete");
+        match inv.target {
+            Some(Target::TextObject(_, _)) => {}
+            other => panic!("expected text-object target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn operator_without_target_errors_helpfully() {
+        let r = fixture();
+        let err = parse("operator delete", &r).unwrap_err();
+        let msg = match err {
+            ExCommandError::BadArgs(m) => m,
+            other => panic!("expected BadArgs, got {other:?}"),
+        };
+        assert!(msg.contains("requires a target"), "got: {msg}");
+        assert!(msg.contains("chord grammar"), "got: {msg}");
+    }
+
+    #[test]
+    fn operator_with_non_motion_target_errors() {
+        let r = fixture();
+        // Pass an ex-command name as target -- not a motion or
+        // text-object. Implicit namespace tries `motion:ex:write`
+        // and `text-object:ex:write` (both miss); the canonical
+        // `ex:write` resolves but fails the kind check.
+        let err = parse("operator delete ex:write", &r).unwrap_err();
+        let msg = match err {
+            ExCommandError::BadArgs(m) => m,
+            other => panic!("expected BadArgs, got {other:?}"),
+        };
+        assert!(msg.contains("not a motion or text-object"), "got: {msg}");
+    }
+
+    #[test]
+    fn naked_text_object_errors_helpfully() {
+        let r = fixture();
+        let err = parse("text-object inner-word", &r).unwrap_err();
+        let msg = match err {
+            ExCommandError::BadArgs(m) => m,
+            other => panic!("expected BadArgs, got {other:?}"),
+        };
+        assert!(msg.contains("text-object"), "got: {msg}");
+        assert!(msg.contains("operator"), "got: {msg}");
+    }
+
+    #[test]
+    fn ex_command_path_unchanged() {
+        // Sanity check: the kind-prefix work doesn't disturb the
+        // ex-command happy path. `:write foo.txt` still resolves.
+        let r = fixture();
+        let inv = parse("write foo.txt", &r).unwrap();
+        assert_eq!(invocation_name(&inv, &r), "ex:write");
     }
 
     // ---- Substitute / global: registry-routed delimiter form ----

@@ -241,6 +241,7 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 
 - [x] One `CommandRegistry` for ex-commands, motions, operators, text objects
 - [x] `:` line is a parser front-end producing typed `CommandInvocation`s
+- [x] Every command is reachable from `:` via the kind-prefix form (`:motion goto-first-line`, `:operator delete word-forward`, `:text-object inner-word`); ex-commands keep their bare alias surface; chord grammar stays the natural compact-typing path
 - [x] `:g/pat/body` and `:v/pat/body` parse `body` up front (no per-match re-parse)
 - [x] `Range::Selection` resolves to active visual selection
 - [x] Interactive arg-prompts via `args_schema` (any required arg arms a prompt; Chord kind auto-submits on next chord)

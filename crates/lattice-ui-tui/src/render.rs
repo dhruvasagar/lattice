@@ -546,16 +546,25 @@ fn render_gutter_for_inactive(
     line_idx: u32,
     gutter_w: u32,
 ) -> Span<'static> {
+    // Inactive panes don't carry their own fold state today (folds
+    // live on the active App), so we format an empty glyph slot --
+    // but use the same shared layout helper so column alignment
+    // matches the active pane.
     if !app.show_line_numbers {
-        return Span::styled("  ".to_string(), TuiStyle::default().fg(Color::DarkGray));
+        return Span::styled(
+            format_gutter_cell("", gutter_w, None),
+            TuiStyle::default().fg(Color::DarkGray),
+        );
     }
-    let label = if !app.relative_line_numbers || line_idx == cursor_line {
-        format!("{:>width$} ", line_idx + 1, width = gutter_w as usize - 1)
+    let n = if !app.relative_line_numbers || line_idx == cursor_line {
+        (line_idx + 1).to_string()
     } else {
-        let dist = line_idx.abs_diff(cursor_line);
-        format!("{:>width$} ", dist, width = gutter_w as usize - 1)
+        line_idx.abs_diff(cursor_line).to_string()
     };
-    Span::styled(label, TuiStyle::default().fg(Color::DarkGray))
+    Span::styled(
+        format_gutter_cell(&n, gutter_w, None),
+        TuiStyle::default().fg(Color::DarkGray),
+    )
 }
 
 /// Render the active hover popup (DESIGN.md §5.9.6, §5.11.4) as a
@@ -1115,10 +1124,20 @@ fn match_style() -> TuiStyle {
         .add_modifier(Modifier::BOLD)
 }
 
+/// Trailing-side padding cells between the gutter's content and the
+/// buffer column. The fold glyph still occupies one of those cells
+/// (right next to the line number); the remaining cells are plain
+/// space so the digits don't run flush against code. Two cells
+/// total reads as visible breathing room without stealing more
+/// buffer width than necessary.
+const GUTTER_TRAILING_PAD: u32 = 2;
+
 fn gutter_width(line_count: u32) -> u32 {
-    // Decimal digits in line count, plus a trailing space and a one-cell pad.
+    // Layout: 1 cell leading pad + N digits + GUTTER_TRAILING_PAD
+    // (which includes the fold-glyph slot). For line_count = 99 and
+    // pad = 2 that's "_99_ " => 5 cells.
     let digits = line_count.max(1).ilog10() + 1;
-    digits + 2
+    digits + 1 + GUTTER_TRAILING_PAD
 }
 
 /// Pick the gutter fold glyph for a buffer line: ▸ when the line
@@ -1130,37 +1149,50 @@ fn fold_glyph_for(app: &App, line_idx: u32) -> Option<char> {
     Some(if f.closed { '▸' } else { '▾' })
 }
 
+/// Format the gutter cell text for a numbered line.
+/// Layout: `[leading_pad][digits][glyph_or_space][trailing_spaces]`.
+/// `glyph_or_space` is the fold glyph (▾ open / ▸ closed) when this
+/// line begins a fold, otherwise a plain space; `trailing_spaces`
+/// fills the rest of [`GUTTER_TRAILING_PAD`] so digits don't run
+/// flush against the buffer column.
+fn format_gutter_cell(label: &str, width: u32, glyph: Option<char>) -> String {
+    let trailing = GUTTER_TRAILING_PAD as usize;
+    let leading = (width as usize).saturating_sub(label.len() + trailing);
+    let g = glyph.unwrap_or(' ');
+    let extra_pad = trailing.saturating_sub(1);
+    format!("{:lead$}{label}{g}{:pad$}", "", "", lead = leading, pad = extra_pad)
+}
+
 fn render_gutter(line_idx: u32, width: u32, glyph: Option<char>) -> Span<'static> {
     let n = (line_idx + 1).to_string();
-    // Gutter layout: "{pad}{n}{glyph}" -- the trailing cell is the
-    // fold glyph slot. When no fold starts on this line, fill with a
-    // plain space so column alignment is preserved.
-    let pad = (width as usize).saturating_sub(n.len() + 1);
-    let g = glyph.unwrap_or(' ');
-    let s = format!("{:pad$}{n}{g}", "", pad = pad);
-    Span::styled(s, TuiStyle::default().fg(Color::DarkGray))
+    Span::styled(
+        format_gutter_cell(&n, width, glyph),
+        TuiStyle::default().fg(Color::DarkGray),
+    )
 }
 
 fn render_gutter_for(app: &App, line_idx: u32, width: u32) -> Span<'static> {
     let glyph = fold_glyph_for(app, line_idx);
     if !app.show_line_numbers {
-        // Glyph still rendered when foldcolumn would normally show
-        // it; otherwise pure padding so the buffer doesn't run flush
-        // against the edge.
-        let g = glyph.unwrap_or(' ');
-        let mut s = " ".repeat((width as usize).saturating_sub(1));
-        s.push(g);
-        return Span::styled(s, TuiStyle::default().fg(Color::DarkGray));
+        // No-numbers gutter: glyph (or empty) at the inner edge,
+        // GUTTER_TRAILING_PAD - 1 trailing spaces, the rest leading
+        // padding. The layout still aligns with the numbered case
+        // so toggling `:set number` doesn't shift content.
+        let label = "";
+        return Span::styled(
+            format_gutter_cell(label, width, glyph),
+            TuiStyle::default().fg(Color::DarkGray),
+        );
     }
     if !app.relative_line_numbers || line_idx == app.cursor.line {
         return render_gutter(line_idx, width, glyph);
     }
     let dist = line_idx.abs_diff(app.cursor.line);
     let n = dist.to_string();
-    let pad = (width as usize).saturating_sub(n.len() + 1);
-    let g = glyph.unwrap_or(' ');
-    let s = format!("{:pad$}{n}{g}", "", pad = pad);
-    Span::styled(s, TuiStyle::default().fg(Color::DarkGray))
+    Span::styled(
+        format_gutter_cell(&n, width, glyph),
+        TuiStyle::default().fg(Color::DarkGray),
+    )
 }
 
 fn render_styled_line(line: &str, spans: &[StyledSpan], max_width: u32) -> Vec<Span<'static>> {
@@ -1225,10 +1257,12 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: u32) -> Vec<Spa
 }
 
 fn empty_marker_line(gutter_w: u32) -> Line<'static> {
-    let pad = (gutter_w as usize).saturating_sub(2);
-    let gutter = format!("{:pad$}~ ", "", pad = pad);
+    // Treat the `~` like a pseudo line-number label so its column
+    // alignment matches `render_gutter`'s numbered output: leading
+    // pad + `~` + GUTTER_TRAILING_PAD.
+    let cell = format_gutter_cell("~", gutter_w, None);
     Line::from(vec![Span::styled(
-        gutter,
+        cell,
         TuiStyle::default().fg(Color::DarkGray),
     )])
 }
@@ -1512,12 +1546,36 @@ mod tests {
 
     #[test]
     fn gutter_width_for_small_buffers() {
-        // 1-digit line count -> "1 " plus pad = 3 cells.
-        assert_eq!(gutter_width(1), 3);
-        assert_eq!(gutter_width(9), 3);
-        assert_eq!(gutter_width(10), 4);
-        assert_eq!(gutter_width(99), 4);
-        assert_eq!(gutter_width(100), 5);
+        // Layout: 1 leading pad + N digits + GUTTER_TRAILING_PAD (2)
+        // = N + 3 cells. 1-digit numbers => 4 cells (" 1  "),
+        // 2-digit => 5 (" 99  "), 3-digit => 6 ("100  ").
+        assert_eq!(gutter_width(1), 4);
+        assert_eq!(gutter_width(9), 4);
+        assert_eq!(gutter_width(10), 5);
+        assert_eq!(gutter_width(99), 5);
+        assert_eq!(gutter_width(100), 6);
+    }
+
+    #[test]
+    fn render_gutter_emits_two_trailing_cells_after_number() {
+        // The fold-glyph slot + an extra plain space cell keep the
+        // line number visually separated from buffer content.
+        let span = render_gutter(0, gutter_width(1), None);
+        let s = span.content.as_ref();
+        // Content shape: " 1  " — leading pad, "1", glyph slot
+        // (space), trailing pad (space).
+        assert!(s.ends_with("  "), "expected two trailing spaces, got {s:?}");
+        assert!(s.contains('1'), "line number missing: {s:?}");
+    }
+
+    #[test]
+    fn render_gutter_keeps_glyph_adjacent_to_number() {
+        // Closed fold ▸ sits in the cell immediately after the
+        // number, with one trailing space before the buffer column.
+        let span = render_gutter(0, gutter_width(1), Some('▸'));
+        let s = span.content.as_ref();
+        assert!(s.contains("1▸ "), "expected '1▸ ' substring, got {s:?}");
+        assert!(s.ends_with(' '), "expected trailing pad cell: {s:?}");
     }
 
     #[test]
@@ -1549,8 +1607,9 @@ mod tests {
         app.cursor.byte = 3;
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(&app, area).unwrap();
-        // gutter for 1-line file is 3 cells; cursor at byte 3 -> column 6.
-        assert_eq!(pos.0, 6);
+        // gutter_width(1) = 4 (1 lead + 1 digit + 2 trailing).
+        // Cursor at byte 3 → column gutter_w + 3 = 7.
+        assert_eq!(pos.0, 7);
         assert_eq!(pos.1, 0);
     }
 
@@ -1565,9 +1624,9 @@ mod tests {
         app.cursor.byte = 6;
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(&app, area).unwrap();
-        // gutter_w is 3 for a 1-line file. `P` is at display col 5
-        // within the line, so absolute screen col = 3 + 5 = 8.
-        assert_eq!(pos.0, 8);
+        // gutter_w is 4 for a 1-line file. `P` is at display col 5
+        // within the line, so absolute screen col = 4 + 5 = 9.
+        assert_eq!(pos.0, 9);
     }
 
     #[test]
@@ -1579,8 +1638,8 @@ mod tests {
         app.cursor.byte = 6; // past the 3-byte CJK char
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(&app, area).unwrap();
-        // gutter_w (3) + 5 display cells = 8.
-        assert_eq!(pos.0, 8);
+        // gutter_w (4) + 5 display cells = 9.
+        assert_eq!(pos.0, 9);
     }
 
     #[test]

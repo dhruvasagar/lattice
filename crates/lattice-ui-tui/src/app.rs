@@ -7711,6 +7711,50 @@ mod tests {
     }
 
     #[test]
+    fn syntax_fold_zc_on_indented_let_with_if_else_reports_five_lines() {
+        // The user's actual scenario: the `let` form is INDENTED
+        // (inside a function body). Verify the outer-pick rule on
+        // the if/let line still resolves to the full if_expression
+        // fold even with leading whitespace, so the rendered count
+        // is 5 lines (not 3 -- the inner then-block size).
+        let src = "fn outer() -> u32 {\n    let len = if has_trailing_newline {\n        bytes - 1\n    } else {\n        bytes\n    };\n    len\n}\n";
+        let mut a = app_with(src, 20);
+        a.syntax = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+            .unwrap();
+        if let Some(s) = a.syntax.as_mut() {
+            s.parse(&a.document.text());
+        }
+        a.foldmethod = FoldMethod::Syntax;
+        a.recompute_folds();
+        // Dump for diagnosis -- show the fold ranges at the live
+        // tree's current state.
+        eprintln!("FOLDS (indented let-if-else inside fn):");
+        for f in &a.folds {
+            eprintln!(
+                "  ({}, {}) span={} lines",
+                f.start_line,
+                f.end_line,
+                f.end_line - f.start_line + 1
+            );
+        }
+        // Cursor on line 1 -- the indented `let len = if ...`
+        // line. zc should pick the outermost fold whose start_line
+        // is 1 (the if_expression / let_declaration), not the
+        // inner then-block.
+        a.cursor = Position::new(1, 0);
+        a.apply(Action::CloseFoldAtCursor);
+        let fold = a
+            .fold_start_at(1)
+            .expect("a closed fold should start at line 1");
+        let count = fold.end_line - fold.start_line + 1;
+        assert_eq!(
+            count, 5,
+            "indented if/else fold must span 5 lines (got {count}; fold = {fold:?}; all = {:?})",
+            a.folds
+        );
+    }
+
+    #[test]
     fn syntax_fold_zc_on_let_with_if_else_reports_five_lines() {
         // Full-pipeline regression for the user's scenario: a top-
         // level `let` binding wrapping an if/else expression. With

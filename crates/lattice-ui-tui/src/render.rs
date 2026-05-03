@@ -891,7 +891,19 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
         let closed_fold_at_start = app
             .fold_start_at(line_idx)
             .filter(|f| f.closed)
-            .map(|f| f.end_line - f.start_line + 1);
+            .map(|f| {
+                // The "N lines folded" suffix should reflect the
+                // user's perception of how much content collapsed
+                // onto this single visible row -- including any
+                // sibling / nested closed folds whose headings are
+                // themselves hidden by this fold and whose ranges
+                // chain past `f.end_line`. Without this walk, two
+                // touching folds (1..=3 then 3..=5, both closed)
+                // visually hide 5 lines but report only the first
+                // fold's own 3 lines, which doesn't match what the
+                // user just collapsed.
+                closed_fold_display_span(app, f)
+            });
         // Blockwise visual: per-line column band [min_col, max_col].
         // Charwise / Linewise visual go through `visual_range` instead.
         if let Some(b) = block
@@ -1275,6 +1287,39 @@ fn combine(gutter: Span<'static>, mut body: Vec<Span<'static>>) -> Line<'static>
     all.push(gutter);
     all.append(&mut body);
     Line::from(all)
+}
+
+/// Number of buffer lines actually collapsed onto the visible row
+/// where `fold` is rendered. Walks forward from `fold.end_line + 1`
+/// through any chained closed folds whose ranges abut or sit
+/// inside the cumulative hidden region, so the "N lines folded"
+/// summary matches what the user just collapsed even when several
+/// sibling folds touch (e.g. `(1, 3)` + `(3, 5)` from
+/// `foldmethod=indent` on a top-level if/else).
+fn closed_fold_display_span(app: &App, fold: &crate::app::Fold) -> u32 {
+    let snap = app.document.snapshot();
+    let total_lines = snap.buffer.line_count();
+    let mut end = fold.end_line;
+    let mut probe = end.saturating_add(1);
+    while probe < total_lines {
+        // Probe land inside another closed fold's hidden body?
+        // (Includes the case where the next fold *starts* at the
+        // probe -- start_line is its heading, which would be
+        // hidden by *us* extending across it.)
+        let next_closed = app.folds.iter().find(|f| {
+            f.closed
+                && (probe == f.start_line
+                    || (probe > f.start_line && probe <= f.end_line))
+        });
+        match next_closed {
+            Some(f) => {
+                end = end.max(f.end_line);
+                probe = end.saturating_add(1);
+            }
+            None => break,
+        }
+    }
+    end.saturating_sub(fold.start_line).saturating_add(1)
 }
 
 /// Translate a buffer line into the corresponding visible row index
@@ -1957,6 +2002,37 @@ mod tests {
         let blob: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(!blob.contains("hidden1"), "interior leaked: {blob}");
         assert!(!blob.contains("hidden2"), "interior leaked: {blob}");
+    }
+
+    #[test]
+    fn closed_fold_summary_includes_chained_closed_folds() {
+        // Reproduces the user's "fold both branches of an if/else
+        // under foldmethod=indent" case: two closed folds touch at
+        // line 3 -- the outer (1, 3) hides 2..=3, the sibling
+        // (3, 5) hides 4..=5 (its heading at 3 is itself hidden by
+        // the first fold). Visually the user collapses 5 buffer
+        // lines onto one row; the summary should report 5, not 3.
+        let mut app = app_with("a\nb\nc\nd\ne\nf\ng\n", 7);
+        app.folds.push(crate::app::Fold {
+            start_line: 1,
+            end_line: 3,
+            closed: true,
+            identity: None,
+        });
+        app.folds.push(crate::app::Fold {
+            start_line: 3,
+            end_line: 5,
+            closed: true,
+            identity: None,
+        });
+        let lines = compose_visible_lines(&app, 7, 80);
+        // Find the row that summarises the chained folds (line 1's
+        // heading row).
+        let row1_text = line_text(&lines[1]);
+        assert!(
+            row1_text.contains("5 lines folded"),
+            "expected '5 lines folded' for chained folds, got: {row1_text:?}"
+        );
     }
 
     #[test]

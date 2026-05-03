@@ -72,4 +72,4 @@ pub use handle::{DocumentHandle, spawn_document};
 pub use lattice_grammar::CancellationToken;
 pub use pending::{InvocationId, Pending, RuntimeError};
 pub use runtime::{block_on, shared_runtime};
-pub use snapshot::{DocumentSnapshot, PublishedSnapshot};
+pub use snapshot::{DocumentSnapshot, PublishedSnapshot, SnapshotCache};

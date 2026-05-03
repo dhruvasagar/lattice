@@ -116,14 +116,23 @@ impl DocumentSnapshot {
 /// semantics are not fungible -- the renderer's correctness model
 /// depends on them.
 pub struct PublishedSnapshot {
-    cell: ArcSwap<DocumentSnapshot>,
+    cell: Arc<ArcSwap<DocumentSnapshot>>,
 }
 
 impl PublishedSnapshot {
     pub(crate) fn new(initial: DocumentSnapshot) -> Self {
         Self {
-            cell: ArcSwap::from_pointee(initial),
+            cell: Arc::new(ArcSwap::from_pointee(initial)),
         }
+    }
+
+    /// Borrowed handle to the shared `Arc<ArcSwap<...>>`. Used by
+    /// [`SnapshotCache::new`] to share the underlying cell with a
+    /// per-thread reader cache without exposing the field
+    /// publicly. Crate-private so external callers can't bypass
+    /// the publish discipline.
+    pub(crate) fn cell_arc(&self) -> Arc<ArcSwap<DocumentSnapshot>> {
+        self.cell.clone()
     }
 
     /// Wait-free read. Returns an `Arc<DocumentSnapshot>` that lives
@@ -154,6 +163,65 @@ impl PublishedSnapshot {
     #[doc(hidden)]
     pub fn __bench_new(initial: DocumentSnapshot) -> Self {
         Self::new(initial)
+    }
+}
+
+/// Per-thread cached reader for a [`PublishedSnapshot`].
+///
+/// `arc_swap::Cache::load` is wait-free thread-local-cached: when
+/// the underlying ArcSwap pointer is unchanged, the load is one
+/// `Relaxed` atomic compare and returns the cached `Arc` reference
+/// at no further cost. When the pointer changes (post-publish),
+/// the next load reloads the new `Arc` and caches it.
+///
+/// **Per-thread state.** `Cache` is `Send` but `!Sync`. Each
+/// reader thread owns its own `SnapshotCache`; the App's renderer
+/// thread (the editor mainloop) is the canonical user. Multiple
+/// threads reading the same document each construct their own
+/// cache from clones of the underlying `Arc<PublishedSnapshot>`.
+///
+/// Backs the §5.6.8 commitment that the read path lives at the
+/// hardware floor (~2ns per load) when the writer hasn't changed
+/// the snapshot since the last frame -- the common case for a
+/// renderer reading multiple times per frame between edits.
+pub struct SnapshotCache {
+    cache: arc_swap::Cache<Arc<ArcSwap<DocumentSnapshot>>, Arc<DocumentSnapshot>>,
+}
+
+impl SnapshotCache {
+    /// Build a fresh cache from a clone of the published-snapshot
+    /// cell. The first `load()` call pulls the current snapshot;
+    /// subsequent calls reuse the cached `Arc` until the writer
+    /// publishes something new.
+    pub fn new(cell: Arc<PublishedSnapshot>) -> Self {
+        Self {
+            cache: arc_swap::Cache::new(cell.cell_arc()),
+        }
+    }
+
+    /// Wait-free per-thread-cached load. Returns a reference to
+    /// the cached `Arc<DocumentSnapshot>`; clone if the caller
+    /// needs an owned `Arc`. **Cheaper than cloning** -- the
+    /// reference is valid for as long as the cache isn't loaded
+    /// again.
+    #[inline]
+    pub fn load(&mut self) -> &Arc<DocumentSnapshot> {
+        self.cache.load()
+    }
+
+    /// Owned-`Arc` variant for callers that genuinely need to
+    /// store the snapshot beyond the cache's borrow lifetime.
+    /// Costs one Arc bump on top of [`Self::load`]; use sparingly.
+    #[inline]
+    pub fn load_arc(&mut self) -> Arc<DocumentSnapshot> {
+        Arc::clone(self.cache.load())
+    }
+}
+
+impl std::fmt::Debug for SnapshotCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SnapshotCache")
+            .finish_non_exhaustive()
     }
 }
 

@@ -94,6 +94,25 @@ fn snapshot_publish_via_apply_edit(c: &mut Criterion) {
     g.finish();
 }
 
+/// Snapshot load via `SnapshotCache` -- the renderer's hot
+/// per-frame read after Cache::load migration. Wait-free
+/// thread-local-cached: when the writer hasn't published since
+/// the last load, the call is one Relaxed atomic compare. Backs
+/// §5.6.8's renderer-side floor.
+fn snapshot_load_cached(c: &mut Criterion) {
+    let mut g = c.benchmark_group("runtime::snapshot_load_cached");
+    let registry = Arc::new(CommandRegistry::new());
+    let handle = spawn_document(Document::from_text("x"), registry);
+    let mut cache = handle.snapshot_cache();
+    g.bench_function("steady", |bencher| {
+        bencher.iter(|| {
+            let snap = cache.load();
+            black_box(snap.version);
+        });
+    });
+    g.finish();
+}
+
 /// Snapshot load: the renderer's per-frame read. Wait-free arc-swap
 /// load (`DocumentHandle::snapshot` -> `PublishedSnapshot::load`).
 /// Should be deep in single-digit nanoseconds -- the §5.6.8 `<5ns
@@ -232,6 +251,7 @@ criterion_group!(
     snapshot_publish_standalone,
     snapshot_publish_via_apply_edit,
     snapshot_load,
+    snapshot_load_cached,
     apply_edit_round_trip,
     snapshot_post_publish_read,
     dispatch_round_trip,

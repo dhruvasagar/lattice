@@ -50,6 +50,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use crate::capabilities::{self, Capabilities};
 use crate::codec::{LspReader, LspWriter};
 use crate::config::ServerConfig;
+use crate::diagnostics::{DiagnosticEvent, DiagnosticsBus};
 use crate::error::{LspError, LspResult};
 use crate::jsonrpc::{Message, Notification, Request, RequestId, Response};
 use crate::pending::{InvocationId, Pending};
@@ -75,6 +76,10 @@ struct HandleInner {
     capabilities: Arc<Capabilities>,
     /// Server id, for logs / telemetry.
     server_id: String,
+    /// Diagnostics broadcast bus -- subscribers (App, plugins,
+    /// future picker) receive every `publishDiagnostics` from
+    /// this server.
+    diagnostics: DiagnosticsBus,
 }
 
 impl std::fmt::Debug for ServerHandle {
@@ -95,6 +100,27 @@ impl ServerHandle {
     /// for the supervisor to look up `ServerConfig`.
     pub fn server_id(&self) -> &str {
         &self.inner.server_id
+    }
+
+    /// Subscribe to this server's diagnostics broadcast. Each
+    /// subscriber receives every `publishDiagnostics` event
+    /// after the call -- prior events are not replayed
+    /// (a freshly opened pane re-issues the URIs it cares about
+    /// to the server, which republishes diagnostics for those).
+    ///
+    /// The returned `Receiver` is the standard
+    /// `tokio::sync::broadcast::Receiver`. A lagging consumer
+    /// drops oldest first; reconcile by tracking the latest
+    /// `version` per URI and ignoring events older than the
+    /// editor's view of the doc.
+    pub fn subscribe_diagnostics(&self) -> tokio::sync::broadcast::Receiver<DiagnosticEvent> {
+        self.inner.diagnostics.subscribe()
+    }
+
+    /// True iff at least one subscriber is currently listening.
+    /// Used by tests; production code doesn't need this.
+    pub fn diagnostics_subscriber_count(&self) -> usize {
+        self.inner.diagnostics.receiver_count()
     }
 
     /// Send a typed JSON-RPC request and return a [`Pending`]
@@ -249,6 +275,9 @@ where
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "workspace".to_string());
+    // One bus per actor, shared with the read_loop's notification
+    // dispatcher.
+    let diagnostics = DiagnosticsBus::new();
 
     tokio::spawn(actor_main(
         reader,
@@ -261,6 +290,7 @@ where
         workspace_folder_uri,
         workspace_name,
         init_options,
+        diagnostics.clone(),
     ));
 
     let capabilities = handshake_rx
@@ -272,6 +302,7 @@ where
             cmd_tx,
             capabilities,
             server_id,
+            diagnostics,
         }),
     })
 }
@@ -325,10 +356,12 @@ async fn actor_main<R, W>(
     workspace_folder_uri: Uri,
     workspace_name: String,
     init_options: Option<Value>,
+    diagnostics: DiagnosticsBus,
 ) where
     R: AsyncBufRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
+    let server_id_arc: Arc<str> = Arc::from(server_id.as_str());
     // Drain stderr in the background -- one line per tracing::warn.
     if let Some(stderr) = stderr {
         let id = server_id.clone();
@@ -377,7 +410,7 @@ async fn actor_main<R, W>(
         match in_rx.recv().await {
             Some(Message::Response(r)) if r.id == init_id => break r,
             Some(other) => {
-                handle_pre_handshake_message(&server_id, other);
+                handle_pre_handshake_message(&server_id_arc, other, &diagnostics);
             }
             None => {
                 let _ = handshake_tx.send(Err(LspError::HandshakeFailed(
@@ -527,7 +560,7 @@ async fn actor_main<R, W>(
                         }
                     }
                     Some(Message::Notification(n)) => {
-                        handle_server_notification(&server_id, &n);
+                        handle_server_notification(&server_id_arc, &n, &diagnostics);
                     }
                     Some(Message::Request(req)) => {
                         // Server-initiated request. Reply with a
@@ -558,30 +591,58 @@ async fn actor_main<R, W>(
     }
 }
 
-/// Handle a server-initiated notification. 4.1 logs everything;
-/// 4.1.d wires `publishDiagnostics` into the decoration layer
-/// and 4.4+ adds progress / log routing into a `:messages`
-/// buffer.
-fn handle_server_notification(server_id: &str, n: &Notification) {
+/// Handle a server-initiated notification. `publishDiagnostics`
+/// fans out to the [`DiagnosticsBus`]; 4.4+ adds progress / log
+/// routing into a `:messages` buffer.
+fn handle_server_notification(
+    server_id: &Arc<str>,
+    n: &Notification,
+    diagnostics: &DiagnosticsBus,
+) {
     match n.method.as_str() {
         "window/logMessage" => {
-            tracing::info!(server_id, params = ?n.params, "server log");
+            tracing::info!(server_id = %server_id, params = ?n.params, "server log");
         }
         "window/showMessage" => {
-            tracing::info!(server_id, params = ?n.params, "server show-message");
+            tracing::info!(server_id = %server_id, params = ?n.params, "server show-message");
         }
         "$/progress" => {
-            tracing::debug!(server_id, params = ?n.params, "server progress");
+            tracing::debug!(server_id = %server_id, params = ?n.params, "server progress");
         }
         "telemetry/event" => {
-            tracing::debug!(server_id, params = ?n.params, "server telemetry");
+            tracing::debug!(server_id = %server_id, params = ?n.params, "server telemetry");
         }
         "textDocument/publishDiagnostics" => {
-            // Routed to the editor in 4.1.d.
-            tracing::debug!(server_id, "diagnostics (handler in 4.1.d)");
+            let params = match n.params.clone() {
+                Some(v) => v,
+                None => {
+                    tracing::warn!(
+                        server_id = %server_id,
+                        "publishDiagnostics with empty params"
+                    );
+                    return;
+                }
+            };
+            match serde_json::from_value::<lsp_types::PublishDiagnosticsParams>(params) {
+                Ok(p) => {
+                    let event = DiagnosticEvent::from_lsp(Arc::clone(server_id), p);
+                    diagnostics.publish(event);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        server_id = %server_id,
+                        error = %e,
+                        "publishDiagnostics deserialise failed"
+                    );
+                }
+            }
         }
         other => {
-            tracing::debug!(server_id, method = other, "unhandled server notification");
+            tracing::debug!(
+                server_id = %server_id,
+                method = other,
+                "unhandled server notification"
+            );
         }
     }
 }
@@ -630,18 +691,22 @@ fn handle_server_request(server_id: &str, req: &Request) -> Response {
 /// Pre-handshake message handler: log, ignore. The server might
 /// emit `window/logMessage` or `$/progress` before responding to
 /// `initialize`; spec lets it.
-fn handle_pre_handshake_message(server_id: &str, msg: Message) {
+fn handle_pre_handshake_message(
+    server_id: &Arc<str>,
+    msg: Message,
+    diagnostics: &DiagnosticsBus,
+) {
     match msg {
-        Message::Notification(n) => handle_server_notification(server_id, &n),
+        Message::Notification(n) => handle_server_notification(server_id, &n, diagnostics),
         Message::Request(_) => {
             tracing::warn!(
-                server_id,
+                server_id = %server_id,
                 "server-initiated request before handshake -- ignored"
             );
         }
         Message::Response(r) => {
             tracing::warn!(
-                server_id,
+                server_id = %server_id,
                 ?r.id,
                 "stray response before handshake -- ignored"
             );

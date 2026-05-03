@@ -3846,14 +3846,14 @@ impl App {
         // uses).
         let is_vertical_jump = inv.command == self.builtins.goto_first_line.0
             || inv.command == self.builtins.goto_last_line.0;
-        // Linear vertical motions (j / k) skip closed-fold interiors
-        // per `docs/help/folding.md`: a `j` from a closed fold's
-        // heading lands on the line *after* the fold, not inside its
-        // hidden body. The grammar's motion is fold-naive (it just
-        // adds 1 to the line index); we post-process here so the
-        // grammar stays free of fold state.
-        let is_linear_vertical = inv.command == self.builtins.line_down.0
-            || inv.command == self.builtins.line_up.0;
+        // Every motion that goes through the dispatcher and isn't a
+        // jump-class command runs the fold-aware snap so the cursor
+        // never settles inside a closed fold's hidden body. Without
+        // this, motions like `w` / `b` / `e` / `(` / `)` / `{` / `}`
+        // happily landed on hidden lines, and the user's perceived
+        // location diverged from `cursor.line`. The snap is
+        // direction-aware (uses `prev_cursor_line`) and idempotent
+        // when the cursor was already on a visible line.
         let prev_cursor_line = self.cursor.line;
         match self.dispatch_blocking(inv) {
             Ok(effect) => {
@@ -3865,9 +3865,15 @@ impl App {
                 }
                 self.apply_effect(effect);
                 if is_vertical_jump {
+                    // Jump motions auto-open the destination fold so
+                    // the user lands at the actual target line, not on
+                    // the fold heading.
                     self.auto_open_folds_at_cursor();
-                } else if is_linear_vertical {
-                    self.skip_closed_fold_for_linear_motion(prev_cursor_line);
+                } else {
+                    // Non-jump motions snap out of any closed fold's
+                    // hidden body to the nearest visible line per
+                    // `docs/help/folding.md`.
+                    self.snap_cursor_past_closed_folds(prev_cursor_line);
                 }
             }
             Err(_) => {
@@ -5513,31 +5519,34 @@ impl App {
         self.folds.iter().find(|f| f.start_line == line)
     }
 
-    /// Skip past a closed fold's interior after a linear vertical
-    /// motion (`j` / `k`). Per `docs/help/folding.md`, j/k count
-    /// visible lines, not buffer lines: pressing `j` from a closed
-    /// fold's heading lands the cursor on the next visible content
-    /// line, not inside the fold's hidden body.
+    /// Move the cursor out of any closed fold's hidden body to the
+    /// nearest visible line, per `docs/help/folding.md`. Called
+    /// after every non-jump dispatcher motion (`j`, `k`, `w`, `b`,
+    /// `e`, `(`, `)`, `{`, `}`, `<C-d>` and friends) so the
+    /// cursor's logical position never diverges from where the user
+    /// thinks it is.
     ///
-    /// The snap is iterative so a sequence of consecutive closed
-    /// folds is jumped over in one keypress, mirroring vim's
-    /// "next visible line" semantics. After exiting a fold
-    /// downward, trailing blank lines that sit between this fold
-    /// and the next sibling are *also* swallowed -- vim's
-    /// `foldmethod=indent` treats those blanks as visually part of
-    /// the fold so j lands on real content (the next sibling's
-    /// heading), not on a blank between siblings. Without this,
-    /// repeated `j` over fold A landed cursor on a blank, and then
-    /// `zc` resolved "innermost open fold" to the *parent* because
-    /// no inner fold contained the blank line -- the
-    /// folding-folds-the-parent regression.
+    /// `prev_line` records the cursor's row before dispatch so the
+    /// snap can pick a sensible direction:
     ///
-    /// Going up never blank-skips: the user is moving toward
-    /// content above and the closed fold's heading is the right
-    /// landing spot.
+    /// - moving down (`prev_line < new_line`) → walk forward over
+    ///   chained closed folds and trailing blank lines, landing on
+    ///   the next visible content row;
+    /// - moving up (`prev_line > new_line`) → walk back to the
+    ///   containing fold's heading line (no blank-swallow on the
+    ///   up direction; the heading is the right landing point);
+    /// - same row (`prev_line == new_line`) → no work; intra-line
+    ///   motions like `^` / `$` can't land on a hidden line.
     ///
-    /// `foldenable = false` suppresses the skip entirely.
-    fn skip_closed_fold_for_linear_motion(&mut self, prev_line: u32) {
+    /// The trailing-blank swallow only fires *after* the snap has
+    /// exited at least one fold downward. Plain `j` onto a blank
+    /// line that isn't a fold neighbour stops at that blank, the
+    /// way vim's visible-line counting works.
+    ///
+    /// `foldenable = false` suppresses the snap entirely; with
+    /// folds disabled every line is visible and the cursor is free
+    /// to land anywhere.
+    fn snap_cursor_past_closed_folds(&mut self, prev_line: u32) {
         if !self.foldenable {
             return;
         }
@@ -7537,6 +7546,58 @@ mod tests {
         // The historical name preserved so anyone re-running an
         // older test list spots the rename.
         line_down_lands_on_next_fold_heading_when_consecutive();
+    }
+
+    // --- Generalised snap covers all non-jump motions --------
+
+    #[test]
+    fn word_forward_snaps_out_of_closed_fold_body() {
+        // `w` from a closed fold's heading lands on the next word.
+        // Pre-snap, that next word might be inside the fold body
+        // (cursor at hidden line). The snap projects cursor onto a
+        // visible line so subsequent `zc` resolves correctly.
+        let src = "alpha bravo\n    charlie delta\n    echo foxtrot\nafter golf hotel\n";
+        let mut a = app_with(src, 10);
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 2,
+            closed: true,
+            identity: None,
+        });
+        a.cursor = Position::new(0, 0);
+        a.apply(invoke_motion(a.builtins.word_forward));
+        // Without snap the cursor would land on "bravo" (line 0,
+        // byte 6) -- still visible. Press w again: would go into
+        // hidden `charlie`. The snap kicks in there.
+        a.apply(invoke_motion(a.builtins.word_forward));
+        assert!(
+            !a.line_inside_closed_fold(a.cursor.line),
+            "w must not leave cursor inside a hidden fold body \
+             (cursor.line = {})",
+            a.cursor.line
+        );
+    }
+
+    #[test]
+    fn paragraph_motion_snaps_out_of_closed_fold_body() {
+        // `}` (paragraph forward) from inside a fold can land
+        // cursor on a hidden paragraph break. Snap must apply.
+        let src = "alpha\n\n    body line one\n    body line two\n\nafter\n";
+        let mut a = app_with(src, 10);
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 4,
+            closed: true,
+            identity: None,
+        });
+        a.cursor = Position::new(0, 0);
+        a.apply(invoke_motion(a.builtins.paragraph_forward));
+        assert!(
+            !a.line_inside_closed_fold(a.cursor.line),
+            "}} must not leave cursor inside a hidden fold body \
+             (cursor.line = {})",
+            a.cursor.line
+        );
     }
 
     #[test]

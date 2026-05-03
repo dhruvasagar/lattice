@@ -1240,23 +1240,89 @@ fn combine(gutter: Span<'static>, mut body: Vec<Span<'static>>) -> Line<'static>
     Line::from(all)
 }
 
+/// Translate a buffer line into the corresponding visible row index
+/// in the active pane, accounting for closed folds. Walks the same
+/// "skip closed-fold interior" algorithm `compose_visible_lines`
+/// uses to build the visible-line list.
+///
+/// If `target` is hidden by a closed fold, the result is the row
+/// where that fold's heading renders -- so the cursor projection
+/// always lands on a line the user can see.
+///
+/// Returns `None` when the resulting row is past `viewport_height`
+/// (the cursor is below the visible window) or before scroll.
+fn buffer_line_to_visible_row(
+    app: &App,
+    target: u32,
+    viewport_height: u32,
+) -> Option<u32> {
+    if target < app.scroll {
+        return None;
+    }
+    let snap = app.document.snapshot();
+    let total_lines = snap.buffer.line_count();
+    let mut buf_line = app.scroll;
+    let mut row: u32 = 0;
+    while row < viewport_height && buf_line < total_lines {
+        // If a closed fold starts at buf_line, the fold's whole
+        // range collapses onto this single visible row. The cursor
+        // resolves to this row whether it's at the fold heading or
+        // anywhere in the hidden body.
+        let fold_at = app.fold_start_at(buf_line);
+        let next_buf_line = match fold_at {
+            Some(fold) => fold.end_line + 1,
+            None => buf_line + 1,
+        };
+        let covers_target = match fold_at {
+            Some(fold) => target >= fold.start_line && target <= fold.end_line,
+            None => target == buf_line,
+        };
+        if covers_target {
+            return Some(row);
+        }
+        if buf_line == target {
+            // Defensive: the line wasn't claimed above (no fold,
+            // not equal); should be unreachable, but return the
+            // current row rather than None so the cursor still
+            // shows somewhere sensible.
+            return Some(row);
+        }
+        if app.line_inside_closed_fold(buf_line) {
+            // Hidden interior line -- not the start of any fold but
+            // still part of one (the renderer skips it). Don't
+            // increment row; just advance buf_line.
+            buf_line += 1;
+            continue;
+        }
+        buf_line = next_buf_line;
+        row += 1;
+    }
+    None
+}
+
 fn cursor_screen_position(app: &App, area: Rect) -> Option<(u16, u16)> {
     if app.cursor.line < app.scroll {
         return None;
     }
-    let row_in_view = app.cursor.line - app.scroll;
-    if row_in_view >= area.height as u32 {
-        return None;
-    }
-    // §8.2 hot path: don't materialise the buffer just to count
-    // lines. ropey gives us `line_count()` in O(1).
-    let snap = app.document.snapshot();
-    let total_lines = snap.buffer.line_count().max(1);
+    // Map the buffer cursor line to the visible row taking closed
+    // folds into account. If the cursor sits inside a closed fold's
+    // hidden body, project it onto the fold's heading row -- the
+    // user always sees the cursor on a real visible line, never
+    // adrift inside collapsed content. This is the safety net for
+    // any code path that sets `app.cursor` without first running
+    // `snap_cursor_past_closed_folds` (e.g. edits that shift line
+    // numbers underneath an unchanged cursor).
+    let total_lines = {
+        let snap = app.document.snapshot();
+        snap.buffer.line_count().max(1)
+    };
+    let row_in_view = buffer_line_to_visible_row(app, app.cursor.line, area.height as u32)?;
     let gutter_w = if app.show_line_numbers {
         gutter_width(total_lines)
     } else {
         2
     };
+    let snap = app.document.snapshot();
     // `cursor.byte` is a UTF-8 byte offset into the line; the
     // terminal places glyphs by display width, not byte count. A
     // line containing `§` (2 bytes / 1 cell) or a CJK glyph (3
@@ -1524,6 +1590,37 @@ mod tests {
         app.cursor.line = 4; // not in viewport [0,1]
         let area = Rect::new(0, 0, 80, 2);
         assert!(cursor_screen_position(&app, area).is_none());
+    }
+
+    #[test]
+    fn cursor_inside_closed_fold_renders_at_fold_heading_row() {
+        // Buffer: lines 0..6. Closed fold spans lines 2..=4. The
+        // cursor sitting on hidden line 3 must render at the
+        // heading row (= row 2 in the visible-line list, since
+        // scroll=0). Without the fold-aware projection, the
+        // cursor would draw at row 3, which doesn't correspond to
+        // any drawn buffer line.
+        let mut app = app_with("a\nb\nh\nx\ny\nz\nq", 7);
+        app.cursor.line = 3; // hidden by fold
+        app.cursor.byte = 0;
+        // Push a closed fold over lines 2..=4.
+        app.folds.push(crate::app::Fold {
+            start_line: 2,
+            end_line: 4,
+            closed: true,
+            identity: None,
+        });
+        let area = Rect::new(0, 0, 80, 7);
+        let pos = cursor_screen_position(&app, area).expect("cursor visible");
+        // Visible rows: 0=line0, 1=line1, 2=line2 (heading + summary),
+        // 3=line5, 4=line6. Cursor at hidden line 3 → screen row 2
+        // (area.y + 2 since area.y is 0).
+        assert_eq!(
+            pos.1,
+            area.y + 2,
+            "cursor must render on the fold heading row, got row {}",
+            pos.1
+        );
     }
 
     #[test]

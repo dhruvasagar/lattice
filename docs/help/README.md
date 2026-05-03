@@ -35,6 +35,7 @@ same surface).
 |-------------------------------------------------------------------------------------------------------|--------------------------|--------|
 | Folding (manual + indent + markdown + tree-sitter, operator interaction, navigation, auto-open)       | [folding.md](folding.md) | ✅     |
 | Buffers and panes (registry, splits, file tree, navigation, theme)                                    | [buffers.md](buffers.md) | ✅     |
+| Languages (bundled set, coverage roadmap, add new language tree-sitter or otherwise)                  | [languages.md](languages.md) | ✅ |
 | Modal editing (Normal / Insert / Visual / Op-pending / Command / Search / Replace, the chord grammar) | _planned_                | ⛔     |
 | Operators (`d` / `y` / `c` / `>` / `<` / `gU` / `gu` / `g~`)                                          | _planned_                | ⛔     |
 | Motions (cursor, word, paragraph, sentence, viewport, find-char, search)                              | _planned_                | ⛔     |

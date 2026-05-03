@@ -195,6 +195,18 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
             "ex:b".into(),
         ],
     });
+    r.register(HelpTopic {
+        name: "languages".into(),
+        summary: "Bundled languages, coverage roadmap, and how to add a new language \
+                  (tree-sitter or otherwise)."
+            .into(),
+        body: HelpTopicBody::Static(include_str!("../../../docs/help/languages.md")),
+        // Most language-related commands route through `:set
+        // syntax=...` once that lands; for now bind the topic to
+        // the foldmethod option so users land on the right doc when
+        // they're investigating per-language fold behaviour.
+        related_command_patterns: vec!["language".into(), "syntax".into()],
+    });
     Arc::new(r)
 }
 

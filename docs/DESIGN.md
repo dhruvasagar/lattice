@@ -1965,68 +1965,132 @@ Throughout: editor pane keeps rendering, LSP keeps running, no other UI work is 
 
 ### 8.2 Performance commitments per path
 
-The shape of the table is "what we commit to land at v1.0", not
-"what we have measured today". Where current benches (`docs/BENCHMARKS.md`)
-already show better than the listed target, we keep the conservative
-target as a published commitment but document the observed number in
-the bench doc -- the goal is to never regress *under* the target,
-not to be bound by past peak runs.
+The shape here is "what's the *physically credible* best we can hit
+on this path, and what do we commit to ship at v1.0?" not
+"how much margin do we want above neovim?" Where the architecture
+genuinely permits ns numbers (atomic loads, format-only segments),
+we don't settle for µs targets just because incumbent editors do.
 
-The columns are:
+#### Columns
 
-- **Target (p99):** the budget every implementation MUST hit. CI
-  fails on >10% regression vs. main on any benchmark.
-- **Stretch:** the credible "decisively better than vim/neovim"
-  target, achievable with the algorithms in `docs/BENCHMARKS.md`'s
-  improvement-paths section. Not gated; measured, tracked.
-- **vs neovim:** a rough qualitative note. Numbers come from
-  Appendix A's measurement methodology.
+- **Floor.** The physics-credible best given our architecture --
+  derived from the cost of the underlying primitives (atomic
+  acquire-load, `parking_lot` mutex acquire, tokio cross-task
+  wakeup, ropey rope op, ratatui draw, tree-sitter parse). When a
+  row's floor is bounded by a known-hard limit (cache bandwidth,
+  scheduler latency, allocator), we say so in the rationale. This
+  isn't aspirational -- it's "what microbenchmarks of the
+  individual ops add up to."
+- **Target (v1).** What every implementation MUST hit by v1.0.
+  Tighter than the Today column on rows where we know the
+  engineering path; relaxed where the Today column reflects a
+  legitimate trade we're keeping. CI fails on >10% regression
+  vs. main on any benchmark.
+- **Today.** The current `docs/BENCHMARKS.md` median. "—" means
+  unmeasured (a gap; backs a row in `BENCHMARKS.md`'s "what's
+  NOT here" section).
+- **Stretch.** Credible with N-months-of-known-engineering, not
+  novel research. Cited paths: GPU renderer, suffix-array search
+  index, single-thread tokio runtime, sync edit fast-path,
+  tree-sitter `Tree::edit` deltas threaded through the actor.
 
-| Operation | Target (p99) | Stretch | vs neovim |
-|---|---|---|---|
-| Keystroke to buffer mutation | <100us | <50us | neovim ~50–200us; we already meet the lower edge. Stretch via `Cache::load` snapshot path. |
-| Keystroke to glyph (code) | <2ms | <1ms | neovim ~3–10ms typical; we already commit faster. Stretch needs GPU renderer. |
-| Keystroke to glyph (code w/ LSP) | <3ms | <2ms | neovim 5–20ms with LSP; our actor + snapshot architecture lets the renderer skip mid-edit redraws. |
-| Keystroke to glyph (markdown) | <5ms | <3ms | neovim has no rich markdown render path. |
-| Frame render (code, 1080p) | <2ms | <500us | Sub-ms on warm cache; GPU path closes the gap. |
-| Frame render (markdown, 1080p) | <5ms | <2ms | Per-line cache + Fenwick height index. |
-| Open 100MB log (first paint) | <100ms | <30ms | neovim 1-3s; ropey load + immediate paint of viewport rows. |
-| Open 100MB log (full ready) | <500ms | <200ms | Background tree-sitter parse + lazy syntax. |
-| Open 10K-line markdown (full ready) | <500ms | <200ms | Eager layout on rayon pool. |
-| Tree-sitter incremental reparse | <1ms | <300us | 50K-line file, single-line edit. |
-| Search (literal substring, typical) | <100us | <10us | First-match-near-cursor: memmem on a single rope chunk -- already 200ns on 200k buffers. |
-| Search (literal substring, worst case) | <2ms | <500us | Full 200k-line walk; current ~1.2ms. Stretch via suffix-array index (post-1.0). |
-| Search regex (typical) | <2ms | <500us | `regex` crate's lazy DFA + SIMD prefilter. |
-| Completion popup (first paint) | <10ms after LSP | <5ms | LSP latency dominates; we just need the popup shell sync. |
-| Hover popup (first paint) | <15ms after LSP | <5ms | Same. |
-| Picker (first match shown) | <50ms | <10ms | Matcher is ours, not LSP -- wins the harder. |
-| Status segment update | <500us | <100us | Single arc-swap'd document snapshot read. |
+The "vs neovim" framing the previous revision carried is
+deliberately gone -- the targets here are derived from primitive
+costs, not from being "X× faster than vim." Where we end up
+significantly faster than incumbents on a row, the rationale
+column says why our architecture permits it; where we're
+constrained by physics (cache bandwidth on a 200k-line full-buffer
+search; tokio scheduler latency on a multi-thread async actor),
+the rationale states the constraint.
 
-The stretch column is the **published goal**: we are deliberately
-willing to set targets faster than the established ceiling for the
-keystroke path, the open-large-file path, and search. The
-architecture decisions that enable this are concrete:
+#### Read path (renderer reads buffer state)
 
-- **Actor + arc-swap snapshots** decouple the renderer from the
-  edit path -- neovim's redraw is synchronous with the edit, so
-  big edits or slow plugins block paint. We don't.
-- **memmem-driven search on rope chunks** (B-α + B-β in this
-  codebase) replaces neovim's char-by-char `findstr.c` walk; we
-  measure 4700× wins on 200k-line buffers.
-- **Per-call WASM overhead budgeted in CI** (typed call <500ns
-  p99; grammar-extension round-trip <5µs p99) prevents
-  plugin-introduced regressions that vim plugins routinely cause.
-- **Latency classes** (§5.2.5) make per-call budgets enforceable;
-  unbudgeted code that wants to extend the keystroke path has to
-  declare which class it's claiming.
+| Operation                                | Floor       | Target (v1) | Today        | Stretch      | Rationale                                                                                                                        |
+|------------------------------------------|-------------|-------------|--------------|--------------|----------------------------------------------------------------------------------------------------------------------------------|
+| Snapshot load (renderer, `load_full`)    | ~2ns        | <5ns        | 17ns         | <2ns         | One atomic acquire-load + one Arc bump. `Cache::load` (post §5.6.8 work) hits the floor.                                         |
+| Snapshot load (renderer, `Cache::load`)  | ~2ns        | <2ns        | unmeasured   | ⏹️           | Wait-free thread-local-cached load. Once the renderer migrates to it, becomes the dominant read path.                            |
+| Status segment update (1 snapshot read + format) | ~50ns      | <100ns      | **56ns**     | ⏹️           | Measured ~56ns. One `ArcSwap::load_full` (~17ns) + Arc deref + `format!` of a few u64s. Already at the practical floor.            |
+| Frame render (code, TUI, 80×24)          | ~200µs      | <500µs      | highlight **178µs** + compose **14µs** = ~192µs | <100µs       | `compose_visible_lines` is fast (~14µs viewport-bounded); highlight dominates. Stretch is a viewport-bounded highlight cache that survives across frames.                     |
+| Frame render (code, TUI, 200×60)         | ~330µs      | <800µs      | highlight **289µs** + compose **40µs** = ~330µs | <200µs       | Same shape, larger viewport. Linear in highlighted-line count; the per-frame compose cost is essentially free.                                                              |
+| Frame render (code, GPU, 1080p)          | ~150µs      | <1ms        | n/a          | <300µs       | Variable-font shaping cached per-line; only diff repaints. GPU path post v1 design (§5.6).                                       |
+| Frame render (markdown, GPU, 1080p)      | ~600µs      | <3ms        | n/a          | <1.5ms       | Per-line layout cache + Fenwick height index; floor scales with shape-changed lines.                                             |
 
-When the architecture limits us below a stretch (e.g. true
-microsecond-class full-buffer search needs a suffix-array index,
-which has months of engineering and ~5× memory cost), the doc
-records that honestly in the per-row note rather than silently
-inflating the target.
+#### Write path (mutation → published snapshot)
 
-CI fails on >10% regression vs. main on any benchmark.
+| Operation                                                                | Floor    | Target (v1) | Today      | Stretch  | Rationale                                                                                                                                                       |
+|--------------------------------------------------------------------------|----------|-------------|------------|----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Snapshot publish standalone (`from_document` + `ArcSwap::store`)         | ~80ns    | <500ns      | **101ns**  | <50ns    | Measured ~101ns constant across buffer sizes -- Buffer::clone is O(1) Arc bump; the cost is the allocator (`Arc::new`) + atomic release-store. Below original 2µs target.                                                |
+| Apply-edit (sync fast-path, `with_document_mut(closure)`) *(planned)*    | ~5µs     | <10µs       | not built  | <2µs     | parking_lot mutex acquire (~30ns) + ropey op (~1-3µs) + snapshot publish (~500ns). Bypass for the keystroke hot path; design in #191.                            |
+| Apply-edit round-trip (async actor, `block_on(handle.apply_edit(...))`)  | ~50µs    | <100µs      | 85µs       | <50µs    | Two cross-thread tokio wakeups (~30µs each) + actor work. Floor is scheduler-bound on a multi-thread runtime; single-thread runtime would close to ~30µs.        |
+| Dispatch round-trip (motion + Effect commit)                             | ~50µs    | <100µs (small bufs) | **78µs** (10 lines) / **86µs** (1k) / 513µs (50k motion walk) | <50µs   | Scheduler-bound on small buffers (matches apply-edit envelope). On large buffers the motion's own walk dominates -- the `word_forward` walk on 50kloc is the cost, not the envelope.                    |
+| Keystroke to glyph (code, TUI)                                           | ~250µs   | <2ms        | unmeasured | <800µs   | Sync fast-path + reparse + viewport highlight + frame render. Stretch when sync fast-path + incremental reparse both land.                                      |
+| Keystroke to glyph (code, GPU)                                           | ~200µs   | <2ms        | n/a        | <500µs   | Same minus ratatui's terminal-write overhead.                                                                                                                   |
+| Keystroke to glyph (code w/ LSP)                                         | ~300µs   | <3ms        | n/a        | <800µs   | Decoupled: LSP results land on a later frame; the keystroke itself doesn't wait. Floor unchanged from non-LSP.                                                  |
+| Keystroke to glyph (markdown render, GPU)                                | ~700µs   | <5ms        | n/a        | <2ms     | Inline-shape cost dominates; per-line layout cache lets unchanged lines reuse glyph runs.                                                                       |
+
+#### Search
+
+| Operation                                | Floor    | Target (v1) | Today      | Stretch  | Rationale                                                                                                                                                |
+|------------------------------------------|----------|-------------|------------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Literal substring, first-match-near-cursor | ~50ns  | <1µs        | 200ns–2µs  | <100ns   | memmem on one rope chunk. Floor is the SIMD prefilter cost. Today's number is fancy-regex's per-call setup; trivial-pattern fast-path could land at floor. |
+| Literal substring, worst-case 200k buffer | ~300µs | <2ms        | 659µs      | <50µs (post-1.0) | L2 bandwidth limit on a sequential scan. Stretch needs suffix-array index (~5× memory; rebuild on edit; deferred).                                       |
+| Regex typical (lazy DFA + literal prefilter) | ~20µs | <2ms        | 1.1ms      | <500µs   | regex crate's lazy DFA. Stretch via larger scan window amortising per-call setup.                                                                         |
+| Regex pathological (backref)             | n/a (bounded) | abort at 50ms | 169ms (50k) | abort at 50ms | fancy-regex backtracking; bounded by 1M-iteration recursion limit. Per-search timeout via cancellation token (§5.2.5) is the credible bound.        |
+
+#### File open + parse
+
+| Operation                                            | Floor   | Target (v1) | Today      | Stretch | Rationale                                                                                                                                            |
+|------------------------------------------------------|---------|-------------|------------|---------|------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Open 100MB log (first paint, viewport only)          | ~80ms   | <100ms      | **76ms** (rope only, render unmeasured) | <30ms   | ropey rope construction at 1.3 GiB/s -- 76ms for 100MB measured. Initial viewport render is on top; well within budget. Tree-sitter parse runs in background; first paint shows raw text immediately.                       |
+| Open 100MB log (full ready, syntax + folds)          | ~80ms   | <500ms      | unmeasured | <200ms  | Tree-sitter full parse (50ms-class on 100MB depending on grammar) + initial fold compute.                                                            |
+| Open 10K-line markdown (full ready)                  | ~50ms   | <500ms      | n/a        | <200ms  | Block parse + inline injection per visible paragraph; layout cache prebuilt on rayon pool.                                                            |
+| Tree-sitter incremental reparse (50kloc, 1-line edit) | ~50µs  | <500µs      | unmeasured | <100µs  | `Tree::edit` byte-delta + `Parser::parse(.., Some(&old_tree))` reuses unchanged subtrees. Owned-Tree work in Option B unblocked the seam.            |
+| Tree-sitter full reparse (50kloc)                    | ~5ms    | <20ms       | unmeasured | <2ms    | The "user pasted a thousand lines" path. Background; doesn't block keystroke. Bench documents the cost.                                              |
+
+#### Folds
+
+| Operation                                  | Floor    | Target (v1) | Today      | Stretch | Rationale                                                                                                                                          |
+|--------------------------------------------|----------|-------------|------------|---------|----------------------------------------------------------------------------------------------------------------------------------------------------|
+| Fold recompute (indent, 200-fn rust)       | ~30µs    | <100µs      | 33µs       | ⏹️      | Linear single-pass scan; near floor.                                                                                                               |
+| Fold recompute (markdown, 100 sections)    | ~5µs     | <50µs       | 6.3µs      | ⏹️      | Linear ATX heading walk; near floor.                                                                                                               |
+| Fold recompute (syntax, 200-fn rust)       | ~3ms     | <5ms        | 3.9ms      | <1ms    | `QueryCursor::matches` traversal across many pattern alternatives. Stretch via per-pattern caching + pruning never-folded captures.                |
+
+#### Plugin host (§5.5; no host yet, targets gated when phase 7 lands)
+
+| Operation                                  | Floor    | Target (v1) | Today | Stretch | Rationale                                                                                                                                          |
+|--------------------------------------------|----------|-------------|-------|---------|----------------------------------------------------------------------------------------------------------------------------------------------------|
+| Typed host fn call (1 scalar in, 1 out)    | ~150ns   | <500ns      | n/a   | <100ns  | wasmtime trampoline + 2 word copies. Floor is Cranelift's ABI marshalling.                                                                         |
+| Grammar-extension round-trip               | ~2µs     | <5µs        | n/a   | <1µs    | Two trampolines + closure invocation. Wasmtime AOT closes most of this.                                                                            |
+| Cold start, 50 lazily-loaded plugins       | ~10ms    | <30ms       | n/a   | <5ms    | Module deserialise + import resolution per plugin. Disk cache amortises across runs.                                                               |
+
+#### Architectural levers, by row
+
+The Floor / Target / Stretch numbers above are not asserted in
+isolation -- specific architecture decisions enable each one:
+
+- **`ArcSwap::Cache::load` (~2ns)** is the renderer's read floor; the
+  full DESIGN.md §5.6.8 split between editor thread (writer) and
+  render thread (reader) is what permits one atomic primitive on
+  the read path.
+- **Sync edit fast-path (planned)** drops the keystroke round-trip
+  from the actor's 85µs envelope to ~5µs by bypassing the mailbox
+  for the editor thread's own writes (see #191).
+- **Owned `tree_sitter::Parser` + `Tree`** (Option B, post-Step-4)
+  collapses the previous dual-parse (one for highlight + one for
+  folds) onto a single parse per keystroke; folds, highlights,
+  and any future query consumer all walk the same `Tree`.
+- **memmem-driven literal search on rope chunks** (B-α + B-β)
+  replaces a naive char-by-char walk with SIMD-prefiltered
+  scanning; backs the search floors above.
+- **Per-call WASM overhead budgeted in CI** prevents
+  plugin-introduced regressions from creeping into any of the
+  bolded targets.
+- **Latency classes (§5.2.5)** make per-call budgets enforceable;
+  any code claiming the keystroke path declares which class it
+  belongs to so the arithmetic doesn't drift.
+
+CI fails on >10% regression vs. main on any benchmark, regardless
+of whether the row is "today" or "target."
 
 ### 8.3 Memory
 

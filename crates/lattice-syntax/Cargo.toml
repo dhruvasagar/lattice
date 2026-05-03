@@ -14,5 +14,12 @@ tree-sitter-javascript = { workspace = true }
 tree-sitter-md = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "highlight"
+harness = false
+
 [lints]
 workspace = true

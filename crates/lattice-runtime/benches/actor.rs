@@ -42,17 +42,35 @@ fn build_buffer_text(n_lines: usize) -> String {
     s
 }
 
+/// Snapshot publish standalone: just `from_document` + `store`,
+/// isolated from the actor mailbox round-trip. Backs the §5.6.8
+/// "snapshot publish (actor side) <2µs" target. Floor: ~500ns
+/// (Buffer::clone Arc bump + Arc::new + atomic release-store).
+fn snapshot_publish_standalone(c: &mut Criterion) {
+    use lattice_runtime::{DocumentSnapshot, PublishedSnapshot};
+    let mut g = c.benchmark_group("runtime::snapshot_publish_standalone");
+    for size in [10usize, 1_000, 50_000] {
+        let text = build_buffer_text(size);
+        let doc = Document::from_text(&text);
+        let initial = DocumentSnapshot::__bench_from_document(&doc);
+        let cell = PublishedSnapshot::__bench_new(initial);
+        g.bench_with_input(BenchmarkId::from_parameter(size), &doc, |bencher, d| {
+            bencher.iter(|| {
+                let snap = DocumentSnapshot::__bench_from_document(black_box(d));
+                cell.__bench_store(snap);
+            });
+        });
+    }
+    g.finish();
+}
+
 /// Snapshot publish: the actor's per-commit cost. We measure
 /// `DocumentSnapshot::from_document` + `PublishedSnapshot::store`
-/// against a representative document. Both are crate-internal to
-/// `lattice-runtime`; `spawn_document` exercises them indirectly,
-/// but the public surface doesn't expose them. We benchmark via a
-/// dedicated handle whose snapshot we read after each mutation --
-/// timing one full mutation cycle.
-///
-/// (Direct `from_document` + `store` measurement isn't possible
-/// from outside the crate; the round-trip below is the closest
-/// public-API proxy.)
+/// against a representative document via the public `apply_edit`
+/// round-trip; this conflates the publish step with mailbox +
+/// scheduler + work, which is intentional -- it backs the §8.2
+/// "apply-edit round-trip" row. The standalone publish bench
+/// above isolates the publish step itself.
 fn snapshot_publish_via_apply_edit(c: &mut Criterion) {
     let mut g = c.benchmark_group("runtime::snapshot_publish_via_apply_edit");
     let registry = Arc::new(CommandRegistry::new());
@@ -144,11 +162,79 @@ fn snapshot_post_publish_read(c: &mut Criterion) {
     g.finish();
 }
 
+/// Dispatch round-trip: a motion (`word_forward`) sent through
+/// the actor, dispatched, and the resulting Effect returned.
+/// Backs §8.2's "dispatch round-trip" row. Distinct from
+/// apply_edit_round_trip in that the latter measures the actor
+/// envelope around a raw rope op; this measures the envelope
+/// around a grammar dispatch (motion → SelectionChange Effect).
+fn dispatch_round_trip(c: &mut Criterion) {
+    use lattice_grammar::CancellationToken;
+    use lattice_grammar::builtins::populate;
+    use lattice_grammar::command::CommandInvocation;
+    let mut g = c.benchmark_group("runtime::dispatch_round_trip");
+    let mut registry_inner = lattice_grammar::CommandRegistry::new();
+    let builtins = populate(&mut registry_inner);
+    let registry = Arc::new(registry_inner);
+    for size in [10usize, 1_000, 50_000] {
+        let text = build_buffer_text(size);
+        g.bench_with_input(BenchmarkId::from_parameter(size), &text, |bencher, t| {
+            let handle = spawn_document(Document::from_text(t), registry.clone());
+            let inv = CommandInvocation::of(builtins.word_forward.0);
+            // Pre-warm the actor task.
+            let _ = block_on(handle.dispatch_with_cancel(
+                inv.clone(),
+                Position::ZERO,
+                CancellationToken::never(),
+            ));
+            bencher.iter(|| {
+                let _ = block_on(handle.dispatch_with_cancel(
+                    inv.clone(),
+                    black_box(Position::ZERO),
+                    CancellationToken::never(),
+                ))
+                .unwrap();
+            });
+        });
+    }
+    g.finish();
+}
+
+/// Status-segment update: one snapshot load + a small format
+/// representative of what the modeline does (`buf NN [path] (line/total)`).
+/// Backs §8.2 "status segment update <500ns" and characterises
+/// the cost on the editor's per-frame path.
+fn status_segment_update(c: &mut Criterion) {
+    let mut g = c.benchmark_group("runtime::status_segment_update");
+    let registry = Arc::new(CommandRegistry::new());
+    let handle = spawn_document(
+        Document::from_text(build_buffer_text(1_000).as_str()),
+        registry,
+    );
+    g.bench_function("modeline_format", |bencher| {
+        bencher.iter(|| {
+            let snap = handle.snapshot();
+            // Representative modeline string: buffer id + path + version.
+            let s = format!(
+                " buf #{}  ver {}  bytes {}",
+                black_box(snap.id.0),
+                black_box(snap.version),
+                black_box(snap.buffer.byte_len()),
+            );
+            black_box(s.len());
+        });
+    });
+    g.finish();
+}
+
 criterion_group!(
     benches,
+    snapshot_publish_standalone,
     snapshot_publish_via_apply_edit,
     snapshot_load,
     apply_edit_round_trip,
     snapshot_post_publish_read,
+    dispatch_round_trip,
+    status_segment_update,
 );
 criterion_main!(benches);

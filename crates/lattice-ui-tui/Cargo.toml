@@ -29,5 +29,9 @@ criterion = { workspace = true }
 name = "folds"
 harness = false
 
+[[bench]]
+name = "render"
+harness = false
+
 [lints]
 workspace = true

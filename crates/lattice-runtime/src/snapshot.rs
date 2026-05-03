@@ -68,6 +68,16 @@ pub struct DocumentSnapshot {
 }
 
 impl DocumentSnapshot {
+    /// Bench-only constructor exposing [`Self::from_document`] to
+    /// criterion benches (which live outside the runtime crate).
+    /// Production callers must go through the actor's publish
+    /// discipline; this is `#[doc(hidden)]` so it doesn't show in
+    /// rustdoc and the name advertises the constraint.
+    #[doc(hidden)]
+    pub fn __bench_from_document(doc: &Document) -> Self {
+        Self::from_document(doc)
+    }
+
     /// Build a snapshot from a `Document`. Called by the actor on
     /// every commit. `pub(crate)` so external callers can't bypass
     /// the actor's publish discipline.
@@ -129,6 +139,21 @@ impl PublishedSnapshot {
     /// actor is the only writer.
     pub(crate) fn store(&self, next: DocumentSnapshot) {
         self.cell.store(Arc::new(next));
+    }
+
+    /// Bench-only `pub` wrapper around [`Self::store`]. See the
+    /// note on [`DocumentSnapshot::__bench_from_document`].
+    #[doc(hidden)]
+    pub fn __bench_store(&self, next: DocumentSnapshot) {
+        self.store(next);
+    }
+
+    /// Bench-only `pub` constructor matching [`Self::new`]. Lets
+    /// benches stand up a `PublishedSnapshot` outside the actor's
+    /// usual `spawn_document` path.
+    #[doc(hidden)]
+    pub fn __bench_new(initial: DocumentSnapshot) -> Self {
+        Self::new(initial)
     }
 }
 

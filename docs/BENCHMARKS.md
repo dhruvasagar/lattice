@@ -1,16 +1,16 @@
 # Benchmark Results
 
 Captured numbers from the criterion suite, indexed against the
-performance commitments in DESIGN.md §5.2.5, §5.6.8, §8.2.
+performance commitments in DESIGN.md §8.2 (Floor / Target / Today
+/ Stretch).
 
 This document is a snapshot, not a moving record -- update it when a
 deliberate perf change lands or a new bench is added; do not bump
 numbers on every routine run. Commit history is the moving record.
 
-Each metric is annotated with an **improvement target**: ⏹️ for
-"already at the practical floor", 🔼 for "more headroom available
-via known engineering paths". The target column states the
-*credible* next step, not aspirational ceilings.
+Each row points back at the §8.2 commitment it backs, so a
+regression here is identifiable as a violation of a specific
+target rather than just a slower number.
 
 > Run `cargo bench --workspace` to reproduce. Times shown are
 > criterion's median estimate. Each row's outer `[low high]`
@@ -20,7 +20,7 @@ via known engineering paths". The target column states the
 
 ## Environment
 
-- Date: 2026-05-03 (post Option B migration: tree-sitter parse + highlight on a single owned Tree; folds benchmarks added)
+- Date: 2026-05-03 (post §8.2 restructure + bench overhaul: standalone snapshot publish, status segment, dispatch round-trip, frame render, native highlight, large file open)
 - Host: WSL2 (Ubuntu) on x86_64
 - Toolchain: Rust 1.94.0 stable
 - Build profile: `bench` (`opt-level = 3`)
@@ -33,13 +33,19 @@ better.
 
 ## §8.2 commitments at a glance
 
-| §8.2 row                      | Target (p99)      | Bench(es)                        | Status                                              |
-|-------------------------------|-------------------|----------------------------------|-----------------------------------------------------|
-| Keystroke -> buffer mutation  | <100µs            | `runtime::apply_edit_round_trip` | ✅ ~83µs constant across sizes                      |
-| Snapshot publish (actor side) | <10µs             | bundled with apply_edit          | ⚠️ ~85µs end-to-end (mailbox + work + publish)       |
-| Snapshot load (renderer side) | <5ns aspirational | `runtime::snapshot_load`         | ⚠️ ~17ns (`load_full` Arc bump)                      |
-| Reflex motion / operator      | <2ms              | `motion::*`, `operator::*`       | ✅ all under budget                                 |
-| Search (literal substring)    | <2ms (Reflex)     | `search::*`                      | ✅ all variants under 2ms even on 200k-line buffers |
+| §8.2 row                                    | Target (v1) | Today                 | Bench                                                    | Status                                          |
+|---------------------------------------------|-------------|-----------------------|----------------------------------------------------------|-------------------------------------------------|
+| Snapshot load (`load_full`)                 | <5ns        | 17ns                  | `runtime::snapshot_load`                                 | ⚠️ above target (one Arc bump)                   |
+| Snapshot publish standalone                 | <500ns      | **101ns**             | `runtime::snapshot_publish_standalone`                   | ✅ at the floor (~80ns)                          |
+| Status segment update                       | <100ns      | **56ns**              | `runtime::status_segment_update`                         | ✅ at the floor                                  |
+| Apply-edit round-trip                       | <100µs      | 85µs                  | `runtime::apply_edit_round_trip`                         | ✅ scheduler-bound; sync fast-path is the next lever |
+| Dispatch round-trip (small buffer)          | <100µs      | 78–86µs               | `runtime::dispatch_round_trip`                           | ✅ same envelope as apply-edit                   |
+| Frame render TUI 80×24 (highlight + compose) | <500µs     | ~192µs                | `highlight::rust_viewport` + `render::frame_24_lines`    | ✅ under target                                  |
+| Frame render TUI 200×60                     | <800µs      | ~330µs                | `highlight::rust_viewport` + `render::frame_60_lines`    | ✅ under target                                  |
+| Open 100MB log (rope construction)          | <100ms      | 76ms                  | `buffer::open_large/100mb`                               | ✅ under target                                  |
+| Search literal worst-case 200k              | <2ms        | 659µs                 | `search::no_match_with_wrap/200k`                        | ✅ under target                                  |
+| Tree-sitter incremental reparse             | <500µs      | unmeasured            | not built (Tree::edit not yet threaded)                  | ⚠️ gap                                           |
+| Reflex motion / operator                    | <2ms        | all under budget      | `motion::*`, `operator::*`                               | ✅                                               |
 
 ---
 
@@ -47,12 +53,15 @@ better.
 
 The load-bearing async primitives (DESIGN.md §5.2.1, §5.6.8, §5.7).
 
-| Benchmark                          | 10 lines   | 1k lines   | 50k lines  | Budget            | Improvement target                                                                                 |
-|------------------------------------|------------|------------|------------|-------------------|----------------------------------------------------------------------------------------------------|
-| `apply_edit` round-trip (block_on) | **83.1µs** | **82.6µs** | **84.0µs** | <100µs p99        | ⏹️ near floor (mailbox + oneshot dominate)                                                          |
-| Snapshot publish via apply_edit    | 85.5µs     | 86.3µs     | 85.6µs     | --                | ⏹️ same path as round-trip                                                                          |
-| Snapshot load (`load_full`)        | **17.4ns** | --         | --         | <5ns aspirational | 🔼 `ArcSwap::load()` (Guard, ~5ns) for read-only paths; `Cache::load()` (~2ns) for renderer thread |
-| Snapshot post-publish read         | 91.1ns     | 18.8ns     | 20.8ns     | --                | 🔼 same path                                                                                       |
+| Benchmark                                | 10 lines       | 1k lines     | 50k lines    | Floor / Target          | Improvement target                                                                              |
+|------------------------------------------|----------------|--------------|--------------|-------------------------|-------------------------------------------------------------------------------------------------|
+| **Snapshot publish standalone** (new)    | **~101ns**     | **~101ns**   | **~97ns**    | ~80ns / <500ns          | ⏹️ at the practical floor (Arc::new + atomic). Constant across sizes -- buffer clone is O(1).    |
+| `apply_edit` round-trip (block_on)       | 83.1µs         | 82.6µs       | 84.0µs       | ~50µs / <100µs          | 🔼 sync edit fast-path drops to ~5µs (DESIGN.md §8.2 stretch).                                   |
+| **Dispatch round-trip** (motion) (new)   | **~78µs**      | **~86µs**    | **~513µs**   | ~50µs / <100µs (small)  | ⏹️ scheduler-bound on small bufs; large-buf cost is the motion walk itself.                      |
+| Snapshot publish via apply_edit          | 85.5µs         | 86.3µs       | 85.6µs       | same as apply_edit      | (envelope, not standalone publish)                                                              |
+| Snapshot load (`load_full`)              | **17.4ns**     | --           | --           | ~2ns / <5ns             | 🔼 `Cache::load` (~2ns thread-local-cached). Renderer migration is the lever.                    |
+| Snapshot post-publish read               | 91.1ns         | 18.8ns       | 20.8ns       | --                      | 🔼 same path                                                                                    |
+| **Status segment update** (new)          | **~56ns**      | --           | --           | ~50ns / <100ns          | ⏹️ at the floor (snapshot load + small format).                                                  |
 
 **Round-trip is constant across buffer sizes** -- mailbox + oneshot
 + Arc clone, not a buffer walk. The ~85µs publish-via-apply-edit is
@@ -210,6 +219,54 @@ next available optimization if 3.9ms ever pushes uncomfortable.
 
 ---
 
+## Native highlight (`crates/lattice-syntax/benches/highlight.rs`)
+
+Times `Syntax::highlight_lines_native` per language across the
+realistic call shapes the renderer actually issues.
+
+| Benchmark                          | size                   | time      | Floor / Target               | Improvement target                                                                                                                |
+|------------------------------------|------------------------|-----------|------------------------------|-----------------------------------------------------------------------------------------------------------------------------------|
+| `highlight::rust/10`               | 81 lines               | **142µs** | ~120µs / —                   | ⏹️ small-buffer setup floor (one full QueryCursor traversal).                                                                      |
+| `highlight::rust/200`              | ~1600 lines            | **3.2ms** | ~3ms / <5ms                  | 🔼 per-pattern caching + pruning never-folded captures (~1ms achievable).                                                          |
+| `highlight::rust/2000`             | ~16k lines             | 42ms      | --                           | 🔼 outlier (single-file 50kloc); the renderer never asks for full-buffer highlight.                                                |
+| **`highlight::rust_viewport/24`**  | 24-line viewport      | **178µs** | ~150µs / <300µs              | ⏹️ realistic frame call shape. The renderer's keystroke path lives here.                                                           |
+| **`highlight::rust_viewport/60`**  | 60-line viewport      | **289µs** | ~250µs / <500µs              | ⏹️                                                                                                                                  |
+| **`highlight::rust_viewport/120`** | 120-line viewport     | **388µs** | ~350µs / <800µs              | ⏹️                                                                                                                                  |
+
+**The viewport-bounded numbers are the meaningful ones.** The
+full-buffer rows characterise worst-case query traversal cost
+but the renderer never asks for the whole document at once. At
+24 lines (typical 80×24 terminal) we're at 178µs, well under the
+§8.2 frame-render budget.
+
+`tree_sitter::QueryCursor::set_byte_range` is a hint -- the
+cursor still walks the entire tree to find captures that overlap
+the requested range. The ~178µs viewport floor reflects this; a
+true viewport-bounded query traversal (Helix's `LanguageLayer`
+incremental approach) is post-1.0 work.
+
+---
+
+## Frame render (`crates/lattice-ui-tui/benches/render.rs`)
+
+Times `compose_visible_lines` against pre-warmed highlight cache
+-- the per-frame view-composition cost on top of the highlight
+work above.
+
+| Benchmark                       | size              | time     | Floor / Target  | Improvement target                                  |
+|---------------------------------|-------------------|----------|-----------------|-----------------------------------------------------|
+| `render::frame_24_lines/200`    | 80×24, 200 fns   | **14µs** | ~10µs / <50µs   | ⏹️ at the practical floor.                           |
+| `render::frame_60_lines/200`    | 200×60, 200 fns  | **42µs** | ~30µs / <100µs  | ⏹️                                                   |
+| `render::frame_120_lines/200`   | 200×120, 200 fns | **86µs** | ~70µs / <150µs  | ⏹️                                                   |
+
+Combined with viewport-bounded highlight (178µs at 24 lines), the
+total per-frame cost on the editor side is ~192µs -- well under
+the §8.2 "Frame render TUI <500µs" target. The remaining cost is
+ratatui's terminal write, which isn't measured here (hardware-
+bound; not benchable without a real TTY).
+
+---
+
 ## Tree-sitter consolidation (Option B migration)
 
 **Architectural change, 2026-05-03.** `lattice-syntax` previously ran
@@ -245,6 +302,11 @@ Direct rope mutations.
 | `insert_at_middle`         | 2.34µs   | 1.75µs   | 72.8µs     | ⏹️                                   |
 | `delete_one_byte`          | 2.54µs   | 1.68µs   | 77.3µs     | ⏹️                                   |
 | `position_byte_round_trip` | 1.12µs   | 419ns    | **390ns**  | ⏹️ B-tree is faster on bigger ropes  |
+
+| Open-large benchmark | size  | time      | throughput  | Floor / Target  | Improvement target                                        |
+|----------------------|-------|-----------|-------------|-----------------|-----------------------------------------------------------|
+| `buffer::open_large` | 10MB  | **3.4ms** | 2.9 GiB/s   | ~2ms / <10ms    | ⏹️ near floor (memcpy-ish into ropey's internal buffer).   |
+| `buffer::open_large` | 100MB | **76ms**  | 1.3 GiB/s   | ~50ms / <100ms  | ⏹️ B-tree split cost compounds; under §8.2 first-paint target. |
 
 `position_byte_round_trip` is *faster* on bigger ropes -- ropey's
 B-tree packs better at scale.

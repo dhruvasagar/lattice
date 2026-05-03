@@ -92,11 +92,43 @@ fn position_to_byte_round_trip(c: &mut Criterion) {
     g.finish();
 }
 
+/// Open large file: `Buffer::from_text` against synthetic ~100MB
+/// payloads. Backs §8.2's "Open 100MB log (first paint)" target
+/// -- ropey rope construction is the floor; the editor's `:e`
+/// path adds language detection + tree-sitter parse on top, so
+/// the floor for "first paint of viewport" is roughly this number
+/// + ratatui draw.
+fn open_large_buffer(c: &mut Criterion) {
+    let mut g = c.benchmark_group("buffer::open_large");
+    // Pre-build the source strings once outside the timing loop --
+    // we want to measure ropey, not memory allocation of the
+    // String.
+    for &(label, target_bytes) in &[
+        ("10mb", 10 * 1024 * 1024),
+        ("100mb", 100 * 1024 * 1024),
+    ] {
+        let mut text = String::with_capacity(target_bytes + 64);
+        let line = "line: the quick brown fox jumps over the lazy dog\n";
+        while text.len() < target_bytes {
+            text.push_str(line);
+        }
+        g.throughput(Throughput::Bytes(text.len() as u64));
+        g.bench_with_input(BenchmarkId::from_parameter(label), &text, |bencher, t| {
+            bencher.iter(|| {
+                let buf = Buffer::from_text(black_box(t));
+                black_box(buf);
+            });
+        });
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
     insert_at_origin,
     insert_at_middle,
     delete_one_byte,
     position_to_byte_round_trip,
+    open_large_buffer,
 );
 criterion_main!(benches);

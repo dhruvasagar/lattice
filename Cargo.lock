@@ -674,6 +674,7 @@ dependencies = [
 name = "lattice-syntax"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "streaming-iterator",
  "thiserror",
  "tree-sitter",

@@ -4121,6 +4121,8 @@ impl App {
     /// Close the active pane. The first surviving pane becomes
     /// active. No-op when only one pane is open (vim leaves the
     /// last window alone; closing it would mean closing the editor).
+    /// Singleton transient buffers (file tree) get garbage-collected
+    /// if no surviving pane references them.
     fn do_close_pane(&mut self) {
         if self.pane_tree.len() <= 1 {
             self.set_message(EchoLevel::Warn, "Already only one pane".to_string());
@@ -4132,6 +4134,23 @@ impl App {
             return;
         }
         self.load_active_pane();
+        self.gc_unreferenced_panel_buffers();
+    }
+
+    /// Drop singleton non-document buffers (currently: file tree)
+    /// when no pane still references them. Document buffers are
+    /// not GC'd here -- they stay in the registry so `:bn` can
+    /// reach them after a pane close. Called from
+    /// [`Self::do_close_pane`].
+    fn gc_unreferenced_panel_buffers(&mut self) {
+        let any_tree = self
+            .pane_tree
+            .leaves()
+            .iter()
+            .any(|p| matches!(p.buffer, BufferKind::FileTree));
+        if !any_tree {
+            self.file_tree = None;
+        }
     }
 
     /// Step cardinally to the spatial neighbour of the active pane.
@@ -10092,6 +10111,24 @@ mod tests {
         // Navigate Left -> active=0.
         a.apply(Action::NavigatePane(PaneDirection::Left));
         assert_eq!(a.pane_tree.active_index(), 0);
+    }
+
+    #[test]
+    fn close_tree_pane_garbage_collects_file_tree() {
+        let dir = std::env::temp_dir().join(format!("lattice-tree-gc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let mut a = app_with("xx", 10);
+        a.terminal_width = Some(80);
+        a.apply(Action::SplitPaneVertical);
+        a.apply(Action::NavigatePane(PaneDirection::Right));
+        a.command_line = format!("Tree {}", dir.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.file_tree.is_some());
+        // Close the tree pane via <C-w>c. Tree should be GC'd.
+        a.apply(Action::ClosePane);
+        assert!(a.file_tree.is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

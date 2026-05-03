@@ -517,8 +517,21 @@ fn resolve_after_ctrl_w(event: KeyEvent) -> Action {
     // bare keys -- vim is lenient because <C-w> is a sticky prefix
     // (typing <C-w><C-w> for "next pane" is muscle memory).
     if event.modifiers.contains(KeyModifiers::CONTROL) {
+        // Vim accepts Ctrl-modified second keys after `<C-w>` so
+        // the user can hold Ctrl through the whole chord
+        // (`<C-w><C-l>` and `<C-w>l` both navigate right). Many
+        // terminals collapse `<C-h>` to Backspace and `<C-i>` to
+        // Tab; we honour those mappings via the bare-key paths
+        // below.
         return match event.code {
             KeyCode::Char('w') => Action::NextPane,
+            KeyCode::Char('h') => Action::NavigatePane(PaneDirection::Left),
+            KeyCode::Char('j') => Action::NavigatePane(PaneDirection::Down),
+            KeyCode::Char('k') => Action::NavigatePane(PaneDirection::Up),
+            KeyCode::Char('l') => Action::NavigatePane(PaneDirection::Right),
+            KeyCode::Char('s') => Action::SplitPaneHorizontal,
+            KeyCode::Char('v') => Action::SplitPaneVertical,
+            KeyCode::Char('c') | KeyCode::Char('q') => Action::ClosePane,
             _ => Action::SetPending(Pending::None),
         };
     }
@@ -526,12 +539,14 @@ fn resolve_after_ctrl_w(event: KeyEvent) -> Action {
         KeyCode::Char('s') | KeyCode::Char('S') => Action::SplitPaneHorizontal,
         KeyCode::Char('v') => Action::SplitPaneVertical,
         KeyCode::Char('c') | KeyCode::Char('q') => Action::ClosePane,
-        KeyCode::Char('h') | KeyCode::Left => Action::NavigatePane(PaneDirection::Left),
+        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
+            Action::NavigatePane(PaneDirection::Left)
+        }
         KeyCode::Char('j') | KeyCode::Down => Action::NavigatePane(PaneDirection::Down),
         KeyCode::Char('k') | KeyCode::Up => Action::NavigatePane(PaneDirection::Up),
         KeyCode::Char('l') | KeyCode::Right => Action::NavigatePane(PaneDirection::Right),
-        KeyCode::Char('w') => Action::NextPane,
-        KeyCode::Char('W') => Action::PrevPane,
+        KeyCode::Char('w') | KeyCode::Tab => Action::NextPane,
+        KeyCode::Char('W') | KeyCode::BackTab => Action::PrevPane,
         _ => Action::SetPending(Pending::None),
     }
 }
@@ -1987,6 +2002,82 @@ mod tests {
                 ctrl(KeyCode::Char('o'))
             ),
             Action::JumpHistoryBack
+        ));
+    }
+
+    // ---- Pane navigation (DESIGN.md §5.9, B.1.b) ----
+
+    #[test]
+    fn ctrl_w_arms_after_ctrl_w_pending() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::None, &b),
+                ctrl(KeyCode::Char('w'))
+            ),
+            Action::SetPending(Pending::AfterCtrlW)
+        ));
+    }
+
+    #[test]
+    fn ctrl_w_l_navigates_right() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterCtrlW, &b),
+                key(KeyCode::Char('l'))
+            ),
+            Action::NavigatePane(PaneDirection::Right)
+        ));
+    }
+
+    #[test]
+    fn ctrl_w_ctrl_l_also_navigates_right() {
+        // Vim accepts the "Ctrl held throughout" form (`<C-w><C-l>`)
+        // as well as the "release then press" form (`<C-w>l`).
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterCtrlW, &b),
+                ctrl(KeyCode::Char('l'))
+            ),
+            Action::NavigatePane(PaneDirection::Right)
+        ));
+    }
+
+    #[test]
+    fn ctrl_w_ctrl_j_navigates_down() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterCtrlW, &b),
+                ctrl(KeyCode::Char('j'))
+            ),
+            Action::NavigatePane(PaneDirection::Down)
+        ));
+    }
+
+    #[test]
+    fn ctrl_w_w_cycles_to_next_pane() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterCtrlW, &b),
+                key(KeyCode::Char('w'))
+            ),
+            Action::NextPane
+        ));
+    }
+
+    #[test]
+    fn ctrl_w_capital_w_cycles_to_prev_pane() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterCtrlW, &b),
+                key(KeyCode::Char('W'))
+            ),
+            Action::PrevPane
         ));
     }
 

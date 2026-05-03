@@ -288,13 +288,13 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     }
 }
 
-/// Lay the pane tree out across `area` and draw each pane.
-/// (DESIGN.md §5.9.) The active pane gets the full
-/// [`draw_buffer`] rendering -- gutter, syntax highlighting,
-/// visual selection, hlsearch, terminal cursor placement. Inactive
-/// panes get [`draw_inactive_pane`], a simpler path that surfaces
-/// the buffer's identity + scroll position; full rendering for
-/// inactive panes lands with B.1.c (multiple distinct documents).
+/// Lay the pane tree out across `area` and draw each pane
+/// (DESIGN.md §5.9). Each pane renders its actual buffer content
+/// (vim-style: no decorative borders) plus a one-row status line
+/// at its bottom edge. The active pane's status line is reverse-
+/// videoed so focus is unambiguous; inactive status lines are
+/// dim. With a single pane we skip the status line so the buffer
+/// area looks identical to the pre-split rendering.
 fn draw_panes(frame: &mut Frame, area: Rect, app: &App) {
     let pane_area = crate::pane::PaneRect {
         x: area.x,
@@ -304,6 +304,7 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App) {
     };
     let rects = app.pane_tree.compute_rects(pane_area);
     let active = app.pane_tree.active_index();
+    let multi = rects.len() > 1;
     for (idx, prect) in rects {
         let rect = Rect {
             x: prect.x,
@@ -311,25 +312,172 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App) {
             width: prect.width,
             height: prect.height,
         };
-        if idx == active {
-            // Active pane: dispatch on the buffer kind. The
-            // document path is fully featured (gutter, syntax,
-            // visual selections, cursor); file-tree gets a
-            // simpler text-only path.
-            match app.pane_tree.active().buffer {
-                crate::buffers::BufferKind::Document => draw_buffer(frame, rect, app),
-                crate::buffers::BufferKind::Help => {
-                    // Help renders via popup overlay (drawn after
-                    // panes); the active pane's underlying
-                    // document still draws here.
-                    draw_buffer(frame, rect, app);
-                }
-                crate::buffers::BufferKind::FileTree => draw_file_tree_pane(frame, rect, app),
-            }
+        let is_active = idx == active;
+        // Reserve the bottom row for the per-pane status line, but
+        // only when there's more than one pane visible.
+        let (content_rect, status_rect) = if multi && rect.height >= 2 {
+            let content_h = rect.height - 1;
+            (
+                Rect {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: content_h,
+                },
+                Some(Rect {
+                    x: rect.x,
+                    y: rect.y + content_h,
+                    width: rect.width,
+                    height: 1,
+                }),
+            )
         } else {
-            draw_inactive_pane(frame, rect, app, idx);
+            (rect, None)
+        };
+        let panes = app.pane_tree.leaves();
+        let Some(pane) = panes.get(idx) else {
+            continue;
+        };
+        let pane = *pane;
+        match pane.buffer {
+            crate::buffers::BufferKind::Document => {
+                if is_active {
+                    draw_buffer(frame, content_rect, app);
+                } else {
+                    draw_inactive_document(frame, content_rect, app, &pane);
+                }
+            }
+            crate::buffers::BufferKind::Help => {
+                // Help is overlay-rendered (drawn after panes); the
+                // pane area shows the underlying document content.
+                if is_active {
+                    draw_buffer(frame, content_rect, app);
+                } else {
+                    draw_inactive_document(frame, content_rect, app, &pane);
+                }
+            }
+            crate::buffers::BufferKind::FileTree => {
+                draw_file_tree_pane(frame, content_rect, app, &pane, is_active);
+            }
+        }
+        if let Some(sr) = status_rect {
+            draw_pane_status_line(frame, sr, app, &pane, is_active);
         }
     }
+}
+
+/// One-row status line at the bottom of a pane (vim's "statusline"
+/// per-window). Active pane is reverse-videoed; inactive panes are
+/// dim. Format: `path  line:col  [+]` (path, position, dirty
+/// marker). Help and file-tree get their own labels.
+fn draw_pane_status_line(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    pane: &crate::pane::PaneState,
+    is_active: bool,
+) {
+    let label = match pane.buffer {
+        crate::buffers::BufferKind::Document => app
+            .documents
+            .get(&pane.buffer_id)
+            .map(|e| {
+                let path = e
+                    .handle
+                    .path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "[no name]".to_string());
+                let dirty = if e.handle.dirty() { " [+]" } else { "" };
+                format!("{path}{dirty}")
+            })
+            .unwrap_or_else(|| "[no buffer]".to_string()),
+        crate::buffers::BufferKind::Help => app
+            .help_buffer
+            .as_ref()
+            .map(|h| format!("[help] {}", h.title))
+            .unwrap_or_else(|| "[help]".to_string()),
+        crate::buffers::BufferKind::FileTree => app
+            .file_tree
+            .as_ref()
+            .map(|t| format!("[tree] {}", t.root.display()))
+            .unwrap_or_else(|| "[tree]".to_string()),
+    };
+    let pos = format!("{}:{}", pane.cursor.line + 1, pane.cursor.byte);
+    let style = if is_active {
+        TuiStyle::default()
+            .add_modifier(Modifier::REVERSED)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        TuiStyle::default().fg(Color::DarkGray)
+    };
+    // Compose: " label                pos "
+    let width = area.width as usize;
+    let total_text_len = label.chars().count() + pos.chars().count() + 3; // 1 lead + 2 sep
+    let pad = if width > total_text_len {
+        width - total_text_len
+    } else {
+        1
+    };
+    let line_text = format!(" {label}{}{pos} ", " ".repeat(pad));
+    let truncated: String = line_text.chars().take(width).collect();
+    let para = Paragraph::new(Line::from(Span::styled(truncated, style)));
+    frame.render_widget(para, area);
+}
+
+/// Render a Document pane that isn't currently focused. Reads the
+/// stashed cursor / scroll from `pane`, looks up the document by
+/// `pane.buffer_id`, and renders gutter + visible lines as plain
+/// text. No syntax highlighting or hlsearch / visual overlays --
+/// those would require carrying parallel `Syntax` state across
+/// panes; deferred until the user focuses the pane (full rendering
+/// kicks in via [`draw_buffer`] then). Long lines truncate to fit.
+fn draw_inactive_document(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pane::PaneState) {
+    let Some(entry) = app.documents.get(&pane.buffer_id) else {
+        return;
+    };
+    let snap = entry.handle.snapshot();
+    let total_lines = snap.buffer.line_count();
+    let gutter_w = if app.show_line_numbers {
+        gutter_width(total_lines)
+    } else {
+        2
+    };
+    let buffer_w = (area.width as u32).saturating_sub(gutter_w);
+
+    let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
+    for i in 0..area.height as u32 {
+        let buf_line = pane.scroll + i;
+        if buf_line >= total_lines {
+            lines.push(empty_marker_line(gutter_w));
+            continue;
+        }
+        let line_text = snap.buffer.line(buf_line).unwrap_or_default();
+        let gutter = render_gutter_for_inactive(app, pane.cursor.line, buf_line, gutter_w);
+        let body = render_styled_line(&line_text, &[], buffer_w);
+        lines.push(combine(gutter, body));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Gutter render for an inactive pane. Uses the pane's stashed
+/// cursor line for relative-numbering -- the active pane uses
+/// `app.cursor.line` instead.
+fn render_gutter_for_inactive(
+    app: &App,
+    cursor_line: u32,
+    line_idx: u32,
+    gutter_w: u32,
+) -> Span<'static> {
+    if !app.show_line_numbers {
+        return Span::styled("  ".to_string(), TuiStyle::default().fg(Color::DarkGray));
+    }
+    let label = if !app.relative_line_numbers || line_idx == cursor_line {
+        format!("{:>width$} ", line_idx + 1, width = gutter_w as usize - 1)
+    } else {
+        let dist = line_idx.abs_diff(cursor_line);
+        format!("{:>width$} ", dist, width = gutter_w as usize - 1)
+    };
+    Span::styled(label, TuiStyle::default().fg(Color::DarkGray))
 }
 
 /// Render the active hover popup (DESIGN.md §5.9.6, §5.11.4) as a
@@ -406,31 +554,41 @@ fn draw_hover_popup(frame: &mut Frame, buffer_area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(visible), inner);
 }
 
-/// Render the file-tree buffer inside its pane. v1 path: dump the
-/// `FileTreeBuffer.content` rope's visible window, prefixed by a
-/// thin border carrying the root path, with the terminal cursor
-/// placed on the cursor line. No syntax highlighting yet.
-fn draw_file_tree_pane(frame: &mut Frame, area: Rect, app: &App) {
-    frame.render_widget(Clear, area);
+/// Render a file-tree pane vim-style: no decorative border, just
+/// the entries listed plain in the pane's content area with the
+/// cursor row reverse-videoed when the pane is focused. Status
+/// information (root path) lives in the per-pane status line, so
+/// the content area is purely the tree text -- consistent with
+/// how a Document pane looks.
+fn draw_file_tree_pane(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    pane: &crate::pane::PaneState,
+    is_active: bool,
+) {
     let Some(tree) = app.file_tree.as_ref() else {
         return;
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" tree: {} ", tree.root.display()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let viewport = inner.height as usize;
+    // Inactive file-tree panes use the pane's stashed cursor /
+    // scroll; the active pane's tree state lives on `tree.cursor`
+    // / `tree.scroll` and gets a visible cursor.
+    let (cursor_line, scroll) = if is_active {
+        (tree.cursor.line as usize, tree.scroll)
+    } else {
+        (pane.cursor.line as usize, pane.scroll as usize)
+    };
+    let viewport = area.height as usize;
     let lines: Vec<Line> = tree
         .content
         .as_string()
         .split('\n')
-        .skip(tree.scroll)
+        .skip(scroll)
         .take(viewport)
         .enumerate()
         .map(|(i, l)| {
-            let line_idx = tree.scroll + i;
-            let style = if line_idx == tree.cursor.line as usize {
+            let line_idx = scroll + i;
+            let style = if is_active && line_idx == cursor_line {
                 TuiStyle::default().add_modifier(Modifier::REVERSED)
             } else {
                 TuiStyle::default()
@@ -438,36 +596,13 @@ fn draw_file_tree_pane(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(Span::styled(l.to_string(), style))
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines), inner);
-    if inner.height > 0 && inner.width > 0 {
+    frame.render_widget(Paragraph::new(lines), area);
+    if is_active && area.height > 0 && area.width > 0 {
         let row_off = (tree.cursor.line as usize).saturating_sub(tree.scroll);
-        let row_off = row_off.min(inner.height.saturating_sub(1) as usize);
-        let col_off = (tree.cursor.byte as usize).min(inner.width.saturating_sub(1) as usize);
-        frame.set_cursor_position((inner.x + col_off as u16, inner.y + row_off as u16));
+        let row_off = row_off.min(area.height.saturating_sub(1) as usize);
+        let col_off = (tree.cursor.byte as usize).min(area.width.saturating_sub(1) as usize);
+        frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
     }
-}
-
-/// Render an inactive pane: a bordered placeholder showing the
-/// pane's buffer kind, id, and stashed cursor line. v1 doesn't
-/// duplicate the full text rendering for inactive panes (would
-/// require parameterizing the visual selection / search overlay
-/// pipeline which all read App.cursor / App.scroll). The data is
-/// there in `pane.cursor` / `pane.scroll`; the visuals will fill
-/// in with B.1.c when there are meaningfully distinct buffers.
-fn draw_inactive_pane(frame: &mut Frame, area: Rect, app: &App, pane_idx: usize) {
-    frame.render_widget(Clear, area);
-    let panes = app.pane_tree.leaves();
-    let Some(pane) = panes.get(pane_idx) else {
-        return;
-    };
-    let label = format!(
-        " [{} #{} -- line {}, switch with <C-w>w] ",
-        pane.buffer.label(),
-        pane.buffer_id.0,
-        pane.cursor.line + 1
-    );
-    let block = Block::default().borders(Borders::ALL).title(label);
-    frame.render_widget(block, area);
 }
 
 fn draw_buffer(frame: &mut Frame, area: Rect, app: &App) {

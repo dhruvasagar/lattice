@@ -42,7 +42,7 @@ better.
 | Apply-edit round-trip                        | <100µs      | 85µs             | `runtime::apply_edit_round_trip`                      | ✅ scheduler-bound; sync fast-path is the next lever |
 | Dispatch round-trip (small buffer)           | <100µs      | 78–86µs          | `runtime::dispatch_round_trip`                        | ✅ same envelope as apply-edit                       |
 | Frame render TUI 80×24 (highlight + compose) | <500µs      | ~192µs           | `highlight::rust_viewport` + `render::frame_24_lines` | ✅ under target                                      |
-| Frame render TUI 200×60                      | <800µs      | ~330µs           | `highlight::rust_viewport` + `render::frame_60_lines` | ✅ under target                                      |
+| Frame render TUI 200×60                      | <800µs      | ~325µs           | `highlight::rust_viewport` + `render::frame_60_lines` | ✅ under target                                      |
 | Open 100MB log (rope construction)           | <100ms      | 76ms             | `buffer::open_large/100mb`                            | ✅ under target                                      |
 | Search literal worst-case 200k               | <2ms        | 659µs            | `search::no_match_with_wrap/200k`                     | ✅ under target                                      |
 | Tree-sitter incremental reparse              | <500µs      | unmeasured       | not built (Tree::edit not yet threaded)               | ⚠️ gap                                                |
@@ -263,8 +263,16 @@ work above.
 | Benchmark                     | size             | time     | Floor / Target | Improvement target         |
 |-------------------------------|------------------|----------|----------------|----------------------------|
 | `render::frame_24_lines/200`  | 80×24, 200 fns   | **14µs** | ~10µs / <50µs  | ⏹️ at the practical floor.  |
-| `render::frame_60_lines/200`  | 200×60, 200 fns  | **42µs** | ~30µs / <100µs | ⏹️                          |
-| `render::frame_120_lines/200` | 200×120, 200 fns | **86µs** | ~70µs / <150µs | ⏹️                          |
+| `render::frame_60_lines/200`  | 200×60, 200 fns  | **35µs** | ~30µs / <100µs | ⏹️                          |
+| `render::frame_120_lines/200` | 200×120, 200 fns | **77µs** | ~70µs / <150µs | ⏹️                          |
+
+The frame_60 / frame_120 rows ticked down ~15% after the renderer
+migrated to `Cache::load` + a single per-frame snapshot
+(`632310d`). `compose_visible_lines` no longer pays an internal
+`load_full` per call, and `closed_fold_display_span` (called per
+fold heading) no longer pays one each either. frame_24 is
+unchanged within noise -- the savings scale with viewport height
+because more visible folds = more eliminated loads.
 
 Combined with viewport-bounded highlight (178µs at 24 lines), the
 total per-frame cost on the editor side is ~192µs -- well under

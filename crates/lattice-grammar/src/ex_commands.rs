@@ -58,6 +58,8 @@ pub struct ExBuiltins {
     pub file_tree_close: ExCommandId,
     pub describe_option: ExCommandId,
     pub list_options: ExCommandId,
+    pub hover: ExCommandId,
+    pub hover_close: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -479,6 +481,46 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let hover = registry.register_ex_command(
+        "ex:hover",
+        "Open a hover popup at the cursor (`:hover [markdown]`). v1 path: feed text manually; \
+         Phase 4 LSP will source from `textDocument/hover`.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| {
+                let markdown = match &ctx.args {
+                    Args::String(s) if !s.is_empty() => s.to_string(),
+                    _ => "(empty hover)".to_string(),
+                };
+                Ok(Effect::OpenHover { markdown })
+            }),
+            args_schema: vec![ArgSpec {
+                name: "markdown",
+                kind: ArgKind::String,
+                doc: "Markdown body of the hover popup.",
+                prompt: "hover:",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let hover_close = registry.register_ex_command(
+        "ex:hover-close",
+        "Dismiss the active hover popup (`:HoverClose`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::CloseHover)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     ExBuiltins {
         write,
         quit,
@@ -504,6 +546,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         file_tree_close,
         describe_option,
         list_options,
+        hover,
+        hover_close,
     }
 }
 

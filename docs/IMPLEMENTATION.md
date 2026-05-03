@@ -604,8 +604,13 @@ Update this section when picking up the in-flight item.
    - **B.1.d outline + diagnostics** ⛔ -- queued behind a
      dedicated outline / LSP integration phase.
 5. **Hover popup + inline completion popup polish** — completion popup
-   is wired (vertico-style); hover popup needs the host scaffolding so
-   LSP hover responses land.
+   is wired (vertico-style); hover popup scaffolding ✅ done. New
+   `HoverPopup` type with markdown body + buffer-position anchor;
+   markdown highlights computed via the shared `LangRegistry`. The
+   renderer floats the popup near the cursor (below if room, above
+   otherwise). `:hover [text]` opens manually for now (Phase 4 LSP
+   will source `text` from `textDocument/hover`); `:HoverClose`
+   dismisses.
 6. **Help major mode + tree-sitter grammar** — defines sections,
    link-targets, code-blocks. Needs the help mode registered as a major
    mode, which depends on the modes registry (Phase 8) but the *grammar*

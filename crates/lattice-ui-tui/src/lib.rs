@@ -22,6 +22,7 @@ pub mod chord;
 pub mod excommand;
 pub mod file_tree;
 pub mod help;
+pub mod hover;
 pub mod input;
 pub mod keymap;
 pub mod options;

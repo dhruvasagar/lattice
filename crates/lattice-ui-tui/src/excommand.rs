@@ -197,6 +197,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("TreeClose", "ex:tree-close"),
     ("describe-option", "ex:describe-option"),
     ("options", "ex:options"),
+    ("hover", "ex:hover"),
+    ("HoverClose", "ex:hover-close"),
 ];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests

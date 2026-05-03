@@ -829,6 +829,12 @@ pub struct App {
     /// standard `:e FILE` path. v1 holds at most one tree at a
     /// time.
     pub file_tree: Option<FileTreeBuffer>,
+    /// Active hover popup (DESIGN.md §5.9.6, §5.11.4). `Some` while
+    /// a transient floating panel is anchored at a buffer position
+    /// (LSP hover, manual `:hover`, future plugin contributions).
+    /// Dismissed by Esc, an explicit `:HoverClose`, or any motion
+    /// that changes the document cursor.
+    pub hover_popup: Option<crate::hover::HoverPopup>,
     /// Where the active help buffer is rendered. v1 only implements
     /// `Popup`; the other variants are reserved for the multi-buffer
     /// phase. Configurable per-user (eventually via `:set
@@ -1205,6 +1211,7 @@ impl App {
             command_history_pending: None,
             help_buffer: None,
             file_tree: None,
+            hover_popup: None,
             help_display_mode: HelpDisplayMode::default(),
             completion_registry,
             completion_state: None,
@@ -2928,6 +2935,22 @@ impl App {
         );
     }
 
+    /// `:hover [markdown]` (DESIGN.md §5.9.6, §5.11.4). Opens a
+    /// transient floating popup at the document cursor with
+    /// `markdown` as the body. v1 path is manual-trigger; Phase 4
+    /// LSP will source the markdown from `textDocument/hover`
+    /// responses.
+    fn do_open_hover(&mut self, markdown: &str) {
+        let popup = crate::hover::HoverPopup::new(self.cursor, markdown)
+            .with_markdown_syntax(self.lang_registry.clone());
+        self.hover_popup = Some(popup);
+    }
+
+    /// `:HoverClose` / `Esc` -- dismiss the hover popup.
+    fn do_close_hover(&mut self) {
+        self.hover_popup = None;
+    }
+
     /// `:options` -- list every registered option in a help view.
     fn do_list_options(&mut self) {
         let mut lines: Vec<String> = Vec::new();
@@ -3518,6 +3541,8 @@ impl App {
             Effect::CloseFileTree => self.dismiss_file_tree(),
             Effect::DescribeOption { name } => self.do_describe_option(&name),
             Effect::ListOptions => self.do_list_options(),
+            Effect::OpenHover { markdown } => self.do_open_hover(&markdown),
+            Effect::CloseHover => self.do_close_hover(),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -5569,7 +5594,9 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
         | Effect::DescribeOption { .. }
-        | Effect::ListOptions => false,
+        | Effect::ListOptions
+        | Effect::OpenHover { .. }
+        | Effect::CloseHover => false,
     }
 }
 
@@ -5605,7 +5632,9 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
         | Effect::DescribeOption { .. }
-        | Effect::ListOptions => false,
+        | Effect::ListOptions
+        | Effect::OpenHover { .. }
+        | Effect::CloseHover => false,
     }
 }
 
@@ -10261,6 +10290,43 @@ mod tests {
         assert!(body.contains("tabstop"));
         assert!(body.contains("integer"));
         assert!(body.contains("default"));
+    }
+
+    // ---- Hover popup (DESIGN.md §5.9.6, B.3) ----
+
+    #[test]
+    fn hover_open_records_anchor_at_cursor() {
+        let mut a = app_with("alpha\nbeta\ngamma", 10);
+        a.cursor = Position::new(1, 2);
+        a.command_line = "hover documentation".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.hover_popup.as_ref().expect("hover open");
+        assert_eq!(h.anchor, Position::new(1, 2));
+        assert!(h.lines.iter().any(|l| l.contains("documentation")));
+    }
+
+    #[test]
+    fn hover_close_dismisses_popup() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "hover x".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.hover_popup.is_some());
+        a.command_line = "HoverClose".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.hover_popup.is_none());
+    }
+
+    #[test]
+    fn hover_with_no_arg_uses_placeholder() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "hover".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.hover_popup.as_ref().expect("hover open");
+        assert!(h.markdown.contains("empty"));
     }
 
     #[test]

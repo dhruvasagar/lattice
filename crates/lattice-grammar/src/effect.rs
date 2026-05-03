@@ -181,6 +181,15 @@ pub enum Effect {
     },
     /// `:options` -- list every registered option.
     ListOptions,
+    /// `:hover [text]` -- open a hover popup at the cursor with
+    /// `text` as the markdown body. v1 path: lets the user
+    /// validate the popup positioning + dismissal; Phase 4 LSP
+    /// will source `text` from a real `textDocument/hover` reply.
+    OpenHover {
+        markdown: String,
+    },
+    /// `:HoverClose` -- dismiss the active hover popup.
+    CloseHover,
 
     Many(Vec<Effect>),
 }

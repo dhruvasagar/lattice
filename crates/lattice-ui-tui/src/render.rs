@@ -63,6 +63,10 @@ pub fn draw_frame(frame: &mut Frame, app: &App) {
     if app.help_buffer.is_some() {
         draw_help_overlay(frame, chunks[0], app);
     }
+    // Hover popup paints last so it sits on top of help / panes.
+    if app.hover_popup.is_some() {
+        draw_hover_popup(frame, chunks[0], app);
+    }
     // Completion popup occupies the bottom rows when active --
     // vertico-style, below the cmdline.
     if popup_rows > 0 {
@@ -326,6 +330,80 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App) {
             draw_inactive_pane(frame, rect, app, idx);
         }
     }
+}
+
+/// Render the active hover popup (DESIGN.md §5.9.6, §5.11.4) as a
+/// floating bordered panel anchored at the popup's buffer cursor.
+/// The popup tries to sit just below the anchor row, falling back
+/// to above when there's no room. Width is `min(content_width + 2,
+/// area.width / 2)`; height is `min(line_count + 2, area.height /
+/// 2)`. No interactive cursor inside the popup -- it's read-only
+/// and dismissed via `Esc` / `:HoverClose`.
+fn draw_hover_popup(frame: &mut Frame, buffer_area: Rect, app: &App) {
+    let Some(hover) = app.hover_popup.as_ref() else {
+        return;
+    };
+    let max_w = (buffer_area.width / 2).max(20);
+    let max_h = (buffer_area.height / 2).max(5);
+    let content_w = hover.content_width(max_w.saturating_sub(2));
+    let width = (content_w + 2).min(max_w);
+    let height = (hover.line_count() as u16 + 2).min(max_h);
+
+    // Anchor: place just below the cursor row (in screen coords).
+    // If that doesn't fit, place above. Cursor's screen position
+    // tracks the document's scroll: anchor.line - app.scroll.
+    let anchor_row = (hover.anchor.line as i64) - (app.scroll as i64);
+    let cursor_screen_y = (buffer_area.y as i64 + anchor_row).max(buffer_area.y as i64) as u16;
+    let cursor_screen_x = buffer_area.x;
+    let mut x = cursor_screen_x.min(buffer_area.x + buffer_area.width.saturating_sub(width));
+    let mut y = cursor_screen_y.saturating_add(1);
+    if y + height > buffer_area.y + buffer_area.height {
+        // Doesn't fit below -- try above.
+        y = cursor_screen_y.saturating_sub(height);
+    }
+    if y < buffer_area.y {
+        y = buffer_area.y;
+    }
+    if x + width > buffer_area.x + buffer_area.width {
+        x = buffer_area.x + buffer_area.width.saturating_sub(width);
+    }
+    let popup = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" hover (Esc / :HoverClose to dismiss) ");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let visible: Vec<Line> = hover
+        .lines
+        .iter()
+        .take(inner.height as usize)
+        .enumerate()
+        .map(|(i, l)| {
+            let spans: Vec<Span<'_>> = if let Some(highlights) = hover.highlights.get(i) {
+                let trimmed = if l.len() > inner.width as usize {
+                    &l[..inner.width as usize]
+                } else {
+                    l.as_str()
+                };
+                render_styled_line(trimmed, highlights, inner.width as u32)
+            } else {
+                let trimmed = if l.len() > inner.width as usize {
+                    &l[..inner.width as usize]
+                } else {
+                    l.as_str()
+                };
+                vec![Span::raw(trimmed.to_string())]
+            };
+            Line::from(spans)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(visible), inner);
 }
 
 /// Render the file-tree buffer inside its pane. v1 path: dump the

@@ -65,6 +65,15 @@ pub struct OptionSpec {
     pub default: OptionValue,
     pub get: GetFn,
     pub set: SetFn,
+    /// Enumerated set of valid string values, when the option's
+    /// space is finite (e.g. `foldmethod` accepts only a fixed
+    /// list). `None` means "no enumeration" -- the value
+    /// completion source falls back to the option's type
+    /// (booleans get `on`/`off` candidates, ints / free-form
+    /// strings get nothing). Listing values here is what makes
+    /// `:set foldmethod=<Tab>` enumerate rather than require the
+    /// user to remember the spelling.
+    pub values: Option<&'static [&'static str]>,
 }
 
 impl std::fmt::Debug for OptionSpec {
@@ -139,6 +148,7 @@ impl OptionRegistry {
 /// Parse the body of `:set` into a structured request. Supports:
 ///
 /// - `name` -- show value (booleans toggle on, others print).
+/// - `name?` -- always show value (even for booleans).
 /// - `name=value` -- set typed value.
 /// - `noname` -- clear boolean.
 ///
@@ -148,6 +158,8 @@ impl OptionRegistry {
 pub enum ParsedSet {
     /// `:set name` -- query / boolean-on.
     NameOnly(String),
+    /// `:set name?` -- always print current value.
+    Query(String),
     /// `:set name=value` -- set typed value.
     Assign { name: String, value: String },
     /// `:set noname` -- clear boolean.
@@ -166,6 +178,15 @@ pub fn parse_set(input: &str) -> Result<ParsedSet, String> {
             return Err("empty option name".into());
         }
         return Ok(ParsedSet::Assign { name, value });
+    }
+    if let Some(name) = trimmed.strip_suffix('?') {
+        // `:set foo?` -- vim's "query value" form. Always prints
+        // the current value, regardless of the option's type.
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("empty option name".into());
+        }
+        return Ok(ParsedSet::Query(name));
     }
     if let Some(rest) = trimmed.strip_prefix("no") {
         // Disambiguate `nopaste` (negate boolean `paste`) from a
@@ -203,6 +224,86 @@ pub fn format_value(v: &OptionValue) -> String {
     }
 }
 
+/// `gen:options`. Completion source for `:set <Tab>`.
+///
+/// Behaviour:
+///
+/// - Bare prefix (no `=`): emits one candidate per registered
+///   option name. Booleans also get a `noNAME` candidate so
+///   `:set noh<Tab>` enumerates the negate forms.
+/// - `name=` prefix: looks up `name` in the registry and emits
+///   `name=value` candidates for each entry in `OptionSpec::values`.
+///   For booleans without an explicit `values` list we fall back to
+///   `on`/`off`. For free-form strings or integers without
+///   enumeration the candidate set is empty and the popup
+///   collapses gracefully.
+///
+/// The candidate `text` is what the matcher prefix-matches against
+/// AND what gets inserted on `<Tab>`, so it always carries the
+/// full "name" or "name=value" form -- the user doesn't have to
+/// retype the option name when picking a value.
+pub struct OptionsGenerator {
+    pub registry: Arc<OptionRegistry>,
+}
+
+impl lattice_completion::traits::CandidateGenerator for OptionsGenerator {
+    fn generate(
+        &self,
+        ctx: &lattice_completion::traits::GenerateContext<'_>,
+    ) -> Vec<lattice_completion::candidate::RawCandidate> {
+        use lattice_completion::candidate::{CandidateData, CandidateKind, RawCandidate};
+        let mut out = Vec::new();
+        let prefix = ctx.prefix;
+        if let Some(eq) = prefix.find('=') {
+            // Value-completion mode. Look up the option to the left
+            // of `=`, emit one candidate per known value.
+            let name = &prefix[..eq];
+            if let Some(spec) = self.registry.lookup(name) {
+                let values: Vec<&'static str> = spec
+                    .values
+                    .map(|v| v.to_vec())
+                    .unwrap_or_else(|| match spec.kind {
+                        OptionKind::Bool => vec!["on", "off", "true", "false"],
+                        // Free-form string / int has no enumeration;
+                        // the popup will be empty.
+                        _ => Vec::new(),
+                    });
+                for v in values {
+                    let text = format!("{}={v}", spec.name);
+                    out.push(RawCandidate {
+                        text: text.clone(),
+                        display: text,
+                        kind: CandidateKind::Plain,
+                        data: CandidateData::Plain,
+                    });
+                }
+            }
+            return out;
+        }
+        // Bare prefix: enumerate every option name.
+        for spec in self.registry.iter() {
+            out.push(RawCandidate {
+                text: spec.name.to_string(),
+                display: spec.name.to_string(),
+                kind: CandidateKind::Plain,
+                data: CandidateData::Plain,
+            });
+            // Booleans also surface their `noNAME` form -- vim's
+            // convention and the canonical way to clear a flag.
+            if matches!(spec.kind, OptionKind::Bool) {
+                let no_name = format!("no{}", spec.name);
+                out.push(RawCandidate {
+                    text: no_name.clone(),
+                    display: no_name,
+                    kind: CandidateKind::Plain,
+                    data: CandidateData::Plain,
+                });
+            }
+        }
+        out
+    }
+}
+
 /// Build the v1 set of registered options. The actual mutation
 /// closures bind App fields by name -- this is the single seam
 /// connecting option metadata to App state. Adding a new option
@@ -224,6 +325,7 @@ pub fn builtin_options() -> OptionRegistry {
             }
             other => Err(format!("expected bool, got {other:?}")),
         }),
+        values: None,
     });
     r.register(OptionSpec {
         name: "relativenumber",
@@ -243,6 +345,7 @@ pub fn builtin_options() -> OptionRegistry {
             }
             other => Err(format!("expected bool, got {other:?}")),
         }),
+        values: None,
     });
     r.register(OptionSpec {
         name: "wrap",
@@ -258,6 +361,7 @@ pub fn builtin_options() -> OptionRegistry {
             }
             other => Err(format!("expected bool, got {other:?}")),
         }),
+        values: None,
     });
     r.register(OptionSpec {
         name: "ignorecase",
@@ -273,6 +377,7 @@ pub fn builtin_options() -> OptionRegistry {
             }
             other => Err(format!("expected bool, got {other:?}")),
         }),
+        values: None,
     });
     r.register(OptionSpec {
         name: "tabstop",
@@ -289,6 +394,7 @@ pub fn builtin_options() -> OptionRegistry {
             OptionValue::Int(i) => Err(format!("tabstop out of range [1, 32]: {i}")),
             other => Err(format!("expected int, got {other:?}")),
         }),
+        values: None,
     });
     r.register(OptionSpec {
         name: "foldenable",
@@ -306,6 +412,7 @@ pub fn builtin_options() -> OptionRegistry {
             }
             other => Err(format!("expected bool, got {other:?}")),
         }),
+        values: None,
     });
     r.register(OptionSpec {
         name: "foldmethod",
@@ -343,6 +450,7 @@ pub fn builtin_options() -> OptionRegistry {
             },
             other => Err(format!("expected string, got {other:?}")),
         }),
+        values: Some(&["manual", "indent", "markdown", "syntax"]),
     });
     r.register(OptionSpec {
         name: "ui.dim_inactive",
@@ -359,6 +467,7 @@ pub fn builtin_options() -> OptionRegistry {
             }
             other => Err(format!("expected bool, got {other:?}")),
         }),
+        values: None,
     });
     r.register(OptionSpec {
         name: "ui.separator",
@@ -378,6 +487,7 @@ pub fn builtin_options() -> OptionRegistry {
             }
             other => Err(format!("expected string, got {other:?}")),
         }),
+        values: None,
     });
     r.register(OptionSpec {
         name: "ui.separator_color",
@@ -395,6 +505,7 @@ pub fn builtin_options() -> OptionRegistry {
             }
             other => Err(format!("expected string, got {other:?}")),
         }),
+        values: None,
     });
     r.register(OptionSpec {
         name: "ui.statusline_active_fg",
@@ -411,6 +522,7 @@ pub fn builtin_options() -> OptionRegistry {
             }
             other => Err(format!("expected string, got {other:?}")),
         }),
+        values: None,
     });
     r.register(OptionSpec {
         name: "ui.statusline_inactive_fg",
@@ -427,6 +539,7 @@ pub fn builtin_options() -> OptionRegistry {
             }
             other => Err(format!("expected string, got {other:?}")),
         }),
+        values: None,
     });
     r.register(OptionSpec {
         name: "scrolloff",
@@ -443,6 +556,7 @@ pub fn builtin_options() -> OptionRegistry {
             OptionValue::Int(i) => Err(format!("scrolloff out of range [0, 64]: {i}")),
             other => Err(format!("expected int, got {other:?}")),
         }),
+        values: None,
     });
     r
 }
@@ -482,6 +596,58 @@ mod tests {
     #[test]
     fn parse_set_empty_errors() {
         assert!(parse_set("   ").is_err());
+    }
+
+    #[test]
+    fn parse_set_query_form_recognised() {
+        assert_eq!(
+            parse_set("foldmethod?").unwrap(),
+            ParsedSet::Query("foldmethod".into())
+        );
+    }
+
+    #[test]
+    fn options_generator_emits_every_registered_option_name() {
+        use lattice_completion::traits::{CandidateGenerator, GenerateContext};
+        let registry = Arc::new(builtin_options());
+        let g = OptionsGenerator {
+            registry: registry.clone(),
+        };
+        let buffer = lattice_core::Buffer::empty();
+        let cmd_registry = lattice_grammar::CommandRegistry::new();
+        let ctx = GenerateContext {
+            prefix: "",
+            buffer: &buffer,
+            registry: &cmd_registry,
+            case_sensitive: true,
+        };
+        let candidates = g.generate(&ctx);
+        let texts: Vec<String> = candidates.iter().map(|c| c.text.clone()).collect();
+        assert!(texts.contains(&"foldmethod".to_string()));
+        assert!(texts.contains(&"number".to_string()));
+        // Boolean options also surface their `noNAME` form.
+        assert!(texts.contains(&"nonumber".to_string()));
+    }
+
+    #[test]
+    fn options_generator_emits_value_candidates_after_equals() {
+        use lattice_completion::traits::{CandidateGenerator, GenerateContext};
+        let registry = Arc::new(builtin_options());
+        let g = OptionsGenerator { registry };
+        let buffer = lattice_core::Buffer::empty();
+        let cmd_registry = lattice_grammar::CommandRegistry::new();
+        let ctx = GenerateContext {
+            prefix: "foldmethod=",
+            buffer: &buffer,
+            registry: &cmd_registry,
+            case_sensitive: true,
+        };
+        let candidates = g.generate(&ctx);
+        let texts: Vec<String> = candidates.iter().map(|c| c.text.clone()).collect();
+        assert!(texts.contains(&"foldmethod=manual".to_string()));
+        assert!(texts.contains(&"foldmethod=indent".to_string()));
+        assert!(texts.contains(&"foldmethod=markdown".to_string()));
+        assert!(texts.contains(&"foldmethod=syntax".to_string()));
     }
 
     #[test]

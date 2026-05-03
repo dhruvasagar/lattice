@@ -1170,6 +1170,18 @@ impl App {
                 topics: help_topics.clone(),
             },
         );
+        // `gen:options` -- completion source for `:set <Tab>` and
+        // `:set name=<Tab>`. Wired to the same OptionRegistry the
+        // `:set` parser consults so completions never drift from
+        // the canonical option list.
+        let options_registry = Arc::new(crate::options::builtin_options());
+        completion_registry.register_generator(
+            "gen:options",
+            "Every registered option name + (when applicable) its enumerated values.",
+            crate::options::OptionsGenerator {
+                registry: options_registry.clone(),
+            },
+        );
         // One `LangRegistry` per App, shared between the document
         // buffer's `Syntax` and every `HelpBuffer` we'll spin up
         // for `:describe-*` / `:apropos` / `:keymap` (markdown
@@ -1273,7 +1285,7 @@ impl App {
             scrolloff: 0,
             foldmethod: FoldMethod::Manual,
             foldenable: true,
-            options: std::sync::Arc::new(crate::options::builtin_options()),
+            options: options_registry.clone(),
             help_topics,
             theme: crate::theme::Theme::default(),
             pane_highlights: HashMap::new(),
@@ -3268,6 +3280,27 @@ impl App {
                         format!("{}={}", spec.name, format_value(&v)),
                     );
                 }
+            }
+            ParsedSet::Query(name) => {
+                // `:set foo?` -- always print the current value,
+                // regardless of type. For booleans this echoes
+                // `foo` or `nofoo` (vim's convention).
+                let Some(spec) = registry.lookup(&name) else {
+                    self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
+                    return;
+                };
+                let v = (spec.get)(self);
+                let msg = match v {
+                    crate::options::OptionValue::Bool(b) => {
+                        if b {
+                            spec.name.to_string()
+                        } else {
+                            format!("no{}", spec.name)
+                        }
+                    }
+                    other => format!("{}={}", spec.name, format_value(&other)),
+                };
+                self.set_message(EchoLevel::Info, msg);
             }
             ParsedSet::Negate(name) => {
                 let Some(spec) = registry.lookup_no_form(&format!("no{name}")) else {

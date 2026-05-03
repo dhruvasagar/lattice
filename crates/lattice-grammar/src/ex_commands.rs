@@ -171,7 +171,17 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_required_string),
             apply: Box::new(apply_set),
-            args_schema: vec![],
+            // Single arg slot tied to the `gen:options` completion
+            // generator so `:set <Tab>` enumerates option names and
+            // `:set foldmethod=<Tab>` enumerates valid values.
+            args_schema: vec![ArgSpec {
+                name: "option",
+                kind: ArgKind::String,
+                doc: "Option name, `name=value`, `name?`, or `noname`.",
+                prompt: "option:",
+                default: ArgDefault::Required,
+                completion: Some("gen:options"),
+            }],
             surface_form: SurfaceForm::Keyword,
         },
     );

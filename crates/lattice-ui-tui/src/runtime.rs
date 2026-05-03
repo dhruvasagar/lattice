@@ -86,6 +86,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         app.set_viewport_height(buffer_height);
         app.terminal_width = Some(size.width);
         app.refresh_highlights();
+        app.refresh_pane_highlights();
 
         // Push the cursor shape only when modal changes -- terminals
         // accept these every frame, but emitting on every iteration adds

@@ -801,6 +801,16 @@ pub struct App {
     /// Typed options registry (DESIGN.md §5.12). `:set` parses
     /// against this; `:describe-option` reads from it.
     pub options: std::sync::Arc<crate::options::OptionRegistry>,
+    /// UI styling knobs (DESIGN.md §5.6). Carries per-pane status
+    /// line colors, the inactive-pane dim overlay, separator
+    /// characters, etc. Customizable via `:set ui.*` options.
+    pub theme: crate::theme::Theme,
+    /// Per-frame snapshot of inactive panes' visible-window syntax
+    /// highlights, keyed by pane index. Refreshed by
+    /// [`Self::refresh_pane_highlights`] before each draw so the
+    /// renderer can read via `&App`. The active pane uses the live
+    /// [`Self::visible_highlights`] field instead.
+    pub pane_highlights: HashMap<usize, Vec<Vec<StyledSpan>>>,
     /// Submitted `:` command history. Newest at the back. Bounded.
     pub command_history: Vec<String>,
     /// While in Command modal: index into `command_history` of the
@@ -1217,6 +1227,8 @@ impl App {
             scrolloff: 0,
             foldmethod: FoldMethod::Manual,
             options: std::sync::Arc::new(crate::options::builtin_options()),
+            theme: crate::theme::Theme::default(),
+            pane_highlights: HashMap::new(),
             command_history: Vec::new(),
             command_history_cursor: None,
             command_history_pending: None,
@@ -1831,6 +1843,72 @@ impl App {
             Some(syntax) => syntax.highlight_lines(start, end).unwrap_or_default(),
             None => Vec::new(),
         };
+    }
+
+    /// Recompute per-pane highlights for inactive Document panes.
+    /// Each inactive pane's [`DocumentEntry::syntax`] gets reparsed
+    /// when the document's `text_version` differs from the entry's
+    /// cached version (cheap: one parse per inactive pane per
+    /// changed document); the visible-window slice lands in
+    /// [`Self::pane_highlights`] keyed by pane index. The renderer
+    /// reads from there via `&App`.
+    ///
+    /// Active pane is skipped (it uses [`Self::visible_highlights`]
+    /// directly). Panes whose document is the same as the active
+    /// document also fall through to `visible_highlights` -- a
+    /// single parse covers both panes.
+    pub fn refresh_pane_highlights(&mut self) {
+        self.pane_highlights.clear();
+        let active_idx = self.pane_tree.active_index();
+        let active_doc_id = if matches!(self.active_buffer, BufferKind::Document) {
+            Some(self.document_buffer_id)
+        } else {
+            None
+        };
+        // Collect (pane_idx, doc_id, scroll, height) for each
+        // inactive Document pane that doesn't share doc with the
+        // active pane.
+        let pending: Vec<(usize, BufferId, u32, u32)> = self
+            .pane_tree
+            .leaves()
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, pane)| {
+                if idx == active_idx {
+                    return None;
+                }
+                if !matches!(pane.buffer, BufferKind::Document) {
+                    return None;
+                }
+                if Some(pane.buffer_id) == active_doc_id {
+                    return None;
+                }
+                // Use the pane's own viewport slice (the per-pane
+                // status line eats one row, so subtract; for v1
+                // we approximate using app.viewport_height).
+                let h = self.viewport_height;
+                Some((idx, pane.buffer_id, pane.scroll, h))
+            })
+            .collect();
+        for (idx, doc_id, scroll, height) in pending {
+            let Some(entry) = self.buffers.document_mut(doc_id) else {
+                continue;
+            };
+            let snap = entry.handle.snapshot();
+            let tv = snap.version;
+            if entry.syntax.is_none() {
+                continue;
+            }
+            if let Some(syntax) = entry.syntax.as_mut() {
+                if tv != entry.last_parsed_text_version {
+                    syntax.parse(&snap.buffer.as_string());
+                    entry.last_parsed_text_version = tv;
+                }
+                let end = scroll.saturating_add(height);
+                let spans = syntax.highlight_lines(scroll, end).unwrap_or_default();
+                self.pane_highlights.insert(idx, spans);
+            }
+        }
     }
 
     /// Spans for the line at `viewport_row` (0-based, relative to the top of

@@ -31,6 +31,7 @@ pub mod options;
 pub mod pane;
 pub mod render;
 pub mod runtime;
+pub mod theme;
 
 pub use app::{Action, App, EchoLevel, EchoMessage, Pending};
 pub use buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};

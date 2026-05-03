@@ -305,7 +305,7 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App) {
     let rects = app.pane_tree.compute_rects(pane_area);
     let active = app.pane_tree.active_index();
     let multi = rects.len() > 1;
-    for (idx, prect) in rects {
+    for (idx, prect) in rects.iter().copied() {
         let rect = Rect {
             x: prect.x,
             y: prect.y,
@@ -344,7 +344,7 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App) {
                 if is_active {
                     draw_buffer(frame, content_rect, app);
                 } else {
-                    draw_inactive_document(frame, content_rect, app, &pane);
+                    draw_inactive_document(frame, content_rect, app, &pane, idx);
                 }
             }
             crate::buffers::BufferKind::Help => {
@@ -353,7 +353,7 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App) {
                 if is_active {
                     draw_buffer(frame, content_rect, app);
                 } else {
-                    draw_inactive_document(frame, content_rect, app, &pane);
+                    draw_inactive_document(frame, content_rect, app, &pane, idx);
                 }
             }
             crate::buffers::BufferKind::FileTree => {
@@ -362,6 +362,42 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App) {
         }
         if let Some(sr) = status_rect {
             draw_pane_status_line(frame, sr, app, &pane, is_active);
+        }
+    }
+    // Draw vertical separators in the column gaps between
+    // side-by-side panes. The separator overlays the boundary
+    // column of the right-side pane; horizontal splits don't get
+    // an explicit separator -- the per-pane status line at the
+    // bottom of the upper pane already provides one.
+    if multi {
+        draw_pane_separators(frame, &rects, app);
+    }
+}
+
+/// Walk the pane rects and draw a vertical separator wherever two
+/// rects share a vertical seam (same y range, A's right edge ==
+/// B's left edge). Uses [`Theme::pane_separator_vertical`] for the
+/// glyph and [`Theme::pane_separator`] for the style.
+fn draw_pane_separators(frame: &mut Frame, rects: &[(usize, crate::pane::PaneRect)], app: &App) {
+    let glyph = app.theme.pane_separator_vertical;
+    let style = app.theme.pane_separator;
+    for (i, (_, a)) in rects.iter().enumerate() {
+        for (_, b) in rects.iter().skip(i + 1) {
+            let same_band = a.y == b.y && a.height == b.height;
+            let adjacent = a.x + a.width == b.x;
+            if same_band && adjacent {
+                let col = a.x + a.width - 1;
+                for row in a.y..a.y + a.height {
+                    let r = Rect {
+                        x: col,
+                        y: row,
+                        width: 1,
+                        height: 1,
+                    };
+                    let para = Paragraph::new(Line::from(Span::styled(glyph.to_string(), style)));
+                    frame.render_widget(para, r);
+                }
+            }
         }
     }
 }
@@ -404,11 +440,9 @@ fn draw_pane_status_line(
     };
     let pos = format!("{}:{}", pane.cursor.line + 1, pane.cursor.byte);
     let style = if is_active {
-        TuiStyle::default()
-            .add_modifier(Modifier::REVERSED)
-            .add_modifier(Modifier::BOLD)
+        app.theme.pane_status_active
     } else {
-        TuiStyle::default().fg(Color::DarkGray)
+        app.theme.pane_status_inactive
     };
     // Compose: " label                pos "
     let width = area.width as usize;
@@ -426,12 +460,21 @@ fn draw_pane_status_line(
 
 /// Render a Document pane that isn't currently focused. Reads the
 /// stashed cursor / scroll from `pane`, looks up the document by
-/// `pane.buffer_id`, and renders gutter + visible lines as plain
-/// text. No syntax highlighting or hlsearch / visual overlays --
-/// those would require carrying parallel `Syntax` state across
-/// panes; deferred until the user focuses the pane (full rendering
-/// kicks in via [`draw_buffer`] then). Long lines truncate to fit.
-fn draw_inactive_document(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pane::PaneState) {
+/// `pane.buffer_id`, and renders gutter + visible lines with the
+/// same syntax-highlight pipeline as the active pane. Inactive
+/// highlights are sourced from [`App::pane_highlights`] (keyed by
+/// pane index) when the doc differs from the active pane's, or
+/// from [`App::visible_highlights`] when the docs match -- a
+/// single parse covers both panes. The theme's
+/// `inactive_pane_overlay` modifier (default: DIM) layers on top
+/// of every span so focus stays unambiguous without losing color.
+fn draw_inactive_document(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    pane: &crate::pane::PaneState,
+    pane_idx: usize,
+) {
     let Some(entry) = app.buffers.document(pane.buffer_id) else {
         return;
     };
@@ -444,6 +487,35 @@ fn draw_inactive_document(frame: &mut Frame, area: Rect, app: &App, pane: &crate
     };
     let buffer_w = (area.width as u32).saturating_sub(gutter_w);
 
+    // Source for inactive-pane highlights:
+    //  1. `pane_highlights[idx]` when the pane has a different
+    //     document than the active pane (refreshed by
+    //     `refresh_pane_highlights`).
+    //  2. `visible_highlights` when the panes share a document
+    //     AND the inactive pane's scroll matches the active's
+    //     (avoids a redundant parse).
+    //  3. Empty otherwise -- plain text, no syntax. Acceptable
+    //     for the rare same-doc-different-scroll case.
+    let active_doc_id = if matches!(app.active_buffer, crate::buffers::BufferKind::Document) {
+        Some(app.document_buffer_id)
+    } else {
+        None
+    };
+    let highlights: Vec<Vec<lattice_syntax::StyledSpan>> =
+        if let Some(spans) = app.pane_highlights.get(&pane_idx) {
+            spans.clone()
+        } else if active_doc_id == Some(pane.buffer_id) && pane.scroll == app.scroll {
+            app.visible_highlights.clone()
+        } else {
+            Vec::new()
+        };
+
+    let dim_overlay = if app.theme.dim_inactive_panes {
+        Some(app.theme.inactive_pane_overlay)
+    } else {
+        None
+    };
+
     let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
     for i in 0..area.height as u32 {
         let buf_line = pane.scroll + i;
@@ -453,7 +525,13 @@ fn draw_inactive_document(frame: &mut Frame, area: Rect, app: &App, pane: &crate
         }
         let line_text = snap.buffer.line(buf_line).unwrap_or_default();
         let gutter = render_gutter_for_inactive(app, pane.cursor.line, buf_line, gutter_w);
-        let body = render_styled_line(&line_text, &[], buffer_w);
+        let spans = highlights.get(i as usize).map(Vec::as_slice).unwrap_or(&[]);
+        let mut body = render_styled_line(&line_text, spans, buffer_w);
+        if let Some(overlay) = dim_overlay {
+            for span in body.iter_mut() {
+                span.style = span.style.patch(overlay);
+            }
+        }
         lines.push(combine(gutter, body));
     }
     frame.render_widget(Paragraph::new(lines), area);

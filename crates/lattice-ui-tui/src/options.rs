@@ -314,6 +314,90 @@ pub fn builtin_options() -> OptionRegistry {
         }),
     });
     r.register(OptionSpec {
+        name: "ui.dim_inactive",
+        aliases: &[],
+        doc: "Apply a `DIM` overlay on inactive panes' syntax-highlighted text \
+              so the active pane stands out without losing color.",
+        kind: OptionKind::Bool,
+        default: OptionValue::Bool(true),
+        get: Box::new(|app| OptionValue::Bool(app.theme.dim_inactive_panes)),
+        set: Box::new(|app, v| match v {
+            OptionValue::Bool(b) => {
+                app.theme.dim_inactive_panes = b;
+                Ok(())
+            }
+            other => Err(format!("expected bool, got {other:?}")),
+        }),
+    });
+    r.register(OptionSpec {
+        name: "ui.separator",
+        aliases: &[],
+        doc: "Character drawn in the column separating side-by-side panes (default `│`).",
+        kind: OptionKind::String,
+        default: OptionValue::String("│".into()),
+        get: Box::new(|app| OptionValue::String(app.theme.pane_separator_vertical.to_string())),
+        set: Box::new(|app, v| match v {
+            OptionValue::String(s) => {
+                let c = s
+                    .chars()
+                    .next()
+                    .ok_or_else(|| "expected one character".to_string())?;
+                app.theme.pane_separator_vertical = c;
+                Ok(())
+            }
+            other => Err(format!("expected string, got {other:?}")),
+        }),
+    });
+    r.register(OptionSpec {
+        name: "ui.separator_color",
+        aliases: &[],
+        doc: "Foreground color of the pane separator. Accepts named ANSI colors \
+              (red, blue, darkgray, ...) and `default` for the terminal default.",
+        kind: OptionKind::String,
+        default: OptionValue::String("darkgray".into()),
+        get: Box::new(|_| OptionValue::String("darkgray".into())),
+        set: Box::new(|app, v| match v {
+            OptionValue::String(s) => {
+                let c = crate::theme::parse_color(&s)?;
+                app.theme.pane_separator = ratatui::style::Style::default().fg(c);
+                Ok(())
+            }
+            other => Err(format!("expected string, got {other:?}")),
+        }),
+    });
+    r.register(OptionSpec {
+        name: "ui.statusline_active_fg",
+        aliases: &[],
+        doc: "Foreground color of the active pane's status line.",
+        kind: OptionKind::String,
+        default: OptionValue::String("default".into()),
+        get: Box::new(|_| OptionValue::String("default".into())),
+        set: Box::new(|app, v| match v {
+            OptionValue::String(s) => {
+                let c = crate::theme::parse_color(&s)?;
+                app.theme.pane_status_active = app.theme.pane_status_active.fg(c);
+                Ok(())
+            }
+            other => Err(format!("expected string, got {other:?}")),
+        }),
+    });
+    r.register(OptionSpec {
+        name: "ui.statusline_inactive_fg",
+        aliases: &[],
+        doc: "Foreground color of inactive panes' status lines.",
+        kind: OptionKind::String,
+        default: OptionValue::String("darkgray".into()),
+        get: Box::new(|_| OptionValue::String("darkgray".into())),
+        set: Box::new(|app, v| match v {
+            OptionValue::String(s) => {
+                let c = crate::theme::parse_color(&s)?;
+                app.theme.pane_status_inactive = app.theme.pane_status_inactive.fg(c);
+                Ok(())
+            }
+            other => Err(format!("expected string, got {other:?}")),
+        }),
+    });
+    r.register(OptionSpec {
         name: "scrolloff",
         aliases: &["so"],
         doc: "Minimum visual lines kept above and below the cursor when scrolling.",

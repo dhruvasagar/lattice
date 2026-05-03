@@ -56,6 +56,8 @@ pub struct ExBuiltins {
     pub buffer_delete: ExCommandId,
     pub file_tree: ExCommandId,
     pub file_tree_close: ExCommandId,
+    pub describe_option: ExCommandId,
+    pub list_options: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -439,6 +441,44 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let describe_option = registry.register_ex_command(
+        "ex:describe-option",
+        "Open the help view for a typed option (`:describe-option NAME`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(name) => Ok(Effect::DescribeOption {
+                    name: name.to_string(),
+                }),
+                _ => Err(CommandError::BadArgs("expected option name".into())),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "name",
+                kind: ArgKind::String,
+                doc: "Registered option name (or alias).",
+                prompt: "option:",
+                default: ArgDefault::Required,
+                completion: Some("gen:options"),
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let list_options = registry.register_ex_command(
+        "ex:options",
+        "List every registered option (`:options`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::ListOptions)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     ExBuiltins {
         write,
         quit,
@@ -462,6 +502,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         buffer_delete,
         file_tree,
         file_tree_close,
+        describe_option,
+        list_options,
     }
 }
 

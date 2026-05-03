@@ -548,8 +548,15 @@ Update this section when picking up the in-flight item.
 2. **Computed folds** (syntax-driven, indent-based) — manual folds via
    zf/zo/zc/za/zR/zM/zd are done; computed folds need tree-sitter integration
    and an indent-based fall-back.
-3. **`:set option=value` + typed options** (§5.12) — also unblocks
-   `:describe-option`.
+3. **`:set option=value` + typed options** (§5.12) ✅ done. Typed
+   `OptionRegistry` keyed by name + alias; each spec carries a
+   getter / setter pair, type, default, and doc. `:set` parses
+   `name`, `name=value`, and `noname` forms; `:describe-option`
+   renders metadata + current value; `:options` lists every
+   registered option. v1 covers number / relativenumber / wrap /
+   ignorecase / tabstop / scrolloff -- adding a new option is a
+   spec entry plus (if needed) an App field. Multi-option `:set`
+   syntax (`:set ic hls scs`) deferred.
 4. **Multi-buffer foundations** (§5.9) — the trigger for `HelpDisplayMode`
    beyond `Popup`. Until this lands, all introspection is overlay-rendered.
    - **B.1.a buffer abstraction + active-buffer routing** ✅ done.

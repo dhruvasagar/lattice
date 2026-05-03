@@ -790,6 +790,22 @@ pub struct App {
     /// When true, the gutter shows distance from the cursor on each
     /// line; the cursor's line shows its absolute number.
     pub relative_line_numbers: bool,
+    /// `:set wrap` / `:set nowrap`. Default false. Visual wrap of
+    /// long lines (deferred -- the v1 renderer always horizontally
+    /// scrolls; this flag is read by future B.3 polish).
+    pub wrap_lines: bool,
+    /// `:set ignorecase` / `:set noignorecase`. Default false.
+    /// Search uses case-insensitive matching when true.
+    pub ignorecase: bool,
+    /// `:set tabstop=N`. Number of spaces a hard tab renders as.
+    /// Default 8 (vim's default).
+    pub tabstop: u32,
+    /// `:set scrolloff=N`. Minimum visual lines kept above + below
+    /// the cursor while scrolling. Default 0.
+    pub scrolloff: u32,
+    /// Typed options registry (DESIGN.md §5.12). `:set` parses
+    /// against this; `:describe-option` reads from it.
+    pub options: std::sync::Arc<crate::options::OptionRegistry>,
     /// Submitted `:` command history. Newest at the back. Bounded.
     pub command_history: Vec<String>,
     /// While in Command modal: index into `command_history` of the
@@ -1179,6 +1195,11 @@ impl App {
             pending_block_insert: None,
             show_line_numbers: true,
             relative_line_numbers: false,
+            wrap_lines: false,
+            ignorecase: false,
+            tabstop: 8,
+            scrolloff: 0,
+            options: std::sync::Arc::new(crate::options::builtin_options()),
             command_history: Vec::new(),
             command_history_cursor: None,
             command_history_pending: None,
@@ -2811,22 +2832,123 @@ impl App {
         self.set_message(EchoLevel::Info, format!("buffer #{} deleted", to_remove.0));
     }
 
-    /// Vim's `:set <option>`. v1 honors a tiny fixed set; everything
-    /// else surfaces as an error rather than silently no-op'ing so the
-    /// user gets clear feedback.
+    /// `:set [option | option=value | nooption]`. Parses against
+    /// the typed [`crate::options::OptionRegistry`] (DESIGN.md
+    /// §5.12). Boolean toggle / negate forms (`:set nu` /
+    /// `:set nonu`) and typed assignment (`:set tabstop=4`) all
+    /// route through the same registry; unknown options surface
+    /// as a clear echo error.
     fn do_set(&mut self, option: &str) {
-        match option {
-            "number" | "nu" => self.show_line_numbers = true,
-            "nonumber" | "nonu" => self.show_line_numbers = false,
-            "relativenumber" | "rnu" => {
-                self.show_line_numbers = true;
-                self.relative_line_numbers = true;
+        use crate::options::{ParsedSet, format_value, parse_set, parse_value};
+        let parsed = match parse_set(option) {
+            Ok(p) => p,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("E518: {e}"));
+                return;
             }
-            "norelativenumber" | "nornu" => self.relative_line_numbers = false,
-            other => {
-                self.set_message(EchoLevel::Error, format!("unknown option: {other}"));
+        };
+        let registry = self.options.clone();
+        match parsed {
+            ParsedSet::NameOnly(name) => {
+                let Some(spec) = registry.lookup(&name) else {
+                    self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
+                    return;
+                };
+                if matches!(spec.kind, crate::options::OptionKind::Bool) {
+                    if let Err(e) = (spec.set)(self, crate::options::OptionValue::Bool(true)) {
+                        self.set_message(EchoLevel::Error, e);
+                    }
+                } else {
+                    let v = (spec.get)(self);
+                    self.set_message(
+                        EchoLevel::Info,
+                        format!("{}={}", spec.name, format_value(&v)),
+                    );
+                }
+            }
+            ParsedSet::Negate(name) => {
+                let Some(spec) = registry.lookup_no_form(&format!("no{name}")) else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("E474: not a boolean option: {name}"),
+                    );
+                    return;
+                };
+                if let Err(e) = (spec.set)(self, crate::options::OptionValue::Bool(false)) {
+                    self.set_message(EchoLevel::Error, e);
+                }
+            }
+            ParsedSet::Assign { name, value } => {
+                let Some(spec) = registry.lookup(&name) else {
+                    self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
+                    return;
+                };
+                let parsed_value = match parse_value(&value, spec.kind) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.set_message(EchoLevel::Error, format!("E521: {name}: {e}"));
+                        return;
+                    }
+                };
+                if let Err(e) = (spec.set)(self, parsed_value) {
+                    self.set_message(EchoLevel::Error, e);
+                }
             }
         }
+    }
+
+    /// `:describe-option <name>` (DESIGN.md §5.11). Renders the
+    /// option's metadata + current value into a help buffer.
+    fn do_describe_option(&mut self, name: &str) {
+        let registry = self.options.clone();
+        let Some(spec) = registry.lookup(name) else {
+            self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
+            return;
+        };
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# {}", spec.name));
+        if !spec.aliases.is_empty() {
+            lines.push(format!("aliases: {}", spec.aliases.join(", ")));
+        }
+        lines.push(format!("type:    {}", spec.kind.label()));
+        lines.push(format!(
+            "default: {}",
+            crate::options::format_value(&spec.default)
+        ));
+        let current = (spec.get)(self);
+        lines.push(format!(
+            "current: {}",
+            crate::options::format_value(&current)
+        ));
+        lines.push(String::new());
+        lines.push(spec.doc.to_string());
+        self.open_help(
+            HelpBuffer::from_lines(format!("describe-option {name}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        );
+    }
+
+    /// `:options` -- list every registered option in a help view.
+    fn do_list_options(&mut self) {
+        let mut lines: Vec<String> = Vec::new();
+        let registry = self.options.clone();
+        lines.push(format!("{} registered option(s):", registry.len()));
+        lines.push(String::new());
+        let mut specs: Vec<_> = registry.iter().cloned().collect();
+        specs.sort_by_key(|s| s.name);
+        for spec in specs {
+            let current = (spec.get)(self);
+            lines.push(format!(
+                "  {:<16} {:<7} = {}",
+                spec.name,
+                spec.kind.label(),
+                crate::options::format_value(&current)
+            ));
+        }
+        self.open_help(
+            HelpBuffer::from_lines("options", lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        );
     }
 
     /// Vim's `:reg` -- list every register's contents in the echo area.
@@ -3394,6 +3516,8 @@ impl App {
             Effect::BufferDelete { force } => self.do_buffer_delete(force),
             Effect::OpenFileTree { root } => self.do_open_file_tree(root),
             Effect::CloseFileTree => self.dismiss_file_tree(),
+            Effect::DescribeOption { name } => self.do_describe_option(&name),
+            Effect::ListOptions => self.do_list_options(),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -5443,7 +5567,9 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::ListBuffers
         | Effect::BufferDelete { .. }
         | Effect::OpenFileTree { .. }
-        | Effect::CloseFileTree => false,
+        | Effect::CloseFileTree
+        | Effect::DescribeOption { .. }
+        | Effect::ListOptions => false,
     }
 }
 
@@ -5477,7 +5603,9 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::ListBuffers
         | Effect::BufferDelete { .. }
         | Effect::OpenFileTree { .. }
-        | Effect::CloseFileTree => false,
+        | Effect::CloseFileTree
+        | Effect::DescribeOption { .. }
+        | Effect::ListOptions => false,
     }
 }
 
@@ -10061,6 +10189,91 @@ mod tests {
         let t = a.file_tree.as_ref().expect("tree open");
         assert_eq!(t.cursor.line, 1);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- Typed options registry (DESIGN.md §5.12, B.2) ----
+
+    #[test]
+    fn set_tabstop_assignment_updates_field() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "set tabstop=4".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.tabstop, 4);
+    }
+
+    #[test]
+    fn set_tabstop_via_alias() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "set ts=2".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.tabstop, 2);
+    }
+
+    #[test]
+    fn set_unknown_option_errors() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "set whatever".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let msg = a.last_message.as_ref().expect("error");
+        assert!(msg.text.contains("Unknown option"), "got: {}", msg.text);
+    }
+
+    #[test]
+    fn set_no_form_clears_boolean() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "set nonumber".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(!a.show_line_numbers);
+    }
+
+    #[test]
+    fn set_no_form_rejects_non_boolean() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "set notabstop".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let msg = a.last_message.as_ref().expect("error");
+        assert!(msg.text.contains("not a boolean"), "got: {}", msg.text);
+    }
+
+    #[test]
+    fn set_int_out_of_range_errors() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "set tabstop=999".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let msg = a.last_message.as_ref().expect("error");
+        assert!(msg.text.contains("out of range"), "got: {}", msg.text);
+    }
+
+    #[test]
+    fn describe_option_renders_help_with_metadata() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-option tabstop".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("describe-option help");
+        let body = h.content.as_string();
+        assert!(body.contains("tabstop"));
+        assert!(body.contains("integer"));
+        assert!(body.contains("default"));
+    }
+
+    #[test]
+    fn list_options_includes_every_registered_option() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "options".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("options help");
+        let body = h.content.as_string();
+        assert!(body.contains("number"));
+        assert!(body.contains("tabstop"));
+        assert!(body.contains("scrolloff"));
     }
 
     #[test]

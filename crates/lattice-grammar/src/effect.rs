@@ -174,6 +174,13 @@ pub enum Effect {
     },
     /// `:TreeClose` -- dismiss the file-tree buffer.
     CloseFileTree,
+    /// `:describe-option NAME` -- render the option's metadata in
+    /// a help view.
+    DescribeOption {
+        name: String,
+    },
+    /// `:options` -- list every registered option.
+    ListOptions,
 
     Many(Vec<Effect>),
 }

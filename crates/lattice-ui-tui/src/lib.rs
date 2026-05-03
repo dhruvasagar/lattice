@@ -24,6 +24,7 @@ pub mod file_tree;
 pub mod help;
 pub mod input;
 pub mod keymap;
+pub mod options;
 pub mod pane;
 pub mod render;
 pub mod runtime;

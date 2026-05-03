@@ -53,6 +53,8 @@ pub mod error;
 pub mod framing;
 pub mod jsonrpc;
 pub mod pending;
+pub mod position;
+pub mod sync;
 pub mod transport;
 
 pub use actor::{ServerHandle, spawn, spawn_with_io};
@@ -63,4 +65,5 @@ pub use error::{LspError, LspResult};
 pub use framing::{FrameError, FrameHeader};
 pub use jsonrpc::{Message, Notification, Request, RequestId, Response, ResponseError};
 pub use pending::{InvocationId, Pending};
+pub use sync::{DocSync, uri_from_str};
 pub use transport::{ChildTransport, TransportError};

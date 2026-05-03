@@ -18,10 +18,14 @@
 //! the editor's own work."
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use lsp_types::PositionEncodingKind;
 use serde_json::json;
 
 use lattice_lsp::framing::parse_header_block;
 use lattice_lsp::jsonrpc::{Message, Notification, Request, RequestId};
+use lattice_lsp::position::{
+    byte_to_lsp_character, utf8_byte_to_utf16_column, utf16_column_to_utf8_byte,
+};
 
 /// Header parse: ASCII-only, ≤200 byte block. Should be deep
 /// in nanoseconds.
@@ -125,6 +129,49 @@ fn encode_decode_request_round_trip(c: &mut Criterion) {
     });
 }
 
+/// Position-encoding conversion: ASCII line. utf-8 mode is a
+/// branch-and-return; this measures the floor.
+fn position_utf8_passthrough(c: &mut Criterion) {
+    let line = "fn handler(req: &Request<Output, Error>) -> Result<()>";
+    c.bench_function("lsp::position::utf8_passthrough", |b| {
+        b.iter(|| {
+            let col = byte_to_lsp_character(
+                black_box(line),
+                black_box(50),
+                &PositionEncodingKind::UTF8,
+            );
+            black_box(col);
+        });
+    });
+}
+
+/// Worst case: 64-character line of CJK glyphs (3 utf-8 bytes / 1
+/// utf-16 unit each). Walks the whole prefix counting utf-16
+/// units. Backs the §8.2 commitment that utf-16 column conversion
+/// stays sub-microsecond on any realistic line.
+fn position_utf16_cjk_line(c: &mut Criterion) {
+    let line: String = "中文".repeat(32);
+    let byte = (line.len() / 2) as u32;
+    c.bench_function("lsp::position::utf16_cjk_line", |b| {
+        b.iter(|| {
+            let col = utf8_byte_to_utf16_column(black_box(&line), black_box(byte));
+            black_box(col);
+        });
+    });
+}
+
+/// Reverse direction: utf-16 character → utf-8 byte. Used on
+/// every range coming FROM the server (definitions, diagnostics).
+fn position_utf16_to_byte_cjk(c: &mut Criterion) {
+    let line: String = "中文".repeat(32);
+    c.bench_function("lsp::position::utf16_to_byte_cjk", |b| {
+        b.iter(|| {
+            let byte = utf16_column_to_utf8_byte(black_box(&line), black_box(32));
+            black_box(byte);
+        });
+    });
+}
+
 criterion_group!(
     benches,
     framing_parse_header,
@@ -132,5 +179,8 @@ criterion_group!(
     decode_publish_diagnostics,
     decode_small_response,
     encode_decode_request_round_trip,
+    position_utf8_passthrough,
+    position_utf16_cjk_line,
+    position_utf16_to_byte_cjk,
 );
 criterion_main!(benches);

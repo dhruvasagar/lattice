@@ -5377,25 +5377,52 @@ impl App {
         self.do_exit_visual();
     }
 
-    /// Toggle / open / close the fold containing the cursor. `state =
-    /// None` toggles; `Some(true)` closes; `Some(false)` opens.
+    /// Toggle / open / close the fold containing the cursor.
+    ///
+    /// Picks the right nested-level per vim semantics:
+    ///
+    /// - `Some(true)` (`zc`): closes the **innermost open** fold
+    ///   containing the cursor. Subsequent `zc`s walk outward.
+    /// - `Some(false)` (`zo`): opens the **outermost closed** fold
+    ///   containing the cursor. Subsequent `zo`s walk inward as
+    ///   each layer reveals the next.
+    /// - `None` (`za`): if any closed fold contains the cursor,
+    ///   acts like `zo` (open outermost closed); otherwise acts
+    ///   like `zc` (close innermost open).
+    ///
+    /// Innermost = max start_line, then min end_line on ties.
+    /// Outermost = min start_line, then max end_line on ties.
+    /// Emits `E490: No fold found` when the requested operation
+    /// has no candidate (e.g. `zo` with nothing closed at cursor).
     fn do_set_fold_state_at_cursor(&mut self, state: Option<bool>) {
         let line = self.cursor.line;
-        for fold in self.folds.iter_mut() {
-            if line >= fold.start_line && line <= fold.end_line {
-                fold.closed = match state {
-                    None => !fold.closed,
-                    Some(s) => s,
-                };
-                return;
+        let target = match state {
+            Some(true) => innermost_fold_idx(&self.folds, line, |f| !f.closed),
+            Some(false) => outermost_fold_idx(&self.folds, line, |f| f.closed),
+            None => {
+                let any_closed = self
+                    .folds
+                    .iter()
+                    .any(|f| f.closed && line >= f.start_line && line <= f.end_line);
+                if any_closed {
+                    outermost_fold_idx(&self.folds, line, |f| f.closed)
+                } else {
+                    innermost_fold_idx(&self.folds, line, |f| !f.closed)
+                }
             }
-        }
-        // No fold at cursor. Default `foldmethod = manual` produces
-        // none until the user runs `zf`, so the most common cause of
-        // "zc does nothing" is forgetting to `:set foldmethod=indent`
-        // (or `markdown` / `syntax`). Vim's E490 message points at
-        // exactly this -- surface it so the gap is discoverable.
-        self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
+        };
+        let Some(idx) = target else {
+            // No matching fold. Default `foldmethod = manual` produces
+            // none until the user runs `zf`; the common cause of "zc
+            // does nothing" is forgetting `:set foldmethod=indent` or
+            // `=syntax`. Surface vim's E490 so the gap is discoverable.
+            self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
+            return;
+        };
+        self.folds[idx].closed = match state {
+            None => !self.folds[idx].closed,
+            Some(s) => s,
+        };
     }
 
     fn do_set_all_folds(&mut self, closed: bool) {
@@ -5428,8 +5455,14 @@ impl App {
 
     fn do_delete_fold_at_cursor(&mut self) {
         let line = self.cursor.line;
-        self.folds
-            .retain(|f| !(line >= f.start_line && line <= f.end_line));
+        // Vim's `zd` removes one fold (the innermost). Previously
+        // we retained-out every containing fold which silently
+        // deleted siblings in nested cases.
+        if let Some(idx) = innermost_fold_idx(&self.folds, line, |_| true) {
+            self.folds.remove(idx);
+        } else {
+            self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
+        }
     }
 
     /// Returns true if `line` is inside a closed fold (and not the fold
@@ -6113,6 +6146,38 @@ fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
         VisualKind::Linewise => VisualMode::Linewise,
         VisualKind::Blockwise => VisualMode::Blockwise,
     }
+}
+
+/// Index of the *innermost* fold containing `line` that satisfies
+/// `pred`. Innermost = max start_line, then min end_line on ties.
+/// Used by `zc` (close innermost open) and `za`'s close branch.
+fn innermost_fold_idx<F: Fn(&Fold) -> bool>(
+    folds: &[Fold],
+    line: u32,
+    pred: F,
+) -> Option<usize> {
+    folds
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| pred(f) && line >= f.start_line && line <= f.end_line)
+        .max_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
+        .map(|(i, _)| i)
+}
+
+/// Index of the *outermost* fold containing `line` that satisfies
+/// `pred`. Outermost = min start_line, then max end_line on ties.
+/// Used by `zo` (open outermost closed) and `za`'s open branch.
+fn outermost_fold_idx<F: Fn(&Fold) -> bool>(
+    folds: &[Fold],
+    line: u32,
+    pred: F,
+) -> Option<usize> {
+    folds
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| pred(f) && line >= f.start_line && line <= f.end_line)
+        .min_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
+        .map(|(i, _)| i)
 }
 
 /// True if the Effect indicates an operator-class action (the buffer
@@ -7165,6 +7230,105 @@ mod tests {
         a.cursor = Position::new(1, 0);
         a.apply(Action::DeleteFoldAtCursor);
         assert!(a.folds.is_empty());
+    }
+
+    // --- Nested-fold semantics (`zc` / `zo` / `za` / `zd`) -----
+
+    fn nested_folds_app() -> App {
+        // Two nested open folds: outer covers lines 0..=10, inner
+        // covers 2..=8. Cursor sits inside both at line 4.
+        let mut a = app_with(&"x\n".repeat(12), 10);
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 10,
+            closed: false,
+            identity: None,
+        });
+        a.folds.push(Fold {
+            start_line: 2,
+            end_line: 8,
+            closed: false,
+            identity: None,
+        });
+        a.cursor = Position::new(4, 0);
+        a
+    }
+
+    #[test]
+    fn zc_closes_innermost_open_fold_first() {
+        let mut a = nested_folds_app();
+        a.apply(Action::CloseFoldAtCursor);
+        let inner = a.folds.iter().find(|f| f.start_line == 2).unwrap();
+        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
+        assert!(inner.closed, "inner should close first");
+        assert!(!outer.closed, "outer should remain open until next zc");
+    }
+
+    #[test]
+    fn second_zc_closes_outer_fold() {
+        let mut a = nested_folds_app();
+        a.apply(Action::CloseFoldAtCursor); // closes inner
+        a.apply(Action::CloseFoldAtCursor); // should close outer
+        let inner = a.folds.iter().find(|f| f.start_line == 2).unwrap();
+        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
+        assert!(inner.closed);
+        assert!(outer.closed);
+    }
+
+    #[test]
+    fn zo_opens_outermost_closed_fold_first() {
+        let mut a = nested_folds_app();
+        // Both folds closed.
+        for f in a.folds.iter_mut() {
+            f.closed = true;
+        }
+        a.apply(Action::OpenFoldAtCursor);
+        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
+        let inner = a.folds.iter().find(|f| f.start_line == 2).unwrap();
+        assert!(!outer.closed, "outer should open first");
+        assert!(inner.closed, "inner should remain closed until next zo");
+    }
+
+    #[test]
+    fn za_toggles_to_open_when_any_fold_closed_then_close_when_all_open() {
+        let mut a = nested_folds_app();
+        // Close outer only.
+        a.folds[0].closed = true;
+        // za with the outer closed => open the outermost closed (the outer).
+        a.apply(Action::ToggleFoldAtCursor);
+        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
+        let inner = a.folds.iter().find(|f| f.start_line == 2).unwrap();
+        assert!(!outer.closed);
+        assert!(!inner.closed);
+        // Now both open: za should close the innermost.
+        a.apply(Action::ToggleFoldAtCursor);
+        let inner = a.folds.iter().find(|f| f.start_line == 2).unwrap();
+        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
+        assert!(inner.closed);
+        assert!(!outer.closed);
+    }
+
+    #[test]
+    fn zc_with_all_folds_closed_emits_e490() {
+        let mut a = nested_folds_app();
+        for f in a.folds.iter_mut() {
+            f.closed = true;
+        }
+        a.apply(Action::CloseFoldAtCursor);
+        // No state change; both still closed.
+        assert!(a.folds.iter().all(|f| f.closed));
+        // E490 echoed.
+        let msg = a.last_message.as_ref().expect("message").text.clone();
+        assert!(msg.contains("E490"), "expected E490, got {msg:?}");
+    }
+
+    #[test]
+    fn zd_removes_innermost_only() {
+        let mut a = nested_folds_app();
+        a.apply(Action::DeleteFoldAtCursor);
+        // The inner (start=2) fold is gone; outer remains.
+        assert!(a.folds.iter().any(|f| f.start_line == 0));
+        assert!(!a.folds.iter().any(|f| f.start_line == 2));
     }
 
     #[test]

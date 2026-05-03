@@ -23,6 +23,11 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "folds"
+harness = false
 
 [lints]
 workspace = true

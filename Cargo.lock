@@ -688,6 +688,7 @@ name = "lattice-ui-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "criterion",
  "crossterm",
  "fancy-regex",
  "lattice-completion",

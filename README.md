@@ -339,6 +339,8 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 | [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) | Per-feature status ledger; updated per session.   |
 | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)| Latest measured numbers vs. §8.2 commitments.            |
 | [`docs/VERIFY.md`](docs/VERIFY.md)        | Manual-verification checklist for recently shipped features. |
+| [`docs/lsp-architecture.md`](docs/lsp-architecture.md) | LSP developer reference (companion to DESIGN.md §5.4). |
+| [`docs/lsp-features.md`](docs/lsp-features.md) | Every LSP 3.17 capability + implementation status.  |
 | [`docs/help/`](docs/help/)                | User-facing reference (the `:help`-style topic docs).    |
 | [`CLAUDE.md`](CLAUDE.md)                  | Conventions for AI-assisted contributions.               |
 

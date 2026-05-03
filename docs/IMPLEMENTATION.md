@@ -39,7 +39,7 @@ rendering, and v1.0 polish.
 | 1     | Modal Editing                         | ✅ done                  | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch + substitute live preview) / folds / ex-commands (every command -- including `:s` / `:g` / `:v` via `Args::List` -- registered as `ExCommandSpec` peers, dispatched through unified `grammar::execute()` per §5.2.1, §B.2). Blockwise visual: per-row dispatch for `d` / `y` / `c` plus blockwise paste; `>` / `<` indent each line in the block; `I` / `A` enter Insert at the block's left/right column with the typed prefix replicated to every row on Esc. Every operator lands as a single undo unit -- counts on linewise ops (`2dd`, `2>>`), block-visual rectangle ops, and I/A replications all collapse to one `u`. |
 | 2     | Terminal UI Bootstrap                 | ✅ done                  | crossterm + ratatui; modal cursor; mode line; gutter                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | 3     | Tree-Sitter                           | ✅ done (Rust/Python/JS/Markdown) | Highlights wired through a shared `LangRegistry` (process-wide `Arc`); injection callback resolves fenced ` ```rust ``` ` blocks in markdown to the rust config (and any registered language to its config) without per-document copies. Markdown is the dual-grammar split (block + inline). Grammar extension API used by builtins, not yet by plugins. New `Style` variants (`Heading1..6`, `Bold`, `Italic`, `Link`, `Url`, `MarkupRaw`, `Markup`) for precise theme targeting. |
-| 4     | LSP                                   | 🚧 in progress (4.1.a)   | `lattice-lsp` crate scaffolded: hand-rolled JSON-RPC 2.0 codec (Content-Length framing, message types with id correlation, tokio AsyncRead/AsyncWrite codec, child-process transport with stderr capture). 37 unit tests + 5 benches; framing 77ns / didChange encode 208ns / publishDiagnostics decode 1.58µs / hover round-trip 878ns -- all Background-class budgets. Per-server actor + capability handshake (4.1.b) next, then document sync (4.1.c) + diagnostics surface (4.1.d) + DESIGN.md §5.4 expansion + docs/help/lsp.md (4.1.e).                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 4     | LSP                                   | 🚧 in progress (4.1)     | `lattice-lsp` crate (12 modules + 4 test files + 1 bench file): wire layer (framing, JSON-RPC, codec, transport), per-server actor with capability handshake, document sync (didOpen/didChange/didClose with utf-8↔utf-16↔utf-32 conversion), diagnostics broadcast (`DiagnosticsBus`). 4.1.a (61a1780) + 4.1.b (ad7afdd) + 4.1.c (b2d154e) + 4.1.d.i (9d6951d) shipped. 100+ unit + 31 integration tests; 8 criterion benches all in nanoseconds-to-microseconds (Background-class). Docs: DESIGN.md §5.4 expanded; new `docs/lsp-architecture.md` (developer reference), `docs/help/lsp.md` (user help), `docs/lsp-features.md` (every LSP 3.17 capability + status). Remaining 4.1: decoration layer + `:diagnostics` buffer (4.1.d.ii–iv). Then 4.2 navigation (hover, definition family, references, symbols, completion), 4.3 edits, 4.4 polish, 4.5 expansion. |
 | 5     | GPU Rendering Foundation              | ⛔ not started           | TUI is the live renderer for v1; GPU is a separate paint surface                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | 6     | Document Renderer + UI Components     | ⛔ not started           | Popups, pickers, panels-as-buffers all live in §5.9                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 7     | Plugin Host                           | ⛔ not started           | wasmtime + Component Model + WIT scaffolding                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -47,17 +47,30 @@ rendering, and v1.0 polish.
 | 9     | Rich Buffer Rendering                 | ⛔ not started           | Per-line shaped path, Fenwick height index                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 10    | Polish + v1.0                         | ⛔ not started           | `*scratch:rust*` live-eval workflow (§10), accessibility, packaging, themes                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
-Active focus: **Phase 4 (LSP) -- foundation in flight.** The §5.2.1
-async-dispatcher refactor (`Pending<T>`) and the §5.6.8 render-
-snapshot model live in `lattice-runtime`; the actor + arc-swap
-publish/load contract is in place. The new `lattice-lsp` crate
-ships the wire layer (framing + JSON-RPC + codec + child-process
-transport) and is now ready for the per-server actor + capability
-handshake (4.1.b). Roadmap: 4.1.a wire layer (done) → 4.1.b
-actor/handshake → 4.1.c document sync → 4.1.d diagnostics
-surface → 4.1.e doc expansion (§5.4 + `docs/help/lsp.md`) →
-4.2 navigation → 4.3 edits → 4.4 polish (semantic tokens, inlay
-hints, folding, document highlight).
+Active focus: **Phase 4 (LSP) -- foundation 4 commits in.** The
+§5.2.1 async-dispatcher refactor (`Pending<T>`) and the §5.6.8
+render-snapshot model live in `lattice-runtime`; the actor +
+arc-swap publish/load contract is in place. `lattice-lsp` ships
+the wire layer, per-server actor with capability handshake,
+document sync (utf-8/utf-16/utf-32 column conversion), and a
+diagnostics broadcast bus -- everything needed for the editor
+to attach servers and receive diagnostics.
+
+LSP docs are now comprehensive across audiences: design-doc
+readers (`DESIGN.md` §5.4), implementers / contributors
+([`lsp-architecture.md`](lsp-architecture.md)), users
+([`help/lsp.md`](help/lsp.md)), and per-feature trackers
+([`lsp-features.md`](lsp-features.md) -- every LSP 3.17
+capability with status).
+
+Roadmap: 4.1.a wire (done) → 4.1.b actor + handshake (done) →
+4.1.c document sync (done) → 4.1.d.i diagnostics routing (done)
+→ 4.1.d.ii decoration layer → 4.1.d.iii renderer integration
+(gutter glyphs + underlines) → 4.1.d.iv `:diagnostics` buffer
+view → 4.1.e final doc polish → 4.2 navigation → 4.3 edits →
+4.4 polish (semantic tokens, inlay hints, folding, document
+highlight) → 4.5 expansion (call/type hierarchy, code lens,
+inline completion).
 
 ---
 

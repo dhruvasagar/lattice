@@ -164,23 +164,23 @@ The editor is structured as **three strictly separated layers** communicating ex
 
 ## 4. Technology Stack
 
-| Concern | Choice | Rationale |
-|---|---|---|
-| Language | **Rust (stable)** | Memory and data-race safety; mature async; strong editor ecosystem. |
-| Async runtime | **tokio** (multi-thread) | Default; integrates everywhere. |
-| Buffer | **`ropey`** | Battle-tested rope; O(log n) edits; cheap clones. |
-| Parser | **`tree-sitter`** | Incremental, error-recovering, ubiquitous. |
-| LSP types | **`lsp-types`** | Generated bindings; we write our own client. |
-| GPU rendering | **GPUI** (preferred) or **`wgpu`** (fallback) | GPUI purpose-built; wgpu the fallback. |
-| Layout (UI furniture) | **`taffy`** | Standalone flexbox/block layout. |
-| Text shaping | **`cosmic-text`** or **`parley`** | Full Unicode when needed; bypassed on monospace fast path. |
-| Plugin runtime | **`wasmtime`** + Component Model + WASI | Sandboxing, fuel limits, async host. |
-| Serialization | **`serde`** + MessagePack (`rmp-serde`); WIT for plugin interfaces | Zero-cost in-process; Component Model for plugins. |
-| Config | **TOML** | Single config tier. Anything beyond config is a WASM plugin (§10). |
-| CLI | **`clap`** | Standard. |
-| Logging | **`tracing`** + `tracing-subscriber` | Structured logs, span timing. |
-| Build | **`cargo`** workspace | Crate boundaries enforce architecture. |
-| Testing | **`cargo test`**, `insta`, `criterion` | Snapshot + benchmarks. |
+| Concern               | Choice                                                             | Rationale                                                           |
+|-----------------------|--------------------------------------------------------------------|---------------------------------------------------------------------|
+| Language              | **Rust (stable)**                                                  | Memory and data-race safety; mature async; strong editor ecosystem. |
+| Async runtime         | **tokio** (multi-thread)                                           | Default; integrates everywhere.                                     |
+| Buffer                | **`ropey`**                                                        | Battle-tested rope; O(log n) edits; cheap clones.                   |
+| Parser                | **`tree-sitter`**                                                  | Incremental, error-recovering, ubiquitous.                          |
+| LSP types             | **`lsp-types`**                                                    | Generated bindings; we write our own client.                        |
+| GPU rendering         | **GPUI** (preferred) or **`wgpu`** (fallback)                      | GPUI purpose-built; wgpu the fallback.                              |
+| Layout (UI furniture) | **`taffy`**                                                        | Standalone flexbox/block layout.                                    |
+| Text shaping          | **`cosmic-text`** or **`parley`**                                  | Full Unicode when needed; bypassed on monospace fast path.          |
+| Plugin runtime        | **`wasmtime`** + Component Model + WASI                            | Sandboxing, fuel limits, async host.                                |
+| Serialization         | **`serde`** + MessagePack (`rmp-serde`); WIT for plugin interfaces | Zero-cost in-process; Component Model for plugins.                  |
+| Config                | **TOML**                                                           | Single config tier. Anything beyond config is a WASM plugin (§10).  |
+| CLI                   | **`clap`**                                                         | Standard.                                                           |
+| Logging               | **`tracing`** + `tracing-subscriber`                               | Structured logs, span timing.                                       |
+| Build                 | **`cargo`** workspace                                              | Crate boundaries enforce architecture.                              |
+| Testing               | **`cargo test`**, `insta`, `criterion`                             | Snapshot + benchmarks.                                              |
 
 ---
 
@@ -551,11 +551,43 @@ Tree-sitter is responsible for **all** structural code understanding.
 
 ### 5.4 LSP Subsystem
 
-We write our own client. `tower-lsp` is for servers.
+We write our own client. `tower-lsp` is server-side; `async-lsp` brings tower middleware that doesn't fit our actor model. `lsp-types` (LSP 3.17) provides the wire types; the rest is hand-rolled.
 
-**Per-language-per-workspace client.** Per-buffer version tracking, automatic cancellation on stale requests, debouncing of `didChange`, backpressure on slow servers, transparent crash recovery.
+The full developer-facing architecture lives in [`lsp-architecture.md`](lsp-architecture.md); the user-facing help in [`help/lsp.md`](help/lsp.md); the per-feature implementation status in [`lsp-features.md`](lsp-features.md). This section is the canonical principle-led summary.
 
-**Features in roadmap order:** diagnostics, completion + resolve, hover, definition/references, rename, code actions, formatting, workspace symbols, semantic tokens, inlay hints.
+**Crate layout.** `lattice-lsp` ships:
+
+- `framing` -- Content-Length header parser (pure).
+- `jsonrpc` -- typed Request / Response / Notification with id correlation.
+- `codec` -- tokio AsyncRead / AsyncWrite codec.
+- `transport` -- child-process spawn + stdio capture.
+- `actor` -- per-server tokio task + `ServerHandle` (the editor-facing analogue of `lattice_runtime::DocumentHandle`).
+- `capabilities` -- client advertise + negotiated `Capabilities` snapshot.
+- `config` -- `ServerConfig` + curated registry (rust-analyzer, pyright, gopls, tsserver, clangd, lua-language-server) + workspace-root resolution.
+- `sync` -- `DocSync`: didOpen / didChange (Incremental + Full + None) / didClose, with per-doc version tracking and a String mirror for utf-16 column conversion.
+- `position` -- utf-8 ↔ utf-16 ↔ utf-32 column conversion.
+- `diagnostics` -- broadcast bus for `publishDiagnostics` fan-out.
+- `pending` -- `Pending<T>` (oneshot wrapper, parameterised over `LspError`).
+
+**Per-language-per-workspace client.** One actor per (workspace, server-id). Sharing across buffers in the same workspace lets rust-analyzer index once and serve many editor-side panes; per-buffer state lives in `DocSync`.
+
+**Three-task topology per server.** `actor` (coordination + pending table + capabilities), `read_loop` (LspReader → inbound mpsc), `write_loop` (outbound mpsc → LspWriter). One stderr-drain task emits server log lines through `tracing::warn!`. Three tasks because a single-task design collapses under indexer-burst loads (semantic-tokens deltas during fast scrolling, diagnostics fan-out at startup).
+
+**Position encoding.** We advertise `[utf-8, utf-16]` in `general.positionEncodings`; the server's choice wins. utf-8 is the fast path (one byte == one code unit; matches lattice's internal `Position::byte`). utf-16 is the LSP 3.16 fallback. Conversion lives in `position::byte_to_lsp_character` -- O(line) walk, sub-microsecond on any realistic line.
+
+**Document sync.** `DocSync::record_edit` translates lattice's `Edit` into a `TextDocumentContentChangeEvent` against the BEFORE-state mirror, queues it, and applies to the mirror. `flush` sends one `didChange`; the editor debounces ~50ms idle to coalesce keystroke-pace bursts. Sync mode honours the server's `TextDocumentSyncKind` (Incremental / Full / None).
+
+**Cancellation is cooperative-but-real.** Every request returns `Pending<T>` (mirroring §5.2.1's `Pending`); `ServerHandle::cancel(id)` resolves the local `Pending` with `LspError::Cancelled` and emits `$/cancelRequest` so the server can free its scheduling slot. Per-feature dispatch supersedes stale requests when a newer same-flavour request arrives (e.g. completion across keystrokes).
+
+**Diagnostics fan-out.** `publishDiagnostics` is broadcast to subscribers via `tokio::sync::broadcast` (`DiagnosticsBus`). Per-URI latest-event tracking + version gating live in the editor-side `DiagnosticsLayer`; the bus is the wire-side primitive. Multiple subscribers (gutter glyph provider, decoration overlay, `:diagnostics` buffer view, future plugins) each receive every event.
+
+**Crash recovery.** The actor detects pipe close from `read_loop`, drains pending requests with `LspError::ActorGone`, signals the supervisor. The supervisor restarts with exponential backoff (100ms → 5s) and re-issues `didOpen` for every URI it was tracking. (Supervisor lives in the editor crate, not `lattice-lsp`, because it depends on the App's view of which buffers were attached.)
+
+**Performance.** LSP requests are §5.2.5 *Background*-class -- no sync-prelude budget. The wire layer is benched at the framing / encode / decode / position-conversion level; all sit in nanoseconds-to-microseconds, well below human-perceptible latency. The §8.2 commitment is "LSP plumbing never shows up next to editor work in a flame graph."
+
+**Features in roadmap order:** diagnostics → completion + resolve → hover → definition / declaration / typeDefinition / implementation / references → documentSymbol / workspace.symbol → codeAction → rename → formatting (full + range + on-type) → signatureHelp → semanticTokens → inlayHint → foldingRange → documentHighlight → callHierarchy + typeHierarchy → codeLens → documentLink → inlineValue → inlineCompletion. Per-method status in [`lsp-features.md`](lsp-features.md).
+
+**Non-goals (v1).** Notebook documents (post-1.0; needs rich-buffer rendering). Multi-root workspace folders (post-1.0; v1 is single-root per actor). Server-side LSP -- lattice talks to servers, doesn't host one.
 
 ### 5.5 Plugin Subsystem
 

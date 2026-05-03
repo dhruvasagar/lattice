@@ -47,6 +47,10 @@ better.
 | Search literal worst-case 200k               | <2ms        | 659µs            | `search::no_match_with_wrap/200k`                     | ✅ under target                                      |
 | Tree-sitter incremental reparse              | <500µs      | unmeasured       | not built (Tree::edit not yet threaded)               | ⚠️ gap                                                |
 | Reflex motion / operator                     | <2ms        | all under budget | `motion::*`, `operator::*`                            | ✅                                                   |
+| LSP framing parse (Content-Length)           | <500ns      | **77ns**         | `lsp::framing::parse_header_block`                    | ✅ Background-class                                  |
+| LSP encode `didChange`                       | <2µs        | **208ns**        | `lsp::encode::did_change`                             | ✅ per-keystroke debounced outgoing                  |
+| LSP decode `publishDiagnostics`              | <10µs       | **1.58µs**       | `lsp::decode::publish_diagnostics`                    | ✅ per-save inbound                                  |
+| LSP utf-16 column conversion (CJK line)      | <1µs        | **23ns**         | `lsp::position::utf16_cjk_line`                       | ✅ never shows up in flame graphs                    |
 
 ---
 
@@ -325,6 +329,32 @@ Direct rope mutations.
 
 `position_byte_round_trip` is *faster* on bigger ropes -- ropey's
 B-tree packs better at scale.
+
+---
+
+## LSP wire layer (`crates/lattice-lsp/benches/lsp.rs`)
+
+Per DESIGN.md §5.4 + §5.2.5, LSP requests are **Background**-class
+(no sync-prelude budget). The wire-layer benches don't gate any
+per-keystroke commitment; they exist to prove the plumbing
+itself never appears next to editor work in a flame graph.
+
+| Bench                                 | Time       | Floor / Target | Notes                                                                                              |
+|---------------------------------------|------------|----------------|----------------------------------------------------------------------------------------------------|
+| `lsp::framing::parse_header_block`    | **77ns**   | ~50ns / <500ns | One ASCII header block, ≤200 bytes. Runs once per inbound message.                                 |
+| `lsp::encode::did_change`             | **208ns**  | ~150ns / <2µs  | One `TextDocumentContentChangeEvent` with a small replacement. Runs once per debounced keystroke.  |
+| `lsp::decode::publish_diagnostics`    | **1.58µs** | ~1µs / <10µs   | Diagnostic with code + range + source + message + severity. Inbound on save / idle.                |
+| `lsp::decode::small_response`         | **364ns**  | ~250ns / <2µs  | initialize / hover response shape.                                                                 |
+| `lsp::encode_decode::hover_request`   | **878ns**  | ~600ns / <5µs  | Encode + decode round-trip (no I/O) for a typical request.                                         |
+| `lsp::position::utf8_passthrough`     | **1.0ns**  | ~1ns / <5ns    | utf-8 negotiated mode short-circuits to a branch + return.                                         |
+| `lsp::position::utf16_cjk_line`       | **23ns**   | ~20ns / <500ns | Worst case: 64-char CJK-only line, mid-line offset. Walks prefix counting utf-16 code units.       |
+| `lsp::position::utf16_to_byte_cjk`    | **43ns**   | ~30ns / <500ns | Reverse direction: utf-16 column → utf-8 byte. Used for ranges arriving FROM the server.           |
+
+The full LSP feature matrix (per-method status) lives in
+[`lsp-features.md`](lsp-features.md); the architecture in
+[`lsp-architecture.md`](lsp-architecture.md). Per-feature
+benches (request round-trip latency end-to-end through a real
+server) land alongside their features in 4.2 / 4.3 / 4.4.
 
 ---
 

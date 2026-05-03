@@ -176,7 +176,26 @@ impl Syntax {
     /// Returns one `Vec<StyledSpan>` per line in the requested range. Spans
     /// use line-relative byte offsets (consistent with the renderer's
     /// existing assumption).
+    ///
+    /// Step 3c flipped this method's body to the hand-rolled native
+    /// pipeline ([`Self::highlight_lines_native`]). The legacy
+    /// `tree_sitter_highlight::Highlighter`-based implementation
+    /// remains under [`Self::highlight_lines_legacy`] as an escape
+    /// hatch / parity reference until Step 4 drops the dependency
+    /// entirely.
     pub fn highlight_lines(
+        &mut self,
+        start_line: u32,
+        end_line: u32,
+    ) -> Result<Vec<Vec<StyledSpan>>, SyntaxError> {
+        self.highlight_lines_native(start_line, end_line)
+    }
+
+    /// The pre-Step-3 streaming-highlighter pipeline. Retained
+    /// while `tree_sitter_highlight` is still in our dep tree so
+    /// parity tests can compare against the previous behaviour.
+    /// Dropped in Step 4 alongside the dependency.
+    pub fn highlight_lines_legacy(
         &mut self,
         start_line: u32,
         end_line: u32,
@@ -859,7 +878,7 @@ mod tests {
         a.parse(source);
         b.parse(source);
         let line_count = source.split('\n').count() as u32;
-        let legacy = a.highlight_lines(0, line_count).unwrap();
+        let legacy = a.highlight_lines_legacy(0, line_count).unwrap();
         let native = b.highlight_lines_native(0, line_count).unwrap();
         assert_eq!(
             legacy.len(),

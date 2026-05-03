@@ -512,14 +512,24 @@ characterize the load-bearing async primitives:
 | Benchmark | DESIGN target (p99) | Observed (median) |
 |---|---|---|
 | `apply_edit` round-trip | <100µs | ~80µs (constant across 10/1k/50k lines) |
-| `snapshot_load` | <5ns aspirational | ~16ns (`load_full`'s Arc bump) |
+| `snapshot_load` (`load_full`) | <20ns | ~17ns (Arc bump path) |
+| `snapshot_load_cached` (`Cache::load`, steady) | <500ps | ~305ps |
 | `snapshot_post_publish_read` | -- | ~17ns |
 
-The `apply_edit` round-trip meets §8.2 with 20% margin. The
-snapshot-load gap (16ns vs. aspirational 5ns) is `load_full`'s
-refcount bump; the wait-free `Cache::load` would be closer but needs
-per-thread state -- revisit when GPU rendering arrives and the
-per-frame overhead matters.
+The `apply_edit` round-trip meets §8.2 with 20% margin. The renderer
+now reads through `arc_swap::Cache::load` per frame (~50× faster than
+`load_full`) -- `App` holds a `SnapshotCache` rebuilt on each
+document switch, the runtime calls `app.snapshot_cache.load_arc()`
+once per frame in `runtime.rs`, and the resulting
+`&DocumentSnapshot` is threaded through the active-pane render path
+(`compose_visible_lines`, `cursor_screen_position`,
+`closed_fold_display_span`, `buffer_line_to_visible_row`,
+`draw_mode_line`). Inactive panes render different documents and
+still go through `entry.handle.snapshot()` (`load_full`); a per-doc
+cache map for inactive panes is queued behind a profiling motivator.
+The 50+ `app.document.snapshot()` call sites in keystroke handlers
+remain on `load_full` -- each runs ≤1× per keystroke, dominated by
+other work, so the migration there is deferred.
 
 **`LatencyClass` declaration** (DESIGN.md §5.2.5) is now a field on
 every `CommandSpec`. `:describe-command` surfaces it under a

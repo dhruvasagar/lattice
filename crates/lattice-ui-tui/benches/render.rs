@@ -13,9 +13,12 @@
 //! highlight cache + viewport composition is the editor-side
 //! cost the user pays per keystroke under the renderer.
 
+use std::sync::Arc;
+
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 use lattice_core::Document;
+use lattice_runtime::DocumentSnapshot;
 use lattice_syntax::{Lang, Syntax};
 use lattice_ui_tui::app::App;
 use lattice_ui_tui::render::compose_visible_lines;
@@ -44,14 +47,23 @@ fn build_app(corpus: &str, viewport: u32) -> App {
     a
 }
 
+/// Pin an `Arc<DocumentSnapshot>` once -- mirrors the runtime's
+/// per-frame `snapshot_cache.load_arc()`. Re-loading inside `iter`
+/// would dominate the measurement and isn't representative of the
+/// real frame path (one load amortised across the whole compose).
+fn pinned_snapshot(app: &App) -> Arc<DocumentSnapshot> {
+    app.document.snapshot()
+}
+
 fn frame_render_24(c: &mut Criterion) {
     let mut g = c.benchmark_group("render::frame_24_lines");
     for n in [10usize, 200, 2000] {
         let corpus = rust_corpus(n);
         let app = build_app(&corpus, 24);
-        g.bench_with_input(BenchmarkId::from_parameter(n), &app, |bencher, a| {
+        let snap = pinned_snapshot(&app);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &(app, snap), |bencher, (a, s)| {
             bencher.iter(|| {
-                let lines = compose_visible_lines(black_box(a), 24, 80);
+                let lines = compose_visible_lines(black_box(a), black_box(s), 24, 80);
                 black_box(lines);
             });
         });
@@ -64,9 +76,10 @@ fn frame_render_60(c: &mut Criterion) {
     for n in [10usize, 200, 2000] {
         let corpus = rust_corpus(n);
         let app = build_app(&corpus, 60);
-        g.bench_with_input(BenchmarkId::from_parameter(n), &app, |bencher, a| {
+        let snap = pinned_snapshot(&app);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &(app, snap), |bencher, (a, s)| {
             bencher.iter(|| {
-                let lines = compose_visible_lines(black_box(a), 60, 200);
+                let lines = compose_visible_lines(black_box(a), black_box(s), 60, 200);
                 black_box(lines);
             });
         });
@@ -79,9 +92,10 @@ fn frame_render_120(c: &mut Criterion) {
     for n in [10usize, 200, 2000] {
         let corpus = rust_corpus(n);
         let app = build_app(&corpus, 120);
-        g.bench_with_input(BenchmarkId::from_parameter(n), &app, |bencher, a| {
+        let snap = pinned_snapshot(&app);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &(app, snap), |bencher, (a, s)| {
             bencher.iter(|| {
-                let lines = compose_visible_lines(black_box(a), 120, 200);
+                let lines = compose_visible_lines(black_box(a), black_box(s), 120, 200);
                 black_box(lines);
             });
         });

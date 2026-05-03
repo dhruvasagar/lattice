@@ -20,11 +20,19 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use lattice_grammar::{ModalState, SearchDirection};
 use lattice_protocol::position::Range as ProtoRange;
 use lattice_protocol::selection::VisualMode;
+use lattice_runtime::DocumentSnapshot;
 use lattice_syntax::{Lang, Style, StyledSpan};
 
 use crate::app::{App, EchoLevel};
 
-pub fn draw_frame(frame: &mut Frame, app: &App) {
+/// Render one terminal frame.
+///
+/// `snap` is the active document's snapshot, loaded once per frame
+/// by the runtime via `app.snapshot_cache.load_arc()` (DESIGN.md
+/// §5.6.8). All active-pane render paths read through this single
+/// snapshot -- inactive panes (different documents) still go
+/// through `entry.handle.snapshot()` since the cache is per-cell.
+pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // Vertico-style layout (DESIGN.md §5.11.3): when a completion
     // popup is open, the `:` prompt moves up by `popup_height` rows
     // so the candidate list sits BELOW the prompt -- the selected
@@ -56,8 +64,8 @@ pub fn draw_frame(frame: &mut Frame, app: &App) {
         .constraints(constraints)
         .split(frame.area());
 
-    draw_panes(frame, chunks[0], app);
-    draw_mode_line(frame, chunks[1], app);
+    draw_panes(frame, chunks[0], app, snap);
+    draw_mode_line(frame, chunks[1], app, snap);
     draw_command_or_echo(frame, chunks[2], app);
     // Help overlay paints over the buffer area.
     if app.help_buffer.is_some() {
@@ -295,7 +303,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
 /// videoed so focus is unambiguous; inactive status lines are
 /// dim. With a single pane we skip the status line so the buffer
 /// area looks identical to the pre-split rendering.
-fn draw_panes(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {
     let pane_area = crate::pane::PaneRect {
         x: area.x,
         y: area.y,
@@ -342,7 +350,7 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App) {
         match pane.buffer {
             crate::buffers::BufferKind::Document => {
                 if is_active {
-                    draw_buffer(frame, content_rect, app);
+                    draw_buffer(frame, content_rect, app, snap);
                 } else {
                     draw_inactive_document(frame, content_rect, app, &pane, idx);
                 }
@@ -351,7 +359,7 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App) {
                 // Help is overlay-rendered (drawn after panes); the
                 // pane area shows the underlying document content.
                 if is_active {
-                    draw_buffer(frame, content_rect, app);
+                    draw_buffer(frame, content_rect, app, snap);
                 } else {
                     draw_inactive_document(frame, content_rect, app, &pane, idx);
                 }
@@ -692,15 +700,17 @@ fn draw_file_tree_pane(
     }
 }
 
-fn draw_buffer(frame: &mut Frame, area: Rect, app: &App) {
-    let lines = compose_visible_lines(app, area.height as u32, area.width as u32);
+fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {
+    let lines = compose_visible_lines(app, snap, area.height as u32, area.width as u32);
     frame.render_widget(Paragraph::new(lines), area);
 
     // Place the buffer-area cursor only when the prompt isn't claiming it.
     // In Command (`:`) and Search (`/`, `?`) modal states the cursor lives
     // in the bottom prompt row -- handled by `draw_command_or_echo`.
     let prompt_owns_cursor = matches!(app.modal, ModalState::Command | ModalState::Search(_));
-    if !prompt_owns_cursor && let Some((screen_x, screen_y)) = cursor_screen_position(app, area) {
+    if !prompt_owns_cursor
+        && let Some((screen_x, screen_y)) = cursor_screen_position(app, snap, area)
+    {
         frame.set_cursor_position((screen_x, screen_y));
     }
 }
@@ -781,12 +791,11 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(para, area);
 }
 
-fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App) {
-    // Load one snapshot per frame -- DESIGN.md §5.6.8: the
-    // renderer reads through a single arc-swap acquire and uses
-    // that snapshot for the entire frame, never round-tripping
-    // the actor.
-    let snap = app.document.snapshot();
+fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {
+    // §5.6.8: the renderer reads through a single arc-swap
+    // `Cache::load` per frame (loaded by the runtime) and reuses
+    // that snapshot for the entire frame -- never round-trips the
+    // actor.
     let path = snap
         .path()
         .map(|p| p.display().to_string())
@@ -821,12 +830,18 @@ fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App) {
 /// Spans are owned (`Cow::Owned`) so the returned `Line`s outlive the
 /// document text we slice out of for this frame. One alloc per visible line
 /// per frame -- negligible at terminal sizes (typically 50-100 lines).
-pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'static>> {
+pub fn compose_visible_lines(
+    app: &App,
+    snap: &DocumentSnapshot,
+    height: u32,
+    width: u32,
+) -> Vec<Line<'static>> {
     // §5.6.8 contract: one snapshot per frame, used for everything.
+    // The snapshot was loaded by the runtime via
+    // `app.snapshot_cache.load_arc()` and threaded through.
     // §8.2 hot path: never materialise the whole buffer -- iterate
     // ropey's line API and pull only the visible window. A 100MB
     // log file should cost the same per-frame as a 100-line file.
-    let snap = app.document.snapshot();
     let total_lines = snap.buffer.line_count();
     let gutter_w = if app.show_line_numbers {
         gutter_width(total_lines)
@@ -902,7 +917,7 @@ pub fn compose_visible_lines(app: &App, height: u32, width: u32) -> Vec<Line<'st
                 // visually hide 5 lines but report only the first
                 // fold's own 3 lines, which doesn't match what the
                 // user just collapsed.
-                closed_fold_display_span(app, f)
+                closed_fold_display_span(app, snap, f)
             });
         // Blockwise visual: per-line column band [min_col, max_col].
         // Charwise / Linewise visual go through `visual_range` instead.
@@ -1296,8 +1311,11 @@ fn combine(gutter: Span<'static>, mut body: Vec<Span<'static>>) -> Line<'static>
 /// summary matches what the user just collapsed even when several
 /// sibling folds touch (e.g. `(1, 3)` + `(3, 5)` from
 /// `foldmethod=indent` on a top-level if/else).
-fn closed_fold_display_span(app: &App, fold: &crate::app::Fold) -> u32 {
-    let snap = app.document.snapshot();
+fn closed_fold_display_span(
+    app: &App,
+    snap: &DocumentSnapshot,
+    fold: &crate::app::Fold,
+) -> u32 {
     let total_lines = snap.buffer.line_count();
     let mut end = fold.end_line;
     let mut probe = end.saturating_add(1);
@@ -1335,13 +1353,13 @@ fn closed_fold_display_span(app: &App, fold: &crate::app::Fold) -> u32 {
 /// (the cursor is below the visible window) or before scroll.
 fn buffer_line_to_visible_row(
     app: &App,
+    snap: &DocumentSnapshot,
     target: u32,
     viewport_height: u32,
 ) -> Option<u32> {
     if target < app.scroll {
         return None;
     }
-    let snap = app.document.snapshot();
     let total_lines = snap.buffer.line_count();
     let mut buf_line = app.scroll;
     let mut row: u32 = 0;
@@ -1382,7 +1400,11 @@ fn buffer_line_to_visible_row(
     None
 }
 
-fn cursor_screen_position(app: &App, area: Rect) -> Option<(u16, u16)> {
+fn cursor_screen_position(
+    app: &App,
+    snap: &DocumentSnapshot,
+    area: Rect,
+) -> Option<(u16, u16)> {
     if app.cursor.line < app.scroll {
         return None;
     }
@@ -1394,17 +1416,13 @@ fn cursor_screen_position(app: &App, area: Rect) -> Option<(u16, u16)> {
     // any code path that sets `app.cursor` without first running
     // `snap_cursor_past_closed_folds` (e.g. edits that shift line
     // numbers underneath an unchanged cursor).
-    let total_lines = {
-        let snap = app.document.snapshot();
-        snap.buffer.line_count().max(1)
-    };
-    let row_in_view = buffer_line_to_visible_row(app, app.cursor.line, area.height as u32)?;
+    let total_lines = snap.buffer.line_count().max(1);
+    let row_in_view = buffer_line_to_visible_row(app, snap, app.cursor.line, area.height as u32)?;
     let gutter_w = if app.show_line_numbers {
         gutter_width(total_lines)
     } else {
         2
     };
-    let snap = app.document.snapshot();
     // `cursor.byte` is a UTF-8 byte offset into the line; the
     // terminal places glyphs by display width, not byte count. A
     // line containing `§` (2 bytes / 1 cell) or a CJK glyph (3
@@ -1631,7 +1649,7 @@ mod tests {
     #[test]
     fn compose_visible_lines_returns_height_lines_padded_with_marker() {
         let app = app_with("a\nb", 5);
-        let lines = compose_visible_lines(&app, 5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
         assert_eq!(lines.len(), 5);
         // Past EOF lines start with the `~` marker.
         let past_eof = format!("{:?}", lines[3]);
@@ -1642,7 +1660,7 @@ mod tests {
     fn compose_visible_lines_starts_at_scroll_offset() {
         let mut app = app_with("0\n1\n2\n3\n4", 2);
         app.scroll = 2;
-        let lines = compose_visible_lines(&app, 2, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),2, 80);
         // Line index 2 is "2"; expect that text in the rendered first line.
         let l0 = format!("{:?}", lines[0]);
         assert!(
@@ -1656,7 +1674,7 @@ mod tests {
         let mut app = app_with("hello", 5);
         app.cursor.byte = 3;
         let area = Rect::new(0, 0, 80, 5);
-        let pos = cursor_screen_position(&app, area).unwrap();
+        let pos = cursor_screen_position(&app, &app.document.snapshot(),area).unwrap();
         // gutter_width(1) = 4 (1 lead + 1 digit + 2 trailing).
         // Cursor at byte 3 → column gutter_w + 3 = 7.
         assert_eq!(pos.0, 7);
@@ -1673,7 +1691,7 @@ mod tests {
         let mut app = app_with("- §8 Performance commitments", 5);
         app.cursor.byte = 6;
         let area = Rect::new(0, 0, 80, 5);
-        let pos = cursor_screen_position(&app, area).unwrap();
+        let pos = cursor_screen_position(&app, &app.document.snapshot(),area).unwrap();
         // gutter_w is 4 for a 1-line file. `P` is at display col 5
         // within the line, so absolute screen col = 4 + 5 = 9.
         assert_eq!(pos.0, 9);
@@ -1687,7 +1705,7 @@ mod tests {
         let mut app = app_with("abc中 def", 5);
         app.cursor.byte = 6; // past the 3-byte CJK char
         let area = Rect::new(0, 0, 80, 5);
-        let pos = cursor_screen_position(&app, area).unwrap();
+        let pos = cursor_screen_position(&app, &app.document.snapshot(),area).unwrap();
         // gutter_w (4) + 5 display cells = 9.
         assert_eq!(pos.0, 9);
     }
@@ -1698,7 +1716,7 @@ mod tests {
         app.scroll = 0;
         app.cursor.line = 4; // not in viewport [0,1]
         let area = Rect::new(0, 0, 80, 2);
-        assert!(cursor_screen_position(&app, area).is_none());
+        assert!(cursor_screen_position(&app, &app.document.snapshot(),area).is_none());
     }
 
     #[test]
@@ -1720,7 +1738,7 @@ mod tests {
             identity: None,
         });
         let area = Rect::new(0, 0, 80, 7);
-        let pos = cursor_screen_position(&app, area).expect("cursor visible");
+        let pos = cursor_screen_position(&app, &app.document.snapshot(),area).expect("cursor visible");
         // Visible rows: 0=line0, 1=line1, 2=line2 (heading + summary),
         // 3=line5, 4=line6. Cursor at hidden line 3 → screen row 2
         // (area.y + 2 since area.y is 0).
@@ -1857,7 +1875,7 @@ mod tests {
     fn compose_visible_lines_applies_match_overlay() {
         let mut app = app_with("hello world", 1);
         app.current_match = Some(ProtoRange::new(pos(0, 6), pos(0, 11)));
-        let lines = compose_visible_lines(&app, 1, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),1, 80);
         let dump = format!("{:?}", lines[0]);
         // Spans should be split so "world" is its own span; we look for the
         // match style's signature in the debug dump.
@@ -1957,7 +1975,7 @@ mod tests {
             visual: Some(VisualMode::Charwise),
         };
         app.set_selections_blocking(SelectionSet::single(sel));
-        let lines = compose_visible_lines(&app, 1, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),1, 80);
         let dump = format!("{:?}", lines[0]);
         // The selected "hello" should appear as its own span(s); we just
         // verify the line still contains the original text after overlay.
@@ -1979,7 +1997,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("heading fold");
         app.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, 5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
         let row0 = line_text(&lines[0]);
         // Heading text is preserved.
         assert!(row0.contains("# Heading"), "row0 = {row0:?}");
@@ -1998,7 +2016,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("heading fold");
         app.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, 5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
         let blob: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(!blob.contains("hidden1"), "interior leaked: {blob}");
         assert!(!blob.contains("hidden2"), "interior leaked: {blob}");
@@ -2025,7 +2043,7 @@ mod tests {
             closed: true,
             identity: None,
         });
-        let lines = compose_visible_lines(&app, 7, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),7, 80);
         // Find the row that summarises the chained folds (line 1's
         // heading row).
         let row1_text = line_text(&lines[1]);
@@ -2041,7 +2059,7 @@ mod tests {
         app.foldmethod = crate::app::FoldMethod::Markdown;
         app.recompute_folds();
         // Leave the fold open (default).
-        let lines = compose_visible_lines(&app, 5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
         let row0 = line_text(&lines[0]);
         assert!(row0.contains("# H"), "row0 = {row0:?}");
         assert!(
@@ -2057,7 +2075,7 @@ mod tests {
         let mut app = app_with("# H\nbody\n", 5);
         app.foldmethod = crate::app::FoldMethod::Markdown;
         app.recompute_folds();
-        let lines = compose_visible_lines(&app, 5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
         let row0 = line_text(&lines[0]);
         assert!(row0.contains('▾'), "expected ▾ glyph on open fold: {row0:?}");
         assert!(!row0.contains('▸'), "did not expect ▸ glyph: {row0:?}");
@@ -2074,7 +2092,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("heading fold");
         app.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, 5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
         let row0 = line_text(&lines[0]);
         assert!(row0.contains('▸'), "expected ▸ glyph on closed fold: {row0:?}");
         assert!(!row0.contains('▾'), "did not expect ▾ glyph: {row0:?}");
@@ -2102,7 +2120,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("struct fold");
         app.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, 4, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),4, 80);
         // Row 0: heading + " ┄ N lines folded".
         // Row 1: the post-fold statement -- correct content, not
         //        leaking interior spans.
@@ -2155,7 +2173,7 @@ mod tests {
             visual: Some(VisualMode::Linewise),
         };
         app.set_selections_blocking(SelectionSet::single(sel));
-        let lines = compose_visible_lines(&app, 5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
         let visual_bg = visual_style().bg;
         let row0 = &lines[0];
         let has_visual_span = row0.spans.iter().any(|s| s.style.bg == visual_bg);
@@ -2185,7 +2203,7 @@ mod tests {
             visual: Some(VisualMode::Linewise),
         };
         app.set_selections_blocking(SelectionSet::single(sel));
-        let lines = compose_visible_lines(&app, 5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
         // Verify the second visible line ("beta") has at least one
         // span styled with the visual color.
         let visual_bg = visual_style().bg;
@@ -2202,7 +2220,7 @@ mod tests {
         let mut app = app_with("# H\nbody one\nbody two\nafter\n", 5);
         app.foldmethod = crate::app::FoldMethod::Markdown;
         app.recompute_folds();
-        let lines = compose_visible_lines(&app, 5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
         // Row 1 (body one) is inside the fold, not a fold start.
         let row1 = line_text(&lines[1]);
         assert!(!row1.contains('▸'), "row1: {row1:?}");

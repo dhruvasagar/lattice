@@ -105,8 +105,15 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
             last_modal = Some(app.modal);
         }
 
+        // §5.6.8: one Cache::load per frame for the active document.
+        // Steady-state ~300ps when the actor hasn't published since
+        // last frame; ~16ns on the first read after a publish.
+        // The Arc keeps the snapshot alive for the entire frame --
+        // the actor is free to publish concurrently and the new
+        // pointer is observed by next frame's load.
+        let frame_snap = app.snapshot_cache.load_arc();
         terminal
-            .draw(|frame| draw_frame(frame, &app))
+            .draw(|frame| draw_frame(frame, &app, &frame_snap))
             .context("draw frame")?;
 
         // 100ms poll keeps the loop responsive to terminal resizes without

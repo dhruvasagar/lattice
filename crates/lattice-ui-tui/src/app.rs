@@ -31,7 +31,8 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
 use lattice_runtime::{
-    CancellationToken, DocumentHandle, EventBus, RuntimeError, block_on, spawn_document,
+    CancellationToken, DocumentHandle, EventBus, RuntimeError, SnapshotCache, block_on,
+    spawn_document,
 };
 use lattice_syntax::{Lang, LangRegistry, StyledSpan, Syntax};
 
@@ -595,6 +596,15 @@ pub struct App {
     /// Denormalized from `documents[active_document_id].handle` for
     /// hot-path access.
     pub document: DocumentHandle,
+    /// Per-thread cached reader for [`Self::document`]'s published
+    /// snapshot cell (DESIGN.md §5.6.8). The renderer's per-frame
+    /// `snapshot_cache.load()` returns the current
+    /// `Arc<DocumentSnapshot>` in ~300ps in steady state (no edit
+    /// since last frame); ~16ns when the actor has just published.
+    /// Rebuilt whenever [`Self::document`] is reassigned --
+    /// `arc_swap::Cache` caches against a specific cell, so it must
+    /// follow the active document's handle.
+    pub snapshot_cache: SnapshotCache,
     /// Stable id for the *active* document buffer. Mirrors the
     /// active pane's `buffer_id` whenever that pane holds a
     /// Document leaf. Position-history entries (§5.1.1) and
@@ -1214,6 +1224,7 @@ impl App {
         // actor and the App share it without lifetime gymnastics.
         let registry = Arc::new(registry);
         let document = spawn_document(document, registry.clone());
+        let snapshot_cache = document.snapshot_cache();
         let document_buffer_id = BufferId::next();
         let initial_pane = PaneState {
             id: crate::pane::PaneId::next(),
@@ -1244,6 +1255,7 @@ impl App {
         });
         Self {
             document,
+            snapshot_cache,
             document_buffer_id,
             buffers,
             active_buffer: BufferKind::Document,
@@ -2961,6 +2973,8 @@ impl App {
         self.active_buffer = BufferKind::Document;
         self.document_buffer_id = new_id;
         self.document = new_handle;
+        // Rebuild the cache against the new document's published-cell.
+        self.snapshot_cache = self.document.snapshot_cache();
         self.syntax = syntax;
         self.last_parsed_text_version = self.document.text_version();
         self.cursor = Position::ZERO;
@@ -3041,6 +3055,10 @@ impl App {
             .document_mut(id)
             .expect("document() lookup above succeeded");
         self.document = entry.handle.clone();
+        // Rebuild the cache against the activated document's
+        // published-cell; the previous cache pointed at the old
+        // document.
+        self.snapshot_cache = self.document.snapshot_cache();
         self.syntax = entry.syntax.take();
         self.last_parsed_text_version = entry.last_parsed_text_version;
         self.document_buffer_id = id;

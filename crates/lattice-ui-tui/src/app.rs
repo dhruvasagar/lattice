@@ -846,13 +846,23 @@ pub struct App {
     /// own options register via [`crate::tui_options::register_tui_options`].
     pub config: std::sync::Arc<lattice_config::ConfigRegistry>,
     /// Typed handles to the renderer-agnostic options registered
-    /// at [`Self::new`] time. Read-side hot paths use
-    /// `*self.config.get(self.core_options.foo)` -- one mutex
-    /// lock + one `ArcSwap` load + one `Arc` deref. Helper
-    /// accessor methods on [`App`] (`Self::foldmethod`,
-    /// `Self::tabstop`, ...) wrap the indirection so call sites
-    /// read like a field access.
+    /// at [`Self::new`] time. Used by the cmdline path
+    /// (`config.parse_and_set_command`) and the cascade hook
+    /// (`drain_option_changes`) that refreshes [`Self::option_cache`].
     pub core_options: lattice_config::CoreOptions,
+    /// Hot-path read cache for the option values. Populated at
+    /// [`Self::new`] time; refreshed inside the
+    /// `Event::OptionChanged` cascade so writes through any path
+    /// (cmdline, plugins, the future customize buffer) propagate.
+    /// Accessor methods on `App` (`foldmethod()` / `tabstop()` /
+    /// `show_line_numbers()` / ...) read the cached primitive
+    /// directly (~1ns field access) instead of going through the
+    /// registry's mutex + ArcSwap + downcast (~33ns). The
+    /// renderer hits these accessors per visible line, so the
+    /// difference is measurable on the 60-line / 120-line frame
+    /// benchmarks. Single source of truth stays in
+    /// [`Self::config`]; this struct is a derived projection.
+    pub option_cache: OptionCache,
     /// Typed handles to the TUI-specific options. Same shape as
     /// [`Self::core_options`], scoped to options that only make
     /// sense for the terminal renderer (`ui.separator`,
@@ -1036,6 +1046,56 @@ pub struct Fold {
 // (`crate::app::FoldMethod` / `FoldMethod`) keep resolving without
 // edits.
 pub use lattice_core::FoldMethod;
+
+/// Hot-path read cache for the typed-options registry's core
+/// options (DESIGN.md §5.12). The renderer reads these once per
+/// visible line in the gutter / wrap / tabstop logic; going
+/// through the registry's mutex + `ArcSwap` + downcast on every
+/// read measured at ~33ns vs. ~1ns for a direct field access.
+/// At 60-120 visible lines × 2-4 reads per line per frame, the
+/// difference is in the multi-µs range and showed up on the
+/// `render::frame_*_lines` benches.
+///
+/// **Single source of truth stays in `App.config`.** This struct
+/// is a derived projection refreshed via the
+/// `Event::OptionChanged` cascade in
+/// [`App::drain_option_changes`] -- so any write source
+/// (cmdline, plugins, the future customize buffer view) keeps
+/// the cache coherent through the same path.
+#[derive(Debug, Clone, Copy)]
+pub struct OptionCache {
+    pub show_line_numbers: bool,
+    pub relative_line_numbers: bool,
+    pub wrap_lines: bool,
+    pub ignorecase: bool,
+    pub tabstop: u32,
+    pub foldenable: bool,
+    pub foldmethod: FoldMethod,
+    pub scrolloff: u32,
+    pub completion_auto_insert_single: bool,
+}
+
+impl Default for OptionCache {
+    /// Defaults match `lattice-config::register_core_options`.
+    /// Used at App construction before the first
+    /// `rebuild_option_cache` runs; once the registry is built
+    /// the cache is repopulated with the actual values (which
+    /// today match these defaults but may diverge once a future
+    /// `options.toml` layer applies user overrides at boot).
+    fn default() -> Self {
+        Self {
+            show_line_numbers: true,
+            relative_line_numbers: false,
+            wrap_lines: false,
+            ignorecase: false,
+            tabstop: 8,
+            foldenable: true,
+            foldmethod: FoldMethod::Manual,
+            scrolloff: 0,
+            completion_auto_insert_single: true,
+        }
+    }
+}
 
 /// Capture of the most recent find/till for `;`/`,` repeat.
 #[derive(Debug, Clone, Copy)]
@@ -1388,6 +1448,11 @@ impl App {
             pending_block_insert: None,
             config,
             core_options,
+            // Default placeholder; rebuilt from config below before
+            // the App is returned. The placeholder lets the struct
+            // literal type-check; the rebuild is the canonical
+            // initial population.
+            option_cache: OptionCache::default(),
             tui_options,
             help_topics,
             theme: crate::theme::Theme::default(),
@@ -1413,73 +1478,97 @@ impl App {
         // configured colors / separator (rather than the static
         // Theme::default values).
         app.sync_theme_from_config();
+        // Populate the hot-path option cache from canonical config
+        // values. Subsequent updates flow through the
+        // `Event::OptionChanged` cascade in
+        // `apply_option_cascade`.
+        app.rebuild_option_cache();
         app
     }
 
     // ---- Typed-options accessors (DESIGN.md §5.12) ----
     //
     // The current value of each option lives in `self.config`
-    // behind an `ArcSwap`. These accessors wrap the indirection
-    // so call sites read like a field access (`self.foldmethod()`
-    // instead of `*self.config.get(self.core_options.foldmethod)`).
-    // Each is a one-liner; rustc inlines them through the typed
-    // handle so there's no dispatch overhead beyond the registry's
-    // brief mutex acquisition + ArcSwap load + Arc deref.
+    // behind an `ArcSwap` (single source of truth). These
+    // accessors read from `self.option_cache` -- a derived
+    // projection refreshed via the §5.10 cascade hook on every
+    // `Event::OptionChanged` -- so the renderer's per-line option
+    // checks stay at field-access speed (~1ns) instead of the
+    // ~33ns mutex+ArcSwap+downcast dance per call.
 
     /// `:set number`. Default `true`.
     pub fn show_line_numbers(&self) -> bool {
-        *self.config.get(self.core_options.number)
+        self.option_cache.show_line_numbers
     }
 
     /// `:set relativenumber`. Default `false`. When true the
     /// gutter shows distance from the cursor; the cursor's line
     /// shows its absolute number. Implies `number` (vim's
-    /// behaviour) -- the post-set hook in [`Self::do_set`] mirrors
-    /// that cascade.
+    /// behaviour) -- the cascade hook in [`Self::apply_option_cascade`]
+    /// mirrors that cascade.
     pub fn relative_line_numbers(&self) -> bool {
-        *self.config.get(self.core_options.relativenumber)
+        self.option_cache.relative_line_numbers
     }
 
     /// `:set wrap`. Default `false`. (v1 renderer always
     /// horizontal-scrolls; this flag is read by future B.3 polish.)
     pub fn wrap_lines(&self) -> bool {
-        *self.config.get(self.core_options.wrap)
+        self.option_cache.wrap_lines
     }
 
     /// `:set ignorecase`. Default `false`.
     pub fn ignorecase(&self) -> bool {
-        *self.config.get(self.core_options.ignorecase)
+        self.option_cache.ignorecase
     }
 
     /// `:set tabstop=N`. Default `8`. Stored as `i64` in config
     /// (the typed system's integer type) and cast back to `u32`
-    /// at the read site -- the validate closure on the option
+    /// at cache-rebuild time -- the validate closure on the option
     /// caps the range to `1..=32` so the cast can never lose bits.
     pub fn tabstop(&self) -> u32 {
-        *self.config.get(self.core_options.tabstop) as u32
+        self.option_cache.tabstop
     }
 
     /// `:set scrolloff=N`. Default `0`. Same `i64`→`u32` shape
     /// as [`Self::tabstop`]; range `0..=64`.
     pub fn scrolloff(&self) -> u32 {
-        *self.config.get(self.core_options.scrolloff) as u32
+        self.option_cache.scrolloff
     }
 
     /// `:set foldmethod=...`. Default [`FoldMethod::Manual`].
     pub fn foldmethod(&self) -> FoldMethod {
-        *self.config.get(self.core_options.foldmethod)
+        self.option_cache.foldmethod
     }
 
     /// `:set foldenable` / `:set nofoldenable` (`zi`). Default `true`.
     pub fn foldenable(&self) -> bool {
-        *self.config.get(self.core_options.foldenable)
+        self.option_cache.foldenable
     }
 
     /// `:set completion.auto_insert_single`. Default `true`.
     pub fn completion_auto_insert_single(&self) -> bool {
-        *self
-            .config
-            .get(self.core_options.completion_auto_insert_single)
+        self.option_cache.completion_auto_insert_single
+    }
+
+    /// Repopulate [`Self::option_cache`] from the canonical values
+    /// in [`Self::config`]. Called at App-init time and from the
+    /// `Event::OptionChanged` cascade so any write source (cmdline,
+    /// plugin, customize buffer) refreshes the renderer-visible
+    /// projection. Cheap: 9 typed reads (~30ns each).
+    fn rebuild_option_cache(&mut self) {
+        self.option_cache = OptionCache {
+            show_line_numbers: *self.config.get(self.core_options.number),
+            relative_line_numbers: *self.config.get(self.core_options.relativenumber),
+            wrap_lines: *self.config.get(self.core_options.wrap),
+            ignorecase: *self.config.get(self.core_options.ignorecase),
+            tabstop: *self.config.get(self.core_options.tabstop) as u32,
+            foldenable: *self.config.get(self.core_options.foldenable),
+            foldmethod: *self.config.get(self.core_options.foldmethod),
+            scrolloff: *self.config.get(self.core_options.scrolloff) as u32,
+            completion_auto_insert_single: *self
+                .config
+                .get(self.core_options.completion_auto_insert_single),
+        };
     }
 
     // ---- Test-only typed setters (kept on the public surface
@@ -1490,26 +1579,32 @@ impl App {
     //      (foldmethod ⇒ recompute, ui.* ⇒ theme refresh, ...) match
     //      the user-driven path. ----
 
-    /// Set `foldmethod` directly. Runs the same post-set hook the
-    /// cmdline path runs (recomputes folds against the new method).
+    /// Set `foldmethod` directly. Drains the cascade afterwards
+    /// so the option cache + recompute_folds run synchronously
+    /// for the caller -- mirrors what production's `do_set` does
+    /// after the cmdline path.
     pub fn set_foldmethod_for_test(&mut self, fm: FoldMethod) {
         self.config
             .set(self.core_options.foldmethod, fm)
             .expect("set foldmethod");
-        self.recompute_folds();
+        self.drain_option_changes();
     }
 
-    /// Set `foldenable` directly. No side effects beyond storage.
-    pub fn set_foldenable_for_test(&self, on: bool) {
+    /// Set `foldenable` directly. Drains the cascade so the cache
+    /// reflects the new value before the caller observes it.
+    pub fn set_foldenable_for_test(&mut self, on: bool) {
         let _ = self.config.set(self.core_options.foldenable, on);
+        self.drain_option_changes();
     }
 
-    /// Set `completion.auto_insert_single` directly. No side
-    /// effects beyond storage.
-    pub fn set_completion_auto_insert_single_for_test(&self, on: bool) {
+    /// Set `completion.auto_insert_single` directly. Drains the
+    /// cascade so the cache reflects the new value before the
+    /// caller observes it.
+    pub fn set_completion_auto_insert_single_for_test(&mut self, on: bool) {
         let _ = self
             .config
             .set(self.core_options.completion_auto_insert_single, on);
+        self.drain_option_changes();
     }
 
     /// Async LSP boot. The runtime calls this once after
@@ -2259,8 +2354,14 @@ impl App {
             Action::GotoNextFold => self.do_goto_fold(true),
             Action::GotoPrevFold => self.do_goto_fold(false),
             Action::ToggleFoldEnable => {
+                // `zi` toggle path. The set() publishes through
+                // the bus; drain immediately so the cascade
+                // refreshes `option_cache.foldenable` before any
+                // subsequent reads in this same `apply` call (and
+                // before the next frame draws).
                 let cur = self.foldenable();
                 let _ = self.config.set(self.core_options.foldenable, !cur);
+                self.drain_option_changes();
             }
             Action::SelectRegister(reg) => {
                 self.pending_register = Some(reg);
@@ -4033,6 +4134,11 @@ impl App {
     /// the canonical name regardless of which alias the user
     /// typed).
     fn apply_option_cascade(&mut self, canonical_name: &str) {
+        // Refresh the hot-path cache so subsequent reads from
+        // `app.show_line_numbers()` etc. see the new value.
+        // Cheap (~300ns total for all 9 options); only runs when
+        // an option actually changed, never on every frame.
+        self.rebuild_option_cache();
         match canonical_name {
             "relativenumber" => {
                 // Vim cascade: `:set rnu` implies `:set nu` so the

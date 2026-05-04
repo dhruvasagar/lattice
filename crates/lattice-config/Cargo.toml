@@ -13,5 +13,12 @@ lattice-completion = { path = "../lattice-completion" }
 arc-swap = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "options"
+harness = false
+
 [lints]
 workspace = true

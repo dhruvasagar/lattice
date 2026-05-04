@@ -266,9 +266,9 @@ work above.
 
 | Benchmark                     | size             | time     | Floor / Target | Improvement target         |
 |-------------------------------|------------------|----------|----------------|----------------------------|
-| `render::frame_24_lines/200`  | 80×24, 200 fns   | **14µs** | ~10µs / <50µs  | ⏹️ at the practical floor.  |
-| `render::frame_60_lines/200`  | 200×60, 200 fns  | **35µs** | ~30µs / <100µs | ⏹️                          |
-| `render::frame_120_lines/200` | 200×120, 200 fns | **77µs** | ~70µs / <150µs | ⏹️                          |
+| `render::frame_24_lines/200`  | 80×24, 200 fns   | **13µs** | ~10µs / <50µs  | ⏹️ at the practical floor.  |
+| `render::frame_60_lines/200`  | 200×60, 200 fns  | **42µs** | ~30µs / <100µs | ⏹️                          |
+| `render::frame_120_lines/200` | 200×120, 200 fns | **78µs** | ~70µs / <150µs | ⏹️                          |
 
 The frame_60 / frame_120 rows ticked down ~15% after the renderer
 migrated to `Cache::load` + a single per-frame snapshot
@@ -283,6 +283,20 @@ total per-frame cost on the editor side is ~192µs -- well under
 the §8.2 "Frame render TUI <500µs" target. The remaining cost is
 ratatui's terminal write, which isn't measured here (hardware-
 bound; not benchable without a real TTY).
+
+**Typed-options migration** (75e2390 → 1bfee16): the initial
+landing of `lattice-config` regressed render frames by 25-57%
+because every per-frame option read (`app.show_line_numbers()`,
+`app.foldmethod()`, ...) went through the registry's mutex +
+`ArcSwap` + downcast (~33ns per read; benchmarked in
+`config::get_bool_via_handle`). At 60-120 visible lines × 2-4
+reads per line, the path added multiple microseconds per frame.
+The follow-up (commit landing this entry) restores baseline by
+caching the option values on `App.option_cache`, refreshed via
+the `Event::OptionChanged` cascade in `apply_option_cascade`.
+Reads become field accesses (~1ns); the canonical value still
+lives in `lattice-config::ConfigRegistry`, the cache is a
+derived projection. Numbers above reflect the post-fix state.
 
 ---
 
@@ -329,6 +343,32 @@ Direct rope mutations.
 
 `position_byte_round_trip` is *faster* on bigger ropes -- ropey's
 B-tree packs better at scale.
+
+---
+
+## Typed options (`crates/lattice-config/benches/options.rs`)
+
+The §5.12 typed-options registry. Read paths (`config.get` /
+`config.with`) appear inside the renderer's per-line gutter
+checks; write paths (`config.set` / `parse_and_set_command`) are
+cmdline / plugin / customize-buffer triggered (cold). Hot-path
+reads are cached on `App.option_cache` (~1ns field access);
+these benches measure the underlying registry costs.
+
+| Bench                                 | Time      | Floor / Target | Notes                                                                                                    |
+|---------------------------------------|-----------|----------------|----------------------------------------------------------------------------------------------------------|
+| `config::get_bool_via_handle`         | **34ns**  | ~30ns / <50ns  | Mutex acquire + `Arc::clone` + `as_any().downcast_ref` + `ArcSwap::load_full` + `Arc<bool>` deref.       |
+| `config::with_int_via_handle`         | **26ns**  | ~25ns / <50ns  | Skips one `Arc::clone` vs `get`; the cheaper closure-style read.                                         |
+| `config::lookup_by_name`              | **35ns**  | ~30ns / <100ns | HashMap probe + `Arc::clone`. Cmdline path uses this; not on the per-frame render hot path.              |
+| `config::set_no_publisher`            | **134ns** | ~100ns / <500ns | Validate + `ArcSwap::store`. No event publisher wired -- baseline cost of the typed write.              |
+| `config::set_with_publisher`          | **145ns** | ~120ns / <500ns | Same as above plus the publisher closure -- registry's contribution to the §5.10 `OptionChanged` flow.  |
+| `config::parse_and_set_command_bool`  | **220ns** | ~180ns / <1µs  | Full cmdline path: `parse_set` + lookup + parse_and_set + format echo + publish.                         |
+
+The `App.option_cache` projection (commit landing this entry)
+turns the per-frame renderer reads into ~1ns field accesses.
+The numbers above gate the *write* path -- which is cold on
+keystroke flame graphs (only `:set` and rare programmatic
+writes hit it). All comfortably under their targets.
 
 ---
 

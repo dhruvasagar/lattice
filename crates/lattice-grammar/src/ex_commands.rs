@@ -67,6 +67,7 @@ pub struct ExBuiltins {
     pub lsp_log: ExCommandId,
     pub lsp_trace: ExCommandId,
     pub lsp_status: ExCommandId,
+    pub lsp_server_log: ExCommandId,
     pub lsp_restart: ExCommandId,
     pub lsp_log_level: ExCommandId,
     pub lsp_log_clear: ExCommandId,
@@ -608,6 +609,19 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let lsp_server_log = registry.register_ex_command(
+        "ex:lsp-server-log",
+        "Picker-style listing of every running LSP server actor with workspace root + buffer count + capability summary; each row links to its log + trace via `exec:` URLs (`:lsp-server-log`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::LspServerLogListing)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let lsp_restart = registry.register_ex_command(
         "ex:lsp-restart",
         "Force-restart a stuck LSP server. Wired but no-op until the supervisor restart path lands in 4.4 (`:lsp-restart <server>`).",
@@ -796,6 +810,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_log,
         lsp_trace,
         lsp_status,
+        lsp_server_log,
         lsp_restart,
         lsp_log_level,
         lsp_log_clear,

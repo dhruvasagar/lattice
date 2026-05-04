@@ -2005,6 +2005,28 @@ impl App {
         self.open_help(buffer.with_markdown_syntax(self.lang_registry.clone()));
     }
 
+    /// `:lsp-server-log` -- picker-style listing of every running
+    /// LSP server actor. Each row shows server id + workspace
+    /// root + buffer count + capability summary, with `exec:`
+    /// links that open the per-server log + trace on Enter.
+    /// Filter rows with vim's `/query` regex search; a real
+    /// fuzzy picker arrives with the bundled fuzzy-finder
+    /// plugin (Phase 8b).
+    pub fn do_lsp_server_log_listing(&mut self) {
+        let buffer = match self.lsp.try_lock() {
+            Ok(sup) => crate::help::HelpBuffer::lsp_server_log_listing(&sup),
+            Err(_) => crate::help::HelpBuffer::from_lines(
+                "lsp-server-log",
+                vec![
+                    "# :lsp-server-log".into(),
+                    String::new(),
+                    "(supervisor lock unavailable; an async open / shutdown is in flight)".into(),
+                ],
+            ),
+        };
+        self.open_help(buffer.with_markdown_syntax(self.lang_registry.clone()));
+    }
+
     /// `:lsp-restart <server>` -- supervisor restart hook.
     /// Currently emits an info message; full restart-with-
     /// backoff lands in 4.4.
@@ -5339,6 +5361,7 @@ impl App {
             Effect::OpenLspLog { server_id } => self.do_open_lsp_log(server_id.as_deref()),
             Effect::ToggleLspTrace { server_id } => self.do_toggle_lsp_trace(&server_id),
             Effect::LspStatus => self.do_lsp_status(),
+            Effect::LspServerLogListing => self.do_lsp_server_log_listing(),
             Effect::LspRestart { server_id } => self.do_lsp_restart(&server_id),
             Effect::SetLspLogLevel { server_id, level } => {
                 self.do_set_lsp_log_level(server_id.as_deref(), &level)
@@ -5609,6 +5632,16 @@ impl App {
                 // walker filters those out (see `do_walk_history`).
                 self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
                 self.do_describe_command(&name, None);
+            }
+            crate::help::HelpLinkTarget::Execute(cmdline) => {
+                // `[label](exec:CMDLINE)` -- run `:CMDLINE` as if
+                // the user had typed it. Used by picker-style help
+                // buffers (e.g. `:lsp-server-log`) where each row
+                // dispatches the underlying ex-command on Enter.
+                // Push history so `<C-o>` walks back into the
+                // picker.
+                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
+                self.execute_ex_line(&cmdline);
             }
             crate::help::HelpLinkTarget::Chord(chord) => {
                 self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
@@ -7791,6 +7824,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::OpenLspLog { .. }
         | Effect::ToggleLspTrace { .. }
         | Effect::LspStatus
+        | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
         | Effect::SetLspLogLevel { .. }
         | Effect::LspLogClear { .. } => false,
@@ -7839,6 +7873,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::OpenLspLog { .. }
         | Effect::ToggleLspTrace { .. }
         | Effect::LspStatus
+        | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
         | Effect::SetLspLogLevel { .. }
         | Effect::LspLogClear { .. } => false,

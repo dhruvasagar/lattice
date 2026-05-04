@@ -180,6 +180,17 @@ impl LspSupervisor {
             .collect()
     }
 
+    /// Number of buffers currently attached to the actor at
+    /// `key`. Cheap walk over `attachments`; used by
+    /// `:lsp-server-log` to surface per-server buffer counts in
+    /// the picker margin.
+    pub fn buffer_count_for(&self, key: &ActorKey) -> usize {
+        self.attachments
+            .values()
+            .filter(|keys| keys.contains(key))
+            .count()
+    }
+
     /// Open a buffer. Walks the config registry, spawns
     /// matching actors as needed, attaches the buffer to each,
     /// and emits `didOpen` per server. Returns the list of

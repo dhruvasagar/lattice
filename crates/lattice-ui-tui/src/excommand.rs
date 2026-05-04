@@ -395,6 +395,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("lsptrace", "ex:lsp-trace"),
     ("lsp-status", "ex:lsp-status"),
     ("lspstatus", "ex:lsp-status"),
+    ("lsp-server-log", "ex:lsp-server-log"),
+    ("lspserverlog", "ex:lsp-server-log"),
     ("lsp-restart", "ex:lsp-restart"),
     ("lsprestart", "ex:lsp-restart"),
     ("lsp-log-level", "ex:lsp-log-level"),

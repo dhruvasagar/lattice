@@ -234,6 +234,30 @@ impl Capabilities {
         self.server.definition_provider.is_some()
     }
 
+    /// Server's `referencesProvider` presence -- gates 4.2.d's
+    /// `gr` dispatch.
+    pub fn supports_references(&self) -> bool {
+        self.server.references_provider.is_some()
+    }
+
+    /// Server's `documentSymbolProvider` presence -- gates the
+    /// `:document-symbols` outline view (Phase 4.2.e).
+    pub fn supports_document_symbol(&self) -> bool {
+        self.server.document_symbol_provider.is_some()
+    }
+
+    /// Server's `workspaceSymbolProvider` presence -- gates the
+    /// `:workspace-symbols` picker (Phase 4.2.f).
+    pub fn supports_workspace_symbol(&self) -> bool {
+        self.server.workspace_symbol_provider.is_some()
+    }
+
+    /// Server's `completionProvider` presence -- gates 4.2.g's
+    /// `gen:lsp-completion` source.
+    pub fn supports_completion(&self) -> bool {
+        self.server.completion_provider.is_some()
+    }
+
     /// Server's text-document sync mode -- determines whether we
     /// send incremental or full content on `didChange`. None is
     /// the LSP signal that the server doesn't want sync at all.

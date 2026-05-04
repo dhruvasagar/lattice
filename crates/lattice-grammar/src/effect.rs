@@ -226,6 +226,14 @@ pub enum Effect {
     /// `:lsp-status` -- render every running server (id, root,
     /// pid, uptime, capability summary) in a help-style buffer.
     LspStatus,
+    /// `:lsp-server-log` -- picker-style listing of every running
+    /// server actor with workspace root + buffer count +
+    /// capability summary, each row carrying `exec:` links to
+    /// the per-server log + trace buffers. Use vim search
+    /// (`/query`) to filter rows; press `<CR>` on a link to
+    /// open. A real fuzzy picker arrives with the bundled
+    /// fuzzy-finder plugin (Phase 8b).
+    LspServerLogListing,
     /// `:lsp-restart <server>` -- supervisor force-restart with
     /// backoff. Wired but no-op until the supervisor's restart
     /// path lands (4.4).

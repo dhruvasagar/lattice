@@ -295,6 +295,65 @@ impl HelpBuffer {
         Self::from_lines(format!("lsp:{server_id}:trace"), lines)
     }
 
+    /// Build the `:lsp-server-log` picker -- one row per running
+    /// actor with workspace root + buffer count + capability
+    /// summary in the margin, each row carrying an `exec:` link
+    /// to its log + trace. Use `/query` (vim regex search) to
+    /// filter; press `<CR>` on a link to open. A real fuzzy
+    /// picker arrives with the bundled fuzzy-finder plugin
+    /// (Phase 8b); for now this listing keeps everything
+    /// reachable through the existing help-buffer machinery.
+    pub fn lsp_server_log_listing(supervisor: &lattice_lsp::LspSupervisor) -> Self {
+        let mut actors = supervisor.running_actors();
+        // Stable order: by server id, then by workspace path. So
+        // re-running the picker doesn't reshuffle rows.
+        actors.sort_by(|a, b| {
+            a.0.1
+                .cmp(&b.0.1)
+                .then_with(|| a.0.0.cmp(&b.0.0))
+        });
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!(
+            "# :lsp-server-log ({} server actor(s) running)",
+            actors.len()
+        ));
+        lines.push(String::new());
+        if actors.is_empty() {
+            lines.push(
+                "(no LSP servers running; open a file with a matching language to attach. \
+                 see :lsp-status for the full overview.)"
+                    .to_string(),
+            );
+            return Self::from_lines("lsp-server-log", lines);
+        }
+        lines.push(
+            "Each row links to the per-server log (`*lsp:<server>*`) and trace \
+             (`*lsp:<server>:trace*`). Press `<CR>` on a link to open. Use \
+             `/query` to filter rows by id or workspace path."
+                .to_string(),
+        );
+        lines.push(String::new());
+        for ((workspace, server_id), handle) in &actors {
+            let buffer_count = supervisor.buffer_count_for(&(workspace.clone(), server_id.clone()));
+            let caps = handle.capabilities();
+            let cap_summary = summarise_capabilities(&caps);
+            // Compose the row. The id link runs `:lsp-log <id>`
+            // (per-server log); the trailing trace link toggles
+            // + opens the JSON-RPC trace.
+            lines.push(format!("## [{server_id}](exec:lsp-log {server_id})"));
+            lines.push(format!("- workspace:    `{}`", workspace.display()));
+            lines.push(format!(
+                "- buffers:      {buffer_count} attached"
+            ));
+            lines.push(format!("- capabilities: {cap_summary}"));
+            lines.push(format!(
+                "- trace:        [open / toggle](exec:lsp-trace {server_id})"
+            ));
+            lines.push(String::new());
+        }
+        Self::from_lines("lsp-server-log", lines)
+    }
+
     /// Build the `:lsp-status` view -- one row per running
     /// actor (id, workspace root, server-side capability
     /// summary).
@@ -564,6 +623,17 @@ pub enum HelpLinkTarget {
     /// follow-link handler scrolls the *current* help buffer to
     /// the matching anchor's line; no buffer swap.
     Anchor(String),
+    /// `[label](exec:CMDLINE)` -- *executes* the cmdline as if the
+    /// user had typed `:CMDLINE<CR>`. Distinct from
+    /// [`Self::Command`] which describes the command instead of
+    /// running it. Used by picker-style help buffers (e.g.
+    /// `:lsp-server-log`) where each row's link should fire the
+    /// real command on Enter, not surface its docs.
+    ///
+    /// The payload is the *full* cmdline (command + args, no
+    /// leading colon). Multi-arg commands like `lsp-log rust`
+    /// pass through verbatim.
+    Execute(String),
     /// `[[…]]` whose payload didn't match a known scheme. Preserved
     /// verbatim for forward-compat -- a plugin / future scheme can
     /// inspect the raw payload.
@@ -610,6 +680,37 @@ pub fn topic_link(name: &str) -> String {
 /// to keep visual alignment.
 fn one_line(s: &str) -> String {
     s.lines().collect::<Vec<_>>().join(" / ")
+}
+
+/// One-line summary of a server's negotiated capabilities. Used
+/// in the `:lsp-server-log` picker margin so a glance tells the
+/// user "this server has hover + completion but not references"
+/// without having to dig into `:lsp-status`.
+fn summarise_capabilities(caps: &lattice_lsp::Capabilities) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if caps.supports_hover() {
+        parts.push("hover");
+    }
+    if caps.supports_definition() {
+        parts.push("definition");
+    }
+    if caps.supports_references() {
+        parts.push("references");
+    }
+    if caps.supports_document_symbol() {
+        parts.push("document-symbol");
+    }
+    if caps.supports_workspace_symbol() {
+        parts.push("workspace-symbol");
+    }
+    if caps.supports_completion() {
+        parts.push("completion");
+    }
+    if parts.is_empty() {
+        "(none advertised)".into()
+    } else {
+        parts.join(", ")
+    }
 }
 
 /// Render one log record as a one-line entry: `HH:MM:SS.mmm
@@ -754,6 +855,10 @@ pub fn parse_help_links(text: &str) -> Vec<HelpLink> {
 fn classify_link_url(url: &str) -> HelpLinkTarget {
     if let Some(rest) = url.strip_prefix("command:") {
         HelpLinkTarget::Command(rest.to_string())
+    } else if let Some(rest) = url.strip_prefix("exec:") {
+        // `[label](exec:CMDLINE)` -- runs `:CMDLINE` on Enter.
+        // Distinct from `command:` which describes the command.
+        HelpLinkTarget::Execute(rest.to_string())
     } else if let Some(rest) = url.strip_prefix("key:") {
         HelpLinkTarget::Chord(rest.to_string())
     } else if let Some(rest) = url.strip_prefix("help:") {

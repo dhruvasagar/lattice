@@ -373,18 +373,18 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
             Line::from(render_help_line(l, &spans))
         })
         .collect();
-    // Honour the `wrap` option so long lines (LSP trace records,
-    // wide diagnostic messages, etc.) don't get clipped at the
-    // popup's right edge. `trim: false` preserves leading
-    // whitespace on wrapped continuation rows so indentation in
-    // markdown / fenced code blocks reads correctly. Cursor
-    // positioning at the end of this fn still uses the unwrapped
-    // line index -- it will land at the wrap origin row, which is
-    // good-enough until the cursor walker grows wrap-awareness.
-    let mut para = Paragraph::new(visible);
-    if app.wrap_lines() {
-        para = para.wrap(Wrap { trim: false });
-    }
+    // Always wrap inside help / log / `:lsp-trace-log` popups --
+    // the content is prose / JSON-RPC payloads / log records, not
+    // code, and the right-edge clip on long lines hides the data
+    // the user opened the buffer to read. Decoupled from the
+    // global `wrap` option (which targets code buffers); help
+    // buffers wrap unconditionally. `trim: false` preserves
+    // leading whitespace on continuation rows so markdown /
+    // fenced-code indentation survives. Cursor positioning at the
+    // end of this fn still uses the unwrapped line index -- it
+    // lands on the wrap origin row, good-enough until the cursor
+    // walker grows wrap-awareness.
+    let para = Paragraph::new(visible).wrap(Wrap { trim: false });
     frame.render_widget(para, inner);
 
     // Move the terminal cursor inside the popup so motions

@@ -469,7 +469,28 @@ pub fn uri_to_path(uri: &Uri) -> Option<std::path::PathBuf> {
 }
 
 pub fn uri_from_path(p: &std::path::Path) -> Uri {
-    let display = p.to_string_lossy();
+    // Promote relative paths to absolute *before* building the URI.
+    // `file:///crates/lattice-core/src/buffer.rs` is interpreted by
+    // every LSP server as `/crates/lattice-core/...` (root-rooted),
+    // not as "the file the editor opened from a relative arg" --
+    // rust-analyzer then can't find the file inside its workspace,
+    // returns null hovers / definitions, and emits notify-watcher
+    // warnings about paths that don't exist on disk. The fix is to
+    // canonicalise to an absolute path here so every URI we send is
+    // wire-correct regardless of how the user invoked the editor
+    // (relative path on the cli, etc.).
+    //
+    // `std::path::absolute` does NOT do I/O and does NOT resolve
+    // symlinks -- both are deliberate. We just want
+    // `cwd().join(p)`-shaped output. If absolute() fails (very rare
+    // -- malformed path on Windows mostly), fall back to the
+    // original; the URI may then still be wrong but the server's
+    // existing failure mode (null reply + warning) is no worse than
+    // before this fix.
+    let absolute = std::path::absolute(p)
+        .ok()
+        .unwrap_or_else(|| p.to_path_buf());
+    let display = absolute.to_string_lossy();
     // Normalise Windows backslashes to forward slashes so the
     // URI is well-formed across platforms. Drive letters
     // (`C:\`) remain in `<C:/path/...>` form, which is what LSP
@@ -1126,4 +1147,51 @@ fn trace_render(msg: &Message) -> String {
         }
     }
     s
+}
+
+#[cfg(test)]
+mod uri_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn relative_path_promoted_to_absolute_uri() {
+        // Bug: a relative path produced `file:///<path>` which the
+        // server interprets as root-rooted, not as
+        // "<cwd>/<path>". Result: rust-analyzer can't find the
+        // file in its workspace and every hover / definition
+        // returns null. Fix: `uri_from_path` calls
+        // `std::path::absolute` first.
+        let cwd = std::env::current_dir().expect("cwd");
+        let rel = PathBuf::from("crates/lattice-core/src/buffer.rs");
+        let uri = uri_from_path(&rel);
+        let uri_str = uri.as_str();
+        assert!(
+            uri_str.starts_with("file://"),
+            "uri must start with file://, got {uri_str:?}"
+        );
+        // The absolute prefix (cwd) must appear in the URI.
+        let cwd_marker = cwd
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+            .to_string();
+        assert!(
+            uri_str.contains(&cwd_marker),
+            "uri should contain absolute cwd; got {uri_str:?} cwd marker {cwd_marker:?}"
+        );
+        assert!(
+            uri_str.ends_with("crates/lattice-core/src/buffer.rs"),
+            "uri should end with the original relative path; got {uri_str:?}"
+        );
+    }
+
+    #[test]
+    fn absolute_path_unchanged_in_uri() {
+        // Already-absolute paths should round-trip without extra
+        // canonicalisation (no symlink resolution).
+        let abs = PathBuf::from("/tmp/lattice-test/foo.rs");
+        let uri = uri_from_path(&abs);
+        assert_eq!(uri.as_str(), "file:///tmp/lattice-test/foo.rs");
+    }
 }

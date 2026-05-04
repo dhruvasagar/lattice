@@ -398,15 +398,15 @@ A `.cpp` file with both `clangd` (semantics) and a custom
 linter bridge (style) attached. Each is its own actor; both
 publish diagnostics. lattice merges per feature:
 
-| Feature | What happens with two servers |
-|---|---|
-| Diagnostics | Both lists shown in the gutter / inline overlay / `:diagnostics` buffer. The most severe wins per-line for the gutter glyph. |
-| Hover | Both responses concatenated, each section labelled with its `server_id`. |
-| Goto-definition | Higher-priority server's response wins. If empty, falls through to the next. |
-| References | Union of all servers' results, deduped. |
-| Code actions | Picker shows entries from each server, prefixed `[server-id]` so you can tell them apart. |
-| Formatting | Single winner: highest-priority server with `documentFormattingProvider`. Avoids two formatters fighting. |
-| Rename | `WorkspaceEdit`s from each server merged; conflicts (same range edited by two servers) resolve to the higher-priority one. |
+| Feature         | What happens with two servers                                                                                                |
+|-----------------|------------------------------------------------------------------------------------------------------------------------------|
+| Diagnostics     | Both lists shown in the gutter / inline overlay / `:diagnostics` buffer. The most severe wins per-line for the gutter glyph. |
+| Hover           | Both responses concatenated, each section labelled with its `server_id`.                                                     |
+| Goto-definition | Higher-priority server's response wins. If empty, falls through to the next.                                                 |
+| References      | Union of all servers' results, deduped.                                                                                      |
+| Code actions    | Picker shows entries from each server, prefixed `[server-id]` so you can tell them apart.                                    |
+| Formatting      | Single winner: highest-priority server with `documentFormattingProvider`. Avoids two formatters fighting.                    |
+| Rename          | `WorkspaceEdit`s from each server merged; conflicts (same range edited by two servers) resolve to the higher-priority one.   |
 
 Server priority is configurable in `lsp.toml`:
 

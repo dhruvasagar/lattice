@@ -64,6 +64,12 @@ pub struct ExBuiltins {
     pub list_diagnostics: ExCommandId,
     pub next_diagnostic: ExCommandId,
     pub prev_diagnostic: ExCommandId,
+    pub lsp_log: ExCommandId,
+    pub lsp_trace: ExCommandId,
+    pub lsp_status: ExCommandId,
+    pub lsp_restart: ExCommandId,
+    pub lsp_log_level: ExCommandId,
+    pub lsp_log_clear: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -535,6 +541,162 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // ---- LSP introspection (Phase 4.1.g) -------------------
+    let lsp_log = registry.register_ex_command(
+        "ex:lsp-log",
+        "Open the LSP subsystem log (`*lsp*`) or a per-server log (`*lsp:<server>*`) (`:lsp-log [server]`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| {
+                let server_id = match &ctx.args {
+                    Args::String(s) if !s.is_empty() => Some(s.to_string()),
+                    _ => None,
+                };
+                Ok(Effect::OpenLspLog { server_id })
+            }),
+            args_schema: vec![ArgSpec {
+                name: "server",
+                kind: ArgKind::String,
+                doc: "Server id (e.g. `rust`, `python`). Absent = subsystem-wide log.",
+                prompt: "server:",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let lsp_trace = registry.register_ex_command(
+        "ex:lsp-trace",
+        "Toggle JSON-RPC wire trace for a server + open `*lsp:<server>:trace*` (`:lsp-trace <server>`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(s) if !s.is_empty() => Ok(Effect::ToggleLspTrace {
+                    server_id: s.to_string(),
+                }),
+                _ => Err(CommandError::BadArgs(
+                    ":lsp-trace requires a server id".into(),
+                )),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "server",
+                kind: ArgKind::String,
+                doc: "Server id to toggle trace on.",
+                prompt: "server:",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let lsp_status = registry.register_ex_command(
+        "ex:lsp-status",
+        "Render every running LSP server (id, root, pid, uptime) in a help-style buffer (`:lsp-status`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::LspStatus)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let lsp_restart = registry.register_ex_command(
+        "ex:lsp-restart",
+        "Force-restart a stuck LSP server. Wired but no-op until the supervisor restart path lands in 4.4 (`:lsp-restart <server>`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(s) if !s.is_empty() => Ok(Effect::LspRestart {
+                    server_id: s.to_string(),
+                }),
+                _ => Err(CommandError::BadArgs(
+                    ":lsp-restart requires a server id".into(),
+                )),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "server",
+                kind: ArgKind::String,
+                doc: "Server id to restart.",
+                prompt: "server:",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let lsp_log_level = registry.register_ex_command(
+        "ex:lsp-log-level",
+        "Set the subsystem-wide default min log level (or a per-server override) (`:lsp-log-level [server] <level>`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(s) if !s.is_empty() => {
+                    let trimmed = s.trim();
+                    let mut parts = trimmed.split_whitespace();
+                    let first = parts.next().unwrap_or("");
+                    let second = parts.next();
+                    let (server_id, level) = match second {
+                        Some(level) => (Some(first.to_string()), level.to_string()),
+                        None => (None, first.to_string()),
+                    };
+                    Ok(Effect::SetLspLogLevel { server_id, level })
+                }
+                _ => Err(CommandError::BadArgs(
+                    ":lsp-log-level requires `[server] <level>`".into(),
+                )),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "spec",
+                kind: ArgKind::String,
+                doc: "Either a level (`error`/`warn`/`info`/`debug`/`trace`) for the subsystem default, or `<server> <level>` for a per-server override.",
+                prompt: "[server] level:",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let lsp_log_clear = registry.register_ex_command(
+        "ex:lsp-log-clear",
+        "Drop the records in `*lsp*` (no arg) or `*lsp:<server>*` (with arg) (`:lsp-log-clear [server]`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| {
+                let server_id = match &ctx.args {
+                    Args::String(s) if !s.is_empty() => Some(s.to_string()),
+                    _ => None,
+                };
+                Ok(Effect::LspLogClear { server_id })
+            }),
+            args_schema: vec![ArgSpec {
+                name: "server",
+                kind: ArgKind::String,
+                doc: "Server id whose ring to clear. Absent = subsystem-wide.",
+                prompt: "server:",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
     let list_diagnostics = registry.register_ex_command(
         "ex:diagnostics",
         "Open a help-style buffer listing every workspace diagnostic with clickable per-entry source links (`:diagnostics`).",
@@ -631,6 +793,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         list_diagnostics,
         next_diagnostic,
         prev_diagnostic,
+        lsp_log,
+        lsp_trace,
+        lsp_status,
+        lsp_restart,
+        lsp_log_level,
+        lsp_log_clear,
     }
 }
 

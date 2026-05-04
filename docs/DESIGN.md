@@ -551,45 +551,206 @@ Tree-sitter is responsible for **all** structural code understanding.
 
 ### 5.4 LSP Subsystem
 
-We write our own client. `tower-lsp` is server-side; `async-lsp` brings tower middleware that doesn't fit our actor model. `lsp-types` (LSP 3.17) provides the wire types; the rest is hand-rolled.
+We write our own client. `tower-lsp` is server-side; `async-lsp` brings tower middleware that doesn't fit our actor model. `lsp-types` (LSP 3.17) provides the wire types; the rest is hand-rolled. The companion docs ([`lsp-architecture.md`](lsp-architecture.md) for module-level commentary, [`help/lsp.md`](help/lsp.md) for the user surface, [`lsp-features.md`](lsp-features.md) for per-method tracking) elaborate beyond the design-relevant detail captured here.
 
-The full developer-facing architecture lives in [`lsp-architecture.md`](lsp-architecture.md); the user-facing help in [`help/lsp.md`](help/lsp.md); the per-feature implementation status in [`lsp-features.md`](lsp-features.md). This section is the canonical principle-led summary.
+#### 5.4.1 Crate layout
 
-**Crate layout.** `lattice-lsp` ships:
+`lattice-lsp` is a self-contained crate; `lattice-ui-tui` consumes its public API. The module split mirrors the data-flow stages:
 
-- `framing` -- Content-Length header parser (pure).
-- `jsonrpc` -- typed Request / Response / Notification with id correlation.
-- `codec` -- tokio AsyncRead / AsyncWrite codec.
-- `transport` -- child-process spawn + stdio capture.
-- `actor` -- per-server tokio task + `ServerHandle` (the editor-facing analogue of `lattice_runtime::DocumentHandle`).
-- `capabilities` -- client advertise + negotiated `Capabilities` snapshot.
-- `config` -- `ServerConfig` + curated registry (rust-analyzer, pyright, gopls, tsserver, clangd, lua-language-server) + workspace-root resolution.
-- `sync` -- `DocSync`: didOpen / didChange (Incremental + Full + None) / didClose, with per-doc version tracking and a String mirror for utf-16 column conversion.
-- `position` -- utf-8 ↔ utf-16 ↔ utf-32 column conversion.
-- `diagnostics` -- broadcast bus for `publishDiagnostics` fan-out.
-- `pending` -- `Pending<T>` (oneshot wrapper, parameterised over `LspError`).
+- `framing` -- LSP `Content-Length` header parser. Pure; stream-agnostic. Default 64 MiB per-message ceiling guards against runaway servers.
+- `jsonrpc` -- JSON-RPC 2.0 typed `Request` / `Response` / `Notification` with `RequestId` correlation (`Number` / `String` / `Null` accepted on the read path; `Number` emitted). Standard error codes (`-32700..=-32600`) plus LSP extensions (`-32099..=-32000`).
+- `codec` -- tokio `AsyncBufRead` / `AsyncWrite` codec. One `read_message` / `write_message` per LSP message; reuses scratch buffers so steady-state alloc count is one per round-trip (the body `Vec` from serde_json).
+- `transport` -- `tokio::process::Command` child-process spawn with `kill_on_drop`; captures stdin / stdout / stderr; `split()` yields the codec halves + retained `Child` so the actor's read / write loops own independent tasks.
+- `pending` -- `Pending<T>` (`oneshot::Receiver` wrapper parameterised over `LspError`). Mirrors `lattice_runtime::Pending` semantics: async-await, blocking_recv, or sync drop.
+- `error` -- `LspError` enum (`Transport` / `Codec` / `Framing` / `Server` / `ActorGone` / `ResponseDropped` / `Cancelled` / `HandshakeFailed` / `ResponseDecode` / `NotInitialized`) with `is_fatal` / `is_retryable` classifiers.
+- `capabilities` -- client capability advertisement (utf-8 preferred + utf-16 fallback, stale-request support, applyEdit, configuration, workspaceFolders, textDocument synchronisation + publishDiagnostics; per-feature buckets opened per phase) and negotiated `Capabilities` snapshot.
+- `config` -- `ServerConfig` (binary, args, env, root markers, init options, file patterns, language id) + curated `builtin_servers()` registry (rust-analyzer, pyright, gopls, typescript-language-server, clangd, lua-language-server) + `resolve_workspace_root` walking up for marker files.
+- `actor` -- per-server tokio task; `ServerHandle` is the editor-facing analogue of `lattice_runtime::DocumentHandle` (clone-cheap, Arc-internal, sync `request<P, R>` / `notify<P>` / `cancel(id)` / `shutdown()`).
+- `position` -- utf-8 ↔ utf-16 ↔ utf-32 column conversion (`byte_to_lsp_character` dispatches per negotiated encoding; utf-8 short-circuits to 1ns).
+- `sync` -- `DocSync`: per-server `HashMap<Uri, DocState>`. `open` / `record_edit` / `flush` / `flush_all` / `close`. Honours `TextDocumentSyncKind::{Incremental, Full, None}`. Maintains a `String` mirror per URI so utf-16 column conversion has access to BEFORE-state line text.
+- `diagnostics` -- `DiagnosticEvent` typed payload (`server_id: Arc<str>`, `uri`, `version`, `Arc<[Diagnostic]>`); `DiagnosticsBus` over `tokio::sync::broadcast`.
+- `diagnostics_layer` -- `DiagnosticsLayer` per-URI state container keyed by `(uri, server_id)` so multi-server scenarios don't overwrite. Apply-side version gating (`event.version < prev.version` drops); empty-list = clear semantics. Lookup APIs: `diagnostics_for(uri)` / `diagnostics_on_line(uri, line)` / `line_severity(uri, line)` / `severity_counts()` / `snapshot()`. `pump_diagnostics(layer, rx)` is the supervisor's spawn-point.
+- `logging` -- `LogLevel` ordered Trace < Debug < Info < Warn < Error; `LogSource` ∈ {Client, Stderr, LspMessage, LspShowMessage, Trace}; `LogRing` bounded `VecDeque<LogRecord>`; `LspLogger` Arc-shared facade with global ring + per-server rings + per-server min-level overrides + per-server trace toggle. Every emission also fires `tracing::*` at the matching level so `RUST_LOG=lattice_lsp=debug` users see the same stream.
+- `supervisor` -- `LspSupervisor`: registry of `ServerConfig`s + per-`(workspace, server-id)` actor map + per-actor `DocSync` + per-`Uri` attachment list + shared logger + shared `DiagnosticsLayer`. `open_buffer` / `close_buffer` / `record_edit` / `flush` / `servers_for` / `attach_handle` / `shutdown` (last one runs the LSP shutdown sequence per actor).
 
-**Per-language-per-workspace client.** One actor per (workspace, server-id). Sharing across buffers in the same workspace lets rust-analyzer index once and serve many editor-side panes; per-buffer state lives in `DocSync`.
+#### 5.4.2 Three-task topology per server
 
-**Three-task topology per server.** `actor` (coordination + pending table + capabilities), `read_loop` (LspReader → inbound mpsc), `write_loop` (outbound mpsc → LspWriter). One stderr-drain task emits server log lines through `tracing::warn!`. Three tasks because a single-task design collapses under indexer-burst loads (semantic-tokens deltas during fast scrolling, diagnostics fan-out at startup).
+```text
++---------+   cmd via mpsc    +-------+    Message via mpsc    +-----------+
+|App      |------------------>|Actor  |----------------------->|Write Loop |
++---------+                   |       |                        +-----------+
+                              |       |                              |
+                              |       |                          LspWriter
+                              |       |                              |
+                              |       |                         server stdin
+                              |       |
+                              |       |    Message via mpsc    +-----------+
+                              |       |<-----------------------|Read Loop  |
+                              +-------+                        +-----------+
+                                  ^                                  ^
+                                  |                              LspReader
+                            Pending map:                              |
+                            RequestId ->                          server stdout
+                            oneshot::Sender
+```
 
-**Position encoding.** We advertise `[utf-8, utf-16]` in `general.positionEncodings`; the server's choice wins. utf-8 is the fast path (one byte == one code unit; matches lattice's internal `Position::byte`). utf-16 is the LSP 3.16 fallback. Conversion lives in `position::byte_to_lsp_character` -- O(line) walk, sub-microsecond on any realistic line.
+A separate `stderr_drain` task reads each line of `ChildStderr` and emits a `Warn` / `Stderr` record through the logger. Four tasks total per server, but the `actor` task itself does no I/O on its hot path — it owns coordination state and delegates reads / writes via channels. Three reasons for the split:
 
-**Document sync.** `DocSync::record_edit` translates lattice's `Edit` into a `TextDocumentContentChangeEvent` against the BEFORE-state mirror, queues it, and applies to the mirror. `flush` sends one `didChange`; the editor debounces ~50ms idle to coalesce keystroke-pace bursts. Sync mode honours the server's `TextDocumentSyncKind` (Incremental / Full / None).
+- **Burst tolerance.** A single-task design collapses when an indexer publishes hundreds of `$/progress` notifications while the editor is also sending `didChange` per keystroke. Splitting reads / writes onto separate tasks lets the OS schedule them across cores; the actor stays cheap.
+- **Bounded contention.** The pending-requests `HashMap` is touched only on the actor task — no locks. The writer is `Mutex`-guarded only because the handshake's initialize request needs to fire before the loop owns it.
+- **Crash containment.** A panicked `read_loop` doesn't take the `write_loop` with it; the actor observes the `mpsc::Receiver::recv()` returning `None` and runs the cleanup path (drain pending with `LspError::ActorGone`, fire shutdown sequence).
 
-**Cancellation is cooperative-but-real.** Every request returns `Pending<T>` (mirroring §5.2.1's `Pending`); `ServerHandle::cancel(id)` resolves the local `Pending` with `LspError::Cancelled` and emits `$/cancelRequest` so the server can free its scheduling slot. Per-feature dispatch supersedes stale requests when a newer same-flavour request arrives (e.g. completion across keystrokes).
+#### 5.4.3 Per-language-per-workspace lifecycle
 
-**Diagnostics fan-out.** `publishDiagnostics` is broadcast to subscribers via `tokio::sync::broadcast` (`DiagnosticsBus`). Per-URI latest-event tracking + version gating live in the editor-side `DiagnosticsLayer`; the bus is the wire-side primitive. Multiple subscribers (gutter glyph provider, decoration overlay, `:diagnostics` buffer view, future plugins) each receive every event.
+The supervisor keys actors by `(workspace_root, server_id)`. Implications:
 
-**Logging (`*lsp*` / `*lsp:<server>*` / `*lsp:<server>:trace*`).** Layered to mirror emacs's `*lsp-log*` / `*<server> stderr*` convention on lattice's everything-is-a-buffer surface. `LspLogger` is one Arc-shared facade per subsystem with bounded per-server rings. Stderr lines, `window/logMessage`, `window/showMessage`, decode failures, supervisor lifecycle events, and (when toggled per-server) full JSON-RPC wire trace land in the rings. Every record also fires `tracing::*` so `RUST_LOG=lattice_lsp=debug` users see the same events. Trace mode is opt-in per-server with a near-free off-path (~9ns / call). See [`lsp-architecture.md`](lsp-architecture.md#7a-logging-logging-module) for the architecture and [`help/lsp.md`](help/lsp.md#debugging--logs) for the user-facing flow.
+- **Two `.rs` files in the same Cargo workspace share one rust-analyzer actor.** Indexing happens once. Both buffers' `didOpen` go through the same `DocSync`; the actor's pending table fans responses back to the right caller via JSON-RPC id.
+- **Two `.rs` files in different Cargo workspaces get two actors.** Different indexed views; no cross-workspace navigation in v1.
+- **Two distinct languages in the same workspace get two actors.** Different `server_id`s.
 
-**Crash recovery.** The actor detects pipe close from `read_loop`, drains pending requests with `LspError::ActorGone`, signals the supervisor. The supervisor restarts with exponential backoff (100ms → 5s) and re-issues `didOpen` for every URI it was tracking. (Supervisor lives in the editor crate, not `lattice-lsp`, because it depends on the App's view of which buffers were attached.)
+Spawn is lazy: the first `didOpen` for a `(workspace, server_id)` triggers `actor::spawn`. The handshake (`initialize` → `initialized`) completes before `open_buffer` returns, so the editor sees a fully-attached handle. Spawn failures (binary not on `PATH`, handshake error, server response malformed) are logged via the supervisor's logger and the relevant attachment is skipped without sinking the buffer-open.
 
-**Performance.** LSP requests are §5.2.5 *Background*-class -- no sync-prelude budget. The wire layer is benched at the framing / encode / decode / position-conversion level; all sit in nanoseconds-to-microseconds, well below human-perceptible latency. The §8.2 commitment is "LSP plumbing never shows up next to editor work in a flame graph."
+A `BufferId ↔ Uri` map lives on the App; `lattice-lsp` is below the UI layer in the crate graph and can't see `BufferId`. The App threads URIs into the supervisor's API.
 
-**Features in roadmap order:** diagnostics → completion + resolve → hover → definition / declaration / typeDefinition / implementation / references → documentSymbol / workspace.symbol → codeAction → rename → formatting (full + range + on-type) → signatureHelp → semanticTokens → inlayHint → foldingRange → documentHighlight → callHierarchy + typeHierarchy → codeLens → documentLink → inlineValue → inlineCompletion. Per-method status in [`lsp-features.md`](lsp-features.md).
+#### 5.4.4 Document synchronisation
 
-**Non-goals (v1).** Notebook documents (post-1.0; needs rich-buffer rendering). Multi-root workspace folders (post-1.0; v1 is single-root per actor). Server-side LSP -- lattice talks to servers, doesn't host one.
+`DocSync::record_edit(uri, edit)` translates a lattice `Edit { range, kind: Replace { text } }` into an LSP `TextDocumentContentChangeEvent`:
+
+1. Look up the `(uri, server_id)`'s mirror; read the lines at `edit.range.start.line` and `edit.range.end.line` (BEFORE-state).
+2. Convert `Position::byte` to LSP `character` via `position::byte_to_lsp_character` against the negotiated encoding.
+3. Build the change event with the converted range + the new text.
+4. Apply the edit to the mirror.
+5. Bump the per-doc version counter.
+6. Push to the per-doc pending queue.
+
+`flush(uri)` honours the negotiated `TextDocumentSyncKind`:
+
+- **Incremental** -- send the queued events as one `didChange`.
+- **Full** -- drop queued events; send the entire mirror as one no-range change.
+- **None** -- clear the queue; emit nothing.
+
+The mirror is a `String` rather than a `Rope` because the LSP layer only ever splices one contiguous region per edit; per-line indexing is rare and bounded by line count. Mirror cost is one `String` per attached buffer per server — a few MB at most for a typical session.
+
+`flush` is debounced by the App's idle timer (~50ms after the last keystroke). One `didChange` per debounce window coalesces typist-pace bursts into a single wire message. `close` flushes pending then sends `didClose` and drops the mirror.
+
+#### 5.4.5 Cancellation model
+
+Every request returns `Pending<T>` (oneshot-backed; matches §5.2.1's envelope). Two cancellation scopes:
+
+- **Actor-internal.** `ServerHandle::cancel(jsonrpc_id)` resolves the matching `Pending` with `LspError::Cancelled` and fires `$/cancelRequest` so the server can free its scheduling slot. Advertised via `general.staleRequestSupport.cancel`.
+- **Editor-driven supersession.** When a newer same-flavour request supersedes a stale one (cursor moves before completion returns, etc.), the editor calls `cancel` on the stale id. The dispatch site for each per-feature command owns the supersession bookkeeping.
+
+Cancellation is **cooperative**: a misbehaving server can ignore `$/cancelRequest` and run to completion. The actor still resolves the local `Pending` immediately; the late response, if any, is logged and discarded.
+
+#### 5.4.6 Diagnostics pipeline
+
+```text
+server          ---publishDiagnostics--->         actor
+                                                    |
+                                          DiagnosticEvent ::=
+                                            (server_id, uri, version,
+                                             Arc<[Diagnostic]>)
+                                                    |
+                                            DiagnosticsBus
+                                          (tokio::sync::broadcast,
+                                           cap 256)
+                                                    |
+            +---------------------------------------+----------------------------+
+            |                          |                            |            |
+       pump_diagnostics       gutter glyph             :diagnostics        future
+        task per server      provider (4.1.d.iii)       buffer view       plugins
+            |                                        (4.1.d.iv)
+       DiagnosticsLayer
+       keyed by (uri, server_id)
+        + version gating
+        + multi-server merge
+            |
+       diagnostics_for(uri)        diagnostics_on_line(uri, line)
+       line_severity(uri, line)    snapshot() / iter_uris() / count()
+```
+
+The bus is the wire-side primitive; the layer is the editor-side state container. Multiple subscribers fan out on each event; a lagging consumer drops oldest first (correct: latest publish supersedes anyway).
+
+The renderer threads through the layer per-frame:
+
+- The gutter prepends a 1-cell severity column per line. The most-severe diagnostic on the line picks a glyph + colour (`■` red Error, `▲` yellow Warning, `●` blue Information, `·` dim Hint).
+- The body has an underline overlay applied to each diagnostic range using ratatui's `Modifier::UNDERLINED` + `Style::underline_color`. Composes with visual / hlsearch / current_match overlays without conflict.
+
+The `:diagnostics` buffer is a help-style synthesised view: one row per diagnostic with a `[severity] [path:line:col message](file:path:line)` markdown link the existing help-link path knows how to follow.
+
+`]d` / `[d` per-buffer navigation queries `diagnostics_for(uri)` sorted by `(line, col)` and walks; `:cnext` / `:cprev` (vim-quickfix aliases) currently scope per-buffer but are intended to walk the `:diagnostics` buffer's flat list (workspace-wide) once the cross-file jump lands.
+
+#### 5.4.7 Logging pipeline
+
+Layered to mirror emacs's `*lsp-log*` / `*<server> stderr*` convention on lattice's everything-is-a-buffer surface:
+
+- **`*lsp*`** -- subsystem-wide events (supervisor: spawn / handshake / crash / restart) plus cross-server messages.
+- **`*lsp:<server-id>*`** -- per-server: stderr lines (Warn/Stderr), `window/logMessage` and `window/showMessage` notifications mapped by the server's `type` field, `publishDiagnostics` summaries (Debug), lifecycle events, decode failures.
+- **`*lsp:<server-id>:trace*`** -- full JSON-RPC wire trace. Off by default; toggle per-server. `←` (inbound) / `→` (outbound) markers + 240-char body excerpt.
+
+Producer: `LspLogger.log(server_id, level, source, message)` runs:
+
+1. **Trace gate.** `level == Trace` + per-server trace toggle off → return immediately. Toggle on → bypass the level filter (deliberate opt-in).
+2. **Level filter.** Drop iff `level < effective_min(server_id)`.
+3. **`tracing::*` fan-out.** Always fires; survives without a subscriber.
+4. **Ring push.** Append to global ring (server_id None) or per-server ring.
+
+Per-record cost ≈ 91ns; trace-off short-circuit ≈ 9ns. Both Background-class.
+
+`:lsp-log [server]` opens the relevant buffer; `:lsp-trace <server>` toggles + opens the trace buffer; `:lsp-status` shows running actors with capability summary; `:lsp-log-level [server] <level>` adjusts gating; `:lsp-log-clear [server]` drops the ring.
+
+Why two pipelines (rings + tracing): rings serve buffer views and survive without an external subscriber; `tracing` fan-out lets power users drive `RUST_LOG`-style filtering, JSON log shipping, OpenTelemetry, etc.
+
+#### 5.4.8 Multi-buffer / multi-server topology
+
+Two scenarios deserve explicit treatment.
+
+**Multiple buffers, separate servers per language.** Each piece of LSP state is keyed by URI or `(URI, server_id)`. Cross-buffer isolation is structural — there's no "active buffer" mutable register that features rewrite. `]d` / `[d` are per-buffer; `:diagnostics` is workspace-wide as a buffer-backed list.
+
+**Multiple servers attached to one buffer.** The supervisor keeps `attachments: HashMap<Uri, Vec<(workspace, server_id)>>`. Two servers attach when both `ServerConfig`s' `file_patterns` match. Per-feature merge (lands per phase as features arrive):
+
+- **Diagnostics**: layer keyed by `(uri, server_id)`; readers merge across servers. Already shipped.
+- **Hover** (4.2): concat with `[server-id]` labels.
+- **Goto-def family** (4.2): race to first non-empty; priority breaks ties.
+- **References / symbols** (4.2): union with dedupe.
+- **Completion** (4.2): each server is a `gen:lsp:<server-id>` generator into the existing `lattice-completion` pipeline.
+- **Code actions** (4.3): union with picker entries prefixed `[server-id]`.
+- **Rename** (4.3): merge `WorkspaceEdit`s; conflict → priority-resolved.
+- **Formatting** (4.3): single winner (priority).
+- **Semantic tokens** (4.4): single server (multi-server merge deferred).
+
+Server priority is a single integer per `ServerConfig`; default 100. Used by the few "single winner" features.
+
+#### 5.4.9 Crash recovery
+
+The `read_loop` detects pipe close and ends. The actor task observes the inbound `mpsc::Receiver::recv()` returning `None`, drains pending requests with `LspError::ActorGone`, signals the supervisor. The supervisor restarts with exponential backoff (100ms → 5s; max 5 retries) and re-issues `didOpen` for every URI it was tracking under that `(workspace, server_id)`. The diagnostics layer's per-server entries clear via `clear_server(&id)`; other servers attached to the same buffer keep working.
+
+Restart-with-backoff lives in the supervisor (App-side knowledge of which buffers were attached); the actor only signals "I'm gone." 4.1.h shipped the actor-side detection; 4.4 lands the supervisor-side restart loop.
+
+#### 5.4.10 Performance characteristics
+
+LSP requests are §5.2.5 *Background*-class — no sync-prelude budget. The wire layer is benched at the framing / encode / decode / position-conversion / logging level (`crates/lattice-lsp/benches/lsp.rs`); all sit in nanoseconds-to-microseconds. Selected numbers (Background targets):
+
+| Operation | Time |
+|---|---|
+| Content-Length parse | ~77ns |
+| `didChange` encode | ~208ns |
+| `publishDiagnostics` decode | ~1.58µs |
+| utf-16 column conversion (CJK line) | ~23ns |
+| `LspLogger::log` per record | ~91ns |
+| `LspLogger::log` trace-off short-circuit | ~9ns |
+
+The §8.2 commitment is "LSP plumbing never shows up next to editor work in a flame graph." `BENCHMARKS.md` carries the full bench table.
+
+#### 5.4.11 Roadmap
+
+Features land in this order: diagnostics → completion + resolve → hover → definition / declaration / typeDefinition / implementation / references → documentSymbol / workspace.symbol → codeAction → rename → formatting (full + range + on-type) → signatureHelp → semanticTokens → inlayHint → foldingRange → documentHighlight → callHierarchy + typeHierarchy → codeLens → documentLink → inlineValue → inlineCompletion. Per-method status in [`lsp-features.md`](lsp-features.md).
+
+#### 5.4.12 Non-goals (v1)
+
+- **Notebook documents** -- post-1.0; needs the rich-buffer rendering work in §5.6 + a notebook-aware buffer kind.
+- **Multi-root workspace folders beyond the initial root** -- post-1.0; v1 is single-root per actor, multiple actors handle multiple roots.
+- **Server-side LSP** -- lattice talks to servers, doesn't host one. The grammar API (§5.2) is the canonical extensibility surface for in-process commands.
 
 ### 5.5 Plugin Subsystem
 

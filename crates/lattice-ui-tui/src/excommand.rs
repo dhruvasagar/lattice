@@ -388,6 +388,19 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("dprev", "ex:diag-prev"),
     ("cprev", "ex:diag-prev"),
     ("cp", "ex:diag-prev"),
+    // LSP introspection (Phase 4.1.g).
+    ("lsp-log", "ex:lsp-log"),
+    ("lsplog", "ex:lsp-log"),
+    ("lsp-trace", "ex:lsp-trace"),
+    ("lsptrace", "ex:lsp-trace"),
+    ("lsp-status", "ex:lsp-status"),
+    ("lspstatus", "ex:lsp-status"),
+    ("lsp-restart", "ex:lsp-restart"),
+    ("lsprestart", "ex:lsp-restart"),
+    ("lsp-log-level", "ex:lsp-log-level"),
+    ("lsploglevel", "ex:lsp-log-level"),
+    ("lsp-log-clear", "ex:lsp-log-clear"),
+    ("lsplogclear", "ex:lsp-log-clear"),
 ];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests

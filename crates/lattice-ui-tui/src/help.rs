@@ -212,6 +212,130 @@ impl HelpBuffer {
         Self::from_lines("diagnostics", lines)
     }
 
+    /// Build the `*lsp*` subsystem-wide log view (Phase
+    /// 4.1.g). Snapshots `logger.snapshot_global()` and
+    /// renders one row per record:
+    /// `<timestamp> <level> <source> <message>`.
+    pub fn lsp_global_log(logger: &lattice_lsp::LspLogger) -> Self {
+        let records = logger.snapshot_global();
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!(
+            "# *lsp* (subsystem-wide, {} records)",
+            records.len()
+        ));
+        lines.push(String::new());
+        if records.is_empty() {
+            lines.push("(no records)".to_string());
+        } else {
+            for r in records {
+                lines.push(format_log_record(&r));
+            }
+        }
+        Self::from_lines("lsp", lines)
+    }
+
+    /// Build a per-server log view (`*lsp:<server>*`). Filters
+    /// out trace records (those land in `lsp_server_trace`).
+    pub fn lsp_server_log(
+        logger: &lattice_lsp::LspLogger,
+        server_id: &std::sync::Arc<str>,
+    ) -> Self {
+        let records = logger.snapshot_server(server_id);
+        let body: Vec<&lattice_lsp::LogRecord> = records
+            .iter()
+            .filter(|r| r.source != lattice_lsp::LogSource::Trace)
+            .collect();
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!(
+            "# *lsp:{}* ({} records, trace excluded)",
+            server_id,
+            body.len()
+        ));
+        lines.push(String::new());
+        if body.is_empty() {
+            lines.push("(no records)".to_string());
+        } else {
+            for r in body {
+                lines.push(format_log_record(r));
+            }
+        }
+        Self::from_lines(format!("lsp:{server_id}"), lines)
+    }
+
+    /// Build the JSON-RPC trace view (`*lsp:<server>:trace*`).
+    /// Filters to `LogSource::Trace` records only. Empty when
+    /// trace mode hasn't been on.
+    pub fn lsp_server_trace(
+        logger: &lattice_lsp::LspLogger,
+        server_id: &std::sync::Arc<str>,
+    ) -> Self {
+        let records = logger.snapshot_server(server_id);
+        let body: Vec<&lattice_lsp::LogRecord> = records
+            .iter()
+            .filter(|r| r.source == lattice_lsp::LogSource::Trace)
+            .collect();
+        let mut lines: Vec<String> = Vec::new();
+        let trace_on = logger.is_tracing(server_id);
+        lines.push(format!(
+            "# *lsp:{}:trace* ({} records, trace currently {})",
+            server_id,
+            body.len(),
+            if trace_on { "ON" } else { "OFF" }
+        ));
+        lines.push(String::new());
+        if body.is_empty() {
+            lines.push(
+                "(no trace records; toggle with `:lsp-trace <server>`)".to_string(),
+            );
+        } else {
+            for r in body {
+                lines.push(format_log_record(r));
+            }
+        }
+        Self::from_lines(format!("lsp:{server_id}:trace"), lines)
+    }
+
+    /// Build the `:lsp-status` view -- one row per running
+    /// actor (id, workspace root, server-side capability
+    /// summary).
+    pub fn lsp_status(supervisor: &lattice_lsp::LspSupervisor) -> Self {
+        let actors = supervisor.running_actors();
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!(
+            "# :lsp-status ({} server(s), {} attached buffer(s))",
+            actors.len(),
+            supervisor.attached_buffer_count()
+        ));
+        lines.push(String::new());
+        if actors.is_empty() {
+            lines.push(
+                "(no LSP servers running; open a file with a matching language to attach)"
+                    .to_string(),
+            );
+        } else {
+            for ((workspace, server_id), handle) in actors {
+                let caps = handle.capabilities();
+                lines.push(format!("## {server_id}"));
+                lines.push(format!("- workspace root: `{}`", workspace.display()));
+                lines.push(format!(
+                    "- position encoding: {:?}",
+                    caps.position_encoding
+                ));
+                lines.push(format!("- supports hover: {}", caps.supports_hover()));
+                lines.push(format!(
+                    "- supports definition: {}",
+                    caps.supports_definition()
+                ));
+                lines.push(format!(
+                    "- diagnostics subscribers: {}",
+                    handle.diagnostics_subscriber_count()
+                ));
+                lines.push(String::new());
+            }
+        }
+        Self::from_lines("lsp-status", lines)
+    }
+
     /// Build a help buffer with anchors. Used by the introspection
     /// renderer to feed `RenderedIntrospection.anchors` through.
     pub fn from_lines_and_anchors(
@@ -486,6 +610,31 @@ pub fn topic_link(name: &str) -> String {
 /// to keep visual alignment.
 fn one_line(s: &str) -> String {
     s.lines().collect::<Vec<_>>().join(" / ")
+}
+
+/// Render one log record as a one-line entry: `HH:MM:SS.mmm
+/// <level> <source>: <message>`. Used by the four log buffer
+/// builders above (Phase 4.1.g).
+fn format_log_record(r: &lattice_lsp::LogRecord) -> String {
+    use std::time::SystemTime;
+    let elapsed = r.timestamp.duration_since(SystemTime::UNIX_EPOCH).ok();
+    let secs = elapsed.map(|d| d.as_secs()).unwrap_or(0);
+    let ms = elapsed.map(|d| d.subsec_millis()).unwrap_or(0);
+    // %H:%M:%S without bringing in chrono: pull out the
+    // hour/min/sec from secs-since-epoch using only divmod.
+    let hh = (secs / 3600) % 24;
+    let mm = (secs / 60) % 60;
+    let ss = secs % 60;
+    format!(
+        "{:02}:{:02}:{:02}.{:03} {} {:>6}: {}",
+        hh,
+        mm,
+        ss,
+        ms,
+        r.level.short(),
+        r.source.tag(),
+        one_line(&r.message)
+    )
 }
 
 pub fn extract_links_and_clean(text: &str) -> (String, Vec<HelpLink>) {

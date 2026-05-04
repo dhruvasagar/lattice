@@ -1534,6 +1534,110 @@ impl App {
         // wiring catches up.
     }
 
+    // ---- LSP introspection (Phase 4.1.g) --------------------
+
+    /// `:lsp-log [server]` -- open the subsystem-wide log when
+    /// `server_id` is `None`, or the per-server log when
+    /// supplied. Backed by a [`HelpBuffer`] populated from the
+    /// `LspLogger`'s ring snapshot.
+    pub fn do_open_lsp_log(&mut self, server_id: Option<&str>) {
+        let buffer = match server_id {
+            None => crate::help::HelpBuffer::lsp_global_log(self.lsp.logger()),
+            Some(id) => {
+                let arc: std::sync::Arc<str> = std::sync::Arc::from(id);
+                crate::help::HelpBuffer::lsp_server_log(self.lsp.logger(), &arc)
+            }
+        };
+        self.open_help(buffer.with_markdown_syntax(self.lang_registry.clone()));
+    }
+
+    /// `:lsp-trace <server>` -- toggle JSON-RPC trace for the
+    /// server + open the trace buffer.
+    pub fn do_toggle_lsp_trace(&mut self, server_id: &str) {
+        let id: std::sync::Arc<str> = std::sync::Arc::from(server_id);
+        let now_on = self.lsp.logger().toggle_trace(std::sync::Arc::clone(&id));
+        let label = if now_on { "on" } else { "off" };
+        self.set_message(
+            EchoLevel::Info,
+            format!("lsp-trace {}: {label}", server_id),
+        );
+        let buffer =
+            crate::help::HelpBuffer::lsp_server_trace(self.lsp.logger(), &id)
+                .with_markdown_syntax(self.lang_registry.clone());
+        self.open_help(buffer);
+    }
+
+    /// `:lsp-status` -- render every running server in a
+    /// help-style buffer.
+    pub fn do_lsp_status(&mut self) {
+        let buffer = crate::help::HelpBuffer::lsp_status(&self.lsp)
+            .with_markdown_syntax(self.lang_registry.clone());
+        self.open_help(buffer);
+    }
+
+    /// `:lsp-restart <server>` -- supervisor restart hook.
+    /// Currently emits an info message; full restart-with-
+    /// backoff lands in 4.4.
+    pub fn do_lsp_restart(&mut self, server_id: &str) {
+        self.set_message(
+            EchoLevel::Info,
+            format!(
+                "lsp-restart {}: supervisor restart wiring lands in 4.4",
+                server_id
+            ),
+        );
+    }
+
+    /// `:lsp-log-level [server] <level>` -- set the subsystem
+    /// default min level (when no server) or a per-server
+    /// override.
+    pub fn do_set_lsp_log_level(&mut self, server_id: Option<&str>, level: &str) {
+        let Some(parsed) = lattice_lsp::LogLevel::parse(level) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "unknown log level {level:?}; expected error/warn/info/debug/trace"
+                ),
+            );
+            return;
+        };
+        match server_id {
+            None => {
+                self.lsp.logger().set_default_level(parsed);
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("lsp default log level: {level}"),
+                );
+            }
+            Some(id) => {
+                let arc: std::sync::Arc<str> = std::sync::Arc::from(id);
+                self.lsp.logger().set_server_level(arc, Some(parsed));
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("lsp log level for {id}: {level}"),
+                );
+            }
+        }
+    }
+
+    /// `:lsp-log-clear [server]` -- drop ring contents.
+    pub fn do_lsp_log_clear(&mut self, server_id: Option<&str>) {
+        match server_id {
+            None => {
+                self.lsp.logger().clear_global();
+                self.set_message(EchoLevel::Info, "*lsp* cleared".to_string());
+            }
+            Some(id) => {
+                let arc: std::sync::Arc<str> = std::sync::Arc::from(id);
+                self.lsp.logger().clear_server(&arc);
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("*lsp:{id}* cleared"),
+                );
+            }
+        }
+    }
+
     // ---- Blocking bridges to the document actor ----
     //
     // Per DESIGN.md §5.2.1 every mutating call returns a
@@ -4307,6 +4411,14 @@ impl App {
             Effect::ListDiagnostics => self.do_list_diagnostics(),
             Effect::NextDiagnostic => self.do_next_diagnostic(),
             Effect::PrevDiagnostic => self.do_prev_diagnostic(),
+            Effect::OpenLspLog { server_id } => self.do_open_lsp_log(server_id.as_deref()),
+            Effect::ToggleLspTrace { server_id } => self.do_toggle_lsp_trace(&server_id),
+            Effect::LspStatus => self.do_lsp_status(),
+            Effect::LspRestart { server_id } => self.do_lsp_restart(&server_id),
+            Effect::SetLspLogLevel { server_id, level } => {
+                self.do_set_lsp_log_level(server_id.as_deref(), &level)
+            }
+            Effect::LspLogClear { server_id } => self.do_lsp_log_clear(server_id.as_deref()),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -6732,7 +6844,13 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
         | Effect::NextDiagnostic
-        | Effect::PrevDiagnostic => false,
+        | Effect::PrevDiagnostic
+        | Effect::OpenLspLog { .. }
+        | Effect::ToggleLspTrace { .. }
+        | Effect::LspStatus
+        | Effect::LspRestart { .. }
+        | Effect::SetLspLogLevel { .. }
+        | Effect::LspLogClear { .. } => false,
     }
 }
 
@@ -6774,7 +6892,13 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
         | Effect::NextDiagnostic
-        | Effect::PrevDiagnostic => false,
+        | Effect::PrevDiagnostic
+        | Effect::OpenLspLog { .. }
+        | Effect::ToggleLspTrace { .. }
+        | Effect::LspStatus
+        | Effect::LspRestart { .. }
+        | Effect::SetLspLogLevel { .. }
+        | Effect::LspLogClear { .. } => false,
     }
 }
 
@@ -13069,5 +13193,166 @@ mod tests {
         let help = app.help_buffer.as_ref().expect("help buffer should open");
         let body = help.content.as_string();
         assert!(body.contains("(none)"));
+    }
+
+    // ---- LSP introspection tests (Phase 4.1.g) ---------------
+
+    #[test]
+    fn lsp_log_opens_global_buffer_when_no_server() {
+        let mut app = app_with("hi\n", 5);
+        // Seed one global record so the body has content.
+        app.lsp.logger().log(
+            None,
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::Client,
+            "test event",
+        );
+        app.do_open_lsp_log(None);
+        let help = app.help_buffer.as_ref().expect("help buffer should open");
+        assert_eq!(help.title, "lsp");
+        let body = help.content.as_string();
+        assert!(body.contains("subsystem-wide"));
+        assert!(body.contains("test event"));
+    }
+
+    #[test]
+    fn lsp_log_opens_per_server_buffer() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp.logger().log(
+            Some(&id),
+            lattice_lsp::LogLevel::Warn,
+            lattice_lsp::LogSource::Stderr,
+            "compile error",
+        );
+        app.do_open_lsp_log(Some("rust"));
+        let help = app.help_buffer.as_ref().expect("help buffer should open");
+        assert_eq!(help.title, "lsp:rust");
+        let body = help.content.as_string();
+        assert!(body.contains("compile error"));
+    }
+
+    #[test]
+    fn lsp_server_log_excludes_trace_records() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp.logger().enable_trace(std::sync::Arc::clone(&id));
+        app.lsp.logger().log(
+            Some(&id),
+            lattice_lsp::LogLevel::Trace,
+            lattice_lsp::LogSource::Trace,
+            "→ Request id=1",
+        );
+        app.lsp.logger().log(
+            Some(&id),
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::Client,
+            "lifecycle",
+        );
+        app.do_open_lsp_log(Some("rust"));
+        let body = app.help_buffer.as_ref().unwrap().content.as_string();
+        // Trace records go to the trace buffer; lifecycle here.
+        assert!(!body.contains("→ Request"));
+        assert!(body.contains("lifecycle"));
+    }
+
+    #[test]
+    fn lsp_trace_toggle_flips_state_and_opens_trace_buffer() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        // Off -> on.
+        app.do_toggle_lsp_trace("rust");
+        assert!(app.lsp.logger().is_tracing(&id));
+        let help = app.help_buffer.as_ref().unwrap();
+        assert_eq!(help.title, "lsp:rust:trace");
+        // On -> off.
+        app.do_toggle_lsp_trace("rust");
+        assert!(!app.lsp.logger().is_tracing(&id));
+    }
+
+    #[test]
+    fn lsp_status_with_no_servers_renders_placeholder() {
+        let mut app = app_with("hi\n", 5);
+        app.do_lsp_status();
+        let body = app.help_buffer.as_ref().unwrap().content.as_string();
+        assert!(body.contains("0 server"));
+        assert!(body.contains("no LSP servers running"));
+    }
+
+    #[test]
+    fn lsp_log_level_subsystem_wide_accepts_known_levels() {
+        let mut app = app_with("hi\n", 5);
+        for lvl in ["error", "warn", "info", "debug", "trace"] {
+            app.do_set_lsp_log_level(None, lvl);
+            let msg = app.last_message.as_ref().unwrap();
+            assert!(
+                msg.text.contains(lvl),
+                "echo should mention {lvl}, got {}",
+                msg.text
+            );
+        }
+    }
+
+    #[test]
+    fn lsp_log_level_rejects_unknown_level() {
+        let mut app = app_with("hi\n", 5);
+        app.do_set_lsp_log_level(None, "babble");
+        let msg = app.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("unknown log level"));
+    }
+
+    #[test]
+    fn lsp_log_level_per_server_override() {
+        let mut app = app_with("hi\n", 5);
+        app.do_set_lsp_log_level(Some("rust"), "debug");
+        // Verify the override actually took: a Debug record on
+        // the "rust" server now lands in the ring (the default
+        // is Info, so without the override it'd be filtered).
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp.logger().log(
+            Some(&id),
+            lattice_lsp::LogLevel::Debug,
+            lattice_lsp::LogSource::Client,
+            "debug event",
+        );
+        let recs = app.lsp.logger().snapshot_server(&id);
+        assert!(recs.iter().any(|r| r.message == "debug event"));
+    }
+
+    #[test]
+    fn lsp_log_clear_drops_global_records() {
+        let mut app = app_with("hi\n", 5);
+        app.lsp.logger().log(
+            None,
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::Client,
+            "x",
+        );
+        assert_eq!(app.lsp.logger().snapshot_global().len(), 1);
+        app.do_lsp_log_clear(None);
+        assert_eq!(app.lsp.logger().snapshot_global().len(), 0);
+    }
+
+    #[test]
+    fn lsp_log_clear_drops_per_server_records() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp.logger().log(
+            Some(&id),
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::Client,
+            "x",
+        );
+        assert_eq!(app.lsp.logger().snapshot_server(&id).len(), 1);
+        app.do_lsp_log_clear(Some("rust"));
+        assert_eq!(app.lsp.logger().snapshot_server(&id).len(), 0);
+    }
+
+    #[test]
+    fn lsp_restart_currently_echoes_placeholder() {
+        let mut app = app_with("hi\n", 5);
+        app.do_lsp_restart("rust");
+        let msg = app.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("4.4"));
     }
 }

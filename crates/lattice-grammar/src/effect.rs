@@ -212,6 +212,40 @@ pub enum Effect {
     /// bottom.
     PrevDiagnostic,
 
+    /// `:lsp-log [server]` (Phase 4.1.g) -- open the subsystem
+    /// log buffer (`*lsp*`) when `server_id` is None, or the
+    /// per-server log (`*lsp:<server>*`) when set.
+    OpenLspLog {
+        server_id: Option<String>,
+    },
+    /// `:lsp-trace <server>` -- toggle JSON-RPC trace for the
+    /// server + open the trace buffer (`*lsp:<server>:trace*`).
+    ToggleLspTrace {
+        server_id: String,
+    },
+    /// `:lsp-status` -- render every running server (id, root,
+    /// pid, uptime, capability summary) in a help-style buffer.
+    LspStatus,
+    /// `:lsp-restart <server>` -- supervisor force-restart with
+    /// backoff. Wired but no-op until the supervisor's restart
+    /// path lands (4.4).
+    LspRestart {
+        server_id: String,
+    },
+    /// `:lsp-log-level [server] <level>` -- set the subsystem-
+    /// wide default min level (when `server_id` is None) or a
+    /// per-server override.
+    SetLspLogLevel {
+        server_id: Option<String>,
+        level: String,
+    },
+    /// `:lsp-log-clear [server]` -- drop the ring's records.
+    /// `None` clears the subsystem-wide ring; a server id
+    /// clears that ring.
+    LspLogClear {
+        server_id: Option<String>,
+    },
+
     Many(Vec<Effect>),
 }
 

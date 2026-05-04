@@ -87,21 +87,21 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     } else {
         draw_command_or_echo(frame, chunks[2], app);
     }
-    // Help -- two display modes:
-    // - **Active in-pane**: help is the active buffer; paint
-    //   directly in the pane area (`draw_panes`'s Help arm). No
-    //   centred popup, no doc backdrop visible. Behaves like any
-    //   other buffer.
-    // - **Transient overlay**: help_buffer is set but active is
-    //   another kind (Document with a hover popup mid-flight, or
-    //   `:hover` demo). Paint the centred popup so the user has a
-    //   floating panel anchored to the cursor / centred on screen.
-    if app.help_buffer.is_some() && !matches!(app.active_buffer, crate::buffers::BufferKind::Help) {
+    // Help popup overlay -- painted whenever a help_buffer is
+    // set AND the active pane isn't already showing it as an
+    // in-pane buffer (the in-pane case is handled by the Help
+    // arm of `draw_panes`). Two scenarios trigger this:
+    // - **State A** (active = Document, help_buffer = Some):
+    //   first `K` shown the popup, focus is still on the doc;
+    //   doc paints normally below, popup floats on top, no
+    //   cursor inside the popup.
+    // - **State B** (active = Help via popup mode, pane.buffer =
+    //   Document): second `K` moved focus into the popup; popup
+    //   paints with a visible cursor at `app.cursor`; doc paints
+    //   as inactive (frozen at `pane.cursor`) below.
+    let active_pane_kind = app.pane_tree.active().buffer;
+    if app.help_buffer.is_some() && active_pane_kind != crate::buffers::BufferKind::Help {
         draw_help_overlay(frame, chunks[0], app);
-    }
-    // Hover popup paints on top of help / panes.
-    if app.hover_popup.is_some() {
-        draw_hover_popup(frame, chunks[0], app);
     }
     // Picker candidate list (precedence over completion popup --
     // only one is interactive at a time).
@@ -403,27 +403,36 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     let para = Paragraph::new(visible).wrap(Wrap { trim: false });
     frame.render_widget(para, inner);
 
-    // Move the terminal cursor inside the popup so motions
-    // (j/k/h/l, 0/$, Ctrl-D/Ctrl-U, gg/G) read like a real buffer:
-    // the cursor visibly tracks `help.cursor`. Overrides any earlier
-    // `set_cursor_position` from `draw_buffer` /
-    // `draw_command_or_echo` because the help overlay paints later.
-    if inner.height > 0 && inner.width > 0 {
-        // Live cursor / scroll come from the App's active-buffer
-        // hot-path fields when help is active; otherwise the
-        // popup is showing stale state (e.g. transient hover
-        // popup over an unfocused doc) and we use the help
-        // buffer's own fields.
-        let cursor = if matches!(app.active_buffer, crate::buffers::BufferKind::Help) {
-            app.cursor
-        } else {
-            help.cursor
-        };
-        let row_off = (cursor.line as usize).saturating_sub(scroll);
+    // Place the terminal cursor INSIDE the popup only in State
+    // B -- focus has moved into it (active_buffer == Help) and
+    // vim grammar acts on the popup's content. In State A the
+    // popup is shown but focus is still on the main buffer; the
+    // cursor stays where the doc renderer placed it (on the
+    // symbol the user K'd) so the user knows what the popup is
+    // about. No cursor placement here in that case.
+    if inner.height > 0
+        && inner.width > 0
+        && matches!(app.active_buffer, crate::buffers::BufferKind::Help)
+    {
+        let row_off = (app.cursor.line as usize).saturating_sub(scroll);
         let row_off = row_off.min(inner.height.saturating_sub(1) as usize);
-        let col_off = (cursor.byte as usize).min(inner.width.saturating_sub(1) as usize);
+        let col_off = (app.cursor.byte as usize).min(inner.width.saturating_sub(1) as usize);
         frame.set_cursor_position((inner.x + col_off as u16, inner.y + row_off as u16));
     }
+}
+
+/// True iff the active pane's buffer kind is the same kind as
+/// `app.active_buffer`. When mismatched, the active pane is
+/// painted as visually inactive (frozen at `pane.cursor`) -- the
+/// scenario that matters is help-popup-overlay (State B) where
+/// the active pane shows a Document but motions go to the help
+/// popup's buffer.
+fn pane_buffer_matches_active(app: &App, idx: usize) -> bool {
+    app.pane_tree
+        .leaves()
+        .get(idx)
+        .map(|p| p.buffer == app.active_buffer)
+        .unwrap_or(false)
 }
 
 /// Paint the help buffer directly into a pane's content area
@@ -558,7 +567,15 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
             width: prect.width,
             height: prect.height,
         };
-        let is_active = idx == active;
+        // A pane is *active for input* iff it's the focused pane
+        // AND the active buffer kind matches the pane's buffer.
+        // The mismatch case is the help-popup-overlay scenario:
+        // active pane shows a Document, but `app.active_buffer ==
+        // Help` because the popup is focused (State B). The doc
+        // must paint with its own (frozen) `pane.cursor`, not
+        // `app.cursor` (which is help's). draw_inactive_document
+        // already reads pane state, so we route there.
+        let is_active = idx == active && pane_buffer_matches_active(app, idx);
         // Reserve the bottom row for the per-pane status line, but
         // only when there's more than one pane visible.
         let (content_rect, status_rect) = if multi && rect.height >= 2 {
@@ -832,80 +849,6 @@ fn render_gutter_for_inactive(
         format_gutter_cell(&n, gutter_w, None),
         TuiStyle::default().fg(Color::DarkGray),
     )
-}
-
-/// Render the active hover popup (DESIGN.md §5.9.6, §5.11.4) as a
-/// floating bordered panel anchored at the popup's buffer cursor.
-/// The popup tries to sit just below the anchor row, falling back
-/// to above when there's no room. Width is `min(content_width + 2,
-/// area.width / 2)`; height is `min(line_count + 2, area.height /
-/// 2)`. No interactive cursor inside the popup -- it's read-only
-/// and dismissed via `Esc` / `:HoverClose`.
-fn draw_hover_popup(frame: &mut Frame, buffer_area: Rect, app: &App) {
-    let Some(hover) = app.hover_popup.as_ref() else {
-        return;
-    };
-    let max_w = (buffer_area.width / 2).max(20);
-    let max_h = (buffer_area.height / 2).max(5);
-    let content_w = hover.content_width(max_w.saturating_sub(2));
-    let width = (content_w + 2).min(max_w);
-    let height = (hover.line_count() as u16 + 2).min(max_h);
-
-    // Anchor: place just below the cursor row (in screen coords).
-    // If that doesn't fit, place above. Cursor's screen position
-    // tracks the document's scroll: anchor.line - app.scroll.
-    let anchor_row = (hover.anchor.line as i64) - (app.scroll as i64);
-    let cursor_screen_y = (buffer_area.y as i64 + anchor_row).max(buffer_area.y as i64) as u16;
-    let cursor_screen_x = buffer_area.x;
-    let mut x = cursor_screen_x.min(buffer_area.x + buffer_area.width.saturating_sub(width));
-    let mut y = cursor_screen_y.saturating_add(1);
-    if y + height > buffer_area.y + buffer_area.height {
-        // Doesn't fit below -- try above.
-        y = cursor_screen_y.saturating_sub(height);
-    }
-    if y < buffer_area.y {
-        y = buffer_area.y;
-    }
-    if x + width > buffer_area.x + buffer_area.width {
-        x = buffer_area.x + buffer_area.width.saturating_sub(width);
-    }
-    let popup = Rect {
-        x,
-        y,
-        width,
-        height,
-    };
-    frame.render_widget(Clear, popup);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" hover (K to step in, Esc / :HoverClose to dismiss) ");
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-    let visible: Vec<Line> = hover
-        .lines
-        .iter()
-        .take(inner.height as usize)
-        .enumerate()
-        .map(|(i, l)| {
-            let spans: Vec<Span<'_>> = if let Some(highlights) = hover.highlights.get(i) {
-                render_styled_line(l, highlights, inner.width as u32)
-            } else {
-                vec![Span::raw(l.clone())]
-            };
-            Line::from(spans)
-        })
-        .collect();
-    // Wrap so long markdown lines (LSP hover responses are often
-    // long signatures or doc strings) survive the popup's narrow
-    // column. `trim: false` preserves leading whitespace inside
-    // fenced code blocks. Once the user presses `K` again the
-    // popup is *promoted* to a real help buffer and routes
-    // through the help-popup machinery (full vim grammar) --
-    // this transient popup stays read-only.
-    frame.render_widget(
-        Paragraph::new(visible).wrap(Wrap { trim: false }),
-        inner,
-    );
 }
 
 /// Render a file-tree pane vim-style: no decorative border, just

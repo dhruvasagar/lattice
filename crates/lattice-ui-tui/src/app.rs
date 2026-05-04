@@ -644,6 +644,21 @@ pub struct UnnamedRegister {
     pub kind: YankKind,
 }
 
+/// Snapshot of the active pane's state captured just before help
+/// took it over. Used by `dismiss_help` to restore the user to the
+/// buffer + cursor + scroll they came from. The same struct serves
+/// both display modes (in-pane and popup-overlay) -- popup mode
+/// doesn't actually mutate `pane.buffer` so the restore there is
+/// effectively a no-op for the pane fields, but keeping one stash
+/// for both paths means dismiss has a single code path.
+#[derive(Debug, Clone, Copy)]
+pub struct PrevPaneState {
+    pub buffer: BufferKind,
+    pub buffer_id: BufferId,
+    pub cursor: Position,
+    pub scroll: u32,
+}
+
 pub struct App {
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable [`Document`]; mutations route
@@ -964,21 +979,14 @@ pub struct App {
     /// centred popup; [`Self::help_display_mode`] picks between
     /// surfaces.
     pub help_buffer: Option<HelpBuffer>,
-    /// Active hover popup (DESIGN.md §5.9.6, §5.11.4). `Some` while
-    /// a transient floating panel is anchored at a buffer position
-    /// (LSP hover, manual `:hover`, future plugin contributions).
-    /// Dismissed by Esc, an explicit `:HoverClose`, or any motion
-    /// that changes the document cursor.
-    ///
-    /// **Promotion to help buffer.** Pressing `K` a second time
-    /// while a popup is open *promotes* the hover content into a
-    /// `HelpBuffer` (see [`Self::do_lsp_hover_request`]). The
-    /// HoverPopup is dismissed; `app.help_buffer` takes over with
-    /// the same markdown body, and the user has full vim grammar
-    /// (motions, `/` search, `n` / `N`, `gg` / `G`, `:` ex
-    /// commands, etc.) -- the same machinery that powers
-    /// `:describe-*` / `:apropos` / `:lsp-log`.
-    pub hover_popup: Option<crate::hover::HoverPopup>,
+    /// Pane state captured before activating help -- used by
+    /// `dismiss_help` to restore the user to whatever buffer +
+    /// cursor + scroll they came from. Set by both display
+    /// paths (in-pane via `activate_help_in_pane`, popup via
+    /// `open_help_popup_overlay`); cleared by dismiss. v1 single-
+    /// pane scope -- multi-pane help dismissal will key by pane
+    /// id when that scenario surfaces.
+    pub prev_pane_for_help: Option<PrevPaneState>,
     /// Where the active help buffer is rendered. v1 only implements
     /// `Popup`; the other variants are reserved for the multi-buffer
     /// phase. Configurable per-user (eventually via `:set
@@ -1602,7 +1610,7 @@ impl App {
             command_history_cursor: None,
             command_history_pending: None,
             help_buffer: None,
-            hover_popup: None,
+            prev_pane_for_help: None,
             help_display_mode: HelpDisplayMode::default(),
             completion_registry,
             completion_state: None,
@@ -2416,15 +2424,20 @@ impl App {
     }
 
     pub fn apply(&mut self, action: Action) {
-        // Snapshot pre-apply state for the hover-auto-dismiss
-        // hook below: any document-cursor motion while a hover
-        // popup is open should close the popup (vim/emacs
-        // behaviour -- moving the cursor leaves the hovered
-        // symbol). The post-apply check compares against these
-        // locals.
-        let hover_pre_cursor = self.cursor;
-        let hover_pre_active = self.active_buffer;
-        let hover_was_open = self.hover_popup.is_some();
+        // Snapshot pre-dispatch state for the State-A hover
+        // auto-dismiss hook below: while a hover popup is shown
+        // and focus is still on the main buffer, any motion that
+        // changes the doc cursor closes the popup -- the popup
+        // is anchored to the symbol the user pressed `K` on, so
+        // a cursor motion makes it stale. Once the user has
+        // pressed `K` again to *focus into* the popup (State B,
+        // active_buffer == Help), this auto-dismiss is skipped:
+        // motions there move the popup's cursor, not the doc's.
+        let pre_active = self.active_buffer;
+        let pre_cursor = self.cursor;
+        let popup_in_state_a = self.help_buffer.is_some()
+            && self.prev_pane_for_help.is_none()
+            && pre_active == BufferKind::Document;
         // While a macro recording is in flight, capture every Action
         // EXCEPT the recording-management ones themselves (otherwise the
         // recording would include "stop recording" or recurse on play).
@@ -2856,20 +2869,17 @@ impl App {
         }
         self.ensure_cursor_visible();
         self.maybe_reparse_syntax();
-        // Hover-auto-dismiss: any document-cursor motion while a
-        // hover popup is open closes the popup. Matches the
-        // vim/emacs convention. Once the user has *promoted* the
-        // hover into a help buffer (second `K`), the popup is
-        // already gone -- the help-buffer dismissal path
-        // (`HelpDismiss`) takes over for the focused-read state.
-        if hover_was_open
-            && self.hover_popup.is_some()
-            && hover_pre_active == BufferKind::Document
+        // State-A hover-auto-dismiss: popup was shown, focus
+        // never moved into it (so `prev_pane_for_help` is None),
+        // and the doc cursor moved. Drop the popup -- it's
+        // anchored to the prior symbol and is now stale.
+        if popup_in_state_a
             && self.active_buffer == BufferKind::Document
-            && self.cursor != hover_pre_cursor
+            && self.cursor != pre_cursor
         {
-            self.hover_popup = None;
+            self.help_buffer = None;
         }
+        let _ = pre_active;
     }
 
     /// Reparse syntax if the document's text has changed since the last
@@ -5000,16 +5010,51 @@ impl App {
         );
     }
 
-    /// `:hover [markdown]` (DESIGN.md §5.9.6, §5.11.4). Opens a
-    /// transient floating popup at the document cursor with
-    /// `markdown` as the body. v1 path is manual-trigger; Phase
-    /// 4.2.b adds the `K` keystroke that sources the markdown
-    /// from `textDocument/hover` responses (see
-    /// [`Self::do_lsp_hover_request`]).
+    /// `K` (LSP hover) response handler / `:hover [markdown]`.
+    /// Enters **State A**: popup overlay shown, focus stays on
+    /// the main buffer. The popup auto-dismisses on the next
+    /// motion (apply()'s post-dispatch hook) since it's anchored
+    /// to the symbol the user K'd. To navigate inside the popup
+    /// the user presses `K` again, which `do_lsp_hover_request`
+    /// recognises as "focus into popup" -> State B.
     fn do_open_hover(&mut self, markdown: &str) {
-        let popup = crate::hover::HoverPopup::new(self.cursor, markdown)
+        let lines: Vec<String> = markdown.split('\n').map(String::from).collect();
+        let buffer = crate::help::HelpBuffer::from_lines("hover", lines)
             .with_markdown_syntax(self.lang_registry.clone());
-        self.hover_popup = Some(popup);
+        // State A: just set the help_buffer. Active stays on the
+        // main buffer; self.cursor untouched. prev_pane_for_help
+        // remains `None` -- the State-A auto-dismiss key.
+        self.help_buffer = Some(buffer);
+    }
+
+    /// **State A -> State B**: focus moves into the popup. After
+    /// this, the popup behaves like any other buffer -- vim
+    /// grammar (motions, `/` search, `n`/`N`, `gg`/`G`, `:` ex
+    /// commands) operates on the popup's content; the doc behind
+    /// is frozen. Dismiss with `<Esc>` / `q` returns focus to
+    /// the doc at the cursor it was on.
+    ///
+    /// `prev_pane_for_help` is the dismiss-restore stash and
+    /// also signals "we're in State B" to the auto-dismiss-on-
+    /// motion hook -- when it's `Some`, motion doesn't close the
+    /// popup.
+    fn focus_help_popup(&mut self) {
+        let Some(help) = self.help_buffer.as_ref() else {
+            return;
+        };
+        let active = self.pane_tree.active();
+        self.prev_pane_for_help = Some(PrevPaneState {
+            buffer: active.buffer,
+            buffer_id: active.buffer_id,
+            cursor: self.cursor,
+            scroll: self.scroll,
+        });
+        let stash_cursor = help.cursor;
+        let stash_scroll = help.scroll as u32;
+        self.cursor = stash_cursor;
+        self.scroll = stash_scroll;
+        self.active_buffer = BufferKind::Help;
+        self.pending = Pending::None;
     }
 
     /// `K` (Phase 4.2.b). Send `textDocument/hover` to every LSP
@@ -5030,25 +5075,21 @@ impl App {
     /// flipped before the new request fires, so a slow server
     /// can't drop a stale popup over the new cursor position.
     fn do_lsp_hover_request(&mut self) {
-        // Vim "step into the docs": the second `K` while a popup
-        // is open promotes the hover content into a real help
-        // buffer. That gives full vim grammar (motions, `/`
-        // search, `n` / `N`, `gg` / `G`, `:` ex commands, the
-        // works) by reusing the same machinery `:describe-*` /
-        // `:apropos` / `:lsp-log` use -- no parallel keymap, no
-        // hand-rolled scroll actions. The hover popup is dropped;
-        // `app.help_buffer` takes over visually + for input.
-        if let Some(hover) = self.hover_popup.take() {
-            let buffer = crate::help::HelpBuffer::from_lines(
-                "hover",
-                hover.lines.clone(),
-            )
-            .with_markdown_syntax(self.lang_registry.clone());
-            self.open_help(buffer);
+        // Already focused into the popup (State B) -- K is a
+        // no-op. To get a fresh hover the user dismisses with
+        // Esc / q, repositions in the doc, then presses K.
+        if matches!(self.active_buffer, BufferKind::Help) {
             return;
         }
-        // Cancel any in-flight hover so its result -- if it
-        // arrives later -- is dropped by the relay.
+        // Popup shown but focus still on main buffer (State A) --
+        // second K transfers focus into the popup. No new LSP
+        // request fires; we just promote.
+        if self.help_buffer.is_some() {
+            self.focus_help_popup();
+            return;
+        }
+        // First K -- fire a fresh hover request. Cancel any
+        // in-flight first.
         if let Some(token) = self.pending_hover_token.take() {
             token.cancel();
         }
@@ -5427,9 +5468,12 @@ impl App {
         // around the target; nothing extra needed here.
     }
 
-    /// `:HoverClose` / `Esc` -- dismiss the hover popup.
+    /// `:HoverClose` -- dismiss the hover popup. Routes through
+    /// the unified help-dismiss path so State A and State B both
+    /// unwind cleanly (B restores via `prev_pane_for_help`; A
+    /// just drops the popup).
     fn do_close_hover(&mut self) {
-        self.hover_popup = None;
+        self.dismiss_help();
     }
 
     /// `:help [topic]` (DESIGN.md §5.11). With no topic the index
@@ -6853,6 +6897,20 @@ impl App {
             let cur = self.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
+        // Capture pre-activation pane + active state so dismiss
+        // can restore the user to whatever buffer they came from.
+        // Only set when transitioning into help from a non-help
+        // buffer; help-to-help transitions (link follows etc.)
+        // preserve the original origin.
+        if !matches!(self.active_buffer, BufferKind::Help) {
+            let active = self.pane_tree.active();
+            self.prev_pane_for_help = Some(PrevPaneState {
+                buffer: active.buffer,
+                buffer_id: active.buffer_id,
+                cursor: self.cursor,
+                scroll: self.scroll,
+            });
+        }
         self.snapshot_active_pane();
         // Note: do NOT call `snapshot_active_document` here. Help
         // is rendered as a popup overlay over the underlying
@@ -6904,7 +6962,24 @@ impl App {
     /// active buffer flips back to Document.
     fn dismiss_help(&mut self) {
         self.help_buffer = None;
-        self.active_buffer = BufferKind::Document;
+        // Restore pre-help state if focus had moved into the help
+        // (State B for hover; in-pane mode for `:lsp-log` etc.).
+        // State A (popup shown but never focused) leaves
+        // `prev_pane_for_help` as `None` -- nothing to restore;
+        // active was never flipped to Help.
+        if let Some(prev) = self.prev_pane_for_help.take() {
+            self.cursor = prev.cursor;
+            self.scroll = prev.scroll;
+            let pane = self.pane_tree.active_mut();
+            pane.buffer = prev.buffer;
+            pane.buffer_id = prev.buffer_id;
+            self.active_buffer = prev.buffer;
+        } else {
+            // State A dismiss (or popup-overlay variant of help
+            // that never took focus): just flip active back as a
+            // safety net; cursor/scroll were never touched.
+            self.active_buffer = BufferKind::Document;
+        }
         // Help mode reuses Pending::AfterG for the gg chord; clear
         // it on dismiss so a stranded `g` doesn't leak into Normal
         // mode.
@@ -14365,13 +14440,16 @@ mod tests {
         // async LSP path), move the cursor, assert dismissal.
         let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
         a.do_open_hover("hover body");
-        assert!(a.hover_popup.is_some());
+        assert!(a.help_buffer.is_some());
+        // State A: focus still on doc, prev_pane_for_help is None.
+        assert!(a.prev_pane_for_help.is_none());
+        assert!(matches!(a.active_buffer, BufferKind::Document));
         // Drive a real motion through `apply` (`l` -- char-right).
         let inv = lattice_grammar::CommandInvocation::of(a.builtins.char_right.0);
         a.apply(Action::Invoke(inv));
         assert!(
-            a.hover_popup.is_none(),
-            "hover should dismiss on cursor motion"
+            a.help_buffer.is_none(),
+            "hover popup should dismiss on cursor motion in State A"
         );
     }
 
@@ -14383,40 +14461,70 @@ mod tests {
         // doesn't move the cursor.
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("hover body");
-        assert!(a.hover_popup.is_some());
+        assert!(a.help_buffer.is_some());
         a.apply(Action::PushDigit(5));
         assert!(
-            a.hover_popup.is_some(),
+            a.help_buffer.is_some(),
             "hover should survive a count-prefix push"
         );
     }
 
     #[test]
-    fn second_hover_request_promotes_to_help_buffer() {
-        // First K opens the popup; second K *promotes* it to a
-        // real HelpBuffer so the user gets full vim grammar
-        // (motions, search, gg/G, :, etc.). Test the synchronous
-        // side: simulate the popup already open, call
-        // `do_lsp_hover_request`, confirm the popup was dismissed
-        // and `app.help_buffer` now carries the same body.
+    fn second_hover_request_focuses_into_popup() {
+        // First K opens the popup (State A: cursor in doc); second
+        // K transfers focus into the popup (State B: cursor in
+        // help). The buffer content is the same; only `active_buffer`
+        // and the cursor position change. `prev_pane_for_help`
+        // captures pre-State-B state so dismiss restores cleanly.
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("hover body line 1\nhover body line 2");
-        assert!(a.hover_popup.is_some());
+        assert!(a.help_buffer.is_some());
+        assert!(matches!(a.active_buffer, BufferKind::Document));
+        assert!(a.prev_pane_for_help.is_none());
+        // Second K -> focus into popup.
         a.do_lsp_hover_request();
-        // Promotion: hover popup gone, help buffer now in.
-        assert!(a.hover_popup.is_none(), "hover popup dismissed on promotion");
-        let help = a
-            .help_buffer
-            .as_ref()
-            .expect("promotion should populate help_buffer");
-        assert_eq!(help.title, "hover");
-        let body = help.content.as_string();
-        assert!(body.contains("hover body line 1"));
-        assert!(body.contains("hover body line 2"));
-        // active_buffer flipped to Help so motion / search dispatch
-        // reads on the help buffer (existing translate_normal
-        // wiring).
+        assert!(a.help_buffer.is_some(), "popup stays up after focus");
         assert!(matches!(a.active_buffer, BufferKind::Help));
+        let stash = a.prev_pane_for_help.expect("State B captures stash");
+        assert_eq!(stash.buffer, BufferKind::Document);
+    }
+
+    #[test]
+    fn focused_hover_does_not_auto_dismiss_on_motion() {
+        // State B: cursor is *inside* the popup; motions move the
+        // popup's cursor, not the doc's. The State-A auto-dismiss
+        // hook is gated on `prev_pane_for_help.is_none()` -- in
+        // State B that field is Some, so motion doesn't drop the
+        // popup.
+        let mut a = app_with("fn main() {}\n", 5);
+        a.do_open_hover("line 1\nline 2\nline 3");
+        a.do_lsp_hover_request(); // -> State B
+        assert!(matches!(a.active_buffer, BufferKind::Help));
+        // Move within popup.
+        let inv = lattice_grammar::CommandInvocation::of(a.builtins.line_down.0);
+        a.apply(Action::Invoke(inv));
+        assert!(a.help_buffer.is_some(), "popup persists in State B");
+        assert_eq!(a.cursor.line, 1);
+    }
+
+    #[test]
+    fn dismiss_focused_hover_restores_doc_cursor() {
+        // Esc / q in State B routes to HelpDismiss, which restores
+        // the pre-State-B cursor / scroll on the doc.
+        let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
+        a.cursor = lattice_protocol::Position::new(1, 4);
+        a.do_open_hover("hover body");
+        a.do_lsp_hover_request(); // -> State B
+        // Move inside the popup.
+        let inv = lattice_grammar::CommandInvocation::of(a.builtins.line_down.0);
+        a.apply(Action::Invoke(inv));
+        assert!(matches!(a.active_buffer, BufferKind::Help));
+        // Dismiss.
+        a.apply(Action::HelpDismiss);
+        assert!(a.help_buffer.is_none());
+        assert!(matches!(a.active_buffer, BufferKind::Document));
+        assert_eq!(a.cursor, lattice_protocol::Position::new(1, 4));
+        assert!(a.prev_pane_for_help.is_none());
     }
 
     #[test]
@@ -15051,15 +15159,18 @@ mod tests {
     // ---- Hover popup (DESIGN.md §5.9.6, B.3) ----
 
     #[test]
-    fn hover_open_records_anchor_at_cursor() {
+    fn hover_open_populates_help_buffer() {
         let mut a = app_with("alpha\nbeta\ngamma", 10);
         a.cursor = Position::new(1, 2);
         a.command_line = "hover documentation".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.hover_popup.as_ref().expect("hover open");
-        assert_eq!(h.anchor, Position::new(1, 2));
-        assert!(h.lines.iter().any(|l| l.contains("documentation")));
+        let h = a.help_buffer.as_ref().expect("hover open");
+        assert_eq!(h.title, "hover");
+        assert!(h.content.as_string().contains("documentation"));
+        // State A: focus stays on doc.
+        assert!(matches!(a.active_buffer, BufferKind::Document));
+        assert!(a.prev_pane_for_help.is_none());
     }
 
     #[test]
@@ -15068,11 +15179,11 @@ mod tests {
         a.command_line = "hover x".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.hover_popup.is_some());
+        assert!(a.help_buffer.is_some());
         a.command_line = "HoverClose".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.hover_popup.is_none());
+        assert!(a.help_buffer.is_none());
     }
 
     #[test]
@@ -15081,8 +15192,8 @@ mod tests {
         a.command_line = "hover".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.hover_popup.as_ref().expect("hover open");
-        assert!(h.markdown.contains("empty"));
+        let h = a.help_buffer.as_ref().expect("hover open");
+        assert!(h.content.as_string().contains("empty"));
     }
 
     // ---- LSP hover (Phase 4.2.b) ----
@@ -15168,8 +15279,11 @@ mod tests {
         tx.send(crate::app::HoverOutcome::Body("**bold body**".into()))
             .unwrap();
         a.drain_pending_hover();
-        let h = a.hover_popup.as_ref().expect("popup");
-        assert_eq!(h.markdown, "**bold body**");
+        let h = a.help_buffer.as_ref().expect("popup");
+        assert!(h.content.as_string().contains("**bold body**"));
+        // State A entry: focus still on the doc.
+        assert!(matches!(a.active_buffer, BufferKind::Document));
+        assert!(a.prev_pane_for_help.is_none());
         assert!(
             a.pending_hover_token.is_none(),
             "delivering the outcome should clear the in-flight token"
@@ -15189,7 +15303,7 @@ mod tests {
         tx.send(crate::app::HoverOutcome::NoBody { servers_tried: 1 })
             .unwrap();
         a.drain_pending_hover();
-        assert!(a.hover_popup.is_none(), "no popup for empty hover");
+        assert!(a.help_buffer.is_none(), "no popup for empty hover");
         let msg = a.last_message.as_ref().expect("echo on no-hover-info");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(
@@ -15228,7 +15342,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
         a.pending_hover_rx = Some(rx);
         a.drain_pending_hover();
-        assert!(a.hover_popup.is_none());
+        assert!(a.help_buffer.is_none());
         assert!(a.last_message.is_none());
     }
 

@@ -386,7 +386,39 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
                     }
                 }
             }
-            Line::from(render_help_line(l, &spans))
+            let mut body = render_help_line(l, &spans);
+            // Hlsearch / current_match overlays -- same painter
+            // the document path and the in-pane help variant use,
+            // so `/foo` in a focused popup shows highlights too.
+            // Only paints when help is actually focused (search
+            // state is active-buffer-relative).
+            if matches!(app.active_buffer, crate::buffers::BufferKind::Help) {
+                let line_len = l.len();
+                for &range in app.all_matches.iter() {
+                    if let Some((overlay_start, overlay_end)) =
+                        match_overlay_range(range, line_idx as u32, line_len)
+                    {
+                        body = apply_match_overlay(
+                            body,
+                            overlay_start,
+                            overlay_end,
+                            hlsearch_style(),
+                        );
+                    }
+                }
+                if let Some(range) = app.current_match
+                    && let Some((overlay_start, overlay_end)) =
+                        match_overlay_range(range, line_idx as u32, line_len)
+                {
+                    body = apply_match_overlay(
+                        body,
+                        overlay_start,
+                        overlay_end,
+                        match_style(),
+                    );
+                }
+            }
+            Line::from(body)
         })
         .collect();
     // Always wrap inside help / log / `:lsp-trace-log` popups --

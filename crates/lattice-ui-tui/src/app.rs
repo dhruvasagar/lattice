@@ -5042,6 +5042,9 @@ impl App {
         let Some(help) = self.help_buffer.as_ref() else {
             return;
         };
+        let stash_cursor = help.cursor;
+        let stash_scroll = help.scroll as u32;
+        // Capture pre-State-B state so dismiss restores cleanly.
         let active = self.pane_tree.active();
         self.prev_pane_for_help = Some(PrevPaneState {
             buffer: active.buffer,
@@ -5049,8 +5052,13 @@ impl App {
             cursor: self.cursor,
             scroll: self.scroll,
         });
-        let stash_cursor = help.cursor;
-        let stash_scroll = help.scroll as u32;
+        // Sync active pane's cursor / scroll stash *before*
+        // swapping `active_buffer` to Help. The renderer reads
+        // `pane.cursor` for any pane whose buffer kind doesn't
+        // match `active_buffer`; without this sync the doc would
+        // appear to jump to wherever pane.cursor was last set
+        // (often (0,0) on a fresh app).
+        self.snapshot_active_pane();
         self.cursor = stash_cursor;
         self.scroll = stash_scroll;
         self.active_buffer = BufferKind::Help;
@@ -6818,10 +6826,30 @@ impl App {
             let cur = self.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
-        // Load the new help buffer's cursor / scroll into the
-        // App's hot path. Same model as activate_help_in_pane:
-        // `self.cursor` / `self.scroll` are the active buffer's,
-        // motion / scroll / search read / write them uniformly.
+        // Sync the active pane's cursor / scroll stash *before*
+        // swapping `active_buffer` to Help. Once active is Help,
+        // the active pane's buffer (Document) no longer matches
+        // `app.active_buffer`, so the renderer paints it as
+        // visually inactive -- reading from `pane.cursor` rather
+        // than `app.cursor`. Without this snapshot the pane stash
+        // is whatever it was last set to (often (0,0)) and the
+        // doc visibly jumps to the top of file when the popup
+        // opens.
+        self.snapshot_active_pane();
+        // Capture pre-help state so dismiss restores the user
+        // cleanly. Mirrors `activate_help_in_pane` / `focus_help_popup`.
+        if !matches!(self.active_buffer, BufferKind::Help) {
+            let active = self.pane_tree.active();
+            self.prev_pane_for_help = Some(PrevPaneState {
+                buffer: active.buffer,
+                buffer_id: active.buffer_id,
+                cursor: self.cursor,
+                scroll: self.scroll,
+            });
+        }
+        // Load the help buffer's cursor / scroll into the App's
+        // hot path. Motion / scroll / search read / write them
+        // uniformly across buffer kinds.
         let stash_cursor = buffer.cursor;
         let stash_scroll = buffer.scroll as u32;
         self.help_buffer = Some(buffer);
@@ -14505,6 +14533,32 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert!(a.help_buffer.is_some(), "popup persists in State B");
         assert_eq!(a.cursor.line, 1);
+    }
+
+    #[test]
+    fn open_help_popup_preserves_doc_pane_cursor_for_render() {
+        // Bug: invoking a popup-mode help command (`:lsp-status`,
+        // `:describe-key`, etc.) flipped `active_buffer` to Help
+        // without first syncing the doc's `app.cursor` /
+        // `app.scroll` into the active pane's stash. The renderer
+        // reads `pane.cursor` for any pane whose buffer kind
+        // doesn't match `active_buffer` (popup mode = mismatch),
+        // so the doc visibly jumped to wherever pane.cursor was
+        // last (often (0,0)).
+        let mut a = app_with("line0\nline1\nline2\nline3\nline4\n", 5);
+        a.cursor = Position::new(3, 2);
+        a.scroll = 1;
+        a.do_lsp_status();
+        // After open_help, active is Help but the active pane
+        // still shows the doc -- pane.cursor must reflect where
+        // the doc was, not the help buffer's (0,0).
+        let pane = a.pane_tree.active();
+        assert_eq!(
+            pane.cursor,
+            Position::new(3, 2),
+            "doc's pre-help cursor must be stashed onto pane.cursor"
+        );
+        assert_eq!(pane.scroll, 1);
     }
 
     #[test]

@@ -811,6 +811,41 @@ WASM call overhead is real but bounded. Ground rules:
 
 **What this means concretely.** A motion evaluator implemented in WASM that queries a host tree-sitter API costs ~5μs round-trip; called once per relevant keypress, this is 0.25% of the < 2ms keystroke budget. The bottleneck is the parser, not the WASM boundary.
 
+#### 5.5.6 Bundled plugins
+
+Lattice ships with a curated set of **bundled plugins** -- WASM Component Model packages compiled into the editor binary (or shipped in a known directory next to it) so they're available without a separate install step. They are the same shape as user-installed plugins; they just have a higher trust default and zero install friction.
+
+The strategy: features that *aren't architecturally core* but *are essential to ship feature-complete out of the box* live here. Core stays narrow (buffers, modal grammar, command registry, renderer trait, runtime, plugin host); editor-quality wins (LSP server management, project-wide search, version-control UIs, snippets, surround / comment / auto-pair editing helpers) ship as bundled plugins. This dogfoods the plugin host on real workloads, gives third-party plugin authors high-quality reference implementations to study, and keeps the plugin API surface honest.
+
+**Trust distinction.** Bundled plugins inherit the editor's trust level -- their capabilities are pre-granted at build time, no per-install consent prompt. User-installed plugins (via the bundled plugin manager) go through capability prompts on first install. Plugin manifests declare requested capabilities (`fs:write:install_dir`, `net:http`, `proc:spawn`, ...); the runtime gates accordingly.
+
+**Bootstrap.** The plugin manager itself is bundled; you can't install it via itself. Bundled plugins live in `core-plugins/<name>.wasm` next to the binary, or compiled-in via `include_bytes!` for single-binary distributions. On first launch the host instantiates them with their pre-granted capabilities; the plugin manager then handles user-installed plugins from `${XDG_DATA_HOME}/lattice/plugins/`.
+
+**Bundled-plugin candidates** (Phase 8 -- post-Phase-7 plugin host; concrete inventory in `docs/IMPLEMENTATION.md`):
+
+- **LSP server manager** -- install / update / uninstall LSPs into a managed `${XDG_DATA_HOME}/lattice/lsp/<name>/<version>/` tree; bundled registry of common servers; SHA-pinned downloads. Lighthouse implementation -- the first non-trivial bundled plugin we build, validating that the WIT surface is sized correctly.
+- **Plugin manager** -- install / update / uninstall third-party plugins; capability-prompt UX.
+- **Project / workspace fuzzy-finder** (Telescope / fzf-lua equivalent).
+- **Project-wide grep** (ripgrep wrapper, results-as-buffer).
+- **Git client** (magit-style — git ops as buffers).
+- **Snippet engine** (LSP-spec snippets + custom).
+- **Editing helpers**: comment toggle, surround, auto-pairs, multi-cursor.
+- **Diff viewer / merge tool**.
+- **Outline / symbols sidebar** (consumes LSP `documentSymbol`).
+- **Format-on-save controller**.
+- **Test runner integration**.
+- **Markdown preview**.
+
+**WIT prerequisites that this design imposes on Phase 7's plugin host** (the first three are blockers for the LSP server manager specifically):
+
+1. `LspSupervisor` mutation through WIT -- plugins register `ServerConfig`s pointing at paths under their managed install dir. `ServerConfig` becomes a stable WIT type.
+2. **Filesystem capability** scoped per-plugin -- `${XDG_DATA_HOME}/lattice/plugins/<plugin-id>/data/` mounted via `wasi:filesystem`; writes outside it require an explicit broader capability.
+3. **Network capability** -- `wasi:http` (preview2), gated; consent prompt on first install.
+4. **Subprocess capability** -- contentious, since "spawn arbitrary process" approximates "trust this plugin completely". v1: bundled plugins only get `proc:spawn`; user-installed plugins ship pre-built binary recipes (no source-build paths). Sandboxed subprocess primitives are post-1.0.
+5. **Long-running task surface** -- `start_task → push_output → finalize` so plugin-driven installs / scans stream stdout into a buffer-backed view without blocking the renderer.
+6. **Ex-command registration** through WIT (already in §5.2.1's plan; called out here as a load-bearing dependency).
+7. **§5.12 typed-options registration** through WIT -- plugins register `lsp-manager.install_root`, `lsp-manager.github_token`, etc. into the same `ConfigRegistry` core options live in.
+
 ### 5.6 Rendering -- The Layered Architecture
 
 #### 5.6.1 The Renderer trait

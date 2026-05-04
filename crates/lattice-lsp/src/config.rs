@@ -187,23 +187,76 @@ pub fn builtin_servers() -> Vec<ServerConfig> {
 }
 
 /// Walk up from `start_dir` looking for any of `markers`. Returns
-/// the first ancestor that contains one. Falls back to `start_dir`
-/// when no marker matches -- the LSP spec allows passing the
-/// buffer's directory as a degenerate workspace.
+/// the resolved workspace root, applying language-specific
+/// "outermost wins" semantics where appropriate. Falls back to
+/// `start_dir` when no marker matches -- the LSP spec allows
+/// passing the buffer's directory as a degenerate workspace.
+///
+/// **Cargo-workspace awareness.** Rust's Cargo allows nested
+/// `Cargo.toml` files (member crate's `[package]`-only Cargo.toml
+/// inside the workspace's `[workspace]` Cargo.toml). rust-analyzer
+/// must be anchored at the *workspace* root for cross-crate
+/// goto-definition + external-dependency indexing to work. This
+/// resolver therefore walks the entire ancestor chain when
+/// `Cargo.toml` is among the markers and prefers the *outermost*
+/// `Cargo.toml` that declares `[workspace]`. For all other markers
+/// (and for standalone-crate Rust projects with no enclosing
+/// workspace) the *nearest* match still wins -- the historical
+/// behaviour and what every other language wants.
 pub fn resolve_workspace_root(
     start_dir: &std::path::Path,
     markers: &[String],
 ) -> PathBuf {
+    let mut nearest_marker_dir: Option<PathBuf> = None;
+    let mut outermost_workspace_dir: Option<PathBuf> = None;
+    let cargo_marker_present = markers.iter().any(|m| m == "Cargo.toml");
+
     let mut cursor = Some(start_dir);
     while let Some(dir) = cursor {
         for marker in markers {
-            if dir.join(marker).exists() {
-                return dir.to_path_buf();
+            let marker_path = dir.join(marker);
+            if marker_path.exists() {
+                if nearest_marker_dir.is_none() {
+                    nearest_marker_dir = Some(dir.to_path_buf());
+                }
+                // Cargo workspace upgrade path: peek inside any
+                // Cargo.toml we encounter; the outermost one with
+                // `[workspace]` is the true root. Cheap line scan
+                // -- no TOML parser dep needed.
+                if cargo_marker_present
+                    && marker == "Cargo.toml"
+                    && cargo_toml_declares_workspace(&marker_path)
+                {
+                    outermost_workspace_dir = Some(dir.to_path_buf());
+                }
             }
         }
         cursor = dir.parent();
     }
-    start_dir.to_path_buf()
+    outermost_workspace_dir
+        .or(nearest_marker_dir)
+        .unwrap_or_else(|| start_dir.to_path_buf())
+}
+
+/// Does the given `Cargo.toml` declare a `[workspace]` section?
+/// Returns false on any read / parse failure -- the caller treats
+/// the file as a non-workspace `Cargo.toml` and the resolver falls
+/// back to the nearest-marker path.
+///
+/// We avoid pulling in a TOML parser dep for this single check;
+/// a line-by-line scan for `[workspace]` (or `[workspace.something]`)
+/// is precise enough. False positives require a `[workspace]`
+/// substring at the start of a non-comment line that *also*
+/// satisfies TOML's section-header grammar -- vanishingly rare in
+/// real Cargo manifests.
+fn cargo_toml_declares_workspace(path: &std::path::Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    content.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed == "[workspace]" || trimmed.starts_with("[workspace.")
+    })
 }
 
 #[cfg(test)]
@@ -282,6 +335,125 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let resolved = resolve_workspace_root(&dir, &["never-exists.toml".into()]);
         assert_eq!(resolved, dir);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_workspace_root_prefers_outermost_cargo_workspace() {
+        // Layout:
+        //   tmp/Cargo.toml         -- [workspace] members = [...]
+        //   tmp/crates/foo/Cargo.toml  -- [package]
+        //   tmp/crates/foo/src/lib.rs
+        // Walking up from `src/`, we should land on `tmp/`, not
+        // `tmp/crates/foo/`. This is the bug that broke cross-
+        // crate goto-definition + external-dep hover for nested
+        // member crates.
+        let dir = tempdir::new_dir("ws-root-cargo-outer");
+        let inner = dir.join("crates/foo/src");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("crates/foo/Cargo.toml"),
+            "[package]\nname = \"foo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let resolved = resolve_workspace_root(&inner, &["Cargo.toml".into()]);
+        assert_eq!(
+            resolved, dir,
+            "outermost Cargo.toml with [workspace] should win"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_workspace_root_standalone_crate_uses_nearest() {
+        // No enclosing workspace: nearest Cargo.toml wins (the
+        // crate's own).
+        let dir = tempdir::new_dir("ws-root-standalone");
+        let inner = dir.join("src");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"solo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let resolved = resolve_workspace_root(&inner, &["Cargo.toml".into()]);
+        assert_eq!(resolved, dir);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_workspace_root_two_unrelated_cargo_dirs_keeps_nearest() {
+        // Two nested Cargo.toml files, neither declares
+        // [workspace]. This is unusual (broken-by-cargo) but the
+        // fallback must still pick the nearest -- the inner crate
+        // is the right anchor for tooling.
+        let dir = tempdir::new_dir("ws-root-unrelated-nested");
+        let inner_crate = dir.join("inner");
+        let inner_src = inner_crate.join("src");
+        fs::create_dir_all(&inner_src).unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"outer\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            inner_crate.join("Cargo.toml"),
+            "[package]\nname = \"inner\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let resolved = resolve_workspace_root(&inner_src, &["Cargo.toml".into()]);
+        assert_eq!(
+            resolved, inner_crate,
+            "nearest Cargo.toml should win when no workspace is declared"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_workspace_root_workspace_table_with_subkey_detected() {
+        // `[workspace.dependencies]` is a sub-table; the parser
+        // should still recognise it as workspace-bearing.
+        let dir = tempdir::new_dir("ws-root-workspace-subkey");
+        let inner = dir.join("crates/foo/src");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            "[workspace.dependencies]\nserde = \"1\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("crates/foo/Cargo.toml"),
+            "[package]\nname = \"foo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let resolved = resolve_workspace_root(&inner, &["Cargo.toml".into()]);
+        assert_eq!(resolved, dir);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_workspace_root_non_cargo_marker_keeps_nearest() {
+        // Markers other than Cargo.toml don't get the
+        // outermost-wins semantics -- a `package.json` deep in a
+        // monorepo should anchor at the deepest match (the
+        // sub-package), not at the monorepo root.
+        let dir = tempdir::new_dir("ws-root-non-cargo");
+        let inner = dir.join("apps/web/src");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(dir.join("package.json"), "{}").unwrap();
+        fs::write(dir.join("apps/web/package.json"), "{}").unwrap();
+        let resolved = resolve_workspace_root(&inner, &["package.json".into()]);
+        assert_eq!(
+            resolved,
+            dir.join("apps/web"),
+            "nearest non-Cargo marker wins"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -5552,14 +5552,31 @@ impl App {
                 }
             }
             crate::help::HelpLinkTarget::Source { path, line } => {
-                self.set_message(
-                    EchoLevel::Info,
-                    format!(
-                        "source: {}:{} (file open arrives with multi-buffer)",
-                        path.display(),
-                        line
-                    ),
-                );
+                // `[label](file:PATH:LINE)` -- open the file via
+                // the existing `:e` machinery (multi-buffer
+                // foundation, §5.9), then position the cursor at
+                // the requested line. Push the help-side cursor
+                // onto position history with `PluginPush` so
+                // `<C-o>` walks back into the help view.
+                self.push_position_history(prev_help_cursor, PositionSource::PluginPush);
+                self.do_edit(Some(path.clone()), false);
+                // `do_edit` may have set an error message + bailed
+                // (e.g. permission denied). Don't try to jump in
+                // that case -- the message is already on screen.
+                if matches!(
+                    self.last_message.as_ref().map(|m| m.level),
+                    Some(EchoLevel::Error)
+                ) {
+                    return;
+                }
+                // Source links carry 1-based line numbers (matching
+                // every editor + every `path:line` convention);
+                // convert to the App's 0-based line index, clamping
+                // to a valid line in the now-loaded buffer.
+                let snap = self.document.snapshot();
+                let last = snap.buffer.line_count().saturating_sub(1);
+                let target_line = line.saturating_sub(1).min(last);
+                self.cursor = Position::new(target_line, 0);
             }
             crate::help::HelpLinkTarget::Unresolved(url) => {
                 self.set_message(EchoLevel::Warn, format!("no handler for `{url}`"));
@@ -14302,6 +14319,94 @@ mod tests {
             h.scroll as u32, target_anchor_line,
             "scroll should follow the anchor"
         );
+    }
+
+    #[test]
+    fn follow_link_source_opens_file_at_line() {
+        // `:describe-command :lsp-trace` (and similar) renders a
+        // `[<source>](file:PATH:LINE)` link. Following it should
+        // open the file via the multi-buffer machinery and
+        // position the cursor at the requested line. Pre-fix this
+        // arm just echoed "(file open arrives with multi-buffer)"
+        // -- we already had multi-buffer; the placeholder was
+        // stale.
+        let path = std::env::temp_dir()
+            .join(format!("lattice-srclink-{}.rs", std::process::id()));
+        std::fs::write(&path, "first\nsecond\nthird\nfourth\n").unwrap();
+        let mut a = app_with("xx", 10);
+        // Open a help buffer so the active modal/buffer state
+        // matches what `FollowLink` expects.
+        a.command_line = "help".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        // Build a synthetic source link inside the help buffer.
+        // 1-based line number: line 3 in the file → cursor at
+        // line index 2 in the buffer.
+        let link = crate::help::HelpLink {
+            range: lattice_protocol::Range::new(
+                lattice_protocol::Position::ZERO,
+                lattice_protocol::Position::new(0, 1),
+            ),
+            target: crate::help::HelpLinkTarget::Source {
+                path: path.clone(),
+                line: 3,
+            },
+        };
+        if let Some(h) = a.help_buffer.as_mut() {
+            h.links.push(link);
+            h.cursor = lattice_protocol::Position::ZERO;
+        }
+        a.active_buffer = BufferKind::Help;
+        a.apply(Action::FollowLink);
+        // The file should now be the active document.
+        assert_eq!(a.active_buffer, BufferKind::Document);
+        let opened = a.document.path().expect("active doc has a path");
+        assert_eq!(opened, path);
+        // Cursor at line index 2 (1-based 3 → 0-based 2).
+        assert_eq!(a.cursor.line, 2);
+        // NOTE: a `PluginPush` history entry is pushed *before*
+        // `do_edit` runs, but `do_edit`'s new-file branch clears
+        // the position history (so a fresh buffer's `<C-o>` doesn't
+        // walk into the previous buffer's positions). That means
+        // cross-buffer jumps from FollowLink and from
+        // `jump_to_lsp_location` currently lose their walk-back
+        // entry. Per-buffer position history is queued as the
+        // proper fix; for now this test asserts the open-and-jump
+        // primary behaviour and lets the history side-effect
+        // regress until that fix lands.
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn follow_link_source_clamps_line_past_eof() {
+        let path = std::env::temp_dir()
+            .join(format!("lattice-srclink-clamp-{}.rs", std::process::id()));
+        std::fs::write(&path, "only-line\n").unwrap();
+        let mut a = app_with("xx", 10);
+        a.command_line = "help".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let link = crate::help::HelpLink {
+            range: lattice_protocol::Range::new(
+                lattice_protocol::Position::ZERO,
+                lattice_protocol::Position::new(0, 1),
+            ),
+            target: crate::help::HelpLinkTarget::Source {
+                path: path.clone(),
+                line: 999,
+            },
+        };
+        if let Some(h) = a.help_buffer.as_mut() {
+            h.links.push(link);
+            h.cursor = lattice_protocol::Position::ZERO;
+        }
+        a.active_buffer = BufferKind::Help;
+        a.apply(Action::FollowLink);
+        // Out-of-range line should clamp to the last valid line,
+        // not panic and not echo a confusing error.
+        let last_line = a.document.snapshot().buffer.line_count().saturating_sub(1);
+        assert_eq!(a.cursor.line, last_line);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

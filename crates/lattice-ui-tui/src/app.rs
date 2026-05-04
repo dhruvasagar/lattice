@@ -12937,6 +12937,39 @@ mod tests {
     }
 
     #[test]
+    fn cmdline_completion_includes_lsp_subcommand_aliases() {
+        // Diagnostic: typing `:lsp-` and tabbing should surface
+        // `lsp-trace`, `lsp-restart`, `lsp-status`, etc. -- the
+        // user-facing aliases for `ex:lsp-trace` etc. The
+        // CommandsGenerator returns canonical names (`ex:lsp-trace`);
+        // `prefer_aliases_for_command_candidates` rewrites them
+        // to the longest alias (`lsp-trace`). User reported these
+        // not appearing; pin the wiring with a regression test.
+        let mut a = app_in_command_mode("lsp-");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let state = a.completion_state.as_ref().expect("popup should open");
+        let texts: Vec<&str> = state
+            .candidates
+            .iter()
+            .map(|c| c.raw.text.as_str())
+            .collect();
+        for needle in [
+            "lsp-trace",
+            "lsp-status",
+            "lsp-restart",
+            "lsp-log",
+            "lsp-log-level",
+            "lsp-log-clear",
+        ] {
+            assert!(
+                texts.contains(&needle),
+                "completion should include `{needle}` -- got {:?}",
+                texts
+            );
+        }
+    }
+
+    #[test]
     fn parser_accepts_canonical_name_directly() {
         // Defensive: even if the user types the canonical name
         // (`:ex:describe-command`), the parser resolves it. The

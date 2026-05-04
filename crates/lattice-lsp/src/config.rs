@@ -211,7 +211,21 @@ pub fn resolve_workspace_root(
     let mut outermost_workspace_dir: Option<PathBuf> = None;
     let cargo_marker_present = markers.iter().any(|m| m == "Cargo.toml");
 
-    let mut cursor = Some(start_dir);
+    // Absolutize `start_dir` before walking up. With a relative
+    // `start_dir` (e.g. `crates/foo/src/`) `Path::parent()` stops
+    // at an empty component long before reaching any workspace
+    // ancestor that lives above the cwd -- the resolver would
+    // then either fall back to the buffer's own directory or
+    // (worse, post-fix) return the nearest Cargo.toml without
+    // the outer `[workspace]` ever being seen. Canonicalize when
+    // the path exists; absolutize via `current_dir().join` when
+    // it doesn't (e.g. `:e new-file.txt` against an unsaved
+    // path).
+    let absolute_start: PathBuf = std::fs::canonicalize(start_dir)
+        .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(start_dir)))
+        .unwrap_or_else(|_| start_dir.to_path_buf());
+
+    let mut cursor = Some(absolute_start.as_path());
     while let Some(dir) = cursor {
         for marker in markers {
             let marker_path = dir.join(marker);
@@ -235,7 +249,7 @@ pub fn resolve_workspace_root(
     }
     outermost_workspace_dir
         .or(nearest_marker_dir)
-        .unwrap_or_else(|| start_dir.to_path_buf())
+        .unwrap_or(absolute_start)
 }
 
 /// Does the given `Cargo.toml` declare a `[workspace]` section?
@@ -434,6 +448,53 @@ mod tests {
         .unwrap();
         let resolved = resolve_workspace_root(&inner, &["Cargo.toml".into()]);
         assert_eq!(resolved, dir);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_workspace_root_resolves_relative_start_dir() {
+        // Regression for the post-resolver-fix break: when
+        // `Document::open` keeps the path relative (e.g.
+        // `lattice src/lib.rs` from inside a member crate), the
+        // resolver's start_dir is relative. `Path::parent()`
+        // stops at an empty component long before the outer
+        // workspace's Cargo.toml is reached, so a member crate
+        // anchored at the inner `crates/foo/Cargo.toml` would
+        // (post-fix) have no Cargo.toml found anywhere, and
+        // `:lsp-status` reported "no servers attached". Fix:
+        // absolutize start_dir via canonicalize / cwd.join
+        // before walking.
+        let dir = tempdir::new_dir("ws-root-relative-start");
+        let inner = dir.join("crates/foo/src");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("crates/foo/Cargo.toml"),
+            "[package]\nname = \"foo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // cd into the workspace root so a relative start_dir
+        // matches the path-shape the App passes through.
+        let saved_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let relative = std::path::Path::new("crates/foo/src");
+        let resolved = resolve_workspace_root(relative, &["Cargo.toml".into()]);
+        std::env::set_current_dir(saved_cwd).unwrap();
+
+        // canonicalize() may resolve symlinks; compare against
+        // the canonical workspace dir for stability across hosts
+        // that put `/tmp` behind a symlink (macOS does).
+        let expected = std::fs::canonicalize(&dir).unwrap();
+        assert_eq!(
+            resolved, expected,
+            "relative start_dir must still find the outer workspace"
+        );
+
         fs::remove_dir_all(&dir).ok();
     }
 

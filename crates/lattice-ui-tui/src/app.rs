@@ -706,15 +706,17 @@ pub struct App {
     /// Receiver for in-flight LSP hover responses (Phase 4.2.b).
     /// `K` fires a `textDocument/hover` request through the typed
     /// wrapper; the spawned task awaits the actor's response and
-    /// pushes the resulting markdown body onto this channel. The
-    /// main loop drains it before each draw via
-    /// [`Self::drain_pending_hover`] and feeds the body into the
-    /// existing [`Self::hover_popup`] via [`Self::do_open_hover`].
+    /// pushes a [`HoverOutcome`] onto this channel. The main loop
+    /// drains it before each draw via [`Self::drain_pending_hover`]
+    /// and either feeds the body into the existing
+    /// [`Self::hover_popup`] via [`Self::do_open_hover`], or echoes
+    /// the no-result reason so the user knows their `K` press was
+    /// received and processed (versus silently dropped).
     ///
     /// `Option` only because the field needs to be `take`-able so
     /// the drain method can borrow `&mut self` for the popup
     /// update; always `Some` between calls.
-    pub pending_hover_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    pub pending_hover_rx: Option<tokio::sync::mpsc::UnboundedReceiver<HoverOutcome>>,
     /// Cancellation token of the most recent hover request. Flipped
     /// when the user re-fires `K`, moves the cursor, or changes
     /// mode -- so a slow server's response arrives marked stale and
@@ -1092,6 +1094,31 @@ pub struct Fold {
 // (`crate::app::FoldMethod` / `FoldMethod`) keep resolving without
 // edits.
 pub use lattice_core::FoldMethod;
+
+/// Result of a `K` (LSP hover) request, sent from the spawned
+/// task to the App's main thread via [`App::pending_hover_rx`].
+/// Carrying the no-result variants explicitly (instead of just
+/// dropping the channel send) lets the drain echo a clear
+/// message so the user always gets feedback on `K`.
+#[derive(Debug, Clone)]
+pub enum HoverOutcome {
+    /// Markdown body to feed into the popup. First non-empty wins
+    /// across attached servers.
+    Body(String),
+    /// Walked every attached server; each returned an empty /
+    /// missing hover. Echo "no hover info" so the user knows
+    /// their `K` was processed but the position has nothing
+    /// useful (e.g. cursor on whitespace, or rust-analyzer is
+    /// still indexing).
+    NoBody {
+        servers_tried: usize,
+    },
+    /// The buffer's URI maps to no attached servers (matching
+    /// servers' spawn failed at boot, or the file extension
+    /// isn't covered). Echo so the user can `:lsp-status` /
+    /// `:lsp-log` to investigate.
+    NoServers,
+}
 
 /// Hot-path read cache for the typed-options registry's core
 /// options (DESIGN.md §5.12). The renderer reads these once per
@@ -4340,15 +4367,20 @@ impl App {
         };
 
         // Fresh channel + token for this request.
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<HoverOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_hover_rx = Some(rx);
         self.pending_hover_token = Some(token.clone());
 
         // Spawn the request on the LSP runtime so the keystroke
         // handler returns instantly. The task walks every server
-        // attached to the buffer; first non-empty body wins.
+        // attached to the buffer; first non-empty body wins. The
+        // task ALWAYS sends exactly one [`HoverOutcome`] (or
+        // nothing if cancelled mid-flight, in which case the
+        // drain just sees an idle channel) so the user always
+        // gets feedback.
         let lsp = self.lsp.clone();
+        let logger = self.lsp_logger.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             // Snapshot the attached handles under the supervisor
             // lock, then drop it before awaiting any per-server
@@ -4356,10 +4388,16 @@ impl App {
             // across awaits).
             let handles: Vec<lattice_lsp::ServerHandle> =
                 { lsp.lock().await.servers_for(&uri) };
+            if handles.is_empty() {
+                let _ = tx.send(HoverOutcome::NoServers);
+                return;
+            }
+            let mut tried = 0usize;
             for handle in handles {
                 if token.is_cancelled() {
                     return;
                 }
+                tried += 1;
                 let params = lsp_types::HoverParams {
                     text_document_position_params: lsp_types::TextDocumentPositionParams {
                         text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
@@ -4371,33 +4409,81 @@ impl App {
                     Ok(Some(hover)) => {
                         let body = hover_contents_to_markdown(&hover.contents);
                         if !body.trim().is_empty() {
-                            // first non-empty wins
-                            let _ = tx.send(body);
+                            let _ = tx.send(HoverOutcome::Body(body));
                             return;
                         }
+                        // Server replied but the body's empty --
+                        // counts as a try, fall through.
                     }
-                    Ok(None) => continue, // try next server
-                    Err(_) => continue,   // log? cancelled / decode error
+                    Ok(None) => {
+                        // Server explicitly returned null: nothing
+                        // to show at this position. Fall through.
+                    }
+                    Err(e) => {
+                        // Cancelled / decode error / actor gone:
+                        // log per-server so :lsp-log surfaces the
+                        // reason. Don't bail -- a sibling server
+                        // may still have something useful.
+                        logger.log(
+                            None,
+                            lattice_lsp::LogLevel::Warn,
+                            lattice_lsp::LogSource::Client,
+                            format!(
+                                "hover via {}: {e}",
+                                handle.server_id()
+                            ),
+                        );
+                    }
                 }
             }
+            // Walked every server, none had a non-empty body.
+            let _ = tx.send(HoverOutcome::NoBody {
+                servers_tried: tried,
+            });
         });
     }
 
     /// Drain the channel populated by [`Self::do_lsp_hover_request`]
-    /// and surface every pending body through [`Self::do_open_hover`].
+    /// and act on every pending [`HoverOutcome`]: open the popup
+    /// for `Body`, echo a clear message for `NoBody` / `NoServers`
+    /// so the user always knows their `K` press was processed.
     /// Called once per main_loop iteration before draw; cheap
     /// when the channel is empty (the common case).
     pub fn drain_pending_hover(&mut self) {
         let Some(mut rx) = self.pending_hover_rx.take() else {
             return;
         };
-        let mut latest: Option<String> = None;
-        while let Ok(body) = rx.try_recv() {
-            latest = Some(body); // last-writer-wins, but typically only one body
+        // Last-writer-wins -- if a stale outcome and a fresh one
+        // both queued (e.g. user pressed K twice quickly and
+        // both relays raced), we surface the latest.
+        let mut latest: Option<HoverOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
         }
-        if let Some(body) = latest {
-            self.do_open_hover(&body);
-            // Hover delivered: clear the in-flight token so a
+        if let Some(outcome) = latest {
+            match outcome {
+                HoverOutcome::Body(body) => {
+                    self.do_open_hover(&body);
+                }
+                HoverOutcome::NoBody { servers_tried } => {
+                    self.set_message(
+                        EchoLevel::Info,
+                        format!(
+                            "no hover info at cursor ({servers_tried} server{} replied)",
+                            if servers_tried == 1 { "" } else { "s" }
+                        ),
+                    );
+                }
+                HoverOutcome::NoServers => {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        "hover: no LSP servers attached for this buffer (\
+                         check :lsp-status / :lsp-log)"
+                            .to_string(),
+                    );
+                }
+            }
+            // Outcome delivered: clear the in-flight token so a
             // subsequent motion doesn't try to flip a stale token.
             self.pending_hover_token = None;
         }
@@ -13994,30 +14080,76 @@ mod tests {
     }
 
     #[test]
-    fn drain_pending_hover_pulls_body_into_hover_popup() {
-        // Simulate a response arriving on the channel and confirm
-        // the drain surfaces it through the popup pipeline.
+    fn drain_pending_hover_body_outcome_opens_popup() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
         a.pending_hover_rx = Some(rx);
         a.pending_hover_token = Some(lattice_protocol::CancellationToken::new());
-        tx.send("**bold body**".to_string()).unwrap();
+        tx.send(crate::app::HoverOutcome::Body("**bold body**".into()))
+            .unwrap();
         a.drain_pending_hover();
         let h = a.hover_popup.as_ref().expect("popup");
         assert_eq!(h.markdown, "**bold body**");
         assert!(
             a.pending_hover_token.is_none(),
-            "delivering the body should clear the in-flight token"
+            "delivering the outcome should clear the in-flight token"
+        );
+    }
+
+    #[test]
+    fn drain_pending_hover_no_body_outcome_echoes_no_hover_info() {
+        // Regression for the silent-K-press symptom: if every
+        // attached server replies with empty contents,
+        // `drain_pending_hover` should echo a clear "no hover
+        // info" so the user knows their K press was received.
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
+        a.pending_hover_rx = Some(rx);
+        a.pending_hover_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(crate::app::HoverOutcome::NoBody { servers_tried: 1 })
+            .unwrap();
+        a.drain_pending_hover();
+        assert!(a.hover_popup.is_none(), "no popup for empty hover");
+        let msg = a.last_message.as_ref().expect("echo on no-hover-info");
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(
+            msg.text.contains("no hover info"),
+            "expected 'no hover info' echo; got `{}`",
+            msg.text
+        );
+    }
+
+    #[test]
+    fn drain_pending_hover_no_servers_outcome_echoes_warn() {
+        // Buffer URI maps to no attached servers (e.g. spawn
+        // failed at boot). The user gets a Warn echo pointing at
+        // :lsp-status / :lsp-log so they can investigate.
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
+        a.pending_hover_rx = Some(rx);
+        a.pending_hover_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(crate::app::HoverOutcome::NoServers).unwrap();
+        a.drain_pending_hover();
+        let msg = a
+            .last_message
+            .as_ref()
+            .expect("echo on no-servers-attached");
+        assert_eq!(msg.level, EchoLevel::Warn);
+        assert!(
+            msg.text.contains("no LSP servers"),
+            "expected NoServers warn echo; got `{}`",
+            msg.text
         );
     }
 
     #[test]
     fn drain_pending_hover_idle_channel_is_noop() {
         let mut a = app_with("xx", 10);
-        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
         a.pending_hover_rx = Some(rx);
         a.drain_pending_hover();
         assert!(a.hover_popup.is_none());
+        assert!(a.last_message.is_none());
     }
 
     #[test]

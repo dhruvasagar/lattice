@@ -300,17 +300,11 @@ fn action_is_document_mutation(action: &Action) -> bool {
             | Action::StopMacroRecord
             | Action::PlayMacro(_)
             | Action::PlayLastMacro
-            // Search / search-word: targets the document; defer
-            // search-in-help to a later phase. Marks similarly
-            // resolve against the document; in help, the user's
-            // cursor isn't tied to a doc position.
-            | Action::EnterSearch(_)
-            | Action::SearchAppend(_)
-            | Action::SearchBackspace
-            | Action::SearchSubmit
-            | Action::SearchCancel
-            | Action::SearchNext
-            | Action::SearchPrevious
+            // `*` / `#` -- search-word-under-cursor reads the
+            // *document* word and is fold-aware. Defer until
+            // it's generalised through `active_text()`. The
+            // regular `/` and friends are NOT mutations and run
+            // on any buffer kind.
             | Action::SearchWordUnderCursor(_)
             | Action::MatchBracket
             | Action::FindRepeat { .. }
@@ -3173,8 +3167,9 @@ impl App {
             SearchDirection::Forward => search::Direction::Forward,
             SearchDirection::Backward => search::Direction::Backward,
         };
+        let buffer = self.active_text();
         match search::find(
-            &self.document.snapshot().buffer,
+            &buffer,
             &regex,
             line.origin,
             dir,
@@ -3184,12 +3179,8 @@ impl App {
             _ => self.current_match = None,
         }
         // Live hlsearch: highlight every occurrence as the user types.
-        self.all_matches = search::find_all(
-            &self.document.snapshot().buffer,
-            &regex,
-            &CancellationToken::never(),
-        )
-        .unwrap_or_default();
+        self.all_matches =
+            search::find_all(&buffer, &regex, &CancellationToken::never()).unwrap_or_default();
     }
 
     fn submit_search(&mut self) {
@@ -3205,9 +3196,12 @@ impl App {
             }
             return;
         }
-        // Save the pre-search position so Ctrl-O returns.
-        let from_pos = line.origin;
-        self.push_position_history(from_pos, PositionSource::AutoJump);
+        // Save the pre-search position so Ctrl-O returns. Position
+        // history is currently document-only; help / tree don't
+        // participate yet.
+        if matches!(self.active_buffer, BufferKind::Document) {
+            self.push_position_history(line.origin, PositionSource::AutoJump);
+        }
         // Compile once for both find + find_all + later n/N replays.
         let regex = match compile_search_pattern(&line.pattern) {
             Ok(r) => r,
@@ -3222,8 +3216,9 @@ impl App {
             SearchDirection::Forward => search::Direction::Forward,
             SearchDirection::Backward => search::Direction::Backward,
         };
+        let buffer = self.active_text();
         match search::find(
-            &self.document.snapshot().buffer,
+            &buffer,
             &regex,
             line.origin,
             dir,
@@ -3232,12 +3227,9 @@ impl App {
             Ok(Some(hit)) => {
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
-                self.all_matches = search::find_all(
-                    &self.document.snapshot().buffer,
-                    &regex,
-                    &CancellationToken::never(),
-                )
-                .unwrap_or_default();
+                self.all_matches =
+                    search::find_all(&buffer, &regex, &CancellationToken::never())
+                        .unwrap_or_default();
                 if hit.wrapped {
                     let level = EchoLevel::Warn;
                     let text = match line.direction {
@@ -3250,7 +3242,9 @@ impl App {
                     pattern: line.pattern,
                     direction: line.direction,
                 });
-                self.auto_open_folds_at_cursor();
+                if matches!(self.active_buffer, BufferKind::Document) {
+                    self.auto_open_folds_at_cursor();
+                }
             }
             Ok(None) => {
                 self.current_match = None;
@@ -3292,9 +3286,10 @@ impl App {
             );
             return;
         };
-        // Push pre-jump position so Ctrl-O can return.
-        let cur = self.cursor;
-        self.push_position_history(cur, PositionSource::AutoJump);
+        if matches!(self.active_buffer, BufferKind::Document) {
+            let cur = self.cursor;
+            self.push_position_history(cur, PositionSource::AutoJump);
+        }
         let direction = match (last.direction, reverse) {
             (SearchDirection::Forward, false) | (SearchDirection::Backward, true) => {
                 SearchDirection::Forward
@@ -3307,8 +3302,9 @@ impl App {
             SearchDirection::Forward => search::Direction::Forward,
             SearchDirection::Backward => search::Direction::Backward,
         };
+        let buffer = self.active_text();
         // Skip current match: advance one byte in the chosen direction.
-        let from = step_byte(&self.document.snapshot().buffer, self.cursor, direction);
+        let from = step_byte(&buffer, self.cursor, direction);
         let regex = match compile_search_pattern(&last.pattern) {
             Ok(r) => r,
             Err(msg) => {
@@ -3317,13 +3313,7 @@ impl App {
                 return;
             }
         };
-        match search::find(
-            &self.document.snapshot().buffer,
-            &regex,
-            from,
-            dir,
-            &CancellationToken::never(),
-        ) {
+        match search::find(&buffer, &regex, from, dir, &CancellationToken::never()) {
             Ok(Some(hit)) => {
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
@@ -3334,7 +3324,9 @@ impl App {
                     };
                     self.set_message(EchoLevel::Warn, text.to_string());
                 }
-                self.auto_open_folds_at_cursor();
+                if matches!(self.active_buffer, BufferKind::Document) {
+                    self.auto_open_folds_at_cursor();
+                }
             }
             Ok(None) => {
                 self.current_match = None;
@@ -4822,18 +4814,23 @@ impl App {
         }
         self.snapshot_active_pane();
         self.snapshot_active_document();
+        // Load the tree's stash into the App's hot-path cursor /
+        // scroll. After this, `self.cursor` / `self.scroll` are
+        // the tree's -- motion / scroll / search code reads /
+        // writes them uniformly, no per-kind branches needed.
+        let (stash_cursor, stash_scroll) = self
+            .buffers
+            .file_tree(id)
+            .map(|t| (t.cursor, t.scroll as u32))
+            .unwrap_or((Position::ZERO, 0));
+        self.cursor = stash_cursor;
+        self.scroll = stash_scroll;
         self.active_buffer = BufferKind::FileTree;
         let pane = self.pane_tree.active_mut();
         pane.buffer = BufferKind::FileTree;
         pane.buffer_id = id;
-        // Restore the tree's last-known cursor / scroll so the
-        // active hot path agrees with what the registry stored.
-        if let Some(t) = self.buffers.file_tree(id) {
-            let stash_cursor = t.cursor;
-            let stash_scroll = t.scroll as u32;
-            self.pane_tree.active_mut().cursor = stash_cursor;
-            self.pane_tree.active_mut().scroll = stash_scroll;
-        }
+        pane.cursor = stash_cursor;
+        pane.scroll = stash_scroll;
     }
 
     /// `:set [option | option=value | nooption | option?]`.
@@ -5766,52 +5763,11 @@ impl App {
     /// Resolve a motion against the active file tree's content.
     /// Same shape as [`Self::run_help_invocation`] but mutates
     /// the tree's cursor instead of the help buffer's.
-    fn run_file_tree_invocation(&mut self, mut inv: CommandInvocation) {
-        let Some(spec) = self.registry.lookup(inv.command) else {
-            return;
-        };
-        if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) {
-            self.pending_count = 0;
-            self.op_count = 0;
-            self.pending_register = None;
-            self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
-            return;
-        }
-        let motion_count = if self.pending_count > 0 {
-            self.pending_count
-        } else {
-            inv.count.map(|c| c.0).unwrap_or(1)
-        };
-        let final_count = if self.op_count > 0 {
-            self.op_count.saturating_mul(motion_count)
-        } else {
-            motion_count
-        };
-        if final_count > 1 {
-            inv = inv.with_count(lattice_grammar::command::Count(final_count));
-        }
-        self.pending_count = 0;
-        self.op_count = 0;
-        let viewport = self.viewport_height as usize;
-        let active_id = self.active_pane_buffer_id();
-        let registry = self.registry.clone();
-        let Some(t) = self.buffers.file_tree_mut(active_id) else {
-            return;
-        };
-        let cancel = lattice_runtime::CancellationToken::never();
-        if let Ok(target) =
-            lattice_grammar::execute_motion_only(&registry, &t.content, t.cursor, inv, &cancel)
-        {
-            let dx = target.byte as i32 - t.cursor.byte as i32;
-            let dy = target.line as i32 - t.cursor.line as i32;
-            if dy != 0 {
-                t.move_cursor(0, dy, viewport);
-            }
-            if dx != 0 {
-                let cur_byte = t.cursor.byte as i32;
-                t.move_cursor(target.byte as i32 - cur_byte, 0, viewport);
-            }
-        }
+    fn run_file_tree_invocation(&mut self, inv: CommandInvocation) {
+        // File-tree is a read-only buffer; motion is the only
+        // class that runs. Operators / text-objects / etc. fall
+        // through to the read-only echo. Same path as help below.
+        self.run_read_only_motion(inv);
     }
 
     /// Resolve a motion-class invocation against the active help
@@ -5826,29 +5782,39 @@ impl App {
     /// the unified position-history ring -- with `active_buffer ==
     /// Help` recorded on the entry -- so `<C-o>` walks back into
     /// the document if the help session is shallow.
-    fn run_help_invocation(&mut self, mut inv: CommandInvocation) {
+    fn run_help_invocation(&mut self, inv: CommandInvocation) {
+        // Help is a read-only buffer; same dispatcher as
+        // file-tree. The only difference between these and the
+        // document path is the read-only-ness; vim grammar
+        // (motions, search, scroll, etc.) is identical.
+        self.run_read_only_motion(inv);
+    }
+
+    /// Unified motion dispatch for read-only buffer kinds (help /
+    /// file-tree). Reads buffer text via [`Self::active_text`] and
+    /// the live cursor / scroll from `self.cursor` / `self.scroll`
+    /// -- same hot-path the document dispatcher uses, so motion
+    /// semantics (counts, jump-history pushes for `gg` / `G`,
+    /// scroll-aware visibility) are identical. Non-motion command
+    /// classes (operators, text-objects, ex bodies that reach
+    /// here) echo "buffer is read-only" and bail.
+    fn run_read_only_motion(&mut self, mut inv: CommandInvocation) {
         let Some(spec) = self.registry.lookup(inv.command) else {
             return;
         };
         if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) {
-            // Operators (delete / change / paste / indent / case)
-            // and any other non-motion class can't run on a read-
-            // only buffer. Yank could in principle be allowed; v1
-            // routes it through the operator path which expects a
-            // mutable Document, so for B.1.a we echo and defer.
             self.pending_count = 0;
             self.op_count = 0;
             self.pending_register = None;
             self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
             return;
         }
-        // Jump-class motions push history before dispatch so `<C-o>`
-        // can return -- same contract as the document path.
-        if (inv.command == self.builtins.goto_first_line.0
-            || inv.command == self.builtins.goto_last_line.0)
-            && let Some(h) = self.help_buffer.as_ref()
+        // Jump-class motions push history before dispatch so
+        // `<C-o>` can return.
+        if inv.command == self.builtins.goto_first_line.0
+            || inv.command == self.builtins.goto_last_line.0
         {
-            let cur = h.cursor;
+            let cur = self.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
         let motion_count = if self.pending_count > 0 {
@@ -5866,32 +5832,28 @@ impl App {
         }
         self.pending_count = 0;
         self.op_count = 0;
-        let viewport = self.help_bufferport_height();
-        let Some(h) = self.help_buffer.as_mut() else {
-            return;
-        };
+        let buffer = self.active_text();
         let cancel = lattice_runtime::CancellationToken::never();
         match lattice_grammar::execute_motion_only(
             &self.registry,
-            &h.content,
-            h.cursor,
+            &buffer,
+            self.cursor,
             inv,
             &cancel,
         ) {
             Ok(target) => {
-                let dx = target.byte as i32 - h.cursor.byte as i32;
-                let dy = target.line as i32 - h.cursor.line as i32;
-                // `move_cursor` re-clamps and adjusts scroll; pass
-                // the offsets so the same per-line clamping applies
-                // even if the motion landed on a column past the
-                // target line's length.
-                if dy != 0 {
-                    h.move_cursor(0, dy, viewport);
+                self.cursor = target;
+                // Clamp cursor's byte to the new line's length
+                // (motions like `j`/`k` may land in a column past
+                // the destination line's content; same vim
+                // semantic as the document path).
+                let line_len = line_byte_len(&buffer, self.cursor.line);
+                if self.cursor.byte > line_len {
+                    self.cursor.byte = line_len;
                 }
-                if dx != 0 {
-                    let cur_byte = h.cursor.byte as i32;
-                    h.move_cursor(target.byte as i32 - cur_byte, 0, viewport);
-                }
+                // ensure_cursor_visible at the end of `apply` does
+                // the scroll math -- self.viewport_height is the
+                // active buffer's visible row count.
             }
             Err(_) => {
                 // Same swallow-error contract as the document path:
@@ -6137,55 +6099,27 @@ impl App {
     /// `M` -> middle, `L` -> bottom. Column is preserved (clamped to the
     /// destination line's length).
     fn do_jump_viewport(&mut self, vpos: ViewportPos) {
-        if matches!(self.active_buffer, BufferKind::Help) {
-            self.do_help_jump_viewport(vpos);
-            return;
-        }
         let height = self.viewport_height.max(1);
         let line = match vpos {
             ViewportPos::Top => self.scroll,
             ViewportPos::Middle => self.scroll + height / 2,
             ViewportPos::Bottom => self.scroll + height.saturating_sub(1),
         };
-        let last = last_addressable_line(&self.document.snapshot().buffer);
+        let buffer = self.active_text();
+        let last = last_addressable_line(&buffer);
         let line = line.min(last);
-        let len = line_byte_len(&self.document.snapshot().buffer, line);
+        let len = line_byte_len(&buffer, line);
         let byte = self.cursor.byte.min(len);
         self.cursor = Position::new(line, byte);
-        self.auto_open_folds_at_cursor();
-    }
-
-    fn do_help_jump_viewport(&mut self, vpos: ViewportPos) {
-        let viewport = self.help_bufferport_height();
-        let Some(h) = self.help_buffer.as_mut() else {
-            return;
-        };
-        let scroll = h.scroll as u32;
-        let height = viewport.max(1) as u32;
-        let line = match vpos {
-            ViewportPos::Top => scroll,
-            ViewportPos::Middle => scroll + height / 2,
-            ViewportPos::Bottom => scroll + height.saturating_sub(1),
-        };
-        h.jump_cursor_to(line, viewport);
+        // Folds only apply to documents.
+        if matches!(self.active_buffer, BufferKind::Document) {
+            self.auto_open_folds_at_cursor();
+        }
     }
 
     /// Adjust scroll so the cursor lands at the requested viewport row.
     /// Cursor itself doesn't move (vim's `zt`/`zz`/`zb`).
     fn do_scroll_cursor_to(&mut self, spos: ScrollPos) {
-        if matches!(self.active_buffer, BufferKind::Help) {
-            let viewport = self.help_bufferport_height() as u32;
-            if let Some(h) = self.help_buffer.as_mut() {
-                h.scroll = match spos {
-                    ScrollPos::Top => h.cursor.line as usize,
-                    ScrollPos::Center => h.cursor.line.saturating_sub(viewport / 2) as usize,
-                    ScrollPos::Bottom => {
-                        h.cursor.line.saturating_sub(viewport.saturating_sub(1)) as usize
-                    }
-                };
-            }
-            return;
-        }
         let height = self.viewport_height.max(1);
         self.scroll = match spos {
             ScrollPos::Top => self.cursor.line,
@@ -6199,23 +6133,16 @@ impl App {
     /// `viewport_height - 2` lines and letting `ensure_cursor_visible`
     /// handle the scroll.
     fn do_page(&mut self, down: bool) {
-        if matches!(self.active_buffer, BufferKind::Help) {
-            let viewport = self.help_bufferport_height();
-            if let Some(h) = self.help_buffer.as_mut() {
-                let step = (viewport.saturating_sub(2)).max(1) as i32;
-                h.move_cursor(0, if down { step } else { -step }, viewport);
-            }
-            return;
-        }
         let height = self.viewport_height.max(1);
         let step = height.saturating_sub(2).max(1);
-        let last = last_addressable_line(&self.document.snapshot().buffer);
+        let buffer = self.active_text();
+        let last = last_addressable_line(&buffer);
         let new_line = if down {
             self.cursor.line.saturating_add(step).min(last)
         } else {
             self.cursor.line.saturating_sub(step)
         };
-        let len = line_byte_len(&self.document.snapshot().buffer, new_line);
+        let len = line_byte_len(&buffer, new_line);
         let byte = self.cursor.byte.min(len);
         self.cursor = Position::new(new_line, byte);
     }
@@ -6224,28 +6151,10 @@ impl App {
     /// pulling the next line into view); `down = false` -> Ctrl-Y.
     /// Cursor follows so it stays on-screen.
     fn do_scroll_line(&mut self, down: bool) {
-        if matches!(self.active_buffer, BufferKind::Help) {
-            let viewport = self.help_bufferport_height();
-            if let Some(h) = self.help_buffer.as_mut() {
-                let last = h.line_count().saturating_sub(1) as usize;
-                if down {
-                    h.scroll = h.scroll.saturating_add(1).min(last);
-                    if (h.cursor.line as usize) < h.scroll {
-                        h.cursor.line = h.scroll as u32;
-                    }
-                } else {
-                    h.scroll = h.scroll.saturating_sub(1);
-                    let bottom = h.scroll + viewport.saturating_sub(1);
-                    if h.cursor.line as usize > bottom {
-                        h.cursor.line = bottom as u32;
-                    }
-                }
-            }
-            return;
-        }
         let height = self.viewport_height.max(1);
+        let buffer = self.active_text();
         if down {
-            let last = last_addressable_line(&self.document.snapshot().buffer);
+            let last = last_addressable_line(&buffer);
             self.scroll = self.scroll.saturating_add(1).min(last);
             // Pull cursor down if it's now off the top of the viewport.
             if self.cursor.line < self.scroll {
@@ -6259,7 +6168,7 @@ impl App {
                 self.cursor.line = bottom;
             }
         }
-        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
+        let len = line_byte_len(&buffer, self.cursor.line);
         if self.cursor.byte > len {
             self.cursor.byte = len;
         }
@@ -6360,18 +6269,18 @@ impl App {
     /// on the link target's variant. Source links echo the
     /// `path:line` for now -- full file-open lands with multi-buffer.
     fn do_help_follow_link(&mut self) {
+        let cursor = self.cursor;
         let Some(help) = self.help_buffer.as_ref() else {
             return;
         };
-        let Some(link) = help.link_at(help.cursor) else {
+        let Some(link) = help.link_at(cursor) else {
             self.set_message(EchoLevel::Info, "no link under cursor".to_string());
             return;
         };
-        // Clone the target + capture the current help cursor so we
-        // can drop the &help borrow before calling
-        // `push_position_history` (which needs &mut self).
+        // Clone the target so we can drop the `&help` borrow
+        // before calling `push_position_history` (`&mut self`).
         let target = link.target.clone();
-        let prev_help_cursor = help.cursor;
+        let prev_help_cursor = cursor;
         match target {
             crate::help::HelpLinkTarget::Command(name) => {
                 // Help -> help transition: record where we were in
@@ -6406,18 +6315,22 @@ impl App {
                 // the anchor line and move the cursor there. Push
                 // history so `<C-o>` returns to the link site.
                 self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
-                let viewport = self.help_bufferport_height();
-                if let Some(h) = self.help_buffer.as_mut() {
-                    if h.scroll_to_anchor(&slug) {
-                        if let Some(a) = h.anchors.iter().find(|a| a.name == slug) {
-                            h.jump_cursor_to(a.line, viewport);
-                        }
-                    } else {
-                        self.set_message(
-                            EchoLevel::Warn,
-                            format!("anchor not found: #{slug}"),
-                        );
-                    }
+                // Anchor lookup runs against the help buffer's
+                // anchor list; the cursor + scroll updates land
+                // on the App's unified hot path.
+                let target_line = self.help_buffer.as_ref().and_then(|h| {
+                    h.anchors.iter().find(|a| a.name == slug).map(|a| a.line)
+                });
+                if let Some(line) = target_line {
+                    let buffer = self.active_text();
+                    let len = line_byte_len(&buffer, line);
+                    self.cursor = Position::new(line, self.cursor.byte.min(len));
+                    self.scroll = line;
+                } else {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        format!("anchor not found: #{slug}"),
+                    );
                 }
             }
             crate::help::HelpLinkTarget::Source { path, line } => {
@@ -6754,82 +6667,69 @@ impl App {
 
     /// Copy the App's hot-path cursor / scroll into the active
     /// pane's stash. Called before any operation that flips which
-    /// pane is active. For help-in-pane the registry's HelpBuffer
-    /// is also overwritten with the current popup-slot contents so
-    /// edits survive a switch-and-return cycle.
+    /// pane is active.
+    ///
+    /// **Unified hot-path**: `self.cursor` and `self.scroll` are
+    /// the active buffer's regardless of kind, so the snapshot
+    /// reads from there uniformly. Help / file-tree records are
+    /// also synced into their kind-specific cursor / scroll fields
+    /// (and the registry copy for help) so the archival state stays
+    /// current; live state always lives on `self`.
     fn snapshot_active_pane(&mut self) {
+        let cursor = self.cursor;
+        let scroll = self.scroll;
+        let pane_id = self.pane_tree.active().buffer_id;
+        // Mirror live state into the buffer-specific stash + the
+        // registry record for archival / cross-pane round-trips.
         match self.active_buffer {
-            BufferKind::Document => {
-                let active = self.pane_tree.active_mut();
-                active.cursor = self.cursor;
-                active.scroll = self.scroll;
-            }
             BufferKind::Help => {
-                if let Some(h) = self.help_buffer.as_ref() {
-                    let cursor = h.cursor;
-                    let scroll = h.scroll as u32;
-                    // Mirror back into the registry entry if this
-                    // help buffer lives in-pane (id matches the
-                    // active pane's recorded id). Pane snapshots
-                    // happen on every pane-flip, so the registry
-                    // record stays current with the user's cursor
-                    // / scroll edits.
-                    let pane_id = self.pane_tree.active().buffer_id;
+                if let Some(h) = self.help_buffer.as_mut() {
+                    h.cursor = cursor;
+                    h.scroll = scroll as usize;
                     if h.id == pane_id
                         && let Some(reg) = self.buffers.help_mut(pane_id)
                     {
                         *reg = h.clone();
                     }
-                    let active = self.pane_tree.active_mut();
-                    active.cursor = cursor;
-                    active.scroll = scroll;
                 }
             }
             BufferKind::FileTree => {
-                let active_id = self.pane_tree.active().buffer_id;
-                if let Some(t) = self.buffers.file_tree(active_id) {
-                    let cursor = t.cursor;
-                    let scroll = t.scroll as u32;
-                    let active = self.pane_tree.active_mut();
-                    active.cursor = cursor;
-                    active.scroll = scroll;
+                if let Some(t) = self.buffers.file_tree_mut(pane_id) {
+                    t.cursor = cursor;
+                    t.scroll = scroll as usize;
                 }
             }
+            BufferKind::Document => {}
         }
+        let active = self.pane_tree.active_mut();
+        active.cursor = cursor;
+        active.scroll = scroll;
     }
 
     /// Inverse of [`Self::snapshot_active_pane`]: pull the freshly
     /// activated pane's stashed cursor / scroll back into the
     /// App's hot-path fields. `active_buffer` is denormalized from
     /// the pane's `buffer` kind.
+    ///
+    /// **Unified hot-path**: `self.cursor` and `self.scroll` are
+    /// the active buffer's, regardless of kind. Help / file-tree
+    /// keep their own cursor / scroll fields as **save state** --
+    /// updated at the snapshot boundary so the registry record is
+    /// archival-correct, but the *live* cursor is `self.cursor`
+    /// for every motion / scroll / search / render path.
     fn load_active_pane(&mut self) {
         let pane = *self.pane_tree.active();
         self.active_buffer = pane.buffer;
-        match pane.buffer {
-            BufferKind::Document => {
-                self.cursor = pane.cursor;
-                self.scroll = pane.scroll;
-            }
-            BufferKind::Help => {
-                // Restore the registry-tracked help into the popup
-                // slot if the active pane points at one. Then pull
-                // the pane's stashed cursor / scroll back onto it.
-                if self.help_buffer.as_ref().map(|h| h.id) != Some(pane.buffer_id)
-                    && let Some(reg) = self.buffers.help(pane.buffer_id)
-                {
-                    self.help_buffer = Some(reg.clone());
-                }
-                if let Some(h) = self.help_buffer.as_mut() {
-                    h.cursor = pane.cursor;
-                    h.scroll = pane.scroll as usize;
-                }
-            }
-            BufferKind::FileTree => {
-                if let Some(t) = self.buffers.file_tree_mut(pane.buffer_id) {
-                    t.cursor = pane.cursor;
-                    t.scroll = pane.scroll as usize;
-                }
-            }
+        self.cursor = pane.cursor;
+        self.scroll = pane.scroll;
+        // Help: restore the registry copy into the hot-path slot
+        // if the active pane points at a different help buffer
+        // than the one currently mirrored.
+        if matches!(pane.buffer, BufferKind::Help)
+            && self.help_buffer.as_ref().map(|h| h.id) != Some(pane.buffer_id)
+            && let Some(reg) = self.buffers.help(pane.buffer_id)
+        {
+            self.help_buffer = Some(reg.clone());
         }
     }
 
@@ -6848,20 +6748,6 @@ impl App {
             width: self.terminal_width.unwrap_or(120),
             height: self.viewport_height as u16,
         }
-    }
-
-    /// Estimated help-overlay viewport height. The overlay is centred
-    /// over the buffer area with a 2-row chrome (border + title), so
-    /// the visible content rows are `buffer_rows - 2 - 4` (the outer
-    /// 4 is the centring margin). Floor at 1 so scroll math is well-
-    /// defined when the terminal is tiny.
-    pub fn help_bufferport_height(&self) -> usize {
-        // Approximate: assume the popup fills ~70% of the buffer area
-        // vertically (matches `draw_help_overlay`). The render layer
-        // re-clamps if the terminal is smaller.
-        let buffer = self.viewport_height as usize;
-        let popup = (buffer * 7 / 10).saturating_sub(2); // 2 = top+bottom border
-        popup.max(1)
     }
 
     /// Adopt a freshly-built help buffer as the active view. Records
@@ -6888,7 +6774,15 @@ impl App {
             let cur = self.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
+        // Load the new help buffer's cursor / scroll into the
+        // App's hot path. Same model as activate_help_in_pane:
+        // `self.cursor` / `self.scroll` are the active buffer's,
+        // motion / scroll / search read / write them uniformly.
+        let stash_cursor = buffer.cursor;
+        let stash_scroll = buffer.scroll as u32;
         self.help_buffer = Some(buffer);
+        self.cursor = stash_cursor;
+        self.scroll = stash_scroll;
         self.active_buffer = BufferKind::Help;
         self.pending = Pending::None;
     }
@@ -6982,10 +6876,24 @@ impl App {
         {
             self.help_buffer = Some(reg_help.clone());
         }
+        // Load the help buffer's stash into the App's hot-path
+        // cursor / scroll. After this, `self.cursor` /
+        // `self.scroll` are the help's -- motion / scroll /
+        // search code reads / writes them uniformly, no per-kind
+        // branches needed. Fresh help buffers default to (0, 0).
+        let (stash_cursor, stash_scroll) = self
+            .help_buffer
+            .as_ref()
+            .map(|h| (h.cursor, h.scroll as u32))
+            .unwrap_or((Position::ZERO, 0));
+        self.cursor = stash_cursor;
+        self.scroll = stash_scroll;
         self.active_buffer = BufferKind::Help;
         let pane = self.pane_tree.active_mut();
         pane.buffer = BufferKind::Help;
         pane.buffer_id = id;
+        pane.cursor = stash_cursor;
+        pane.scroll = stash_scroll;
         self.pending = Pending::None;
     }
 
@@ -7112,10 +7020,13 @@ impl App {
     /// switches to / spawns a Document buffer in the active pane).
     fn do_file_tree_follow(&mut self) {
         let active_id = self.active_pane_buffer_id();
+        // Live cursor lives on `self.cursor` (unified across
+        // buffer kinds); the tree's own `cursor` field is
+        // archival save-state.
+        let idx = self.cursor.line as usize;
         let Some(tree) = self.buffers.file_tree_mut(active_id) else {
             return;
         };
-        let idx = tree.cursor.line as usize;
         let Some(entry) = tree.entries.get(idx).cloned() else {
             return;
         };
@@ -7634,36 +7545,30 @@ impl App {
                 self.auto_open_folds_at_cursor();
             }
             BufferKind::Help => {
-                let viewport = self.help_bufferport_height();
                 self.active_buffer = BufferKind::Help;
                 // Prefer an in-pane help buffer with the recorded id;
-                // fall back to the transient popup if that's where
-                // the entry came from.
-                if let Some(h) = self.buffers.help_mut(entry.buffer_id) {
-                    h.jump_cursor_to(entry.position.line, viewport);
-                    let target_byte = entry.position.byte as i32;
-                    let cur_byte = h.cursor.byte as i32;
-                    if target_byte != cur_byte {
-                        h.move_cursor(target_byte - cur_byte, 0, viewport);
-                    }
+                // fall back to the transient popup. Either way the
+                // live cursor lands on `self.cursor` (unified).
+                let buffer_present = self.buffers.help(entry.buffer_id).is_some()
+                    || self
+                        .help_buffer
+                        .as_ref()
+                        .map(|h| h.id == entry.buffer_id)
+                        .unwrap_or(false);
+                if buffer_present {
+                    self.cursor = entry.position;
                     self.pane_tree.active_mut().buffer = BufferKind::Help;
                     self.pane_tree.active_mut().buffer_id = entry.buffer_id;
-                } else if let Some(h) = self.help_buffer.as_mut() {
-                    h.jump_cursor_to(entry.position.line, viewport);
-                    let target_byte = entry.position.byte as i32;
-                    let cur_byte = h.cursor.byte as i32;
-                    if target_byte != cur_byte {
-                        h.move_cursor(target_byte - cur_byte, 0, viewport);
-                    }
+                    self.clamp_cursor_to_active_buffer();
                 }
             }
             BufferKind::FileTree => {
-                let viewport = self.viewport_height as usize;
-                if let Some(t) = self.buffers.file_tree_mut(entry.buffer_id) {
+                if self.buffers.file_tree(entry.buffer_id).is_some() {
                     self.active_buffer = BufferKind::FileTree;
-                    t.jump_cursor_to(entry.position.line, viewport);
+                    self.cursor = entry.position;
                     self.pane_tree.active_mut().buffer = BufferKind::FileTree;
                     self.pane_tree.active_mut().buffer_id = entry.buffer_id;
+                    self.clamp_cursor_to_active_buffer();
                 }
             }
         }
@@ -8446,11 +8351,19 @@ impl App {
     }
 
     fn clamp_cursor_to_buffer(&mut self) {
-        let last_line = last_addressable_line(&self.document.snapshot().buffer);
+        self.clamp_cursor_to_active_buffer();
+    }
+
+    /// Clamp `self.cursor` to the active buffer's bounds. Same as
+    /// `clamp_cursor_to_buffer` but reads from `active_text()` so
+    /// it works for help / file-tree / document uniformly.
+    fn clamp_cursor_to_active_buffer(&mut self) {
+        let buffer = self.active_text();
+        let last_line = last_addressable_line(&buffer);
         if self.cursor.line > last_line {
             self.cursor.line = last_line;
         }
-        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
+        let len = line_byte_len(&buffer, self.cursor.line);
         if self.cursor.byte > len {
             self.cursor.byte = len;
         }
@@ -8466,6 +8379,27 @@ impl App {
         let bottom = self.scroll + self.viewport_height - 1;
         if self.cursor.line > bottom {
             self.scroll = self.cursor.line + 1 - self.viewport_height;
+        }
+    }
+
+    /// The active buffer's text -- a `Buffer` clone (rope is O(1)).
+    /// Document, help, file-tree all flow through this, so motion /
+    /// scroll / search code can read text without branching on
+    /// `BufferKind`. `self.cursor` / `self.scroll` are the live
+    /// position into this buffer.
+    pub fn active_text(&self) -> Buffer {
+        match self.active_buffer {
+            BufferKind::Help => self
+                .help_buffer
+                .as_ref()
+                .map(|h| h.content.clone())
+                .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
+            BufferKind::FileTree => self
+                .buffers
+                .file_tree(self.active_pane_buffer_id())
+                .map(|t| t.content.clone())
+                .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
+            BufferKind::Document => self.document.snapshot().buffer.clone(),
         }
     }
 
@@ -8487,7 +8421,25 @@ impl App {
     /// agree with what's actually drawn. Without this, a horizontal
     /// split clips the lower half of the upper pane: the App thinks
     /// it has the whole screen, the renderer only paints half.
+    ///
+    /// **Help / hover-promoted overlay.** When the active buffer
+    /// is `BufferKind::Help` the popup is centred over the buffer
+    /// area (~70% tall, minus the popup borders), so the visible
+    /// rows are smaller than the pane. The viewport height we
+    /// hand to motion / scroll / cursor-visible code is the
+    /// popup's content height. This unifies the cursor model:
+    /// `self.cursor` / `self.scroll` / `self.viewport_height`
+    /// are the active buffer's; help isn't a special case anywhere
+    /// past this branch.
     pub fn active_pane_content_height(&self, buffer_height: u32) -> u32 {
+        if matches!(self.active_buffer, BufferKind::Help) {
+            // Same formula draw_help_overlay uses to size itself:
+            // 70% of the buffer band, minus 2 rows for the
+            // popup's borders. Floor at 1 so scroll math is
+            // well-defined on tiny terminals.
+            let buffer = buffer_height as usize;
+            return ((buffer * 7 / 10).saturating_sub(2)).max(1) as u32;
+        }
         let area = crate::pane::PaneRect {
             x: 0,
             y: 0,
@@ -14892,9 +14844,10 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let line_down = a.builtins.line_down;
         a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
-        let active_id = a.pane_tree.active().buffer_id;
-        let t = a.buffers.file_tree(active_id).expect("tree open");
-        assert_eq!(t.cursor.line, 1);
+        // After unification, `self.cursor` is the active buffer's
+        // cursor. The tree's own `cursor` field is archival save-
+        // state synced at activation transitions.
+        assert_eq!(a.cursor.line, 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -15567,9 +15520,7 @@ mod tests {
             .expect("topic link present")
             .clone();
         let target_pos = link.range.start;
-        if let Some(h) = a.help_buffer.as_mut() {
-            h.cursor = target_pos;
-        }
+        a.cursor = target_pos;
         a.apply(Action::FollowLink);
         let h = a.help_buffer.as_ref().expect("help reopen");
         assert_eq!(h.title, "help buffers");
@@ -15606,9 +15557,9 @@ mod tests {
             .expect("anchor generated for `## 1. Tree-sitter, core`")
             .line;
         // Position the cursor on the link, then follow.
-        if let Some(h) = a.help_buffer.as_mut() {
-            h.cursor = link.range.start;
-        }
+        // After unification, the active cursor lives on `app.cursor`
+        // (regardless of buffer kind); we set it there.
+        a.cursor = link.range.start;
         a.apply(Action::FollowLink);
         let h = a.help_buffer.as_ref().expect("help still open");
         assert_eq!(
@@ -15616,11 +15567,11 @@ mod tests {
             "follow-link must NOT swap topics for an anchor jump"
         );
         assert_eq!(
-            h.cursor.line, target_anchor_line,
+            a.cursor.line, target_anchor_line,
             "cursor should land on the heading line"
         );
         assert_eq!(
-            h.scroll as u32, target_anchor_line,
+            a.scroll, target_anchor_line,
             "scroll should follow the anchor"
         );
     }
@@ -15761,6 +15712,56 @@ mod tests {
     }
 
     #[test]
+    fn search_in_help_buffer_targets_help_text() {
+        // After unification, `/` works in any read-only buffer
+        // (help, file-tree, future kinds). Search reads
+        // `active_text()` and `self.cursor`; on a hit it writes
+        // `self.cursor` -- exactly the document path.
+        let mut a = app_with("xx", 10);
+        let body: Vec<String> = vec![
+            "alpha".into(),
+            "beta".into(),
+            "gamma needle".into(),
+            "delta".into(),
+        ];
+        install_help(&mut a, HelpBuffer::from_lines("search-test", body));
+        // Open `/` and type `needle` then submit.
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        for c in "needle".chars() {
+            a.apply(Action::SearchAppend(c));
+        }
+        a.apply(Action::SearchSubmit);
+        // Cursor should land on line 2 (gamma needle).
+        assert_eq!(a.cursor.line, 2, "cursor jumped to the help line");
+        // Active buffer stays Help -- search didn't leak into the
+        // document.
+        assert!(matches!(a.active_buffer, BufferKind::Help));
+    }
+
+    #[test]
+    fn search_in_help_buffer_no_longer_blocked_by_read_only_guard() {
+        // Regression: `EnterSearch` etc. used to be in the
+        // `action_is_document_mutation` allow-list, so `/` in a
+        // help buffer echoed "buffer is read-only". They're not
+        // mutations -- the guard list now only covers true edits.
+        let mut a = app_with("xx", 10);
+        install_help(&mut a, HelpBuffer::from_lines("ro", vec!["abc".into(); 5]));
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        // Should be in search modal, not Normal with a read-only
+        // echo.
+        assert!(
+            matches!(a.modal, ModalState::Search(_)),
+            "should be in Search modal, got {:?}",
+            a.modal
+        );
+        assert!(
+            a.last_message.is_none(),
+            "no read-only echo expected, got {:?}",
+            a.last_message
+        );
+    }
+
+    #[test]
     fn help_motion_routes_through_active_buffer() {
         // `j` in help mode should resolve via the same chord grammar
         // as a code buffer, but the apply layer routes the resulting
@@ -15774,9 +15775,11 @@ mod tests {
         for _ in 0..3 {
             a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
         }
-        let h = a.help_buffer.as_ref().unwrap();
-        assert_eq!(h.cursor.line, 3);
-        assert_eq!(h.scroll, 0);
+        // After unification, `self.cursor` / `self.scroll` are
+        // the active buffer's. The help_buffer's cursor field is
+        // archival save-state synced at activation transitions.
+        assert_eq!(a.cursor.line, 3);
+        assert_eq!(a.scroll, 0);
     }
 
     #[test]
@@ -15788,10 +15791,13 @@ mod tests {
         for _ in 0..1000 {
             a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
         }
-        let h = a.help_buffer.as_ref().unwrap();
-        assert_eq!(h.cursor.line, 49);
-        // Scroll keeps cursor on screen: line 49 + 1 - 5 = 45.
-        assert_eq!(h.scroll, 45);
+        assert_eq!(a.cursor.line, 49);
+        // Scroll keeps cursor on screen: viewport 10, cursor 49,
+        // so scroll = 49 + 1 - 10 = 40. Production runtime sets
+        // viewport per-frame via active_pane_content_height (which
+        // shrinks for help popups); the test fixture sets a fixed
+        // viewport of 10 and the assertion follows from that.
+        assert_eq!(a.scroll, 40);
     }
 
     #[test]
@@ -15805,9 +15811,8 @@ mod tests {
         for _ in 0..1000 {
             a.apply(Action::Invoke(CommandInvocation::of(line_up.0)));
         }
-        let h = a.help_buffer.as_ref().unwrap();
-        assert_eq!(h.cursor.line, 0);
-        assert_eq!(h.scroll, 0);
+        assert_eq!(a.cursor.line, 0);
+        assert_eq!(a.scroll, 0);
     }
 
     #[test]
@@ -15824,17 +15829,17 @@ mod tests {
         for _ in 0..3 {
             a.apply(Action::Invoke(CommandInvocation::of(char_right.0)));
         }
-        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.byte, 3);
+        assert_eq!(a.cursor.byte, 3);
         a.apply(Action::Invoke(CommandInvocation::of(char_left.0)));
-        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.byte, 2);
+        assert_eq!(a.cursor.byte, 2);
         a.apply(Action::Invoke(CommandInvocation::of(line_end.0)));
         // `motion:line-end` lands at `byte == line_len` (one past
         // the last byte) -- the same convention as the document
         // path. The grammar uses this position so operator targets
         // (d$, c$, y$) take an exclusive end.
-        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.byte, 11);
+        assert_eq!(a.cursor.byte, 11);
         a.apply(Action::Invoke(CommandInvocation::of(line_start.0)));
-        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.byte, 0);
+        assert_eq!(a.cursor.byte, 0);
     }
 
     #[test]
@@ -15844,13 +15849,11 @@ mod tests {
         let goto_first = a.builtins.goto_first_line;
         let goto_last = a.builtins.goto_last_line;
         a.apply(Action::Invoke(CommandInvocation::of(goto_last.0)));
-        let h = a.help_buffer.as_ref().unwrap();
-        assert_eq!(h.cursor.line, 29);
-        assert!(h.scroll > 0);
+        assert_eq!(a.cursor.line, 29);
+        assert!(a.scroll > 0);
         a.apply(Action::Invoke(CommandInvocation::of(goto_first.0)));
-        let h = a.help_buffer.as_ref().unwrap();
-        assert_eq!(h.cursor.line, 0);
-        assert_eq!(h.scroll, 0);
+        assert_eq!(a.cursor.line, 0);
+        assert_eq!(a.scroll, 0);
     }
 
     #[test]
@@ -15863,7 +15866,7 @@ mod tests {
         a.apply(Action::Invoke(
             CommandInvocation::of(line_down.0).with_count(lattice_grammar::command::Count(5)),
         ));
-        assert_eq!(a.help_buffer.as_ref().unwrap().cursor.line, 5);
+        assert_eq!(a.cursor.line, 5);
     }
 
     #[test]

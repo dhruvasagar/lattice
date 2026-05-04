@@ -341,14 +341,22 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     // time via the markdown grammar; we just look them up by line
     // and emit per-row styled spans.
     let viewport = inner.height as usize;
+    // Active-buffer scroll lives on `app.scroll` after the
+    // unification; help_buffer's own `scroll` field is archival
+    // save-state synced at activation transitions.
+    let scroll = if matches!(app.active_buffer, crate::buffers::BufferKind::Help) {
+        app.scroll as usize
+    } else {
+        help.scroll
+    };
     let lines = help.lines();
     let visible: Vec<Line> = lines
         .iter()
-        .skip(help.scroll)
+        .skip(scroll)
         .take(viewport)
         .enumerate()
         .map(|(i, l)| {
-            let line_idx = help.scroll + i;
+            let line_idx = scroll + i;
             let mut spans: Vec<lattice_syntax::StyledSpan> =
                 help.highlights.get(line_idx).cloned().unwrap_or_default();
             // Layer Style::Link decoration on every link's label
@@ -393,10 +401,17 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     // `set_cursor_position` from `draw_buffer` /
     // `draw_command_or_echo` because the help overlay paints later.
     if inner.height > 0 && inner.width > 0 {
-        let cursor = help.cursor;
-        // Translate buffer-space (line, byte) into screen coords by
-        // subtracting `scroll` and clamping to the popup interior.
-        let row_off = (cursor.line as usize).saturating_sub(help.scroll);
+        // Live cursor / scroll come from the App's active-buffer
+        // hot-path fields when help is active; otherwise the
+        // popup is showing stale state (e.g. transient hover
+        // popup over an unfocused doc) and we use the help
+        // buffer's own fields.
+        let cursor = if matches!(app.active_buffer, crate::buffers::BufferKind::Help) {
+            app.cursor
+        } else {
+            help.cursor
+        };
+        let row_off = (cursor.line as usize).saturating_sub(scroll);
         let row_off = row_off.min(inner.height.saturating_sub(1) as usize);
         let col_off = (cursor.byte as usize).min(inner.width.saturating_sub(1) as usize);
         frame.set_cursor_position((inner.x + col_off as u16, inner.y + row_off as u16));
@@ -786,11 +801,12 @@ fn draw_file_tree_pane(
     let Some(tree) = app.buffers.file_tree(pane.buffer_id) else {
         return;
     };
-    // Inactive file-tree panes use the pane's stashed cursor /
-    // scroll; the active pane's tree state lives on `tree.cursor`
-    // / `tree.scroll` and gets a visible cursor.
+    // Active pane's live cursor / scroll live on `app.cursor` /
+    // `app.scroll` (unified across buffer kinds). Inactive panes
+    // use the pane's stashed cursor / scroll; the tree's own
+    // `cursor` / `scroll` fields are archival save-state.
     let (cursor_line, scroll) = if is_active {
-        (tree.cursor.line as usize, tree.scroll)
+        (app.cursor.line as usize, app.scroll as usize)
     } else {
         (pane.cursor.line as usize, pane.scroll as usize)
     };
@@ -814,9 +830,9 @@ fn draw_file_tree_pane(
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
     if is_active && area.height > 0 && area.width > 0 {
-        let row_off = (tree.cursor.line as usize).saturating_sub(tree.scroll);
+        let row_off = (app.cursor.line as usize).saturating_sub(app.scroll as usize);
         let row_off = row_off.min(area.height.saturating_sub(1) as usize);
-        let col_off = (tree.cursor.byte as usize).min(area.width.saturating_sub(1) as usize);
+        let col_off = (app.cursor.byte as usize).min(area.width.saturating_sub(1) as usize);
         frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
     }
 }

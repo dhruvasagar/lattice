@@ -1,0 +1,12 @@
+# Pinned rustc / rustup toolchain. Picked up automatically by
+# `rustup` when running cargo / rustc inside this repo: contributors
+# get the exact same compiler we test with, regardless of their
+# system default. Mirrors `.tool-versions` for asdf / mise users.
+#
+# Bumping: keep in sync with `Cargo.toml::workspace.package.rust-version`
+# (the MSRV) and `.tool-versions`. CI still pins `stable` explicitly
+# in `.github/workflows/ci.yml`; this file is for local reproducibility.
+[toolchain]
+channel = "1.94.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -4,3 +4,7 @@ Cargo.lock.bak
 .DS_Store
 *.swp
 *.swo
+
+# Override global asdf/mise ignores -- the toolchain pin is part
+# of the repo so contributors get a reproducible build.
+!.tool-versions

@@ -58,6 +58,22 @@ pub enum Event {
     /// veto path (a handler returning Err to abort quit) layers on
     /// once the bus grows the Before-event mutation semantics.
     BeforeQuit,
+    /// Fired after a typed-options registry value changes
+    /// (DESIGN.md §5.12). Carries the option's canonical name plus
+    /// the formatted old / new value strings -- string-formatted
+    /// (rather than `Box<dyn Any>`) because most subscribers just
+    /// react to the change signal and don't need the typed value.
+    /// Subscribers that need the typed value re-read through the
+    /// registry (`config.with(handle, |v| ...)`).
+    ///
+    /// `old` is `None` for the very first publish after registration
+    /// (when the option is initialised to its default and no prior
+    /// value exists); subsequent edits always carry both sides.
+    OptionChanged {
+        name: String,
+        old: Option<String>,
+        new: String,
+    },
 }
 
 impl Event {
@@ -74,6 +90,7 @@ impl Event {
             Event::SelectionsChanged { .. } => EventKind::SelectionsChanged,
             Event::ModalModeChanged { .. } => EventKind::ModalModeChanged,
             Event::BeforeQuit => EventKind::BeforeQuit,
+            Event::OptionChanged { .. } => EventKind::OptionChanged,
         }
     }
 }
@@ -91,6 +108,7 @@ pub enum EventKind {
     SelectionsChanged,
     ModalModeChanged,
     BeforeQuit,
+    OptionChanged,
 }
 
 /// An edit as actually applied to the buffer (the original `Edit` plus the

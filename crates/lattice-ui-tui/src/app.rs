@@ -1225,6 +1225,10 @@ impl App {
                 topics: help_topics.clone(),
             },
         );
+        // §5.10 event bus. Stood up before the typed-options
+        // registry so the registry can publish `OptionChanged`
+        // events to it via the `EventPublisher` closure.
+        let event_bus = Arc::new(EventBus::new());
         // Typed-options registry (DESIGN.md §5.12). Single source
         // of truth for every option's *current value*: each
         // `Option<T>` owns a wait-free `ArcSwap<T>` cell that
@@ -1233,6 +1237,16 @@ impl App {
         // agnostic options register from `lattice-config`; this
         // renderer's own options register from `crate::tui_options`.
         let config = Arc::new(lattice_config::ConfigRegistry::new());
+        // Wire the registry's `OptionChanged` publisher to the
+        // event bus (§5.10 + §5.12 unification). Subscribers see
+        // every typed-option change as `Event::OptionChanged`
+        // instead of having to poll. The closure captures an
+        // Arc<EventBus> clone so the registry's lifetime is
+        // independent of any single App field.
+        let bus_for_publisher = event_bus.clone();
+        config.set_event_publisher(std::sync::Arc::new(move |event| {
+            bus_for_publisher.publish(event);
+        }));
         let core_options = lattice_config::register_core_options(&config);
         let tui_options = crate::tui_options::register_tui_options(&config);
         // `gen:options` -- completion source for `:set <Tab>` and
@@ -1309,7 +1323,7 @@ impl App {
             modal: ModalState::Normal,
             pending: Pending::None,
             registry,
-            event_bus: Arc::new(EventBus::new()),
+            event_bus: event_bus.clone(),
             lang_registry,
             builtins,
             command_line: String::new(),
@@ -7367,6 +7381,65 @@ mod tests {
 
     fn invoke_motion(id: lattice_grammar::registry::MotionId) -> Action {
         Action::Invoke(CommandInvocation::of(id.0))
+    }
+
+    // ---- Event::OptionChanged (DESIGN.md §5.10 + §5.12) ----
+
+    #[test]
+    fn event_bus_publishes_option_changed_on_set_assign() {
+        let mut a = app_with("xx", 10);
+        let mut rx = subscribe_all_events(&a);
+        a.command_line = "set tabstop=4".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let mut found_opt = None;
+        while let Ok(evt) = rx.try_recv() {
+            if let Event::OptionChanged { name, old, new } = evt {
+                found_opt = Some((name, old, new));
+                break;
+            }
+        }
+        let (name, old, new) = found_opt.expect("OptionChanged should fire on :set tabstop=4");
+        assert_eq!(name, "tabstop");
+        assert_eq!(old.as_deref(), Some("8"));
+        assert_eq!(new, "4");
+    }
+
+    #[test]
+    fn event_bus_publishes_option_changed_on_set_negate() {
+        let mut a = app_with("xx", 10);
+        let mut rx = subscribe_all_events(&a);
+        a.command_line = "set nonumber".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let mut found = false;
+        while let Ok(evt) = rx.try_recv() {
+            if let Event::OptionChanged { name, new, .. } = evt
+                && name == "number"
+                && new == "false"
+            {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, ":set nonumber should publish OptionChanged");
+    }
+
+    #[test]
+    fn event_bus_does_not_publish_option_changed_on_query() {
+        let mut a = app_with("xx", 10);
+        let mut rx = subscribe_all_events(&a);
+        a.command_line = "set number?".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        // No OptionChanged for query; we only get unrelated events
+        // (ModalModeChanged from cmdline transitions, etc.).
+        while let Ok(evt) = rx.try_recv() {
+            assert!(
+                !matches!(evt, Event::OptionChanged { .. }),
+                "query should not publish OptionChanged"
+            );
+        }
     }
 
     // ---- Initial state ----

@@ -36,10 +36,25 @@
 //!   `ui.statusline_active_fg` register from each renderer crate
 //!   through the same `ConfigRegistry::register::<T>(...)` API.
 //!   See `lattice-ui-tui::tui_options` for the TUI's example.
-//! - **Event publication.** The follow-up task wires the registry
-//!   to optionally publish `Event::OptionChanged` on every set
-//!   (per the §5.10 event bus). Renderers will subscribe to that
-//!   event for cascade refreshes instead of polling.
+//! ## Event-bus integration (DESIGN.md §5.10 + §5.12)
+//!
+//! The registry optionally publishes [`lattice_protocol::Event::OptionChanged`]
+//! on every successful set so consumers can react to typed-option
+//! changes without polling. Wire it via
+//! [`ConfigRegistry::set_event_publisher`] -- the closure receives
+//! the `Event` and delegates to the consumer's bus. The crate is
+//! agnostic to *which* bus (avoids a dep on `lattice-runtime`); the
+//! App today calls `event_bus.publish(event)` from inside the
+//! closure.
+//!
+//! Events fire on:
+//! - typed `set::<T>(handle, value)` writes
+//! - cmdline `parse_and_set_command(":set foo=bar")` (Assign)
+//! - cmdline `:set nofoo` (Negate)
+//! - cmdline `:set foo` boolean toggle (NameOnly on bool option)
+//!
+//! Events do NOT fire on `:set foo?` (Query) or on validation /
+//! parse failures.
 
 pub mod completion;
 mod core_options;
@@ -56,4 +71,4 @@ pub use erased::ErasedOption;
 pub use option::{Option, OptionBuilder, OptionHandle};
 pub use option_type::OptionType;
 pub use parse::{ParsedSet, parse_set};
-pub use registry::{ConfigError, ConfigRegistry};
+pub use registry::{ConfigError, ConfigRegistry, EventPublisher};

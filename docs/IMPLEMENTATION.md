@@ -485,7 +485,8 @@ race past their own commit.
 | Latency-class declarations (Reflex / Display / Background) | ✅ declarative        | §5.2.5 (`LatencyClass` field on `CommandSpec`; runtime enforcement deferred) |
 | Cancellation token contract                                | ✅ user-Esc           | §5.2.5; `CancellationToken` (Arc<AtomicBool>) plumbed through `dispatch_with_cancel` → grammar dispatcher → operator/motion/text-object contexts → search loops. Deadline-timer flipper (Reflex < 2 ms, Display < 10 ms) is the remaining piece. |
 | Event bus (observation baseline)                           | ✅                   | §5.10; `EventBus` in lattice-runtime: kind-indexed dispatch, `SubscriptionTarget::Channel` (mpsc) + `Invocation` (queued via `drain_pending_invocations`). |
-| App-side event publish                                     | ✅                   | §5.10; App publishes `DocumentChanged` (apply_edit / batch / undo / redo), `SelectionsChanged` (set_selections), `ModalModeChanged` (only on actual axis movement), `BeforeSave` + `DocumentSaved` (sync wrapper around save / save_as), `BeforeQuit` (Action::Quit + `:q` after dirty-check). |
+| App-side event publish                                     | ✅                   | §5.10; App publishes `DocumentChanged` (apply_edit / batch / undo / redo), `SelectionsChanged` (set_selections), `ModalModeChanged` (only on actual axis movement), `BeforeSave` + `DocumentSaved` (sync wrapper around save / save_as), `BeforeQuit` (Action::Quit + `:q` after dirty-check), `OptionChanged` (every typed-options registry write — including `:set foo=bar`, `:set nofoo`, and direct `config.set` paths; carries canonical name + old + new formatted strings). |
+| Config → event bus bridge                                  | ✅                   | §5.10 + §5.12; `lattice-config::ConfigRegistry` exposes `set_event_publisher(EventPublisher)`. App wires the bus at boot via a closure that calls `event_bus.publish(event)`. Subscribers see option changes through `Event::OptionChanged` instead of polling. The post-set cascade hook (`apply_post_set` for `relativenumber⇒number`, `foldmethod⇒recompute`, `ui.*⇒theme`) coexists with the bus until a future commit migrates it onto bus subscriptions. |
 | Veto-class hooks (1ms p99)                                 | ⛔                   | §5.2.1 (needs Before-event return-path so handlers can mutate / abort; v1 publish is observation-only) |
 | Events-over-invocation rule                                | ⛔                   | §5.2.5 (needs `:autocmd` and `add-hook` parser front-ends to desugar into `subscribe`) |
 | Interactive arg-prompts (§B.1 phase 2)                     | ✅                   | Submitting bare `:cmd<CR>` with a Required first arg arms a prompt: prefills `:cmd `, surfaces the schema's prompt in the echo area, and waits for typed input (Chord-kind args additionally auto-submit on the next captured chord). Optional-default args take the parser's normal path. |
@@ -830,11 +831,11 @@ Workspace tests as of the last commit. Coverage by crate:
 | lattice-core (incl. integration) | 86    |
 | lattice-grammar                  | 183   |
 | lattice-completion               | 117   |
-| lattice-config                   | 49    |
+| lattice-config                   | 57    |
 | lattice-syntax                   | 13    |
 | lattice-runtime                  | 35    |
 | lattice-lsp                      | 32    |
-| lattice-ui-tui                   | 899   |
+| lattice-ui-tui                   | 902   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators,
 runtime actor) — see `docs/BENCHMARKS.md` for the latest numbers.

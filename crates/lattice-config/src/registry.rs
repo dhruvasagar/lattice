@@ -27,10 +27,23 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use lattice_protocol::Event;
+
 use crate::erased::ErasedOption;
 use crate::option::{Option, OptionHandle};
 use crate::option_type::OptionType;
 use crate::parse::{ParsedSet, parse_set};
+
+/// Sink the registry calls after every successful set so consumers
+/// can react to typed-option changes through the §5.10 event bus.
+/// Stored as a `Box<dyn Fn>` so `lattice-config` doesn't depend on
+/// `lattice-runtime`'s `EventBus` directly -- the App wires
+/// `event_bus.publish(event)` as the closure body at boot.
+///
+/// The publisher is invoked synchronously from the same thread
+/// that drove the set; downstream subscribers should not assume
+/// any particular thread context.
+pub type EventPublisher = Arc<dyn Fn(Event) + Send + Sync>;
 
 /// Process-shared registry.
 #[derive(Default)]
@@ -47,6 +60,13 @@ struct Inner {
     /// Name + alias → index. Multiple entries (canonical name +
     /// each alias) all point at the same `by_id` index.
     by_name: HashMap<String, usize>,
+    /// Optional sink for [`Event::OptionChanged`] publishing
+    /// (DESIGN.md §5.10 / §5.12). `None` means "no event publish",
+    /// useful in tests and for embedded uses that don't run an
+    /// event bus. The App wires this at boot via
+    /// [`ConfigRegistry::set_event_publisher`] -- the closure
+    /// body calls `event_bus.publish(event)`.
+    event_publisher: std::option::Option<EventPublisher>,
 }
 
 /// What the registry's fallible operations can fail with. Kept
@@ -97,6 +117,42 @@ fn panic_on_duplicate(e: &ConfigError) -> ! {
 impl ConfigRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Install the [`Event::OptionChanged`] sink. Idempotent
+    /// replacement -- calling twice swaps the closure. Designed to
+    /// be called once at boot from the consumer that owns the
+    /// `EventBus` (the App today; future plugin-host paths route
+    /// through the same closure).
+    pub fn set_event_publisher(&self, publisher: EventPublisher) {
+        let mut inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        inner.event_publisher = Some(publisher);
+    }
+
+    /// Publish helper: capture old + new and dispatch to the
+    /// registered publisher (if any). Old value is captured
+    /// *before* the set; new is captured *after*. We re-look-up
+    /// the spec under the lock to read both sides atomically wrt
+    /// the publisher fan-out -- but the publisher itself runs
+    /// outside the lock so subscribers can re-enter the registry
+    /// safely (e.g. read another option).
+    fn publish_change(&self, name: &str, old: std::option::Option<String>) {
+        let (publisher, new) = {
+            let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+            let publisher = inner.event_publisher.clone();
+            let new = inner
+                .by_name
+                .get(name)
+                .map(|i| inner.by_id[*i].get_formatted());
+            (publisher, new)
+        };
+        if let (Some(publisher), Some(new)) = (publisher, new) {
+            publisher(Event::OptionChanged {
+                name: name.to_string(),
+                old,
+                new,
+            });
+        }
     }
 
     /// Register a typed option. Returns an [`OptionHandle<T>`] for
@@ -174,7 +230,8 @@ impl ConfigRegistry {
     }
 
     /// Typed write through a handle. Runs the option's validator
-    /// before committing.
+    /// before committing. Publishes [`Event::OptionChanged`] on
+    /// success.
     pub fn set<T: OptionType>(&self, handle: OptionHandle<T>, value: T) -> Result<(), String> {
         let arc = self
             .erased_at(handle.idx)
@@ -186,7 +243,11 @@ impl ConfigRegistry {
                 T::type_label()
             )
         })?;
-        opt.set(value)
+        let old = opt.with(|v| v.format());
+        let name = opt.name();
+        opt.set(value)?;
+        self.publish_change(name, Some(old));
+        Ok(())
     }
 
     /// Look up an option by name (or alias). Returns the erased
@@ -236,7 +297,10 @@ impl ConfigRegistry {
                     .lookup(&name)
                     .ok_or(ConfigError::UnknownOption(name.clone()))?;
                 if opt.is_bool() {
+                    let canonical = opt.name();
+                    let old = opt.get_formatted();
                     opt.parse_and_set("true").map_err(ConfigError::Validation)?;
+                    self.publish_change(canonical, Some(old));
                 }
                 // For both bool (post-toggle) and non-bool, echo
                 // the current formatted value.
@@ -255,14 +319,20 @@ impl ConfigRegistry {
                     // migration.
                     return Err(ConfigError::NotBoolean(name));
                 }
+                let canonical = opt.name();
+                let old = opt.get_formatted();
                 opt.negate().map_err(ConfigError::Validation)?;
+                self.publish_change(canonical, Some(old));
                 Ok(format!("{}={}", opt.name(), opt.get_formatted()))
             }
             ParsedSet::Assign { name, value } => {
                 let opt = self
                     .lookup(&name)
                     .ok_or(ConfigError::UnknownOption(name.clone()))?;
+                let canonical = opt.name();
+                let old = opt.get_formatted();
                 opt.parse_and_set(&value).map_err(ConfigError::Validation)?;
+                self.publish_change(canonical, Some(old));
                 Ok(format!("{}={}", opt.name(), opt.get_formatted()))
             }
             ParsedSet::Query(name) => {
@@ -291,7 +361,7 @@ impl std::fmt::Debug for ConfigRegistry {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
 
     #[test]
@@ -414,5 +484,162 @@ mod tests {
             let _ = r.get(h_bool);
         }));
         assert!(result.is_err());
+    }
+
+    // ---- Event::OptionChanged publish (DESIGN.md §5.10 + §5.12) ----
+
+    fn capture_events() -> (
+        EventPublisher,
+        Arc<std::sync::Mutex<Vec<lattice_protocol::Event>>>,
+    ) {
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cap = captured.clone();
+        let publisher: EventPublisher = Arc::new(move |event| {
+            cap.lock().expect("captured poisoned").push(event);
+        });
+        (publisher, captured)
+    }
+
+    #[test]
+    fn typed_set_publishes_option_changed_event() {
+        use lattice_protocol::Event;
+        let r = ConfigRegistry::new();
+        let h = r.register(Option::<bool>::new("number", true, ""));
+        let (publisher, captured) = capture_events();
+        r.set_event_publisher(publisher);
+        r.set(h, false).unwrap();
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::OptionChanged { name, old, new } => {
+                assert_eq!(name, "number");
+                assert_eq!(old.as_deref(), Some("true"));
+                assert_eq!(new, "false");
+            }
+            other => panic!("expected OptionChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_and_set_command_publishes_for_assign() {
+        use lattice_protocol::Event;
+        let r = ConfigRegistry::new();
+        r.register(Option::<i64>::new("tabstop", 8, ""));
+        let (publisher, captured) = capture_events();
+        r.set_event_publisher(publisher);
+        r.parse_and_set_command("tabstop=4").unwrap();
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::OptionChanged { name, old, new } => {
+                assert_eq!(name, "tabstop");
+                assert_eq!(old.as_deref(), Some("8"));
+                assert_eq!(new, "4");
+            }
+            other => panic!("expected OptionChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_and_set_command_publishes_for_negate() {
+        use lattice_protocol::Event;
+        let r = ConfigRegistry::new();
+        r.register(Option::<bool>::new("number", true, ""));
+        let (publisher, captured) = capture_events();
+        r.set_event_publisher(publisher);
+        r.parse_and_set_command("nonumber").unwrap();
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::OptionChanged { name, old, new } => {
+                assert_eq!(name, "number");
+                assert_eq!(old.as_deref(), Some("true"));
+                assert_eq!(new, "false");
+            }
+            other => panic!("expected OptionChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_and_set_command_publishes_for_bool_toggle() {
+        use lattice_protocol::Event;
+        let r = ConfigRegistry::new();
+        r.register(Option::<bool>::new("number", false, ""));
+        let (publisher, captured) = capture_events();
+        r.set_event_publisher(publisher);
+        r.parse_and_set_command("number").unwrap();
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::OptionChanged { name, old, new } => {
+                assert_eq!(name, "number");
+                assert_eq!(old.as_deref(), Some("false"));
+                assert_eq!(new, "true");
+            }
+            other => panic!("expected OptionChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_and_set_command_query_does_not_publish() {
+        let r = ConfigRegistry::new();
+        r.register(Option::<bool>::new("number", true, ""));
+        let (publisher, captured) = capture_events();
+        r.set_event_publisher(publisher);
+        r.parse_and_set_command("number?").unwrap();
+        assert!(captured.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn no_publisher_set_means_no_events() {
+        let r = ConfigRegistry::new();
+        let h = r.register(Option::<bool>::new("number", true, ""));
+        // Don't set a publisher.
+        r.set(h, false).unwrap();
+        // No panic, no event capture; just a silent set.
+        assert!(!*r.get(h));
+    }
+
+    #[test]
+    fn alias_set_publishes_under_canonical_name() {
+        use lattice_protocol::Event;
+        // `:set ts=4` (alias) should publish OptionChanged with
+        // canonical name "tabstop", not "ts".
+        let r = ConfigRegistry::new();
+        r.register(
+            Option::<i64>::builder("tabstop", 8, "")
+                .aliases(&["ts"])
+                .build(),
+        );
+        let (publisher, captured) = capture_events();
+        r.set_event_publisher(publisher);
+        r.parse_and_set_command("ts=4").unwrap();
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        if let Event::OptionChanged { name, .. } = &events[0] {
+            assert_eq!(name, "tabstop", "expected canonical name");
+        } else {
+            panic!("expected OptionChanged");
+        }
+    }
+
+    #[test]
+    fn validation_error_does_not_publish() {
+        let r = ConfigRegistry::new();
+        r.register(
+            Option::<i64>::builder("tabstop", 8, "")
+                .validate(|i| {
+                    if (1..=32).contains(i) {
+                        Ok(())
+                    } else {
+                        Err(format!("out of range: {i}"))
+                    }
+                })
+                .build(),
+        );
+        let (publisher, captured) = capture_events();
+        r.set_event_publisher(publisher);
+        let _ = r.parse_and_set_command("tabstop=999");
+        assert!(captured.lock().unwrap().is_empty());
     }
 }

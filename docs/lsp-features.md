@@ -64,14 +64,14 @@ Capability columns:
 
 ## Server → client notifications
 
-| Method                            | Phase | Status | Notes                                                                                                                                                  |
-|-----------------------------------|-------|--------|--------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Method                            | Phase | Status | Notes                                                                                                                                                                                  |
+|-----------------------------------|-------|--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `textDocument/publishDiagnostics` | 4.1   | ✅     | `DiagnosticsBus` broadcast (4.1.d.i) + `DiagnosticsLayer` per-URI state with version gating + multi-server merge (4.1.d.ii). Renderer overlay + `:diagnostics` buffer in 4.1.d.iii–iv. |
-| `window/showMessage`              | 4.4   | 🚧     | Logged today; routed into a non-blocking minibuffer notification in 4.4.                                                                               |
-| `window/showMessageRequest`       | 4.4   | ⏹️      | Modal picker (action-button list) -- 4.4.                                                                                                              |
-| `window/showDocument`             | 4.4   | ⏹️      | Open the requested URI (file or external) in a buffer / browser.                                                                                       |
-| `window/logMessage`               | 4.4   | 🚧     | Logged today; routed to `:messages` buffer in 4.4.                                                                                                     |
-| `telemetry/event`                 | 4.4   | 🚧     | Logged today; opt-in subscription point for plugins in 4.4.                                                                                            |
+| `window/showMessage`              | 4.4   | 🚧     | Logged today; routed into a non-blocking minibuffer notification in 4.4.                                                                                                               |
+| `window/showMessageRequest`       | 4.4   | ⏹️      | Modal picker (action-button list) -- 4.4.                                                                                                                                              |
+| `window/showDocument`             | 4.4   | ⏹️      | Open the requested URI (file or external) in a buffer / browser.                                                                                                                       |
+| `window/logMessage`               | 4.4   | 🚧     | Logged today; routed to `:messages` buffer in 4.4.                                                                                                                                     |
+| `telemetry/event`                 | 4.4   | 🚧     | Logged today; opt-in subscription point for plugins in 4.4.                                                                                                                            |
 
 ## Server-initiated requests
 
@@ -110,67 +110,67 @@ Capability columns:
 
 ### Hover / signatures / completion
 
-| Method                                 | Phase | Status | Notes |
-|----------------------------------------|-------|--------|-------|
-| `textDocument/hover`                   | 4.2   | ⏹️    | Reuses existing hover-popup primitive; `K` keybinding. |
-| `textDocument/signatureHelp`           | 4.3   | ⏹️    | Trigger characters (`,`, `(`) drive auto-popup. |
-| `textDocument/completion`              | 4.2   | ⏹️    | Provider for `lattice-completion`. Snippet support, label details, insertReplace, resolveSupport advertised. |
-| `completionItem/resolve`               | 4.2   | ⏹️    | Lazy-resolve documentation / detail / additionalTextEdits when an item gains focus. |
-| `textDocument/inlineCompletion`        | 4.5   | ⏹️    | LSP 3.18 / pre-spec. Inline ghost-text suggestions; integrates with copilot-like flows once landed. |
+| Method                          | Phase | Status | Notes                                                                                                        |
+|---------------------------------|-------|--------|--------------------------------------------------------------------------------------------------------------|
+| `textDocument/hover`            | 4.2   | ⏹️      | Reuses existing hover-popup primitive; `K` keybinding.                                                       |
+| `textDocument/signatureHelp`    | 4.3   | ⏹️      | Trigger characters (`,`, `(`) drive auto-popup.                                                              |
+| `textDocument/completion`       | 4.2   | ⏹️      | Provider for `lattice-completion`. Snippet support, label details, insertReplace, resolveSupport advertised. |
+| `completionItem/resolve`        | 4.2   | ⏹️      | Lazy-resolve documentation / detail / additionalTextEdits when an item gains focus.                          |
+| `textDocument/inlineCompletion` | 4.5   | ⏹️      | LSP 3.18 / pre-spec. Inline ghost-text suggestions; integrates with copilot-like flows once landed.          |
 
 ### Navigation
 
-| Method                                    | Phase | Status | Notes |
-|-------------------------------------------|-------|--------|-------|
-| `textDocument/declaration`                | 4.2   | ⏹️    | `gd` family. Pushes a `PluginPush` entry to the position-history (§5.1.1). |
-| `textDocument/definition`                 | 4.2   | ⏹️    | `gD` / `gd` per keymap. |
-| `textDocument/typeDefinition`             | 4.2   | ⏹️    | `gy` |
-| `textDocument/implementation`             | 4.2   | ⏹️    | `gI` |
-| `textDocument/references`                 | 4.2   | ⏹️    | `gr` -- opens a buffer-backed list view (everything-is-a-buffer). |
-| `textDocument/documentHighlight`          | 4.4   | ⏹️    | Renderer overlay highlighting matches under cursor. |
-| `textDocument/documentSymbol`             | 4.2   | ⏹️    | Outline pane buffer. |
-| `textDocument/prepareCallHierarchy`       | 4.5   | ⏹️    | Required by callHierarchy/* below. |
-| `callHierarchy/incomingCalls`             | 4.5   | ⏹️    | Caller-side traversal. |
-| `callHierarchy/outgoingCalls`             | 4.5   | ⏹️    | Callee-side traversal. |
-| `textDocument/prepareTypeHierarchy`       | 4.5   | ⏹️    | Required by typeHierarchy/*. |
-| `typeHierarchy/supertypes`                | 4.5   | ⏹️    | Up the type tree. |
-| `typeHierarchy/subtypes`                  | 4.5   | ⏹️    | Down the type tree. |
-| `textDocument/moniker`                    | 4.5   | ⏹️    | Stable cross-project symbol id. Useful for cross-repo navigation; niche. |
-| `textDocument/selectionRange`             | 4.4   | ⏹️    | Hierarchical selection expansion (`+` / `-` keys). |
+| Method                              | Phase | Status | Notes                                                                      |
+|-------------------------------------|-------|--------|----------------------------------------------------------------------------|
+| `textDocument/declaration`          | 4.2   | ⏹️      | `gd` family. Pushes a `PluginPush` entry to the position-history (§5.1.1). |
+| `textDocument/definition`           | 4.2   | ⏹️      | `gD` / `gd` per keymap.                                                    |
+| `textDocument/typeDefinition`       | 4.2   | ⏹️      | `gy`                                                                       |
+| `textDocument/implementation`       | 4.2   | ⏹️      | `gI`                                                                       |
+| `textDocument/references`           | 4.2   | ⏹️      | `gr` -- opens a buffer-backed list view (everything-is-a-buffer).          |
+| `textDocument/documentHighlight`    | 4.4   | ⏹️      | Renderer overlay highlighting matches under cursor.                        |
+| `textDocument/documentSymbol`       | 4.2   | ⏹️      | Outline pane buffer.                                                       |
+| `textDocument/prepareCallHierarchy` | 4.5   | ⏹️      | Required by callHierarchy/* below.                                         |
+| `callHierarchy/incomingCalls`       | 4.5   | ⏹️      | Caller-side traversal.                                                     |
+| `callHierarchy/outgoingCalls`       | 4.5   | ⏹️      | Callee-side traversal.                                                     |
+| `textDocument/prepareTypeHierarchy` | 4.5   | ⏹️      | Required by typeHierarchy/*.                                               |
+| `typeHierarchy/supertypes`          | 4.5   | ⏹️      | Up the type tree.                                                          |
+| `typeHierarchy/subtypes`            | 4.5   | ⏹️      | Down the type tree.                                                        |
+| `textDocument/moniker`              | 4.5   | ⏹️      | Stable cross-project symbol id. Useful for cross-repo navigation; niche.   |
+| `textDocument/selectionRange`       | 4.4   | ⏹️      | Hierarchical selection expansion (`+` / `-` keys).                         |
 
 ### Edits
 
-| Method                                    | Phase | Status | Notes |
-|-------------------------------------------|-------|--------|-------|
-| `textDocument/codeAction`                 | 4.3   | ⏹️    | Picker popup; supports `WorkspaceEdit` + `Command` payloads. |
-| `codeAction/resolve`                      | 4.3   | ⏹️    | Lazy-resolve `edit` from the action's `data`. |
-| `textDocument/rename`                     | 4.3   | ⏹️    | Multi-file edit applied atomically (one undo step per doc). |
-| `textDocument/prepareRename`              | 4.3   | ⏹️    | Validates the cursor is on a renameable identifier; returns the placeholder. |
-| `textDocument/formatting`                 | 4.3   | ⏹️    | Whole-buffer formatter; `=G` mapped. |
-| `textDocument/rangeFormatting`            | 4.3   | ⏹️    | Range formatter; `=` operator on motions / objects. |
-| `textDocument/onTypeFormatting`           | 4.3   | ⏹️    | Trigger-character driven (e.g. `;` / `}` in C-family). |
-| `textDocument/linkedEditingRange`         | 4.5   | ⏹️    | Multi-cursor mode for linked identifiers (HTML tag pairs, etc.). |
+| Method                            | Phase | Status | Notes                                                                        |
+|-----------------------------------|-------|--------|------------------------------------------------------------------------------|
+| `textDocument/codeAction`         | 4.3   | ⏹️      | Picker popup; supports `WorkspaceEdit` + `Command` payloads.                 |
+| `codeAction/resolve`              | 4.3   | ⏹️      | Lazy-resolve `edit` from the action's `data`.                                |
+| `textDocument/rename`             | 4.3   | ⏹️      | Multi-file edit applied atomically (one undo step per doc).                  |
+| `textDocument/prepareRename`      | 4.3   | ⏹️      | Validates the cursor is on a renameable identifier; returns the placeholder. |
+| `textDocument/formatting`         | 4.3   | ⏹️      | Whole-buffer formatter; `=G` mapped.                                         |
+| `textDocument/rangeFormatting`    | 4.3   | ⏹️      | Range formatter; `=` operator on motions / objects.                          |
+| `textDocument/onTypeFormatting`   | 4.3   | ⏹️      | Trigger-character driven (e.g. `;` / `}` in C-family).                       |
+| `textDocument/linkedEditingRange` | 4.5   | ⏹️      | Multi-cursor mode for linked identifiers (HTML tag pairs, etc.).             |
 
 ### Decorations / inline information
 
-| Method                                    | Phase | Status | Notes |
-|-------------------------------------------|-------|--------|-------|
-| `textDocument/publishDiagnostics`         | 4.1   | 🚧     | Routing (4.1.d.i) ✅, per-URI state w/ version gating + multi-server merge (4.1.d.ii) ✅, renderer integration: gutter severity column + inline underline overlay (4.1.d.iii) ✅. `:diagnostics` buffer view + `]d`/`[d`/`:cnext`/`:cprev` (4.1.d.iv) ⏹️. |
-| `textDocument/diagnostic`                 | 4.4   | ⏹️    | Pull-based diagnostics (LSP 3.17). Used when server prefers pull over push. |
-| `workspace/diagnostic`                    | 4.4   | ⏹️    | Workspace-wide pull. |
-| `textDocument/inlayHint`                  | 4.4   | ⏹️    | Renderer overlay; type/parameter hints inline. |
-| `inlayHint/resolve`                       | 4.4   | ⏹️    | Lazy-resolve tooltip / textEdits when the hint gains focus. |
-| `textDocument/inlineValue`                | 4.5   | ⏹️    | Debug-flow value-at-line. Niche outside debugger integration. |
-| `textDocument/codeLens`                   | 4.5   | ⏹️    | Above-line clickable annotations (run / debug / references). |
-| `codeLens/resolve`                        | 4.5   | ⏹️    | Lazy-resolve the lens command. |
-| `textDocument/documentLink`               | 4.5   | ⏹️    | Hyperlinks inside text (URLs, imports). `gx` follows them. |
-| `documentLink/resolve`                    | 4.5   | ⏹️    | Lazy-resolve target. |
-| `textDocument/documentColor`              | 4.5   | ⏹️    | Color swatches at hex literals; `colorPresentation` returns named alternatives. |
-| `textDocument/colorPresentation`          | 4.5   | ⏹️    | Companion to documentColor. |
-| `textDocument/foldingRange`               | 4.4   | ⏹️    | New `FoldMethod::Lsp` -- merges with tree-sitter fold provider via priority. |
-| `textDocument/semanticTokens/full`        | 4.4   | ⏹️    | Per-doc semantic-token list; merges with tree-sitter highlight as a layer. |
-| `textDocument/semanticTokens/full/delta`  | 4.4   | ⏹️    | Delta encoding for re-requests after edits. |
-| `textDocument/semanticTokens/range`       | 4.4   | ⏹️    | Viewport-bounded request; cheaper for large files. |
+| Method                                   | Phase | Status | Notes                                                                                                                                                                                                                                                     |
+|------------------------------------------|-------|--------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `textDocument/publishDiagnostics`        | 4.1   | ✅     | Routing (4.1.d.i) ✅, per-URI state w/ version gating + multi-server merge (4.1.d.ii) ✅, renderer integration: gutter severity column + inline underline overlay (4.1.d.iii) ✅, `:diagnostics` help-style buffer w/ clickable Source links + `:diag-next` / `:diag-prev` / `:cnext` / `:cprev` cursor navigation (4.1.d.iv) ✅. |
+| `textDocument/diagnostic`                | 4.4   | ⏹️      | Pull-based diagnostics (LSP 3.17). Used when server prefers pull over push.                                                                                                                                                                               |
+| `workspace/diagnostic`                   | 4.4   | ⏹️      | Workspace-wide pull.                                                                                                                                                                                                                                      |
+| `textDocument/inlayHint`                 | 4.4   | ⏹️      | Renderer overlay; type/parameter hints inline.                                                                                                                                                                                                            |
+| `inlayHint/resolve`                      | 4.4   | ⏹️      | Lazy-resolve tooltip / textEdits when the hint gains focus.                                                                                                                                                                                               |
+| `textDocument/inlineValue`               | 4.5   | ⏹️      | Debug-flow value-at-line. Niche outside debugger integration.                                                                                                                                                                                             |
+| `textDocument/codeLens`                  | 4.5   | ⏹️      | Above-line clickable annotations (run / debug / references).                                                                                                                                                                                              |
+| `codeLens/resolve`                       | 4.5   | ⏹️      | Lazy-resolve the lens command.                                                                                                                                                                                                                            |
+| `textDocument/documentLink`              | 4.5   | ⏹️      | Hyperlinks inside text (URLs, imports). `gx` follows them.                                                                                                                                                                                                |
+| `documentLink/resolve`                   | 4.5   | ⏹️      | Lazy-resolve target.                                                                                                                                                                                                                                      |
+| `textDocument/documentColor`             | 4.5   | ⏹️      | Color swatches at hex literals; `colorPresentation` returns named alternatives.                                                                                                                                                                           |
+| `textDocument/colorPresentation`         | 4.5   | ⏹️      | Companion to documentColor.                                                                                                                                                                                                                               |
+| `textDocument/foldingRange`              | 4.4   | ⏹️      | New `FoldMethod::Lsp` -- merges with tree-sitter fold provider via priority.                                                                                                                                                                              |
+| `textDocument/semanticTokens/full`       | 4.4   | ⏹️      | Per-doc semantic-token list; merges with tree-sitter highlight as a layer.                                                                                                                                                                                |
+| `textDocument/semanticTokens/full/delta` | 4.4   | ⏹️      | Delta encoding for re-requests after edits.                                                                                                                                                                                                               |
+| `textDocument/semanticTokens/range`      | 4.4   | ⏹️      | Viewport-bounded request; cheaper for large files.                                                                                                                                                                                                        |
 
 ## Logging & introspection (lattice-side)
 
@@ -178,22 +178,22 @@ These aren't LSP methods -- they're lattice's debugging
 surface around LSP traffic. Tracked here so the matrix is the
 single source of truth.
 
-| Feature | Phase | Status | Notes |
-|---|---|---|---|
-| `LspLogger` (rings + level gating + trace toggle) | 4.1.f | ✅ | `crate::logging`. ~9ns trace-off, ~100ns per record. |
-| `tracing` crate fan-out | 4.1.f | ✅ | Every `LspLogger::log` also fires `tracing::*`. `RUST_LOG=lattice_lsp=debug` works. |
-| `LspSupervisor` (per-buffer attachment + per-(workspace, server-id) actor reuse) | 4.1.h | ✅ | `crate::supervisor`. open_buffer / close_buffer / record_edit / flush / flush_all / servers_for / shutdown. attach_handle for tests + custom transports. Supports multi-server-per-buffer + multi-buffer reuse of one actor. |
-| App-side wiring: `App` holds `LspSupervisor`, `App::initialize_lsp` async boot, `lsp_record_edit` / `lsp_flush` / `lsp_close_buffer` sync hooks, `BufferId ↔ Uri` map | 4.1.i | ✅ | `lattice-ui-tui::app`. App::new builds dormant supervisor with builtin_servers; runtime calls initialize_lsp before main loop. do_buffer_delete fires lsp_close_buffer. |
-| Edit dispatch: apply_edit_blocking → lsp_record_edit + debounced flush | 4.1.i.2 | ⏹️ | Sync→async bridge for the input pipeline. Lands alongside `:e <path>` LSP integration. |
-| `*lsp*` subsystem buffer | 4.1.g | ⏹️ | Editor-side; lands with App integration. |
-| `*lsp:<server>*` per-server buffer | 4.1.g | ⏹️ | Per-server: stderr + window/logMessage + window/showMessage + lifecycle. |
-| `*lsp:<server>:trace*` JSON-RPC trace buffer | 4.1.g | ⏹️ | Toggle on per server. Inbound `←` / outbound `→` markers. |
-| `:lsp-log [server]` ex-command | 4.1.g | ⏹️ | Open the relevant log buffer. |
-| `:lsp-trace <server>` ex-command | 4.1.g | ⏹️ | Toggle JSON-RPC trace. |
-| `:lsp-status` ex-command | 4.1.g | ⏹️ | Running servers + uptime + restart count. |
-| `:lsp-restart <server>` ex-command | 4.4 | ⏹️ | Lands with the supervisor. |
-| `:lsp-log-level` / `:lsp-log-clear` | 4.1.g | ⏹️ | Runtime level + ring controls. |
-| `lsp.toml` log keys (`log_level`, `log_capacity`, `trace_io`) | 4.4 | ⏹️ | Lands when the §5.12 typed-options layer arrives. |
+| Feature                                                                                                                                                               | Phase   | Status | Notes                                                                                                                                                                                                                        |
+|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|--------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `LspLogger` (rings + level gating + trace toggle)                                                                                                                     | 4.1.f   | ✅     | `crate::logging`. ~9ns trace-off, ~100ns per record.                                                                                                                                                                         |
+| `tracing` crate fan-out                                                                                                                                               | 4.1.f   | ✅     | Every `LspLogger::log` also fires `tracing::*`. `RUST_LOG=lattice_lsp=debug` works.                                                                                                                                          |
+| `LspSupervisor` (per-buffer attachment + per-(workspace, server-id) actor reuse)                                                                                      | 4.1.h   | ✅     | `crate::supervisor`. open_buffer / close_buffer / record_edit / flush / flush_all / servers_for / shutdown. attach_handle for tests + custom transports. Supports multi-server-per-buffer + multi-buffer reuse of one actor. |
+| App-side wiring: `App` holds `LspSupervisor`, `App::initialize_lsp` async boot, `lsp_record_edit` / `lsp_flush` / `lsp_close_buffer` sync hooks, `BufferId ↔ Uri` map | 4.1.i   | ✅     | `lattice-ui-tui::app`. App::new builds dormant supervisor with builtin_servers; runtime calls initialize_lsp before main loop. do_buffer_delete fires lsp_close_buffer.                                                      |
+| Edit dispatch: apply_edit_blocking → lsp_record_edit + debounced flush                                                                                                | 4.1.i.2 | ⏹️      | Sync→async bridge for the input pipeline. Lands alongside `:e <path>` LSP integration.                                                                                                                                       |
+| `*lsp*` subsystem buffer                                                                                                                                              | 4.1.g   | ⏹️      | Editor-side; lands with App integration.                                                                                                                                                                                     |
+| `*lsp:<server>*` per-server buffer                                                                                                                                    | 4.1.g   | ⏹️      | Per-server: stderr + window/logMessage + window/showMessage + lifecycle.                                                                                                                                                     |
+| `*lsp:<server>:trace*` JSON-RPC trace buffer                                                                                                                          | 4.1.g   | ⏹️      | Toggle on per server. Inbound `←` / outbound `→` markers.                                                                                                                                                                    |
+| `:lsp-log [server]` ex-command                                                                                                                                        | 4.1.g   | ⏹️      | Open the relevant log buffer.                                                                                                                                                                                                |
+| `:lsp-trace <server>` ex-command                                                                                                                                      | 4.1.g   | ⏹️      | Toggle JSON-RPC trace.                                                                                                                                                                                                       |
+| `:lsp-status` ex-command                                                                                                                                              | 4.1.g   | ⏹️      | Running servers + uptime + restart count.                                                                                                                                                                                    |
+| `:lsp-restart <server>` ex-command                                                                                                                                    | 4.4     | ⏹️      | Lands with the supervisor.                                                                                                                                                                                                   |
+| `:lsp-log-level` / `:lsp-log-clear`                                                                                                                                   | 4.1.g   | ⏹️      | Runtime level + ring controls.                                                                                                                                                                                               |
+| `lsp.toml` log keys (`log_level`, `log_capacity`, `trace_io`)                                                                                                         | 4.4     | ⏹️      | Lands when the §5.12 typed-options layer arrives.                                                                                                                                                                            |
 
 ## Notebook documents
 

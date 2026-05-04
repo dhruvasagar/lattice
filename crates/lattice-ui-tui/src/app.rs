@@ -1446,6 +1446,94 @@ impl App {
         let _ = self.lsp.close_buffer(&uri);
     }
 
+    // ---- LSP diagnostic navigation (Phase 4.1.d.iv) ---------
+
+    /// `:diagnostics` -- open a help-style buffer listing every
+    /// workspace diagnostic with clickable per-entry source
+    /// links.
+    pub fn do_list_diagnostics(&mut self) {
+        let buffer = crate::help::HelpBuffer::diagnostics(self.lsp.diagnostics())
+            .with_markdown_syntax(self.lang_registry.clone());
+        self.open_help(buffer);
+    }
+
+    /// `]d` / `:diag-next` / `:cnext` -- move the cursor to the
+    /// next diagnostic in the active buffer. Wraps to top.
+    pub fn do_next_diagnostic(&mut self) {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
+            return;
+        };
+        let mut diags = self.lsp.diagnostics().diagnostics_for(uri);
+        if diags.is_empty() {
+            self.set_message(EchoLevel::Info, "no diagnostics in buffer".to_string());
+            return;
+        }
+        diags.sort_by_key(|d| (d.range.start.line, d.range.start.character));
+        let cursor = self.cursor;
+        let Some(next) = diags
+            .iter()
+            .find(|d| {
+                d.range.start.line > cursor.line
+                    || (d.range.start.line == cursor.line
+                        && d.range.start.character > cursor.byte)
+            })
+            .or_else(|| diags.first())
+            .map(|d| d.range.start)
+        else {
+            // Unreachable: the empty-diags case returned early
+            // above, so first() is always Some here. Surface a
+            // no-op rather than panicking if the invariant
+            // breaks.
+            return;
+        };
+        self.cursor = Position::new(next.line, next.character);
+        self.publish_position_change();
+    }
+
+    /// `[d` / `:diag-prev` / `:cprev` -- move the cursor to the
+    /// previous diagnostic in the active buffer. Wraps to
+    /// bottom.
+    pub fn do_prev_diagnostic(&mut self) {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
+            return;
+        };
+        let mut diags = self.lsp.diagnostics().diagnostics_for(uri);
+        if diags.is_empty() {
+            self.set_message(EchoLevel::Info, "no diagnostics in buffer".to_string());
+            return;
+        }
+        diags.sort_by_key(|d| (d.range.start.line, d.range.start.character));
+        let cursor = self.cursor;
+        let Some(prev) = diags
+            .iter()
+            .rev()
+            .find(|d| {
+                d.range.start.line < cursor.line
+                    || (d.range.start.line == cursor.line
+                        && d.range.start.character < cursor.byte)
+            })
+            .or_else(|| diags.last())
+            .map(|d| d.range.start)
+        else {
+            return;
+        };
+        self.cursor = Position::new(prev.line, prev.character);
+        self.publish_position_change();
+    }
+
+    /// Helper: publish a position-only change event. Cheap
+    /// stand-in for whatever the rest of the App uses to
+    /// signal cursor moves. Currently a no-op since the
+    /// renderer reads cursor directly; reserved for future
+    /// position-history pushes.
+    fn publish_position_change(&self) {
+        // 4.1.d.iv: position history hook reserved -- a real
+        // PluginPush entry lands here when the position-history
+        // wiring catches up.
+    }
+
     // ---- Blocking bridges to the document actor ----
     //
     // Per DESIGN.md §5.2.1 every mutating call returns a
@@ -4216,6 +4304,9 @@ impl App {
             Effect::OpenHover { markdown } => self.do_open_hover(&markdown),
             Effect::CloseHover => self.do_close_hover(),
             Effect::OpenHelpTopic { topic } => self.do_open_help_topic(topic.as_deref()),
+            Effect::ListDiagnostics => self.do_list_diagnostics(),
+            Effect::NextDiagnostic => self.do_next_diagnostic(),
+            Effect::PrevDiagnostic => self.do_prev_diagnostic(),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -6638,7 +6729,10 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::CloseHover
-        | Effect::OpenHelpTopic { .. } => false,
+        | Effect::OpenHelpTopic { .. }
+        | Effect::ListDiagnostics
+        | Effect::NextDiagnostic
+        | Effect::PrevDiagnostic => false,
     }
 }
 
@@ -6677,7 +6771,10 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::CloseHover
-        | Effect::OpenHelpTopic { .. } => false,
+        | Effect::OpenHelpTopic { .. }
+        | Effect::ListDiagnostics
+        | Effect::NextDiagnostic
+        | Effect::PrevDiagnostic => false,
     }
 }
 
@@ -12855,5 +12952,122 @@ mod tests {
         app.initialize_lsp().await;
         assert_eq!(app.lsp.attached_buffer_count(), 0);
         assert!(app.buffer_uris.is_empty());
+    }
+
+    // ---- LSP diagnostic navigation tests (Phase 4.1.d.iv) ----
+
+    /// Helper: seed N diagnostics into the App's LSP layer at
+    /// the given lines + map a fake URI to the active buffer.
+    fn seed_diags_at_lines(app: &mut App, lines: &[u32]) {
+        use std::str::FromStr;
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, uri.clone());
+        let diags: Vec<lattice_lsp::Diagnostic> = lines
+            .iter()
+            .map(|line| lattice_lsp::Diagnostic {
+                range: lattice_lsp::LspRange {
+                    start: lattice_lsp::LspPosition {
+                        line: *line,
+                        character: 0,
+                    },
+                    end: lattice_lsp::LspPosition {
+                        line: *line,
+                        character: 1,
+                    },
+                },
+                severity: Some(lattice_lsp::DiagnosticSeverity::ERROR),
+                code: None,
+                code_description: None,
+                source: None,
+                message: format!("err on line {line}"),
+                related_information: None,
+                tags: None,
+                data: None,
+            })
+            .collect();
+        app.lsp
+            .diagnostics()
+            .apply(lattice_lsp::DiagnosticEvent {
+                server_id: std::sync::Arc::from("rust"),
+                uri,
+                version: None,
+                diagnostics: std::sync::Arc::from(diags.into_boxed_slice()),
+            });
+    }
+
+    #[test]
+    fn next_diagnostic_advances_cursor() {
+        let mut app = app_with("a\nb\nc\nd\ne\n", 10);
+        seed_diags_at_lines(&mut app, &[1, 3]);
+        app.cursor = Position::new(0, 0);
+        app.do_next_diagnostic();
+        assert_eq!(app.cursor, Position::new(1, 0));
+        app.do_next_diagnostic();
+        assert_eq!(app.cursor, Position::new(3, 0));
+        // Past the last -> wraps to the first.
+        app.do_next_diagnostic();
+        assert_eq!(app.cursor, Position::new(1, 0));
+    }
+
+    #[test]
+    fn prev_diagnostic_walks_backward() {
+        let mut app = app_with("a\nb\nc\nd\ne\n", 10);
+        seed_diags_at_lines(&mut app, &[1, 3]);
+        app.cursor = Position::new(4, 0);
+        app.do_prev_diagnostic();
+        assert_eq!(app.cursor, Position::new(3, 0));
+        app.do_prev_diagnostic();
+        assert_eq!(app.cursor, Position::new(1, 0));
+        // Past the first -> wraps to the last.
+        app.do_prev_diagnostic();
+        assert_eq!(app.cursor, Position::new(3, 0));
+    }
+
+    #[test]
+    fn next_diagnostic_with_no_attachment_echoes_error() {
+        let mut app = app_with("hi\n", 5);
+        // No buffer_uris mapping -> "no LSP attachment".
+        app.do_next_diagnostic();
+        let msg = app.last_message.as_ref().expect("expected echo");
+        assert!(msg.text.contains("no LSP attachment"), "got: {}", msg.text);
+    }
+
+    #[test]
+    fn next_diagnostic_with_no_diagnostics_echoes_info() {
+        let mut app = app_with("hi\n", 5);
+        // Seed an empty layer mapping.
+        use std::str::FromStr;
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/empty.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, uri);
+        app.do_next_diagnostic();
+        let msg = app.last_message.as_ref().expect("expected echo");
+        assert!(msg.text.contains("no diagnostics"), "got: {}", msg.text);
+    }
+
+    #[test]
+    fn list_diagnostics_opens_help_buffer() {
+        let mut app = app_with("hi\n", 5);
+        seed_diags_at_lines(&mut app, &[0, 1]);
+        app.do_list_diagnostics();
+        let help = app.help_buffer.as_ref().expect("help buffer should open");
+        assert_eq!(help.title, "diagnostics");
+        let body = help.content.as_string();
+        // Header summary + per-URI section + per-diagnostic rows.
+        assert!(body.contains("Workspace diagnostics"));
+        assert!(body.contains("file:///tmp/x.rs") || body.contains("/tmp/x.rs"));
+        assert!(body.contains("err on line 0"));
+        assert!(body.contains("err on line 1"));
+        // Two diagnostic links to follow.
+        assert_eq!(help.links.len(), 2);
+    }
+
+    #[test]
+    fn list_diagnostics_with_empty_layer_renders_none() {
+        let mut app = app_with("hi\n", 5);
+        // No diagnostics seeded.
+        app.do_list_diagnostics();
+        let help = app.help_buffer.as_ref().expect("help buffer should open");
+        let body = help.content.as_string();
+        assert!(body.contains("(none)"));
     }
 }

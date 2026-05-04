@@ -199,6 +199,19 @@ pub enum Effect {
         topic: Option<String>,
     },
 
+    /// `:diagnostics` -- render every workspace diagnostic in a
+    /// help-style buffer with clickable per-entry source links
+    /// (Phase 4.1.d.iv). The host queries its
+    /// `LspSupervisor::diagnostics()` layer and formats.
+    ListDiagnostics,
+    /// `]d` / `:diag-next` / `:cnext` -- move the cursor to the
+    /// next diagnostic in the active buffer. Wraps to top.
+    NextDiagnostic,
+    /// `[d` / `:diag-prev` / `:cprev` -- move the cursor to the
+    /// previous diagnostic in the active buffer. Wraps to
+    /// bottom.
+    PrevDiagnostic,
+
     Many(Vec<Effect>),
 }
 

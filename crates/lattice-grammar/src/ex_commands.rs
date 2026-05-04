@@ -61,6 +61,9 @@ pub struct ExBuiltins {
     pub hover: ExCommandId,
     pub hover_close: ExCommandId,
     pub help: ExCommandId,
+    pub list_diagnostics: ExCommandId,
+    pub next_diagnostic: ExCommandId,
+    pub prev_diagnostic: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -532,6 +535,45 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let list_diagnostics = registry.register_ex_command(
+        "ex:diagnostics",
+        "Open a help-style buffer listing every workspace diagnostic with clickable per-entry source links (`:diagnostics`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::ListDiagnostics)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let next_diagnostic = registry.register_ex_command(
+        "ex:diag-next",
+        "Move the cursor to the next diagnostic in the active buffer (wraps; `]d` / `:diag-next` / `:cnext`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::NextDiagnostic)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let prev_diagnostic = registry.register_ex_command(
+        "ex:diag-prev",
+        "Move the cursor to the previous diagnostic in the active buffer (wraps; `[d` / `:diag-prev` / `:cprev`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::PrevDiagnostic)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let help = registry.register_ex_command(
         "ex:help",
         "Open the topic index or a named help topic (`:help [topic]`).",
@@ -586,6 +628,9 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         hover,
         hover_close,
         help,
+        list_diagnostics,
+        next_diagnostic,
+        prev_diagnostic,
     }
 }
 

@@ -360,6 +360,44 @@ where
 /// percent-encode manually for the small set of bytes that
 /// matter in a path (space → `%20`, etc.). Servers in practice
 /// tolerate plain `file:///<path>` without aggressive encoding.
+/// Inverse of [`uri_from_path`]. Strips the `file://` scheme +
+/// percent-decodes the small set of bytes the encoder rewrites.
+/// Returns the path string (caller decides whether to coerce to
+/// `PathBuf`); `None` for non-`file://` URIs.
+pub fn uri_to_path(uri: &Uri) -> Option<std::path::PathBuf> {
+    let s = uri.as_str();
+    let stripped = s.strip_prefix("file://")?;
+    // Percent-decode the small set the encoder writes. More
+    // exotic encodings (CJK paths etc) round-trip via the
+    // identity branch in uri_from_path.
+    let mut out = String::with_capacity(stripped.len());
+    let mut chars = stripped.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let h1 = chars.next();
+            let h2 = chars.next();
+            if let (Some(h1), Some(h2)) = (h1, h2)
+                && let (Some(h1), Some(h2)) = (h1.to_digit(16), h2.to_digit(16))
+            {
+                let byte = (h1 * 16 + h2) as u8;
+                out.push(byte as char);
+                continue;
+            }
+            // Malformed; keep the literal `%` and any consumed chars.
+            out.push('%');
+            if let Some(h1) = h1 {
+                out.push(h1);
+            }
+            if let Some(h2) = h2 {
+                out.push(h2);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    Some(std::path::PathBuf::from(out))
+}
+
 pub fn uri_from_path(p: &std::path::Path) -> Uri {
     let display = p.to_string_lossy();
     // Normalise Windows backslashes to forward slashes so the

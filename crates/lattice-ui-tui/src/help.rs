@@ -147,6 +147,71 @@ impl HelpBuffer {
         Self::from_lines_and_anchors(title, lines, Vec::new())
     }
 
+    /// Build a help buffer listing every workspace diagnostic
+    /// (Phase 4.1.d.iv). Each diagnostic renders as one
+    /// `[severity] [path:line:col message](file:path:line)`
+    /// row -- the markdown link is parsed by
+    /// [`extract_links_and_clean`] into a [`HelpLinkTarget::Source`]
+    /// that the existing `do_help_follow_link` path knows how
+    /// to dispatch (jumps to the file at the given line).
+    ///
+    /// URIs sort alphabetically; diagnostics within a URI sort
+    /// by (line, column). Empty layer renders an explicit
+    /// "no diagnostics" message so the buffer is always
+    /// useful as a status read.
+    pub fn diagnostics(layer: &lattice_lsp::DiagnosticsLayer) -> Self {
+        let snapshot = layer.snapshot();
+        let counts = layer.severity_counts();
+        let mut lines: Vec<String> = Vec::new();
+        if snapshot.is_empty() {
+            lines.push("# Workspace diagnostics".to_string());
+            lines.push(String::new());
+            lines.push("(none)".to_string());
+            return Self::from_lines("diagnostics", lines);
+        }
+        lines.push(format!(
+            "# Workspace diagnostics ({} total: {} errors, {} warnings, {} info, {} hints)",
+            counts.total(),
+            counts.errors,
+            counts.warnings,
+            counts.info,
+            counts.hints
+        ));
+        lines.push(String::new());
+        for (uri, diags) in snapshot {
+            let path = lattice_lsp::actor::uri_to_path(&uri)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| uri.as_str().to_string());
+            lines.push(format!("## {} ({})", path, diags.len()));
+            lines.push(String::new());
+            for d in diags {
+                let sev = match d.severity {
+                    Some(lattice_lsp::DiagnosticSeverity::ERROR) => "E",
+                    Some(lattice_lsp::DiagnosticSeverity::WARNING) => "W",
+                    Some(lattice_lsp::DiagnosticSeverity::INFORMATION) => "I",
+                    Some(lattice_lsp::DiagnosticSeverity::HINT) => "H",
+                    _ => "?",
+                };
+                let line0 = d.range.start.line;
+                let col0 = d.range.start.character;
+                // The Source link parser expects `file:<path>:<line>`
+                // exactly; we use 1-based line in the label for
+                // display but pass 0-based to the link target so
+                // the cursor lands on the right row.
+                let label = format!(
+                    "{}:{}:{} {}",
+                    path,
+                    line0 + 1,
+                    col0 + 1,
+                    one_line(&d.message)
+                );
+                lines.push(format!("[{sev}] [{label}](file:{path}:{line0})"));
+            }
+            lines.push(String::new());
+        }
+        Self::from_lines("diagnostics", lines)
+    }
+
     /// Build a help buffer with anchors. Used by the introspection
     /// renderer to feed `RenderedIntrospection.anchors` through.
     pub fn from_lines_and_anchors(
@@ -414,6 +479,15 @@ pub fn topic_link(name: &str) -> String {
 /// URL still drives navigation -- it's stored on the returned
 /// [`HelpLink::target`] but the URL bytes don't appear in the
 /// rendered output.
+/// Collapse a multi-line diagnostic message to a single line.
+/// LSP messages can contain newlines (e.g. rust-analyzer's
+/// "expected `Foo`, found `Bar`\n  -- in fn::method"). The
+/// help-buffer's row layout assumes one row per entry; squash
+/// to keep visual alignment.
+fn one_line(s: &str) -> String {
+    s.lines().collect::<Vec<_>>().join(" / ")
+}
+
 pub fn extract_links_and_clean(text: &str) -> (String, Vec<HelpLink>) {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());

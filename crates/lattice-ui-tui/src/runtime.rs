@@ -47,15 +47,31 @@ pub fn run(document: Document) -> Result<()> {
 /// runtime, drive the boot future to completion, and let the
 /// runtime live as a background reactor for the actor tasks.
 fn initialize_lsp_blocking(app: &mut App) {
+    let rt = lsp_runtime();
+    rt.block_on(app.initialize_lsp());
+}
+
+/// Drive [`App::drain_pending_lsp_opens`] from the synchronous
+/// main loop. Reuses the same boot runtime so spawned actor
+/// tasks share one reactor. Cheap when the queue is empty;
+/// invoked once per main-loop iteration.
+fn drain_pending_lsp_opens_blocking(app: &mut App) {
+    let rt = lsp_runtime();
+    rt.block_on(app.drain_pending_lsp_opens());
+}
+
+/// Shared tokio multi-thread runtime that hosts every LSP
+/// task (actor + read/write loops + diagnostic pumps + the
+/// debounced flush task). Survives for the editor's lifetime.
+fn lsp_runtime() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    let rt = RT.get_or_init(|| {
+    RT.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("lattice-lsp")
             .build()
             .expect("LSP tokio runtime should build")
-    });
-    rt.block_on(app.initialize_lsp());
+    })
 }
 
 fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
@@ -107,6 +123,13 @@ fn cursor_style_for(modal: ModalState) -> SetCursorStyle {
 fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> Result<()> {
     let mut last_modal: Option<ModalState> = None;
     while !app.should_quit {
+        // Drain pending LSP opens (Phase 4.1.i.2). `:e <path>`
+        // queues; we attach asynchronously on the boot runtime
+        // so the input thread doesn't await the actor handshake.
+        // Cheap when the queue is empty (the common case).
+        if !app.pending_lsp_opens.is_empty() {
+            drain_pending_lsp_opens_blocking(&mut app);
+        }
         // Update viewport height (height minus the mode line + command/echo row).
         let size = terminal.size().context("query terminal size")?;
         let buffer_height = size.height.saturating_sub(2) as u32;

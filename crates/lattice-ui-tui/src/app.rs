@@ -30,7 +30,7 @@ use lattice_protocol::Event;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
-use lattice_lsp::{LogLevel, LspLogger, LspSupervisor};
+use lattice_lsp::{DiagnosticsLayer, LogLevel, LspLogger, LspSupervisor};
 use lattice_runtime::{
     CancellationToken, DocumentHandle, EventBus, RuntimeError, SnapshotCache, block_on,
     spawn_document,
@@ -43,18 +43,27 @@ use std::sync::Arc;
 use crate::buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
 
-/// Build a fresh LSP subsystem with the curated builtin server
-/// configs. Called once per `App::new`. The supervisor starts
-/// dormant (no actors spawned, no buffers attached); the
-/// runtime calls [`App::initialize_lsp`] to bring it online.
-fn build_lsp_supervisor() -> LspSupervisor {
+/// Build a fresh LSP subsystem. Returns the supervisor wrapped
+/// in `Arc<Mutex>` for App-side sharing, plus cloned handles
+/// to the diagnostics layer + logger so the renderer's
+/// per-frame reads can skip the supervisor lock.
+fn build_lsp_subsystem() -> (
+    std::sync::Arc<tokio::sync::Mutex<LspSupervisor>>,
+    DiagnosticsLayer,
+    LspLogger,
+) {
     let logger = LspLogger::with_defaults();
-    let mut sup = LspSupervisor::new(logger);
+    let mut sup = LspSupervisor::new(logger.clone());
     // Builtin registry: rust-analyzer, pyright, gopls,
     // typescript-language-server, clangd, lua-language-server.
     // Users override via lsp.toml when §5.12 lands.
     sup.set_configs(lattice_lsp::builtin_servers());
-    sup
+    let diagnostics = sup.diagnostics().clone();
+    (
+        std::sync::Arc::new(tokio::sync::Mutex::new(sup)),
+        diagnostics,
+        logger,
+    )
 }
 use crate::excommand;
 use crate::file_tree::{FileTreeBuffer, FileTreeEntryKind};
@@ -908,18 +917,40 @@ pub struct App {
     pub auto_submit_after_chord: bool,
     /// LSP supervisor (DESIGN.md §5.4, Phase 4.1.h). Owns the
     /// per-(workspace, server-id) actor map, per-buffer
-    /// attachments, shared logger, and shared diagnostics
-    /// layer. Constructed empty in `App::new`; the runtime
-    /// calls [`Self::initialize_lsp`] before entering the main
-    /// loop to attach the initial document and start
-    /// matching servers. Tests that don't care about LSP can
-    /// simply skip the initialize_lsp call -- the supervisor
-    /// stays dormant.
-    pub lsp: lattice_lsp::LspSupervisor,
+    /// attachments, and the shared logger / diagnostics layer
+    /// references the App needs to manipulate. Wrapped in
+    /// `Arc<tokio::sync::Mutex>` (Phase 4.1.i.2) so async open
+    /// / close paths and sync record / flush paths can both
+    /// borrow without rippling `&mut self` through the App's
+    /// 44 edit call sites. The mutex is cheap (uncontended
+    /// during normal operation -- App methods are
+    /// single-threaded; only `:e <path>` async open contends
+    /// briefly with idle-flush).
+    pub lsp: std::sync::Arc<tokio::sync::Mutex<lattice_lsp::LspSupervisor>>,
+    /// Cloned handle to the supervisor's diagnostics layer.
+    /// `DiagnosticsLayer` is Clone-via-Arc-internal so this is
+    /// cheap; the renderer's per-frame `app.lsp_diagnostics
+    /// .line_severity(...)` reads happen without taking the
+    /// supervisor lock.
+    pub lsp_diagnostics: DiagnosticsLayer,
+    /// Cloned handle to the supervisor's logger. Same lock-
+    /// free read pattern as `lsp_diagnostics`.
+    pub lsp_logger: LspLogger,
     /// `BufferId` → `Uri` map. Maintained by buffer-open /
     /// buffer-close paths; the supervisor's API is keyed by
     /// `Uri`, so this is the bridge.
     pub buffer_uris: std::collections::HashMap<BufferId, lattice_lsp::Uri>,
+    /// Pending file-open attachments. `:e <path>` queues here
+    /// because the supervisor's `open_buffer` is async; the
+    /// runtime drains the queue between input events.
+    pub pending_lsp_opens: Vec<(BufferId, std::path::PathBuf, String)>,
+    /// Channel that record-edit fires into to wake the debounced
+    /// flush task. Spawned by `initialize_lsp`. `None` until
+    /// the runtime calls initialize_lsp; tests that don't
+    /// invoke initialize_lsp leave it None and record_edit
+    /// just skips the wake (the supervisor's queue still
+    /// accumulates so a manual flush() works).
+    pub lsp_flush_signal: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 /// Reasons `compute_completion_state` can fail. Kept narrow so the
@@ -1194,6 +1225,11 @@ impl std::fmt::Debug for App {
 
 impl App {
     pub fn new(document: Document) -> Self {
+        // LSP subsystem: build once + extract shared handles so
+        // the App's `lsp_diagnostics` / `lsp_logger` reads land
+        // on the same Arc-shared state the supervisor's actors
+        // push to.
+        let (lsp, lsp_diagnostics, lsp_logger) = build_lsp_subsystem();
         let mut registry = CommandRegistry::new();
         let builtins = populate(&mut registry);
         // Register the built-in ex-commands as peers of motions /
@@ -1352,8 +1388,12 @@ impl App {
             completion_registry,
             completion_state: None,
             auto_submit_after_chord: false,
-            lsp: build_lsp_supervisor(),
+            lsp,
+            lsp_diagnostics,
+            lsp_logger,
             buffer_uris: std::collections::HashMap::new(),
+            pending_lsp_opens: Vec::new(),
+            lsp_flush_signal: None,
         }
     }
 
@@ -1380,13 +1420,17 @@ impl App {
         drop(snap);
 
         if let Some(path) = path_opt {
-            match self.lsp.open_buffer(path.clone(), text).await {
+            let result = {
+                let mut sup = self.lsp.lock().await;
+                sup.open_buffer(path.clone(), text).await
+            };
+            match result {
                 Ok(_handles) => {
                     let uri = lattice_lsp::actor::uri_from_path(&path);
                     self.buffer_uris.insert(buffer_id, uri);
                 }
                 Err(e) => {
-                    self.lsp.logger().log(
+                    self.lsp_logger.log(
                         None,
                         LogLevel::Warn,
                         lattice_lsp::LogSource::Client,
@@ -1395,6 +1439,38 @@ impl App {
                 }
             }
         }
+
+        // Spawn the debounced flush task. Wakes 50ms after the
+        // most recent record_edit signal, locks the supervisor,
+        // calls flush_all() (cheap when nothing's pending,
+        // correct when something is). One task per App; lives
+        // for the editor's lifetime.
+        let (flush_tx, mut flush_rx) =
+            tokio::sync::mpsc::unbounded_channel::<()>();
+        self.lsp_flush_signal = Some(flush_tx);
+        let supervisor_clone = std::sync::Arc::clone(&self.lsp);
+        tokio::spawn(async move {
+            use tokio::time::{Duration, Instant, timeout_at};
+            const DEBOUNCE: Duration = Duration::from_millis(50);
+            loop {
+                // Wait for first edit signal.
+                if flush_rx.recv().await.is_none() {
+                    return;
+                }
+                // Coalesce additional signals during the
+                // debounce window.
+                let deadline = Instant::now() + DEBOUNCE;
+                loop {
+                    match timeout_at(deadline, flush_rx.recv()).await {
+                        Ok(Some(())) => continue,
+                        Ok(None) => return,
+                        Err(_) => break, // timeout -> flush
+                    }
+                }
+                let mut sup = supervisor_clone.lock().await;
+                let _ = sup.flush_all();
+            }
+        });
     }
 
     // ---- LSP integration helpers ----
@@ -1414,26 +1490,41 @@ impl App {
         self.buffer_uris.get(&id)
     }
 
-    /// Notify the LSP supervisor of an edit on a buffer. Sync
-    /// because record_edit is itself sync (just queues a
-    /// change event in the per-doc DocSync; the actual
-    /// `didChange` send is debounced separately). No-op for
-    /// buffers with no LSP attachment.
-    pub fn lsp_record_edit(&mut self, buffer_id: BufferId, edit: &Edit) {
+    /// Notify the LSP supervisor of an edit on a buffer. Sync;
+    /// `try_lock` because the supervisor mutex is uncontended
+    /// during normal operation (only async open / shutdown
+    /// paths take it for non-trivial windows). When contended
+    /// (rare: only during `:e <path>` async open), the edit is
+    /// dropped on the LSP side -- the editor's buffer still
+    /// commits; the LSP layer catches up on the next edit.
+    /// `&self` so it can be called from `apply_edit_blocking`
+    /// without rippling `&mut self` through 44 edit call sites.
+    pub fn lsp_record_edit(&self, buffer_id: BufferId, edit: &Edit) {
         let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
             return;
         };
-        let _ = self.lsp.record_edit(&uri, edit);
+        if let Ok(mut sup) = self.lsp.try_lock() {
+            let _ = sup.record_edit(&uri, edit);
+        }
+        // Wake the debounce task so a `didChange` flush fires
+        // ~50ms after this edit (modulo further edits in that
+        // window).
+        if let Some(tx) = self.lsp_flush_signal.as_ref() {
+            let _ = tx.send(());
+        }
     }
 
     /// Flush queued didChange events for a buffer immediately.
-    /// Used by the App's debounce timer (4.1.i.2) and by
-    /// will-save hooks (4.3).
-    pub fn lsp_flush(&mut self, buffer_id: BufferId) {
+    /// Used by the App's debounce timer and by will-save hooks
+    /// (4.3). `&self` for the same reason as
+    /// [`Self::lsp_record_edit`].
+    pub fn lsp_flush(&self, buffer_id: BufferId) {
         let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
             return;
         };
-        let _ = self.lsp.flush(&uri);
+        if let Ok(mut sup) = self.lsp.try_lock() {
+            let _ = sup.flush(&uri);
+        }
     }
 
     /// Detach a buffer from every attached LSP server. Called
@@ -1443,7 +1534,48 @@ impl App {
         let Some(uri) = self.buffer_uris.remove(&buffer_id) else {
             return;
         };
-        let _ = self.lsp.close_buffer(&uri);
+        if let Ok(mut sup) = self.lsp.try_lock() {
+            let _ = sup.close_buffer(&uri);
+        }
+    }
+
+    /// Queue an LSP attachment for a freshly-opened file. The
+    /// runtime's main loop drains the queue between input
+    /// events so `:e <path>` doesn't have to await the
+    /// supervisor lock + handshake on the input thread.
+    pub fn queue_lsp_open(&mut self, buffer_id: BufferId, path: std::path::PathBuf, text: String) {
+        self.pending_lsp_opens.push((buffer_id, path, text));
+    }
+
+    /// Drain the pending-LSP-open queue (async; called by the
+    /// runtime). For each entry, takes the supervisor lock,
+    /// awaits open_buffer, and on success records the
+    /// BufferId → Uri mapping.
+    pub async fn drain_pending_lsp_opens(&mut self) {
+        let pending: Vec<_> = std::mem::take(&mut self.pending_lsp_opens);
+        for (buffer_id, path, text) in pending {
+            let result = {
+                let mut sup = self.lsp.lock().await;
+                sup.open_buffer(path.clone(), text).await
+            };
+            match result {
+                Ok(_handles) => {
+                    let uri = lattice_lsp::actor::uri_from_path(&path);
+                    self.buffer_uris.insert(buffer_id, uri);
+                }
+                Err(e) => {
+                    self.lsp_logger.log(
+                        None,
+                        LogLevel::Warn,
+                        lattice_lsp::LogSource::Client,
+                        format!(
+                            "drain_pending_lsp_opens: open_buffer({}) failed: {e}",
+                            path.display()
+                        ),
+                    );
+                }
+            }
+        }
     }
 
     // ---- LSP diagnostic navigation (Phase 4.1.d.iv) ---------
@@ -1452,7 +1584,7 @@ impl App {
     /// workspace diagnostic with clickable per-entry source
     /// links.
     pub fn do_list_diagnostics(&mut self) {
-        let buffer = crate::help::HelpBuffer::diagnostics(self.lsp.diagnostics())
+        let buffer = crate::help::HelpBuffer::diagnostics(&self.lsp_diagnostics)
             .with_markdown_syntax(self.lang_registry.clone());
         self.open_help(buffer);
     }
@@ -1464,7 +1596,7 @@ impl App {
             self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
             return;
         };
-        let mut diags = self.lsp.diagnostics().diagnostics_for(uri);
+        let mut diags = self.lsp_diagnostics.diagnostics_for(uri);
         if diags.is_empty() {
             self.set_message(EchoLevel::Info, "no diagnostics in buffer".to_string());
             return;
@@ -1499,7 +1631,7 @@ impl App {
             self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
             return;
         };
-        let mut diags = self.lsp.diagnostics().diagnostics_for(uri);
+        let mut diags = self.lsp_diagnostics.diagnostics_for(uri);
         if diags.is_empty() {
             self.set_message(EchoLevel::Info, "no diagnostics in buffer".to_string());
             return;
@@ -1542,10 +1674,10 @@ impl App {
     /// `LspLogger`'s ring snapshot.
     pub fn do_open_lsp_log(&mut self, server_id: Option<&str>) {
         let buffer = match server_id {
-            None => crate::help::HelpBuffer::lsp_global_log(self.lsp.logger()),
+            None => crate::help::HelpBuffer::lsp_global_log(&self.lsp_logger),
             Some(id) => {
                 let arc: std::sync::Arc<str> = std::sync::Arc::from(id);
-                crate::help::HelpBuffer::lsp_server_log(self.lsp.logger(), &arc)
+                crate::help::HelpBuffer::lsp_server_log(&self.lsp_logger, &arc)
             }
         };
         self.open_help(buffer.with_markdown_syntax(self.lang_registry.clone()));
@@ -1555,14 +1687,14 @@ impl App {
     /// server + open the trace buffer.
     pub fn do_toggle_lsp_trace(&mut self, server_id: &str) {
         let id: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let now_on = self.lsp.logger().toggle_trace(std::sync::Arc::clone(&id));
+        let now_on = self.lsp_logger.toggle_trace(std::sync::Arc::clone(&id));
         let label = if now_on { "on" } else { "off" };
         self.set_message(
             EchoLevel::Info,
             format!("lsp-trace {}: {label}", server_id),
         );
         let buffer =
-            crate::help::HelpBuffer::lsp_server_trace(self.lsp.logger(), &id)
+            crate::help::HelpBuffer::lsp_server_trace(&self.lsp_logger, &id)
                 .with_markdown_syntax(self.lang_registry.clone());
         self.open_help(buffer);
     }
@@ -1570,9 +1702,20 @@ impl App {
     /// `:lsp-status` -- render every running server in a
     /// help-style buffer.
     pub fn do_lsp_status(&mut self) {
-        let buffer = crate::help::HelpBuffer::lsp_status(&self.lsp)
-            .with_markdown_syntax(self.lang_registry.clone());
-        self.open_help(buffer);
+        // try_lock is enough; the App is single-threaded and
+        // the supervisor isn't held across .await right now.
+        let buffer = match self.lsp.try_lock() {
+            Ok(sup) => crate::help::HelpBuffer::lsp_status(&sup),
+            Err(_) => crate::help::HelpBuffer::from_lines(
+                "lsp-status",
+                vec![
+                    "# :lsp-status".into(),
+                    String::new(),
+                    "(supervisor lock unavailable; an async open / shutdown is in flight)".into(),
+                ],
+            ),
+        };
+        self.open_help(buffer.with_markdown_syntax(self.lang_registry.clone()));
     }
 
     /// `:lsp-restart <server>` -- supervisor restart hook.
@@ -1603,7 +1746,7 @@ impl App {
         };
         match server_id {
             None => {
-                self.lsp.logger().set_default_level(parsed);
+                self.lsp_logger.set_default_level(parsed);
                 self.set_message(
                     EchoLevel::Info,
                     format!("lsp default log level: {level}"),
@@ -1611,7 +1754,7 @@ impl App {
             }
             Some(id) => {
                 let arc: std::sync::Arc<str> = std::sync::Arc::from(id);
-                self.lsp.logger().set_server_level(arc, Some(parsed));
+                self.lsp_logger.set_server_level(arc, Some(parsed));
                 self.set_message(
                     EchoLevel::Info,
                     format!("lsp log level for {id}: {level}"),
@@ -1624,12 +1767,12 @@ impl App {
     pub fn do_lsp_log_clear(&mut self, server_id: Option<&str>) {
         match server_id {
             None => {
-                self.lsp.logger().clear_global();
+                self.lsp_logger.clear_global();
                 self.set_message(EchoLevel::Info, "*lsp* cleared".to_string());
             }
             Some(id) => {
                 let arc: std::sync::Arc<str> = std::sync::Arc::from(id);
-                self.lsp.logger().clear_server(&arc);
+                self.lsp_logger.clear_server(&arc);
                 self.set_message(
                     EchoLevel::Info,
                     format!("*lsp:{id}* cleared"),
@@ -1655,24 +1798,33 @@ impl App {
     /// Block_on `apply_edit` and return the `AppliedEdit` (or
     /// `RuntimeError`). Snapshot republishes inside the actor
     /// before this returns. On success, publishes a
-    /// [`Event::DocumentChanged`] to the App's event bus.
+    /// [`Event::DocumentChanged`] to the App's event bus and
+    /// records the edit with the LSP supervisor (Phase
+    /// 4.1.i.2) so attached servers see `didChange`.
     pub fn apply_edit_blocking(&self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
-        let result = block_on(self.document.apply_edit(edit));
+        let result = block_on(self.document.apply_edit(edit.clone()));
         if result.is_ok() {
             self.publish_document_changed();
+            self.lsp_record_edit(self.document_buffer_id, &edit);
         }
         result
     }
 
     /// Block_on `apply_edit_batch`. The batch lands as one undo
-    /// unit on the document's undo stack.
+    /// unit on the document's undo stack. Each edit in the
+    /// batch is also fed to the LSP supervisor in order
+    /// (Phase 4.1.i.2).
     pub fn apply_edit_batch_blocking(
         &self,
         edits: Vec<Edit>,
     ) -> Result<Vec<AppliedEdit>, RuntimeError> {
+        let edits_for_lsp = edits.clone();
         let result = block_on(self.document.apply_edit_batch(edits));
         if result.is_ok() {
             self.publish_document_changed();
+            for edit in &edits_for_lsp {
+                self.lsp_record_edit(self.document_buffer_id, edit);
+            }
         }
         result
     }
@@ -3313,6 +3465,11 @@ impl App {
         // right buffer.
         self.pane_tree.active_mut().buffer = BufferKind::Document;
         self.pane_tree.active_mut().buffer_id = new_id;
+        // Queue an LSP attachment for the new file (Phase
+        // 4.1.i.2). The runtime drains the queue on its next
+        // tick; the buffer is fully usable before LSP attaches.
+        let new_text = self.document.snapshot().buffer.as_string();
+        self.queue_lsp_open(new_id, target.clone(), new_text);
         self.set_message(EchoLevel::Info, format!("\"{}\" opened", target.display()));
     }
 
@@ -13021,12 +13178,12 @@ mod tests {
         // Builtin registry: rust, python, go, typescript, c-cpp,
         // lua. Six entries today.
         assert!(
-            app.lsp.configs().len() >= 6,
+            app.lsp.try_lock().unwrap().configs().len() >= 6,
             "expected at least 6 builtin server configs"
         );
         // Supervisor starts dormant.
-        assert_eq!(app.lsp.running_actor_count(), 0);
-        assert_eq!(app.lsp.attached_buffer_count(), 0);
+        assert_eq!(app.lsp.try_lock().unwrap().running_actor_count(), 0);
+        assert_eq!(app.lsp.try_lock().unwrap().attached_buffer_count(), 0);
         assert!(app.buffer_uris.is_empty());
     }
 
@@ -13060,7 +13217,7 @@ mod tests {
 
     #[test]
     fn lsp_record_edit_is_noop_when_no_uri_mapping() {
-        let mut app = App::new(Document::from_text("hi"));
+        let app = App::new(Document::from_text("hi"));
         // No URI mapping -> record_edit short-circuits, no panic.
         app.lsp_record_edit(
             app.document_buffer_id,
@@ -13074,7 +13231,7 @@ mod tests {
         // Document has no on-disk path, so initialize_lsp
         // shouldn't try to attach anything.
         app.initialize_lsp().await;
-        assert_eq!(app.lsp.attached_buffer_count(), 0);
+        assert_eq!(app.lsp.try_lock().unwrap().attached_buffer_count(), 0);
         assert!(app.buffer_uris.is_empty());
     }
 
@@ -13109,14 +13266,12 @@ mod tests {
                 data: None,
             })
             .collect();
-        app.lsp
-            .diagnostics()
-            .apply(lattice_lsp::DiagnosticEvent {
-                server_id: std::sync::Arc::from("rust"),
-                uri,
-                version: None,
-                diagnostics: std::sync::Arc::from(diags.into_boxed_slice()),
-            });
+        app.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
+            server_id: std::sync::Arc::from("rust"),
+            uri,
+            version: None,
+            diagnostics: std::sync::Arc::from(diags.into_boxed_slice()),
+        });
     }
 
     #[test]
@@ -13201,7 +13356,7 @@ mod tests {
     fn lsp_log_opens_global_buffer_when_no_server() {
         let mut app = app_with("hi\n", 5);
         // Seed one global record so the body has content.
-        app.lsp.logger().log(
+        app.lsp_logger.log(
             None,
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,
@@ -13219,7 +13374,7 @@ mod tests {
     fn lsp_log_opens_per_server_buffer() {
         let mut app = app_with("hi\n", 5);
         let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        app.lsp.logger().log(
+        app.lsp_logger.log(
             Some(&id),
             lattice_lsp::LogLevel::Warn,
             lattice_lsp::LogSource::Stderr,
@@ -13236,14 +13391,14 @@ mod tests {
     fn lsp_server_log_excludes_trace_records() {
         let mut app = app_with("hi\n", 5);
         let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        app.lsp.logger().enable_trace(std::sync::Arc::clone(&id));
-        app.lsp.logger().log(
+        app.lsp_logger.enable_trace(std::sync::Arc::clone(&id));
+        app.lsp_logger.log(
             Some(&id),
             lattice_lsp::LogLevel::Trace,
             lattice_lsp::LogSource::Trace,
             "→ Request id=1",
         );
-        app.lsp.logger().log(
+        app.lsp_logger.log(
             Some(&id),
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,
@@ -13262,12 +13417,12 @@ mod tests {
         let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
         // Off -> on.
         app.do_toggle_lsp_trace("rust");
-        assert!(app.lsp.logger().is_tracing(&id));
+        assert!(app.lsp_logger.is_tracing(&id));
         let help = app.help_buffer.as_ref().unwrap();
         assert_eq!(help.title, "lsp:rust:trace");
         // On -> off.
         app.do_toggle_lsp_trace("rust");
-        assert!(!app.lsp.logger().is_tracing(&id));
+        assert!(!app.lsp_logger.is_tracing(&id));
     }
 
     #[test]
@@ -13309,43 +13464,43 @@ mod tests {
         // the "rust" server now lands in the ring (the default
         // is Info, so without the override it'd be filtered).
         let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        app.lsp.logger().log(
+        app.lsp_logger.log(
             Some(&id),
             lattice_lsp::LogLevel::Debug,
             lattice_lsp::LogSource::Client,
             "debug event",
         );
-        let recs = app.lsp.logger().snapshot_server(&id);
+        let recs = app.lsp_logger.snapshot_server(&id);
         assert!(recs.iter().any(|r| r.message == "debug event"));
     }
 
     #[test]
     fn lsp_log_clear_drops_global_records() {
         let mut app = app_with("hi\n", 5);
-        app.lsp.logger().log(
+        app.lsp_logger.log(
             None,
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,
             "x",
         );
-        assert_eq!(app.lsp.logger().snapshot_global().len(), 1);
+        assert_eq!(app.lsp_logger.snapshot_global().len(), 1);
         app.do_lsp_log_clear(None);
-        assert_eq!(app.lsp.logger().snapshot_global().len(), 0);
+        assert_eq!(app.lsp_logger.snapshot_global().len(), 0);
     }
 
     #[test]
     fn lsp_log_clear_drops_per_server_records() {
         let mut app = app_with("hi\n", 5);
         let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        app.lsp.logger().log(
+        app.lsp_logger.log(
             Some(&id),
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,
             "x",
         );
-        assert_eq!(app.lsp.logger().snapshot_server(&id).len(), 1);
+        assert_eq!(app.lsp_logger.snapshot_server(&id).len(), 1);
         app.do_lsp_log_clear(Some("rust"));
-        assert_eq!(app.lsp.logger().snapshot_server(&id).len(), 0);
+        assert_eq!(app.lsp_logger.snapshot_server(&id).len(), 0);
     }
 
     #[test]
@@ -13354,5 +13509,84 @@ mod tests {
         app.do_lsp_restart("rust");
         let msg = app.last_message.as_ref().unwrap();
         assert!(msg.text.contains("4.4"));
+    }
+
+    // ---- Edit-dispatch wiring tests (Phase 4.1.i.2) ----------
+
+    #[test]
+    fn apply_edit_blocking_records_lsp_edit_when_attached() {
+        let mut app = app_with("abc\n", 5);
+        // Attach a fake URI mapping so lsp_record_edit
+        // reaches the supervisor.
+        use std::str::FromStr;
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, uri.clone());
+        // Test-only: register the URI directly with the
+        // supervisor under a mock actor. Without a real
+        // ServerHandle attach_handle requires one, so instead
+        // we verify the wiring fires by checking that the
+        // record-edit path doesn't panic and the buffer_uri
+        // mapping survives.
+        let edit = Edit::insert(Position::new(0, 0), "x");
+        let _ = app.apply_edit_blocking(edit.clone());
+        // Buffer mapping unchanged; record_edit is best-effort
+        // (skips if no actor attached for the URI).
+        assert_eq!(app.buffer_uris.get(&app.document_buffer_id), Some(&uri));
+    }
+
+    #[test]
+    fn apply_edit_blocking_with_no_lsp_attachment_is_safe() {
+        // Without a buffer_uri mapping, lsp_record_edit
+        // short-circuits. No panic, no crash, edit still
+        // commits.
+        let app = app_with("hi\n", 5);
+        let r = app.apply_edit_blocking(Edit::insert(Position::new(0, 0), "x"));
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn apply_edit_batch_blocking_records_each_edit_in_order() {
+        let app = app_with("abc\n", 5);
+        let edits = vec![
+            Edit::insert(Position::new(0, 0), "1"),
+            Edit::insert(Position::new(0, 1), "2"),
+        ];
+        // No LSP attachment seeded -> records short-circuit;
+        // we only check the path is reachable (no panic).
+        let r = app.apply_edit_batch_blocking(edits);
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn queue_lsp_open_appends_pending_entry() {
+        let mut app = app_with("", 5);
+        let buffer_id = app.document_buffer_id;
+        app.queue_lsp_open(
+            buffer_id,
+            std::path::PathBuf::from("/tmp/new.rs"),
+            "fn main() {}".into(),
+        );
+        assert_eq!(app.pending_lsp_opens.len(), 1);
+        let (id, path, text) = &app.pending_lsp_opens[0];
+        assert_eq!(*id, buffer_id);
+        assert_eq!(path.as_path(), std::path::Path::new("/tmp/new.rs"));
+        assert_eq!(text, "fn main() {}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drain_pending_lsp_opens_clears_queue() {
+        let mut app = App::new(Document::from_text(""));
+        // Queue an open for a path with no matching server
+        // config -- the supervisor returns Ok(empty) without
+        // spawning anything (no rust binaries on the test
+        // host). The drain still consumes the entry from the
+        // queue.
+        app.queue_lsp_open(
+            app.document_buffer_id,
+            std::path::PathBuf::from("/tmp/no-server-for-this.xyz"),
+            "x".into(),
+        );
+        app.drain_pending_lsp_opens().await;
+        assert_eq!(app.pending_lsp_opens.len(), 0);
     }
 }

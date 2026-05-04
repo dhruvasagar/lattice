@@ -184,7 +184,7 @@ single source of truth.
 | `tracing` crate fan-out                                                                                                                                               | 4.1.f   | ✅     | Every `LspLogger::log` also fires `tracing::*`. `RUST_LOG=lattice_lsp=debug` works.                                                                                                                                          |
 | `LspSupervisor` (per-buffer attachment + per-(workspace, server-id) actor reuse)                                                                                      | 4.1.h   | ✅     | `crate::supervisor`. open_buffer / close_buffer / record_edit / flush / flush_all / servers_for / shutdown. attach_handle for tests + custom transports. Supports multi-server-per-buffer + multi-buffer reuse of one actor. |
 | App-side wiring: `App` holds `LspSupervisor`, `App::initialize_lsp` async boot, `lsp_record_edit` / `lsp_flush` / `lsp_close_buffer` sync hooks, `BufferId ↔ Uri` map | 4.1.i   | ✅     | `lattice-ui-tui::app`. App::new builds dormant supervisor with builtin_servers; runtime calls initialize_lsp before main loop. do_buffer_delete fires lsp_close_buffer.                                                      |
-| Edit dispatch: apply_edit_blocking → lsp_record_edit + debounced flush                                                                                                | 4.1.i.2 | ⏹️      | Sync→async bridge for the input pipeline. Lands alongside `:e <path>` LSP integration.                                                                                                                                       |
+| Edit dispatch: apply_edit_blocking → lsp_record_edit + debounced flush + open-on-`:e` | 4.1.i.2 | ✅ | `Arc<tokio::sync::Mutex<LspSupervisor>>` for shared async/sync access; cloned `DiagnosticsLayer` + `LspLogger` for lock-free renderer reads. apply_edit_blocking + apply_edit_batch_blocking call lsp_record_edit on success. Spawned debounce task wakes 50ms after the last edit signal, locks supervisor, calls flush_all. `:e <path>` queues an attachment; runtime drains the queue between input events. |
 | `*lsp*` subsystem buffer | 4.1.g | ✅ | `:lsp-log` (no arg). Help-style buffer; one row per record from `LspLogger::snapshot_global()`. Format: `HH:MM:SS.mmm <level> <source>: <message>`. |
 | `*lsp:<server>*` per-server buffer | 4.1.g | ✅ | `:lsp-log <server>`. Per-server records (stderr + window/logMessage + window/showMessage + lifecycle), trace records filtered out. |
 | `*lsp:<server>:trace*` JSON-RPC trace buffer | 4.1.g | ✅ | `:lsp-trace <server>`. Filtered to `LogSource::Trace`; toggle inbound/outbound recording on/off; `←` / `→` markers in body. |
@@ -217,7 +217,7 @@ Counts as of 2026-05-04:
 
 Phase rollup:
 
-- **4.1** Foundation: complete except for 4.1.i.2 (apply_edit → record_edit + open-on-`:e`). All buffer-backed introspection surfaces shipped; renderer overlays shipped; supervisor + diagnostics + logging + per-buffer navigation all in.
+- **4.1** Foundation: **complete**. Wire layer + actor/handshake + sync + diagnostics (broadcast → layer → renderer → buffer view + nav) + logging (rings + tracing fan-out + buffer views + commands) + supervisor + App-side wiring + edit-dispatch + open-on-`:e` all shipped. Phase 4.2 (navigation: hover, definition, references, symbols, completion) is the next chunk.
 - **4.2** Navigation: 0/12 -- queued.
 - **4.3** Edits: 0/9 -- queued.
 - **4.4** Polish: 0/19 -- queued.

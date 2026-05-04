@@ -1309,7 +1309,7 @@ fn render_diagnostic_severity_cell(
 }
 
 /// Resolve the most-severe diagnostic on `line_idx` of the
-/// active buffer. Walks `app.lsp.diagnostics()` keyed by the
+/// active buffer. Walks `app.lsp_diagnostics` keyed by the
 /// active URI (looked up via `app.buffer_uri`). Returns `None`
 /// when:
 /// - the active buffer has no URI (unsaved scratch), or
@@ -1321,7 +1321,7 @@ pub(crate) fn severity_for_line(
     line_idx: u32,
 ) -> Option<DiagnosticSeverity> {
     let uri = app.buffer_uri(app.document_buffer_id)?;
-    app.lsp.diagnostics().line_severity(uri, line_idx)
+    app.lsp_diagnostics.line_severity(uri, line_idx)
 }
 
 /// Diagnostics that overlap `line_idx` of the active buffer.
@@ -1334,7 +1334,7 @@ pub(crate) fn diagnostics_on_line(
     let Some(uri) = app.buffer_uri(app.document_buffer_id) else {
         return Vec::new();
     };
-    app.lsp.diagnostics().diagnostics_on_line(uri, line_idx)
+    app.lsp_diagnostics.diagnostics_on_line(uri, line_idx)
 }
 
 
@@ -2428,7 +2428,7 @@ mod tests {
             tags: None,
             data: None,
         };
-        app.lsp.diagnostics().apply(lattice_lsp::DiagnosticEvent {
+        app.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
             server_id: std::sync::Arc::from("rust"),
             uri,
             version: None,

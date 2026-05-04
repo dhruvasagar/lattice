@@ -6,12 +6,14 @@
 pub mod buffer;
 pub mod document;
 pub mod error;
+pub mod folding;
 pub mod search;
 pub mod undo;
 
 pub use crate::buffer::Buffer;
 pub use crate::document::{Document, DocumentBuilder};
 pub use crate::error::{CoreError, CoreResult};
+pub use crate::folding::FoldMethod;
 pub use crate::search::{Direction as SearchDir, SearchHit, find as search_find};
 pub use crate::undo::{UndoEntry, UndoStack};
 

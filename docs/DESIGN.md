@@ -1833,6 +1833,8 @@ Host-state generators (`gen:chords`, `gen:registers`, `gen:marks`, `gen:buffers`
 
 Vim's `:set option=value` is a string-bag with no typing or validation, and vimscript fills the gaps with a string-shaped scripting language users have to learn separately. Emacs's `customize` is a typed system bridged awkwardly to `setq` for non-curated variables, and elisp fills the gaps with a second authoring environment plugin authors must also master. We unify both halves: a typed option registry for **data**, and the Rust→WASM plugin substrate (§5.5) reused as the **code** layer. There is no third surface and no second language.
 
+> **Implementation status:** the typed-option registry below ships in its own renderer-agnostic crate, `lattice-config`. The current implementation uses a slightly tightened shape vs. the sketch (each `Option<T>` is generic and owns its own `ArcSwap<T>` value cell; the registry stores `Arc<dyn ErasedOption>`; consumers hold typed `OptionHandle<T>` for zero-overhead reads). `:set` syntax, `gen:options` completion, `:describe-option`, and the `register_core_options` / `register_*_options` API all flow through this crate. The `options.toml` + `init.rs` layers below are post-Phase-7 (gated on the WASM plugin host).
+
 #### 5.12.1 The typed option registry
 
 ```rust
@@ -1870,10 +1872,10 @@ User configuration lives in two layered files at `~/.config/lattice/`:
 └── init.rs           # Rust source, compiled to WASM, loaded as a plugin with `boot` capability
 ```
 
-| Layer | Format | Toolchain | Loaded | What it expresses |
-|---|---|---|---|---|
-| `options.toml` | TOML | none | deserialized into the option registry | typed option overrides; static keymap entries (chord → invocation string); static autocmds (event + filter + invocation string) |
-| `init.rs` | Rust → WASM Component | rustup + cargo-component (auto-detected; banner if absent) | loaded as a plugin via the §5.5 host with the `boot` capability | everything `options.toml` can express, plus closures, conditionals, custom command/motion/operator registration, autocmd handlers with logic, and any other plugin-shaped extension |
+| Layer          | Format                | Toolchain                                                  | Loaded                                                          | What it expresses                                                                                                                                                                   |
+|----------------|-----------------------|------------------------------------------------------------|-----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `options.toml` | TOML                  | none                                                       | deserialized into the option registry                           | typed option overrides; static keymap entries (chord → invocation string); static autocmds (event + filter + invocation string)                                                     |
+| `init.rs`      | Rust → WASM Component | rustup + cargo-component (auto-detected; banner if absent) | loaded as a plugin via the §5.5 host with the `boot` capability | everything `options.toml` can express, plus closures, conditionals, custom command/motion/operator registration, autocmd handlers with logic, and any other plugin-shaped extension |
 
 Either, both, or neither can be present. Both fall back to defaults when absent. Both reach the same internal state through the same functional API -- TOML via deserialize-then-call-the-setter, `init.rs` via WASM-call-into-the-host-which-calls-the-setter. There is no functional gap between them; the cost difference is "instant data load" vs. "5-15s first-boot compile, then cached".
 
@@ -2536,7 +2538,13 @@ lattice/
 |   |-- lattice-plugin-host/           # wasmtime + Component Model + WIT bindings
 |   |-- lattice-modes/                 # major / minor mode registry
 |   |-- lattice-protocol/              # Command / Event enums; serde + msgpack
-|   |-- lattice-config/                # options.toml deserializer + init.rs build / load orchestration
+|   |-- lattice-config/                # typed-options registry: `OptionType` trait,
+|   |                                  #   `Option<T>` (ArcSwap-backed value cell),
+|   |                                  #   `ErasedOption`, `ConfigRegistry`,
+|   |                                  #   `OptionsGenerator` (gen:options), `:set` parser,
+|   |                                  #   renderer-agnostic core options
+|   |                                  #   (`register_core_options → CoreOptions`).
+|   |                                  #   Phase 7+ adds options.toml + init.rs build/load.
 |   |-- lattice-config-api/            # WIT-bindings reexport consumed by user `init.rs`
 |   |-- lattice-render/                # Renderer trait, atlas, frame, fonts
 |   |-- lattice-render-editor/         # EditorRenderer (all paths)

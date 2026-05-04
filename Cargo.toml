@@ -5,6 +5,7 @@ members = [
 	"crates/lattice-core",
 	"crates/lattice-grammar",
 	"crates/lattice-completion",
+	"crates/lattice-config",
 	"crates/lattice-syntax",
 	"crates/lattice-runtime",
 	"crates/lattice-lsp",

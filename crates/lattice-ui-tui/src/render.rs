@@ -489,7 +489,7 @@ fn draw_inactive_document(
     };
     let snap = entry.handle.snapshot();
     let total_lines = snap.buffer.line_count();
-    let gutter_w = if app.show_line_numbers {
+    let gutter_w = if app.show_line_numbers() {
         gutter_width(total_lines)
     } else {
         2
@@ -573,13 +573,13 @@ fn render_gutter_for_inactive(
     // live on the active App), so we format an empty glyph slot --
     // but use the same shared layout helper so column alignment
     // matches the active pane.
-    if !app.show_line_numbers {
+    if !app.show_line_numbers() {
         return Span::styled(
             format_gutter_cell("", gutter_w, None),
             TuiStyle::default().fg(Color::DarkGray),
         );
     }
-    let n = if !app.relative_line_numbers || line_idx == cursor_line {
+    let n = if !app.relative_line_numbers() || line_idx == cursor_line {
         (line_idx + 1).to_string()
     } else {
         line_idx.abs_diff(cursor_line).to_string()
@@ -858,7 +858,7 @@ pub fn compose_visible_lines(
     // ropey's line API and pull only the visible window. A 100MB
     // log file should cost the same per-frame as a 100-line file.
     let total_lines = snap.buffer.line_count();
-    let gutter_w = if app.show_line_numbers {
+    let gutter_w = if app.show_line_numbers() {
         gutter_width(total_lines)
     } else {
         // Keep one cell of left padding for the empty-marker `~` line
@@ -1258,7 +1258,7 @@ fn render_gutter(line_idx: u32, width: u32, glyph: Option<char>) -> Span<'static
 
 fn render_gutter_for(app: &App, line_idx: u32, width: u32) -> Span<'static> {
     let glyph = fold_glyph_for(app, line_idx);
-    if !app.show_line_numbers {
+    if !app.show_line_numbers() {
         // No-numbers gutter: glyph (or empty) at the inner edge,
         // GUTTER_TRAILING_PAD - 1 trailing spaces, the rest leading
         // padding. The layout still aligns with the numbered case
@@ -1269,7 +1269,7 @@ fn render_gutter_for(app: &App, line_idx: u32, width: u32) -> Span<'static> {
             TuiStyle::default().fg(Color::DarkGray),
         );
     }
-    if !app.relative_line_numbers || line_idx == app.cursor.line {
+    if !app.relative_line_numbers() || line_idx == app.cursor.line {
         return render_gutter(line_idx, width, glyph);
     }
     let dist = line_idx.abs_diff(app.cursor.line);
@@ -1584,7 +1584,7 @@ fn cursor_screen_position(
     // numbers underneath an unchanged cursor).
     let total_lines = snap.buffer.line_count().max(1);
     let row_in_view = buffer_line_to_visible_row(app, snap, app.cursor.line, area.height as u32)?;
-    let gutter_w = if app.show_line_numbers {
+    let gutter_w = if app.show_line_numbers() {
         gutter_width(total_lines)
     } else {
         2
@@ -2153,7 +2153,7 @@ mod tests {
     #[test]
     fn closed_fold_preserves_heading_and_appends_summary() {
         let mut app = app_with("# Heading\nbody one\nbody two\nafter\n", 5);
-        app.foldmethod = crate::app::FoldMethod::Markdown;
+        app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
         // Close the heading fold.
         let idx = app
@@ -2173,7 +2173,7 @@ mod tests {
     #[test]
     fn closed_fold_hides_interior_lines() {
         let mut app = app_with("# H\nhidden1\nhidden2\nshown\n", 5);
-        app.foldmethod = crate::app::FoldMethod::Markdown;
+        app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
         let idx = app
             .folds
@@ -2221,7 +2221,7 @@ mod tests {
     #[test]
     fn open_fold_renders_lines_normally_without_summary() {
         let mut app = app_with("# H\nbody\n", 5);
-        app.foldmethod = crate::app::FoldMethod::Markdown;
+        app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
         // Leave the fold open (default).
         let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
@@ -2238,7 +2238,7 @@ mod tests {
     #[test]
     fn open_fold_gutter_shows_down_glyph() {
         let mut app = app_with("# H\nbody\n", 5);
-        app.foldmethod = crate::app::FoldMethod::Markdown;
+        app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
         let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
         let row0 = line_text(&lines[0]);
@@ -2249,7 +2249,7 @@ mod tests {
     #[test]
     fn closed_fold_gutter_shows_right_glyph() {
         let mut app = app_with("# H\nbody\n", 5);
-        app.foldmethod = crate::app::FoldMethod::Markdown;
+        app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
         let idx = app
             .folds
@@ -2277,7 +2277,7 @@ mod tests {
         // statement, not the brace.
         let src = "pub struct Buffer {\n    rope: Rope,\n}\nlet trailing = 1;\n";
         let mut app = app_with(src, 10);
-        app.foldmethod = crate::app::FoldMethod::Indent;
+        app.set_foldmethod_for_test(crate::app::FoldMethod::Indent);
         app.recompute_folds();
         let idx = app
             .folds
@@ -2307,7 +2307,7 @@ mod tests {
         // orphan brace below `... ┄ N lines folded`.
         let src = "pub struct Buffer {\n    rope: Rope,\n}\n";
         let mut app = app_with(src, 5);
-        app.foldmethod = crate::app::FoldMethod::Indent;
+        app.set_foldmethod_for_test(crate::app::FoldMethod::Indent);
         app.recompute_folds();
         let f = app.folds.iter().find(|f| f.start_line == 0).expect("fold");
         assert_eq!(f.end_line, 2, "expected `}}` swallowed: {f:?}");
@@ -2322,7 +2322,7 @@ mod tests {
         // suffix is now appended AFTER overlay processing.
         let src = "pub struct Buffer {\n    rope: Rope,\n}\n";
         let mut app = app_with(src, 5);
-        app.foldmethod = crate::app::FoldMethod::Indent;
+        app.set_foldmethod_for_test(crate::app::FoldMethod::Indent);
         app.recompute_folds();
         let idx = app
             .folds
@@ -2383,7 +2383,7 @@ mod tests {
     #[test]
     fn lines_without_fold_start_have_no_glyph() {
         let mut app = app_with("# H\nbody one\nbody two\nafter\n", 5);
-        app.foldmethod = crate::app::FoldMethod::Markdown;
+        app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
         let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
         // Row 1 (body one) is inside the fold, not a fold start.

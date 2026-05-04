@@ -822,41 +822,27 @@ pub struct App {
     /// Text being captured during the *current* Insert session.
     /// Promoted into `last_insert` when leaving Insert.
     pub recording_insert: Option<String>,
-    /// `:set number` / `:set nonumber`. Default true.
-    pub show_line_numbers: bool,
-    /// `:set relativenumber` / `:set norelativenumber`. Default false.
-    /// When true, the gutter shows distance from the cursor on each
-    /// line; the cursor's line shows its absolute number.
-    pub relative_line_numbers: bool,
-    /// `:set wrap` / `:set nowrap`. Default false. Visual wrap of
-    /// long lines (deferred -- the v1 renderer always horizontally
-    /// scrolls; this flag is read by future B.3 polish).
-    pub wrap_lines: bool,
-    /// `:set ignorecase` / `:set noignorecase`. Default false.
-    /// Search uses case-insensitive matching when true.
-    pub ignorecase: bool,
-    /// `:set tabstop=N`. Number of spaces a hard tab renders as.
-    /// Default 8 (vim's default).
-    pub tabstop: u32,
-    /// `:set scrolloff=N`. Minimum visual lines kept above + below
-    /// the cursor while scrolling. Default 0.
-    pub scrolloff: u32,
-    /// `:set foldmethod=manual|indent`. Controls whether
-    /// [`Self::folds`] is populated by user `zf` operations
-    /// (`manual`) or recomputed from the buffer's indentation
-    /// (`indent`). Tree-sitter-driven folds queue as a follow-up
-    /// (DESIGN.md §15:18).
-    pub foldmethod: FoldMethod,
-    /// `:set foldenable` / `:set nofoldenable`, toggled by `zi`
-    /// (`docs/help/folding.md`). When `false`, every fold renders
-    /// as open regardless of [`Fold::closed`], and the fold-aware
-    /// operator / auto-open logic short-circuits. The closed-state
-    /// flags themselves are preserved -- `zi` flipping back to
-    /// enabled restores the previous closed/open distribution.
-    pub foldenable: bool,
-    /// Typed options registry (DESIGN.md §5.12). `:set` parses
-    /// against this; `:describe-option` reads from it.
-    pub options: std::sync::Arc<crate::options::OptionRegistry>,
+    /// Shared typed-options registry (DESIGN.md §5.12). Every
+    /// option's *current value* lives in here behind an
+    /// `ArcSwap<T>`; `:set` parses against it; the customize
+    /// buffer view (post-1.0) reads + writes through the same
+    /// surface. Renderer-agnostic options register via
+    /// [`lattice_config::register_core_options`]; this renderer's
+    /// own options register via [`crate::tui_options::register_tui_options`].
+    pub config: std::sync::Arc<lattice_config::ConfigRegistry>,
+    /// Typed handles to the renderer-agnostic options registered
+    /// at [`Self::new`] time. Read-side hot paths use
+    /// `*self.config.get(self.core_options.foo)` -- one mutex
+    /// lock + one `ArcSwap` load + one `Arc` deref. Helper
+    /// accessor methods on [`App`] (`Self::foldmethod`,
+    /// `Self::tabstop`, ...) wrap the indirection so call sites
+    /// read like a field access.
+    pub core_options: lattice_config::CoreOptions,
+    /// Typed handles to the TUI-specific options. Same shape as
+    /// [`Self::core_options`], scoped to options that only make
+    /// sense for the terminal renderer (`ui.separator`,
+    /// `ui.statusline_active_fg`, ...).
+    pub tui_options: crate::tui_options::TuiOptions,
     /// Free-form help topic registry (DESIGN.md §5.11). `:help`
     /// reads from this; built-ins are sourced from `docs/help/*.md`
     /// at build time. Plugins / future LSP integrations register
@@ -908,6 +894,10 @@ pub struct App {
     /// Active completion popup. `Some` while the user has Tab-
     /// triggered completion in the `:` line.
     pub completion_state: Option<CompletionState>,
+    // `completion.auto_insert_single` lives on the typed-options
+    // registry now (`self.config` keyed by
+    // `self.core_options.completion_auto_insert_single`). Read via
+    // [`Self::completion_auto_insert_single`].
     /// One-shot "auto-submit on next chord" flag. Set when the
     /// user submitted a Chord-arg-required command with no value
     /// (`:describe-key<CR>`); the cmdline pre-fills with the
@@ -1025,34 +1015,12 @@ pub struct Fold {
     pub identity: Option<u64>,
 }
 
-/// `:set foldmethod=...` (DESIGN.md §15:18, C.2; `docs/help/folding.md`).
-/// Decides which provider feeds [`App::folds`]:
-///
-/// - `Manual` -- only user `zf` ranges, no auto-recompute.
-/// - `Indent` -- universal indent walker.
-/// - `Markdown` -- ATX heading nesting (`*.md`).
-/// - `Syntax` -- tree-sitter scope queries (queued); cascades to
-///   `Markdown` for `.md` buffers and `Indent` otherwise until the
-///   tree-sitter provider lands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FoldMethod {
-    #[default]
-    Manual,
-    Indent,
-    Markdown,
-    Syntax,
-}
-
-impl FoldMethod {
-    pub fn label(self) -> &'static str {
-        match self {
-            FoldMethod::Manual => "manual",
-            FoldMethod::Indent => "indent",
-            FoldMethod::Markdown => "markdown",
-            FoldMethod::Syntax => "syntax",
-        }
-    }
-}
+// `FoldMethod` moved to `lattice_core::folding::FoldMethod` for
+// renderer-agnostic ownership. Re-exported through `lattice_core`'s
+// crate root + this re-export so existing call sites
+// (`crate::app::FoldMethod` / `FoldMethod`) keep resolving without
+// edits.
+pub use lattice_core::FoldMethod;
 
 /// Capture of the most recent find/till for `;`/`,` repeat.
 #[derive(Debug, Clone, Copy)]
@@ -1257,17 +1225,24 @@ impl App {
                 topics: help_topics.clone(),
             },
         );
+        // Typed-options registry (DESIGN.md §5.12). Single source
+        // of truth for every option's *current value*: each
+        // `Option<T>` owns a wait-free `ArcSwap<T>` cell that
+        // `:set` parses into, hot-path readers load from, and the
+        // (future) customize buffer view edits through. Renderer-
+        // agnostic options register from `lattice-config`; this
+        // renderer's own options register from `crate::tui_options`.
+        let config = Arc::new(lattice_config::ConfigRegistry::new());
+        let core_options = lattice_config::register_core_options(&config);
+        let tui_options = crate::tui_options::register_tui_options(&config);
         // `gen:options` -- completion source for `:set <Tab>` and
-        // `:set name=<Tab>`. Wired to the same OptionRegistry the
+        // `:set name=<Tab>`. Wired to the same `ConfigRegistry` the
         // `:set` parser consults so completions never drift from
         // the canonical option list.
-        let options_registry = Arc::new(crate::options::builtin_options());
         completion_registry.register_generator(
             "gen:options",
             "Every registered option name + (when applicable) its enumerated values.",
-            crate::options::OptionsGenerator {
-                registry: options_registry.clone(),
-            },
+            lattice_config::OptionsGenerator::new(config.clone()),
         );
         // One `LangRegistry` per App, shared between the document
         // buffer's `Syntax` and every `HelpBuffer` we'll spin up
@@ -1311,14 +1286,15 @@ impl App {
             data: BufferData::Document(DocumentEntry {
                 id: document_buffer_id,
                 handle: document.clone(),
-                // Active buffer's syntax lives on App.syntax for
-                // the hot path; the registry entry stores `None`
-                // until a switch saves the active state back.
+                // Active buffer's syntax / folds live on the App
+                // for the hot path; the registry entry stays empty
+                // until a switch snapshots the active state back.
                 syntax: None,
                 last_parsed_text_version: 0,
+                folds: Vec::new(),
             }),
         });
-        Self {
+        let mut app = Self {
             document,
             snapshot_cache,
             document_buffer_id,
@@ -1367,15 +1343,9 @@ impl App {
             last_insert: None,
             recording_insert: None,
             pending_block_insert: None,
-            show_line_numbers: true,
-            relative_line_numbers: false,
-            wrap_lines: false,
-            ignorecase: false,
-            tabstop: 8,
-            scrolloff: 0,
-            foldmethod: FoldMethod::Manual,
-            foldenable: true,
-            options: options_registry.clone(),
+            config,
+            core_options,
+            tui_options,
             help_topics,
             theme: crate::theme::Theme::default(),
             pane_highlights: HashMap::new(),
@@ -1394,7 +1364,109 @@ impl App {
             buffer_uris: std::collections::HashMap::new(),
             pending_lsp_opens: Vec::new(),
             lsp_flush_signal: None,
-        }
+        };
+        // Sync derived theme styles from the freshly-registered
+        // ui.* options so the renderer's first frame uses the
+        // configured colors / separator (rather than the static
+        // Theme::default values).
+        app.sync_theme_from_config();
+        app
+    }
+
+    // ---- Typed-options accessors (DESIGN.md §5.12) ----
+    //
+    // The current value of each option lives in `self.config`
+    // behind an `ArcSwap`. These accessors wrap the indirection
+    // so call sites read like a field access (`self.foldmethod()`
+    // instead of `*self.config.get(self.core_options.foldmethod)`).
+    // Each is a one-liner; rustc inlines them through the typed
+    // handle so there's no dispatch overhead beyond the registry's
+    // brief mutex acquisition + ArcSwap load + Arc deref.
+
+    /// `:set number`. Default `true`.
+    pub fn show_line_numbers(&self) -> bool {
+        *self.config.get(self.core_options.number)
+    }
+
+    /// `:set relativenumber`. Default `false`. When true the
+    /// gutter shows distance from the cursor; the cursor's line
+    /// shows its absolute number. Implies `number` (vim's
+    /// behaviour) -- the post-set hook in [`Self::do_set`] mirrors
+    /// that cascade.
+    pub fn relative_line_numbers(&self) -> bool {
+        *self.config.get(self.core_options.relativenumber)
+    }
+
+    /// `:set wrap`. Default `false`. (v1 renderer always
+    /// horizontal-scrolls; this flag is read by future B.3 polish.)
+    pub fn wrap_lines(&self) -> bool {
+        *self.config.get(self.core_options.wrap)
+    }
+
+    /// `:set ignorecase`. Default `false`.
+    pub fn ignorecase(&self) -> bool {
+        *self.config.get(self.core_options.ignorecase)
+    }
+
+    /// `:set tabstop=N`. Default `8`. Stored as `i64` in config
+    /// (the typed system's integer type) and cast back to `u32`
+    /// at the read site -- the validate closure on the option
+    /// caps the range to `1..=32` so the cast can never lose bits.
+    pub fn tabstop(&self) -> u32 {
+        *self.config.get(self.core_options.tabstop) as u32
+    }
+
+    /// `:set scrolloff=N`. Default `0`. Same `i64`→`u32` shape
+    /// as [`Self::tabstop`]; range `0..=64`.
+    pub fn scrolloff(&self) -> u32 {
+        *self.config.get(self.core_options.scrolloff) as u32
+    }
+
+    /// `:set foldmethod=...`. Default [`FoldMethod::Manual`].
+    pub fn foldmethod(&self) -> FoldMethod {
+        *self.config.get(self.core_options.foldmethod)
+    }
+
+    /// `:set foldenable` / `:set nofoldenable` (`zi`). Default `true`.
+    pub fn foldenable(&self) -> bool {
+        *self.config.get(self.core_options.foldenable)
+    }
+
+    /// `:set completion.auto_insert_single`. Default `true`.
+    pub fn completion_auto_insert_single(&self) -> bool {
+        *self
+            .config
+            .get(self.core_options.completion_auto_insert_single)
+    }
+
+    // ---- Test-only typed setters (kept on the public surface
+    //      because integration tests in render.rs reach for them).
+    //      Production code uses `do_set` which goes through the
+    //      cmdline path. These mirror what `do_set` does sans the
+    //      cmdline parse, calling `apply_post_set` so side effects
+    //      (foldmethod ⇒ recompute, ui.* ⇒ theme refresh, ...) match
+    //      the user-driven path. ----
+
+    /// Set `foldmethod` directly. Runs the same post-set hook the
+    /// cmdline path runs (recomputes folds against the new method).
+    pub fn set_foldmethod_for_test(&mut self, fm: FoldMethod) {
+        self.config
+            .set(self.core_options.foldmethod, fm)
+            .expect("set foldmethod");
+        self.recompute_folds();
+    }
+
+    /// Set `foldenable` directly. No side effects beyond storage.
+    pub fn set_foldenable_for_test(&self, on: bool) {
+        let _ = self.config.set(self.core_options.foldenable, on);
+    }
+
+    /// Set `completion.auto_insert_single` directly. No side
+    /// effects beyond storage.
+    pub fn set_completion_auto_insert_single_for_test(&self, on: bool) {
+        let _ = self
+            .config
+            .set(self.core_options.completion_auto_insert_single, on);
     }
 
     /// Async LSP boot. The runtime calls this once after
@@ -2143,7 +2215,10 @@ impl App {
             Action::DeleteFoldAtCursor => self.do_delete_fold_at_cursor(),
             Action::GotoNextFold => self.do_goto_fold(true),
             Action::GotoPrevFold => self.do_goto_fold(false),
-            Action::ToggleFoldEnable => self.foldenable = !self.foldenable,
+            Action::ToggleFoldEnable => {
+                let cur = self.foldenable();
+                let _ = self.config.set(self.core_options.foldenable, !cur);
+            }
             Action::SelectRegister(reg) => {
                 self.pending_register = Some(reg);
             }
@@ -2375,11 +2450,12 @@ impl App {
     /// so `:set foldmethod=syntax` is useful even on a plain-text
     /// buffer.
     pub fn recompute_folds(&mut self) {
-        if matches!(self.foldmethod, FoldMethod::Manual) {
+        let fm = self.foldmethod();
+        if matches!(fm, FoldMethod::Manual) {
             return;
         }
         let snapshot = self.document.snapshot();
-        let mut next = match self.foldmethod {
+        let mut next = match fm {
             FoldMethod::Manual => return,
             FoldMethod::Indent => crate::folds::compute_indent_folds(&snapshot.buffer),
             FoldMethod::Markdown => crate::folds::compute_markdown_folds(&snapshot.buffer),
@@ -3032,9 +3108,27 @@ impl App {
 
     /// Build the pipeline for the current slot and run it. Caches
     /// results into `completion_state`.
+    ///
+    /// When `completion.auto_insert_single` is on (the default) and
+    /// the pipeline returns exactly one candidate, the popup is
+    /// skipped and that candidate is applied to the command line
+    /// directly -- same effect as `<Tab><CR>` but without the
+    /// confirm keystroke for an unambiguous match. The popup-open
+    /// boundary is the only fire point; narrowing an already-open
+    /// popup to one candidate while typing does not auto-insert.
     fn open_completion_popup(&mut self) {
         match self.compute_completion_state() {
             Ok(state) => {
+                if self.completion_auto_insert_single() && state.candidates.len() == 1 {
+                    let chosen_text = state.candidates[0].raw.text.clone();
+                    self.command_line
+                        .replace_range(state.replace_start..self.command_line.len(), &chosen_text);
+                    // Don't open the popup -- the single candidate
+                    // is already applied. `completion_state` stays
+                    // `None` so the next `<Tab>` would re-trigger
+                    // the pipeline against the new line.
+                    return;
+                }
                 self.completion_state = Some(state);
             }
             Err(err) => {
@@ -3422,11 +3516,12 @@ impl App {
             data: BufferData::Document(DocumentEntry {
                 id: new_id,
                 handle: new_handle.clone(),
-                // Active buffer's syntax lives on App.syntax for
-                // the hot path; entry's slot stays None until a
-                // switch.
+                // Active buffer's syntax / folds live on the App
+                // for the hot path; entry's slots stay empty until
+                // a switch.
                 syntax: None,
                 last_parsed_text_version: 0,
+                folds: Vec::new(),
             }),
         });
         // Save the currently-active buffer's hot-path state into
@@ -3465,6 +3560,12 @@ impl App {
         // right buffer.
         self.pane_tree.active_mut().buffer = BufferKind::Document;
         self.pane_tree.active_mut().buffer_id = new_id;
+        // Single principled hook for everything that needs to
+        // come up with the new buffer (parse seam, fold seed,
+        // highlight cache reset). Same hook used by
+        // `activate_document` so opening a fresh file and
+        // switching to an existing one go through the same path.
+        self.activate_buffer_state();
         // Queue an LSP attachment for the new file (Phase
         // 4.1.i.2). The runtime drains the queue on its next
         // tick; the buffer is fully usable before LSP attaches.
@@ -3480,7 +3581,7 @@ impl App {
     }
 
     /// Save the currently-active document's hot-path state
-    /// (`syntax`, `last_parsed_text_version`) into its
+    /// (`syntax`, `last_parsed_text_version`, `folds`) into its
     /// [`DocumentEntry`]. Called before switching the active
     /// buffer so the rotation is round-trippable.
     ///
@@ -3499,7 +3600,45 @@ impl App {
         if let Some(entry) = self.buffers.document_mut(self.document_buffer_id) {
             entry.syntax = self.syntax.take();
             entry.last_parsed_text_version = self.last_parsed_text_version;
+            // Folds round-trip with the buffer: stashing them here
+            // preserves the user's open/closed state across a
+            // switch-away-and-back. The activation hook on the
+            // destination side decides whether to recompute (first
+            // visit) or restore (subsequent visits).
+            entry.folds = std::mem::take(&mut self.folds);
         }
+    }
+
+    /// Lifecycle hook fired after a document buffer becomes the
+    /// active buffer (either via [`Self::activate_document`] or
+    /// after `:e <path>` opens a fresh file). Refreshes anything
+    /// that "lives with the buffer until it closes" so the user
+    /// sees consistent state without having to reach for `<C-l>`.
+    ///
+    /// New buffer-level state plugs in here: keep the path
+    /// principled instead of sprinkling per-option fixups across
+    /// every entry point that changes the active buffer.
+    fn activate_buffer_state(&mut self) {
+        // Make sure the syntax tree matches the current text. If
+        // the entry stashed a parse for the document's current
+        // version this no-ops; otherwise it parses + recomputes
+        // folds in lockstep via the seam in `maybe_reparse_syntax`.
+        self.maybe_reparse_syntax();
+        // First-activation case: a freshly-opened file (or one we
+        // never visited before) has an empty fold list and the
+        // reparse seam may have been a no-op (text version already
+        // matched the entry's stashed parse). Seed the fold list
+        // from the active foldmethod so the gutter shows ▸ markers
+        // and `za` works without a manual `<C-l>`. `Manual` skips
+        // the seed (the user's `zf` ranges are authoritative).
+        if self.folds.is_empty() && !matches!(self.foldmethod(), FoldMethod::Manual) {
+            self.recompute_folds();
+        }
+        // Drop frame-level highlight caches so the next
+        // `refresh_highlights` repopulates against the activated
+        // buffer's content rather than the previous buffer's.
+        self.visible_highlights.clear();
+        self.pane_highlights.clear();
     }
 
     /// Switch the active document to `id`. Snapshots the current
@@ -3530,6 +3669,12 @@ impl App {
         self.snapshot_cache = self.document.snapshot_cache();
         self.syntax = entry.syntax.take();
         self.last_parsed_text_version = entry.last_parsed_text_version;
+        // Folds round-trip with the buffer (see DocumentEntry
+        // doc-comment). On first activation the entry is empty
+        // and `activate_buffer_state` seeds from foldmethod;
+        // subsequent re-activations restore the user's
+        // open/closed state.
+        self.folds = std::mem::take(&mut entry.folds);
         self.document_buffer_id = id;
         // The active pane now references this document.
         let pane = self.pane_tree.active_mut();
@@ -3541,14 +3686,16 @@ impl App {
         self.all_matches.clear();
         self.search_line = None;
         // Note: `last_search` / `last_find` / `last_change` /
-        // `last_visual` / marks / registers / macros / folds /
+        // `last_visual` / marks / registers / macros /
         // replace_history / position_history all persist
-        // intentionally. Folds in particular are buffer-local;
-        // when B.1.c has per-buffer fold state we'll move them
-        // into `DocumentEntry`.
+        // intentionally. Folds are buffer-local and snapshotted
+        // into `DocumentEntry` above.
         self.cursor = Position::ZERO;
         self.scroll = 0;
         self.load_active_pane();
+        // Single principled hook for everything that needs to
+        // come up with the buffer (parse, folds, highlight cache).
+        self.activate_buffer_state();
         self.set_message(
             EchoLevel::Info,
             format!(
@@ -3764,117 +3911,137 @@ impl App {
         }
     }
 
-    /// `:set [option | option=value | nooption]`. Parses against
-    /// the typed [`crate::options::OptionRegistry`] (DESIGN.md
-    /// §5.12). Boolean toggle / negate forms (`:set nu` /
-    /// `:set nonu`) and typed assignment (`:set tabstop=4`) all
-    /// route through the same registry; unknown options surface
-    /// as a clear echo error.
+    /// `:set [option | option=value | nooption | option?]`.
+    /// Parses against the shared typed-options
+    /// [`lattice_config::ConfigRegistry`] (DESIGN.md §5.12).
+    /// Boolean toggle / negate forms (`:set nu` / `:set nonu`),
+    /// query (`:set foo?`), and typed assignment (`:set tabstop=4`)
+    /// all flow through one path. Post-set side effects
+    /// (`relativenumber` ⇒ `number`, `foldmethod` ⇒ recompute folds,
+    /// every `ui.*` change ⇒ refresh derived theme styles) are
+    /// applied after a successful set in [`Self::apply_post_set`].
     fn do_set(&mut self, option: &str) {
-        use crate::options::{ParsedSet, format_value, parse_set, parse_value};
-        let parsed = match parse_set(option) {
-            Ok(p) => p,
-            Err(e) => {
-                self.set_message(EchoLevel::Error, format!("E518: {e}"));
+        let echo = match self.config.parse_and_set_command(option) {
+            Ok(echo) => echo,
+            Err(err) => {
+                self.set_message(EchoLevel::Error, err.to_string());
                 return;
             }
         };
-        let registry = self.options.clone();
-        match parsed {
-            ParsedSet::NameOnly(name) => {
-                let Some(spec) = registry.lookup(&name) else {
-                    self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
-                    return;
-                };
-                if matches!(spec.kind, crate::options::OptionKind::Bool) {
-                    if let Err(e) = (spec.set)(self, crate::options::OptionValue::Bool(true)) {
-                        self.set_message(EchoLevel::Error, e);
-                    }
-                } else {
-                    let v = (spec.get)(self);
-                    self.set_message(
-                        EchoLevel::Info,
-                        format!("{}={}", spec.name, format_value(&v)),
-                    );
+        // Identify the canonical option name from `option` so the
+        // post-set hook knows which side effects to run. Re-parsing
+        // is cheap and keeps `parse_and_set_command` pure.
+        if let Ok(parsed) = lattice_config::parse_set(option) {
+            self.apply_post_set(parsed);
+        }
+        self.set_message(EchoLevel::Info, echo);
+    }
+
+    /// Run side effects that the typed-options system can't
+    /// express on its own: option cascades (`relativenumber` ⇒
+    /// `number=true`), domain-state refreshes (`foldmethod` ⇒
+    /// recompute folds), and renderer-cached projections (`ui.*`
+    /// ⇒ refresh `App.theme` Styles).
+    ///
+    /// Phase 3's `Event::OptionChanged` will replace this with the
+    /// event-bus subscription pattern; for now the App polls via
+    /// the `:set` parsed name. Cheap (most branches no-op for any
+    /// given option).
+    fn apply_post_set(&mut self, parsed: lattice_config::ParsedSet) {
+        // Extract the option name regardless of variant.
+        let name = match &parsed {
+            lattice_config::ParsedSet::NameOnly(n)
+            | lattice_config::ParsedSet::Query(n)
+            | lattice_config::ParsedSet::Negate(n) => n.as_str(),
+            lattice_config::ParsedSet::Assign { name, .. } => name.as_str(),
+        };
+        // Resolve aliases through the registry so the post-set
+        // hook compares canonical names regardless of which form
+        // the user typed (`:set rnu` vs `:set relativenumber`).
+        let canonical = self
+            .config
+            .lookup(name)
+            .map(|s| s.name().to_string())
+            .unwrap_or_else(|| name.to_string());
+        match canonical.as_str() {
+            "relativenumber" => {
+                // Vim cascade: `:set rnu` implies `:set nu` so the
+                // gutter renders at all. The reverse (`:set nornu`)
+                // does NOT clear `nu` -- preserves user intent.
+                if matches!(
+                    parsed,
+                    lattice_config::ParsedSet::NameOnly(_) | lattice_config::ParsedSet::Assign { .. }
+                ) && self.relative_line_numbers()
+                {
+                    let _ = self.config.set(self.core_options.number, true);
                 }
             }
-            ParsedSet::Query(name) => {
-                // `:set foo?` -- always print the current value,
-                // regardless of type. For booleans this echoes
-                // `foo` or `nofoo` (vim's convention).
-                let Some(spec) = registry.lookup(&name) else {
-                    self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
-                    return;
-                };
-                let v = (spec.get)(self);
-                let msg = match v {
-                    crate::options::OptionValue::Bool(b) => {
-                        if b {
-                            spec.name.to_string()
-                        } else {
-                            format!("no{}", spec.name)
-                        }
-                    }
-                    other => format!("{}={}", spec.name, format_value(&other)),
-                };
-                self.set_message(EchoLevel::Info, msg);
+            "foldmethod" => {
+                // Recompute folds against the new method. Idempotent
+                // and cheap when method is `Manual` (the recompute
+                // returns immediately).
+                self.recompute_folds();
             }
-            ParsedSet::Negate(name) => {
-                let Some(spec) = registry.lookup_no_form(&format!("no{name}")) else {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("E474: not a boolean option: {name}"),
-                    );
-                    return;
-                };
-                if let Err(e) = (spec.set)(self, crate::options::OptionValue::Bool(false)) {
-                    self.set_message(EchoLevel::Error, e);
-                }
+            n if n.starts_with("ui.") => {
+                self.sync_theme_from_config();
             }
-            ParsedSet::Assign { name, value } => {
-                let Some(spec) = registry.lookup(&name) else {
-                    self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
-                    return;
-                };
-                let parsed_value = match parse_value(&value, spec.kind) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        self.set_message(EchoLevel::Error, format!("E521: {name}: {e}"));
-                        return;
-                    }
-                };
-                if let Err(e) = (spec.set)(self, parsed_value) {
-                    self.set_message(EchoLevel::Error, e);
-                }
-            }
+            _ => {}
+        }
+    }
+
+    /// Re-derive `App.theme`'s renderer-specific [`Style`] values
+    /// from the current `ui.*` option values in the config. Called
+    /// at App-init time (after registration) and on every `:set
+    /// ui.*` so the cached theme stays in lockstep with the
+    /// canonical primitives in config.
+    pub fn sync_theme_from_config(&mut self) {
+        use ratatui::style::Style;
+        // ui.dim_inactive -- bool flag projected directly.
+        self.theme.dim_inactive_panes = *self.config.get(self.tui_options.dim_inactive);
+        // ui.separator -- one-character glyph for the vertical
+        // pane divider. Validated to len==1 at parse; fall back to
+        // the default if a forged value sneaks through.
+        let sep = self.config.get(self.tui_options.separator);
+        self.theme.pane_separator_vertical = sep.chars().next().unwrap_or('│');
+        // ui.separator_color -- color name; parse_color returned
+        // Ok during validate so unwrap-via-fallback is safe.
+        let sep_color = self.config.get(self.tui_options.separator_color);
+        if let Ok(c) = crate::theme::parse_color(&sep_color) {
+            self.theme.pane_separator = Style::default().fg(c);
+        }
+        // ui.statusline_active_fg -- foreground only; preserve any
+        // existing modifiers / background by chaining `.fg(c)` on
+        // the current style.
+        let active_fg = self.config.get(self.tui_options.statusline_active_fg);
+        if let Ok(c) = crate::theme::parse_color(&active_fg) {
+            self.theme.pane_status_active = self.theme.pane_status_active.fg(c);
+        }
+        let inactive_fg = self.config.get(self.tui_options.statusline_inactive_fg);
+        if let Ok(c) = crate::theme::parse_color(&inactive_fg) {
+            self.theme.pane_status_inactive = self.theme.pane_status_inactive.fg(c);
         }
     }
 
     /// `:describe-option <name>` (DESIGN.md §5.11). Renders the
     /// option's metadata + current value into a help buffer.
     fn do_describe_option(&mut self, name: &str) {
-        let registry = self.options.clone();
-        let Some(spec) = registry.lookup(name) else {
+        let Some(spec) = self.config.lookup(name) else {
             self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
             return;
         };
         let mut lines: Vec<String> = Vec::new();
-        lines.push(format!("# {}", spec.name));
-        if !spec.aliases.is_empty() {
-            lines.push(format!("aliases: {}", spec.aliases.join(", ")));
+        lines.push(format!("# {}", spec.name()));
+        if !spec.aliases().is_empty() {
+            lines.push(format!("aliases: {}", spec.aliases().join(", ")));
         }
-        lines.push(format!("type:    {}", spec.kind.label()));
-        lines.push(format!(
-            "default: {}",
-            crate::options::format_value(&spec.default)
-        ));
-        let current = (spec.get)(self);
-        lines.push(format!(
-            "current: {}",
-            crate::options::format_value(&current)
-        ));
+        lines.push(format!("type:    {}", spec.type_label()));
+        lines.push(format!("default: {}", spec.default_formatted()));
+        lines.push(format!("current: {}", spec.get_formatted()));
+        if let Some(values) = spec.enumerate_values() {
+            lines.push(format!("values:  {}", values.join(", ")));
+        }
         lines.push(String::new());
-        lines.push(spec.doc.to_string());
+        lines.push(spec.doc().to_string());
         self.open_help(
             HelpBuffer::from_lines(format!("describe-option {name}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
@@ -3931,18 +4098,16 @@ impl App {
     /// `:options` -- list every registered option in a help view.
     fn do_list_options(&mut self) {
         let mut lines: Vec<String> = Vec::new();
-        let registry = self.options.clone();
-        lines.push(format!("{} registered option(s):", registry.len()));
+        let mut specs = self.config.iter();
+        specs.sort_by_key(|s| s.name());
+        lines.push(format!("{} registered option(s):", specs.len()));
         lines.push(String::new());
-        let mut specs: Vec<_> = registry.iter().cloned().collect();
-        specs.sort_by_key(|s| s.name);
         for spec in specs {
-            let current = (spec.get)(self);
             lines.push(format!(
-                "  {:<16} {:<7} = {}",
-                spec.name,
-                spec.kind.label(),
-                crate::options::format_value(&current)
+                "  {:<32} {:<10} = {}",
+                spec.name(),
+                spec.type_label(),
+                spec.get_formatted()
             ));
         }
         self.open_help(
@@ -4421,7 +4586,7 @@ impl App {
         // covers the whole fold. The operator stays a single edit /
         // single undo unit because the dispatcher composes one
         // `Effect::Edits` from the expanded range.
-        if self.foldenable
+        if self.foldenable()
             && matches!(inv.range, Some(lattice_grammar::range::Range::CurrentLine))
             && let Some(fold) = self.fold_start_at(self.cursor.line)
         {
@@ -4963,7 +5128,8 @@ impl App {
         lines.push(format!("folds:          {}", self.folds.len()));
         lines.push(format!(
             "options:        number={}  relativenumber={}",
-            self.show_line_numbers, self.relative_line_numbers
+            self.show_line_numbers(),
+            self.relative_line_numbers()
         ));
         self.open_help(
             HelpBuffer::from_lines("describe-buffer", lines)
@@ -6132,7 +6298,7 @@ impl App {
     /// regardless of fold state -- `zi` / `:set nofoldenable` makes
     /// every line visible.
     pub fn line_inside_closed_fold(&self, line: u32) -> bool {
-        if !self.foldenable {
+        if !self.foldenable() {
             return false;
         }
         self.folds
@@ -6145,7 +6311,7 @@ impl App {
     /// `foldenable = false` short-circuits this -- nothing renders
     /// folded.
     pub fn fold_start_at(&self, line: u32) -> Option<&Fold> {
-        if !self.foldenable {
+        if !self.foldenable() {
             return None;
         }
         self.folds.iter().find(|f| f.closed && f.start_line == line)
@@ -6157,7 +6323,7 @@ impl App {
     /// `foldenable = false` the gutter glyph is suppressed too --
     /// every line renders flat.
     pub fn fold_start_at_any(&self, line: u32) -> Option<&Fold> {
-        if !self.foldenable {
+        if !self.foldenable() {
             return None;
         }
         self.folds.iter().find(|f| f.start_line == line)
@@ -6191,7 +6357,7 @@ impl App {
     /// folds disabled every line is visible and the cursor is free
     /// to land anywhere.
     fn snap_cursor_past_closed_folds(&mut self, prev_line: u32) {
-        if !self.foldenable {
+        if !self.foldenable() {
             return;
         }
         let new_line = self.cursor.line;
@@ -6245,7 +6411,7 @@ impl App {
     /// applies to them. When `foldenable = false` this is a no-op.
     /// (`docs/help/folding.md`).
     pub fn auto_open_folds_at_cursor(&mut self) {
-        if !self.foldenable {
+        if !self.foldenable() {
             return;
         }
         let line = self.cursor.line;
@@ -8197,7 +8363,7 @@ mod tests {
             closed: true,
             identity: None,
         });
-        a.foldenable = false;
+        a.set_foldenable_for_test(false);
         a.cursor = Position::new(1, 0);
         a.apply(invoke_motion(a.builtins.line_down));
         assert_eq!(a.cursor.line, 2);
@@ -8333,7 +8499,7 @@ mod tests {
         if let Some(s) = a.syntax.as_mut() {
             s.parse(&a.document.text());
         }
-        a.foldmethod = FoldMethod::Syntax;
+        a.set_foldmethod_for_test(FoldMethod::Syntax);
         a.recompute_folds();
         // Dump for diagnosis -- show the fold ranges at the live
         // tree's current state.
@@ -8377,7 +8543,7 @@ mod tests {
         if let Some(s) = a.syntax.as_mut() {
             s.parse(&a.document.text());
         }
-        a.foldmethod = FoldMethod::Syntax;
+        a.set_foldmethod_for_test(FoldMethod::Syntax);
         a.recompute_folds();
         // Cursor on line 0 (the `let` line). zc must pick the
         // outermost fold starting at line 0 -- the if_expression /
@@ -8762,22 +8928,22 @@ mod tests {
     #[test]
     fn set_number_and_nonumber_toggle_show_line_numbers() {
         let mut a = app_with("hello", 10);
-        assert!(a.show_line_numbers);
+        assert!(a.show_line_numbers());
         submit_ex(&mut a, "set nonumber");
-        assert!(!a.show_line_numbers);
+        assert!(!a.show_line_numbers());
         submit_ex(&mut a, "set number");
-        assert!(a.show_line_numbers);
+        assert!(a.show_line_numbers());
     }
 
     #[test]
     fn set_relativenumber_toggles_flag() {
         let mut a = app_with("hello\nworld", 10);
-        assert!(!a.relative_line_numbers);
+        assert!(!a.relative_line_numbers());
         submit_ex(&mut a, "set relativenumber");
-        assert!(a.relative_line_numbers);
-        assert!(a.show_line_numbers);
+        assert!(a.relative_line_numbers());
+        assert!(a.show_line_numbers());
         submit_ex(&mut a, "set norelativenumber");
-        assert!(!a.relative_line_numbers);
+        assert!(!a.relative_line_numbers());
     }
 
     #[test]
@@ -10508,7 +10674,7 @@ mod tests {
         // # H2 heading so the # H1 fold has a bounded end.
         let initial = "# H1\nbody one\nbody two\n# H2\nafter\n";
         let mut a = app_with(initial, 10);
-        a.foldmethod = FoldMethod::Markdown;
+        a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         // Close the H1 fold (lines 0..=2).
         let idx = a
@@ -10533,7 +10699,7 @@ mod tests {
     fn yy_on_closed_fold_heading_yanks_whole_fold() {
         let initial = "# H1\nbody one\nbody two\n# H2\nafter\n";
         let mut a = app_with(initial, 10);
-        a.foldmethod = FoldMethod::Markdown;
+        a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
             .folds
@@ -10572,7 +10738,7 @@ mod tests {
         // any other line.
         let initial = "# H1\nbody one\nbody two\n# H2\nafter\n";
         let mut a = app_with(initial, 10);
-        a.foldmethod = FoldMethod::Markdown;
+        a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         // Leave open (default).
         a.cursor = Position::new(0, 0);
@@ -10590,7 +10756,7 @@ mod tests {
         // cursor lands in.
         let initial = "# H1\nbody one needle\nbody two\n# H2\nafter\n";
         let mut a = app_with(initial, 10);
-        a.foldmethod = FoldMethod::Markdown;
+        a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
             .folds
@@ -10619,7 +10785,7 @@ mod tests {
     fn goto_first_line_into_closed_fold_auto_opens() {
         let initial = "# H1\nbody\nbody2\n# H2\nafter\n";
         let mut a = app_with(initial, 10);
-        a.foldmethod = FoldMethod::Markdown;
+        a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
             .folds
@@ -10642,7 +10808,7 @@ mod tests {
     #[test]
     fn zi_toggles_foldenable_and_renders_folds_open() {
         let mut a = app_with("# H\nbody\n# H2\n", 10);
-        a.foldmethod = FoldMethod::Markdown;
+        a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
             .folds
@@ -10655,13 +10821,13 @@ mod tests {
         assert!(a.fold_start_at(0).is_some());
         // zi disables.
         a.apply(Action::ToggleFoldEnable);
-        assert!(!a.foldenable);
+        assert!(!a.foldenable());
         // With foldenable=false, the renderer sees no closed folds.
         assert!(!a.line_inside_closed_fold(1));
         assert!(a.fold_start_at(0).is_none());
         // zi again re-enables and the closed-state is preserved.
         a.apply(Action::ToggleFoldEnable);
-        assert!(a.foldenable);
+        assert!(a.foldenable());
         assert!(a.line_inside_closed_fold(1));
         assert!(a.fold_start_at(0).is_some());
     }
@@ -10670,7 +10836,7 @@ mod tests {
     fn nofoldenable_disables_fold_aware_operators() {
         let initial = "# H1\nbody one\nbody two\n# H2\nafter\n";
         let mut a = app_with(initial, 10);
-        a.foldmethod = FoldMethod::Markdown;
+        a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
             .folds
@@ -10678,7 +10844,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
         a.folds[idx].closed = true;
-        a.foldenable = false;
+        a.set_foldenable_for_test(false);
         a.cursor = Position::new(0, 0);
         let inv = CommandInvocation::of(a.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
@@ -10698,7 +10864,7 @@ mod tests {
         // cursor move into the fold range to verify the rule.
         let initial = "# H1\nbody\nbody2\n# H2\nafter\n";
         let mut a = app_with(initial, 10);
-        a.foldmethod = FoldMethod::Markdown;
+        a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
             .folds
@@ -10729,7 +10895,7 @@ mod tests {
         // contract, not something fold-aware expansion should
         // change.)
         let mut a = app_with("aaa\nBBB\nccc", 10);
-        a.foldmethod = FoldMethod::Indent;
+        a.set_foldmethod_for_test(FoldMethod::Indent);
         a.recompute_folds();
         a.cursor = Position::new(1, 0);
         let inv = CommandInvocation::of(a.builtins.delete.0)
@@ -12033,6 +12199,120 @@ mod tests {
         );
     }
 
+    // ---- completion.auto_insert_single (B + sub-decision (i)) ----
+    //
+    // Single-candidate auto-insert at popup-open: when `<Tab>` would
+    // open a popup with exactly one candidate AND the option is on,
+    // skip the popup and apply the candidate to the cmdline directly.
+    // Today there's only one completion path (cmdline `:` Tab), so
+    // this hook covers `gen:commands`, `gen:options`, and every other
+    // arg-slot generator uniformly. When LSP / Insert-mode completion
+    // lands (Phase 4.2, task #199), Phase 4.2 should reuse
+    // `open_completion_popup` (or factor a shared helper) so this
+    // option stays universal without a second knob.
+
+    #[test]
+    fn auto_insert_single_default_is_on() {
+        let a = app_with("xx", 10);
+        assert!(a.completion_auto_insert_single());
+    }
+
+    #[test]
+    fn auto_insert_single_replaces_command_line_for_one_candidate() {
+        // `:set foldmethod=ind` is a unique fuzzy match against the
+        // four enumerated `foldmethod=*` values (manual / indent /
+        // markdown / syntax) -- only `foldmethod=indent` survives.
+        // Tab should auto-insert it without opening a popup.
+        let mut a = app_in_command_mode("set foldmethod=ind");
+        assert!(a.completion_auto_insert_single(), "default should be on");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        assert!(
+            a.completion_state.is_none(),
+            "popup must not open when the only candidate auto-inserts"
+        );
+        assert_eq!(a.command_line, "set foldmethod=indent");
+    }
+
+    #[test]
+    fn auto_insert_single_off_keeps_popup_for_one_candidate() {
+        // Disabling reverts to "always show popup, even with one row".
+        let mut a = app_in_command_mode("set foldmethod=ind");
+        a.set_completion_auto_insert_single_for_test(false);
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let state = a
+            .completion_state
+            .as_ref()
+            .expect("popup should open when option is off");
+        assert_eq!(state.candidates.len(), 1);
+        assert_eq!(
+            a.command_line, "set foldmethod=ind",
+            "cmdline must not change until user confirms"
+        );
+    }
+
+    #[test]
+    fn auto_insert_single_does_not_fire_for_multiple_candidates() {
+        // Multiple matches → popup opens whether or not the option
+        // is on. The auto-insert path is only the one-candidate case.
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let state = a
+            .completion_state
+            .as_ref()
+            .expect("popup should open with multiple candidates");
+        assert!(
+            state.candidates.len() >= 2,
+            "expected several describe-* candidates: {:?}",
+            state
+                .candidates
+                .iter()
+                .map(|c| &c.raw.text)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn auto_insert_single_does_not_fire_when_narrowing_open_popup() {
+        // Sub-decision (i): only fires at popup-open. Opening on a
+        // multi-candidate prefix and narrowing while typing must
+        // leave the popup open (even if it shrinks to one) -- vim's
+        // default and the less surprising behaviour.
+        let mut a = app_in_command_mode("set foldmethod=");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let initial = a
+            .completion_state
+            .as_ref()
+            .expect("popup should open for the value list");
+        assert!(initial.candidates.len() >= 2);
+        // Narrow by typing toward `indent`.
+        for c in "ind".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        // Popup is still open even after narrowing to the unique
+        // match -- auto-insert only fires at popup-open, not on
+        // refilter-while-open.
+        assert!(
+            a.completion_state.is_some(),
+            "popup must stay open when narrowed mid-typing"
+        );
+        assert_eq!(a.command_line, "set foldmethod=ind");
+    }
+
+    #[test]
+    fn auto_insert_single_set_via_set_command() {
+        // `:set nocompletion.auto_insert_single` flips the bool;
+        // `:set completion.auto_insert_single` flips it back.
+        let mut a = app_with("xx", 10);
+        a.command_line = "set nocompletion.auto_insert_single".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(!a.completion_auto_insert_single());
+        a.command_line = "set completion.auto_insert_single".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.completion_auto_insert_single());
+    }
+
     #[test]
     fn delete_trailing_word_strips_then_cuts() {
         let mut s = String::from("alpha beta");
@@ -12430,6 +12710,134 @@ mod tests {
         assert!(msg.text.contains("only buffer"));
     }
 
+    // ---- Buffer activation lifecycle ----
+    //
+    // Regression coverage for the `<C-l>`-needed bug: opening a
+    // second file via `:e <path>` left the new buffer with empty
+    // folds and stale highlight caches because no single hook ran
+    // on activation. `App::activate_buffer_state` is now the one
+    // place to add buffer-level state that needs to come up with
+    // the buffer.
+
+    #[test]
+    fn opening_new_file_seeds_folds_for_indent_foldmethod() {
+        // foldmethod=indent on the initial buffer; then `:e <new>`
+        // should populate folds for the new buffer without requiring
+        // a manual `<C-l>` redraw.
+        let path = write_temp_file(
+            "activate-folds-indent",
+            "a:\n    x\n    y\nb:\n    p\n    q\n",
+        );
+        let mut a = app_with("xx", 10);
+        a.set_foldmethod_for_test(FoldMethod::Indent);
+        a.command_line = format!("e {}", path.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        // The new buffer should have folds without `<C-l>`.
+        assert!(
+            !a.folds.is_empty(),
+            "expected folds to be seeded on activation, got empty"
+        );
+        assert!(
+            a.folds.iter().any(|f| f.start_line == 0),
+            "expected a fold starting at line 0: {:?}",
+            a.folds
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn switching_back_to_buffer_preserves_closed_fold_state() {
+        // Open two buffers with foldmethod=indent. Close a fold in
+        // the first, switch to the second, switch back -- the fold
+        // should still be closed.
+        let path = write_temp_file("activate-fold-roundtrip", "a:\n    x\n    y\n");
+        let mut a = app_with("first:\n    p\n    q\nsecond:\n    r\n    s\n", 10);
+        a.set_foldmethod_for_test(FoldMethod::Indent);
+        a.recompute_folds();
+        let initial_id = a.document_buffer_id;
+        // Close the first fold (line 0) on the initial buffer.
+        let first_idx = a
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("fold");
+        a.folds[first_idx].closed = true;
+        // Open + activate the new buffer.
+        a.command_line = format!("e {}", path.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        // Switch back via :bn.
+        a.command_line = "bn".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.document_buffer_id, initial_id);
+        // Closed state survived the round-trip.
+        assert!(
+            a.folds.iter().any(|f| f.start_line == 0 && f.closed),
+            "expected fold@0 to remain closed after switch-away-and-back: {:?}",
+            a.folds
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn switching_to_unvisited_buffer_first_time_seeds_folds() {
+        // Open a second file with foldmethod=manual so its initial
+        // entry has no folds, switch foldmethod to indent, then
+        // activate -- the activation hook should seed the folds on
+        // first visit (entry's `folds` was empty).
+        let path = write_temp_file("activate-unvisited", "section:\n    a\n    b\n    c\n");
+        let mut a = app_with("xx", 10);
+        // Open the second file under foldmethod=manual so no folds
+        // get seeded into its entry.
+        a.set_foldmethod_for_test(FoldMethod::Manual);
+        a.command_line = format!("e {}", path.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let id_target = a.document_buffer_id;
+        assert!(a.folds.is_empty(), "manual leaves folds empty");
+        // Switch back to the original buffer.
+        let original_id = a
+            .buffers
+            .document_ids_sorted()
+            .into_iter()
+            .find(|id| *id != id_target)
+            .expect("original buffer");
+        a.activate_document(original_id);
+        // Now flip foldmethod to indent and activate the target;
+        // the hook should seed folds for the unvisited-under-indent
+        // buffer on first visit.
+        a.set_foldmethod_for_test(FoldMethod::Indent);
+        a.activate_document(id_target);
+        assert_eq!(a.document_buffer_id, id_target);
+        assert!(
+            !a.folds.is_empty(),
+            "expected activation hook to seed folds on first visit under indent: {:?}",
+            a.folds
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn activation_skips_fold_seed_for_manual_foldmethod() {
+        // Manual foldmethod => activation must NOT auto-create folds
+        // (the user's `zf` ranges are authoritative; auto-seeding
+        // would surprise them).
+        let path = write_temp_file("activate-manual", "a:\n    x\n    y\nb:\n    p\n    q\n");
+        let mut a = app_with("xx", 10);
+        a.set_foldmethod_for_test(FoldMethod::Manual);
+        a.command_line = format!("e {}", path.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(
+            a.folds.is_empty(),
+            "manual foldmethod should not auto-seed folds: {:?}",
+            a.folds
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
     // ---- File-tree buffer (DESIGN.md §5.9, B.1.d) ----
 
     #[test]
@@ -12486,7 +12894,7 @@ mod tests {
         a.command_line = "set tabstop=4".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.tabstop, 4);
+        assert_eq!(a.tabstop(), 4);
     }
 
     #[test]
@@ -12495,7 +12903,7 @@ mod tests {
         a.command_line = "set ts=2".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.tabstop, 2);
+        assert_eq!(a.tabstop(), 2);
     }
 
     #[test]
@@ -12514,7 +12922,7 @@ mod tests {
         a.command_line = "set nonumber".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(!a.show_line_numbers);
+        assert!(!a.show_line_numbers());
     }
 
     #[test]
@@ -12558,7 +12966,7 @@ mod tests {
         a.command_line = "set foldmethod=indent".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.foldmethod, FoldMethod::Indent);
+        assert_eq!(a.foldmethod(), FoldMethod::Indent);
         assert!(!a.folds.is_empty());
         let f = a.folds.iter().find(|f| f.start_line == 0).expect("fold");
         assert_eq!(f.end_line, 2);
@@ -12567,7 +12975,7 @@ mod tests {
     #[test]
     fn foldmethod_indent_preserves_closed_state_across_reparse() {
         let mut a = app_with("a:\n    b\n    c\n", 10);
-        a.foldmethod = FoldMethod::Indent;
+        a.set_foldmethod_for_test(FoldMethod::Indent);
         a.recompute_folds();
         assert_eq!(a.folds.len(), 1);
         // Close the fold.
@@ -12590,7 +12998,7 @@ mod tests {
         a.command_line = "set foldmethod=markdown".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.foldmethod, FoldMethod::Markdown);
+        assert_eq!(a.foldmethod(), FoldMethod::Markdown);
         assert!(!a.folds.is_empty());
         let f = a.folds.iter().find(|f| f.start_line == 0).expect("fold");
         assert!(f.end_line >= 2);
@@ -12604,7 +13012,7 @@ mod tests {
         a.command_line = "set foldmethod=syntax".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.foldmethod, FoldMethod::Syntax);
+        assert_eq!(a.foldmethod(), FoldMethod::Syntax);
         assert!(a.folds.iter().any(|f| f.start_line == 0 && f.end_line == 2));
     }
 
@@ -12627,7 +13035,7 @@ mod tests {
         a.command_line = "set foldmethod=syntax".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.foldmethod, FoldMethod::Syntax);
+        assert_eq!(a.foldmethod(), FoldMethod::Syntax);
         // Tree-sitter fold for the struct (lines 0..=2).
         assert!(
             a.folds.iter().any(|f| f.start_line == 0 && f.end_line >= 2),
@@ -12651,7 +13059,7 @@ mod tests {
         // having shifted.
         let initial = "first:\n    a\n    b\nsecond:\n    x\n    y\n";
         let mut a = app_with(initial, 10);
-        a.foldmethod = FoldMethod::Indent;
+        a.set_foldmethod_for_test(FoldMethod::Indent);
         a.recompute_folds();
         // Find and close the `second:` fold.
         let second_idx = a
@@ -12683,7 +13091,7 @@ mod tests {
         a.command_line = "set foldmethod=bogus".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.foldmethod, FoldMethod::Manual);
+        assert_eq!(a.foldmethod(), FoldMethod::Manual);
         assert!(a.last_message.is_some());
     }
 

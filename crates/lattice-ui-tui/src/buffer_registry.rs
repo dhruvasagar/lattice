@@ -29,15 +29,34 @@ use crate::buffers::{BufferFlags, BufferId, BufferKind};
 use crate::file_tree::FileTreeBuffer;
 
 /// Per-document registry payload. Each entry carries the actor
-/// handle plus the per-document tree-sitter [`Syntax`] state. The
-/// active buffer's `syntax` slot is `None` (the live state lives
-/// on `App.syntax`); inactive buffers stash their state here.
+/// handle plus per-document tree-sitter [`Syntax`] state, fold
+/// list, and any other "lives with this buffer until it
+/// closes" state.
+///
+/// **Active vs inactive split.** The currently-active buffer's
+/// `syntax` / `folds` slots are conventionally `None` / empty
+/// because the live state lives on `App.syntax` / `App.folds`
+/// for hot-path access. Switching buffers via
+/// `App::activate_document` snapshots the old buffer's live
+/// state into its entry, then loads the destination's state
+/// from its entry into the App's hot-path fields. The
+/// `App::activate_buffer_state` hook then refreshes anything
+/// that needs recomputing for the newly-active buffer (e.g.
+/// fold recompute when switching into a buffer for the first
+/// time).
 #[derive(Debug)]
 pub struct DocumentEntry {
     pub id: BufferId,
     pub handle: DocumentHandle,
     pub syntax: Option<Syntax>,
     pub last_parsed_text_version: u64,
+    /// Per-buffer fold list. Empty means "not yet computed for
+    /// this buffer." The activation hook recomputes against
+    /// the current `App.foldmethod` on first activation;
+    /// subsequent re-activations (switching back to this
+    /// buffer) restore the user's open/closed state without
+    /// re-walking the buffer.
+    pub folds: Vec<crate::app::Fold>,
 }
 
 /// One slot in the registry. The kind-specific data lives in

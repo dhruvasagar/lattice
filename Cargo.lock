@@ -708,6 +708,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-config"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "lattice-completion",
+ "lattice-core",
+ "lattice-grammar",
+ "lattice-protocol",
+ "thiserror",
+]
+
+[[package]]
 name = "lattice-core"
 version = "0.1.0"
 dependencies = [
@@ -795,6 +807,7 @@ dependencies = [
  "crossterm",
  "fancy-regex",
  "lattice-completion",
+ "lattice-config",
  "lattice-core",
  "lattice-grammar",
  "lattice-lsp",

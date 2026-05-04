@@ -251,7 +251,7 @@ candidate that would error when accepted. They remain reachable via
 | :noh / :nohl / :nohlsearch                        | ✅ registry                     | §5.2.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | :reg / :registers                                 | ✅ registry                     | §5.2.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | :marks                                            | ✅ registry                     | §5.2.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| :set option=value                                 | ✅ registry; ⚠️ option set       | §5.12. v1 only honors number/relativenumber toggles; full typed-options post-1.0.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| :set option=value                                 | ✅                              | §5.12. Typed-options registry in `lattice-config` (renderer-agnostic): `OptionType` trait + `Option<T>` with `ArcSwap<T>` cell + typed `OptionHandle<T>`. Core options (number, relativenumber, wrap, ignorecase, tabstop, foldenable, foldmethod, scrolloff, completion.auto_insert_single) register from `lattice-config::register_core_options`; renderer options register from each renderer crate. App integration: `do_set` ⇒ `config.parse_and_set_command` ⇒ `apply_post_set` for cascades (relativenumber ⇒ number, foldmethod ⇒ recompute, ui.* ⇒ theme refresh).      |
 | :s/.../.../[g]                                    | ✅ registry (regex)             | §5.2.1 / §B.2; `Args::List([pattern, replacement, flags])`, scope via Range::CurrentLine/Whole. fancy-regex compile + per-line `replace_all`; replacement template uses `$1`/`${name}`/`$0`.                                                                                                                                                                                                                                                                                                                                                              |
 | :g/pattern/cmd                                    | ✅ registry                     | §B.2; `Args::List([pattern, false, ArgValue::Invocation(body)])`. Body parsed once at `:g` parse time (no per-match re-parse); body syntax errors surface before `:g` fires.                                                                                                                                                                                                                                                                                                                                                                                                     |
 | :v/pattern/cmd                                    | ✅ registry                     | §B.2; same shape as `:g`, inverted flag set.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -260,7 +260,8 @@ candidate that would error when accepted. They remain reachable via
 | :describe-key <chord>                             | ✅ buffer (popup)               | §5.11; renders every `KeymapEntry` for the chord through the unified `Introspectable` surface. Each binding shows `Bound at: [[file:keymap.rs:LINE]]` (built-in) -- the row's source captured by the `keymap_entry!` macro -- plus an Action: `[[command:...]]` cross-reference. The `chord` arg uses `ArgKind::Chord`: typing `:describe-key <space>` puts the cmdline into chord-capture mode (raw key events render as canonical tokens -- `Ctrl-c` -> `<C-c>`, `Up` -> `<Up>`); `:describe-key<CR>` with no arg arms a one-shot prompt and the very next chord auto-submits. |
 | :keymap                                           | ✅ buffer (popup)               | §5.11; lists all default bindings grouped by mode, every chord linked via `[[key:...]]` for follow-up `:describe-key`.                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | :apropos <pattern>                                | ✅ buffer (popup)               | §5.11; case-insensitive substring over every `CommandSpec.name` + `doc`. Picker UI (§5.9.7) is post-1.0.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| :describe-option, :describe-event, :describe-mode | ⛔                              | §5.11; each lands when its registry does (typed options §5.12 / event bus §5.10 / modes Phase 8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| :describe-option                                  | ✅                              | §5.11 / §5.12. Reads from `lattice-config::ConfigRegistry`'s `ErasedOption` view: name, aliases, type label, current value, default value, enumerated values (where applicable), doc body. Markdown-rendered into a help buffer.                                                                                                                                                                                                                                                                                                                                                |
+| :describe-event, :describe-mode                   | ⛔                              | §5.11; each lands when its registry does (event bus §5.10 / modes Phase 8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Command-line history (Up/Down)                    | ✅                              | §B.3                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | :history-*                                        | ⛔                              | §B.3 (picker UI; Up/Down already works)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | :customize                                        | ⛔                              | §5.12                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -381,6 +382,7 @@ own line item.
 | `<C-w>` delete trailing word             | ✅          | strips whitespace then last token                                                                                                                                                                                         |
 | Vertico-style popup render               | ✅          | bordered, anchored BELOW the `:` prompt (cmdline shifts up to make room), selected row highlighted, matched byte ranges painted, annotations right-aligned                                                                |
 | Alias-preferred candidate text           | ✅          | `gen:commands` returns canonical names (`ex:describe-command`); host post-process rewrites to the user-facing alias (`describe-command`) and recomputes match ranges. Parser accepts both forms via two-stage resolution. |
+| Single-candidate auto-insert             | ✅          | `:set completion.auto_insert_single` (default on). When `<Tab>` would open a popup with exactly one candidate, applies it directly instead. Fires only at popup-open boundary; narrowing an open popup to one candidate while typing does NOT auto-insert (vim-style; less surprising). Phase 4.2 (#199) should reuse `App::open_completion_popup` (or factor a shared helper) when wiring Insert-mode / LSP completion so this option stays universal without a second knob. |
 | Help overlay dismissed when entering `:` | ✅          | Q16: user can only focus on one thing                                                                                                                                                                                     |
 | `<C-b>` / `<C-e>` cursor movement        | ⛔ deferred | needs full cmdline-cursor refactor; v1 cursor stays at end                                                                                                                                                                |
 | `<C-r>` register paste                   | ⛔ deferred | needs `Pending::AfterCommandLineRegister` substate                                                                                                                                                                        |
@@ -627,25 +629,54 @@ Update this section when picking up the in-flight item.
    `folds.scm`) remain queued. The `Fold` data type is shared, so
    a tree-sitter provider drops into the existing recompute /
    identity / render plumbing without a redesign.
-3. **`:set option=value` + typed options** (§5.12) ✅ done. Typed
-   `OptionRegistry` keyed by name + alias; each spec carries a
-   getter / setter pair, type, default, and doc. `:set` parses
-   `name`, `name=value`, and `noname` forms; `:describe-option`
-   renders metadata + current value; `:options` lists every
-   registered option. v1 covers number / relativenumber / wrap /
-   ignorecase / tabstop / scrolloff -- adding a new option is a
-   spec entry plus (if needed) an App field. Multi-option `:set`
-   syntax (`:set ic hls scs`) deferred.
+3. **`:set option=value` + typed options** (§5.12) ✅ done — now
+   in its own renderer-agnostic crate. The `lattice-config` crate
+   owns the option machinery: an `OptionType` trait (with built-in
+   impls for `bool`, `i64`, `String`); `Option<T>` whose value cell
+   is an `arc_swap::ArcSwap<T>` for wait-free hot-path reads; an
+   `ErasedOption` trait + `ConfigRegistry` backing both typed
+   `OptionHandle<T>` access and by-name (`:set foo=bar`) access;
+   the `:set` syntax parser; and an `OptionsGenerator` that the
+   completion pipeline picks up via the `gen:options` source.
+   `register_core_options(&registry) → CoreOptions` registers the
+   nine renderer-agnostic options (number, relativenumber, wrap,
+   ignorecase, tabstop, foldenable, foldmethod, scrolloff,
+   completion.auto_insert_single); each renderer registers its
+   own UI-specific options through the same `register` API and
+   gets its own typed-handle struct back (`lattice-ui-tui` ships
+   `register_tui_options → TuiOptions` for `ui.dim_inactive`,
+   `ui.separator`, `ui.separator_color`,
+   `ui.statusline_active_fg`, `ui.statusline_inactive_fg`).
+   `FoldMethod` lives in `lattice-core::folding` (any renderer
+   reads it the same way); the `OptionType for FoldMethod` impl
+   lives in `lattice-config::domain` to keep core's dep direction
+   inward. `:set name=value` echoes are byte-identical to the
+   pre-migration wording, including all error messages
+   (`E518: Unknown option`, `E474: not a boolean option`,
+   `tabstop out of range [1, 32]: N`). Multi-option `:set`
+   syntax (`:set ic hls scs`) still deferred.
 
-   **§5.12 amendment landed in DESIGN.md (no code yet).** Two-layer
-   config codified: `~/.config/lattice/options.toml` for static
-   data; `~/.config/lattice/init.rs` compiled to WASM Component,
-   loaded by the §5.5 plugin host with a `boot` capability, for
-   programmable config. Auto-build on first boot (cargo-component
-   under `~/.cache/lattice/`); cache by source hash + lattice
-   version + WIT revision. `lattice config build` exists as a
-   diagnostic CLI. Project-local code-config deferred behind a
-   future per-directory trust prompt; project-local
+   **App integration**: `App.config: Arc<ConfigRegistry>` plus
+   typed handle structs (`core_options`, `tui_options`) replace
+   the previous duplicated `App.foldmethod` /
+   `App.show_line_numbers` / etc. fields. Read-side accessors
+   (`app.foldmethod()`, `app.tabstop()`, ...) wrap the indirection
+   so call sites read like a field access. `do_set` calls
+   `config.parse_and_set_command(...)` and runs `apply_post_set`
+   for cascade side effects: `relativenumber` ⇒ `number=true`,
+   `foldmethod` ⇒ `recompute_folds()`, every `ui.*` ⇒
+   `sync_theme_from_config()` to refresh the cached `Theme`
+   `Style` projections.
+
+   **§5.12 amendment landed in DESIGN.md (no plugin code yet).**
+   Two-layer config codified: `~/.config/lattice/options.toml`
+   for static data; `~/.config/lattice/init.rs` compiled to WASM
+   Component, loaded by the §5.5 plugin host with a `boot`
+   capability, for programmable config. Auto-build on first boot
+   (cargo-component under `~/.cache/lattice/`); cache by source
+   hash + lattice version + WIT revision. `lattice config build`
+   exists as a diagnostic CLI. Project-local code-config deferred
+   behind a future per-directory trust prompt; project-local
    `options.toml` supported. Implementation depends on Phase 7
    (plugin host); `lattice-config-api` crate added to the project
    layout as the WIT-bindings reexport user `init.rs` consumes.
@@ -709,6 +740,15 @@ Update this section when picking up the in-flight item.
      defers to `:Tree folder` (vim's `:Explore` semantics). Help
      stays overlay-rendered for now -- moving it into the registry
      is a follow-up that doesn't require structural change.
+     `DocumentEntry` stashes per-buffer hot-path state (syntax tree,
+     fold list, last-parsed version) when a buffer leaves active;
+     a single `App::activate_buffer_state` lifecycle hook fires on
+     every transition into a document buffer (both `:e <new>` and
+     `:b N` paths), reparsing if needed and seeding folds against
+     the active `foldmethod` so users no longer have to reach for
+     `<C-l>` after switching files. New buffer-level state plugs
+     into the same hook -- no per-option fixups across the
+     activation paths.
    - **Pane visuals** ✅ done. Each pane gets a vim-style status
      line (active reverse-videoed via theme, inactive dim);
      `│` separator drawn between vertically split panes. Inactive
@@ -782,17 +822,19 @@ are crossed out there. Items that influence active tasks:
 
 ## Test counts (snapshot)
 
-1035 tests across the workspace as of the last commit. Coverage by crate:
+Workspace tests as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
 | lattice-protocol                 | 30    |
-| lattice-core (incl. integration) | 84    |
-| lattice-grammar                  | 179   |
-| lattice-completion               | 82    |
-| lattice-syntax                   | 23    |
-| lattice-runtime                  | 20    |
-| lattice-ui-tui                   | 617   |
+| lattice-core (incl. integration) | 86    |
+| lattice-grammar                  | 183   |
+| lattice-completion               | 117   |
+| lattice-config                   | 49    |
+| lattice-syntax                   | 13    |
+| lattice-runtime                  | 35    |
+| lattice-lsp                      | 32    |
+| lattice-ui-tui                   | 899   |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators,
 runtime actor) — see `docs/BENCHMARKS.md` for the latest numbers.

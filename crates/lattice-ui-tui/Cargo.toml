@@ -10,6 +10,7 @@ lattice-protocol = { path = "../lattice-protocol" }
 lattice-core = { path = "../lattice-core" }
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-completion = { path = "../lattice-completion" }
+lattice-config = { path = "../lattice-config" }
 lattice-syntax = { path = "../lattice-syntax" }
 lattice-runtime = { path = "../lattice-runtime" }
 lattice-lsp = { path = "../lattice-lsp" }

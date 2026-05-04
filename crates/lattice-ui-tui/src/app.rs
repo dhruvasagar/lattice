@@ -682,11 +682,26 @@ pub struct App {
     pub registry: Arc<CommandRegistry>,
     /// In-process event bus (DESIGN.md §5.10). The App publishes
     /// editor lifecycle events (DocumentChanged, SelectionsChanged,
-    /// ModalModeChanged, BeforeSave, DocumentSaved, BeforeQuit)
-    /// after observing the corresponding state transitions.
-    /// Subscribers are external -- v1 nobody subscribes by default,
-    /// but plugins / autocmd compat will wire up here.
+    /// ModalModeChanged, BeforeSave, DocumentSaved, BeforeQuit,
+    /// OptionChanged) after observing the corresponding state
+    /// transitions. The App itself subscribes to `OptionChanged`
+    /// for the cascade hook (see [`Self::option_change_rx`]);
+    /// other subscribers (plugins, autocmds) wire up the same way.
     pub event_bus: Arc<EventBus>,
+    /// Receiver end of the App's own subscription to
+    /// `EventKind::OptionChanged` (DESIGN.md §5.10 + §5.12). The
+    /// typed-options registry publishes through `event_bus` on
+    /// every successful set; this channel queues those events for
+    /// [`Self::drain_option_changes`] to consume on the App's main
+    /// thread. Decouples cascade timing from the publish path
+    /// (publishes can come from any thread -- plugin tasks, future
+    /// LSP-driven config writes, the customize buffer) without
+    /// risking re-entrancy on the registry mutex or the renderer.
+    ///
+    /// `Option` only because the field needs to be `take`-able so
+    /// the drain method can borrow `&mut self` for cascade work
+    /// while iterating the receiver. Always `Some` between calls.
+    pub option_change_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Event>>,
     /// Shared language registry for tree-sitter highlighting. One
     /// `Arc<LangRegistry>` services the document buffer's `Syntax`
     /// AND every `HelpBuffer` constructed by `:describe-*` /
@@ -1229,6 +1244,19 @@ impl App {
         // registry so the registry can publish `OptionChanged`
         // events to it via the `EventPublisher` closure.
         let event_bus = Arc::new(EventBus::new());
+        // Subscribe the App's own cascade-handler channel to
+        // `OptionChanged` events on the bus. The receiver lives
+        // on `App.option_change_rx`; `App::drain_option_changes`
+        // pulls from it (called from the main loop + at the end
+        // of `do_set`). This decouples cascades from the publish
+        // path: any consumer that calls `config.set` -- the
+        // cmdline, plugins, the future customize buffer view --
+        // triggers the cascade through the same channel.
+        let (option_tx, option_change_rx) = tokio::sync::mpsc::unbounded_channel();
+        event_bus.subscribe(
+            lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::OptionChanged),
+            lattice_runtime::SubscriptionTarget::Channel(option_tx),
+        );
         // Typed-options registry (DESIGN.md §5.12). Single source
         // of truth for every option's *current value*: each
         // `Option<T>` owns a wait-free `ArcSwap<T>` cell that
@@ -1324,6 +1352,7 @@ impl App {
             pending: Pending::None,
             registry,
             event_bus: event_bus.clone(),
+            option_change_rx: Some(option_change_rx),
             lang_registry,
             builtins,
             command_line: String::new(),
@@ -3942,51 +3971,76 @@ impl App {
                 return;
             }
         };
-        // Identify the canonical option name from `option` so the
-        // post-set hook knows which side effects to run. Re-parsing
-        // is cheap and keeps `parse_and_set_command` pure.
-        if let Ok(parsed) = lattice_config::parse_set(option) {
-            self.apply_post_set(parsed);
-        }
+        // Drain any cascade events the set just enqueued so the
+        // user sees the side effects (recompute folds, theme
+        // refresh, ...) before the next frame draws. The runtime's
+        // main_loop also drains once per iteration as a backstop
+        // for writes that originate outside the keystroke path
+        // (plugin tasks, future LSP-driven config writes).
+        self.drain_option_changes();
         self.set_message(EchoLevel::Info, echo);
     }
 
-    /// Run side effects that the typed-options system can't
-    /// express on its own: option cascades (`relativenumber` ⇒
-    /// `number=true`), domain-state refreshes (`foldmethod` ⇒
-    /// recompute folds), and renderer-cached projections (`ui.*`
-    /// ⇒ refresh `App.theme` Styles).
+    /// Drain queued [`Event::OptionChanged`] events from the App's
+    /// own bus subscription and apply per-option cascades on the
+    /// App's main thread.
     ///
-    /// Phase 3's `Event::OptionChanged` will replace this with the
-    /// event-bus subscription pattern; for now the App polls via
-    /// the `:set` parsed name. Cheap (most branches no-op for any
-    /// given option).
-    fn apply_post_set(&mut self, parsed: lattice_config::ParsedSet) {
-        // Extract the option name regardless of variant.
-        let name = match &parsed {
-            lattice_config::ParsedSet::NameOnly(n)
-            | lattice_config::ParsedSet::Query(n)
-            | lattice_config::ParsedSet::Negate(n) => n.as_str(),
-            lattice_config::ParsedSet::Assign { name, .. } => name.as_str(),
+    /// Why a channel and not a callback: typed-option writes can
+    /// originate from anywhere -- the cmdline, plugin tasks
+    /// (Phase 7), the customize buffer view (post-1.0), or future
+    /// LSP-driven config writes. The publisher closure on the
+    /// registry runs *on the calling thread*, which may not be
+    /// the App's. Routing every cascade through this channel
+    /// gives us:
+    ///
+    /// - **No re-entrancy on the registry mutex**: the cascade
+    ///   runs after the publish path drops every lock. A cascade
+    ///   that itself calls `config.set` (e.g. `relativenumber=true`
+    ///   ⇒ `number=true`) just queues another event -- the
+    ///   `while let Ok` loop picks it up on the next iteration.
+    /// - **No render-thread blocking**: drains happen at known
+    ///   points (top of main_loop iteration, end of `do_set`).
+    ///   Plugins doing heavy work in their own subscriptions
+    ///   never delay a keystroke.
+    /// - **One source of truth for the cascade logic**: any
+    ///   typed-option write goes through this hook regardless of
+    ///   how the write was triggered. Pre-bus the cascade lived
+    ///   on the cmdline path only and direct `config.set` calls
+    ///   silently skipped it.
+    ///
+    /// `Manual` foldmethod, no-op cascades, and unmatched options
+    /// all return early so the drain is cheap when nothing
+    /// substantive needs to happen.
+    pub fn drain_option_changes(&mut self) {
+        // Take the receiver to dodge the borrow checker (we want
+        // to mutate `self` for cascades while reading from the rx).
+        // Always restored after the loop; the `Option` is purely a
+        // borrow gymnastic, never observed in any other state.
+        let mut rx = match self.option_change_rx.take() {
+            Some(rx) => rx,
+            None => return,
         };
-        // Resolve aliases through the registry so the post-set
-        // hook compares canonical names regardless of which form
-        // the user typed (`:set rnu` vs `:set relativenumber`).
-        let canonical = self
-            .config
-            .lookup(name)
-            .map(|s| s.name().to_string())
-            .unwrap_or_else(|| name.to_string());
-        match canonical.as_str() {
+        while let Ok(event) = rx.try_recv() {
+            if let Event::OptionChanged { name, .. } = event {
+                self.apply_option_cascade(&name);
+            }
+        }
+        self.option_change_rx = Some(rx);
+    }
+
+    /// Run the per-option cascade for `canonical_name` (already
+    /// resolved by `Event::OptionChanged.name`, which is always
+    /// the canonical name regardless of which alias the user
+    /// typed).
+    fn apply_option_cascade(&mut self, canonical_name: &str) {
+        match canonical_name {
             "relativenumber" => {
                 // Vim cascade: `:set rnu` implies `:set nu` so the
                 // gutter renders at all. The reverse (`:set nornu`)
                 // does NOT clear `nu` -- preserves user intent.
-                if matches!(
-                    parsed,
-                    lattice_config::ParsedSet::NameOnly(_) | lattice_config::ParsedSet::Assign { .. }
-                ) && self.relative_line_numbers()
-                {
+                // Conditional on the new value being `true`, which
+                // we re-read through the typed handle (cheap).
+                if self.relative_line_numbers() {
                     let _ = self.config.set(self.core_options.number, true);
                 }
             }
@@ -7423,6 +7477,91 @@ mod tests {
             }
         }
         assert!(found, ":set nonumber should publish OptionChanged");
+    }
+
+    #[test]
+    fn drain_option_changes_runs_foldmethod_cascade_for_direct_config_writes() {
+        // Architectural test: writes that bypass `:set` -- e.g. a
+        // plugin or the future customize buffer view calling
+        // `config.set` directly -- still trigger the cascade once
+        // `drain_option_changes` runs. Pre-bus the cascade lived
+        // on the cmdline path only; this confirms the migration to
+        // the bus-subscription model fixes that gap.
+        let mut a = app_with("def f():\n    pass\n    pass\n", 10);
+        // No :set involved -- direct write to the registry.
+        a.config
+            .set(a.core_options.foldmethod, FoldMethod::Indent)
+            .unwrap();
+        // Folds should not be populated yet -- the cascade is
+        // queued but hasn't been drained.
+        // (The rx hasn't drained, so recompute_folds hasn't run.)
+        // Drain explicitly (production code drains in main_loop /
+        // do_set).
+        a.drain_option_changes();
+        assert_eq!(a.foldmethod(), FoldMethod::Indent);
+        assert!(
+            !a.folds.is_empty(),
+            "drain_option_changes should run the foldmethod cascade and recompute folds"
+        );
+    }
+
+    #[test]
+    fn drain_option_changes_runs_relativenumber_to_number_cascade() {
+        // Direct `config.set(relativenumber, true)` should also
+        // implicitly enable `number` after the drain. Mirrors vim:
+        // `:set rnu` implies `:set nu`.
+        let mut a = app_with("xx", 10);
+        // Start with number off so the cascade has something to do.
+        a.config.set(a.core_options.number, false).unwrap();
+        a.drain_option_changes();
+        assert!(!a.show_line_numbers());
+        // Now flip relativenumber on directly.
+        a.config
+            .set(a.core_options.relativenumber, true)
+            .unwrap();
+        a.drain_option_changes();
+        assert!(a.relative_line_numbers());
+        assert!(
+            a.show_line_numbers(),
+            "relativenumber=true should cascade to number=true via the bus subscription"
+        );
+    }
+
+    #[test]
+    fn drain_option_changes_runs_ui_theme_sync_for_direct_writes() {
+        // Direct write to a `ui.*` option should refresh the
+        // cached theme projections via `sync_theme_from_config`.
+        let mut a = app_with("xx", 10);
+        a.config
+            .set(a.tui_options.dim_inactive, false)
+            .unwrap();
+        a.drain_option_changes();
+        assert!(
+            !a.theme.dim_inactive_panes,
+            "ui.dim_inactive=false should propagate to theme.dim_inactive_panes via the cascade"
+        );
+    }
+
+    #[test]
+    fn drain_option_changes_handles_chained_cascade_writes() {
+        // The relativenumber cascade itself calls config.set(number),
+        // which fires another OptionChanged event. The drain loop
+        // must handle the chained event without deadlocking or
+        // dropping it. Confirm by starting from a clean state and
+        // asserting both options ended up correctly set.
+        let mut a = app_with("xx", 10);
+        a.config.set(a.core_options.number, false).unwrap();
+        a.drain_option_changes();
+        a.config
+            .set(a.core_options.relativenumber, true)
+            .unwrap();
+        a.drain_option_changes();
+        assert!(a.relative_line_numbers());
+        assert!(a.show_line_numbers());
+        // Re-drain should be a no-op (channel empty).
+        a.drain_option_changes();
+        assert!(a.relative_line_numbers());
+        assert!(a.show_line_numbers());
     }
 
     #[test]

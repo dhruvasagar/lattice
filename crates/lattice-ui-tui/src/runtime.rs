@@ -130,6 +130,13 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         if !app.pending_lsp_opens.is_empty() {
             drain_pending_lsp_opens_blocking(&mut app);
         }
+        // Drain queued `Event::OptionChanged` cascades (DESIGN.md
+        // §5.10 + §5.12). Backstop for option writes that happened
+        // outside a keystroke -- e.g. plugin tasks, future
+        // LSP-driven config writes. The cmdline path's `do_set`
+        // already drains synchronously after each `:set`, so the
+        // common case here is a no-op pull on an empty channel.
+        app.drain_option_changes();
         // Update viewport height (height minus the mode line + command/echo row).
         let size = terminal.size().context("query terminal size")?;
         let buffer_height = size.height.saturating_sub(2) as u32;

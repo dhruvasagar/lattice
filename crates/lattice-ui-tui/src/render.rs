@@ -101,7 +101,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     //   as inactive (frozen at `pane.cursor`) below.
     let active_pane_kind = app.pane_tree.active().buffer;
     if app.help_buffer.is_some() && active_pane_kind != crate::buffers::BufferKind::Help {
-        draw_help_overlay(frame, chunks[0], app);
+        draw_help_overlay(frame, chunks[0], app, snap);
     }
     // Picker candidate list (precedence over completion popup --
     // only one is interactive at a time).
@@ -319,20 +319,32 @@ fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
 /// the visible window from the rendered string. Link markup
 /// (`[[…]]`) renders verbatim today; future passes paint the link
 /// ranges with a distinct style and add a follow-link motion.
-fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
+fn draw_help_overlay(
+    frame: &mut Frame,
+    buffer_area: Rect,
+    app: &App,
+    snap: &DocumentSnapshot,
+) {
     let Some(help) = app.help_buffer.as_ref() else {
         return;
     };
-    let height = (buffer_area.height as u32 * 7 / 10).max(5) as u16;
-    let width = (buffer_area.width.saturating_sub(4)).clamp(20, 100);
-    let x = buffer_area.x + buffer_area.width.saturating_sub(width) / 2;
-    let y = buffer_area.y + buffer_area.height.saturating_sub(height) / 2;
-    let popup = Rect {
-        x,
-        y,
-        width,
-        height,
-    };
+    // Tooltip-style sizing: cap to a reasonable max so the popup
+    // doesn't dominate the screen. Height auto-fits content (line
+    // count + 2 for borders), capped at 20 rows or half the buffer
+    // area, whichever is smaller. Width caps at 80 cells, with a
+    // 30-cell minimum for usability.
+    //
+    // The inner height (height - 2 borders) is the popup's motion
+    // viewport. App::help_popup_inner_height computes the same
+    // value for `set_viewport_height`, so motion / scroll /
+    // ensure_cursor_visible match the rows the renderer actually
+    // paints; without that, `j` past the last visible row would
+    // silently advance `cursor.line`.
+    let line_count = help.line_count().max(1) as u16;
+    let max_h = (buffer_area.height / 2).max(5).min(20);
+    let height = (line_count.saturating_add(2)).min(max_h).max(5);
+    let width = (buffer_area.width.saturating_sub(4)).clamp(30, 80);
+    let popup = position_help_popup(app, snap, buffer_area, width, height);
 
     frame.render_widget(Clear, popup);
 
@@ -450,6 +462,119 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         let row_off = row_off.min(inner.height.saturating_sub(1) as usize);
         let col_off = (app.cursor.byte as usize).min(inner.width.saturating_sub(1) as usize);
         frame.set_cursor_position((inner.x + col_off as u16, inner.y + row_off as u16));
+    }
+}
+
+/// Tooltip-style placement for the hover / help popup overlay.
+///
+/// Anchors the popup near the *document* cursor that triggered it,
+/// rather than centering. Falls back to the centered position if
+/// the cursor isn't visible (off-screen scroll, no active doc
+/// pane, etc.).
+///
+/// Placement rules:
+/// - Below cursor when there's room; otherwise above.
+/// - Horizontally aligned to the cursor column, shifted left to
+///   keep the popup inside `buffer_area`.
+/// - In State A (active = Document) the doc cursor is `app.cursor`
+///   / `app.scroll`; in State B (active = Help) it lives in the
+///   active pane's stash.
+fn position_help_popup(
+    app: &App,
+    snap: &DocumentSnapshot,
+    buffer_area: Rect,
+    width: u16,
+    height: u16,
+) -> Rect {
+    let centered = || {
+        let cx = buffer_area.x + buffer_area.width.saturating_sub(width) / 2;
+        let cy = buffer_area.y + buffer_area.height.saturating_sub(height) / 2;
+        Rect {
+            x: cx,
+            y: cy,
+            width,
+            height,
+        }
+    };
+    let pane_area = match active_pane_content_rect(app, buffer_area) {
+        Some(r) => r,
+        None => return centered(),
+    };
+    // Active pane must be a Document for the anchor to make sense
+    // (the popup is only painted when active_pane.buffer != Help,
+    // so this is the State A / B case where the active pane shows
+    // a doc).
+    let (cursor, scroll) = match app.active_buffer {
+        crate::buffers::BufferKind::Document => (app.cursor, app.scroll),
+        _ => {
+            let pane = app.pane_tree.active();
+            (pane.cursor, pane.scroll)
+        }
+    };
+    let Some((cx, cy)) = cursor_screen_position_at(app, snap, pane_area, cursor, scroll) else {
+        return centered();
+    };
+    // Vertical: prefer below the cursor row; if the popup wouldn't
+    // fit, place above. Pin to buffer_area bounds.
+    let area_bottom = buffer_area.y + buffer_area.height;
+    let space_below = area_bottom.saturating_sub(cy + 1);
+    let space_above = cy.saturating_sub(buffer_area.y);
+    let y = if space_below >= height {
+        cy + 1
+    } else if space_above >= height {
+        cy.saturating_sub(height)
+    } else if space_below >= space_above {
+        // Not enough room either side -- pick the larger gap and
+        // clamp the popup so it stays on-screen.
+        area_bottom.saturating_sub(height).max(buffer_area.y)
+    } else {
+        buffer_area.y
+    };
+    // Horizontal: align to cursor column; shift left if it would
+    // overflow the buffer area's right edge. Clamp to area.x.
+    let max_x = (buffer_area.x + buffer_area.width).saturating_sub(width);
+    let x = cx.min(max_x).max(buffer_area.x);
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+/// Compute the *content* rect (status row excluded) of the active
+/// pane within `buffer_area`. Replicates the layout
+/// [`draw_panes`] computes per pane. Returns `None` if the pane
+/// tree has no active leaf (shouldn't happen in practice).
+fn active_pane_content_rect(app: &App, buffer_area: Rect) -> Option<Rect> {
+    let pane_area = crate::pane::PaneRect {
+        x: buffer_area.x,
+        y: buffer_area.y,
+        width: buffer_area.width,
+        height: buffer_area.height,
+    };
+    let rects = app.pane_tree.compute_rects(pane_area);
+    let active_idx = app.pane_tree.active_index();
+    let multi = rects.len() > 1;
+    let prect = rects
+        .iter()
+        .find(|(idx, _)| *idx == active_idx)
+        .map(|(_, r)| *r)?;
+    let rect = Rect {
+        x: prect.x,
+        y: prect.y,
+        width: prect.width,
+        height: prect.height,
+    };
+    if multi && rect.height >= 2 {
+        Some(Rect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height - 1,
+        })
+    } else {
+        Some(rect)
     }
 }
 
@@ -1776,17 +1901,23 @@ fn closed_fold_display_span(
 ///
 /// Returns `None` when the resulting row is past `viewport_height`
 /// (the cursor is below the visible window) or before scroll.
-fn buffer_line_to_visible_row(
+/// Map a buffer line to the visible row inside a pane viewport,
+/// taking closed folds into account. `scroll` is the pane's
+/// top-of-viewport buffer line -- usually `app.scroll`, but the
+/// popup-anchor path passes the active pane's stashed doc scroll
+/// (State B) where the doc isn't the active buffer.
+fn buffer_line_to_visible_row_with(
     app: &App,
     snap: &DocumentSnapshot,
     target: u32,
     viewport_height: u32,
+    scroll: u32,
 ) -> Option<u32> {
-    if target < app.scroll {
+    if target < scroll {
         return None;
     }
     let total_lines = snap.buffer.line_count();
-    let mut buf_line = app.scroll;
+    let mut buf_line = scroll;
     let mut row: u32 = 0;
     while row < viewport_height && buf_line < total_lines {
         // If a closed fold starts at buf_line, the fold's whole
@@ -1830,7 +1961,23 @@ fn cursor_screen_position(
     snap: &DocumentSnapshot,
     area: Rect,
 ) -> Option<(u16, u16)> {
-    if app.cursor.line < app.scroll {
+    cursor_screen_position_at(app, snap, area, app.cursor, app.scroll)
+}
+
+/// Same as [`cursor_screen_position`] but with explicit `cursor`
+/// and `scroll`. Used by the help-popup tooltip-anchor path where
+/// the document's cursor / scroll live in the active pane's stash
+/// (State B), not on `app.cursor` / `app.scroll` (which hold the
+/// help buffer's). Folds are document-state and read straight off
+/// `app`, which is correct for both states.
+fn cursor_screen_position_at(
+    app: &App,
+    snap: &DocumentSnapshot,
+    area: Rect,
+    cursor: lattice_protocol::Position,
+    scroll: u32,
+) -> Option<(u16, u16)> {
+    if cursor.line < scroll {
         return None;
     }
     // Map the buffer cursor line to the visible row taking closed
@@ -1842,7 +1989,8 @@ fn cursor_screen_position(
     // `snap_cursor_past_closed_folds` (e.g. edits that shift line
     // numbers underneath an unchanged cursor).
     let total_lines = snap.buffer.line_count().max(1);
-    let row_in_view = buffer_line_to_visible_row(app, snap, app.cursor.line, area.height as u32)?;
+    let row_in_view =
+        buffer_line_to_visible_row_with(app, snap, cursor.line, area.height as u32, scroll)?;
     let gutter_w = if app.show_line_numbers() {
         gutter_width(total_lines)
     } else {
@@ -1857,7 +2005,7 @@ fn cursor_screen_position(
     // Latin-1 / Greek / Cyrillic (multi-byte but 1 cell), CJK and
     // emoji (1-4 bytes, 2 cells).
     // Cursor column = severity_cell + gutter + display column.
-    let col = DIAG_GUTTER_WIDTH + gutter_w + display_col_for_byte(&snap.buffer, app.cursor);
+    let col = DIAG_GUTTER_WIDTH + gutter_w + display_col_for_byte(&snap.buffer, cursor);
     Some((
         area.x.saturating_add(col.try_into().unwrap_or(u16::MAX)),
         area.y

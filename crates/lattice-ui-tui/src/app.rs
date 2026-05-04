@@ -5895,14 +5895,6 @@ impl App {
         ) {
             Ok(target) => {
                 self.cursor = target;
-                // Clamp cursor's byte to the new line's length
-                // (motions like `j`/`k` may land in a column past
-                // the destination line's content; same vim
-                // semantic as the document path).
-                let line_len = line_byte_len(&buffer, self.cursor.line);
-                if self.cursor.byte > line_len {
-                    self.cursor.byte = line_len;
-                }
                 // ensure_cursor_visible at the end of `apply` does
                 // the scroll math -- self.viewport_height is the
                 // active buffer's visible row count.
@@ -5914,6 +5906,15 @@ impl App {
                 // notification subsystem will route these.
             }
         }
+        // Clamp the line *and* byte to the active buffer's bounds
+        // -- mirrors the `clamp_cursor_to_buffer()` call at the end
+        // of `run_document_invocation`. Without the line clamp,
+        // `j` past the last line would silently advance
+        // `cursor.line` past the buffer (the renderer pins the
+        // visible row, so it looks fine on screen) and a
+        // subsequent `k` would have to "unwind" the phantom
+        // overshoot before it actually moved up.
+        self.clamp_cursor_to_active_buffer();
     }
 
     fn run_document_invocation(&mut self, mut inv: CommandInvocation) {
@@ -8525,12 +8526,24 @@ impl App {
     /// split clips the lower half of the upper pane: the App thinks
     /// it has the whole screen, the renderer only paints half.
     ///
-    /// Help fills the pane area (DESIGN.md §5.9: help is a real
-    /// buffer); its viewport height matches the active pane's
-    /// content rows -- no special-case shrink for the popup
-    /// frame. The transient hover-overlay popup is a separate
-    /// surface that doesn't drive `self.viewport_height`.
+    /// **Help-popup overlay (State B).** When the focus has moved
+    /// into a hover/help popup that paints as a centred overlay
+    /// (active_buffer == Help, but the active pane still shows a
+    /// Document underneath), the popup -- not the pane -- is the
+    /// surface receiving motion. Returning the *popup's inner
+    /// height* here keeps `ensure_cursor_visible` and the renderer
+    /// in sync: without it, `j` past the last *visible* popup row
+    /// silently advanced `cursor.line` (the pane viewport is much
+    /// taller than the popup, so the App thought the cursor was
+    /// fine) and the renderer pinned the cursor visually to the
+    /// last drawn row -- so subsequent `k` had to "unwind" the
+    /// phantom overshoot before any visible motion. Help-as-buffer
+    /// (in-pane help, where pane.buffer == Help) doesn't take this
+    /// branch -- the pane content height is the right answer.
     pub fn active_pane_content_height(&self, buffer_height: u32) -> u32 {
+        if let Some(h) = self.help_popup_inner_height(buffer_height) {
+            return h;
+        }
         let area = crate::pane::PaneRect {
             x: 0,
             y: 0,
@@ -8551,6 +8564,31 @@ impl App {
             pane_h
         };
         u32::from(content_h).max(1)
+    }
+
+    /// Inner height of the hover/help popup overlay when one is
+    /// active in State B (focused popup, doc still showing in the
+    /// pane below). `None` when no overlay is active or help fills
+    /// the pane (in which case the regular pane-content-height
+    /// path applies).
+    ///
+    /// Sizing matches `render::position_help_popup` exactly so the
+    /// motion engine and the renderer agree on the popup viewport.
+    /// Border rows (top + bottom) are subtracted; the result is
+    /// the row count `Paragraph` actually paints into.
+    pub fn help_popup_inner_height(&self, buffer_height: u32) -> Option<u32> {
+        if !matches!(self.active_buffer, BufferKind::Help) {
+            return None;
+        }
+        if self.pane_tree.active().buffer == BufferKind::Help {
+            return None;
+        }
+        let help = self.help_buffer.as_ref()?;
+        let line_count = help.line_count().max(1);
+        let buffer_h = buffer_height.max(1);
+        let max_h = (buffer_h / 2).max(5).min(20);
+        let height = (line_count + 2).min(max_h).max(5);
+        Some(height.saturating_sub(2).max(1))
     }
 
     pub fn modal_label(&self) -> &'static str {
@@ -15984,6 +16022,78 @@ mod tests {
         // shrinks for help popups); the test fixture sets a fixed
         // viewport of 10 and the assertion follows from that.
         assert_eq!(a.scroll, 40);
+    }
+
+    #[test]
+    fn help_popup_inner_height_caps_at_twenty() {
+        // 50-line help in a 60-row buffer: popup height clamps at
+        // 20, inner = 18. Motion uses this as the viewport so
+        // ensure_cursor_visible scrolls the popup -- not the full
+        // pane -- when the cursor reaches the bottom row.
+        let mut a = app_with("xx", 60);
+        let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
+        install_help(&mut a, HelpBuffer::from_lines("size", lines));
+        assert_eq!(a.help_popup_inner_height(60), Some(18));
+        // Confirm `active_pane_content_height` routes through the
+        // popup-inner branch in State B, so the runtime feeds 18
+        // into `set_viewport_height` (not the full 60-row pane).
+        assert_eq!(a.active_pane_content_height(60), 18);
+    }
+
+    #[test]
+    fn help_popup_inner_height_fits_short_content() {
+        // 4-line help: popup auto-fits to height 6 (4 + 2 borders),
+        // inner = 4. Cursor can never go off-popup-viewport
+        // because the popup shows every line of the help buffer.
+        let mut a = app_with("xx", 60);
+        install_help(
+            &mut a,
+            HelpBuffer::from_lines("tiny", vec!["a".into(); 4]),
+        );
+        assert_eq!(a.help_popup_inner_height(60), Some(4));
+    }
+
+    #[test]
+    fn help_popup_inner_height_none_when_pane_holds_help() {
+        // In-pane help (e.g. `:lsp-log`) -- pane.buffer is Help, so
+        // the help fills the pane and the regular pane-content-
+        // height path applies. No overlay sizing.
+        let mut a = app_with("xx", 60);
+        let id = a.open_help_in_pane(HelpBuffer::from_lines("log", vec!["a".into(); 8]));
+        assert_eq!(a.pane_tree.active().buffer_id, id);
+        assert_eq!(a.help_popup_inner_height(60), None);
+    }
+
+    #[test]
+    fn help_popup_j_past_last_line_does_not_advance_cursor() {
+        // Regression for "j past last line in popup advanced
+        // cursor.line internally" -- the pane viewport (60 rows)
+        // hid the overshoot from `ensure_cursor_visible`, so
+        // cursor.line crept past the last visible popup row and
+        // every k afterwards had to walk back through the phantom
+        // gap before any visible motion. Now `viewport_height`
+        // matches the popup's inner height (18 here) AND the
+        // motion path clamps `cursor.line` to last_addressable.
+        let mut a = app_with("xx", 60);
+        let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
+        install_help(&mut a, HelpBuffer::from_lines("scroll", lines));
+        a.set_viewport_height(a.active_pane_content_height(60));
+        let line_down = a.builtins.line_down;
+        let line_up = a.builtins.line_up;
+        // `G` to the last line first so we're at the clamp.
+        let goto_last = a.builtins.goto_last_line;
+        a.apply(Action::Invoke(CommandInvocation::of(goto_last.0)));
+        assert_eq!(a.cursor.line, 49);
+        // Press j five times past the last line. cursor.line must
+        // stay pinned at 49 -- no phantom overshoot.
+        for _ in 0..5 {
+            a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
+        }
+        assert_eq!(a.cursor.line, 49);
+        // First k must move up immediately, not "unwind" any
+        // overshoot.
+        a.apply(Action::Invoke(CommandInvocation::of(line_up.0)));
+        assert_eq!(a.cursor.line, 48);
     }
 
     #[test]

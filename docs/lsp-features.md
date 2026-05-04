@@ -183,6 +183,8 @@ single source of truth.
 | `LspLogger` (rings + level gating + trace toggle) | 4.1.f | ✅ | `crate::logging`. ~9ns trace-off, ~100ns per record. |
 | `tracing` crate fan-out | 4.1.f | ✅ | Every `LspLogger::log` also fires `tracing::*`. `RUST_LOG=lattice_lsp=debug` works. |
 | `LspSupervisor` (per-buffer attachment + per-(workspace, server-id) actor reuse) | 4.1.h | ✅ | `crate::supervisor`. open_buffer / close_buffer / record_edit / flush / flush_all / servers_for / shutdown. attach_handle for tests + custom transports. Supports multi-server-per-buffer + multi-buffer reuse of one actor. |
+| App-side wiring: `App` holds `LspSupervisor`, `App::initialize_lsp` async boot, `lsp_record_edit` / `lsp_flush` / `lsp_close_buffer` sync hooks, `BufferId ↔ Uri` map | 4.1.i | ✅ | `lattice-ui-tui::app`. App::new builds dormant supervisor with builtin_servers; runtime calls initialize_lsp before main loop. do_buffer_delete fires lsp_close_buffer. |
+| Edit dispatch: apply_edit_blocking → lsp_record_edit + debounced flush | 4.1.i.2 | ⏹️ | Sync→async bridge for the input pipeline. Lands alongside `:e <path>` LSP integration. |
 | `*lsp*` subsystem buffer | 4.1.g | ⏹️ | Editor-side; lands with App integration. |
 | `*lsp:<server>*` per-server buffer | 4.1.g | ⏹️ | Per-server: stderr + window/logMessage + window/showMessage + lifecycle. |
 | `*lsp:<server>:trace*` JSON-RPC trace buffer | 4.1.g | ⏹️ | Toggle on per server. Inbound `←` / outbound `→` markers. |

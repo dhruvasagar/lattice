@@ -26,9 +26,36 @@ use crate::render::draw_frame;
 
 pub fn run(document: Document) -> Result<()> {
     let mut terminal = setup().context("setup terminal")?;
-    let result = main_loop(&mut terminal, App::new(document));
+    let mut app = App::new(document);
+    // LSP boot. Spawns matching language servers for the
+    // initial document (if it has a path) + attaches them.
+    // Async because the LSP handshake awaits an `initialize`
+    // response. Failure is logged through the supervisor's
+    // logger -- never blocks editor startup.
+    initialize_lsp_blocking(&mut app);
+    let result = main_loop(&mut terminal, app);
     teardown(&mut terminal).context("teardown terminal")?;
     result
+}
+
+/// Drive [`App::initialize_lsp`] from the synchronous `run`
+/// entry point. We're not yet inside a tokio runtime here; the
+/// editor's main loop is a sync `crossterm::event::poll` loop
+/// that uses [`lattice_runtime::block_on`] for its async
+/// boundaries. For LSP boot we need a full tokio context (the
+/// supervisor spawns actor tasks), so we stand up a multi-thread
+/// runtime, drive the boot future to completion, and let the
+/// runtime live as a background reactor for the actor tasks.
+fn initialize_lsp_blocking(app: &mut App) {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    let rt = RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("lattice-lsp")
+            .build()
+            .expect("LSP tokio runtime should build")
+    });
+    rt.block_on(app.initialize_lsp());
 }
 
 fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {

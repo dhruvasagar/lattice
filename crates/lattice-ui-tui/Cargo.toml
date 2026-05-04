@@ -12,6 +12,8 @@ lattice-grammar = { path = "../lattice-grammar" }
 lattice-completion = { path = "../lattice-completion" }
 lattice-syntax = { path = "../lattice-syntax" }
 lattice-runtime = { path = "../lattice-runtime" }
+lattice-lsp = { path = "../lattice-lsp" }
+tokio = { workspace = true }
 tree-sitter = { workspace = true }
 streaming-iterator = { workspace = true }
 fancy-regex = { workspace = true }
@@ -22,7 +24,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "test-util", "time"] }
 criterion = { workspace = true }
 
 [[bench]]

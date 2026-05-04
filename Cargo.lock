@@ -797,6 +797,7 @@ dependencies = [
  "lattice-completion",
  "lattice-core",
  "lattice-grammar",
+ "lattice-lsp",
  "lattice-protocol",
  "lattice-runtime",
  "lattice-syntax",

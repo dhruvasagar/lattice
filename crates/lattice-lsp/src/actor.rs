@@ -360,7 +360,7 @@ where
 /// percent-encode manually for the small set of bytes that
 /// matter in a path (space → `%20`, etc.). Servers in practice
 /// tolerate plain `file:///<path>` without aggressive encoding.
-pub(crate) fn uri_from_path(p: &std::path::Path) -> Uri {
+pub fn uri_from_path(p: &std::path::Path) -> Uri {
     let display = p.to_string_lossy();
     // Normalise Windows backslashes to forward slashes so the
     // URI is well-formed across platforms. Drive letters

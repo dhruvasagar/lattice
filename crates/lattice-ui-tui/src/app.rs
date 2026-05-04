@@ -30,6 +30,7 @@ use lattice_protocol::Event;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+use lattice_lsp::{LogLevel, LspLogger, LspSupervisor};
 use lattice_runtime::{
     CancellationToken, DocumentHandle, EventBus, RuntimeError, SnapshotCache, block_on,
     spawn_document,
@@ -41,6 +42,20 @@ use std::sync::Arc;
 
 use crate::buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
+
+/// Build a fresh LSP subsystem with the curated builtin server
+/// configs. Called once per `App::new`. The supervisor starts
+/// dormant (no actors spawned, no buffers attached); the
+/// runtime calls [`App::initialize_lsp`] to bring it online.
+fn build_lsp_supervisor() -> LspSupervisor {
+    let logger = LspLogger::with_defaults();
+    let mut sup = LspSupervisor::new(logger);
+    // Builtin registry: rust-analyzer, pyright, gopls,
+    // typescript-language-server, clangd, lua-language-server.
+    // Users override via lsp.toml when §5.12 lands.
+    sup.set_configs(lattice_lsp::builtin_servers());
+    sup
+}
 use crate::excommand;
 use crate::file_tree::{FileTreeBuffer, FileTreeEntryKind};
 use crate::help::{HelpBuffer, HelpDisplayMode, command_link, key_link};
@@ -891,6 +906,20 @@ pub struct App {
     /// auto-fires [`Action::CommandLineSubmit`] without an
     /// explicit `<CR>`. Reset on cancel / submit.
     pub auto_submit_after_chord: bool,
+    /// LSP supervisor (DESIGN.md §5.4, Phase 4.1.h). Owns the
+    /// per-(workspace, server-id) actor map, per-buffer
+    /// attachments, shared logger, and shared diagnostics
+    /// layer. Constructed empty in `App::new`; the runtime
+    /// calls [`Self::initialize_lsp`] before entering the main
+    /// loop to attach the initial document and start
+    /// matching servers. Tests that don't care about LSP can
+    /// simply skip the initialize_lsp call -- the supervisor
+    /// stays dormant.
+    pub lsp: lattice_lsp::LspSupervisor,
+    /// `BufferId` → `Uri` map. Maintained by buffer-open /
+    /// buffer-close paths; the supervisor's API is keyed by
+    /// `Uri`, so this is the bridge.
+    pub buffer_uris: std::collections::HashMap<BufferId, lattice_lsp::Uri>,
 }
 
 /// Reasons `compute_completion_state` can fail. Kept narrow so the
@@ -1323,7 +1352,98 @@ impl App {
             completion_registry,
             completion_state: None,
             auto_submit_after_chord: false,
+            lsp: build_lsp_supervisor(),
+            buffer_uris: std::collections::HashMap::new(),
         }
+    }
+
+    /// Async LSP boot. The runtime calls this once after
+    /// [`App::new`] but before entering the main loop. Walks
+    /// every currently-registered buffer (today: just the
+    /// initial document) and attaches matching servers via
+    /// the supervisor.
+    ///
+    /// Failures here do NOT block editor startup -- the editor
+    /// works fine without LSP. Spawn errors (server binary not
+    /// on PATH, etc.) are logged via the supervisor's logger
+    /// and surfaced through the `*lsp*` buffer when the user
+    /// opens it.
+    pub async fn initialize_lsp(&mut self) {
+        // Initial document: if the document was opened with a
+        // path on disk, attach matching servers. New unsaved
+        // buffers have no path and skip attachment until the
+        // first :write gives them one.
+        let snap = self.document.snapshot();
+        let path_opt = snap.path().map(std::path::Path::to_path_buf);
+        let text = snap.buffer.as_string();
+        let buffer_id = self.document_buffer_id;
+        drop(snap);
+
+        if let Some(path) = path_opt {
+            match self.lsp.open_buffer(path.clone(), text).await {
+                Ok(_handles) => {
+                    let uri = lattice_lsp::actor::uri_from_path(&path);
+                    self.buffer_uris.insert(buffer_id, uri);
+                }
+                Err(e) => {
+                    self.lsp.logger().log(
+                        None,
+                        LogLevel::Warn,
+                        lattice_lsp::LogSource::Client,
+                        format!("initialize_lsp: open_buffer failed: {e}"),
+                    );
+                }
+            }
+        }
+    }
+
+    // ---- LSP integration helpers ----
+    //
+    // The supervisor lives on the App; its open_buffer is
+    // async so we expose a sync-side hook (record_edit /
+    // close_buffer / flush) for tight integration with
+    // apply_edit_blocking and do_buffer_delete, and an async
+    // entry point ([`Self::initialize_lsp`]) for the boot
+    // path. Open-on-edit (`:e <path>`) hooks land in 4.1.i.2
+    // alongside the sync->async bridge for the input pipeline.
+
+    /// Look up the current URI of a buffer. None for buffers
+    /// that have no on-disk path yet (new unsaved scratch
+    /// buffers).
+    pub fn buffer_uri(&self, id: BufferId) -> Option<&lattice_lsp::Uri> {
+        self.buffer_uris.get(&id)
+    }
+
+    /// Notify the LSP supervisor of an edit on a buffer. Sync
+    /// because record_edit is itself sync (just queues a
+    /// change event in the per-doc DocSync; the actual
+    /// `didChange` send is debounced separately). No-op for
+    /// buffers with no LSP attachment.
+    pub fn lsp_record_edit(&mut self, buffer_id: BufferId, edit: &Edit) {
+        let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
+            return;
+        };
+        let _ = self.lsp.record_edit(&uri, edit);
+    }
+
+    /// Flush queued didChange events for a buffer immediately.
+    /// Used by the App's debounce timer (4.1.i.2) and by
+    /// will-save hooks (4.3).
+    pub fn lsp_flush(&mut self, buffer_id: BufferId) {
+        let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
+            return;
+        };
+        let _ = self.lsp.flush(&uri);
+    }
+
+    /// Detach a buffer from every attached LSP server. Called
+    /// from the bdelete path. Sends `didClose` per server +
+    /// clears the URI's diagnostics.
+    pub fn lsp_close_buffer(&mut self, buffer_id: BufferId) {
+        let Some(uri) = self.buffer_uris.remove(&buffer_id) else {
+            return;
+        };
+        let _ = self.lsp.close_buffer(&uri);
     }
 
     // ---- Blocking bridges to the document actor ----
@@ -3228,6 +3348,10 @@ impl App {
             return;
         };
         self.activate_buffer(successor);
+        // Detach from LSP before dropping the buffer registry
+        // entry so the supervisor sees the URI go away while the
+        // BufferId is still mapped.
+        self.lsp_close_buffer(to_remove);
         self.buffers.remove(to_remove);
         // Re-point any pane still referencing the removed buffer.
         let new_id = self.active_pane_buffer_id();
@@ -12666,5 +12790,70 @@ mod tests {
         assert_eq!(a.cursor, Position::new(0, 0));
         a.apply(Action::SearchNext);
         assert_eq!(a.cursor, Position::new(2, 0));
+    }
+
+    // ---- LSP wiring tests (Phase 4.1.i) ---------------------
+
+    #[test]
+    fn lsp_supervisor_constructed_with_builtin_configs() {
+        let app = App::new(Document::from_text(""));
+        // Builtin registry: rust, python, go, typescript, c-cpp,
+        // lua. Six entries today.
+        assert!(
+            app.lsp.configs().len() >= 6,
+            "expected at least 6 builtin server configs"
+        );
+        // Supervisor starts dormant.
+        assert_eq!(app.lsp.running_actor_count(), 0);
+        assert_eq!(app.lsp.attached_buffer_count(), 0);
+        assert!(app.buffer_uris.is_empty());
+    }
+
+    #[test]
+    fn buffer_uri_returns_none_before_initialize_lsp() {
+        let app = App::new(Document::from_text("fn main() {}"));
+        // No initialize_lsp call -> no buffer_uris entries.
+        assert!(app.buffer_uri(app.document_buffer_id).is_none());
+    }
+
+    #[test]
+    fn lsp_close_buffer_removes_uri_mapping_for_unattached_buffer() {
+        let mut app = App::new(Document::from_text(""));
+        // Seed a fake mapping (as if initialize_lsp had attached it).
+        let fake_uri =
+            <lattice_lsp::Uri as std::str::FromStr>::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, fake_uri);
+        assert!(app.buffer_uri(app.document_buffer_id).is_some());
+
+        app.lsp_close_buffer(app.document_buffer_id);
+        assert!(app.buffer_uri(app.document_buffer_id).is_none());
+    }
+
+    #[test]
+    fn lsp_close_buffer_is_noop_for_unmapped_id() {
+        let mut app = App::new(Document::from_text(""));
+        // No mapping exists; close must not panic.
+        app.lsp_close_buffer(app.document_buffer_id);
+        assert!(app.buffer_uris.is_empty());
+    }
+
+    #[test]
+    fn lsp_record_edit_is_noop_when_no_uri_mapping() {
+        let mut app = App::new(Document::from_text("hi"));
+        // No URI mapping -> record_edit short-circuits, no panic.
+        app.lsp_record_edit(
+            app.document_buffer_id,
+            &Edit::insert(Position::new(0, 0), "x"),
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn initialize_lsp_with_no_path_is_noop() {
+        let mut app = App::new(Document::from_text("fn main() {}"));
+        // Document has no on-disk path, so initialize_lsp
+        // shouldn't try to attach anything.
+        app.initialize_lsp().await;
+        assert_eq!(app.lsp.attached_buffer_count(), 0);
+        assert!(app.buffer_uris.is_empty());
     }
 }

@@ -15,7 +15,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style as TuiStyle};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use lattice_grammar::{ModalState, SearchDirection};
 use lattice_lsp::{Diagnostic as LspDiagnostic, DiagnosticSeverity};
@@ -373,7 +373,18 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
             Line::from(render_help_line(l, &spans))
         })
         .collect();
-    let para = Paragraph::new(visible);
+    // Honour the `wrap` option so long lines (LSP trace records,
+    // wide diagnostic messages, etc.) don't get clipped at the
+    // popup's right edge. `trim: false` preserves leading
+    // whitespace on wrapped continuation rows so indentation in
+    // markdown / fenced code blocks reads correctly. Cursor
+    // positioning at the end of this fn still uses the unwrapped
+    // line index -- it will land at the wrap origin row, which is
+    // good-enough until the cursor walker grows wrap-awareness.
+    let mut para = Paragraph::new(visible);
+    if app.wrap_lines() {
+        para = para.wrap(Wrap { trim: false });
+    }
     frame.render_widget(para, inner);
 
     // Move the terminal cursor inside the popup so motions

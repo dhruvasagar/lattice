@@ -87,8 +87,16 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     } else {
         draw_command_or_echo(frame, chunks[2], app);
     }
-    // Help overlay paints over the buffer area.
-    if app.help_buffer.is_some() {
+    // Help -- two display modes:
+    // - **Active in-pane**: help is the active buffer; paint
+    //   directly in the pane area (`draw_panes`'s Help arm). No
+    //   centred popup, no doc backdrop visible. Behaves like any
+    //   other buffer.
+    // - **Transient overlay**: help_buffer is set but active is
+    //   another kind (Document with a hover popup mid-flight, or
+    //   `:hover` demo). Paint the centred popup so the user has a
+    //   floating panel anchored to the cursor / centred on screen.
+    if app.help_buffer.is_some() && !matches!(app.active_buffer, crate::buffers::BufferKind::Help) {
         draw_help_overlay(frame, chunks[0], app);
     }
     // Hover popup paints on top of help / panes.
@@ -418,6 +426,114 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     }
 }
 
+/// Paint the help buffer directly into a pane's content area
+/// when help is the active in-pane buffer. Same per-line painter
+/// the popup overlay uses, plus the document buffer's hlsearch /
+/// current_match overlays so `/` `n` `N` look right.
+///
+/// No border, no title, no popup framing: the pane area IS the
+/// help content. Per-pane status line (drawn separately by
+/// `draw_pane_status_line`) shows the title.
+fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(help) = app.help_buffer.as_ref() else {
+        return;
+    };
+    let viewport = area.height as usize;
+    let scroll = app.scroll as usize;
+    let lines = help.lines();
+    let cursor_line = app.cursor.line as usize;
+    let visible: Vec<Line> = lines
+        .iter()
+        .skip(scroll)
+        .take(viewport)
+        .enumerate()
+        .map(|(i, l)| {
+            let line_idx = scroll + i;
+            let mut spans: Vec<lattice_syntax::StyledSpan> =
+                help.highlights.get(line_idx).cloned().unwrap_or_default();
+            for link in help.links.iter() {
+                if let Some((s, e)) = link_label_range_on_line(link, line_idx as u32) {
+                    let line_len = l.len();
+                    let s = s.min(line_len);
+                    let e = e.min(line_len);
+                    if s < e {
+                        spans.push(lattice_syntax::StyledSpan {
+                            start: s,
+                            end: e,
+                            style: lattice_syntax::Style::Link,
+                        });
+                    }
+                }
+            }
+            let mut body = render_help_line(l, &spans);
+            let line_len = l.len();
+            // Hlsearch overlay: every `app.all_matches` range that
+            // touches this line. Same painter the document path
+            // uses, so visual + match styles compose identically.
+            for &range in app.all_matches.iter() {
+                if let Some((overlay_start, overlay_end)) =
+                    match_overlay_range(range, line_idx as u32, line_len)
+                {
+                    body = apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
+                }
+            }
+            // Current-match (the one the cursor is on after `/`
+            // submit / `n` / `N`) gets the louder match style.
+            if let Some(range) = app.current_match
+                && let Some((overlay_start, overlay_end)) =
+                    match_overlay_range(range, line_idx as u32, line_len)
+            {
+                body = apply_match_overlay(body, overlay_start, overlay_end, match_style());
+            }
+            Line::from(body)
+        })
+        .collect();
+    let para = Paragraph::new(visible).wrap(Wrap { trim: false });
+    frame.render_widget(para, area);
+    // Cursor placement: same math as the popup path.
+    if area.height > 0 && area.width > 0 {
+        let row_off = cursor_line.saturating_sub(scroll);
+        let row_off = row_off.min(area.height.saturating_sub(1) as usize);
+        let col_off = (app.cursor.byte as usize).min(area.width.saturating_sub(1) as usize);
+        frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
+    }
+}
+
+/// Inactive companion to `draw_help_in_pane`: paint a static help
+/// view in a non-active pane (multi-pane sessions where one pane
+/// holds a help buffer the user isn't currently looking at). No
+/// cursor, dim styling.
+fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pane::PaneState) {
+    // Inactive panes use the pane's stashed cursor / scroll
+    // (active panes use `app.cursor` / `app.scroll`, but those
+    // belong to the focused buffer which isn't this one).
+    let scroll = pane.scroll as usize;
+    let viewport = area.height as usize;
+    // Look up the help content via the registry id this pane
+    // tracks; fall back to the popup slot for the legacy path.
+    let Some(help) = app
+        .buffers
+        .help(pane.buffer_id)
+        .or(app.help_buffer.as_ref())
+    else {
+        return;
+    };
+    let lines = help.lines();
+    let visible: Vec<Line> = lines
+        .iter()
+        .skip(scroll)
+        .take(viewport)
+        .enumerate()
+        .map(|(i, l)| {
+            let line_idx = scroll + i;
+            let spans: Vec<lattice_syntax::StyledSpan> =
+                help.highlights.get(line_idx).cloned().unwrap_or_default();
+            Line::from(render_help_line(l, &spans))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(visible).wrap(Wrap { trim: false }), area);
+}
+
 /// Lay the pane tree out across `area` and draw each pane
 /// (DESIGN.md §5.9). Each pane renders its actual buffer content
 /// (vim-style: no decorative borders) plus a one-row status line
@@ -478,12 +594,19 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
                 }
             }
             crate::buffers::BufferKind::Help => {
-                // Help is overlay-rendered (drawn after panes); the
-                // pane area shows the underlying document content.
+                // Help-as-buffer (DESIGN.md §5.9): when help is the
+                // active buffer it fills the pane area, just like
+                // a document. The centred popup overlay is reserved
+                // for the *transient* hover state where help_buffer
+                // is set but active is another kind. Doing both
+                // (popup + draw the doc behind it) would mean help
+                // motions visibly scroll the doc backdrop, which
+                // breaks the "help is just a buffer" model the
+                // user expects.
                 if is_active {
-                    draw_buffer(frame, content_rect, app, snap);
+                    draw_help_in_pane(frame, content_rect, app);
                 } else {
-                    draw_inactive_document(frame, content_rect, app, &pane, idx);
+                    draw_inactive_help(frame, content_rect, app, &pane);
                 }
             }
             crate::buffers::BufferKind::FileTree => {
@@ -1829,12 +1952,12 @@ fn link_label_range_on_line(link: &crate::help::HelpLink, line_idx: u32) -> Opti
 /// row the link still renders as plain text -- the underlying
 /// `[label]` and `(url)` characters stay visible, the navigation
 /// extracted by `parse_help_links` works regardless.)
-fn render_help_line<'a>(line: &'a str, spans: &[lattice_syntax::StyledSpan]) -> Vec<Span<'a>> {
+fn render_help_line(line: &str, spans: &[lattice_syntax::StyledSpan]) -> Vec<Span<'static>> {
     if spans.is_empty() {
-        return vec![Span::raw(line)];
+        return vec![Span::raw(line.to_string())];
     }
     let bytes = line.as_bytes();
-    let mut out: Vec<Span<'a>> = Vec::with_capacity(spans.len() * 2 + 1);
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() * 2 + 1);
     let mut cursor = 0usize;
     // Spans should arrive sorted by start; defensive sort + drop
     // overlapping in case the highlighter emits an unusual order.

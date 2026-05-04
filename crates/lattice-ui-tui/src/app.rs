@@ -8422,24 +8422,12 @@ impl App {
     /// split clips the lower half of the upper pane: the App thinks
     /// it has the whole screen, the renderer only paints half.
     ///
-    /// **Help / hover-promoted overlay.** When the active buffer
-    /// is `BufferKind::Help` the popup is centred over the buffer
-    /// area (~70% tall, minus the popup borders), so the visible
-    /// rows are smaller than the pane. The viewport height we
-    /// hand to motion / scroll / cursor-visible code is the
-    /// popup's content height. This unifies the cursor model:
-    /// `self.cursor` / `self.scroll` / `self.viewport_height`
-    /// are the active buffer's; help isn't a special case anywhere
-    /// past this branch.
+    /// Help fills the pane area (DESIGN.md §5.9: help is a real
+    /// buffer); its viewport height matches the active pane's
+    /// content rows -- no special-case shrink for the popup
+    /// frame. The transient hover-overlay popup is a separate
+    /// surface that doesn't drive `self.viewport_height`.
     pub fn active_pane_content_height(&self, buffer_height: u32) -> u32 {
-        if matches!(self.active_buffer, BufferKind::Help) {
-            // Same formula draw_help_overlay uses to size itself:
-            // 70% of the buffer band, minus 2 rows for the
-            // popup's borders. Floor at 1 so scroll math is
-            // well-defined on tiny terminals.
-            let buffer = buffer_height as usize;
-            return ((buffer * 7 / 10).saturating_sub(2)).max(1) as u32;
-        }
         let area = crate::pane::PaneRect {
             x: 0,
             y: 0,
@@ -15736,6 +15724,36 @@ mod tests {
         // Active buffer stays Help -- search didn't leak into the
         // document.
         assert!(matches!(a.active_buffer, BufferKind::Help));
+    }
+
+    #[test]
+    fn search_in_help_buffer_populates_all_matches_for_hlsearch() {
+        // The renderer paints `app.all_matches` as styled overlays
+        // on each visible help line (same painter the document
+        // path uses). This test ensures `submit_search` in a help
+        // buffer fills `all_matches` against the help text -- the
+        // *render* check (visible highlight) is covered by the
+        // existing `apply_match_overlay` unit tests; here we just
+        // assert the data is in place for the renderer to use.
+        let mut a = app_with("xx", 10);
+        let body: Vec<String> = vec![
+            "alpha needle".into(),
+            "beta".into(),
+            "gamma needle".into(),
+            "delta needle".into(),
+        ];
+        install_help(&mut a, HelpBuffer::from_lines("hl-test", body));
+        a.apply(Action::EnterSearch(SearchDirection::Forward));
+        for c in "needle".chars() {
+            a.apply(Action::SearchAppend(c));
+        }
+        a.apply(Action::SearchSubmit);
+        assert_eq!(
+            a.all_matches.len(),
+            3,
+            "every occurrence in the help body should be in all_matches"
+        );
+        assert!(a.current_match.is_some());
     }
 
     #[test]

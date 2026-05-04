@@ -1449,6 +1449,14 @@ trait PreviewProvider {
 
 **Plugin-defined pickers:** plugins create pickers by implementing `ContentProvider` and optionally `ItemRenderer`/`PreviewProvider` and calling `ui.open-picker(spec)`. Examples: a git-branch picker, a docker-container picker, a snippet picker.
 
+**Implementation seed (v1).** A minimal but real picker primitive lives in `lattice-ui-tui::picker::Picker` today: holds a query line, a substring-filtered candidate list (fed by a `PickerSource` enum), a selection cursor, and a `PickerAction` tag the host's accept dispatcher pattern-matches on. The first instantiation is the **buffer switcher** -- `:b` with no arg walks `BufferRegistry`, builds one row per entry with a kind-tagged marginalia (`doc` / `tree` / `help`, plus `(current)` on the active buffer), and `<CR>` activates the selected `BufferId` via `App::activate_buffer`. Filtering today is case-insensitive substring; the full pipeline-driven path (`lattice-completion` matcher / ranker / annotators) graduates the picker once `CommandLineSlot` is lifted out of the slot detector.
+
+**Renderer-agnostic by construction.** The picker module has no renderer-specific or host-specific imports beyond `lattice-completion`'s candidate shape. Host-coupled work (walking `BufferRegistry`, snapshotting the LSP supervisor, parsing host buffer ids) lives on the host side; the picker's only mutation entry is `Picker::set_raw_candidates(Vec<RawCandidate>)`. When the GPUI / wgpu renderer comes online, this module graduates to a sibling crate (`lattice-picker`) with zero file-by-file edits — only the host's render adapter is renderer-specific.
+
+**Layout.** Vertico-style: the picker's query line takes over the cmdline / echo row at the bottom, candidates render in the row band immediately below. The selected row sits at the TOP of the band (closest to the prompt below), alternatives fan upward in match-rank order. Reuses the cmdline completion popup's per-row painter (matched ranges + marginalia), so styling is consistent across surfaces.
+
+**Live preview.** While a `SwitchToBuffer` picker is open, every selection change activates the candidate buffer in the active pane (without pushing to position history). On `<CR>` the preview-active buffer is the real switch; on `<Esc>` the pane reverts to whatever buffer was active when the picker opened (`Picker::preview_origin`). Activate paths gate position-history pushes on `App.previewing` so preview hovers don't pollute the jump list. LSP-instance pickers (`OpenLspLog` / `OpenLspTraceLog`) skip preview today -- those targets create / surface real registry-tracked log buffers on accept; preview-on-hover for them is a follow-up.
+
 #### 5.9.8 Buffer-backed views (panels-as-buffers)
 
 The auxiliary surfaces other editors expose as fixed sidebars and bottom panels (file tree, outline, diagnostics list, search results, LSP / plugin logs, terminal, REPL, debugger, test runner, git branch viewer) are all just **buffers** here. They are placed in panes via the standard split / window operations.
@@ -1495,6 +1503,8 @@ pub enum BufferMutability {
 | `terminal` | PTY adapter (post-1.0) | Interactive |
 
 The user opens any of these like opening a file: a command (`:open file-tree`, key binding, command palette entry) creates a new buffer of that major mode and places it in the active pane (or a new split, by user choice). To get a "left sidebar with a file tree," the user creates a vertical split and opens `file-tree` in the left pane; the layout is theirs to compose, save, and restore via tabs (§5.9.3).
+
+**Implementation seed: help / log buffers in the registry.** The unified `BufferRegistry` carries the same `BufferData::Help(HelpBuffer)` variant the introspection layer (§5.11) uses for `:describe-*`, `:apropos`, `:diagnostics`, and the LSP log views. `App::open_help_in_pane(buffer)` is the in-pane entry point (durable record + active hot-path mirror); `App::open_help` is the popup overlay path (transient surfaces: hover, doc lookups, error toasts). De-dup by title means re-running `:lsp-log rust` surfaces the existing buffer rather than spawning a duplicate. The picker (§5.9.7) and the LSP command refactor (`:lsp-log` / `:lsp-server-log` / `:lsp-trace-log`) consume this primitive: candidate generation walks `BufferRegistry::help_ids_sorted()`, on-accept activates the chosen `BufferId` in the current pane.
 
 **Performance:** content providers are lazy. They populate on first display; they refresh on declared triggers (event, periodic, manual), all off the UI thread on the rayon pool. A buffer that is open but whose pane is not visible can be configured to suspend updates entirely.
 
@@ -1661,7 +1671,7 @@ Every meaningful editor state transition publishes a typed event. The catalog gr
 - **Modal state:** `ModalModeChanged { from, to }`, `OperatorPendingEntered`, `OperatorPendingResolved`.
 - **Mode lifecycle:** `MajorModeActivated`, `MajorModeDeactivated`, `MinorModeActivated`, `MinorModeDeactivated`.
 - **Selection / cursor:** `SelectionsChanged`, `CursorMoved`, `JumpPushed { source }`.
-- **LSP:** `LspServerStarted`, `LspResponseReceived`, `DiagnosticsUpdated`, `CompletionAvailable`.
+- **LSP:** `LspServerStarted`, `LspResponseReceived`, `DiagnosticsUpdated`, `CompletionAvailable`, `LspLogPushed { server_id, level, source, message }` (every `LspLogger::log` append; powers live-tail of `*lsp:<server>*` / `*lsp:<server>:trace*` buffers).
 - **UI:** `PaneFocused`, `PaneClosed`, `WindowFocused`, `BufferViewOpened`.
 - **Plugin:** `PluginActivated`, `PluginCrashed`, `PluginDeactivated`.
 - **System:** `Idle { duration }`, `FocusGained`, `FocusLost`, `BeforeQuit`.

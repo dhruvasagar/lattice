@@ -507,6 +507,21 @@ pub enum Action {
     /// Replace the echo area with a typed message.
     Echo(EchoMessage),
 
+    // ---- Picker (DESIGN.md §5.9.7) ----
+    /// Append a character to the picker's query and refilter.
+    PickerAppend(char),
+    /// Drop the last char from the picker's query and refilter.
+    PickerBackspace,
+    /// Move the selection cursor down one row (wraps).
+    PickerSelectNext,
+    /// Move the selection cursor up one row (wraps).
+    PickerSelectPrev,
+    /// Run the picker's accept action against the selected
+    /// candidate and dismiss.
+    PickerAccept,
+    /// Drop the picker without acting on any candidate.
+    PickerDismiss,
+
     // ---- Paste (`p`, `P`) ----
     /// Vim's `p` -- paste the unnamed register after the cursor (charwise)
     /// or below the current line (linewise).
@@ -967,6 +982,27 @@ pub struct App {
     /// Active completion popup. `Some` while the user has Tab-
     /// triggered completion in the `:` line.
     pub completion_state: Option<CompletionState>,
+    /// Active vertico-style picker (DESIGN.md §5.9.7, §5.9.10).
+    /// `Some` while a picker is open over a buffer / LSP instance
+    /// / future generator. Input routes here in
+    /// [`crate::input::translate`] before falling through to the
+    /// modal handlers; render takes precedence over completion +
+    /// hover popups.
+    pub picker: Option<crate::picker::Picker>,
+    /// True while a buffer activation is in *preview* mode --
+    /// driven by the picker's `select_next` / `select_prev`
+    /// hooks. Activate paths gate position-history pushes on
+    /// this flag so a hover-preview doesn't pollute the jump
+    /// list. Cleared at the end of every preview tick.
+    pub previewing: bool,
+    /// Receiver for [`Event::LspLogPushed`] events (Phase 4).
+    /// Drained once per main-loop tick by
+    /// [`Self::drain_lsp_log_events`]; matching log buffers in
+    /// `BufferRegistry` are rebuilt from the logger snapshot so
+    /// `*lsp*` / `*lsp:<server>*` / `*lsp:<server>:trace*` views
+    /// update live without the user having to reopen them.
+    pub lsp_log_event_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_protocol::Event>>,
     // `completion.auto_insert_single` lives on the typed-options
     // registry now (`self.config` keyed by
     // `self.core_options.completion_auto_insert_single`). Read via
@@ -1390,6 +1426,24 @@ impl App {
             lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::OptionChanged),
             lattice_runtime::SubscriptionTarget::Channel(option_tx),
         );
+        // LSP log live-tail (Phase 4): every record the LspLogger
+        // appends fires Event::LspLogPushed; the App's drain hook
+        // refreshes any open `*lsp*` / `*lsp:<server>*` /
+        // `*lsp:<server>:trace*` help buffer from the logger
+        // snapshot so views update live as records arrive.
+        let (lsp_log_tx, lsp_log_event_rx) = tokio::sync::mpsc::unbounded_channel();
+        event_bus.subscribe(
+            lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::LspLogPushed),
+            lattice_runtime::SubscriptionTarget::Channel(lsp_log_tx),
+        );
+        // Wire the logger's publisher to the same bus. The
+        // logger lives in `lattice-lsp`; the closure captures an
+        // Arc<EventBus> clone so the logger's lifetime is
+        // independent of any single App field.
+        let bus_for_log = event_bus.clone();
+        lsp_logger.set_event_publisher(std::sync::Arc::new(move |event| {
+            bus_for_log.publish(event);
+        }));
         // Typed-options registry (DESIGN.md §5.12). Single source
         // of truth for every option's *current value*: each
         // `Option<T>` owns a wait-free `ArcSwap<T>` cell that
@@ -1542,6 +1596,9 @@ impl App {
             help_display_mode: HelpDisplayMode::default(),
             completion_registry,
             completion_state: None,
+            picker: None,
+            previewing: false,
+            lsp_log_event_rx: Some(lsp_log_event_rx),
             auto_submit_after_chord: false,
             lsp,
             lsp_diagnostics,
@@ -1955,35 +2012,56 @@ impl App {
 
     // ---- LSP introspection (Phase 4.1.g) --------------------
 
-    /// `:lsp-log [server]` -- open the subsystem-wide log when
-    /// `server_id` is `None`, or the per-server log when
-    /// supplied. Backed by a [`HelpBuffer`] populated from the
-    /// `LspLogger`'s ring snapshot.
+    /// `:lsp-log [server]` -- open a per-server log buffer in the
+    /// active pane.
+    ///
+    /// - **No arg**: open the vertico-style picker over every
+    ///   running `(workspace, server_id)` instance. `<CR>` opens
+    ///   `*lsp:<server>*` for the chosen row.
+    /// - **`server` arg**: pre-filter the picker. If exactly one
+    ///   instance matches (the common case -- one rust-analyzer
+    ///   per workspace), short-circuit and open directly. If
+    ///   multiple instances match (same server id across multiple
+    ///   workspaces), the picker still appears so the user
+    ///   disambiguates by workspace path.
+    ///
+    /// Buffer goes through [`Self::open_help_in_pane`] -- it lives
+    /// in `BufferRegistry` and is reachable via `:bn` / `:b N` /
+    /// the buffer picker (Phase 1 / Phase 2 wiring).
     pub fn do_open_lsp_log(&mut self, server_id: Option<&str>) {
-        let buffer = match server_id {
-            None => crate::help::HelpBuffer::lsp_global_log(&self.lsp_logger),
-            Some(id) => {
-                let arc: std::sync::Arc<str> = std::sync::Arc::from(id);
-                crate::help::HelpBuffer::lsp_server_log(&self.lsp_logger, &arc)
-            }
-        };
-        self.open_help(buffer.with_markdown_syntax(self.lang_registry.clone()));
+        self.open_lsp_picker(
+            "lsp-log",
+            server_id.map(|s| s.to_string()),
+            crate::picker::PickerAction::OpenLspLog,
+        );
+    }
+
+    /// `:lsp-trace-log [server]` -- open the JSON-RPC trace ring
+    /// in the active pane. Same dispatch shape as `:lsp-log`:
+    /// picker on no-arg or multi-match, direct open on single
+    /// match. **Does not toggle tracing** -- pair with
+    /// `:lsp-trace <server>` to start / stop the wire trace; this
+    /// command only views the records.
+    pub fn do_open_lsp_trace_log(&mut self, server_id: Option<&str>) {
+        self.open_lsp_picker(
+            "lsp-trace-log",
+            server_id.map(|s| s.to_string()),
+            crate::picker::PickerAction::OpenLspTraceLog,
+        );
     }
 
     /// `:lsp-trace <server>` -- toggle JSON-RPC trace for the
-    /// server + open the trace buffer.
+    /// server. Pure toggle: the trace buffer is opened by the
+    /// separate `:lsp-trace-log [server]` command so peeking
+    /// mid-stream doesn't flip the toggle off.
     pub fn do_toggle_lsp_trace(&mut self, server_id: &str) {
         let id: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let now_on = self.lsp_logger.toggle_trace(std::sync::Arc::clone(&id));
+        let now_on = self.lsp_logger.toggle_trace(id);
         let label = if now_on { "on" } else { "off" };
         self.set_message(
             EchoLevel::Info,
-            format!("lsp-trace {}: {label}", server_id),
+            format!("lsp-trace {server_id}: {label} (use :lsp-trace-log {server_id} to view)"),
         );
-        let buffer =
-            crate::help::HelpBuffer::lsp_server_trace(&self.lsp_logger, &id)
-                .with_markdown_syntax(self.lang_registry.clone());
-        self.open_help(buffer);
     }
 
     /// `:lsp-status` -- render every running server in a
@@ -2005,26 +2083,17 @@ impl App {
         self.open_help(buffer.with_markdown_syntax(self.lang_registry.clone()));
     }
 
-    /// `:lsp-server-log` -- picker-style listing of every running
-    /// LSP server actor. Each row shows server id + workspace
-    /// root + buffer count + capability summary, with `exec:`
-    /// links that open the per-server log + trace on Enter.
-    /// Filter rows with vim's `/query` regex search; a real
-    /// fuzzy picker arrives with the bundled fuzzy-finder
-    /// plugin (Phase 8b).
+    /// `:lsp-server-log` -- vertico picker over every running
+    /// `(workspace, server_id)` LSP actor. `<CR>` opens the
+    /// per-server log (`*lsp:<server>*`) for the chosen row. Use
+    /// `:lsp-trace-log` for the trace-ring view; `:lsp-status` for
+    /// the read-only static overview.
     pub fn do_lsp_server_log_listing(&mut self) {
-        let buffer = match self.lsp.try_lock() {
-            Ok(sup) => crate::help::HelpBuffer::lsp_server_log_listing(&sup),
-            Err(_) => crate::help::HelpBuffer::from_lines(
-                "lsp-server-log",
-                vec![
-                    "# :lsp-server-log".into(),
-                    String::new(),
-                    "(supervisor lock unavailable; an async open / shutdown is in flight)".into(),
-                ],
-            ),
-        };
-        self.open_help(buffer.with_markdown_syntax(self.lang_registry.clone()));
+        self.open_lsp_picker(
+            "lsp-server-log",
+            None,
+            crate::picker::PickerAction::OpenLspLog,
+        );
     }
 
     /// `:lsp-restart <server>` -- supervisor restart hook.
@@ -2424,6 +2493,33 @@ impl App {
             Action::Echo(message) => {
                 self.last_message = Some(message);
             }
+
+            Action::PickerAppend(c) => {
+                if let Some(p) = self.picker.as_mut() {
+                    p.append_query(c);
+                }
+                self.preview_picker_selection();
+            }
+            Action::PickerBackspace => {
+                if let Some(p) = self.picker.as_mut() {
+                    p.backspace_query();
+                }
+                self.preview_picker_selection();
+            }
+            Action::PickerSelectNext => {
+                if let Some(p) = self.picker.as_mut() {
+                    p.select_next();
+                }
+                self.preview_picker_selection();
+            }
+            Action::PickerSelectPrev => {
+                if let Some(p) = self.picker.as_mut() {
+                    p.select_prev();
+                }
+                self.preview_picker_selection();
+            }
+            Action::PickerAccept => self.do_picker_accept(),
+            Action::PickerDismiss => self.do_picker_dismiss(),
 
             Action::PushDigit(d) => {
                 // Accumulate one decimal digit into the pending count.
@@ -4016,12 +4112,14 @@ impl App {
         let active_id = self.active_pane_buffer_id();
         let doc_count = self.buffers.document_ids_sorted().len();
         let tree_count = self.buffers.file_tree_ids_sorted().len();
+        let help_count = self.buffers.help_ids_sorted().len();
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!(
-            "{} open buffer(s) ({} document, {} tree):",
+            "{} open buffer(s) ({} document, {} tree, {} help):",
             ids.len(),
             doc_count,
-            tree_count
+            tree_count,
+            help_count,
         ));
         lines.push(String::new());
         for id in ids {
@@ -4050,12 +4148,428 @@ impl App {
                         t.root.display()
                     ));
                 }
+                BufferData::Help(h) => {
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} help     {}",
+                        id.0, h.title,
+                    ));
+                }
             }
         }
         self.open_help(
             HelpBuffer::from_lines("buffers", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
         );
+    }
+
+    /// Snapshot the supervisor's running actor table into the
+    /// shape the picker consumes. Walks the supervisor under its
+    /// lock, builds one [`crate::picker::LspInstanceRow`] per
+    /// `(workspace, server_id)` actor, drops the lock, and returns
+    /// the vec. Returns an empty list (and echoes a warning) when
+    /// the lock isn't immediately available -- async open / close
+    /// in flight; the picker degrades to an empty list rather than
+    /// blocking input.
+    fn snapshot_lsp_instances(&mut self) -> Vec<crate::picker::LspInstanceRow> {
+        let Ok(sup) = self.lsp.try_lock() else {
+            self.set_message(
+                EchoLevel::Warn,
+                "lsp-picker: supervisor busy (async open / shutdown in flight); try again"
+                    .to_string(),
+            );
+            return Vec::new();
+        };
+        let actors = sup.running_actors();
+        actors
+            .into_iter()
+            .map(|((workspace, server_id), handle)| {
+                let key = (workspace.clone(), server_id.clone());
+                let buffer_count = sup.buffer_count_for(&key);
+                let caps = handle.capabilities();
+                let cap_summary = crate::help::summarise_capabilities(&caps);
+                crate::picker::LspInstanceRow {
+                    workspace,
+                    server_id,
+                    buffer_count,
+                    cap_summary,
+                }
+            })
+            .collect()
+    }
+
+    /// Build + open an LSP instance picker. Called by `:lsp-log`,
+    /// `:lsp-server-log`, and `:lsp-trace-log`. The `prefilter`
+    /// arg pre-narrows the candidate list to one server id while
+    /// still allowing the user to disambiguate between multiple
+    /// workspaces. `on_accept` decides which buffer the chosen
+    /// row opens (`OpenLspLog` or `OpenLspTraceLog`).
+    fn open_lsp_picker(
+        &mut self,
+        title: &str,
+        prefilter: Option<String>,
+        on_accept: crate::picker::PickerAction,
+    ) {
+        let rows = self.snapshot_lsp_instances();
+        if rows.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP servers running; open a file with a matching language to attach"
+                    .to_string(),
+            );
+            return;
+        }
+        // Single match short-circuit: when prefilter narrows the
+        // candidate set to exactly one row, skip the picker and
+        // open the buffer directly. Vim-style "do what I mean"
+        // (e.g. `:lsp-log rust` with one rust workspace).
+        let matches: Vec<&crate::picker::LspInstanceRow> = rows
+            .iter()
+            .filter(|r| {
+                prefilter
+                    .as_ref()
+                    .is_none_or(|want| r.server_id == *want)
+            })
+            .collect();
+        if matches.len() == 1 {
+            let server_id = matches[0].server_id.clone();
+            match on_accept {
+                crate::picker::PickerAction::OpenLspLog => {
+                    self.open_lsp_log_in_pane(&server_id)
+                }
+                crate::picker::PickerAction::OpenLspTraceLog => {
+                    self.open_lsp_trace_log_in_pane(&server_id)
+                }
+                crate::picker::PickerAction::SwitchToBuffer => {}
+            }
+            return;
+        }
+        if matches.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                format!(
+                    "no LSP server matching {:?} running",
+                    prefilter.unwrap_or_default()
+                ),
+            );
+            return;
+        }
+        let mut p = crate::picker::Picker::new(
+            title,
+            crate::picker::PickerSource::LspInstances { prefilter },
+            on_accept,
+        );
+        p.set_lsp_instances(rows);
+        self.picker = Some(p);
+    }
+
+    /// `:b` with no arg (DESIGN.md §5.9.7) -- open the vertico-style
+    /// buffer switcher. Type to filter; `<Up>` / `<Down>` (or
+    /// `<C-p>` / `<C-n>`) to move; `<CR>` to switch to the
+    /// selected buffer; `<Esc>` to dismiss. Marginalia shows the
+    /// kind (`doc` / `tree` / `help`) plus a `(current)` tag on
+    /// the active buffer.
+    ///
+    /// **Live preview.** While the picker is open, every selection
+    /// change activates the candidate buffer in the active pane
+    /// (without polluting the jump list). On accept, that
+    /// activation becomes the real switch; on dismiss, the
+    /// pane reverts to whatever buffer was active when the
+    /// picker opened.
+    pub fn open_buffer_picker(&mut self) {
+        let active = self.active_pane_buffer_id();
+        let mut p = crate::picker::Picker::new(
+            "buffers",
+            crate::picker::PickerSource::Buffers,
+            crate::picker::PickerAction::SwitchToBuffer,
+        );
+        // Host-side candidate build (the picker module is
+        // renderer-agnostic and doesn't import `BufferRegistry`).
+        let raw = raw_buffer_candidates(&self.buffers, active);
+        p.set_raw_candidates(raw);
+        // Stash the original active buffer id so dismiss can
+        // restore. None on no-buffer pickers (LSP); for the
+        // buffer switcher we always have one. Encoded as `u32`
+        // because `Picker::preview_origin` is renderer-agnostic
+        // (the host newtype-wraps).
+        p.preview_origin = Some(active.0);
+        self.picker = Some(p);
+        // Preview the initial selection. With the active buffer
+        // floated to the bottom, the initial selection is a
+        // *different* buffer (the alternate-buffer convention),
+        // so opening the picker immediately shows what `<CR>`
+        // would land on.
+        self.preview_picker_selection();
+    }
+
+    /// If the picker is open and its action is
+    /// [`crate::picker::PickerAction::SwitchToBuffer`], activate
+    /// the currently-selected candidate's buffer in the active
+    /// pane *as a preview* -- no position-history push, no
+    /// commit. Called after every selection change while a buffer
+    /// picker is open.
+    fn preview_picker_selection(&mut self) {
+        let Some(picker) = self.picker.as_ref() else {
+            return;
+        };
+        if !matches!(picker.on_accept, crate::picker::PickerAction::SwitchToBuffer) {
+            return;
+        }
+        let Some(c) = picker.selected_candidate() else {
+            return;
+        };
+        let Some(raw_id) = crate::picker::buffer_id_from_text(&c.raw.text) else {
+            return;
+        };
+        let id = BufferId(raw_id);
+        if id == self.active_pane_buffer_id() {
+            // Already showing this buffer; nothing to preview.
+            return;
+        }
+        self.previewing = true;
+        self.activate_buffer(id);
+        self.previewing = false;
+    }
+
+    /// Apply `Action::PickerDismiss` -- close the picker and, if
+    /// a buffer-switch picker was previewing, restore the active
+    /// pane to whatever buffer it was on at picker-open. Tested
+    /// by `picker_dismiss_restores_origin_when_previewing`.
+    fn do_picker_dismiss(&mut self) {
+        let Some(picker) = self.picker.take() else {
+            return;
+        };
+        if let Some(origin_raw) = picker.preview_origin {
+            let origin = BufferId(origin_raw);
+            if origin != self.active_pane_buffer_id() {
+                self.previewing = true;
+                self.activate_buffer(origin);
+                self.previewing = false;
+            }
+        }
+    }
+
+    /// Apply `Action::PickerAccept` -- run the picker's stored
+    /// action against the selected candidate, then dismiss.
+    /// For [`crate::picker::PickerAction::SwitchToBuffer`] the
+    /// preview-activated buffer is already on screen; the accept
+    /// path just commits (clears preview tracking) without
+    /// re-activating, so the position history sees ONE entry for
+    /// the user's original cursor (pushed at picker-open in
+    /// future, today the help-arm autopush handles cross-buffer-
+    /// kind landings).
+    fn do_picker_accept(&mut self) {
+        let Some(picker) = self.picker.take() else {
+            return;
+        };
+        let Some(c) = picker.selected_candidate() else {
+            // Empty filter -- bail without acting (the picker is
+            // already gone since we `take()`d it). Restore the
+            // original buffer if we'd been previewing.
+            if let Some(origin) = picker.preview_origin {
+                self.previewing = true;
+                self.activate_buffer(BufferId(origin));
+                self.previewing = false;
+            }
+            return;
+        };
+        let payload = c.raw.text.clone();
+        match picker.on_accept {
+            crate::picker::PickerAction::SwitchToBuffer => {
+                let Some(raw_id) = crate::picker::buffer_id_from_text(&payload) else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: malformed buffer id {payload:?}"),
+                    );
+                    // Malformed -- restore origin if we'd previewed.
+                    if let Some(origin) = picker.preview_origin {
+                        self.previewing = true;
+                        self.activate_buffer(BufferId(origin));
+                        self.previewing = false;
+                    }
+                    return;
+                };
+                let id = BufferId(raw_id);
+                // Already on the target via preview; no additional
+                // action needed beyond letting the picker drop.
+                if id != self.active_pane_buffer_id() {
+                    self.activate_buffer(id);
+                }
+            }
+            crate::picker::PickerAction::OpenLspLog => {
+                let Some((_workspace, server_id)) =
+                    crate::picker::lsp_key_from_text(&payload)
+                else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: malformed lsp key {payload:?}"),
+                    );
+                    return;
+                };
+                self.open_lsp_log_in_pane(&server_id);
+            }
+            crate::picker::PickerAction::OpenLspTraceLog => {
+                let Some((_workspace, server_id)) =
+                    crate::picker::lsp_key_from_text(&payload)
+                else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: malformed lsp key {payload:?}"),
+                    );
+                    return;
+                };
+                self.open_lsp_trace_log_in_pane(&server_id);
+            }
+        }
+    }
+
+    /// Open `*lsp:<server_id>*` in the active pane via the
+    /// in-pane help registry path. Used by both the picker
+    /// accept dispatcher and the direct ex-command short path
+    /// when only one instance matches.
+    fn open_lsp_log_in_pane(&mut self, server_id: &str) {
+        let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
+        let buffer = crate::help::HelpBuffer::lsp_server_log(&self.lsp_logger, &arc)
+            .with_markdown_syntax(self.lang_registry.clone());
+        self.open_help_in_pane(buffer);
+    }
+
+    /// Open `*lsp:<server_id>:trace*` in the active pane. Pure
+    /// view -- the trace toggle is `:lsp-trace <server>` and is
+    /// independent of opening / closing this buffer.
+    fn open_lsp_trace_log_in_pane(&mut self, server_id: &str) {
+        let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
+        let buffer = crate::help::HelpBuffer::lsp_server_trace(&self.lsp_logger, &arc)
+            .with_markdown_syntax(self.lang_registry.clone());
+        self.open_help_in_pane(buffer);
+    }
+
+    /// Drain queued [`lattice_protocol::Event::LspLogPushed`]
+    /// events (Phase 4) and refresh any open log / trace
+    /// help buffers from the logger snapshot. Called once per
+    /// main-loop tick + at the end of any path that pushes a log
+    /// record synchronously.
+    ///
+    /// Cheap when no log buffers are open: the refresh path
+    /// short-circuits on `BufferRegistry::help_with_title`
+    /// missing the title. When buffers ARE open the rebuild walks
+    /// the logger ring (≤ 10k records) and replaces the rope --
+    /// well within frame budget for the editor's scale.
+    pub fn drain_lsp_log_events(&mut self) {
+        let Some(mut rx) = self.lsp_log_event_rx.take() else {
+            return;
+        };
+        // Coalesce: collect every drained event's scope, then
+        // refresh each unique scope at most once. A burst of
+        // 100 trace records on one server -> one refresh.
+        let mut subsystem = false;
+        let mut server_logs: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut server_traces: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        while let Ok(event) = rx.try_recv() {
+            if let lattice_protocol::Event::LspLogPushed {
+                server_id,
+                level,
+                source,
+                ..
+            } = event
+            {
+                match server_id {
+                    None => subsystem = true,
+                    Some(id) => {
+                        // Trace records (level == "trace" OR
+                        // source == "trace") refresh the trace
+                        // view; everything else refreshes the
+                        // per-server log view (which excludes
+                        // trace records by filter).
+                        if level == "trace" || source == "trace" {
+                            server_traces.insert(id);
+                        } else {
+                            server_logs.insert(id);
+                        }
+                    }
+                }
+            }
+        }
+        if subsystem {
+            self.refresh_lsp_log_buffer_subsystem();
+        }
+        for id in server_logs {
+            self.refresh_lsp_log_buffer_per_server(&id);
+        }
+        for id in server_traces {
+            self.refresh_lsp_trace_buffer(&id);
+        }
+        self.lsp_log_event_rx = Some(rx);
+    }
+
+    /// Rebuild the `*lsp*` (subsystem-wide) help buffer from the
+    /// logger snapshot, preserving cursor + scroll. No-op when
+    /// the buffer isn't currently open.
+    fn refresh_lsp_log_buffer_subsystem(&mut self) {
+        let Some(id) = self.buffers.help_with_title("lsp") else {
+            return;
+        };
+        let new_buf = crate::help::HelpBuffer::lsp_global_log(&self.lsp_logger)
+            .with_markdown_syntax(self.lang_registry.clone());
+        self.replace_help_buffer_preserving_cursor(id, new_buf);
+    }
+
+    /// Rebuild `*lsp:<server_id>*` from the logger snapshot.
+    fn refresh_lsp_log_buffer_per_server(&mut self, server_id: &str) {
+        let title = format!("lsp:{server_id}");
+        let Some(id) = self.buffers.help_with_title(&title) else {
+            return;
+        };
+        let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
+        let new_buf = crate::help::HelpBuffer::lsp_server_log(&self.lsp_logger, &arc)
+            .with_markdown_syntax(self.lang_registry.clone());
+        self.replace_help_buffer_preserving_cursor(id, new_buf);
+    }
+
+    /// Rebuild `*lsp:<server_id>:trace*` from the logger snapshot.
+    fn refresh_lsp_trace_buffer(&mut self, server_id: &str) {
+        let title = format!("lsp:{server_id}:trace");
+        let Some(id) = self.buffers.help_with_title(&title) else {
+            return;
+        };
+        let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
+        let new_buf = crate::help::HelpBuffer::lsp_server_trace(&self.lsp_logger, &arc)
+            .with_markdown_syntax(self.lang_registry.clone());
+        self.replace_help_buffer_preserving_cursor(id, new_buf);
+    }
+
+    /// Atomically replace a registry-tracked help buffer's body
+    /// with `new_buf`, preserving the existing buffer id +
+    /// cursor + scroll so the user's view stays put across the
+    /// rebuild. Clamps cursor to the new content's line bounds.
+    /// Also syncs `App.help_buffer` (the popup hot-path mirror)
+    /// when it points at the same id.
+    fn replace_help_buffer_preserving_cursor(
+        &mut self,
+        id: BufferId,
+        mut new_buf: crate::help::HelpBuffer,
+    ) {
+        let (cur, scr) = match self.buffers.help(id) {
+            Some(h) => (h.cursor, h.scroll),
+            None => return,
+        };
+        new_buf.id = id;
+        new_buf.cursor = cur;
+        new_buf.scroll = scr;
+        let line_count = new_buf.line_count() as u32;
+        if line_count > 0 && new_buf.cursor.line >= line_count {
+            new_buf.cursor.line = line_count - 1;
+        }
+        if let Some(slot) = self.buffers.help_mut(id) {
+            *slot = new_buf;
+        }
+        // Sync the popup hot-path mirror when active.
+        if self.help_buffer.as_ref().map(|h| h.id) == Some(id)
+            && let Some(reg) = self.buffers.help(id)
+        {
+            self.help_buffer = Some(reg.clone());
+        }
     }
 
     /// `:bd[elete]` -- close the active buffer (whichever the
@@ -4109,7 +4623,8 @@ impl App {
     /// Switch the active pane to whatever buffer `id` references,
     /// regardless of kind. Document buffers route through
     /// [`Self::activate_document`]; tree buffers update the active
-    /// pane + load the tree's stash.
+    /// pane + load the tree's stash; help buffers go through
+    /// [`Self::activate_help_in_pane`] (Phase 1 wiring).
     pub fn activate_buffer(&mut self, id: BufferId) {
         let kind = match self.buffers.get(id) {
             Some(entry) => entry.kind(),
@@ -4121,9 +4636,7 @@ impl App {
         match kind {
             BufferKind::Document => self.activate_document(id),
             BufferKind::FileTree => self.activate_file_tree(id),
-            BufferKind::Help => {
-                // Help isn't in the registry yet; ignore.
-            }
+            BufferKind::Help => self.activate_help_in_pane(id),
         }
     }
 
@@ -5396,6 +5909,7 @@ impl App {
             Effect::BufferNext => self.do_buffer_next(),
             Effect::BufferPrev => self.do_buffer_prev(),
             Effect::ListBuffers => self.do_list_buffers(),
+            Effect::OpenBufferPicker => self.open_buffer_picker(),
             Effect::BufferDelete { force } => self.do_buffer_delete(force),
             Effect::OpenFileTree { root } => self.do_open_file_tree(root),
             Effect::CloseFileTree => self.dismiss_file_tree(),
@@ -5409,6 +5923,9 @@ impl App {
             Effect::PrevDiagnostic => self.do_prev_diagnostic(),
             Effect::OpenLspLog { server_id } => self.do_open_lsp_log(server_id.as_deref()),
             Effect::ToggleLspTrace { server_id } => self.do_toggle_lsp_trace(&server_id),
+            Effect::OpenLspTraceLog { server_id } => {
+                self.do_open_lsp_trace_log(server_id.as_deref())
+            }
             Effect::LspStatus => self.do_lsp_status(),
             Effect::LspServerLogListing => self.do_lsp_server_log_listing(),
             Effect::LspRestart { server_id } => self.do_lsp_restart(&server_id),
@@ -6053,7 +6570,9 @@ impl App {
 
     /// Copy the App's hot-path cursor / scroll into the active
     /// pane's stash. Called before any operation that flips which
-    /// pane is active.
+    /// pane is active. For help-in-pane the registry's HelpBuffer
+    /// is also overwritten with the current popup-slot contents so
+    /// edits survive a switch-and-return cycle.
     fn snapshot_active_pane(&mut self) {
         match self.active_buffer {
             BufferKind::Document => {
@@ -6063,9 +6582,23 @@ impl App {
             }
             BufferKind::Help => {
                 if let Some(h) = self.help_buffer.as_ref() {
+                    let cursor = h.cursor;
+                    let scroll = h.scroll as u32;
+                    // Mirror back into the registry entry if this
+                    // help buffer lives in-pane (id matches the
+                    // active pane's recorded id). Pane snapshots
+                    // happen on every pane-flip, so the registry
+                    // record stays current with the user's cursor
+                    // / scroll edits.
+                    let pane_id = self.pane_tree.active().buffer_id;
+                    if h.id == pane_id
+                        && let Some(reg) = self.buffers.help_mut(pane_id)
+                    {
+                        *reg = h.clone();
+                    }
                     let active = self.pane_tree.active_mut();
-                    active.cursor = h.cursor;
-                    active.scroll = h.scroll as u32;
+                    active.cursor = cursor;
+                    active.scroll = scroll;
                 }
             }
             BufferKind::FileTree => {
@@ -6094,6 +6627,14 @@ impl App {
                 self.scroll = pane.scroll;
             }
             BufferKind::Help => {
+                // Restore the registry-tracked help into the popup
+                // slot if the active pane points at one. Then pull
+                // the pane's stashed cursor / scroll back onto it.
+                if self.help_buffer.as_ref().map(|h| h.id) != Some(pane.buffer_id)
+                    && let Some(reg) = self.buffers.help(pane.buffer_id)
+                {
+                    self.help_buffer = Some(reg.clone());
+                }
                 if let Some(h) = self.help_buffer.as_mut() {
                     h.cursor = pane.cursor;
                     h.scroll = pane.scroll as usize;
@@ -6145,6 +6686,14 @@ impl App {
     /// to the document spot the user opened from), then flips
     /// `active_buffer` to `Help`. Used by every `:describe-*` /
     /// `:apropos` / `:keymap` entry point.
+    ///
+    /// **Popup vs in-pane.** This is the *popup* path -- the help
+    /// content sits on the App's transient `help_buffer` slot and
+    /// renders as a centred overlay. The complementary
+    /// [`Self::open_help_in_pane`] path registers the buffer in
+    /// [`BufferRegistry`] and swaps the active pane to it; that's
+    /// what `:lsp-log` / `:lsp-server-log` / `:lsp-trace-log` (Phase
+    /// 3) and future persistent help views route through.
     fn open_help(&mut self, buffer: HelpBuffer) {
         // Record the *document* cursor (we're still active=Document
         // here, since open_help precedes the active_buffer flip).
@@ -6160,8 +6709,95 @@ impl App {
         self.pending = Pending::None;
     }
 
+    /// Adopt a help buffer into the unified [`BufferRegistry`] and
+    /// swap the active pane to it -- the in-pane counterpart to
+    /// [`Self::open_help`]. Used by persistent help views (LSP logs,
+    /// `:diagnostics`, `:apropos` once migrated) that should live as
+    /// real buffers: split-able, switchable via `:bn` / `:b N`,
+    /// listed by `:ls`.
+    ///
+    /// De-duplicates by title -- re-running the command surfaces the
+    /// existing buffer rather than allocating a new one. Returns the
+    /// `BufferId` either way so callers can wire follow-up state
+    /// (Phase 4 live-tail subscriptions key off this id).
+    ///
+    /// **Hot-path model.** The registry entry is the durable record
+    /// (`:ls` / `:bn` / picker discovery); the App's `help_buffer`
+    /// slot mirrors the active in-pane help so the keymap +
+    /// renderer stay single-path. Pane-switch hooks
+    /// ([`Self::snapshot_active_pane`] / [`Self::load_active_pane`])
+    /// sync the two at boundaries -- same pattern as Document's
+    /// `syntax`/`folds` snapshots.
+    pub fn open_help_in_pane(&mut self, buffer: HelpBuffer) -> BufferId {
+        if let Some(existing_id) = self.buffers.help_with_title(&buffer.title) {
+            // Already open: refresh its content (so `:lsp-log` re-
+            // run picks up new records) and switch the active pane
+            // to it.
+            if let Some(slot) = self.buffers.help_mut(existing_id) {
+                *slot = buffer;
+            }
+            self.activate_help_in_pane(existing_id);
+            return existing_id;
+        }
+        let id = BufferId::next();
+        // Clone for the registry record; the active hot-path copy
+        // lands on `self.help_buffer` via `activate_help_in_pane`.
+        // HelpBuffer's heavy field is the rope (O(1) clone); the
+        // markdown highlight Vec is the only allocation cost.
+        let registry_copy = buffer.clone();
+        self.buffers.insert(BufferEntry {
+            id,
+            flags: BufferFlags::default(),
+            data: BufferData::Help(registry_copy),
+        });
+        // Take ownership of the original for the popup hot-path.
+        self.help_buffer = Some(buffer);
+        self.activate_help_in_pane(id);
+        id
+    }
+
+    /// Switch the active pane to an existing help buffer in the
+    /// registry. Snapshots prior pane state so `<C-o>` returns the
+    /// user to the document/cursor they came from. The registry's
+    /// HelpBuffer is mirrored into `self.help_buffer` so the
+    /// existing keymap + render paths transparently target it.
+    fn activate_help_in_pane(&mut self, id: BufferId) {
+        if self.buffers.help(id).is_none() {
+            self.set_message(EchoLevel::Error, format!("buffer #{} not a help buffer", id.0));
+            return;
+        }
+        // Skip the auto-jump push during picker-preview hovers --
+        // the user hasn't committed to this buffer yet, so we
+        // don't want every cursor over a candidate to bloat the
+        // jump list. The real push happens on `PickerAccept` if
+        // the user commits.
+        if !self.previewing && matches!(self.active_buffer, BufferKind::Document) {
+            let cur = self.cursor;
+            self.push_position_history(cur, PositionSource::AutoJump);
+        }
+        self.snapshot_active_pane();
+        self.snapshot_active_document();
+        // Mirror the registry copy into the hot-path slot. If
+        // open_help_in_pane just placed it there, this is a no-op;
+        // for re-entries via :bn / picker we restore the saved
+        // content.
+        if self.help_buffer.as_ref().map(|h| h.id) != Some(id)
+            && let Some(reg_help) = self.buffers.help(id)
+        {
+            self.help_buffer = Some(reg_help.clone());
+        }
+        self.active_buffer = BufferKind::Help;
+        let pane = self.pane_tree.active_mut();
+        pane.buffer = BufferKind::Help;
+        pane.buffer_id = id;
+        self.pending = Pending::None;
+    }
+
     /// Close the help overlay and route input back to the document.
-    /// Idempotent: closing when no help is open is a no-op.
+    /// Idempotent: closing when no help is open is a no-op. Pane-
+    /// tracked help buffers stay in the registry (so `:bn` / `:b N`
+    /// can return to them); only the popup slot is cleared and the
+    /// active buffer flips back to Document.
     fn dismiss_help(&mut self) {
         self.help_buffer = None;
         self.active_buffer = BufferKind::Document;
@@ -6757,15 +7393,17 @@ impl App {
             return;
         }
         // Reachable: the registry still holds an entry for the
-        // recorded buffer id (or, for the transient Help overlay,
-        // the singleton id matches). Document and tree buffers
-        // both live in `self.buffers` now -- one lookup covers
-        // both kinds.
-        let help_id = self.help_buffer.as_ref().map(|h| h.id);
+        // recorded buffer id (in-pane Help / Document / FileTree
+        // all live in `self.buffers`); the transient popup-mode
+        // Help overlay's id is checked separately.
+        let popup_help_id = self.help_buffer.as_ref().map(|h| h.id);
         let reachable = |e: &PositionEntry| -> bool {
             match e.buffer {
                 BufferKind::Document | BufferKind::FileTree => self.buffers.contains(e.buffer_id),
-                BufferKind::Help => help_id == Some(e.buffer_id),
+                BufferKind::Help => {
+                    self.buffers.help(e.buffer_id).is_some()
+                        || popup_help_id == Some(e.buffer_id)
+                }
             }
         };
         let combined = |e: &PositionEntry| pred(e) && reachable(e);
@@ -6801,8 +7439,20 @@ impl App {
             }
             BufferKind::Help => {
                 let viewport = self.help_bufferport_height();
-                if let Some(h) = self.help_buffer.as_mut() {
-                    self.active_buffer = BufferKind::Help;
+                self.active_buffer = BufferKind::Help;
+                // Prefer an in-pane help buffer with the recorded id;
+                // fall back to the transient popup if that's where
+                // the entry came from.
+                if let Some(h) = self.buffers.help_mut(entry.buffer_id) {
+                    h.jump_cursor_to(entry.position.line, viewport);
+                    let target_byte = entry.position.byte as i32;
+                    let cur_byte = h.cursor.byte as i32;
+                    if target_byte != cur_byte {
+                        h.move_cursor(target_byte - cur_byte, 0, viewport);
+                    }
+                    self.pane_tree.active_mut().buffer = BufferKind::Help;
+                    self.pane_tree.active_mut().buffer_id = entry.buffer_id;
+                } else if let Some(h) = self.help_buffer.as_mut() {
                     h.jump_cursor_to(entry.position.line, viewport);
                     let target_byte = entry.position.byte as i32;
                     let cur_byte = h.cursor.byte as i32;
@@ -7859,6 +8509,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::BufferNext
         | Effect::BufferPrev
         | Effect::ListBuffers
+        | Effect::OpenBufferPicker
         | Effect::BufferDelete { .. }
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
@@ -7872,6 +8523,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
         | Effect::ToggleLspTrace { .. }
+        | Effect::OpenLspTraceLog { .. }
         | Effect::LspStatus
         | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
@@ -7908,6 +8560,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::BufferNext
         | Effect::BufferPrev
         | Effect::ListBuffers
+        | Effect::OpenBufferPicker
         | Effect::BufferDelete { .. }
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
@@ -7921,6 +8574,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
         | Effect::ToggleLspTrace { .. }
+        | Effect::OpenLspTraceLog { .. }
         | Effect::LspStatus
         | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
@@ -7933,6 +8587,65 @@ fn effect_mutates(effect: &Effect) -> bool {
 /// using the utf-16 encoding the spec defaults to. Returns `None`
 /// if the line is out of bounds.
 ///
+/// Build the raw candidate list for the buffer-switcher picker.
+/// Lives here (not in [`crate::picker`]) because it walks the
+/// host's [`BufferRegistry`] / [`BufferData`] -- types that the
+/// picker module is intentionally agnostic of so it can graduate
+/// to a renderer-neutral sibling crate when a second renderer
+/// (GPUI, web) needs it.
+///
+/// One row per [`crate::buffer_registry::BufferEntry`] regardless
+/// of kind. The active buffer is tagged `(current)` in the
+/// marginalia and floated to the bottom so the picker's
+/// initial-selected row lands on the alternate buffer (vim's
+/// `:b<CR>` shortcut).
+pub(crate) fn raw_buffer_candidates(
+    registry: &BufferRegistry,
+    active: BufferId,
+) -> Vec<lattice_completion::RawCandidate> {
+    let mut ids = registry.sorted_ids();
+    ids.sort_by_key(|id| (*id == active, *id));
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        let Some(entry) = registry.get(id) else {
+            continue;
+        };
+        let active_marker = if id == active { " (current)" } else { "" };
+        let (body, kind_label) = match &entry.data {
+            BufferData::Document(d) => {
+                let path = d
+                    .handle
+                    .path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "[no name]".to_string());
+                let dirty = if d.handle.dirty() { " [+]" } else { "" };
+                (
+                    format!("#{:<3} {path}{dirty}", id.0),
+                    format!("doc{active_marker}"),
+                )
+            }
+            BufferData::FileTree(t) => (
+                format!("#{:<3} {}", id.0, t.root.display()),
+                format!("tree{active_marker}"),
+            ),
+            BufferData::Help(h) => (
+                format!("#{:<3} {}", id.0, h.title),
+                format!("help{active_marker}"),
+            ),
+        };
+        // `text` is the dispatch payload (`#<id>`, parsed by
+        // `picker::buffer_id_from_text`); `display` is what the
+        // popup paints (body + kind marginalia).
+        let mut raw = lattice_completion::RawCandidate::plain(
+            format!("#{}", id.0),
+            lattice_completion::CandidateKind::Buffer,
+        );
+        raw.display = format!("{body:<60} {kind_label}");
+        out.push(raw);
+    }
+    out
+}
+
 /// Phase 4.2 features (hover, definition, references, completion)
 /// all need this; later we'll thread the per-server negotiated
 /// `PositionEncodingKind` through here so utf-8 / utf-32 servers
@@ -15144,25 +15857,34 @@ mod tests {
     // ---- LSP introspection tests (Phase 4.1.g) ---------------
 
     #[test]
-    fn lsp_log_opens_global_buffer_when_no_server() {
+    fn lsp_log_with_no_running_servers_echoes_message() {
+        // Phase 3: `:lsp-log` (with or without arg) routes through
+        // the LSP picker. With zero running actors there's nothing
+        // to pick; the user gets a clear echo instead of an empty
+        // popup.
         let mut app = app_with("hi\n", 5);
-        // Seed one global record so the body has content.
-        app.lsp_logger.log(
-            None,
-            lattice_lsp::LogLevel::Info,
-            lattice_lsp::LogSource::Client,
-            "test event",
-        );
         app.do_open_lsp_log(None);
-        let help = app.help_buffer.as_ref().expect("help buffer should open");
-        assert_eq!(help.title, "lsp");
-        let body = help.content.as_string();
-        assert!(body.contains("subsystem-wide"));
-        assert!(body.contains("test event"));
+        let msg = app.last_message.as_ref().expect("echoes a message");
+        assert!(
+            msg.text.contains("no LSP servers running"),
+            "expected 'no LSP servers running' in echo, got {:?}",
+            msg.text
+        );
+        assert!(app.picker.is_none(), "picker should not have opened");
     }
 
     #[test]
-    fn lsp_log_opens_per_server_buffer() {
+    fn lsp_log_with_arg_no_match_echoes_message() {
+        let mut app = app_with("hi\n", 5);
+        app.do_open_lsp_log(Some("rust"));
+        let msg = app.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn open_lsp_log_in_pane_renders_per_server_records() {
+        // Direct unit test of the in-pane helper (picker accept
+        // path bypasses the picker for single-instance cases too).
         let mut app = app_with("hi\n", 5);
         let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
         app.lsp_logger.log(
@@ -15171,15 +15893,24 @@ mod tests {
             lattice_lsp::LogSource::Stderr,
             "compile error",
         );
-        app.do_open_lsp_log(Some("rust"));
-        let help = app.help_buffer.as_ref().expect("help buffer should open");
-        assert_eq!(help.title, "lsp:rust");
-        let body = help.content.as_string();
+        app.open_lsp_log_in_pane("rust");
+        // Lives in the registry as a Help variant + active pane.
+        let help_id = app
+            .buffers
+            .help_with_title("lsp:rust")
+            .expect("buffer registered");
+        assert_eq!(app.active_pane_buffer_id(), help_id);
+        let body = app
+            .buffers
+            .help(help_id)
+            .unwrap()
+            .content
+            .as_string();
         assert!(body.contains("compile error"));
     }
 
     #[test]
-    fn lsp_server_log_excludes_trace_records() {
+    fn open_lsp_log_in_pane_excludes_trace_records() {
         let mut app = app_with("hi\n", 5);
         let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
         app.lsp_logger.enable_trace(std::sync::Arc::clone(&id));
@@ -15195,25 +15926,385 @@ mod tests {
             lattice_lsp::LogSource::Client,
             "lifecycle",
         );
-        app.do_open_lsp_log(Some("rust"));
-        let body = app.help_buffer.as_ref().unwrap().content.as_string();
+        app.open_lsp_log_in_pane("rust");
+        let help_id = app.buffers.help_with_title("lsp:rust").unwrap();
+        let body = app
+            .buffers
+            .help(help_id)
+            .unwrap()
+            .content
+            .as_string();
         // Trace records go to the trace buffer; lifecycle here.
         assert!(!body.contains("→ Request"));
         assert!(body.contains("lifecycle"));
     }
 
     #[test]
-    fn lsp_trace_toggle_flips_state_and_opens_trace_buffer() {
+    fn lsp_log_buffer_refreshes_live_when_record_appended() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        // Open the per-server log buffer in pane.
+        app.open_lsp_log_in_pane("rust");
+        let help_id = app.buffers.help_with_title("lsp:rust").unwrap();
+        let body_before = app.buffers.help(help_id).unwrap().content.as_string();
+        assert!(!body_before.contains("fresh-after-open"));
+        // Push a new record AFTER the buffer was opened.
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::Client,
+            "fresh-after-open",
+        );
+        // The publisher fired Event::LspLogPushed; drain hook
+        // should refresh the open log buffer.
+        app.drain_lsp_log_events();
+        let body_after = app.buffers.help(help_id).unwrap().content.as_string();
+        assert!(
+            body_after.contains("fresh-after-open"),
+            "expected new record visible after drain, got body:\n{body_after}"
+        );
+    }
+
+    #[test]
+    fn lsp_log_drain_is_noop_when_no_log_buffer_open() {
+        // Pushing log records with no log buffer open should not
+        // crash or echo anything; the drain just consumes events
+        // and finds no matching titles.
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::Client,
+            "no-target",
+        );
+        app.drain_lsp_log_events();
+        // No help buffers should have appeared.
+        assert!(app.buffers.help_with_title("lsp:rust").is_none());
+        assert!(app.buffers.help_with_title("lsp").is_none());
+    }
+
+    #[test]
+    fn lsp_trace_buffer_refreshes_live_when_trace_record_appended() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        // Trace gating requires the toggle on for trace records
+        // to land in the ring (and fire the publisher).
+        app.lsp_logger.enable_trace(std::sync::Arc::clone(&id));
+        app.open_lsp_trace_log_in_pane("rust");
+        let help_id = app.buffers.help_with_title("lsp:rust:trace").unwrap();
+        let before = app.buffers.help(help_id).unwrap().content.as_string();
+        assert!(!before.contains("→ NEW"));
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Trace,
+            lattice_lsp::LogSource::Trace,
+            "→ NEW request id=42",
+        );
+        app.drain_lsp_log_events();
+        let after = app.buffers.help(help_id).unwrap().content.as_string();
+        assert!(after.contains("→ NEW"));
+    }
+
+    #[test]
+    fn lsp_log_burst_coalesces_into_one_refresh() {
+        // Many records pushed in quick succession should result
+        // in at most one buffer rebuild per scope per drain.
+        // (We can't observe the rebuild count directly without
+        // instrumentation; instead we assert the final body
+        // contains every pushed record AND that drain is fast.)
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.open_lsp_log_in_pane("rust");
+        for i in 0..50 {
+            app.lsp_logger.log(
+                Some(&id),
+                lattice_lsp::LogLevel::Info,
+                lattice_lsp::LogSource::Client,
+                format!("msg-{i}"),
+            );
+        }
+        app.drain_lsp_log_events();
+        let help_id = app.buffers.help_with_title("lsp:rust").unwrap();
+        let body = app.buffers.help(help_id).unwrap().content.as_string();
+        // First and last pushed records both visible.
+        assert!(body.contains("msg-0"));
+        assert!(body.contains("msg-49"));
+    }
+
+    #[test]
+    fn open_lsp_trace_log_in_pane_shows_only_trace_records() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp_logger.enable_trace(std::sync::Arc::clone(&id));
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Trace,
+            lattice_lsp::LogSource::Trace,
+            "→ Request id=1",
+        );
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::Client,
+            "lifecycle",
+        );
+        app.open_lsp_trace_log_in_pane("rust");
+        let help_id = app.buffers.help_with_title("lsp:rust:trace").unwrap();
+        let body = app
+            .buffers
+            .help(help_id)
+            .unwrap()
+            .content
+            .as_string();
+        // Trace yes, lifecycle no.
+        assert!(body.contains("→ Request"));
+        assert!(!body.contains("lifecycle"));
+    }
+
+    #[test]
+    fn open_help_in_pane_registers_buffer_and_activates_pane() {
+        let mut app = app_with("hi\n", 5);
+        let buf = HelpBuffer::from_lines(
+            "test-help",
+            vec!["# heading".into(), "body".into()],
+        );
+        let id = app.open_help_in_pane(buf);
+        // Lives in the registry as a Help variant.
+        assert!(app.buffers.help(id).is_some());
+        // Active pane points at it.
+        assert_eq!(app.active_pane_buffer_id(), id);
+        assert!(matches!(app.active_buffer, BufferKind::Help));
+        // Hot-path popup slot mirrors the registry copy.
+        assert_eq!(
+            app.help_buffer.as_ref().unwrap().title,
+            "test-help"
+        );
+        // :ls walks the registry; help variants count.
+        assert!(app.buffers.help_ids_sorted().contains(&id));
+    }
+
+    #[test]
+    fn open_help_in_pane_dedups_by_title() {
+        let mut app = app_with("hi\n", 5);
+        let id1 = app.open_help_in_pane(HelpBuffer::from_lines(
+            "lsp:rust",
+            vec!["v1".into()],
+        ));
+        let id2 = app.open_help_in_pane(HelpBuffer::from_lines(
+            "lsp:rust",
+            vec!["v2 (refreshed)".into()],
+        ));
+        assert_eq!(id1, id2, "same title returns same BufferId");
+        // Refresh path overwrote the body.
+        let body = app.help_buffer.as_ref().unwrap().content.as_string();
+        assert!(body.contains("refreshed"));
+        // Single help entry in the registry.
+        assert_eq!(app.buffers.help_ids_sorted().len(), 1);
+    }
+
+    #[test]
+    fn open_buffer_picker_seeds_with_every_registry_entry() {
+        let mut app = app_with("hi\n", 5);
+        // Add a help buffer so the picker has more than just the
+        // initial document to filter against.
+        let _help_id = app.open_help_in_pane(HelpBuffer::from_lines(
+            "lsp:rust",
+            vec!["a".into()],
+        ));
+        // Activate back to the document so the picker's "active"
+        // marker doesn't land on the help buffer.
+        let doc_id = app
+            .buffers
+            .document_ids_sorted()
+            .first()
+            .copied()
+            .unwrap();
+        app.activate_document(doc_id);
+        app.open_buffer_picker();
+        let p = app.picker.as_ref().expect("picker should be open");
+        // Initial: every buffer in the registry. With no filter,
+        // both the doc and the help buffer should be present.
+        assert!(p.candidates.len() >= 2);
+        assert_eq!(p.title, "buffers");
+    }
+
+    #[test]
+    fn picker_accept_switches_to_selected_buffer() {
+        let mut app = app_with("hi\n", 5);
+        let help_id = app.open_help_in_pane(HelpBuffer::from_lines(
+            "test-target",
+            vec!["body".into()],
+        ));
+        let doc_id = app
+            .buffers
+            .document_ids_sorted()
+            .first()
+            .copied()
+            .unwrap();
+        // Start on the doc.
+        app.activate_document(doc_id);
+        assert!(matches!(app.active_buffer, BufferKind::Document));
+        // Open picker, type the help title, accept.
+        app.open_buffer_picker();
+        for c in "test-target".chars() {
+            app.apply(Action::PickerAppend(c));
+        }
+        app.apply(Action::PickerAccept);
+        // Picker is dismissed; active pane is on the help buffer.
+        assert!(app.picker.is_none());
+        assert_eq!(app.active_pane_buffer_id(), help_id);
+        assert!(matches!(app.active_buffer, BufferKind::Help));
+    }
+
+    #[test]
+    fn picker_dismiss_leaves_active_pane_unchanged() {
+        let mut app = app_with("hi\n", 5);
+        let doc_id = app
+            .buffers
+            .document_ids_sorted()
+            .first()
+            .copied()
+            .unwrap();
+        app.activate_document(doc_id);
+        app.open_buffer_picker();
+        app.apply(Action::PickerDismiss);
+        assert!(app.picker.is_none());
+        assert_eq!(app.active_pane_buffer_id(), doc_id);
+    }
+
+    #[test]
+    fn buffer_picker_previews_initial_selection_in_active_pane() {
+        // With doc + help in registry, opening the picker on the
+        // doc immediately previews the alternate (help) buffer in
+        // the active pane.
+        let mut app = app_with("hi\n", 5);
+        let help_id = app.open_help_in_pane(HelpBuffer::from_lines(
+            "alt",
+            vec!["alt body".into()],
+        ));
+        let doc_id = app
+            .buffers
+            .document_ids_sorted()
+            .first()
+            .copied()
+            .unwrap();
+        app.activate_document(doc_id);
+        // Sanity: starting state.
+        assert_eq!(app.active_pane_buffer_id(), doc_id);
+        app.open_buffer_picker();
+        // Picker open + preview switched the pane to the help
+        // buffer (the alternate -- "(current)" is the doc).
+        assert_eq!(app.active_pane_buffer_id(), help_id);
+        assert!(matches!(app.active_buffer, BufferKind::Help));
+    }
+
+    #[test]
+    fn picker_dismiss_restores_origin_when_previewing() {
+        let mut app = app_with("hi\n", 5);
+        let _help_id = app.open_help_in_pane(HelpBuffer::from_lines(
+            "alt",
+            vec!["alt body".into()],
+        ));
+        let doc_id = app
+            .buffers
+            .document_ids_sorted()
+            .first()
+            .copied()
+            .unwrap();
+        app.activate_document(doc_id);
+        app.open_buffer_picker();
+        // Preview moved us off the doc.
+        assert_ne!(app.active_pane_buffer_id(), doc_id);
+        app.apply(Action::PickerDismiss);
+        // Esc restored the original.
+        assert!(app.picker.is_none());
+        assert_eq!(app.active_pane_buffer_id(), doc_id);
+        assert!(matches!(app.active_buffer, BufferKind::Document));
+    }
+
+    #[test]
+    fn picker_select_next_re_previews_new_candidate() {
+        let mut app = app_with("hi\n", 5);
+        let help_a = app.open_help_in_pane(HelpBuffer::from_lines(
+            "alpha-help",
+            vec!["a".into()],
+        ));
+        let help_b = app.open_help_in_pane(HelpBuffer::from_lines(
+            "beta-help",
+            vec!["b".into()],
+        ));
+        let doc_id = app
+            .buffers
+            .document_ids_sorted()
+            .first()
+            .copied()
+            .unwrap();
+        app.activate_document(doc_id);
+        app.open_buffer_picker();
+        let first_preview = app.active_pane_buffer_id();
+        // Move down -- previews the next candidate.
+        app.apply(Action::PickerSelectNext);
+        let second_preview = app.active_pane_buffer_id();
+        assert_ne!(first_preview, second_preview, "selection moved -> different preview");
+        // Both previews land on one of the help buffers we set up.
+        assert!(first_preview == help_a || first_preview == help_b || first_preview == doc_id);
+        assert!(second_preview == help_a || second_preview == help_b || second_preview == doc_id);
+        // Dismiss restores the original document.
+        app.apply(Action::PickerDismiss);
+        assert_eq!(app.active_pane_buffer_id(), doc_id);
+    }
+
+    #[test]
+    fn picker_preview_does_not_pollute_position_history() {
+        // Hover-previewing through several candidates should not
+        // push to the jump list; only an *accepted* switch should.
+        let mut app = app_with("hi\n", 5);
+        let _h1 = app.open_help_in_pane(HelpBuffer::from_lines(
+            "h-one",
+            vec!["a".into()],
+        ));
+        let _h2 = app.open_help_in_pane(HelpBuffer::from_lines(
+            "h-two",
+            vec!["b".into()],
+        ));
+        let doc_id = app
+            .buffers
+            .document_ids_sorted()
+            .first()
+            .copied()
+            .unwrap();
+        app.activate_document(doc_id);
+        let history_before = app.position_history.len();
+        app.open_buffer_picker();
+        app.apply(Action::PickerSelectNext);
+        app.apply(Action::PickerSelectNext);
+        app.apply(Action::PickerSelectPrev);
+        app.apply(Action::PickerDismiss);
+        let history_after = app.position_history.len();
+        assert_eq!(
+            history_before, history_after,
+            "preview hovers should leave the jump list alone"
+        );
+    }
+
+    #[test]
+    fn lsp_trace_toggle_flips_state_without_opening_buffer() {
         let mut app = app_with("hi\n", 5);
         let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
         // Off -> on.
         app.do_toggle_lsp_trace("rust");
         assert!(app.lsp_logger.is_tracing(&id));
-        let help = app.help_buffer.as_ref().unwrap();
-        assert_eq!(help.title, "lsp:rust:trace");
+        // Pure toggle now -- the trace buffer is opened separately
+        // via :lsp-trace-log so peeking doesn't flip the toggle off.
+        assert!(app.help_buffer.is_none());
+        let msg = app.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("on"));
+        assert!(msg.text.contains(":lsp-trace-log"));
         // On -> off.
         app.do_toggle_lsp_trace("rust");
         assert!(!app.lsp_logger.is_tracing(&id));
+        assert!(app.help_buffer.is_none());
     }
 
     #[test]

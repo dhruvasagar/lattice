@@ -34,24 +34,35 @@ use crate::app::{App, EchoLevel};
 /// snapshot -- inactive panes (different documents) still go
 /// through `entry.handle.snapshot()` since the cache is per-cell.
 pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
-    // Vertico-style layout (DESIGN.md §5.11.3): when a completion
-    // popup is open, the `:` prompt moves up by `popup_height` rows
-    // so the candidate list sits BELOW the prompt -- the selected
-    // candidate visually adjacent to where the user is typing,
-    // alternatives extending downward. Without an open popup the
-    // layout is the standard buffer / mode-line / cmdline three.
-    let popup_rows = app
+    // Vertico-style layout (DESIGN.md §5.11.3, §5.9.7): when the
+    // cmdline completion popup OR the picker is open, an extra row
+    // band sits below the cmdline holding the candidate list. The
+    // selected candidate sits visually adjacent to the prompt
+    // (above for completion, below for picker), alternatives
+    // fanning away. Without either open the layout is the standard
+    // buffer / mode-line / cmdline three.
+    //
+    // Picker takes precedence over completion when both are open
+    // (only one is reachable interactively at a time, but the
+    // ordering matters for layout sizing).
+    let picker_rows = app
+        .picker
+        .as_ref()
+        .map(|p| popup_height(p.candidates.len().max(1)))
+        .unwrap_or(0);
+    let completion_rows = app
         .completion_state
         .as_ref()
         .map(|s| popup_height(s.candidates.len()))
         .unwrap_or(0);
+    let extra_rows = picker_rows.max(completion_rows);
 
-    let constraints: Vec<Constraint> = if popup_rows > 0 {
+    let constraints: Vec<Constraint> = if extra_rows > 0 {
         vec![
             Constraint::Min(1),                    // buffer
             Constraint::Length(1),                 // mode line
-            Constraint::Length(1),                 // cmdline (above popup)
-            Constraint::Length(popup_rows as u16), // popup (bottom)
+            Constraint::Length(1),                 // cmdline / picker query
+            Constraint::Length(extra_rows as u16), // candidate list (bottom)
         ]
     } else {
         vec![
@@ -67,34 +78,48 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
 
     draw_panes(frame, chunks[0], app, snap);
     draw_mode_line(frame, chunks[1], app, snap);
-    draw_command_or_echo(frame, chunks[2], app);
+    // Picker query takes over the cmdline row when active; the
+    // user types in the picker's own query buffer, not the `:`
+    // line, so the cmdline / echo content is hidden until the
+    // picker dismisses.
+    if app.picker.is_some() {
+        draw_picker_prompt(frame, chunks[2], app);
+    } else {
+        draw_command_or_echo(frame, chunks[2], app);
+    }
     // Help overlay paints over the buffer area.
     if app.help_buffer.is_some() {
         draw_help_overlay(frame, chunks[0], app);
     }
-    // Hover popup paints last so it sits on top of help / panes.
+    // Hover popup paints on top of help / panes.
     if app.hover_popup.is_some() {
         draw_hover_popup(frame, chunks[0], app);
     }
-    // Completion popup occupies the bottom rows when active --
-    // vertico-style, below the cmdline.
-    if popup_rows > 0 {
+    // Picker candidate list (precedence over completion popup --
+    // only one is interactive at a time).
+    if picker_rows > 0 {
+        draw_picker_candidates(frame, chunks[3], app);
+    } else if completion_rows > 0 {
         draw_completion_popup(frame, chunks[3], app);
     }
 }
 
-/// Total rows the popup occupies (content + borders), capped so it
+/// Total rows the popup occupies (no borders -- vertico-style;
+/// matches the picker's candidate-list shape) capped so it
 /// never dominates the screen.
 fn popup_height(candidate_count: usize) -> usize {
     const MAX_ROWS: usize = 10;
-    let visible = candidate_count.min(MAX_ROWS);
-    visible + 2 // top + bottom border
+    candidate_count.min(MAX_ROWS).max(1)
 }
 
-/// Vertico-style completion popup (DESIGN.md §5.11.3). Sits BELOW
-/// the `:` prompt; the selected candidate is the FIRST visible row
-/// (closest to the prompt above), alternatives fan downward. Match
-/// ranges painted with a distinct style; annotations right-aligned.
+/// Vertico-style cmdline completion popup (DESIGN.md §5.11.3,
+/// §5.9.7). Sits BELOW the `:` prompt; the selected candidate is
+/// the FIRST visible row (closest to the prompt above), alternatives
+/// fan downward. Same visual shape as
+/// [`draw_picker_candidates`] -- no border, no title bar, just the
+/// candidate list. The candidate-count hint is appended to the
+/// cmdline itself by [`draw_command_or_echo`] when completion is
+/// open, matching the picker's prompt-inline `(n/m)` style.
 fn draw_completion_popup(frame: &mut Frame, popup_area: Rect, app: &App) {
     let Some(state) = app.completion_state.as_ref() else {
         return;
@@ -104,14 +129,7 @@ fn draw_completion_popup(frame: &mut Frame, popup_area: Rect, app: &App) {
     }
 
     frame.render_widget(Clear, popup_area);
-    let title = format!(
-        " completion ({} of {}) ",
-        state.selected + 1,
-        state.candidates.len()
-    );
-    let block = Block::default().borders(Borders::ALL).title(title);
-    let inner = block.inner(popup_area);
-    frame.render_widget(block, popup_area);
+    let inner = popup_area;
 
     // Visible window. Selected stays in view as the user advances
     // with Tab; once it would scroll off the bottom, we shift the
@@ -210,6 +228,83 @@ fn candidate_to_line<'a>(
 
 /// Draw the help buffer (DESIGN.md §5.11) as a centred popup. Popup
 /// is the v1 display strategy; multi-buffer support brings split /
+/// Vertico-style picker prompt (DESIGN.md §5.9.7) drawn in the
+/// cmdline row when a [`crate::picker::Picker`] is open. Format:
+/// `<title>> <query>` -- the title stands in for the `:` prompt
+/// so the user knows what they're picking, and `query` is the
+/// live filter they're typing. Sits at the screen bottom; the
+/// candidate list is rendered below by
+/// [`draw_picker_candidates`].
+fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(p) = app.picker.as_ref() else {
+        return;
+    };
+    let count = if p.candidates.is_empty() {
+        format!("(0/0) ")
+    } else {
+        format!("({}/{}) ", p.selected + 1, p.candidates.len())
+    };
+    let para = Paragraph::new(Line::from(vec![
+        Span::styled(
+            format!("{}> ", p.title),
+            TuiStyle::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(p.query.clone()),
+        Span::styled(
+            format!("  {count}"),
+            TuiStyle::default().fg(Color::DarkGray),
+        ),
+    ]));
+    frame.render_widget(para, area);
+}
+
+/// Vertico-style candidate list (DESIGN.md §5.9.7) drawn in the
+/// row band below the picker prompt. Selected row sits at the
+/// TOP of the band (closest to the prompt below), alternatives
+/// fan upward in match-rank order. Reuses [`candidate_to_line`]
+/// for per-row rendering so match highlights + marginalia stay
+/// consistent with the cmdline completion popup.
+fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(p) = app.picker.as_ref() else {
+        return;
+    };
+    frame.render_widget(Clear, area);
+    if p.candidates.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  (no matches)",
+            TuiStyle::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(empty, area);
+        return;
+    }
+    // Window the visible slice around the selected candidate so
+    // it's always on screen. With the prompt ABOVE the list
+    // (vertico's flipped variant), the selected candidate sits at
+    // the TOP of the band (closest to the prompt) so the eye
+    // tracks naturally from query to selection.
+    let visible_count = area.height as usize;
+    if visible_count == 0 {
+        return;
+    }
+    let scroll = if p.selected < visible_count {
+        0
+    } else {
+        p.selected + 1 - visible_count
+    };
+    let visible: Vec<Line> = p
+        .candidates
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_count)
+        .map(|(i, c)| candidate_to_line(c, i == p.selected, area.width))
+        .collect();
+    let para = Paragraph::new(visible);
+    frame.render_widget(para, area);
+}
+
 /// tab / window targets per [`crate::help::HelpDisplayMode`]. Width is
 /// `min(buffer_width - 4, 100)`, height is 70% of the buffer area.
 /// Content is the [`crate::help::HelpBuffer`]'s rope text; we slice
@@ -765,6 +860,18 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::ITALIC),
             ));
         }
+        // Vertico-style count hint when the completion popup is
+        // open: `(selected/total)` faintly trailing the cmdline.
+        // Mirrors the picker prompt's `(n/m)` so both surfaces
+        // read the same.
+        if let Some(state) = app.completion_state.as_ref()
+            && !state.candidates.is_empty()
+        {
+            spans.push(Span::styled(
+                format!("  ({}/{})", state.selected + 1, state.candidates.len()),
+                TuiStyle::default().fg(Color::DarkGray),
+            ));
+        }
         let para = Paragraph::new(Line::from(spans));
         frame.render_widget(para, area);
         frame.set_cursor_position((cursor_col, area.y));
@@ -806,6 +913,28 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(para, area);
 }
 
+/// Modeline segment listing the LSP servers attached to the active
+/// document buffer. Empty string when no servers are attached, when
+/// the active buffer has no URI yet, or when the supervisor mutex
+/// is contended (the modeline never blocks the render thread -- the
+/// next frame picks the indicator up). Multiple servers are joined
+/// with `+` (`[lsp:rust+typos]`); the §5.4 multi-server merge model
+/// means more than one is legitimate.
+fn active_lsp_segment(app: &App) -> String {
+    let Some(uri) = app.buffer_uris.get(&app.document_buffer_id) else {
+        return String::new();
+    };
+    let Ok(sup) = app.lsp.try_lock() else {
+        return String::new();
+    };
+    let handles = sup.servers_for(uri);
+    if handles.is_empty() {
+        return String::new();
+    }
+    let ids: Vec<&str> = handles.iter().map(|h| h.server_id()).collect();
+    format!("[lsp:{}]", ids.join("+"))
+}
+
 fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {
     // §5.6.8: the renderer reads through a single arc-swap
     // `Cache::load` per frame (loaded by the runtime) and reuses
@@ -819,9 +948,14 @@ fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnaps
     let pos = format!("{}:{}", app.cursor.line + 1, app.cursor.byte);
     let lang = Lang::detect_from_path(snap.path()).label();
     let mode_label = app.modal_label();
+    let lsp_segment = active_lsp_segment(app);
 
     let left = format!("[{mode_label}] {dirty} {path}");
-    let right = format!("{pos}  {lang}");
+    let right = if lsp_segment.is_empty() {
+        format!("{pos}  {lang}")
+    } else {
+        format!("{pos}  {lang}  {lsp_segment}")
+    };
 
     let total = (area.width as usize).max(left.len() + right.len() + 1);
     let pad = total - left.len() - right.len();
@@ -2518,6 +2652,24 @@ mod tests {
         // Error wins over warning on the same line for the
         // gutter glyph (most-severe semantics).
         assert!(row0.contains('■'), "row0 expected ■: {row0:?}");
+    }
+
+    #[test]
+    fn modeline_lsp_segment_empty_when_no_uri_mapping() {
+        let app = App::new(Document::from_text(""));
+        // No initialize_lsp -> buffer_uris empty -> indicator hidden.
+        assert_eq!(active_lsp_segment(&app), "");
+    }
+
+    #[test]
+    fn modeline_lsp_segment_empty_when_no_servers_attached() {
+        let mut app = App::new(Document::from_text(""));
+        // Seed a URI mapping but no actor/attachment -- supervisor
+        // returns an empty handle list, so the indicator stays empty.
+        let fake_uri =
+            <lattice_lsp::Uri as std::str::FromStr>::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, fake_uri);
+        assert_eq!(active_lsp_segment(&app), "");
     }
 
     #[test]

@@ -166,6 +166,12 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // `gd` spawns a request; single-result jumps in-place,
         // multi-result echoes a count + jumps to first.
         app.drain_pending_definitions();
+        // Drain queued Event::LspLogPushed events (Phase 4) and
+        // refresh any open log / trace buffers from the logger
+        // snapshot. Cheap on an idle channel; cheap when no log
+        // buffer is open (the refresh path short-circuits on
+        // missing-by-title).
+        app.drain_lsp_log_events();
         // Update viewport height (height minus the mode line + command/echo row).
         let size = terminal.size().context("query terminal size")?;
         let buffer_height = size.height.saturating_sub(2) as u32;
@@ -217,6 +223,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         active_buffer: app.active_buffer,
                         completion_open: app.completion_state.is_some(),
                         chord_capture: app.chord_capture_active(),
+                        picker_open: app.picker.is_some(),
                     };
                     let action = translate(ctx, k);
                     app.apply(action);

@@ -279,12 +279,25 @@ A `HelpBuffer` (in `lattice-ui-tui::help`) holds a real
 overlay treats the help buffer as a buffer: `j` `k` `h` `l` `0` `$`
 `gg` `G` `Ctrl-D` `Ctrl-U` move the cursor and scroll auto-follows.
 The terminal cursor is rendered at the screen translation of
-`help.cursor` so the user sees their position. The current display
-strategy is the centred popup overlay; **`HelpDisplayMode` enumerates
-Popup / Split / Tab / Window** so when multi-buffer support arrives
-(Phase 6 / §5.9) the display target swaps without touching the
-help-content layer. The target is configurable per-user (eventually
-via `:set help.display-mode=...`).
+`help.cursor` so the user sees their position. **`HelpDisplayMode` enumerates
+Popup / Split / Tab / Window** for the per-user display preference;
+the popup overlay is one strategy and stays available for transient
+surfaces (hover, future doc lookups, error toasts).
+
+Help also lives in the unified [`BufferRegistry`] as
+`BufferData::Help(HelpBuffer)`. `App::open_help_in_pane(buffer)`
+allocates a `BufferId`, inserts the registry entry, and swaps the
+active pane to it -- the in-pane counterpart to `App::open_help`
+(popup). The registry holds the durable record (`:ls` / `:bn` /
+picker discovery); `App.help_buffer` mirrors the active in-pane
+copy so the existing keymap + render paths stay single-path.
+Pane-switch hooks (`snapshot_active_pane` / `load_active_pane`)
+sync the two at boundaries, mirroring the Document buffer pattern
+(`syntax`/`folds` snapshots). De-dup is by title -- re-running
+`:lsp-log rust` surfaces the existing buffer rather than allocating
+a duplicate. Persistent help views (LSP logs, `:diagnostics`,
+`:apropos`, `:describe-*`) migrate to this path in Phase 3
+alongside the picker (Phase 2).
 
 ### Provenance (§5.11.1)
 
@@ -416,8 +429,13 @@ navigation arrive incrementally:
 | Buffer-backed help (rope content)        | ✅     | `HelpBuffer.content: Buffer`                                      |
 | Link markup defined + parsed             | ✅     | `parse_help_links` returns `Vec<HelpLink>` with byte ranges       |
 | Help formatters emit links               | ✅     | `:describe-key`, `:apropos`, `:keymap` reference cross-targets    |
-| Display: Popup overlay                   | ✅     | v1 default                                                        |
-| Display: Split / Tab / Window            | ⛔     | post-multi-buffer (Phase 6)                                       |
+| Display: Popup overlay                   | ✅     | transient surface (hover, doc lookups); reachable via `App::open_help` |
+| Display: In-pane (registry-tracked)      | ✅     | `BufferData::Help` + `App::open_help_in_pane` + `activate_buffer` Help arm; call-site migration to in-pane (`:lsp-log`, `:describe-*`, `:diagnostics`) follows in Phase 3 |
+| Display: Split / Tab / Window            | 🟡     | in-pane lands with active pane today; multi-pane (split into a sibling pane) follows the picker / Phase 3 |
+| Vertico-style picker primitive (§5.9.7)  | ✅     | `lattice-ui-tui::picker::Picker` -- query line + substring filter + selection cursor + `PickerAction` accept tag. **Renderer-agnostic data model**: the only imports are stdlib + `lattice_completion`; host-coupled candidate builders live on the host side (the buffer-source builder is `app::raw_buffer_candidates`; the LSP-source builder is `LspInstanceRow::into_candidate` fed by host-snapshotted rows). `Picker::set_raw_candidates` is the single mutation entry point. Drops into a sibling crate `lattice-picker` with no source edits when a second renderer needs it. Sources: `Buffers`, `LspInstances { prefilter }`. First instantiations: `:b` buffer switcher; `:lsp-log` / `:lsp-server-log` / `:lsp-trace-log` LSP picker (Phase 3). Layout: vertico-style (query takes over cmdline row; candidates render in band immediately below, selected row closest to prompt, no border). Live preview-in-pane for `SwitchToBuffer` (selection-change activates the buffer in active pane without pushing position history; `<Esc>` restores `preview_origin`). Pipeline-driven matcher / ranker / annotators graduate the picker in a follow-up. |
+| Cmdline tab-completion: vertico-styled   | ✅     | `:` line tab-completion popup converged with the picker's visual shape. No bordered box / title; candidates render flush in the row band below the cmdline, reusing `candidate_to_line`. The cmdline appends a faint `(n/m)` count suffix when the popup is open, mirroring the picker prompt's inline indicator. |
+| LSP picker -- log / trace dispatch       | ✅     | `:lsp-log [server]`, `:lsp-trace-log [server]`, `:lsp-server-log` route through `App::open_lsp_picker` (Phase 3). Single-match short-circuit opens directly; multi-match opens the picker pre-filtered. Opened buffer goes through `open_help_in_pane`. `:lsp-trace` is now a pure toggle (no buffer-open side-effect). |
+| LSP log buffers live-tail (Phase 4)      | ✅     | `Event::LspLogPushed` fires on every `LspLogger::log` append; `App::drain_lsp_log_events` (called per main-loop tick) refreshes any open `*lsp*` / `*lsp:<server>*` / `*lsp:<server>:trace*` help buffer from a fresh logger snapshot. Coalesces by scope so a burst of N records resolves to one rebuild per affected scope. Cursor + scroll preserved across the rebuild (clamped to new line bounds); popup hot-path mirror synced. |
 | Styled link ranges in renderer           | ⛔     | renderer ignores `links` today                                    |
 | Follow-link motion (e.g. `<CR>` on link) | ⛔     | needs tree-sitter help grammar + link motion                      |
 | Help major mode + tree-sitter grammar    | ⛔     | post-Phase-3-extension; sections / code-blocks / link-targets     |

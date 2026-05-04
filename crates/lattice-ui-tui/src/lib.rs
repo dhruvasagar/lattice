@@ -29,6 +29,7 @@ pub mod hover;
 pub mod input;
 pub mod keymap;
 pub mod pane;
+pub mod picker;
 pub mod render;
 pub mod runtime;
 pub mod theme;

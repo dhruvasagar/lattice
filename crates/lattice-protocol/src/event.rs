@@ -74,6 +74,30 @@ pub enum Event {
         old: Option<String>,
         new: String,
     },
+    /// Fired when [`lattice_lsp::LspLogger::log`] appends a record
+    /// to a log ring (subsystem-wide when `server_id` is `None`,
+    /// per-server otherwise). Subscribers (the App) refresh any
+    /// open `*lsp*` / `*lsp:<server>*` / `*lsp:<server>:trace*`
+    /// help buffers from the logger snapshot so log views update
+    /// live as records arrive.
+    ///
+    /// Carries primitive fields rather than a typed `LogRecord`
+    /// because `lattice-protocol` sits below `lattice-lsp` in the
+    /// crate graph; subscribers that need the typed record can
+    /// re-snapshot through the logger.
+    LspLogPushed {
+        /// `None` for subsystem-wide records; `Some(id)` per-server.
+        server_id: Option<String>,
+        /// Severity tag (`"trace"`, `"debug"`, `"info"`, `"warn"`,
+        /// `"error"`) -- string-formatted to keep the protocol crate
+        /// independent of `lattice-lsp::LogLevel`.
+        level: String,
+        /// Source tag (`"client"`, `"stderr"`, `"log"`, `"show"`,
+        /// `"trace"`).
+        source: String,
+        /// The record's message text.
+        message: String,
+    },
 }
 
 impl Event {
@@ -91,6 +115,7 @@ impl Event {
             Event::ModalModeChanged { .. } => EventKind::ModalModeChanged,
             Event::BeforeQuit => EventKind::BeforeQuit,
             Event::OptionChanged { .. } => EventKind::OptionChanged,
+            Event::LspLogPushed { .. } => EventKind::LspLogPushed,
         }
     }
 }
@@ -109,6 +134,7 @@ pub enum EventKind {
     ModalModeChanged,
     BeforeQuit,
     OptionChanged,
+    LspLogPushed,
 }
 
 /// An edit as actually applied to the buffer (the original `Edit` plus the

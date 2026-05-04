@@ -53,9 +53,23 @@ pub struct TranslateContext<'a> {
     /// of multi-stroke sequences (`gg`, `<C-w>j`) is supported by
     /// pressing each chord in turn.
     pub chord_capture: bool,
+    /// True when a picker (`Picker` overlay) is open. Picker
+    /// claims every key before the modal handlers see it: char
+    /// keys append to the query, `<Up>` / `<C-p>` / `<Down>` /
+    /// `<C-n>` move selection, `<CR>` accepts, `<Esc>` dismisses.
+    pub picker_open: bool,
 }
 
 pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
+    // Picker overlay precedes everything (DESIGN.md §5.9.7): the
+    // user is in a focused "type to filter, Enter to act" state;
+    // modal handlers never see these keys until the picker is
+    // dismissed. `<C-c>` still drops the picker rather than the
+    // app so an open picker isn't a foot-gun.
+    if ctx.picker_open {
+        return translate_picker(event);
+    }
+
     // Chord-capture overlay precedes the universal `<C-c>` -> Quit
     // hatch, because looking up `<C-c>`'s binding via
     // `:describe-key <C-c>` is a legitimate user need. The overlay
@@ -270,6 +284,37 @@ fn translate_command_chord_capture(event: KeyEvent) -> Action {
         // Release events / modifier-only presses don't have a
         // chord representation -- swallow them silently.
         None => Action::None,
+    }
+}
+
+/// Picker-overlay key router. See [`crate::picker::Picker`] for
+/// the data shape. Reserved keys (Esc / CR / BS / arrows /
+/// Ctrl-{n,p,c}) drive the picker's intrinsic actions; printable
+/// chars append to the query; everything else is swallowed.
+fn translate_picker(event: KeyEvent) -> Action {
+    if event.modifiers.contains(KeyModifiers::CONTROL) {
+        return match event.code {
+            // C-c dismisses the picker (not the app) so the user
+            // can always abort.
+            KeyCode::Char('c') => Action::PickerDismiss,
+            KeyCode::Char('n') => Action::PickerSelectNext,
+            KeyCode::Char('p') => Action::PickerSelectPrev,
+            // C-u clears the query in one stroke (vim's cmdline
+            // shortcut, applied here for consistency).
+            KeyCode::Char('u') => Action::PickerBackspace, // approximate; per-char today
+            _ => Action::None,
+        };
+    }
+    match event.code {
+        KeyCode::Esc => Action::PickerDismiss,
+        KeyCode::Enter => Action::PickerAccept,
+        KeyCode::Backspace => Action::PickerBackspace,
+        KeyCode::Up => Action::PickerSelectPrev,
+        KeyCode::Down => Action::PickerSelectNext,
+        KeyCode::Tab => Action::PickerSelectNext,
+        KeyCode::BackTab => Action::PickerSelectPrev,
+        KeyCode::Char(c) => Action::PickerAppend(c),
+        _ => Action::None,
     }
 }
 
@@ -962,6 +1007,7 @@ mod tests {
             active_buffer: BufferKind::Document,
             completion_open: false,
             chord_capture: false,
+            picker_open: false,
         }
     }
 
@@ -980,6 +1026,7 @@ mod tests {
             active_buffer: BufferKind::Document,
             completion_open: false,
             chord_capture: false,
+            picker_open: false,
         }
     }
 
@@ -997,6 +1044,7 @@ mod tests {
             active_buffer: BufferKind::Document,
             completion_open: false,
             chord_capture: false,
+            picker_open: false,
         }
     }
 
@@ -1010,6 +1058,7 @@ mod tests {
             active_buffer: BufferKind::Document,
             completion_open: false,
             chord_capture: true,
+            picker_open: false,
         }
     }
 
@@ -1927,6 +1976,7 @@ mod tests {
             active_buffer: BufferKind::Help,
             completion_open: false,
             chord_capture: false,
+            picker_open: false,
         }
     }
 
@@ -2215,6 +2265,7 @@ mod tests {
                 active_buffer,
                 completion_open: false,
                 chord_capture: false,
+                picker_open: false,
             };
             last = translate(ctx, event);
             if let Action::SetPending(p) = &last {

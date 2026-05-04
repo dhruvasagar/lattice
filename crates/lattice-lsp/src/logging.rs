@@ -49,6 +49,27 @@ use std::time::SystemTime;
 
 use std::sync::Mutex;
 
+use lattice_protocol::Event;
+
+/// Closure invoked on every successful append. Wired by the App
+/// (or test harness) to publish [`Event::LspLogPushed`] onto the
+/// runtime event bus, which lets log buffers refresh live as
+/// records arrive. Optional: `LspLogger::with_defaults()` starts
+/// with no publisher; `set_event_publisher` installs one.
+pub type LogEventPublisher = Arc<dyn Fn(Event) + Send + Sync>;
+
+/// Compact severity tag for [`Event::LspLogPushed`]. Mirrors
+/// [`LogSource::tag`]'s shape for the level discriminator.
+fn level_tag(l: LogLevel) -> &'static str {
+    match l {
+        LogLevel::Trace => "trace",
+        LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error => "error",
+    }
+}
+
 /// Internal helper: lock with consistent expect-message. Logger
 /// mutexes are never held across `.await` and never panic in
 /// the critical section, so `PoisonError` is unreachable in
@@ -237,6 +258,10 @@ struct LoggerState {
     global: Mutex<LogRing>,
     /// Per-server rings (server_id = Some(_) records).
     per_server: Mutex<HashMap<Arc<str>, LogRing>>,
+    /// Optional publisher fired on every successful append.
+    /// Wired by the App at boot to feed the runtime event bus.
+    /// `None` -> no events emitted (test paths, or pre-wire).
+    event_publisher: Mutex<Option<LogEventPublisher>>,
     /// Default capacity for new per-server rings.
     default_capacity: Mutex<usize>,
     /// Default min level (records below are dropped).
@@ -263,8 +288,18 @@ impl LspLogger {
                 default_min_level: Mutex::new(default_min_level),
                 server_levels: Mutex::new(HashMap::new()),
                 server_trace: Mutex::new(HashSet::new()),
+                event_publisher: Mutex::new(None),
             }),
         }
+    }
+
+    /// Install / replace the event publisher. Subsequent `log`
+    /// calls fire the closure with [`Event::LspLogPushed`] after
+    /// the record lands in its ring. The App wires this at boot
+    /// so the runtime event bus sees every append; subscribers
+    /// (live log views) drain the bus on tick.
+    pub fn set_event_publisher(&self, publisher: LogEventPublisher) {
+        *lock(&self.state.event_publisher) = Some(publisher);
     }
 
     /// Sensible defaults: Info level, 10k records / ring.
@@ -353,6 +388,17 @@ impl LspLogger {
             message,
         };
 
+        // Fan out to the runtime event bus before / after the
+        // ring push. We snapshot primitive fields so the publisher
+        // closure (which lives in the App via `lattice-protocol`)
+        // doesn't need to import LSP types.
+        let publish_payload = (
+            record.server_id.as_ref().map(|s| s.to_string()),
+            level_tag(record.level).to_string(),
+            record.source.tag().to_string(),
+            record.message.clone(),
+        );
+
         match server_id {
             None => {
                 lock(&self.state.global).push(record);
@@ -364,6 +410,20 @@ impl LspLogger {
                     .or_insert_with(|| LogRing::new(cap))
                     .push(record);
             }
+        }
+
+        // Snapshot the publisher under the mutex, drop the lock,
+        // then call -- the bus's internal mutex is independent of
+        // ours and we never hold both at once.
+        let publisher = lock(&self.state.event_publisher).clone();
+        if let Some(p) = publisher {
+            let (server_id, level, source, message) = publish_payload;
+            p(Event::LspLogPushed {
+                server_id,
+                level,
+                source,
+                message,
+            });
         }
     }
 

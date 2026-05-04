@@ -27,6 +27,7 @@ use lattice_syntax::Syntax;
 
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
 use crate::file_tree::FileTreeBuffer;
+use crate::help::HelpBuffer;
 
 /// Per-document registry payload. Each entry carries the actor
 /// handle plus per-document tree-sitter [`Syntax`] state, fold
@@ -73,6 +74,7 @@ impl BufferEntry {
         match &self.data {
             BufferData::Document(_) => BufferKind::Document,
             BufferData::FileTree(_) => BufferKind::FileTree,
+            BufferData::Help(_) => BufferKind::Help,
         }
     }
 
@@ -103,12 +105,35 @@ impl BufferEntry {
             _ => None,
         }
     }
+
+    pub fn help(&self) -> Option<&HelpBuffer> {
+        match &self.data {
+            BufferData::Help(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    pub fn help_mut(&mut self) -> Option<&mut HelpBuffer> {
+        match &mut self.data {
+            BufferData::Help(h) => Some(h),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
 pub enum BufferData {
     Document(DocumentEntry),
     FileTree(FileTreeBuffer),
+    /// Help / log / picker-listing buffers placed into a pane
+    /// (DESIGN.md §5.9, §5.11). The transient overlay path
+    /// (`App.help_buffer`) remains for popup-style displays
+    /// (hover, doc lookups, error toasts); persistent help views
+    /// (`:lsp-log`, `:lsp-server-log`, `:lsp-trace-log`,
+    /// `:describe-*`, `:diagnostics`) route here so they live in
+    /// a real pane, can be split, switched, listed via `:ls`,
+    /// and updated live when their backing source emits events.
+    Help(HelpBuffer),
 }
 
 /// The App's buffer registry. Wraps a `HashMap<BufferId,
@@ -208,6 +233,33 @@ impl BufferRegistry {
         ids
     }
 
+    /// Help buffers only, sorted by id.
+    pub fn help_ids_sorted(&self) -> Vec<BufferId> {
+        let mut ids: Vec<BufferId> = self
+            .by_id
+            .iter()
+            .filter(|(_, e)| matches!(e.data, BufferData::Help(_)))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// First help buffer with the given title, if any. Used by the
+    /// `:lsp-log` / `:lsp-trace-log` openers so re-running the
+    /// command surfaces the existing buffer rather than allocating
+    /// a duplicate.
+    pub fn help_with_title(&self, title: &str) -> Option<BufferId> {
+        for entry in self.by_id.values() {
+            if let BufferData::Help(h) = &entry.data
+                && h.title == title
+            {
+                return Some(entry.id);
+            }
+        }
+        None
+    }
+
     /// First document buffer with the given path, if any. Used by
     /// `:e FILE` to detect "already open".
     pub fn document_with_path(&self, path: &std::path::Path) -> Option<BufferId> {
@@ -250,6 +302,14 @@ impl BufferRegistry {
 
     pub fn file_tree_mut(&mut self, id: BufferId) -> Option<&mut FileTreeBuffer> {
         self.by_id.get_mut(&id).and_then(BufferEntry::file_tree_mut)
+    }
+
+    pub fn help(&self, id: BufferId) -> Option<&HelpBuffer> {
+        self.by_id.get(&id).and_then(BufferEntry::help)
+    }
+
+    pub fn help_mut(&mut self, id: BufferId) -> Option<&mut HelpBuffer> {
+        self.by_id.get_mut(&id).and_then(BufferEntry::help_mut)
     }
 }
 

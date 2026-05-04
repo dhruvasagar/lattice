@@ -74,6 +74,13 @@ pub enum HelpDisplayMode {
 /// backed), so it composes with everything else that consumes
 /// `Buffer` -- search, motions, syntax highlighting (once a help
 /// major mode + tree-sitter grammar lands).
+///
+/// Clone is cheap-ish: the rope clones in O(1), but the markdown
+/// highlight `Vec<Vec<StyledSpan>>` allocates per-line. Used by
+/// the registry-mirrored hot-path (`App::open_help_in_pane`) so
+/// the durable record and the active hot-path slot stay in sync
+/// at pane-switch boundaries.
+#[derive(Clone)]
 pub struct HelpBuffer {
     /// Stable id assigned at creation. Position-history entries
     /// (§5.1.1) carry this so `<C-o>` / `<C-i>` can route back to
@@ -686,7 +693,7 @@ fn one_line(s: &str) -> String {
 /// in the `:lsp-server-log` picker margin so a glance tells the
 /// user "this server has hover + completion but not references"
 /// without having to dig into `:lsp-status`.
-fn summarise_capabilities(caps: &lattice_lsp::Capabilities) -> String {
+pub(crate) fn summarise_capabilities(caps: &lattice_lsp::Capabilities) -> String {
     let mut parts: Vec<&str> = Vec::new();
     if caps.supports_hover() {
         parts.push("hover");

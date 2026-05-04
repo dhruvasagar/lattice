@@ -412,6 +412,19 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let _buffer_picker = registry.register_ex_command(
+        "ex:buffer-picker",
+        "Open the vertico-style buffer switcher (`:b`). Type to filter; `<CR>` to switch.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::OpenBufferPicker)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let buffer_delete = registry.register_ex_command(
         "ex:bdelete",
         "Close the active document buffer (`:bd[elete][!]`). `!` discards unsaved changes.",
@@ -571,7 +584,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
     );
     let lsp_trace = registry.register_ex_command(
         "ex:lsp-trace",
-        "Toggle JSON-RPC wire trace for a server + open `*lsp:<server>:trace*` (`:lsp-trace <server>`).",
+        "Toggle JSON-RPC wire trace for a server (pure toggle; view records via `:lsp-trace-log <server>`) (`:lsp-trace <server>`).",
         ExCommandSpec {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
@@ -589,6 +602,32 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 name: "server",
                 kind: ArgKind::String,
                 doc: "Server id to toggle trace on.",
+                prompt: "server:",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let _lsp_trace_log = registry.register_ex_command(
+        "ex:lsp-trace-log",
+        "Open the JSON-RPC trace ring for an LSP server (`:lsp-trace-log [server]`). No arg = picker over every running instance; arg = pre-filter (single match short-circuits). Independent of `:lsp-trace`.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| {
+                let server_id = match &ctx.args {
+                    Args::String(s) if !s.is_empty() => Some(s.to_string()),
+                    _ => None,
+                };
+                Ok(Effect::OpenLspTraceLog { server_id })
+            }),
+            args_schema: vec![ArgSpec {
+                name: "server",
+                kind: ArgKind::String,
+                doc: "Server id (e.g. `rust`). Absent = picker over every running instance.",
                 prompt: "server:",
                 default: ArgDefault::None,
                 completion: None,

@@ -399,6 +399,46 @@ motions, search, yank all work. The trace buffer benefits
 from a custom highlighter (4.1.g): JSON syntax + leading `→`
 / `←` markers picked out.
 
+### Trace toggle vs. trace view
+
+Two ex-commands, separated so a peek at the JSON-RPC stream
+doesn't flip the toggle off:
+
+| Command                  | Effect                                                                                                                                                                                                                                |
+|--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `:lsp-trace [server]`    | Pure toggle. Flips `LspLogger::is_tracing(server)`; emits an info echo. No buffer is opened.                                                                                                                                          |
+| `:lsp-trace-log [server]`| Opens `*lsp:<server>:trace*` in the active pane via the vertico picker (Phase 3). No arg = picker over every running instance; arg = pre-filter; single match short-circuits the picker and opens directly. Independent of `:lsp-trace`. |
+
+Why the split: `:lsp-trace` was previously a "toggle + open" action. Re-running it to inspect the buffer was the only way to view records, but that also flipped the toggle off. The pure-toggle form lets you turn tracing on, exercise hover/definition/etc., and read the records without losing tracing state.
+
+### LSP commands routed through the picker (Phase 3)
+
+| Command                | Source              | Action                                                                       | Short-circuit when 1 match                |
+|------------------------|---------------------|------------------------------------------------------------------------------|-------------------------------------------|
+| `:lsp-log [server]`    | `LspInstances`      | `OpenLspLog` -- opens `*lsp:<server>*` in active pane                        | yes (`:lsp-log rust` with one rust ws)    |
+| `:lsp-trace-log [server]` | `LspInstances`   | `OpenLspTraceLog` -- opens `*lsp:<server>:trace*` in active pane             | yes                                       |
+| `:lsp-server-log`      | `LspInstances`      | `OpenLspLog` -- broad picker over every running actor                        | n/a (no prefilter)                        |
+
+The picker walks `LspSupervisor::running_actors()` snapshot under the supervisor lock, builds one row per `(workspace_root, server_id)` pair with marginalia `<buffer_count> bufs  <cap_summary>`, drops the lock, and hands the row vec to `Picker::set_lsp_instances`. Candidate `text` encodes the actor key as `"<server_id>\t<workspace_path>"`; `lsp_key_from_text` parses on accept. The opened buffer goes through `App::open_help_in_pane` (Phase 1) so it lives in `BufferRegistry`, splits, and is reachable via `:bn` / `:b N` / the buffer picker.
+
+### Log buffers as in-pane registry buffers
+
+Persistent log views (`*lsp:<server>*` / `*lsp:<server>:trace*`) and other help-shaped views (`:describe-*`, `:diagnostics`) live in the unified [`BufferRegistry`] (DESIGN.md §5.9.8) as `BufferData::Help`. The popup-overlay path remains available for transient surfaces (hover, future doc lookups, error toasts). LSP commands route through the in-pane path via the picker accept dispatcher (Phase 3); the remaining migrations (`:describe-*`, `:diagnostics`) are mechanical -- swap `open_help` for `open_help_in_pane` at each call site -- and follow when a session needs them.
+
+### Live-tail (Phase 4)
+
+Log buffers update **live** as records arrive -- no manual refresh, no buffer reopen. The wiring:
+
+1. `LspLogger::set_event_publisher(closure)` installs a publisher (the App wires this at boot to forward to the runtime [`EventBus`]).
+2. Every `LspLogger::log` append fires `Event::LspLogPushed { server_id, level, source, message }` via the publisher (after the ring push, with no logger lock held).
+3. The App subscribes a channel to `EventKind::LspLogPushed` and stores the receiver on `App.lsp_log_event_rx`.
+4. `App::drain_lsp_log_events` -- called once per main-loop tick (right after `drain_pending_definitions`) -- drains the channel, **coalesces** by scope (subsystem / per-server log / per-server trace), and refreshes only the buffers actually open in `BufferRegistry`.
+5. `replace_help_buffer_preserving_cursor` rebuilds the help buffer's rope from a fresh `LspLogger::snapshot_*` while preserving the user's cursor + scroll (clamped to the new content's line bounds). The popup hot-path mirror (`App.help_buffer`) syncs too when it points at the same id.
+
+A burst of 50 records on one server resolves to **one** rebuild per scope per drain (the first-and-last assertion in `lsp_log_burst_coalesces_into_one_refresh` proves this); cheap idle behaviour because the refresh path short-circuits on `BufferRegistry::help_with_title` missing.
+
+Trace records (level == `trace` OR source == `trace`) refresh `*lsp:<server>:trace*`; everything else refreshes `*lsp:<server>*`. `server_id == None` records refresh the subsystem-wide `*lsp*` buffer. The trace-toggle gate in `LspLogger::log` still applies -- `trace` records that don't pass the toggle are dropped before the publisher fires, so disabled-trace servers don't generate refresh churn.
+
 ### Configuration surface
 
 Documented in [`help/lsp.md`](help/lsp.md). Wire-level keys:

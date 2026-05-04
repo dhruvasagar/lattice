@@ -162,6 +162,12 @@ pub enum Effect {
     /// `:ls` / `:buffers` -- render every open document buffer in a
     /// help-style view.
     ListBuffers,
+    /// `:b` with no arg -- open the vertico-style buffer switcher
+    /// (DESIGN.md §5.9.7). The user types to filter, `<CR>` to
+    /// switch. Type-aware completion in the cmdline can pre-fill
+    /// the picker via `:b <prefix>` once that wiring lands; for now
+    /// the no-arg form is the entry point.
+    OpenBufferPicker,
     /// `:bd[elete][!]` -- close the active document buffer.
     /// `force = true` discards unsaved changes.
     BufferDelete {
@@ -218,10 +224,20 @@ pub enum Effect {
     OpenLspLog {
         server_id: Option<String>,
     },
-    /// `:lsp-trace <server>` -- toggle JSON-RPC trace for the
-    /// server + open the trace buffer (`*lsp:<server>:trace*`).
+    /// `:lsp-trace <server>` -- pure toggle of JSON-RPC tracing
+    /// for the server. The trace buffer is opened separately via
+    /// `:lsp-trace-log <server>` so peeking mid-stream doesn't
+    /// flip the toggle off.
     ToggleLspTrace {
         server_id: String,
+    },
+    /// `:lsp-trace-log [server]` -- open the JSON-RPC trace ring
+    /// (`*lsp:<server>:trace*`) in the active pane via the
+    /// vertico picker (Phase 3). No arg = picker over every
+    /// running instance; arg = pre-filter; single match short-
+    /// circuits the picker. Independent of the trace toggle.
+    OpenLspTraceLog {
+        server_id: Option<String>,
     },
     /// `:lsp-status` -- render every running server (id, root,
     /// pid, uptime, capability summary) in a help-style buffer.

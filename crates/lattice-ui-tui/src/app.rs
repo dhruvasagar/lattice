@@ -4078,6 +4078,40 @@ impl App {
         // Save active pane's cursor/scroll first; the active pane
         // is the one whose buffer changed.
         self.snapshot_active_pane();
+        // Same-document fast path: returning to the document
+        // buffer that `self.document` still points at (e.g. from
+        // a help-in-pane overlay or a file-tree pane). Two cases
+        // converge here, distinguished by whether the prior
+        // transition stashed hot-path state into the entry:
+        //
+        // 1. **Help-in-pane** (overlay): `activate_help_in_pane`
+        //    deliberately does NOT stash, so `self.syntax` /
+        //    `self.folds` stay live for the underlying document
+        //    paint. `entry.syntax` is `None`. Skip the restore;
+        //    just flip flags + pane state.
+        //
+        // 2. **File tree** (replaces buffer area): `activate_file_tree`
+        //    routes through `snapshot_active_document` which moves
+        //    `self.syntax` into `entry.syntax`. On the way back
+        //    `entry.syntax` is `Some` and we restore it.
+        //
+        // The "is the entry stashed?" check is `entry.syntax.is_some()`;
+        // folds piggyback on the same condition so partial-empty
+        // fold lists don't trip the take-from-entry branch.
+        if id == self.document_buffer_id {
+            self.active_buffer = BufferKind::Document;
+            let pane = self.pane_tree.active_mut();
+            pane.buffer = BufferKind::Document;
+            pane.buffer_id = id;
+            if let Some(entry) = self.buffers.document_mut(id)
+                && entry.syntax.is_some()
+            {
+                self.syntax = entry.syntax.take();
+                self.last_parsed_text_version = entry.last_parsed_text_version;
+                self.folds = std::mem::take(&mut entry.folds);
+            }
+            return;
+        }
         self.snapshot_active_document();
         // Load destination.
         let entry = self
@@ -6869,7 +6903,19 @@ impl App {
             self.push_position_history(cur, PositionSource::AutoJump);
         }
         self.snapshot_active_pane();
-        self.snapshot_active_document();
+        // Note: do NOT call `snapshot_active_document` here. Help
+        // is rendered as a popup overlay over the underlying
+        // document; the pane's per-frame paint draws the active
+        // document via `draw_buffer(snap)` which reads from
+        // `self.syntax` / `self.folds` for highlights + fold
+        // overlays. Stashing those onto the document entry would
+        // leave `self.syntax = None` for the duration of the help
+        // session, so the document underneath the popup paints
+        // unhighlighted (the user's #5 bug report). The hot-path
+        // state stays live; the round-trip back to the same
+        // document via `activate_document` early-returns on
+        // matching `document_buffer_id` (see that fn for the
+        // same-doc fast path).
         // Mirror the registry copy into the hot-path slot. If
         // open_help_in_pane just placed it there, this is a no-op;
         // for re-entries via :bn / picker we restore the saved
@@ -14313,6 +14359,55 @@ mod tests {
         );
         let msg = a.last_message.as_ref().expect("info echo");
         assert!(msg.text.contains("redraw"), "user-visible echo: {msg:?}");
+    }
+
+    #[test]
+    fn opening_help_in_pane_keeps_document_syntax_live() {
+        // Bug: opening `:lsp-log` (which routes through
+        // `open_help_in_pane`) stashed the document's syntax onto
+        // the registry entry, leaving `self.syntax = None` for the
+        // duration of the help session. The help buffer renders as
+        // a popup overlay over the underlying document; the
+        // document paint reads `self.syntax`, so the document
+        // appeared unhighlighted under the popup.
+        //
+        // Fix: `activate_help_in_pane` does NOT call
+        // `snapshot_active_document`. Hot-path state stays live;
+        // the round-trip back via `activate_document` early-returns
+        // for the same-doc case and skips the restore (entry has
+        // nothing to give).
+        let mut a = app_with("fn main() {}\n", 10);
+        a.terminal_width = Some(80);
+        a.syntax = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust).unwrap();
+        if let Some(s) = a.syntax.as_mut() {
+            s.parse(&a.document.text());
+        }
+        assert!(a.syntax.is_some(), "fixture syntax wired");
+        // Open a help buffer in pane (mimics `:lsp-log rust`).
+        let _help_id = a.open_help_in_pane(HelpBuffer::from_lines(
+            "lsp:rust",
+            vec!["log line".into()],
+        ));
+        assert!(matches!(a.active_buffer, BufferKind::Help));
+        // The document's syntax must remain on the hot path so the
+        // pane underneath paints with highlights.
+        assert!(
+            a.syntax.is_some(),
+            "syntax must stay live during help-in-pane overlay"
+        );
+        // Round-trip back to the document.
+        let doc_id = a
+            .buffers
+            .document_ids_sorted()
+            .first()
+            .copied()
+            .unwrap();
+        a.activate_document(doc_id);
+        assert!(matches!(a.active_buffer, BufferKind::Document));
+        assert!(
+            a.syntax.is_some(),
+            "syntax must survive the help-in-pane round trip"
+        );
     }
 
     #[test]

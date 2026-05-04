@@ -176,6 +176,76 @@ impl ServerHandle {
         Pending::new(id, rx)
     }
 
+    /// Same as [`Self::request`] but with cooperative cancellation
+    /// driven by a [`lattice_protocol::CancellationToken`]. While
+    /// the relay task is awaiting the response from the actor, it
+    /// also polls the token; if the token flips before the response
+    /// arrives, the relay resolves with [`LspError::Cancelled`].
+    ///
+    /// **Local-only cancellation today.** The server may keep
+    /// computing -- we just drop its result if it arrives stale.
+    /// `$/cancelRequest` over the wire is a Phase 4.2 polish item
+    /// (requires plumbing the JSON-RPC id back from the actor for
+    /// server-side cancel; not on a hot path).
+    ///
+    /// Used by every Phase 4.2 navigation feature
+    /// ([`Self::hover`] / [`Self::goto_definition`] / ...) so
+    /// stale popups don't appear after the user moves on.
+    pub fn request_with_cancel<P, R>(
+        &self,
+        method: &str,
+        params: P,
+        token: lattice_protocol::CancellationToken,
+    ) -> Pending<R>
+    where
+        P: serde::Serialize,
+        R: serde::de::DeserializeOwned + Send + 'static,
+    {
+        let params_json = match serde_json::to_value(params) {
+            Ok(v) => Some(v),
+            Err(e) => return Pending::ready_err(LspError::ResponseDecode(e)),
+        };
+        let (reply_tx, mut reply_rx) = oneshot::channel::<LspResult<Value>>();
+        let cmd = ActorCmd::Request {
+            method: method.to_string(),
+            params: params_json,
+            reply: reply_tx,
+        };
+        if self.inner.cmd_tx.send(cmd).is_err() {
+            return Pending::ready_err(LspError::ActorGone);
+        }
+        let id = InvocationId::next();
+        let (tx, rx) = oneshot::channel::<LspResult<R>>();
+        tokio::spawn(async move {
+            // 10ms poll cadence balances responsiveness (a typical
+            // human-perceptible delay is >50ms) against wakeup
+            // overhead. The token is an `Arc<AtomicBool>`; the poll
+            // is one Acquire load.
+            let result = loop {
+                tokio::select! {
+                    biased;
+                    v = &mut reply_rx => {
+                        break match v {
+                            Ok(Ok(v)) => match serde_json::from_value::<R>(v) {
+                                Ok(r) => Ok(r),
+                                Err(e) => Err(LspError::ResponseDecode(e)),
+                            },
+                            Ok(Err(e)) => Err(e),
+                            Err(_) => Err(LspError::ResponseDropped),
+                        };
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                        if token.is_cancelled() {
+                            break Err(LspError::Cancelled);
+                        }
+                    }
+                }
+            };
+            let _ = tx.send(result);
+        });
+        Pending::new(id, rx)
+    }
+
     /// Fire a JSON-RPC notification (no response expected).
     pub fn notify<P: serde::Serialize>(&self, method: &str, params: P) -> LspResult<()> {
         let params_json = serde_json::to_value(params).map_err(LspError::ResponseDecode)?;

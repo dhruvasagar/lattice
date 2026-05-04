@@ -14,6 +14,7 @@ lattice-config = { path = "../lattice-config" }
 lattice-syntax = { path = "../lattice-syntax" }
 lattice-runtime = { path = "../lattice-runtime" }
 lattice-lsp = { path = "../lattice-lsp" }
+lsp-types = { workspace = true }
 tokio = { workspace = true }
 tree-sitter = { workspace = true }
 streaming-iterator = { workspace = true }

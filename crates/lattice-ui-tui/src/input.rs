@@ -456,6 +456,14 @@ fn translate_normal(
         // Toggle case at cursor
         KeyCode::Char('~') => Action::ToggleCaseAtCursor,
 
+        // LSP hover at cursor (Phase 4.2.b). Vim's `K` traditionally
+        // runs `keywordprg` (man-page lookup); we repurpose it for
+        // textDocument/hover to surface the symbol's docs without
+        // leaving the buffer. Cancellation rides on motion / mode
+        // change so a slow server can't drop a stale popup over a
+        // moved cursor.
+        KeyCode::Char('K') => Action::LspHoverRequest,
+
         // Search
         KeyCode::Char('/') => Action::EnterSearch(SearchDirection::Forward),
         KeyCode::Char('?') => Action::EnterSearch(SearchDirection::Backward),

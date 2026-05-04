@@ -815,6 +815,7 @@ dependencies = [
  "lattice-protocol",
  "lattice-runtime",
  "lattice-syntax",
+ "lsp-types",
  "ratatui",
  "streaming-iterator",
  "thiserror",

@@ -112,7 +112,7 @@ Capability columns:
 
 | Method                          | Phase | Status | Notes                                                                                                        |
 |---------------------------------|-------|--------|--------------------------------------------------------------------------------------------------------------|
-| `textDocument/hover`            | 4.2   | ⏹️      | Reuses existing hover-popup primitive; `K` keybinding.                                                       |
+| `textDocument/hover`            | 4.2   | ✅      | `K` keystroke (Phase 4.2.b). Spawns the request on the LSP runtime; first non-empty body across attached servers wins; relay's cancellation token flips on a follow-up `K` so a stale response can't drop a popup over a moved cursor. Markdown body feeds the existing `HoverPopup` pipeline. Multi-server merge with `--- {name} ---` separators is a polish item. |
 | `textDocument/signatureHelp`    | 4.3   | ⏹️      | Trigger characters (`,`, `(`) drive auto-popup.                                                              |
 | `textDocument/completion`       | 4.2   | ⏹️      | Provider for `lattice-completion`. Snippet support, label details, insertReplace, resolveSupport advertised. |
 | `completionItem/resolve`        | 4.2   | ⏹️      | Lazy-resolve documentation / detail / additionalTextEdits when an item gains focus.                          |

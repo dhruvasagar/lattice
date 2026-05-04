@@ -74,6 +74,25 @@ fn lsp_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
+/// Spawn a fire-and-forget future on the shared LSP runtime
+/// (Phase 4.2). Used by the App's per-feature dispatchers
+/// (hover, definition, references, ...) so the request awaits
+/// the actor's response *off* the main UI thread; the result
+/// flows back through a per-feature mpsc channel that the App
+/// drains before each draw.
+///
+/// Returning a `JoinHandle` lets the caller cancel by dropping
+/// it -- though for LSP cooperative cancellation runs through
+/// the `CancellationToken` plumbed into the typed wrappers,
+/// so the handle is mostly informational.
+pub fn spawn_on_lsp_runtime<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    lsp_runtime().spawn(future)
+}
+
 fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = std::io::stdout();
@@ -137,6 +156,12 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // already drains synchronously after each `:set`, so the
         // common case here is a no-op pull on an empty channel.
         app.drain_option_changes();
+        // Drain queued LSP hover responses (Phase 4.2.b). The K
+        // keystroke spawns a request on the LSP runtime; the
+        // response flows back through `App.pending_hover_rx` and
+        // surfaces here, before the next draw, via the existing
+        // hover popup. Cheap on an idle channel.
+        app.drain_pending_hover();
         // Update viewport height (height minus the mode line + command/echo row).
         let size = terminal.size().context("query terminal size")?;
         let buffer_height = size.height.saturating_sub(2) as u32;

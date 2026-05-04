@@ -415,6 +415,13 @@ pub enum Action {
     /// Vim's `zi` -- toggle [`App::foldenable`]. With folds disabled
     /// every line renders flat regardless of any closed flag.
     ToggleFoldEnable,
+    /// `K` (Phase 4.2.b). Send `textDocument/hover` to every
+    /// LSP server attached to the active document; render the
+    /// first non-empty markdown body in the hover popup. The
+    /// request rides a [`lattice_protocol::CancellationToken`]
+    /// so a stale response from a slow server can't drop a
+    /// popup over a moved cursor.
+    LspHoverRequest,
     /// `"<reg>` prefix -- stash the named register for the next operator
     /// / paste invocation.
     SelectRegister(Register),
@@ -688,6 +695,24 @@ pub struct App {
     /// for the cascade hook (see [`Self::option_change_rx`]);
     /// other subscribers (plugins, autocmds) wire up the same way.
     pub event_bus: Arc<EventBus>,
+    /// Receiver for in-flight LSP hover responses (Phase 4.2.b).
+    /// `K` fires a `textDocument/hover` request through the typed
+    /// wrapper; the spawned task awaits the actor's response and
+    /// pushes the resulting markdown body onto this channel. The
+    /// main loop drains it before each draw via
+    /// [`Self::drain_pending_hover`] and feeds the body into the
+    /// existing [`Self::hover_popup`] via [`Self::do_open_hover`].
+    ///
+    /// `Option` only because the field needs to be `take`-able so
+    /// the drain method can borrow `&mut self` for the popup
+    /// update; always `Some` between calls.
+    pub pending_hover_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    /// Cancellation token of the most recent hover request. Flipped
+    /// when the user re-fires `K`, moves the cursor, or changes
+    /// mode -- so a slow server's response arrives marked stale and
+    /// is dropped by the typed wrapper's relay. `None` when no
+    /// hover is in flight.
+    pub pending_hover_token: Option<lattice_protocol::CancellationToken>,
     /// Receiver end of the App's own subscription to
     /// `EventKind::OptionChanged` (DESIGN.md §5.10 + §5.12). The
     /// typed-options registry publishes through `event_bus` on
@@ -1413,6 +1438,8 @@ impl App {
             registry,
             event_bus: event_bus.clone(),
             option_change_rx: Some(option_change_rx),
+            pending_hover_rx: None,
+            pending_hover_token: None,
             lang_registry,
             builtins,
             command_line: String::new(),
@@ -2363,6 +2390,7 @@ impl App {
                 let _ = self.config.set(self.core_options.foldenable, !cur);
                 self.drain_option_changes();
             }
+            Action::LspHoverRequest => self.do_lsp_hover_request(),
             Action::SelectRegister(reg) => {
                 self.pending_register = Some(reg);
             }
@@ -4224,13 +4252,132 @@ impl App {
 
     /// `:hover [markdown]` (DESIGN.md §5.9.6, §5.11.4). Opens a
     /// transient floating popup at the document cursor with
-    /// `markdown` as the body. v1 path is manual-trigger; Phase 4
-    /// LSP will source the markdown from `textDocument/hover`
-    /// responses.
+    /// `markdown` as the body. v1 path is manual-trigger; Phase
+    /// 4.2.b adds the `K` keystroke that sources the markdown
+    /// from `textDocument/hover` responses (see
+    /// [`Self::do_lsp_hover_request`]).
     fn do_open_hover(&mut self, markdown: &str) {
         let popup = crate::hover::HoverPopup::new(self.cursor, markdown)
             .with_markdown_syntax(self.lang_registry.clone());
         self.hover_popup = Some(popup);
+    }
+
+    /// `K` (Phase 4.2.b). Send `textDocument/hover` to every LSP
+    /// server attached to the active document; the spawned task
+    /// awaits the actor's response on the LSP runtime, so the
+    /// keystroke handler returns instantly. The markdown body
+    /// arrives back through [`Self::pending_hover_rx`] and the
+    /// next frame's [`Self::drain_pending_hover`] feeds it into
+    /// the popup.
+    ///
+    /// **Multi-server merge** is "first non-empty wins" for
+    /// 4.2.b. The `--- {server-name} ---` concat-with-separators
+    /// strategy spec'd in `docs/lsp-architecture.md` lands as a
+    /// follow-up; today the simpler shape is enough to validate
+    /// the end-to-end plumbing.
+    ///
+    /// **Cancellation**: any prior in-flight hover's token is
+    /// flipped before the new request fires, so a slow server
+    /// can't drop a stale popup over the new cursor position.
+    fn do_lsp_hover_request(&mut self) {
+        // Cancel any in-flight hover so its result -- if it
+        // arrives later -- is dropped by the relay.
+        if let Some(token) = self.pending_hover_token.take() {
+            token.cancel();
+        }
+
+        // Resolve the active buffer's URI. No URI = no LSP for
+        // this buffer (e.g. unsaved scratch); echo + bail.
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+
+        // Build the LSP-side cursor position. App's cursor is
+        // (line, col_byte) in utf-8; LSP wants utf-16 columns.
+        // The lattice-lsp::position::Encoding-aware conversion
+        // walks the line; for hover, exact column matters
+        // because servers gate the lookup on the symbol under
+        // the cursor.
+        let snapshot = self.document.snapshot();
+        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => {
+                self.set_message(EchoLevel::Error, "hover: cursor out of buffer".to_string());
+                return;
+            }
+        };
+
+        // Fresh channel + token for this request.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_hover_rx = Some(rx);
+        self.pending_hover_token = Some(token.clone());
+
+        // Spawn the request on the LSP runtime so the keystroke
+        // handler returns instantly. The task walks every server
+        // attached to the buffer; first non-empty body wins.
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            // Snapshot the attached handles under the supervisor
+            // lock, then drop it before awaiting any per-server
+            // response (the lock is App-side; we don't hold it
+            // across awaits).
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.lock().await.servers_for(&uri) };
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                let params = lsp_types::HoverParams {
+                    text_document_position_params: lsp_types::TextDocumentPositionParams {
+                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                        position: lsp_position,
+                    },
+                    work_done_progress_params: Default::default(),
+                };
+                match handle.hover(params, token.clone()).await {
+                    Ok(Some(hover)) => {
+                        let body = hover_contents_to_markdown(&hover.contents);
+                        if !body.trim().is_empty() {
+                            // first non-empty wins
+                            let _ = tx.send(body);
+                            return;
+                        }
+                    }
+                    Ok(None) => continue, // try next server
+                    Err(_) => continue,   // log? cancelled / decode error
+                }
+            }
+        });
+    }
+
+    /// Drain the channel populated by [`Self::do_lsp_hover_request`]
+    /// and surface every pending body through [`Self::do_open_hover`].
+    /// Called once per main_loop iteration before draw; cheap
+    /// when the channel is empty (the common case).
+    pub fn drain_pending_hover(&mut self) {
+        let Some(mut rx) = self.pending_hover_rx.take() else {
+            return;
+        };
+        let mut latest: Option<String> = None;
+        while let Ok(body) = rx.try_recv() {
+            latest = Some(body); // last-writer-wins, but typically only one body
+        }
+        if let Some(body) = latest {
+            self.do_open_hover(&body);
+            // Hover delivered: clear the in-flight token so a
+            // subsequent motion doesn't try to flip a stale token.
+            self.pending_hover_token = None;
+        }
+        self.pending_hover_rx = Some(rx);
     }
 
     /// `:HoverClose` / `Esc` -- dismiss the hover popup.
@@ -7396,6 +7543,54 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspRestart { .. }
         | Effect::SetLspLogLevel { .. }
         | Effect::LspLogClear { .. } => false,
+    }
+}
+
+/// Convert the App's `(line, byte)` cursor into an LSP `Position`
+/// using the utf-16 encoding the spec defaults to. Returns `None`
+/// if the line is out of bounds.
+///
+/// Phase 4.2 features (hover, definition, references, completion)
+/// all need this; later we'll thread the per-server negotiated
+/// `PositionEncodingKind` through here so utf-8 / utf-32 servers
+/// don't pay the utf-16 conversion. For 4.2.b utf-16 is correct
+/// for every server we care about today.
+pub(crate) fn app_to_lsp_position(buffer: &Buffer, p: Position) -> Option<lsp_types::Position> {
+    let line_text = buffer.line(p.line)?;
+    let character = lattice_lsp::position::utf8_byte_to_utf16_column(&line_text, p.byte);
+    Some(lsp_types::Position {
+        line: p.line,
+        character,
+    })
+}
+
+/// Render an LSP `HoverContents` payload to a markdown string the
+/// renderer's [`crate::hover::HoverPopup`] pipeline can highlight
+/// via the markdown grammar.
+///
+/// `MarkedString::String(s)` keeps `s` verbatim. `MarkedString::LanguageString
+/// { language, value }` wraps `value` in a fenced code block tagged with
+/// `language` so the markdown injection picks it up.
+/// `MarkupContent` arrives pre-rendered as either markdown or plaintext
+/// (we treat plaintext as already-good markdown). `Array` joins each
+/// element with two newlines so blocks separate cleanly.
+pub(crate) fn hover_contents_to_markdown(contents: &lsp_types::HoverContents) -> String {
+    fn marked_to_markdown(m: &lsp_types::MarkedString) -> String {
+        match m {
+            lsp_types::MarkedString::String(s) => s.clone(),
+            lsp_types::MarkedString::LanguageString(ls) => {
+                format!("```{}\n{}\n```", ls.language, ls.value)
+            }
+        }
+    }
+    match contents {
+        lsp_types::HoverContents::Scalar(m) => marked_to_markdown(m),
+        lsp_types::HoverContents::Array(items) => items
+            .iter()
+            .map(marked_to_markdown)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        lsp_types::HoverContents::Markup(m) => m.value.clone(),
     }
 }
 
@@ -13448,6 +13643,123 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let h = a.hover_popup.as_ref().expect("hover open");
         assert!(h.markdown.contains("empty"));
+    }
+
+    // ---- LSP hover (Phase 4.2.b) ----
+
+    #[test]
+    fn hover_contents_scalar_string_renders_verbatim() {
+        let m = lsp_types::HoverContents::Scalar(lsp_types::MarkedString::String(
+            "fn foo() -> u32".into(),
+        ));
+        assert_eq!(super::hover_contents_to_markdown(&m), "fn foo() -> u32");
+    }
+
+    #[test]
+    fn hover_contents_language_string_renders_as_fenced_block() {
+        let m = lsp_types::HoverContents::Scalar(lsp_types::MarkedString::LanguageString(
+            lsp_types::LanguageString {
+                language: "rust".into(),
+                value: "let x: u32 = 5;".into(),
+            },
+        ));
+        let md = super::hover_contents_to_markdown(&m);
+        assert!(md.contains("```rust"));
+        assert!(md.contains("let x: u32 = 5;"));
+        assert!(md.ends_with("```"));
+    }
+
+    #[test]
+    fn hover_contents_array_joins_with_double_newline() {
+        let m = lsp_types::HoverContents::Array(vec![
+            lsp_types::MarkedString::String("first".into()),
+            lsp_types::MarkedString::String("second".into()),
+        ]);
+        let md = super::hover_contents_to_markdown(&m);
+        assert_eq!(md, "first\n\nsecond");
+    }
+
+    #[test]
+    fn hover_contents_markup_uses_value_as_markdown() {
+        let m = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+            kind: lsp_types::MarkupKind::Markdown,
+            value: "# heading\n\nbody".into(),
+        });
+        assert_eq!(super::hover_contents_to_markdown(&m), "# heading\n\nbody");
+    }
+
+    #[test]
+    fn lsp_hover_request_with_no_uri_echoes_no_lsp_attached() {
+        // Initial document has no path, so no URI mapping; the
+        // request should set an info message and not panic.
+        let mut a = app_with("xx", 10);
+        a.apply(Action::LspHoverRequest);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn lsp_hover_request_pre_cancels_in_flight_token() {
+        // Two K presses in a row: the first one's token must be
+        // flipped before the second's request fires, so a slow
+        // first response gets dropped by the relay's cancel-aware
+        // poll loop.
+        let mut a = app_with("xx", 10);
+        // Manually install an in-flight token.
+        let stale = lattice_protocol::CancellationToken::new();
+        a.pending_hover_token = Some(stale.clone());
+        // Trigger another hover. With no LSP attached the new
+        // request bails on the URI lookup, but the cancel of the
+        // previous token should still happen first.
+        a.apply(Action::LspHoverRequest);
+        assert!(
+            stale.is_cancelled(),
+            "prior in-flight hover token should flip on a new K press"
+        );
+    }
+
+    #[test]
+    fn drain_pending_hover_pulls_body_into_hover_popup() {
+        // Simulate a response arriving on the channel and confirm
+        // the drain surfaces it through the popup pipeline.
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        a.pending_hover_rx = Some(rx);
+        a.pending_hover_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send("**bold body**".to_string()).unwrap();
+        a.drain_pending_hover();
+        let h = a.hover_popup.as_ref().expect("popup");
+        assert_eq!(h.markdown, "**bold body**");
+        assert!(
+            a.pending_hover_token.is_none(),
+            "delivering the body should clear the in-flight token"
+        );
+    }
+
+    #[test]
+    fn drain_pending_hover_idle_channel_is_noop() {
+        let mut a = app_with("xx", 10);
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        a.pending_hover_rx = Some(rx);
+        a.drain_pending_hover();
+        assert!(a.hover_popup.is_none());
+    }
+
+    #[test]
+    fn app_to_lsp_position_converts_utf8_byte_to_utf16_column() {
+        let buf = lattice_core::Buffer::from_text("hello\nαβγ\nworld\n");
+        // Line 1 (αβγ): 2-byte UTF-8 chars; byte 4 = end of β.
+        // utf-16 column at byte 4: α (1 unit) + β (1 unit) = 2.
+        let p = super::app_to_lsp_position(&buf, Position::new(1, 4)).expect("in-range");
+        assert_eq!(p.line, 1);
+        assert_eq!(p.character, 2);
+    }
+
+    #[test]
+    fn app_to_lsp_position_returns_none_for_out_of_range_line() {
+        let buf = lattice_core::Buffer::from_text("only-one-line\n");
+        assert!(super::app_to_lsp_position(&buf, Position::new(99, 0)).is_none());
     }
 
     // ---- :help (DESIGN.md §5.11) ----

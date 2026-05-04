@@ -4401,8 +4401,23 @@ impl App {
         // nothing if cancelled mid-flight, in which case the
         // drain just sees an idle channel) so the user always
         // gets feedback.
+        //
+        // Trace each request into `:lsp-log` so users can
+        // correlate K presses with server responses -- helpful
+        // when rust-analyzer-style servers are still indexing
+        // on first launch and every hover returns null until the
+        // index settles (a real "indexing in progress" status
+        // segment lands as Phase 4.4 polish).
+        // Per-request traces flow into the per-server ring
+        // (`*lsp:<server>*`) -- not the global `*lsp*` ring --
+        // so `:lsp-server-log` lands the picker on the right
+        // place to inspect them. The logger's first arg gates
+        // routing: `None` = global ring; `Some(id)` = per-server
+        // ring keyed by id.
         let lsp = self.lsp.clone();
         let logger = self.lsp_logger.clone();
+        let request_started = std::time::Instant::now();
+        let request_uri = uri.as_str().to_string();
         crate::runtime::spawn_on_lsp_runtime(async move {
             // Snapshot the attached handles under the supervisor
             // lock, then drop it before awaiting any per-server
@@ -4427,33 +4442,67 @@ impl App {
                     },
                     work_done_progress_params: Default::default(),
                 };
+                let server_id_arc: std::sync::Arc<str> =
+                    std::sync::Arc::from(handle.server_id());
+                // Trace the request landing per-server so the
+                // user can correlate K presses with responses
+                // from inside `:lsp-log <server>` /
+                // `:lsp-server-log` -> the right row's log.
+                logger.log(
+                    Some(&server_id_arc),
+                    lattice_lsp::LogLevel::Debug,
+                    lattice_lsp::LogSource::Client,
+                    format!(
+                        "hover requested @ {request_uri} line {} character {}",
+                        lsp_position.line, lsp_position.character
+                    ),
+                );
                 match handle.hover(params, token.clone()).await {
                     Ok(Some(hover)) => {
                         let body = hover_contents_to_markdown(&hover.contents);
                         if !body.trim().is_empty() {
+                            logger.log(
+                                Some(&server_id_arc),
+                                lattice_lsp::LogLevel::Debug,
+                                lattice_lsp::LogSource::Client,
+                                format!(
+                                    "hover reply: {} bytes after {:?}",
+                                    body.len(),
+                                    request_started.elapsed()
+                                ),
+                            );
                             let _ = tx.send(HoverOutcome::Body(body));
                             return;
                         }
-                        // Server replied but the body's empty --
-                        // counts as a try, fall through.
+                        // Server replied but the body's empty.
+                        // rust-analyzer returns this while still
+                        // indexing -- highlight the pattern in
+                        // the per-server log.
+                        logger.log(
+                            Some(&server_id_arc),
+                            lattice_lsp::LogLevel::Debug,
+                            lattice_lsp::LogSource::Client,
+                            "hover reply: empty body (server still indexing?)".to_string(),
+                        );
                     }
                     Ok(None) => {
-                        // Server explicitly returned null: nothing
-                        // to show at this position. Fall through.
+                        logger.log(
+                            Some(&server_id_arc),
+                            lattice_lsp::LogLevel::Debug,
+                            lattice_lsp::LogSource::Client,
+                            "hover reply: null (cursor not on a known symbol, or server still indexing)"
+                                .to_string(),
+                        );
                     }
                     Err(e) => {
                         // Cancelled / decode error / actor gone:
-                        // log per-server so :lsp-log surfaces the
-                        // reason. Don't bail -- a sibling server
-                        // may still have something useful.
+                        // per-server Warn so the right log
+                        // surfaces the reason.
                         logger.log(
-                            None,
+                            Some(&server_id_arc),
                             lattice_lsp::LogLevel::Warn,
                             lattice_lsp::LogSource::Client,
-                            format!(
-                                "hover via {}: {e}",
-                                handle.server_id()
-                            ),
+                            format!("hover error: {e}"),
                         );
                     }
                 }

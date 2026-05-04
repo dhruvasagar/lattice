@@ -738,36 +738,58 @@ fn draw_hover_popup(frame: &mut Frame, buffer_area: Rect, app: &App) {
         height,
     };
     frame.render_widget(Clear, popup);
+    // Border style flags hover-focused mode (vim "step into the
+    // docs"): a subtle cyan border tells the user their motions
+    // now scroll the popup; default style means motions move the
+    // document and any motion will dismiss the popup. Title
+    // mirrors the input contract.
+    let (border_style, title) = if app.hover_focused {
+        (
+            TuiStyle::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+            " hover [focused] (j/k scroll, Esc/q close) ",
+        )
+    } else {
+        (
+            TuiStyle::default(),
+            " hover (K to focus, Esc / :HoverClose to dismiss) ",
+        )
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" hover (Esc / :HoverClose to dismiss) ");
+        .border_style(border_style)
+        .title(title);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
+    // Window the visible slice around `hover.scroll` so the
+    // focused-mode scroll keys actually move what's painted.
+    let scroll = hover.scroll.min(hover.lines.len().saturating_sub(1));
     let visible: Vec<Line> = hover
         .lines
         .iter()
-        .take(inner.height as usize)
         .enumerate()
+        .skip(scroll)
+        .take(inner.height as usize)
         .map(|(i, l)| {
             let spans: Vec<Span<'_>> = if let Some(highlights) = hover.highlights.get(i) {
-                let trimmed = if l.len() > inner.width as usize {
-                    &l[..inner.width as usize]
-                } else {
-                    l.as_str()
-                };
-                render_styled_line(trimmed, highlights, inner.width as u32)
+                render_styled_line(l, highlights, inner.width as u32)
             } else {
-                let trimmed = if l.len() > inner.width as usize {
-                    &l[..inner.width as usize]
-                } else {
-                    l.as_str()
-                };
-                vec![Span::raw(trimmed.to_string())]
+                vec![Span::raw(l.clone())]
             };
             Line::from(spans)
         })
         .collect();
-    frame.render_widget(Paragraph::new(visible), inner);
+    // Wrap so long markdown lines (LSP hover responses are often
+    // long signatures or doc strings) survive the popup's narrow
+    // column. `trim: false` preserves leading whitespace inside
+    // fenced code blocks. Cursor positioning math doesn't apply
+    // here -- the document cursor still sits in the editor body
+    // when the popup is visible, focused or not.
+    frame.render_widget(
+        Paragraph::new(visible).wrap(Wrap { trim: false }),
+        inner,
+    );
 }
 
 /// Render a file-tree pane vim-style: no decorative border, just

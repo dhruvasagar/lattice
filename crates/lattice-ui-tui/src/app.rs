@@ -507,6 +507,23 @@ pub enum Action {
     /// Replace the echo area with a typed message.
     Echo(EchoMessage),
 
+    // ---- Hover popup focus mode ----
+    /// Dismiss the hover popup (focused or not). Mirrors the
+    /// `:HoverClose` ex-command for the keymap path.
+    CloseHover,
+    /// Scroll the focused hover popup down by one line.
+    HoverScrollDown,
+    /// Scroll the focused hover popup up by one line.
+    HoverScrollUp,
+    /// Page-down inside the focused hover popup.
+    HoverPageDown,
+    /// Page-up inside the focused hover popup.
+    HoverPageUp,
+    /// Jump to the top of the focused hover popup.
+    HoverGotoTop,
+    /// Jump to the bottom of the focused hover popup.
+    HoverGotoBottom,
+
     // ---- Picker (DESIGN.md §5.9.7) ----
     /// Append a character to the picker's query and refilter.
     PickerAppend(char),
@@ -967,8 +984,16 @@ pub struct App {
     /// a transient floating panel is anchored at a buffer position
     /// (LSP hover, manual `:hover`, future plugin contributions).
     /// Dismissed by Esc, an explicit `:HoverClose`, or any motion
-    /// that changes the document cursor.
+    /// that changes the document cursor while the popup is *not*
+    /// focused.
     pub hover_popup: Option<crate::hover::HoverPopup>,
+    /// True when the hover popup has input focus. Set by pressing
+    /// `K` a second time while a popup is already open (vim's
+    /// "step into the docs" gesture). While focused, `j` / `k` /
+    /// `<C-d>` / `<C-u>` / `gg` / `G` scroll the popup, `<Esc>`
+    /// or `q` close it; document-side motions are blocked. Cleared
+    /// when the popup dismisses (any path).
+    pub hover_focused: bool,
     /// Where the active help buffer is rendered. v1 only implements
     /// `Popup`; the other variants are reserved for the multi-buffer
     /// phase. Configurable per-user (eventually via `:set
@@ -1593,6 +1618,7 @@ impl App {
             command_history_pending: None,
             help_buffer: None,
             hover_popup: None,
+            hover_focused: false,
             help_display_mode: HelpDisplayMode::default(),
             completion_registry,
             completion_state: None,
@@ -2406,6 +2432,16 @@ impl App {
     }
 
     pub fn apply(&mut self, action: Action) {
+        // Snapshot pre-apply state for the hover-auto-dismiss
+        // hook below: any document-cursor motion while an
+        // unfocused hover popup is open should close the popup
+        // (vim/emacs behaviour -- moving the cursor leaves the
+        // hovered symbol). The post-apply check compares against
+        // these locals.
+        let hover_pre_cursor = self.cursor;
+        let hover_pre_active = self.active_buffer;
+        let hover_was_open = self.hover_popup.is_some();
+        let hover_was_focused = self.hover_focused;
         // While a macro recording is in flight, capture every Action
         // EXCEPT the recording-management ones themselves (otherwise the
         // recording would include "stop recording" or recurse on play).
@@ -2575,6 +2611,42 @@ impl App {
                 self.last_message = Some(message);
             }
 
+            Action::CloseHover => self.do_close_hover(),
+            Action::HoverScrollDown => {
+                if let Some(h) = self.hover_popup.as_mut() {
+                    h.scroll_by(1);
+                }
+            }
+            Action::HoverScrollUp => {
+                if let Some(h) = self.hover_popup.as_mut() {
+                    h.scroll_by(-1);
+                }
+            }
+            Action::HoverPageDown => {
+                // Page = ~half the popup; without precise popup
+                // geometry on the App side, use a stable 6-line
+                // step. The renderer caps the popup at half the
+                // buffer height so this is roughly half a page on
+                // typical terminals.
+                if let Some(h) = self.hover_popup.as_mut() {
+                    h.scroll_by(6);
+                }
+            }
+            Action::HoverPageUp => {
+                if let Some(h) = self.hover_popup.as_mut() {
+                    h.scroll_by(-6);
+                }
+            }
+            Action::HoverGotoTop => {
+                if let Some(h) = self.hover_popup.as_mut() {
+                    h.scroll_to_top();
+                }
+            }
+            Action::HoverGotoBottom => {
+                if let Some(h) = self.hover_popup.as_mut() {
+                    h.scroll_to_bottom();
+                }
+            }
             Action::PickerAppend(c) => {
                 if let Some(p) = self.picker.as_mut() {
                     p.append_query(c);
@@ -2836,6 +2908,24 @@ impl App {
         }
         self.ensure_cursor_visible();
         self.maybe_reparse_syntax();
+        // Hover-auto-dismiss: if a hover popup was open in
+        // *unfocused* mode and the document cursor moved as a
+        // result of this action, close the popup. Matches the
+        // vim/emacs convention where any cursor motion off the
+        // hovered symbol dismisses the doc panel. Skipped while
+        // the popup is focused (the user is navigating *inside*
+        // the popup -- those motions read on the hover, not the
+        // document).
+        if hover_was_open
+            && !hover_was_focused
+            && self.hover_popup.is_some()
+            && hover_pre_active == BufferKind::Document
+            && self.active_buffer == BufferKind::Document
+            && self.cursor != hover_pre_cursor
+        {
+            self.hover_popup = None;
+            self.hover_focused = false;
+        }
     }
 
     /// Reparse syntax if the document's text has changed since the last
@@ -4993,6 +5083,17 @@ impl App {
     /// flipped before the new request fires, so a slow server
     /// can't drop a stale popup over the new cursor position.
     fn do_lsp_hover_request(&mut self) {
+        // Vim "step into the docs": if a popup is already up and
+        // not yet focused, the second `K` doesn't fire a new
+        // request -- it just transfers input to the popup so the
+        // user can scroll / search inside it. Subsequent K presses
+        // while focused are no-ops (the K-as-refocus behaviour
+        // tends to mean "open another", which we don't want during
+        // an active read).
+        if self.hover_popup.is_some() {
+            self.hover_focused = true;
+            return;
+        }
         // Cancel any in-flight hover so its result -- if it
         // arrives later -- is dropped by the relay.
         if let Some(token) = self.pending_hover_token.take() {
@@ -5376,6 +5477,7 @@ impl App {
     /// `:HoverClose` / `Esc` -- dismiss the hover popup.
     fn do_close_hover(&mut self) {
         self.hover_popup = None;
+        self.hover_focused = false;
     }
 
     /// `:help [topic]` (DESIGN.md §5.11). With no topic the index
@@ -14359,6 +14461,87 @@ mod tests {
         );
         let msg = a.last_message.as_ref().expect("info echo");
         assert!(msg.text.contains("redraw"), "user-visible echo: {msg:?}");
+    }
+
+    #[test]
+    fn hover_dismisses_on_document_cursor_motion() {
+        // Vim/emacs UX: any motion off the hovered symbol drops
+        // the popup. Apply a hover popup directly (skipping the
+        // async LSP path), move the cursor, assert dismissal.
+        let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
+        a.do_open_hover("hover body");
+        assert!(a.hover_popup.is_some());
+        // Drive a real motion through `apply` (`l` -- char-right).
+        let inv = lattice_grammar::CommandInvocation::of(a.builtins.char_right.0);
+        a.apply(Action::Invoke(inv));
+        assert!(
+            a.hover_popup.is_none(),
+            "hover should dismiss on cursor motion"
+        );
+        assert!(!a.hover_focused);
+    }
+
+    #[test]
+    fn hover_does_not_dismiss_when_cursor_unchanged() {
+        // No-op actions (e.g. setting a no-arg ex command,
+        // an out-of-bounds motion that clamps in place) must not
+        // dismiss the popup. Use a count-only push (`5`) which
+        // doesn't move the cursor.
+        let mut a = app_with("fn main() {}\n", 5);
+        a.do_open_hover("hover body");
+        assert!(a.hover_popup.is_some());
+        a.apply(Action::PushDigit(5));
+        assert!(
+            a.hover_popup.is_some(),
+            "hover should survive a count-prefix push"
+        );
+    }
+
+    #[test]
+    fn second_hover_request_focuses_existing_popup() {
+        // First K opens the popup; second K transfers focus
+        // (no new request). Test the synchronous side: simulate
+        // the popup already open, then call `do_lsp_hover_request`
+        // and confirm the focus flip without firing a request.
+        let mut a = app_with("fn main() {}\n", 5);
+        a.do_open_hover("hover body");
+        assert!(a.hover_popup.is_some());
+        assert!(!a.hover_focused);
+        // Calling do_lsp_hover_request with a popup already open
+        // should set focus, not spawn a request. We can't easily
+        // observe the "no spawn" side without mocking the LSP
+        // runtime; the focus flag is sufficient evidence.
+        a.do_lsp_hover_request();
+        assert!(a.hover_focused, "second K should focus the popup");
+        assert!(a.hover_popup.is_some(), "popup still up after focus");
+    }
+
+    #[test]
+    fn focused_hover_scrolls_with_j_and_k_actions() {
+        let mut a = app_with("fn main() {}\n", 5);
+        let body = (0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        a.do_open_hover(&body);
+        a.hover_focused = true;
+        assert_eq!(a.hover_popup.as_ref().unwrap().scroll, 0);
+        a.apply(Action::HoverScrollDown);
+        a.apply(Action::HoverScrollDown);
+        assert_eq!(a.hover_popup.as_ref().unwrap().scroll, 2);
+        a.apply(Action::HoverScrollUp);
+        assert_eq!(a.hover_popup.as_ref().unwrap().scroll, 1);
+        a.apply(Action::HoverGotoBottom);
+        assert_eq!(a.hover_popup.as_ref().unwrap().scroll, 19);
+        a.apply(Action::HoverGotoTop);
+        assert_eq!(a.hover_popup.as_ref().unwrap().scroll, 0);
+    }
+
+    #[test]
+    fn close_hover_action_clears_focus_flag() {
+        let mut a = app_with("hi\n", 5);
+        a.do_open_hover("body");
+        a.hover_focused = true;
+        a.apply(Action::CloseHover);
+        assert!(a.hover_popup.is_none());
+        assert!(!a.hover_focused);
     }
 
     #[test]

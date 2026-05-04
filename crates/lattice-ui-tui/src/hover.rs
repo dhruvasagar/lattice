@@ -21,6 +21,16 @@ use lattice_syntax::{Lang, LangRegistry, StyledSpan, Syntax};
 /// One open hover popup. Anchor is in buffer coordinates; the
 /// renderer translates to screen coordinates each frame so terminal
 /// resizes / scrolls reposition the popup naturally.
+///
+/// **Transient view only.** The hover popup is the read-only
+/// preview of an LSP `textDocument/hover` reply, anchored at the
+/// cursor and dismissed on any document motion. When the user
+/// presses `K` a second time the popup *promotes* into a real
+/// help buffer (`HelpBuffer`) via `App::do_lsp_hover_request`'s
+/// promotion path -- that gives full vim grammar (motions,
+/// search, `/`, `n` / `N`, `gg` / `G`, `:` line, etc.) for free
+/// instead of duplicating a stripped-down keymap here. The
+/// HoverPopup struct itself stays read-only / scroll-less.
 #[derive(Debug, Clone)]
 pub struct HoverPopup {
     /// Buffer position the hover targets. The popup floats just
@@ -32,11 +42,6 @@ pub struct HoverPopup {
     pub markdown: String,
     pub lines: Vec<String>,
     pub highlights: Vec<Vec<StyledSpan>>,
-    /// First visible line index inside the popup. Mutated by the
-    /// hover-focused keymap (`j` / `k` / `<C-d>` / `<C-u>` / `gg`
-    /// / `G`) so long hover bodies are scrollable. Stays at 0
-    /// for transient (unfocused) display.
-    pub scroll: usize,
 }
 
 impl HoverPopup {
@@ -48,26 +53,7 @@ impl HoverPopup {
             markdown,
             lines,
             highlights: Vec::new(),
-            scroll: 0,
         }
-    }
-
-    /// Scroll by `delta` lines (negative = up). Clamps so the
-    /// popup never scrolls past the last line.
-    pub fn scroll_by(&mut self, delta: i32) {
-        let max = self.lines.len().saturating_sub(1);
-        let new = (self.scroll as i32 + delta).max(0) as usize;
-        self.scroll = new.min(max);
-    }
-
-    /// Jump to the first line.
-    pub fn scroll_to_top(&mut self) {
-        self.scroll = 0;
-    }
-
-    /// Jump so the last line is visible.
-    pub fn scroll_to_bottom(&mut self) {
-        self.scroll = self.lines.len().saturating_sub(1);
     }
 
     /// Pre-compute markdown highlights for the popup body. Same

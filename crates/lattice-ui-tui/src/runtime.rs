@@ -258,7 +258,6 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         completion_open: app.completion_state.is_some(),
                         chord_capture: app.chord_capture_active(),
                         picker_open: app.picker.is_some(),
-                        hover_focused: app.hover_focused,
                     };
                     let action = translate(ctx, k);
                     app.apply(action);

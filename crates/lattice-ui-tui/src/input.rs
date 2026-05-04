@@ -58,12 +58,6 @@ pub struct TranslateContext<'a> {
     /// keys append to the query, `<Up>` / `<C-p>` / `<Down>` /
     /// `<C-n>` move selection, `<CR>` accepts, `<Esc>` dismisses.
     pub picker_open: bool,
-    /// True when a hover popup is open AND has input focus
-    /// (second-`K` gesture). While focused, `j` / `k` /
-    /// `<C-d>` / `<C-u>` / `gg` / `G` scroll the popup,
-    /// `<Esc>` / `q` close it, and document-side motions are
-    /// blocked.
-    pub hover_focused: bool,
 }
 
 pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
@@ -74,13 +68,6 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
     // app so an open picker isn't a foot-gun.
     if ctx.picker_open {
         return translate_picker(event);
-    }
-    // Hover-focused overlay (vim's "second K steps into the
-    // docs"): once the user has chosen to read the hover panel,
-    // their motion keys scroll the panel rather than the
-    // document. Esc / q dismisses + returns focus.
-    if ctx.hover_focused {
-        return translate_hover_focused(event);
     }
 
     // Chord-capture overlay precedes the universal `<C-c>` -> Quit
@@ -297,41 +284,6 @@ fn translate_command_chord_capture(event: KeyEvent) -> Action {
         // Release events / modifier-only presses don't have a
         // chord representation -- swallow them silently.
         None => Action::None,
-    }
-}
-
-/// Hover-focused overlay key router. Active when `K` is pressed
-/// a second time while the hover popup is open (vim's "step into
-/// the docs"). Reserved keys move within the popup; everything
-/// else is swallowed so the document can't accidentally scroll
-/// out from under the hovered symbol. `<Esc>` / `q` closes;
-/// `<C-c>` is a universal escape hatch.
-fn translate_hover_focused(event: KeyEvent) -> Action {
-    if event.modifiers.contains(KeyModifiers::CONTROL) {
-        return match event.code {
-            KeyCode::Char('c') => Action::CloseHover,
-            KeyCode::Char('d') => Action::HoverPageDown,
-            KeyCode::Char('u') => Action::HoverPageUp,
-            KeyCode::Char('e') => Action::HoverScrollDown,
-            KeyCode::Char('y') => Action::HoverScrollUp,
-            _ => Action::None,
-        };
-    }
-    match event.code {
-        KeyCode::Esc => Action::CloseHover,
-        KeyCode::Char('q') => Action::CloseHover,
-        KeyCode::Char('j') => Action::HoverScrollDown,
-        KeyCode::Char('k') => Action::HoverScrollUp,
-        KeyCode::Down => Action::HoverScrollDown,
-        KeyCode::Up => Action::HoverScrollUp,
-        KeyCode::Char('G') => Action::HoverGotoBottom,
-        // `gg` is a chord: handled by sending two `g` presses.
-        // For simplicity in v1, a single `g` jumps to the top.
-        // Replace with a chord parser if a real conflict surfaces.
-        KeyCode::Char('g') => Action::HoverGotoTop,
-        KeyCode::PageDown => Action::HoverPageDown,
-        KeyCode::PageUp => Action::HoverPageUp,
-        _ => Action::None,
     }
 }
 
@@ -1056,7 +1008,6 @@ mod tests {
             completion_open: false,
             chord_capture: false,
             picker_open: false,
-            hover_focused: false,
         }
     }
 
@@ -1076,7 +1027,6 @@ mod tests {
             completion_open: false,
             chord_capture: false,
             picker_open: false,
-            hover_focused: false,
         }
     }
 
@@ -1095,7 +1045,6 @@ mod tests {
             completion_open: false,
             chord_capture: false,
             picker_open: false,
-            hover_focused: false,
         }
     }
 
@@ -1110,7 +1059,6 @@ mod tests {
             completion_open: false,
             chord_capture: true,
             picker_open: false,
-            hover_focused: false,
         }
     }
 
@@ -2029,7 +1977,6 @@ mod tests {
             completion_open: false,
             chord_capture: false,
             picker_open: false,
-            hover_focused: false,
         }
     }
 
@@ -2319,7 +2266,6 @@ mod tests {
                 completion_open: false,
                 chord_capture: false,
                 picker_open: false,
-                hover_focused: false,
             };
             last = translate(ctx, event);
             if let Action::SetPending(p) = &last {

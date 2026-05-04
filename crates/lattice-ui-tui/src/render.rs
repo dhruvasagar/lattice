@@ -18,6 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use lattice_grammar::{ModalState, SearchDirection};
+use lattice_lsp::{Diagnostic as LspDiagnostic, DiagnosticSeverity};
 use lattice_protocol::position::Range as ProtoRange;
 use lattice_protocol::selection::VisualMode;
 use lattice_runtime::DocumentSnapshot;
@@ -493,7 +494,12 @@ fn draw_inactive_document(
     } else {
         2
     };
-    let buffer_w = (area.width as u32).saturating_sub(gutter_w);
+    // Reserve the diagnostic-severity column on inactive panes
+    // too so the gutter alignment matches the active pane when
+    // they share a document.
+    let buffer_w = (area.width as u32)
+        .saturating_sub(gutter_w)
+        .saturating_sub(DIAG_GUTTER_WIDTH);
 
     // Source for inactive-pane highlights:
     //  1. `pane_highlights[idx]` when the pane has a different
@@ -540,7 +546,16 @@ fn draw_inactive_document(
                 span.style = span.style.patch(overlay);
             }
         }
-        lines.push(combine(gutter, body));
+        // Inactive panes get a blank severity cell so the
+        // alignment matches the active pane when they share a
+        // document. Diagnostics on inactive panes are
+        // intentionally minimal -- the active pane is the
+        // canonical surface; inactive ones avoid visual noise.
+        lines.push(combine_prefixed(
+            vec![Span::styled(" ".to_string(), TuiStyle::default())],
+            gutter,
+            body,
+        ));
     }
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -851,7 +866,11 @@ pub fn compose_visible_lines(
         // still has a one-cell margin from the edge).
         2
     };
-    let buffer_w = width.saturating_sub(gutter_w);
+    // Severity column is prepended (Phase 4.1.d.iii); reserve
+    // one cell so buffer width stays correct.
+    let buffer_w = width
+        .saturating_sub(gutter_w)
+        .saturating_sub(DIAG_GUTTER_WIDTH);
 
     // Compute visual selection range once (instead of per line).
     let visual_range = visual_selection_range(app);
@@ -951,6 +970,35 @@ pub fn compose_visible_lines(
         {
             body = apply_match_overlay(body, overlay_start, overlay_end, match_style());
         }
+        // LSP diagnostic underline overlay (Phase 4.1.d.iii):
+        // for each diagnostic touching this line, underline the
+        // affected range with the severity colour. Underline
+        // modifier composes with any prior bg / fg overlays
+        // (visual / hlsearch / current_match) -- all four can
+        // co-exist on a single span without conflict.
+        for d in diagnostics_on_line(app, snap, line_idx) {
+            let start = if d.range.start.line == line_idx {
+                (d.range.start.character as usize).min(line_len)
+            } else {
+                0
+            };
+            let end = if d.range.end.line == line_idx {
+                (d.range.end.character as usize).min(line_len)
+            } else {
+                line_len
+            };
+            if start >= end {
+                continue;
+            }
+            let color = match d.severity {
+                Some(DiagnosticSeverity::ERROR) => Color::Red,
+                Some(DiagnosticSeverity::WARNING) => Color::Yellow,
+                Some(DiagnosticSeverity::INFORMATION) => Color::Blue,
+                Some(DiagnosticSeverity::HINT) => Color::DarkGray,
+                _ => Color::Blue,
+            };
+            body = apply_underline_overlay(body, start, end, color);
+        }
         // Substitute live preview overlay (DESIGN.md §5.9.10): paint
         // the about-to-be-replaced ranges in a strike-through-ish
         // style so the user sees what will change before they hit
@@ -979,7 +1027,14 @@ pub fn compose_visible_lines(
                 TuiStyle::default().fg(Color::DarkGray),
             ));
         }
-        out.push(combine(gutter, body));
+        // LSP severity cell (Phase 4.1.d.iii). One cell pre-
+        // pended to the gutter; severity glyph + colour when a
+        // diagnostic touches the line, blank otherwise. Costs
+        // one cell of gutter width on every frame -- visible
+        // even when no diagnostics exist so the layout doesn't
+        // shift when one arrives.
+        let severity_cell = render_diagnostic_severity_cell(app, snap, line_idx);
+        out.push(combine_prefixed(vec![severity_cell], gutter, body));
     }
     out
 }
@@ -1225,6 +1280,64 @@ fn render_gutter_for(app: &App, line_idx: u32, width: u32) -> Span<'static> {
     )
 }
 
+/// Width of the diagnostic-severity column prepended to the
+/// gutter (Phase 4.1.d.iii). Always 1 cell when LSP is in use --
+/// matches vim's `signcolumn=yes`. Costs one cell of gutter
+/// width but keeps the layout stable when diagnostics
+/// arrive / clear.
+const DIAG_GUTTER_WIDTH: u32 = 1;
+
+/// Build the severity-column cell for `line_idx`. Returns one
+/// `Span` -- the severity glyph + the per-severity style when a
+/// diagnostic touches the line, or a single space styled
+/// dim-darkgray when nothing's there.
+fn render_diagnostic_severity_cell(
+    app: &App,
+    snap: &DocumentSnapshot,
+    line_idx: u32,
+) -> Span<'static> {
+    let theme = &app.theme;
+    let blank = Span::styled(" ".to_string(), TuiStyle::default());
+    let Some(severity) = severity_for_line(app, snap, line_idx) else {
+        return blank;
+    };
+    let (glyph, style) = crate::theme::diagnostic_glyph_and_style(theme, severity);
+    // The theme stores ratatui-native Style values, so no
+    // conversion is needed here -- they're already the right
+    // shape for `Span::styled`.
+    Span::styled(glyph.to_string(), style)
+}
+
+/// Resolve the most-severe diagnostic on `line_idx` of the
+/// active buffer. Walks `app.lsp.diagnostics()` keyed by the
+/// active URI (looked up via `app.buffer_uri`). Returns `None`
+/// when:
+/// - the active buffer has no URI (unsaved scratch), or
+/// - the buffer has no LSP attachment, or
+/// - no diagnostic touches the line.
+pub(crate) fn severity_for_line(
+    app: &App,
+    _snap: &DocumentSnapshot,
+    line_idx: u32,
+) -> Option<DiagnosticSeverity> {
+    let uri = app.buffer_uri(app.document_buffer_id)?;
+    app.lsp.diagnostics().line_severity(uri, line_idx)
+}
+
+/// Diagnostics that overlap `line_idx` of the active buffer.
+/// Used by the inline-underline overlay.
+pub(crate) fn diagnostics_on_line(
+    app: &App,
+    _snap: &DocumentSnapshot,
+    line_idx: u32,
+) -> Vec<LspDiagnostic> {
+    let Some(uri) = app.buffer_uri(app.document_buffer_id) else {
+        return Vec::new();
+    };
+    app.lsp.diagnostics().diagnostics_on_line(uri, line_idx)
+}
+
+
 fn render_styled_line(line: &str, spans: &[StyledSpan], max_width: u32) -> Vec<Span<'static>> {
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut cursor = 0usize;
@@ -1290,18 +1403,71 @@ fn empty_marker_line(gutter_w: u32) -> Line<'static> {
     // Treat the `~` like a pseudo line-number label so its column
     // alignment matches `render_gutter`'s numbered output: leading
     // pad + `~` + GUTTER_TRAILING_PAD.
+    // Prepended one-cell severity column blank (Phase 4.1.d.iii)
+    // so the `~` lines align with body lines below the document.
     let cell = format_gutter_cell("~", gutter_w, None);
-    Line::from(vec![Span::styled(
-        cell,
-        TuiStyle::default().fg(Color::DarkGray),
-    )])
+    Line::from(vec![
+        Span::styled(" ".to_string(), TuiStyle::default()),
+        Span::styled(cell, TuiStyle::default().fg(Color::DarkGray)),
+    ])
 }
 
-fn combine(gutter: Span<'static>, mut body: Vec<Span<'static>>) -> Line<'static> {
-    let mut all = Vec::with_capacity(body.len() + 1);
+/// Like [`combine_prefixed`] but accepts a multi-span prefix -- used by
+/// the LSP diagnostic gutter where the leading severity cell
+/// has its own per-severity style and can't share a span with
+/// the line-number gutter (which is always dim-darkgray).
+fn combine_prefixed(
+    prefix: Vec<Span<'static>>,
+    gutter: Span<'static>,
+    mut body: Vec<Span<'static>>,
+) -> Line<'static> {
+    let mut all = Vec::with_capacity(prefix.len() + 1 + body.len());
+    all.extend(prefix);
     all.push(gutter);
     all.append(&mut body);
     Line::from(all)
+}
+
+/// Apply an underline overlay over a byte range of a line's
+/// existing styled spans. Unlike [`apply_match_overlay`], this
+/// PRESERVES the underlying span's foreground / background and
+/// only ADDs the `UNDERLINED` modifier + sets the underline
+/// color. Used for inline LSP diagnostic decoration.
+fn apply_underline_overlay(
+    spans: Vec<Span<'static>>,
+    overlay_start: usize,
+    overlay_end: usize,
+    underline_color: Color,
+) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 2);
+    let mut cursor = 0usize;
+    for span in spans {
+        let s = span.content.as_ref().to_string();
+        let span_start = cursor;
+        let span_end = cursor + s.len();
+        let overlap_start = span_start.max(overlay_start);
+        let overlap_end = span_end.min(overlay_end);
+        if overlap_start >= overlap_end {
+            out.push(Span::styled(s, span.style));
+        } else {
+            if overlap_start > span_start {
+                let pre = s[..overlap_start - span_start].to_string();
+                out.push(Span::styled(pre, span.style));
+            }
+            let mid = s[overlap_start - span_start..overlap_end - span_start].to_string();
+            let mid_style = span
+                .style
+                .add_modifier(Modifier::UNDERLINED)
+                .underline_color(underline_color);
+            out.push(Span::styled(mid, mid_style));
+            if overlap_end < span_end {
+                let post = s[overlap_end - span_start..].to_string();
+                out.push(Span::styled(post, span.style));
+            }
+        }
+        cursor = span_end;
+    }
+    out
 }
 
 /// Number of buffer lines actually collapsed onto the visible row
@@ -1431,7 +1597,8 @@ fn cursor_screen_position(
     // the prefix `line[..cursor.byte]` -- handles ASCII (1:1),
     // Latin-1 / Greek / Cyrillic (multi-byte but 1 cell), CJK and
     // emoji (1-4 bytes, 2 cells).
-    let col = gutter_w + display_col_for_byte(&snap.buffer, app.cursor);
+    // Cursor column = severity_cell + gutter + display column.
+    let col = DIAG_GUTTER_WIDTH + gutter_w + display_col_for_byte(&snap.buffer, app.cursor);
     Some((
         area.x.saturating_add(col.try_into().unwrap_or(u16::MAX)),
         area.y
@@ -1675,9 +1842,8 @@ mod tests {
         app.cursor.byte = 3;
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(&app, &app.document.snapshot(),area).unwrap();
-        // gutter_width(1) = 4 (1 lead + 1 digit + 2 trailing).
-        // Cursor at byte 3 → column gutter_w + 3 = 7.
-        assert_eq!(pos.0, 7);
+        // severity_cell (1) + gutter_width(1)=4 + 3 = 8.
+        assert_eq!(pos.0, 8);
         assert_eq!(pos.1, 0);
     }
 
@@ -1692,9 +1858,8 @@ mod tests {
         app.cursor.byte = 6;
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(&app, &app.document.snapshot(),area).unwrap();
-        // gutter_w is 4 for a 1-line file. `P` is at display col 5
-        // within the line, so absolute screen col = 4 + 5 = 9.
-        assert_eq!(pos.0, 9);
+        // severity_cell (1) + gutter_w (4) + 5 display cells = 10.
+        assert_eq!(pos.0, 10);
     }
 
     #[test]
@@ -1706,8 +1871,8 @@ mod tests {
         app.cursor.byte = 6; // past the 3-byte CJK char
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(&app, &app.document.snapshot(),area).unwrap();
-        // gutter_w (4) + 5 display cells = 9.
-        assert_eq!(pos.0, 9);
+        // severity_cell (1) + gutter_w (4) + 5 display cells = 10.
+        assert_eq!(pos.0, 10);
     }
 
     #[test]
@@ -2225,5 +2390,178 @@ mod tests {
         let row1 = line_text(&lines[1]);
         assert!(!row1.contains('▸'), "row1: {row1:?}");
         assert!(!row1.contains('▾'), "row1: {row1:?}");
+    }
+
+    // ---- LSP diagnostic rendering tests (Phase 4.1.d.iii) ----
+
+    /// Helper: seed a diagnostic into the App's LSP layer for
+    /// the given line range + severity, mapping the App's
+    /// active buffer to a fake URI.
+    fn seed_diagnostic(
+        app: &mut App,
+        line: u32,
+        start_col: u32,
+        end_col: u32,
+        severity: lattice_lsp::DiagnosticSeverity,
+        message: &str,
+    ) {
+        use std::str::FromStr;
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, uri.clone());
+        let diag = lattice_lsp::Diagnostic {
+            range: lattice_lsp::LspRange {
+                start: lattice_lsp::LspPosition {
+                    line,
+                    character: start_col,
+                },
+                end: lattice_lsp::LspPosition {
+                    line,
+                    character: end_col,
+                },
+            },
+            severity: Some(severity),
+            code: None,
+            code_description: None,
+            source: None,
+            message: message.into(),
+            related_information: None,
+            tags: None,
+            data: None,
+        };
+        app.lsp.diagnostics().apply(lattice_lsp::DiagnosticEvent {
+            server_id: std::sync::Arc::from("rust"),
+            uri,
+            version: None,
+            diagnostics: std::sync::Arc::from(vec![diag].into_boxed_slice()),
+        });
+    }
+
+    #[test]
+    fn diagnostic_severity_glyph_appears_in_gutter_for_error() {
+        let mut app = app_with("fn main() {}\nlet x = 1;\n", 5);
+        seed_diagnostic(
+            &mut app,
+            0,
+            0,
+            7,
+            lattice_lsp::DiagnosticSeverity::ERROR,
+            "boom",
+        );
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        // Row 0 has the error; expect the ■ glyph somewhere in
+        // the rendered first span (the severity cell).
+        let row0 = line_text(&lines[0]);
+        assert!(
+            row0.contains('■'),
+            "expected error glyph on diag line; got {row0:?}"
+        );
+        // Row 1 has no diagnostic; should NOT have any
+        // severity glyph.
+        let row1 = line_text(&lines[1]);
+        assert!(!row1.contains('■'), "row 1 should be clean: {row1:?}");
+        assert!(!row1.contains('▲'), "row 1 should be clean: {row1:?}");
+    }
+
+    #[test]
+    fn diagnostic_warning_uses_triangle_glyph() {
+        let mut app = app_with("hello\n", 3);
+        seed_diagnostic(
+            &mut app,
+            0,
+            0,
+            5,
+            lattice_lsp::DiagnosticSeverity::WARNING,
+            "warn",
+        );
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 3, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(row0.contains('▲'), "expected warning glyph; got {row0:?}");
+    }
+
+    #[test]
+    fn diagnostic_hint_uses_dot_glyph() {
+        let mut app = app_with("hello\n", 3);
+        seed_diagnostic(
+            &mut app,
+            0,
+            0,
+            1,
+            lattice_lsp::DiagnosticSeverity::HINT,
+            "hint",
+        );
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 3, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(row0.contains('·'), "expected hint glyph; got {row0:?}");
+    }
+
+    #[test]
+    fn most_severe_wins_per_line() {
+        let mut app = app_with("hello\n", 3);
+        seed_diagnostic(
+            &mut app,
+            0,
+            0,
+            3,
+            lattice_lsp::DiagnosticSeverity::WARNING,
+            "warn",
+        );
+        seed_diagnostic(
+            &mut app,
+            0,
+            2,
+            5,
+            lattice_lsp::DiagnosticSeverity::ERROR,
+            "err",
+        );
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 3, 80);
+        let row0 = line_text(&lines[0]);
+        // Error wins over warning on the same line for the
+        // gutter glyph (most-severe semantics).
+        assert!(row0.contains('■'), "row0 expected ■: {row0:?}");
+    }
+
+    #[test]
+    fn no_lsp_attachment_no_severity_glyph() {
+        let app = app_with("hello\n", 3);
+        // No buffer_uri mapping -> no diagnostics queryable.
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 3, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(!row0.contains('■'), "no LSP -> no error glyph: {row0:?}");
+        assert!(!row0.contains('▲'), "no LSP -> no warn glyph: {row0:?}");
+    }
+
+    #[test]
+    fn diagnostic_underline_modifier_applied_to_overlap_range() {
+        let mut app = app_with("hello world\n", 3);
+        // Underline cols 6..11 ("world") with an error.
+        seed_diagnostic(
+            &mut app,
+            0,
+            6,
+            11,
+            lattice_lsp::DiagnosticSeverity::ERROR,
+            "err",
+        );
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 3, 80);
+        // Walk every span on row 0; at least one span covering
+        // bytes 6..11 must have UNDERLINED set.
+        let mut found_underline = false;
+        for span in &lines[0].spans {
+            if span.style.add_modifier.contains(Modifier::UNDERLINED)
+                || span.style.sub_modifier.is_empty()
+                    && span
+                        .style
+                        .add_modifier
+                        .contains(Modifier::UNDERLINED)
+            {
+                found_underline = true;
+                break;
+            }
+        }
+        assert!(
+            found_underline,
+            "expected an UNDERLINED modifier somewhere in the row's spans: {:?}",
+            lines[0]
+        );
     }
 }

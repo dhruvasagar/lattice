@@ -46,6 +46,23 @@ pub struct Theme {
     /// at the bottom of the upper pane. Reserved for layouts
     /// that disable per-pane status lines.
     pub pane_separator_horizontal: char,
+
+    // ---- Diagnostics (Phase 4.1.d.iii) ---------------------
+
+    /// Glyph + color for an Error-severity diagnostic. Rendered
+    /// in the gutter's severity column; also drives the inline
+    /// underline color when an error range overlaps text.
+    pub diagnostic_error_glyph: char,
+    pub diagnostic_error_style: Style,
+    /// Warning severity.
+    pub diagnostic_warning_glyph: char,
+    pub diagnostic_warning_style: Style,
+    /// Information severity.
+    pub diagnostic_info_glyph: char,
+    pub diagnostic_info_style: Style,
+    /// Hint severity.
+    pub diagnostic_hint_glyph: char,
+    pub diagnostic_hint_style: Style,
 }
 
 impl Default for Theme {
@@ -60,7 +77,46 @@ impl Default for Theme {
             pane_separator: Style::new().fg(Color::DarkGray),
             pane_separator_vertical: '│',
             pane_separator_horizontal: '─',
+            // Severity glyphs: solid square / triangle / circle /
+            // dot. Same shapes vim's nvim-lsp / VS Code use --
+            // immediately readable, terminal-safe.
+            diagnostic_error_glyph: '■',
+            diagnostic_error_style: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+            diagnostic_warning_glyph: '▲',
+            diagnostic_warning_style: Style::new()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            diagnostic_info_glyph: '●',
+            diagnostic_info_style: Style::new().fg(Color::Blue),
+            diagnostic_hint_glyph: '·',
+            diagnostic_hint_style: Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
         }
+    }
+}
+
+/// Resolve the per-severity rendering bits from the theme.
+/// Returns `(glyph, style)`.
+pub fn diagnostic_glyph_and_style(
+    theme: &Theme,
+    severity: lattice_lsp::DiagnosticSeverity,
+) -> (char, Style) {
+    match severity {
+        lattice_lsp::DiagnosticSeverity::ERROR => {
+            (theme.diagnostic_error_glyph, theme.diagnostic_error_style)
+        }
+        lattice_lsp::DiagnosticSeverity::WARNING => (
+            theme.diagnostic_warning_glyph,
+            theme.diagnostic_warning_style,
+        ),
+        lattice_lsp::DiagnosticSeverity::INFORMATION => {
+            (theme.diagnostic_info_glyph, theme.diagnostic_info_style)
+        }
+        lattice_lsp::DiagnosticSeverity::HINT => {
+            (theme.diagnostic_hint_glyph, theme.diagnostic_hint_style)
+        }
+        _ => (theme.diagnostic_info_glyph, theme.diagnostic_info_style),
     }
 }
 

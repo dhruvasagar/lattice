@@ -75,9 +75,11 @@ pub use pending::{InvocationId, Pending};
 pub use supervisor::LspSupervisor;
 pub use sync::{DocSync, uri_from_str};
 
-// Re-export the LSP `Uri` type so consumers don't need a
-// direct `lsp-types` dep just to spell out URIs in their
+// Re-export commonly-used LSP types so consumers don't need
+// a direct `lsp-types` dep just to spell them out in
 // signatures. lsp-types changes shape across major versions;
-// the re-export gives us a stable seam if we need to swap.
-pub use lsp_types::Uri;
+// the re-exports give us a stable seam if we need to swap.
+pub use lsp_types::{
+    Diagnostic, DiagnosticSeverity, Position as LspPosition, Range as LspRange, Uri,
+};
 pub use transport::{ChildTransport, TransportError};

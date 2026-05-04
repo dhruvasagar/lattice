@@ -155,7 +155,7 @@ Capability columns:
 
 | Method                                    | Phase | Status | Notes |
 |-------------------------------------------|-------|--------|-------|
-| `textDocument/publishDiagnostics`         | 4.1   | 🚧     | Routing done (4.1.d.i); per-URI state with version gating + multi-server merge done (4.1.d.ii). Renderer + `:diagnostics` buffer view in 4.1.d.iii–iv. |
+| `textDocument/publishDiagnostics`         | 4.1   | 🚧     | Routing (4.1.d.i) ✅, per-URI state w/ version gating + multi-server merge (4.1.d.ii) ✅, renderer integration: gutter severity column + inline underline overlay (4.1.d.iii) ✅. `:diagnostics` buffer view + `]d`/`[d`/`:cnext`/`:cprev` (4.1.d.iv) ⏹️. |
 | `textDocument/diagnostic`                 | 4.4   | ⏹️    | Pull-based diagnostics (LSP 3.17). Used when server prefers pull over push. |
 | `workspace/diagnostic`                    | 4.4   | ⏹️    | Workspace-wide pull. |
 | `textDocument/inlayHint`                  | 4.4   | ⏹️    | Renderer overlay; type/parameter hints inline. |

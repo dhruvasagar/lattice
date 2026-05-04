@@ -2050,18 +2050,99 @@ impl App {
         );
     }
 
-    /// `:lsp-trace <server>` -- toggle JSON-RPC trace for the
+    /// `:lsp-trace <name>` -- toggle JSON-RPC trace for the
     /// server. Pure toggle: the trace buffer is opened by the
     /// separate `:lsp-trace-log [server]` command so peeking
     /// mid-stream doesn't flip the toggle off.
-    pub fn do_toggle_lsp_trace(&mut self, server_id: &str) {
-        let id: std::sync::Arc<str> = std::sync::Arc::from(server_id);
+    ///
+    /// `name` is resolved against running actors first (exact id
+    /// match), then against configured binary names so `:lsp-trace
+    /// rust-analyzer` resolves to the `rust` actor id when the
+    /// user types the binary name they recognise. On miss the echo
+    /// lists running actor ids so the user sees what's available
+    /// instead of a phantom-toggle that goes nowhere.
+    pub fn do_toggle_lsp_trace(&mut self, name: &str) {
+        let resolved = self.resolve_server_id(name);
+        let Some(server_id) = resolved else {
+            let running = self.running_server_ids();
+            let listing = if running.is_empty() {
+                "no LSP servers running".to_string()
+            } else {
+                format!("running: {}", running.join(", "))
+            };
+            self.set_message(
+                EchoLevel::Error,
+                format!("lsp-trace: no server matches {name:?} ({listing})"),
+            );
+            return;
+        };
+        let id: std::sync::Arc<str> = std::sync::Arc::from(server_id.as_str());
         let now_on = self.lsp_logger.toggle_trace(id);
         let label = if now_on { "on" } else { "off" };
+        let alias_note = if server_id != name {
+            format!(" (resolved {name:?} -> {server_id:?})")
+        } else {
+            String::new()
+        };
         self.set_message(
             EchoLevel::Info,
-            format!("lsp-trace {server_id}: {label} (use :lsp-trace-log {server_id} to view)"),
+            format!(
+                "lsp-trace {server_id}: {label}{alias_note} (use :lsp-trace-log {server_id} to view)"
+            ),
         );
+    }
+
+    /// Resolve a user-supplied server name to a canonical server
+    /// id. Tries, in order:
+    ///
+    /// 1. Exact id match against running actors (the common case
+    ///    once a buffer has attached).
+    /// 2. Exact id match against registered configs (so
+    ///    `:lsp-trace rust` works pre-spawn -- e.g. enable trace
+    ///    before opening the first .rs file).
+    /// 3. Binary file-name (or stem) match against configs (so
+    ///    `:lsp-trace rust-analyzer` resolves to the `rust` actor
+    ///    id when the user types the binary they recognise).
+    ///
+    /// Returns `None` when none matches.
+    fn resolve_server_id(&self, name: &str) -> Option<String> {
+        let sup = self.lsp.try_lock().ok()?;
+        for ((_, sid), _) in sup.running_actors() {
+            if sid == name {
+                return Some(sid);
+            }
+        }
+        for cfg in sup.configs() {
+            if cfg.id == name {
+                return Some(cfg.id.clone());
+            }
+            let file = cfg
+                .binary
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let stem = file.trim_end_matches(".exe");
+            if file == name || stem == name {
+                return Some(cfg.id.clone());
+            }
+        }
+        None
+    }
+
+    /// Distinct server ids of every running actor. Used in echo
+    /// messages so the user sees what's available.
+    fn running_server_ids(&self) -> Vec<String> {
+        let Ok(sup) = self.lsp.try_lock() else {
+            return Vec::new();
+        };
+        let mut ids: Vec<String> = sup
+            .running_actors()
+            .into_iter()
+            .map(|((_, sid), _)| sid)
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
     }
 
     /// `:lsp-status` -- render every running server in a
@@ -4218,6 +4299,12 @@ impl App {
             );
             return;
         }
+        // Resolve the user's prefilter through the alias table so
+        // `:lsp-log rust-analyzer` finds the `rust` actor. On miss
+        // we fall back to the literal string -- the picker UI then
+        // shows "no match" with the unresolved name in the echo.
+        let resolved_prefilter = prefilter.as_deref().and_then(|n| self.resolve_server_id(n));
+        let effective = resolved_prefilter.clone().or_else(|| prefilter.clone());
         // Single match short-circuit: when prefilter narrows the
         // candidate set to exactly one row, skip the picker and
         // open the buffer directly. Vim-style "do what I mean"
@@ -4225,7 +4312,7 @@ impl App {
         let matches: Vec<&crate::picker::LspInstanceRow> = rows
             .iter()
             .filter(|r| {
-                prefilter
+                effective
                     .as_ref()
                     .is_none_or(|want| r.server_id == *want)
             })
@@ -4244,18 +4331,24 @@ impl App {
             return;
         }
         if matches.is_empty() {
+            let asked = prefilter.clone().unwrap_or_default();
+            let running = self.running_server_ids();
+            let listing = if running.is_empty() {
+                String::new()
+            } else {
+                format!(" (running: {})", running.join(", "))
+            };
             self.set_message(
                 EchoLevel::Info,
-                format!(
-                    "no LSP server matching {:?} running",
-                    prefilter.unwrap_or_default()
-                ),
+                format!("no LSP server matching {asked:?} running{listing}"),
             );
             return;
         }
         let mut p = crate::picker::Picker::new(
             title,
-            crate::picker::PickerSource::LspInstances { prefilter },
+            crate::picker::PickerSource::LspInstances {
+                prefilter: effective,
+            },
             on_accept,
         );
         p.set_lsp_instances(rows);
@@ -8276,6 +8369,42 @@ impl App {
     pub fn set_viewport_height(&mut self, height: u32) {
         self.viewport_height = height.max(1);
         self.ensure_cursor_visible();
+    }
+
+    /// Compute the active pane's *content* height inside a buffer
+    /// area of `buffer_height` rows. Mirrors the renderer's per-pane
+    /// layout: the pane tree splits the area evenly; with more than
+    /// one pane, the bottom row of each pane is reserved for the
+    /// status line. Returns at least 1 so callers can multiply / use
+    /// without checking for zero.
+    ///
+    /// Used by the runtime to feed `set_viewport_height` the
+    /// **active pane's** content height -- not the full buffer area
+    /// -- so motions, scroll, fold-aware ensure_cursor_visible all
+    /// agree with what's actually drawn. Without this, a horizontal
+    /// split clips the lower half of the upper pane: the App thinks
+    /// it has the whole screen, the renderer only paints half.
+    pub fn active_pane_content_height(&self, buffer_height: u32) -> u32 {
+        let area = crate::pane::PaneRect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: buffer_height as u16,
+        };
+        let rects = self.pane_tree.compute_rects(area);
+        let active_idx = self.pane_tree.active_index();
+        let multi = rects.len() > 1;
+        let pane_h = rects
+            .iter()
+            .find(|(idx, _)| *idx == active_idx)
+            .map(|(_, r)| r.height)
+            .unwrap_or(buffer_height as u16);
+        let content_h = if multi && pane_h >= 2 {
+            pane_h - 1 // reserve the per-pane status row
+        } else {
+            pane_h
+        };
+        u32::from(content_h).max(1)
     }
 
     pub fn modal_label(&self) -> &'static str {
@@ -16305,6 +16434,66 @@ mod tests {
         app.do_toggle_lsp_trace("rust");
         assert!(!app.lsp_logger.is_tracing(&id));
         assert!(app.help_buffer.is_none());
+    }
+
+    #[test]
+    fn lsp_trace_resolves_binary_name_to_canonical_id() {
+        // `:lsp-trace rust-analyzer` should resolve to the `rust`
+        // config id (the registered binary file_name match) and
+        // toggle the trace flag on `rust`, NOT a phantom
+        // `rust-analyzer` id that nothing else looks at.
+        let mut app = app_with("hi\n", 5);
+        let canonical: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        let phantom: std::sync::Arc<str> = std::sync::Arc::from("rust-analyzer");
+        app.do_toggle_lsp_trace("rust-analyzer");
+        assert!(app.lsp_logger.is_tracing(&canonical));
+        assert!(!app.lsp_logger.is_tracing(&phantom));
+        let msg = app.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("resolved"));
+    }
+
+    #[test]
+    fn lsp_trace_unknown_name_echoes_error_with_running_servers() {
+        let mut app = app_with("hi\n", 5);
+        app.do_toggle_lsp_trace("totally-fake-server-name");
+        let msg = app.last_message.as_ref().unwrap();
+        assert!(matches!(msg.level, EchoLevel::Error));
+        assert!(msg.text.contains("totally-fake-server-name"));
+    }
+
+    #[test]
+    fn k_chord_is_registered_in_keymap() {
+        // `:describe-key K` walks the keymap registry; without an
+        // entry there it reports "K is not bound" even though the
+        // input translator dispatches K to LspHoverRequest. The
+        // registry entry is the source of truth `:describe-key`
+        // and `:apropos` consult.
+        use crate::keymap::{BindingMode, default_keymap};
+        let entries = default_keymap();
+        let k = entries
+            .iter()
+            .find(|e| e.chord == "K" && e.mode == BindingMode::Normal);
+        assert!(k.is_some(), "K should be registered as a Normal-mode binding");
+        let entry = k.unwrap();
+        assert!(
+            entry.doc.to_lowercase().contains("hover"),
+            "doc should mention hover, got {:?}",
+            entry.doc
+        );
+    }
+
+    #[test]
+    fn active_pane_content_height_subtracts_status_row_in_horizontal_split() {
+        // Single pane: content = full buffer height.
+        let mut app = app_with("hi\n", 5);
+        assert_eq!(app.active_pane_content_height(20), 20);
+        // Horizontal split -> two panes, each ~half the buffer
+        // height; minus the per-pane status row.
+        app.pane_tree
+            .split_active(crate::pane::SplitOrientation::Horizontal);
+        let content = app.active_pane_content_height(20);
+        // 20 / 2 = 10; minus status row = 9.
+        assert_eq!(content, 9);
     }
 
     #[test]

@@ -340,6 +340,9 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: AfterG, chord: "gJ", doc: "Join lines without inserting a space" },
         keymap_entry! { mode: AfterG, chord: "g;", doc: "Walk named-mark history backward" },
         keymap_entry! { mode: AfterG, chord: "g,", doc: "Walk named-mark history forward" },
+        keymap_entry! { mode: AfterG, chord: "gd", doc: "LSP: go to definition (textDocument/definition)" },
+        // ---- LSP top-level keys ----
+        keymap_entry! { mode: Normal, chord: "K", doc: "LSP: hover documentation popup at cursor (textDocument/hover)" },
         // ---- After-z sub-commands (scroll + folds) ----
         keymap_entry! { mode: AfterZ, chord: "zz", doc: "Center cursor in viewport" },
         keymap_entry! { mode: AfterZ, chord: "z.", doc: "Center cursor in viewport (alias of zz)" },

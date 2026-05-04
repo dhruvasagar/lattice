@@ -139,6 +139,17 @@ fn cursor_style_for(modal: ModalState) -> SetCursorStyle {
     }
 }
 
+/// Mirror of the renderer's `popup_height` so the runtime can
+/// subtract the candidate-list rows from the buffer-area height
+/// before computing the active pane's viewport. Kept in sync by
+/// hand for now; if either drifts the cursor / scroll math
+/// goes off by `extra_rows` in pickers / completion. See
+/// `render::popup_height` for the canonical formula.
+fn popup_height_for(candidate_count: usize) -> usize {
+    const MAX_ROWS: usize = 10;
+    candidate_count.min(MAX_ROWS).max(1)
+}
+
 fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> Result<()> {
     let mut last_modal: Option<ModalState> = None;
     while !app.should_quit {
@@ -172,10 +183,33 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // buffer is open (the refresh path short-circuits on
         // missing-by-title).
         app.drain_lsp_log_events();
-        // Update viewport height (height minus the mode line + command/echo row).
+        // Update viewport height. The buffer-area band is the
+        // terminal minus the mode line + cmdline/echo row (and the
+        // candidate-list row band, when a picker / completion popup
+        // is up). Within that band, the active *pane* gets only its
+        // share -- horizontal/vertical splits divide the area, and
+        // multi-pane layouts reserve the bottom row of each pane
+        // for its status line. The viewport must reflect the active
+        // pane's content height, not the full buffer band, so
+        // motions / scroll / cursor visibility agree with what the
+        // renderer actually paints.
         let size = terminal.size().context("query terminal size")?;
-        let buffer_height = size.height.saturating_sub(2) as u32;
-        app.set_viewport_height(buffer_height);
+        let extra_rows = app
+            .picker
+            .as_ref()
+            .map(|p| popup_height_for(p.candidates.len().max(1)))
+            .unwrap_or(0)
+            .max(
+                app.completion_state
+                    .as_ref()
+                    .map(|s| popup_height_for(s.candidates.len()))
+                    .unwrap_or(0),
+            );
+        let buffer_height = size
+            .height
+            .saturating_sub(2)
+            .saturating_sub(extra_rows as u16) as u32;
+        app.set_viewport_height(app.active_pane_content_height(buffer_height));
         app.terminal_width = Some(size.width);
         // `<C-l>` (RedrawScreen) sets `pending_redraw`; honour it
         // by clearing the terminal buffer so the next draw repaints

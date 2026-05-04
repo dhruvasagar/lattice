@@ -583,6 +583,11 @@ fn resolve_after_g(event: KeyEvent, builtins: &Builtins) -> Action {
         // `g;` / `g,`: walk named-mark history.
         KeyCode::Char(';') => Action::WalkMarkHistoryBack,
         KeyCode::Char(',') => Action::WalkMarkHistoryForward,
+        // `gd` (Phase 4.2.c): textDocument/definition. Walks every
+        // attached LSP server's response, concats + dedups by
+        // (uri, range). Single result jumps in-place; multiple
+        // results open a `*lsp:definitions*` picker.
+        KeyCode::Char('d') => Action::LspDefinitionRequest,
         _ => Action::SetPending(Pending::None),
     }
 }

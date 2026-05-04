@@ -162,6 +162,10 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // surfaces here, before the next draw, via the existing
         // hover popup. Cheap on an idle channel.
         app.drain_pending_hover();
+        // Drain queued LSP goto-definition responses (Phase 4.2.c).
+        // `gd` spawns a request; single-result jumps in-place,
+        // multi-result echoes a count + jumps to first.
+        app.drain_pending_definitions();
         // Update viewport height (height minus the mode line + command/echo row).
         let size = terminal.size().context("query terminal size")?;
         let buffer_height = size.height.saturating_sub(2) as u32;

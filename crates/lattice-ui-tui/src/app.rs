@@ -422,6 +422,14 @@ pub enum Action {
     /// so a stale response from a slow server can't drop a
     /// popup over a moved cursor.
     LspHoverRequest,
+    /// `gd` (Phase 4.2.c). Send `textDocument/definition` to
+    /// every attached LSP server. Single result → jump
+    /// in-place (or via `:e <path>` if cross-file); multiple
+    /// results → render in a `*lsp:definitions*` picker. Pushes
+    /// the current cursor onto the position history (§5.1.1)
+    /// so `<C-o>` walks back. Cancellation token rides on
+    /// motion / mode change.
+    LspDefinitionRequest,
     /// `"<reg>` prefix -- stash the named register for the next operator
     /// / paste invocation.
     SelectRegister(Register),
@@ -713,6 +721,19 @@ pub struct App {
     /// is dropped by the typed wrapper's relay. `None` when no
     /// hover is in flight.
     pub pending_hover_token: Option<lattice_protocol::CancellationToken>,
+    /// Receiver for in-flight goto-definition responses (Phase
+    /// 4.2.c). Shape mirrors [`Self::pending_hover_rx`] -- `gd`
+    /// fires every attached server's `textDocument/definition`,
+    /// the spawned task collects the merged + deduped location
+    /// list, and pushes it onto this channel. Drained per frame
+    /// in [`Self::drain_pending_definitions`]; single-result
+    /// case jumps in-place, multi-result case echoes a count
+    /// (picker buffer lands with 4.2.d).
+    pub pending_definition_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<lsp_types::Location>>>,
+    /// Cancellation token of the most recent goto-definition
+    /// request. Flipped on a follow-up `gd` so a slow server's
+    /// stale response can't drop a popup over a moved cursor.
+    pub pending_definition_token: Option<lattice_protocol::CancellationToken>,
     /// Receiver end of the App's own subscription to
     /// `EventKind::OptionChanged` (DESIGN.md §5.10 + §5.12). The
     /// typed-options registry publishes through `event_bus` on
@@ -1440,6 +1461,8 @@ impl App {
             option_change_rx: Some(option_change_rx),
             pending_hover_rx: None,
             pending_hover_token: None,
+            pending_definition_rx: None,
+            pending_definition_token: None,
             lang_registry,
             builtins,
             command_line: String::new(),
@@ -2391,6 +2414,7 @@ impl App {
                 self.drain_option_changes();
             }
             Action::LspHoverRequest => self.do_lsp_hover_request(),
+            Action::LspDefinitionRequest => self.do_lsp_definition_request(),
             Action::SelectRegister(reg) => {
                 self.pending_register = Some(reg);
             }
@@ -4378,6 +4402,178 @@ impl App {
             self.pending_hover_token = None;
         }
         self.pending_hover_rx = Some(rx);
+    }
+
+    /// `gd` (Phase 4.2.c). Send `textDocument/definition` to every
+    /// LSP server attached to the active document. Same async
+    /// shape as [`Self::do_lsp_hover_request`]: spawn on the LSP
+    /// runtime, route the merged + deduped location list back via
+    /// [`Self::pending_definition_rx`], drain on next frame.
+    ///
+    /// **Multi-server merge**: every server's response is
+    /// flattened to `Vec<Location>` (the lsp-types enum carries
+    /// `Scalar` / `Array` / `Link` shapes); the union is
+    /// deduplicated by `(uri, range.start)`. A single result
+    /// jumps; multiple results today echo a count and jump to the
+    /// first (the picker buffer lands with 4.2.d's references
+    /// view -- same shape, no point building it twice).
+    fn do_lsp_definition_request(&mut self) {
+        if let Some(token) = self.pending_definition_token.take() {
+            token.cancel();
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => {
+                self.set_message(
+                    EchoLevel::Error,
+                    "definition: cursor out of buffer".to_string(),
+                );
+                return;
+            }
+        };
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_definition_rx = Some(rx);
+        self.pending_definition_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.lock().await.servers_for(&uri) };
+            let mut all: Vec<lsp_types::Location> = Vec::new();
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                let params = lsp_types::GotoDefinitionParams {
+                    text_document_position_params: lsp_types::TextDocumentPositionParams {
+                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                        position: lsp_position,
+                    },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                };
+                if let Ok(Some(resp)) = handle.goto_definition(params, token.clone()).await {
+                    all.extend(definition_response_to_locations(resp));
+                }
+            }
+            // Dedup by (uri, range.start). Some servers emit the
+            // same location for overloaded methods; the picker
+            // shouldn't show duplicates.
+            all.sort_by(|a, b| {
+                let au = a.uri.as_str();
+                let bu = b.uri.as_str();
+                au.cmp(bu)
+                    .then_with(|| a.range.start.line.cmp(&b.range.start.line))
+                    .then_with(|| a.range.start.character.cmp(&b.range.start.character))
+            });
+            all.dedup_by(|a, b| {
+                a.uri.as_str() == b.uri.as_str() && a.range.start == b.range.start
+            });
+            let _ = tx.send(all);
+        });
+    }
+
+    /// Drain queued goto-definition results and act on them:
+    /// 0 → echo, 1 → jump, N>1 → echo count + jump to first
+    /// (picker is 4.2.d's job; we share its buffer surface
+    /// rather than build two of them). Pushes the pre-jump
+    /// cursor onto the position history so `<C-o>` walks back.
+    pub fn drain_pending_definitions(&mut self) {
+        let Some(mut rx) = self.pending_definition_rx.take() else {
+            return;
+        };
+        let mut latest: Option<Vec<lsp_types::Location>> = None;
+        while let Ok(locs) = rx.try_recv() {
+            latest = Some(locs);
+        }
+        self.pending_definition_rx = Some(rx);
+        let locs = match latest {
+            Some(l) => l,
+            None => return,
+        };
+        // Result delivered; clear the in-flight token.
+        self.pending_definition_token = None;
+
+        match locs.len() {
+            0 => {
+                self.set_message(EchoLevel::Info, "no definitions found".to_string());
+            }
+            1 => {
+                self.jump_to_lsp_location(&locs[0]);
+            }
+            n => {
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("{n} definitions; jumping to first (picker comes in 4.2.d)"),
+                );
+                self.jump_to_lsp_location(&locs[0]);
+            }
+        }
+    }
+
+    /// Jump to an LSP `Location`. If the target is the current
+    /// buffer, just move the cursor + push history. If
+    /// cross-file, route through `do_edit` so the `:e` machinery
+    /// (LSP attach, buffer registry, etc.) handles the open;
+    /// then move cursor.
+    ///
+    /// Pushes the *pre-jump* cursor onto position history with
+    /// source [`PositionSource::PluginPush`] so `<C-o>` walks
+    /// back. Tagging it as PluginPush (not AutoJump) reflects
+    /// that the jump came from an external dispatch (LSP) rather
+    /// than a vim-style motion.
+    fn jump_to_lsp_location(&mut self, loc: &lsp_types::Location) {
+        let target_path = match lattice_lsp::actor::uri_to_path(&loc.uri) {
+            Some(p) => p,
+            None => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("definition target uri is not a file: {}", loc.uri.as_str()),
+                );
+                return;
+            }
+        };
+        // Push pre-jump cursor before doing anything else so a
+        // subsequent <C-o> walks back to where we started, not to
+        // the target.
+        self.push_position_history(self.cursor, PositionSource::PluginPush);
+
+        // Same buffer? Just update the cursor.
+        let same_buffer = self
+            .document
+            .path()
+            .map(|p| p == target_path)
+            .unwrap_or(false);
+        if !same_buffer {
+            self.do_edit(Some(target_path), false);
+            // After do_edit, self.document points at the new
+            // buffer; the cursor below positions inside it.
+        }
+        // Convert LSP target position back to App (line, byte).
+        let snap = self.document.snapshot();
+        let line_text = snap.buffer.line(loc.range.start.line).unwrap_or_default();
+        // utf-16 → utf-8 byte (Phase 4.1's encoding negotiation
+        // defaults to utf-16; same assumption here).
+        let byte = lattice_lsp::position::utf16_column_to_utf8_byte(
+            &line_text,
+            loc.range.start.character,
+        );
+        self.cursor = Position::new(loc.range.start.line, byte);
+        // The fold-aware open-on-jump (#173) handles closed folds
+        // around the target; nothing extra needed here.
     }
 
     /// `:HoverClose` / `Esc` -- dismiss the hover popup.
@@ -7562,6 +7758,34 @@ pub(crate) fn app_to_lsp_position(buffer: &Buffer, p: Position) -> Option<lsp_ty
         line: p.line,
         character,
     })
+}
+
+/// Flatten an LSP `GotoDefinitionResponse` (Scalar / Array /
+/// Link) into a uniform `Vec<Location>`. The `Link` shape carries
+/// richer per-result info (origin selection range used to
+/// highlight the symbol the user clicked); we drop it for now and
+/// keep the target location only -- the App's jump path is
+/// position-only. When 4.2.d's picker buffer lands the link
+/// metadata (e.g., `target_selection_range` for narrower jump
+/// destinations) becomes useful and this function gains a richer
+/// sibling.
+pub(crate) fn definition_response_to_locations(
+    resp: lsp_types::GotoDefinitionResponse,
+) -> Vec<lsp_types::Location> {
+    match resp {
+        lsp_types::GotoDefinitionResponse::Scalar(loc) => vec![loc],
+        lsp_types::GotoDefinitionResponse::Array(locs) => locs,
+        lsp_types::GotoDefinitionResponse::Link(links) => links
+            .into_iter()
+            .map(|l| lsp_types::Location {
+                uri: l.target_uri,
+                // `target_selection_range` is the narrower symbol
+                // range; `target_range` is the enclosing block.
+                // Picker UX usually wants the narrower one.
+                range: l.target_selection_range,
+            })
+            .collect(),
+    }
 }
 
 /// Render an LSP `HoverContents` payload to a markdown string the
@@ -13760,6 +13984,181 @@ mod tests {
     fn app_to_lsp_position_returns_none_for_out_of_range_line() {
         let buf = lattice_core::Buffer::from_text("only-one-line\n");
         assert!(super::app_to_lsp_position(&buf, Position::new(99, 0)).is_none());
+    }
+
+    // ---- LSP goto-definition (Phase 4.2.c) ----
+
+    fn fake_uri(path: &str) -> lsp_types::Uri {
+        use std::str::FromStr;
+        lsp_types::Uri::from_str(&format!("file://{path}")).unwrap()
+    }
+
+    fn loc(path: &str, line: u32, col: u32) -> lsp_types::Location {
+        lsp_types::Location {
+            uri: fake_uri(path),
+            range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line,
+                    character: col,
+                },
+                end: lsp_types::Position {
+                    line,
+                    character: col + 1,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn definition_response_scalar_flattens_to_one_location() {
+        let resp = lsp_types::GotoDefinitionResponse::Scalar(loc("/x.rs", 1, 2));
+        let v = super::definition_response_to_locations(resp);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].range.start.line, 1);
+    }
+
+    #[test]
+    fn definition_response_array_flattens_verbatim() {
+        let resp = lsp_types::GotoDefinitionResponse::Array(vec![
+            loc("/a.rs", 0, 0),
+            loc("/b.rs", 5, 5),
+        ]);
+        let v = super::definition_response_to_locations(resp);
+        assert_eq!(v.len(), 2);
+    }
+
+    #[test]
+    fn definition_response_link_uses_target_selection_range() {
+        // Link variant carries richer per-result info; we use
+        // target_selection_range (narrower) for jumps.
+        let link = lsp_types::LocationLink {
+            origin_selection_range: None,
+            target_uri: fake_uri("/x.rs"),
+            target_range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: lsp_types::Position {
+                    line: 10,
+                    character: 0,
+                },
+            },
+            target_selection_range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 5,
+                    character: 4,
+                },
+                end: lsp_types::Position {
+                    line: 5,
+                    character: 7,
+                },
+            },
+        };
+        let resp = lsp_types::GotoDefinitionResponse::Link(vec![link]);
+        let v = super::definition_response_to_locations(resp);
+        assert_eq!(v.len(), 1);
+        // Should be the target_selection_range, not target_range.
+        assert_eq!(v[0].range.start.line, 5);
+        assert_eq!(v[0].range.start.character, 4);
+    }
+
+    #[test]
+    fn lsp_definition_request_with_no_uri_echoes_no_lsp_attached() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::LspDefinitionRequest);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn lsp_definition_request_pre_cancels_in_flight_token() {
+        let mut a = app_with("xx", 10);
+        let stale = lattice_protocol::CancellationToken::new();
+        a.pending_definition_token = Some(stale.clone());
+        a.apply(Action::LspDefinitionRequest);
+        assert!(stale.is_cancelled());
+    }
+
+    #[test]
+    fn drain_pending_definitions_with_no_results_echoes_not_found() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        a.pending_definition_rx = Some(rx);
+        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(Vec::new()).unwrap();
+        a.drain_pending_definitions();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no definitions"));
+        assert!(a.pending_definition_token.is_none());
+    }
+
+    #[test]
+    fn drain_pending_definitions_with_single_same_buffer_jumps_in_place() {
+        // Set up an App whose document path matches the location's
+        // uri, so the jump stays in-buffer (no `:e` round-trip).
+        let path = std::env::temp_dir()
+            .join(format!("lattice-defjump-{}.rs", std::process::id()));
+        std::fs::write(&path, "first line\nsecond line\nthird line\n").unwrap();
+        let doc = Document::open(&path).unwrap();
+        let mut a = App::new(doc);
+        a.set_viewport_height(10);
+        // Cursor starts at (0, 0). Drain a definition pointing at
+        // line 2 col 5 (utf-16 character; same as utf-8 byte for
+        // ASCII).
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        a.pending_definition_rx = Some(rx);
+        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        let target = lsp_types::Location {
+            uri: super::tests::fake_uri(path.to_str().unwrap()),
+            range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 2,
+                    character: 5,
+                },
+                end: lsp_types::Position {
+                    line: 2,
+                    character: 6,
+                },
+            },
+        };
+        tx.send(vec![target]).unwrap();
+        a.drain_pending_definitions();
+        // Cursor moved to (2, 5).
+        assert_eq!(a.cursor.line, 2);
+        assert_eq!(a.cursor.byte, 5);
+        // Pre-jump position pushed onto history as PluginPush.
+        let pushed = a
+            .position_history
+            .iter()
+            .any(|e| e.source == PositionSource::PluginPush && e.position == Position::ZERO);
+        assert!(pushed, "expected PluginPush entry for pre-jump cursor");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn drain_pending_definitions_with_multiple_jumps_to_first_with_count_echo() {
+        let path = std::env::temp_dir()
+            .join(format!("lattice-defmulti-{}.rs", std::process::id()));
+        std::fs::write(&path, "alpha\nbeta\ngamma\n").unwrap();
+        let doc = Document::open(&path).unwrap();
+        let mut a = App::new(doc);
+        a.set_viewport_height(10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        a.pending_definition_rx = Some(rx);
+        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        let target_path = path.to_str().unwrap();
+        tx.send(vec![
+            super::tests::loc(target_path, 1, 0),
+            super::tests::loc(target_path, 2, 0),
+        ])
+        .unwrap();
+        a.drain_pending_definitions();
+        // Jumped to the first.
+        assert_eq!(a.cursor.line, 1);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("2 definitions"));
     }
 
     // ---- :help (DESIGN.md §5.11) ----

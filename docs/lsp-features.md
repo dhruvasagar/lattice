@@ -123,7 +123,7 @@ Capability columns:
 | Method                              | Phase | Status | Notes                                                                      |
 |-------------------------------------|-------|--------|----------------------------------------------------------------------------|
 | `textDocument/declaration`          | 4.2   | ⏹️      | `gd` family. Pushes a `PluginPush` entry to the position-history (§5.1.1). |
-| `textDocument/definition`           | 4.2   | ⏹️      | `gD` / `gd` per keymap.                                                    |
+| `textDocument/definition`           | 4.2   | ✅      | `gd` keystroke (Phase 4.2.c). Spawns the request on the LSP runtime; merged + deduped (by uri+range.start) across attached servers. Single result jumps in-place (or via `:e <path>` if cross-file); multiple results echo a count and jump to the first (the picker buffer arrives with 4.2.d's references view). Pre-jump cursor pushed onto position history with `PluginPush` source so `<C-o>` walks back. Cancellation token rides on follow-up `gd` so a slow server can't drop a popup over a moved cursor. |
 | `textDocument/typeDefinition`       | 4.2   | ⏹️      | `gy`                                                                       |
 | `textDocument/implementation`       | 4.2   | ⏹️      | `gI`                                                                       |
 | `textDocument/references`           | 4.2   | ⏹️      | `gr` -- opens a buffer-backed list view (everything-is-a-buffer).          |

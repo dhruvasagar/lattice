@@ -675,9 +675,18 @@ snapshot_post_publish_read at 10/1k/50k lines).
   gates on search submit + repeat search are gone.
 
 Remaining 4.2:
-- Buffer-level Insert-mode completion shell (the `:complete`
-  picker is the bridge until it lands).
-- `completionItem/resolve` (lazy doc / additional edits).
+- **Buffer-level Insert-mode completion** -- design spec at
+  [`insert-completion.md`](insert-completion.md). Multi-source
+  (LSP / snippets / buffer-words / path / tree-sitter /
+  plugin), async-first aggregator, multi-column popup with
+  match highlights, side documentation popup with lazy
+  resolve, snippet engine with placeholder navigation,
+  frequency-aware ranking. Implementation phased as 4.2.g.1
+  through 4.2.g.7 (shell → LSP → docs popup → snippets →
+  ranking → ts/path → polish). The current `:complete`
+  picker is the bridge until 4.2.g.2 lands.
+- `completionItem/resolve` (lazy doc / additional edits) --
+  shipped as part of 4.2.g.3 + 4.2.g.7.
 - `workspaceSymbol/resolve` (lazy location).
 
 Remaining 4.3:

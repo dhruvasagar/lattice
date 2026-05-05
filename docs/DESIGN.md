@@ -1874,6 +1874,8 @@ Host-state generators (`gen:chords`, `gen:registers`, `gen:marks`, `gen:buffers`
 
 **Vertico-style rendering** (post-popup work): a vertical list of candidates, one per row, with the matched byte ranges from `ScoredCandidate.match_ranges` painted with a distinct style. Annotations rendered right-aligned. Selected row marked. Renderer is replaceable -- when the rich minibuffer (§5.9.10) lands, the popup graduates to a tree-sitter-styled buffer view; the underlying `RenderedCandidate` shape doesn't change.
 
+**Insert-mode completion** (Phase 4.2.g) is the editor surface that turns this pipeline into a buffer-level input flow: trigger evaluation per-keystroke, async sources (LSP / snippets / buffer-words / path / tree-sitter / plugin), multi-column popup display, side documentation popup with lazy `completionItem/resolve`, snippet engine with placeholder navigation, frequency-aware ranking. Spec lives in [`insert-completion.md`](insert-completion.md); behavioural choices are explained alongside surveyed precedents (VS Code / Neovim `blink.cmp` / Helix / JetBrains / Sublime / Emacs `corfu`).
+
 ### 5.12 Configuration System (typed options + code-as-config)
 
 Vim's `:set option=value` is a string-bag with no typing or validation, and vimscript fills the gaps with a string-shaped scripting language users have to learn separately. Emacs's `customize` is a typed system bridged awkwardly to `setq` for non-curated variables, and elisp fills the gaps with a second authoring environment plugin authors must also master. We unify both halves: a typed option registry for **data**, and the Rust→WASM plugin substrate (§5.5) reused as the **code** layer. There is no third surface and no second language.

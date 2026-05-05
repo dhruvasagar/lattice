@@ -641,6 +641,12 @@ snapshot_post_publish_read at 10/1k/50k lines).
   when `includeText` is set. willSaveWaitUntil typed
   wrapper exists; the App-side block-on-response
   (format-on-save) is queued.
+- ✅ `:code-actions` (`:ca`) -- vertico picker over LSP
+  code actions; resolves lazy `edit` via
+  `codeAction/resolve` when the action arrived without
+  inline edit + command; routes Command payloads through
+  `workspace/executeCommand`. Edits land via the rename
+  apply path (per-file one-undo-unit).
 - Multi-result lookups + `:diagnostics` route through one
   vertico picker (`PickerSource::LspLocations` +
   `PickerAction::JumpToLspLocation`); single-result nav still
@@ -666,10 +672,10 @@ Remaining 4.2:
 - `workspaceSymbol/resolve` (lazy location).
 
 Remaining 4.3:
-- codeAction + codeAction/resolve.
-- onTypeFormatting.
+- onTypeFormatting (Insert-mode trigger-character driven).
 - willSaveWaitUntil block-on-response (format-on-save).
-- workspace/applyEdit, workspace/executeCommand.
+- workspace/applyEdit (server-initiated edits; codeAction
+  Commands frequently route side-effects through this).
 
 Update this section when picking up the in-flight item.
 

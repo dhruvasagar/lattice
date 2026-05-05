@@ -102,7 +102,7 @@ Capability columns:
 | `workspace/didRenameFiles`            | 4.4   | ⏹️      | Post-rename notification.                                      |
 | `workspace/willDeleteFiles`           | 4.4   | ⏹️      | Pre-delete hook (e.g. cascading edits).                        |
 | `workspace/didDeleteFiles`            | 4.4   | ⏹️      | Post-delete notification.                                      |
-| `workspace/executeCommand`            | 4.3   | ⏹️      | Used by code-action `command` payloads.                        |
+| `workspace/executeCommand`            | 4.3   | ✅     | Wired through the codeAction Command-payload arm. `:code-actions` accept fires it via the originating server; capability-gated on `executeCommandProvider`. |
 | `workspace/symbol`                    | 4.2   | ✅     | `:lsp-workspace-symbol [query]` (Phase 4.2.f). Fans out across every running server (workspace-scoped); dedups by `(path, line, col, name)`; opens the merged list as a vertico `PickerSource::LspLocations` picker. Empty query → server's idea of "every workspace symbol". |
 | `workspaceSymbol/resolve`             | 4.2   | ⏹️      | Resolve location of a workspace-symbol entry.                  |
 
@@ -142,8 +142,8 @@ Capability columns:
 
 | Method                            | Phase | Status | Notes                                                                        |
 |-----------------------------------|-------|--------|------------------------------------------------------------------------------|
-| `textDocument/codeAction`         | 4.3   | ⏹️      | Picker popup; supports `WorkspaceEdit` + `Command` payloads.                 |
-| `codeAction/resolve`              | 4.3   | ⏹️      | Lazy-resolve `edit` from the action's `data`.                                |
+| `textDocument/codeAction`         | 4.3   | ✅     | `:code-actions` (alias `:ca`). Picks first server with `codeActionProvider`; context carries overlapping diagnostics + `InvokedTriggerKind`. Visual selection / point cursor range. Vertico picker; accept routes `Command` payloads through `executeCommand` and `WorkspaceEdit` payloads through the rename apply path (per-file one-undo-unit). |
+| `codeAction/resolve`              | 4.3   | ✅     | Lazy-resolve fires when the chosen action arrived without both `edit` and `command`. Resolve response feeds the same apply path; the Resolved arm of `CodeActionOutcome` distinguishes from fresh-fetch.                                |
 | `textDocument/rename`             | 4.3   | ✅     | `:rename <new-name>` (alias `:rn`). Single highest-priority server with `renameProvider`. WorkspaceEdit flattens both legacy `changes` map and modern `document_changes` Edits arm; `AnnotatedTextEdit` unwraps to plain TextEdit. Active buffer applies as one undo unit; cross-file edits open via `:e` then apply (cross-file atomic rollback is a follow-up). |
 | `textDocument/prepareRename`      | 4.3   | ✅     | Runs before `rename` when the server advertises `prepare_provider`. RangeWithPlaceholder-shape responses pre-populate the new-name when the user types `:rename` with no arg; Range / DefaultBehavior responses fall through. NotRenameable echoes the server's reason. |
 | `textDocument/formatting`         | 4.3   | ✅     | `:format` (alias `:fmt`). Highest-priority server with `documentFormattingProvider`; returned `Vec<TextEdit>` applies as one undo unit. TextEdits sorted in REVERSE by start position before apply (LSP convention: non-overlapping edits relative to original document). Single-server strategy per architecture doc. |
@@ -210,16 +210,16 @@ Counts as of 2026-05-05:
 
 | State          | Count |
 |----------------|-------|
-| ✅ Done        | 25    |
+| ✅ Done        | 28    |
 | 🚧 In progress | 6     |
-| ⏹️ Planned      | 34    |
+| ⏹️ Planned      | 31    |
 | ⛔ Deferred    | 4     |
 
 Phase rollup:
 
 - **4.1** Foundation: **complete**. Wire layer + actor/handshake + sync + diagnostics (broadcast → layer → renderer → buffer view + nav) + logging (rings + tracing fan-out + buffer views + commands) + supervisor + App-side wiring + edit-dispatch + open-on-`:e` all shipped.
 - **4.2** Navigation: **9/12 shipped + 1 partial**. ✅ hover (`K`), definition (`gd`), declaration (`gD`), typeDefinition (`gy`), implementation (`gI`), references (`gr`), documentSymbol (`:lsp-symbols`), workspaceSymbol (`:lsp-workspace-symbol`). 🚧 completion (`:complete`) -- bridge picker until buffer-level Insert-mode completion lands. All multi-result lookups + `:diagnostics` route through the unified vertico picker (`PickerSource::LspLocations` + `PickerAction::JumpToLspLocation`). Tag stack `<C-t>` pops `gd`-family drill-downs LIFO; jump list `<C-o>`/`<C-i>` walks every cursor jump chronologically. Remaining: completionItem/resolve + workspaceSymbol/resolve + Insert-mode completion shell.
-- **4.3** Edits: **6/9 shipped** (formatting + rangeFormatting; signatureHelp; rename + prepareRename; willSave / didSave notifications fan-out from `App::save_blocking`). Remaining: codeAction (+ resolve), onTypeFormatting, willSaveWaitUntil block-on-response (format-on-save), applyEdit, executeCommand.
+- **4.3** Edits: **7/9 shipped** (formatting + rangeFormatting; signatureHelp; rename + prepareRename; willSave / didSave notifications; codeAction + resolve + executeCommand). Remaining: onTypeFormatting, willSaveWaitUntil block-on-response (format-on-save), workspace/applyEdit (server-initiated edits).
 - **4.4** Polish: 0/19 -- queued.
 - **4.5** Expansion: 0/14 -- queued.
 - **post-1.0**: notebooks + multi-root workspaces.

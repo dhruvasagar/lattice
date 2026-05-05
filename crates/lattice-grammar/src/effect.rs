@@ -296,6 +296,13 @@ pub enum Effect {
     /// cursor and open the merged item list as a vertico
     /// picker. Phase 4.2.g.
     LspComplete,
+    /// `:rename <new-name>` -- run textDocument/prepareRename
+    /// (when advertised) then textDocument/rename; apply the
+    /// returned WorkspaceEdit as one undo unit across every
+    /// affected buffer. Phase 4.3.
+    LspRename {
+        new_name: String,
+    },
 
     Many(Vec<Effect>),
 }

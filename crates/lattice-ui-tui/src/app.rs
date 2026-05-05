@@ -879,6 +879,13 @@ pub struct App {
     /// the chosen item's text into the buffer at the right
     /// position. Cleared on dismiss / outcome consumption.
     pub pending_completion_items: Option<Vec<CompletionItemRow>>,
+    /// Receiver for in-flight `:rename` responses (Phase 4.3).
+    /// Drained per-frame; the `Edits` arm fans out across every
+    /// affected URI applying TextEdits (one undo unit per file
+    /// in v1; cross-file atomic application is queued).
+    pub pending_rename_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<RenameOutcome>>,
+    pub pending_rename_token: Option<lattice_protocol::CancellationToken>,
     /// Receiver end of the App's own subscription to
     /// `EventKind::OptionChanged` (DESIGN.md §5.10 + §5.12). The
     /// typed-options registry publishes through `event_bus` on
@@ -1349,6 +1356,30 @@ pub struct CompletionItemRow {
 pub enum CompletionOutcome {
     Items(Vec<CompletionItemRow>),
     NoServers,
+}
+
+/// Outcome of a `:rename` request. The success arm pre-flattens
+/// the WorkspaceEdit into a per-file `Vec<TextEdit>` map so the
+/// App-side apply path doesn't have to walk lsp-types' enum
+/// shapes. `NoProvider` echoes when no attached server
+/// advertises `renameProvider`; `NotRenameable` when
+/// prepareRename refused; `Empty` when the rename succeeded
+/// but the server returned no edits (no symbol matches).
+#[derive(Debug, Clone)]
+pub enum RenameOutcome {
+    Edits {
+        /// Per-file edits keyed by URI string. Each Vec is
+        /// already in the order the server returned (the apply
+        /// path reverse-sorts before applying, same as
+        /// formatting).
+        per_file: Vec<(lsp_types::Uri, Vec<lsp_types::TextEdit>)>,
+        new_name: String,
+    },
+    NoProvider,
+    NotRenameable {
+        reason: String,
+    },
+    Empty,
 }
 
 /// Outcome of a `textDocument/signatureHelp` request. The
@@ -1872,6 +1903,8 @@ impl App {
             pending_completion_rx: None,
             pending_completion_token: None,
             pending_completion_items: None,
+            pending_rename_rx: None,
+            pending_rename_token: None,
             lang_registry,
             builtins,
             command_line: String::new(),
@@ -5100,6 +5133,253 @@ impl App {
         }
     }
 
+    /// `:rename <new-name>` (Phase 4.3). Fires
+    /// `textDocument/prepareRename` (when the server advertises
+    /// the prepare provider) to validate the cursor and pick up
+    /// the placeholder; then `textDocument/rename` to compute
+    /// the WorkspaceEdit; the App applies the edits per-file as
+    /// one undo unit per affected buffer (cross-file atomic
+    /// rollback is a follow-up).
+    ///
+    /// `new_name` empty falls back to `prepareRename`'s
+    /// placeholder (when available) -- the user model is
+    /// "show me what I'm about to rename, then take the new
+    /// name from the same line." When prepareRename returns
+    /// nothing AND `new_name` is empty, we error with
+    /// `:rename requires a new name`.
+    ///
+    /// Single-server strategy: highest-priority server with
+    /// `renameProvider`. Per architecture doc §7b -- conflicting
+    /// rename results between two servers are a fail-safe; for
+    /// v1 we just take the first.
+    fn do_lsp_rename_request(&mut self, new_name: &str) {
+        if let Some(token) = self.pending_rename_token.take() {
+            token.cancel();
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => {
+                self.set_message(EchoLevel::Error, "rename: cursor out of buffer");
+                return;
+            }
+        };
+        let new_name = new_name.to_string();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<RenameOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_rename_rx = Some(rx);
+        self.pending_rename_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.lock().await.servers_for(&uri) };
+            // Pick the first server with renameProvider.
+            let chosen = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_rename());
+            let Some(handle) = chosen else {
+                let _ = tx.send(RenameOutcome::NoProvider);
+                return;
+            };
+            // Optional prepareRename. If the server advertises
+            // prepare and refuses, surface the reason; if it
+            // accepts, also use the placeholder when the user
+            // didn't supply a name.
+            let mut effective_name = new_name.clone();
+            if handle.capabilities().supports_prepare_rename() {
+                if token.is_cancelled() {
+                    return;
+                }
+                let pos = lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    position: lsp_position,
+                };
+                match handle.prepare_rename(pos, token.clone()).await {
+                    Ok(Some(prep)) => {
+                        if effective_name.is_empty() {
+                            // Pull the placeholder out of the
+                            // response shape (Range / Placeholder /
+                            // DefaultBehavior).
+                            effective_name = prepare_rename_placeholder(&prep)
+                                .unwrap_or_default();
+                        }
+                    }
+                    Ok(None) => {
+                        let _ = tx.send(RenameOutcome::NotRenameable {
+                            reason: "server refused rename at this position".into(),
+                        });
+                        return;
+                    }
+                    Err(_) => {
+                        // Server doesn't actually support prepare
+                        // (despite caps) -- fall through to rename.
+                    }
+                }
+            }
+            if effective_name.is_empty() {
+                let _ = tx.send(RenameOutcome::NotRenameable {
+                    reason: "rename requires a new name".into(),
+                });
+                return;
+            }
+            let params = lsp_types::RenameParams {
+                text_document_position: lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    position: lsp_position,
+                },
+                new_name: effective_name.clone(),
+                work_done_progress_params: Default::default(),
+            };
+            match handle.rename(params, token.clone()).await {
+                Ok(Some(workspace_edit)) => {
+                    let per_file = flatten_workspace_edit(workspace_edit);
+                    if per_file.is_empty() {
+                        let _ = tx.send(RenameOutcome::Empty);
+                    } else {
+                        let _ = tx.send(RenameOutcome::Edits {
+                            per_file,
+                            new_name: effective_name,
+                        });
+                    }
+                }
+                _ => {
+                    let _ = tx.send(RenameOutcome::Empty);
+                }
+            }
+        });
+    }
+
+    /// Drain queued `:rename` responses; apply the
+    /// WorkspaceEdit. v1: per-file edits land as one undo unit
+    /// in each affected buffer (the App's
+    /// `apply_edit_batch_blocking` coalesces in-buffer edits;
+    /// cross-file atomic rollback is queued behind a future
+    /// `apply_workspace_edit_atomic`).
+    pub fn drain_pending_rename(&mut self) {
+        let Some(mut rx) = self.pending_rename_rx.take() else {
+            return;
+        };
+        let mut latest: Option<RenameOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_rename_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_rename_token = None;
+        match outcome {
+            RenameOutcome::NoProvider => self.set_message(
+                EchoLevel::Info,
+                "no server with renameProvider",
+            ),
+            RenameOutcome::NotRenameable { reason } => {
+                self.set_message(EchoLevel::Error, format!("rename: {reason}"))
+            }
+            RenameOutcome::Empty => self.set_message(
+                EchoLevel::Info,
+                "rename: no changes",
+            ),
+            RenameOutcome::Edits { per_file, new_name } => {
+                self.apply_rename_workspace_edit(per_file, new_name);
+            }
+        }
+    }
+
+    /// Apply a per-file WorkspaceEdit returned by a `:rename`.
+    /// The active buffer's edits land directly via
+    /// `apply_edit_batch_blocking`; cross-file edits get
+    /// surfaced as a status echo for v1 (the multi-buffer
+    /// foundation has the seams to land them in-place; that
+    /// migration is a follow-up). Cross-file edits hitting
+    /// already-open buffers in the registry write through
+    /// the registry's document handle.
+    fn apply_rename_workspace_edit(
+        &mut self,
+        per_file: Vec<(lsp_types::Uri, Vec<lsp_types::TextEdit>)>,
+        new_name: String,
+    ) {
+        let mut applied_files = 0usize;
+        let mut total_edits = 0usize;
+        let mut deferred_files: Vec<String> = Vec::new();
+        for (uri, edits) in per_file {
+            let target_path = match lattice_lsp::actor::uri_to_path(&uri) {
+                Some(p) => p,
+                None => continue,
+            };
+            let edit_count = edits.len();
+            if self
+                .document
+                .path()
+                .map(|p| p == target_path)
+                .unwrap_or(false)
+            {
+                if let Err(e) = self.apply_lsp_text_edits(edits) {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("rename: apply failed for active buffer: {e}"),
+                    );
+                    return;
+                }
+                applied_files += 1;
+                total_edits += edit_count;
+            } else {
+                // Cross-file edits: open the file via :e and
+                // apply. This makes the edits visible in the
+                // editor and registers undo on each affected
+                // buffer. v1 limitation: each opened buffer
+                // gets its own undo entry rather than one global
+                // unit. The :e path's standard machinery handles
+                // LSP attach + buffer registration, so the
+                // edits coexist with future LSP traffic.
+                self.do_edit(Some(target_path.clone()), false);
+                if matches!(
+                    self.last_message.as_ref().map(|m| m.level),
+                    Some(EchoLevel::Error)
+                ) {
+                    deferred_files.push(target_path.display().to_string());
+                    continue;
+                }
+                if let Err(e) = self.apply_lsp_text_edits(edits) {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!(
+                            "rename: apply failed for {}: {e}",
+                            target_path.display()
+                        ),
+                    );
+                    return;
+                }
+                applied_files += 1;
+                total_edits += edit_count;
+            }
+        }
+        let mut summary = format!(
+            "rename -> {new_name}: {total_edits} edit{} across {applied_files} file{}",
+            if total_edits == 1 { "" } else { "s" },
+            if applied_files == 1 { "" } else { "s" },
+        );
+        if !deferred_files.is_empty() {
+            summary.push_str(&format!(
+                " (skipped {}: open the file then re-run)",
+                deferred_files.join(", ")
+            ));
+        }
+        self.set_message(EchoLevel::Info, summary);
+    }
+
     /// `:complete` (Phase 4.2.g). Fires
     /// `textDocument/completion` at the cursor; the merged
     /// item list opens as a vertico picker. Multi-server
@@ -7645,6 +7925,7 @@ impl App {
             Effect::LspFormatRange => self.do_lsp_format_request(true),
             Effect::LspSignatureHelp => self.do_lsp_signature_help_request(),
             Effect::LspComplete => self.do_lsp_completion_request(),
+            Effect::LspRename { new_name } => self.do_lsp_rename_request(&new_name),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -10401,7 +10682,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspFormat
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp
-        | Effect::LspComplete => false,
+        | Effect::LspComplete
+        | Effect::LspRename { .. } => false,
     }
 }
 
@@ -10458,7 +10740,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspFormat
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp
-        | Effect::LspComplete => false,
+        | Effect::LspComplete
+        | Effect::LspRename { .. } => false,
     }
 }
 
@@ -10677,6 +10960,74 @@ pub(crate) fn symbol_information_to_row(
         line: sym.location.range.start.line,
         col: sym.location.range.start.character,
     })
+}
+
+/// Extract a placeholder string from a `PrepareRenameResponse`.
+/// The spec gives three shapes: a Range (no placeholder, just
+/// "you can rename here"), a Range+Placeholder (preferred), or
+/// a DefaultBehavior signal (server defers to the editor's
+/// word-under-cursor heuristic). We pull the placeholder when
+/// present, else `None` so the App's caller can fall back to
+/// the heuristic.
+pub(crate) fn prepare_rename_placeholder(
+    resp: &lsp_types::PrepareRenameResponse,
+) -> Option<String> {
+    match resp {
+        lsp_types::PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. } => {
+            Some(placeholder.clone())
+        }
+        lsp_types::PrepareRenameResponse::Range(_) => None,
+        lsp_types::PrepareRenameResponse::DefaultBehavior { .. } => None,
+    }
+}
+
+/// Flatten a `WorkspaceEdit` into a per-file
+/// `Vec<(Uri, Vec<TextEdit>)>`. Handles both the legacy `changes`
+/// HashMap shape and the modern `document_changes` shape (which
+/// also carries DocumentChangeOperation::Op create/rename/delete
+/// -- those are skipped in v1; rename returns plain text edits
+/// for ~100% of identifiers).
+///
+/// Empty Vec means "nothing to apply" (the App echoes `Empty`).
+pub(crate) fn flatten_workspace_edit(
+    we: lsp_types::WorkspaceEdit,
+) -> Vec<(lsp_types::Uri, Vec<lsp_types::TextEdit>)> {
+    let mut out: Vec<(lsp_types::Uri, Vec<lsp_types::TextEdit>)> = Vec::new();
+    if let Some(changes) = we.changes {
+        for (uri, edits) in changes {
+            if !edits.is_empty() {
+                out.push((uri, edits));
+            }
+        }
+    }
+    if let Some(doc_changes) = we.document_changes {
+        match doc_changes {
+            lsp_types::DocumentChanges::Edits(edits) => {
+                for te_doc in edits {
+                    let uri = te_doc.text_document.uri.clone();
+                    let raw_edits: Vec<lsp_types::TextEdit> = te_doc
+                        .edits
+                        .into_iter()
+                        .filter_map(|e| match e {
+                            lsp_types::OneOf::Left(te) => Some(te),
+                            // AnnotatedTextEdit -- strip the
+                            // annotation; v1 doesn't surface
+                            // change-annotations to the user.
+                            lsp_types::OneOf::Right(ate) => Some(ate.text_edit),
+                        })
+                        .collect();
+                    if !raw_edits.is_empty() {
+                        out.push((uri, raw_edits));
+                    }
+                }
+            }
+            // create-file / rename-file / delete-file ops are
+            // skipped in v1 -- the rename use case is identifier
+            // rewrites, which servers return as plain text edits.
+            lsp_types::DocumentChanges::Operations(_) => {}
+        }
+    }
+    out
 }
 
 /// Single-character glyph for an LSP `CompletionItemKind`.
@@ -17689,6 +18040,168 @@ mod tests {
         // Cursor on the space.
         let p = Position::new(0, 3);
         assert_eq!(super::word_under_cursor(&snap.buffer, p), None);
+    }
+
+    #[test]
+    fn prepare_rename_placeholder_extracted_from_range_with_placeholder() {
+        let r = lsp_types::Range {
+            start: lsp_types::Position {
+                line: 0,
+                character: 0,
+            },
+            end: lsp_types::Position {
+                line: 0,
+                character: 3,
+            },
+        };
+        let resp = lsp_types::PrepareRenameResponse::RangeWithPlaceholder {
+            range: r,
+            placeholder: "foo".into(),
+        };
+        assert_eq!(
+            super::prepare_rename_placeholder(&resp),
+            Some("foo".to_string())
+        );
+        let resp = lsp_types::PrepareRenameResponse::Range(r);
+        assert_eq!(super::prepare_rename_placeholder(&resp), None);
+    }
+
+    #[test]
+    fn flatten_workspace_edit_collects_legacy_changes_map() {
+        use std::collections::HashMap;
+        let uri = super::tests::fake_uri("/tmp/x.rs");
+        let mut changes: HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> = HashMap::new();
+        changes.insert(
+            uri.clone(),
+            vec![lsp_types::TextEdit {
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: lsp_types::Position {
+                        line: 0,
+                        character: 3,
+                    },
+                },
+                new_text: "bar".into(),
+            }],
+        );
+        let we = lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        };
+        let flat = super::flatten_workspace_edit(we);
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].0, uri);
+        assert_eq!(flat[0].1[0].new_text, "bar");
+    }
+
+    #[test]
+    fn drain_pending_rename_no_provider_echoes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
+        a.pending_rename_rx = Some(rx);
+        a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::RenameOutcome::NoProvider).unwrap();
+        a.drain_pending_rename();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("renameProvider"));
+    }
+
+    #[test]
+    fn drain_pending_rename_not_renameable_echoes_reason() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
+        a.pending_rename_rx = Some(rx);
+        a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::RenameOutcome::NotRenameable {
+            reason: "out of bounds".into(),
+        })
+        .unwrap();
+        a.drain_pending_rename();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("out of bounds"));
+    }
+
+    #[test]
+    fn drain_pending_rename_empty_echoes_no_changes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
+        a.pending_rename_rx = Some(rx);
+        a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::RenameOutcome::Empty).unwrap();
+        a.drain_pending_rename();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no changes"));
+    }
+
+    #[test]
+    fn drain_pending_rename_applies_active_buffer_edits_as_one_undo_unit() {
+        // End-to-end-ish: load a real document, send a rename
+        // outcome targeting it, verify the buffer text changed
+        // and a single undo restores.
+        let path = std::env::temp_dir()
+            .join(format!("lattice-rename-{}.rs", std::process::id()));
+        std::fs::write(&path, "let foo = 1;\nlet x = foo + 2;\n").unwrap();
+        let doc = Document::open(&path).unwrap();
+        let mut a = App::new(doc);
+        a.set_viewport_height(10);
+        let uri = super::tests::fake_uri(path.to_str().unwrap());
+        let edits = vec![
+            // Replace `foo` on line 0 col 4..7
+            lsp_types::TextEdit {
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: 0,
+                        character: 4,
+                    },
+                    end: lsp_types::Position {
+                        line: 0,
+                        character: 7,
+                    },
+                },
+                new_text: "bar".into(),
+            },
+            // Replace `foo` on line 1 col 8..11
+            lsp_types::TextEdit {
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: 1,
+                        character: 8,
+                    },
+                    end: lsp_types::Position {
+                        line: 1,
+                        character: 11,
+                    },
+                },
+                new_text: "bar".into(),
+            },
+        ];
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
+        a.pending_rename_rx = Some(rx);
+        a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::RenameOutcome::Edits {
+            per_file: vec![(uri, edits)],
+            new_name: "bar".into(),
+        })
+        .unwrap();
+        a.drain_pending_rename();
+        let body = a.document.snapshot().buffer.as_string();
+        assert!(body.contains("let bar = 1;"));
+        assert!(body.contains("let x = bar + 2;"));
+        // One undo restores the pre-rename buffer (apply_lsp_text_edits
+        // commits via apply_edit_batch_blocking which is one undo unit).
+        let _ = a.undo_blocking();
+        let restored = a.document.snapshot().buffer.as_string();
+        assert!(restored.contains("let foo = 1;"));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -276,6 +276,29 @@ impl Capabilities {
         self.server.signature_help_provider.is_some()
     }
 
+    /// Server's `renameProvider` presence -- gates `:rename`
+    /// (Phase 4.3). Returns true for both bool and options
+    /// shapes the LSP spec allows.
+    pub fn supports_rename(&self) -> bool {
+        match self.server.rename_provider.as_ref() {
+            Some(lsp_types::OneOf::Left(b)) => *b,
+            Some(lsp_types::OneOf::Right(_)) => true,
+            None => false,
+        }
+    }
+
+    /// Whether the server advertises `prepareProvider` on its
+    /// rename options -- if so, `prepareRename` should run
+    /// before `rename` to validate the cursor and pick up the
+    /// placeholder. Most modern servers (rust-analyzer,
+    /// pyright, gopls) advertise this.
+    pub fn supports_prepare_rename(&self) -> bool {
+        match self.server.rename_provider.as_ref() {
+            Some(lsp_types::OneOf::Right(opts)) => opts.prepare_provider.unwrap_or(false),
+            _ => false,
+        }
+    }
+
     /// Trigger characters that should fire `textDocument/signatureHelp`
     /// in Insert mode. Empty when the server doesn't advertise the
     /// provider or doesn't list any.

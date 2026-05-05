@@ -77,6 +77,7 @@ pub struct ExBuiltins {
     pub lsp_format_range: ExCommandId,
     pub lsp_signature_help: ExCommandId,
     pub lsp_complete: ExCommandId,
+    pub lsp_rename: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -796,6 +797,33 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         },
     );
 
+    let lsp_rename = registry.register_ex_command(
+        "ex:lsp-rename",
+        "Rename the symbol under cursor across the workspace via textDocument/rename. Empty name uses prepareRename's placeholder when advertised (`:rename [new-name]`, Phase 4.3).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| {
+                let new_name = match &ctx.args {
+                    Args::String(s) => s.trim().to_string(),
+                    _ => String::new(),
+                };
+                Ok(Effect::LspRename { new_name })
+            }),
+            args_schema: vec![ArgSpec {
+                name: "new-name",
+                kind: ArgKind::String,
+                doc: "Replacement identifier. Empty -> use the server's prepareRename placeholder.",
+                prompt: "new name:",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
     let lsp_complete = registry.register_ex_command(
         "ex:lsp-complete",
         "Open a vertico picker over LSP completion items at the cursor (`:complete`, Phase 4.2.g). Plain-text insert -- snippet expansion / lazy resolve land with buffer-level Insert-mode completion.",
@@ -960,6 +988,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_format_range,
         lsp_signature_help,
         lsp_complete,
+        lsp_rename,
     }
 }
 

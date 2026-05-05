@@ -27,8 +27,9 @@ use lattice_protocol::CancellationToken;
 use lsp_types::{
     CompletionParams, CompletionResponse, DocumentFormattingParams, DocumentRangeFormattingParams,
     DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
-    Hover, HoverParams, Location, ReferenceParams, SignatureHelp, SignatureHelpParams,
-    SymbolInformation, TextEdit, WorkspaceSymbolParams,
+    Hover, HoverParams, Location, PrepareRenameResponse, ReferenceParams, RenameParams,
+    SignatureHelp, SignatureHelpParams, SymbolInformation, TextDocumentPositionParams, TextEdit,
+    WorkspaceEdit, WorkspaceSymbolParams,
     request::{
         GotoDeclarationParams, GotoDeclarationResponse, GotoImplementationParams,
         GotoImplementationResponse, GotoTypeDefinitionParams, GotoTypeDefinitionResponse,
@@ -194,6 +195,33 @@ impl ServerHandle {
         token: CancellationToken,
     ) -> Pending<Option<SignatureHelp>> {
         self.request_with_cancel("textDocument/signatureHelp", params, token)
+    }
+
+    /// `textDocument/prepareRename` (Phase 4.3). Validates the
+    /// cursor is on a renameable identifier and returns the
+    /// placeholder + range. `None` means "the symbol can't be
+    /// renamed here" -- the editor echoes and bails. Optional
+    /// in the spec (servers may skip prepareRename and accept
+    /// rename directly), so callers should treat `None` from
+    /// `prepare_rename` as "fall through to rename".
+    pub fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+        token: CancellationToken,
+    ) -> Pending<Option<PrepareRenameResponse>> {
+        self.request_with_cancel("textDocument/prepareRename", params, token)
+    }
+
+    /// `textDocument/rename` (Phase 4.3). Renames the symbol
+    /// under cursor across the workspace. Response is a
+    /// `WorkspaceEdit` with per-file `Vec<TextEdit>`s; the
+    /// editor applies all edits as a single undoable unit.
+    pub fn rename(
+        &self,
+        params: RenameParams,
+        token: CancellationToken,
+    ) -> Pending<Option<WorkspaceEdit>> {
+        self.request_with_cancel("textDocument/rename", params, token)
     }
 }
 

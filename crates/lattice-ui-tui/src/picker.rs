@@ -107,6 +107,12 @@ pub enum PickerAction {
     /// Used by multi-result `gd` / `gD` / `gy` / `gI`, by
     /// `gr` references, and by `:diagnostics`.
     JumpToLspLocation,
+    /// Selected candidate's `text` is `"#<idx>"` -- a numeric
+    /// index into the host's `pending_completion_items`
+    /// snapshot. The accept handler reads the item by index
+    /// and splices it into the buffer at the captured replace
+    /// range. Used by `:complete` (Phase 4.2.g).
+    AcceptLspCompletion,
 }
 
 /// One open vertico-style picker. Lives on `App.picker` while

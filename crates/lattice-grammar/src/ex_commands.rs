@@ -76,6 +76,7 @@ pub struct ExBuiltins {
     pub lsp_format: ExCommandId,
     pub lsp_format_range: ExCommandId,
     pub lsp_signature_help: ExCommandId,
+    pub lsp_complete: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -795,6 +796,20 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         },
     );
 
+    let lsp_complete = registry.register_ex_command(
+        "ex:lsp-complete",
+        "Open a vertico picker over LSP completion items at the cursor (`:complete`, Phase 4.2.g). Plain-text insert -- snippet expansion / lazy resolve land with buffer-level Insert-mode completion.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::LspComplete)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
     let lsp_signature_help = registry.register_ex_command(
         "ex:lsp-signature-help",
         "Open the LSP signature-help popup for the current cursor (`:signature-help`, Phase 4.3). Trigger-character driven in Insert mode -- typing `(` / `,` etc. fires the same request automatically.",
@@ -944,6 +959,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_format,
         lsp_format_range,
         lsp_signature_help,
+        lsp_complete,
     }
 }
 

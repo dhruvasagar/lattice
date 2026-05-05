@@ -292,6 +292,10 @@ pub enum Effect {
     /// `textDocument/signatureHelp` to attached servers; first
     /// non-empty response renders into the hover popup.
     LspSignatureHelp,
+    /// `:complete` -- fire `textDocument/completion` at the
+    /// cursor and open the merged item list as a vertico
+    /// picker. Phase 4.2.g.
+    LspComplete,
 
     Many(Vec<Effect>),
 }

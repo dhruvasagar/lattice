@@ -422,6 +422,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("signaturehelp", "ex:lsp-signature-help"),
     ("sighelp", "ex:lsp-signature-help"),
     ("lspsighelp", "ex:lsp-signature-help"),
+    ("complete", "ex:lsp-complete"),
+    ("lspcomplete", "ex:lsp-complete"),
 ];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests

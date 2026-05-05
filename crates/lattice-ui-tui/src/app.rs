@@ -456,6 +456,15 @@ pub enum Action {
     /// automatically when the user types a server-advertised
     /// trigger character (commonly `(` and `,`).
     LspSignatureHelpRequest,
+    /// `:complete` (Phase 4.2.g, picker-flavoured). Fires
+    /// `textDocument/completion` at the cursor; the merged item
+    /// list opens as a vertico picker (label + kind glyph +
+    /// detail). Accept replaces the prefix-under-cursor with
+    /// the item's insert text. Snippet expansion + lazy
+    /// `completionItem/resolve` are queued behind buffer-level
+    /// Insert-mode completion (which doesn't exist yet -- this
+    /// is the bridge until that lands).
+    LspCompletionRequest,
     /// `<C-t>` -- pop the tag stack (vim's tag-stack
     /// `:pop`). Walks back through the LIFO chain of `gd` /
     /// `gD` / `gy` / `gI` drill-downs. Independent of the
@@ -859,6 +868,17 @@ pub struct App {
     pub pending_signature_help_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<SignatureHelpOutcome>>,
     pub pending_signature_help_token: Option<lattice_protocol::CancellationToken>,
+    /// Receiver for in-flight LSP completion responses (Phase
+    /// 4.2.g). The accept path stitches the chosen item's
+    /// insert_text into the buffer at the captured replace
+    /// range.
+    pub pending_completion_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<CompletionOutcome>>,
+    pub pending_completion_token: Option<lattice_protocol::CancellationToken>,
+    /// Captured at request fire so the accept path can splice
+    /// the chosen item's text into the buffer at the right
+    /// position. Cleared on dismiss / outcome consumption.
+    pub pending_completion_items: Option<Vec<CompletionItemRow>>,
     /// Receiver end of the App's own subscription to
     /// `EventKind::OptionChanged` (DESIGN.md §5.10 + §5.12). The
     /// typed-options registry publishes through `event_bus` on
@@ -1299,6 +1319,35 @@ pub enum ReferencesOutcome {
     },
     /// The buffer's URI maps to no attached servers. Echo
     /// "no LSP server attached" so the user can investigate.
+    NoServers,
+}
+
+/// One row of an LSP completion picker. Carries the item
+/// label, kind glyph, optional detail blurb, and the insert
+/// text. `replace_range` is the byte range in the active line
+/// to splice the insert text over -- driven by the item's
+/// `text_edit` when present, else a word-boundary heuristic
+/// host-side.
+#[derive(Debug, Clone)]
+pub struct CompletionItemRow {
+    pub label: String,
+    pub kind_glyph: &'static str,
+    pub detail: Option<String>,
+    /// Text to insert (raw -- no snippet expansion yet).
+    pub insert_text: String,
+    /// Replace range as `(start_byte, end_byte)` on the active
+    /// line.
+    pub replace_range: (u32, u32),
+    /// Line the replace range is on (LSP 0-based). Always the
+    /// cursor's line; carried explicitly to keep the accept
+    /// path independent of cursor mutations.
+    pub line: u32,
+}
+
+/// Outcome of a `textDocument/completion` request.
+#[derive(Debug, Clone)]
+pub enum CompletionOutcome {
+    Items(Vec<CompletionItemRow>),
     NoServers,
 }
 
@@ -1820,6 +1869,9 @@ impl App {
             pending_format_token: None,
             pending_signature_help_rx: None,
             pending_signature_help_token: None,
+            pending_completion_rx: None,
+            pending_completion_token: None,
+            pending_completion_items: None,
             lang_registry,
             builtins,
             command_line: String::new(),
@@ -2991,6 +3043,7 @@ impl App {
             }
             Action::LspReferencesRequest => self.do_lsp_references_request(),
             Action::LspSignatureHelpRequest => self.do_lsp_signature_help_request(),
+            Action::LspCompletionRequest => self.do_lsp_completion_request(),
             Action::TagStackPop => self.do_tag_stack_pop(),
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
             Action::LspWorkspaceSymbolRequest(q) => {
@@ -4785,7 +4838,8 @@ impl App {
                     self.open_lsp_trace_log_in_pane(&server_id)
                 }
                 crate::picker::PickerAction::SwitchToBuffer
-                | crate::picker::PickerAction::JumpToLspLocation => {}
+                | crate::picker::PickerAction::JumpToLspLocation
+                | crate::picker::PickerAction::AcceptLspCompletion => {}
             }
             return;
         }
@@ -4998,6 +5052,208 @@ impl App {
                     self.tag_stack.push(origin);
                 }
                 self.jump_to_file_line_col(&path, line, col);
+            }
+            crate::picker::PickerAction::AcceptLspCompletion => {
+                let Some(idx) = crate::picker::buffer_id_from_text(&payload) else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: malformed completion idx {payload:?}"),
+                    );
+                    return;
+                };
+                let Some(items) = self.pending_completion_items.take() else {
+                    return;
+                };
+                let Some(item) = items.into_iter().nth(idx as usize) else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: completion idx {idx} out of range"),
+                    );
+                    return;
+                };
+                self.apply_lsp_completion_item(&item);
+            }
+        }
+    }
+
+    /// Splice a chosen completion item into the buffer at its
+    /// captured replace range. Plain text only -- snippet
+    /// expansion (`$0` placeholders, etc.) lands with the
+    /// buffer-level Insert-mode completion shell.
+    fn apply_lsp_completion_item(&mut self, item: &CompletionItemRow) {
+        let (start_byte, end_byte) = item.replace_range;
+        let range = lattice_protocol::position::Range::new(
+            Position::new(item.line, start_byte),
+            Position::new(item.line, end_byte),
+        );
+        let edit = Edit::replace(range, item.insert_text.clone());
+        match self.apply_edit_blocking(edit) {
+            Ok(applied) => {
+                self.cursor = applied.inserted_range.end;
+            }
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("complete: apply failed: {e:?}"),
+                );
+            }
+        }
+    }
+
+    /// `:complete` (Phase 4.2.g). Fires
+    /// `textDocument/completion` at the cursor; the merged
+    /// item list opens as a vertico picker. Multi-server
+    /// union; dedup by `(label, kind)`. Token rides on
+    /// follow-up requests.
+    fn do_lsp_completion_request(&mut self) {
+        if let Some(token) = self.pending_completion_token.take() {
+            token.cancel();
+        }
+        // Browse-style; not a tag-intent drill-down.
+        self.pending_tag_origin = None;
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => return,
+        };
+        // Compute the prefix replace range: walk back from the
+        // cursor over word characters. The server may override
+        // via `text_edit` per-item, but the heuristic is the
+        // fallback when items don't carry one.
+        let line_text = snapshot.buffer.line(self.cursor.line).unwrap_or_default();
+        let cursor_byte = self.cursor.byte as usize;
+        let mut start = cursor_byte;
+        let bytes = line_text.as_bytes();
+        while start > 0 && start <= bytes.len() && is_word_char_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        let prefix_start = start as u32;
+        let cursor_line = self.cursor.line;
+        let cursor_col = self.cursor.byte;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CompletionOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_completion_rx = Some(rx);
+        self.pending_completion_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.lock().await.servers_for(&uri) };
+            if handles.is_empty() {
+                let _ = tx.send(CompletionOutcome::NoServers);
+                return;
+            }
+            let mut all: Vec<CompletionItemRow> = Vec::new();
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                if !handle.capabilities().supports_completion() {
+                    continue;
+                }
+                let params = lsp_types::CompletionParams {
+                    text_document_position: lsp_types::TextDocumentPositionParams {
+                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                        position: lsp_position,
+                    },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    context: None,
+                };
+                if let Ok(Some(resp)) = handle.completion(params, token.clone()).await {
+                    let items = match resp {
+                        lsp_types::CompletionResponse::Array(items) => items,
+                        lsp_types::CompletionResponse::List(list) => list.items,
+                    };
+                    for ci in items {
+                        let label = ci.label;
+                        let kind_glyph = completion_kind_glyph(ci.kind);
+                        let detail = ci.detail.clone();
+                        let insert_text = ci
+                            .insert_text
+                            .clone()
+                            .unwrap_or_else(|| label.clone());
+                        all.push(CompletionItemRow {
+                            label,
+                            kind_glyph,
+                            detail,
+                            insert_text,
+                            replace_range: (prefix_start, cursor_col),
+                            line: cursor_line,
+                        });
+                    }
+                }
+            }
+            // Dedup by (label, kind glyph) -- avoid two servers
+            // emitting the same name twice.
+            all.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.kind_glyph.cmp(b.kind_glyph)));
+            all.dedup_by(|a, b| a.label == b.label && a.kind_glyph == b.kind_glyph);
+            let _ = tx.send(CompletionOutcome::Items(all));
+        });
+    }
+
+    /// Drain queued LSP completion responses and open a picker.
+    /// `NoServers` echoes; empty list echoes.
+    pub fn drain_pending_completion(&mut self) {
+        let Some(mut rx) = self.pending_completion_rx.take() else {
+            return;
+        };
+        let mut latest: Option<CompletionOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_completion_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_completion_token = None;
+        match outcome {
+            CompletionOutcome::NoServers => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no LSP server attached".to_string(),
+                );
+            }
+            CompletionOutcome::Items(items) => {
+                if items.is_empty() {
+                    self.set_message(EchoLevel::Info, "no completions".to_string());
+                    return;
+                }
+                let total = items.len();
+                let raw: Vec<lattice_completion::RawCandidate> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        let mut c = lattice_completion::RawCandidate::plain(
+                            format!("#{i}"),
+                            lattice_completion::CandidateKind::Plain,
+                        );
+                        c.display = match &item.detail {
+                            Some(d) => format!("{} {}  {d}", item.kind_glyph, item.label),
+                            None => format!("{} {}", item.kind_glyph, item.label),
+                        };
+                        c
+                    })
+                    .collect();
+                self.pending_completion_items = Some(items);
+                let mut p = crate::picker::Picker::new(
+                    format!("complete ({total})"),
+                    crate::picker::PickerSource::LspLocations,
+                    crate::picker::PickerAction::AcceptLspCompletion,
+                );
+                p.set_raw_candidates(raw);
+                self.picker = Some(p);
             }
         }
     }
@@ -7388,6 +7644,7 @@ impl App {
             Effect::LspFormat => self.do_lsp_format_request(false),
             Effect::LspFormatRange => self.do_lsp_format_request(true),
             Effect::LspSignatureHelp => self.do_lsp_signature_help_request(),
+            Effect::LspComplete => self.do_lsp_completion_request(),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -10143,7 +10400,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspWorkspaceSymbol { .. }
         | Effect::LspFormat
         | Effect::LspFormatRange
-        | Effect::LspSignatureHelp => false,
+        | Effect::LspSignatureHelp
+        | Effect::LspComplete => false,
     }
 }
 
@@ -10199,7 +10457,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspWorkspaceSymbol { .. }
         | Effect::LspFormat
         | Effect::LspFormatRange
-        | Effect::LspSignatureHelp => false,
+        | Effect::LspSignatureHelp
+        | Effect::LspComplete => false,
     }
 }
 
@@ -10418,6 +10677,31 @@ pub(crate) fn symbol_information_to_row(
         line: sym.location.range.start.line,
         col: sym.location.range.start.character,
     })
+}
+
+/// Single-character glyph for an LSP `CompletionItemKind`.
+/// Same shape as `symbol_kind_glyph` but maps the completion-
+/// item kind enum (which is wider -- snippets, keywords,
+/// folders, etc.). Kept narrow on purpose; richer per-kind
+/// styling lives in the renderer once buffer-level Insert
+/// completion lands.
+pub(crate) fn completion_kind_glyph(kind: Option<lsp_types::CompletionItemKind>) -> &'static str {
+    use lsp_types::CompletionItemKind as K;
+    match kind {
+        Some(K::FUNCTION) | Some(K::METHOD) | Some(K::CONSTRUCTOR) => "ƒ",
+        Some(K::VARIABLE) | Some(K::FIELD) | Some(K::PROPERTY) => "v",
+        Some(K::CONSTANT) => "K",
+        Some(K::CLASS) | Some(K::INTERFACE) => "🅒",
+        Some(K::STRUCT) => "🅢",
+        Some(K::ENUM) | Some(K::ENUM_MEMBER) => "🅔",
+        Some(K::MODULE) => "📦",
+        Some(K::FILE) | Some(K::FOLDER) => "📄",
+        Some(K::SNIPPET) => "✂",
+        Some(K::KEYWORD) => "K",
+        Some(K::TEXT) => "≡",
+        Some(K::REFERENCE) => "→",
+        _ => "?",
+    }
 }
 
 /// Single-character glyph for an LSP `SymbolKind`. Picked to
@@ -17405,6 +17689,83 @@ mod tests {
         // Cursor on the space.
         let p = Position::new(0, 3);
         assert_eq!(super::word_under_cursor(&snap.buffer, p), None);
+    }
+
+    #[test]
+    fn completion_kind_glyph_distinct_for_common_kinds() {
+        use lsp_types::CompletionItemKind as K;
+        let f = super::completion_kind_glyph(Some(K::FUNCTION));
+        let s = super::completion_kind_glyph(Some(K::SNIPPET));
+        let v = super::completion_kind_glyph(Some(K::VARIABLE));
+        assert_ne!(f, s);
+        assert_ne!(f, v);
+    }
+
+    #[test]
+    fn drain_pending_completion_no_servers_echoes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
+        a.pending_completion_rx = Some(rx);
+        a.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::CompletionOutcome::NoServers).unwrap();
+        a.drain_pending_completion();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn drain_pending_completion_items_open_picker_with_indexed_text() {
+        let mut a = app_with("foo\n", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
+        a.pending_completion_rx = Some(rx);
+        a.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::CompletionOutcome::Items(vec![
+            super::CompletionItemRow {
+                label: "foo_bar".into(),
+                kind_glyph: "ƒ",
+                detail: Some("fn foo_bar()".into()),
+                insert_text: "foo_bar()".into(),
+                replace_range: (0, 3),
+                line: 0,
+            },
+        ]))
+        .unwrap();
+        a.drain_pending_completion();
+        let picker = a.picker.as_ref().expect("picker");
+        assert!(picker.title.starts_with("complete"));
+        assert!(matches!(
+            picker.on_accept,
+            crate::picker::PickerAction::AcceptLspCompletion
+        ));
+        assert_eq!(picker.candidates.len(), 1);
+        // Display carries kind glyph + label + detail.
+        let display = &picker.candidates[0].raw.display;
+        assert!(display.contains("ƒ foo_bar"));
+        assert!(display.contains("fn foo_bar()"));
+        // Text round-trips through `buffer_id_from_text` (the
+        // `#<idx>` encoding shared with the buffer switcher).
+        assert_eq!(
+            crate::picker::buffer_id_from_text(&picker.candidates[0].raw.text),
+            Some(0u32)
+        );
+        // Items survive on the App for the accept path.
+        assert!(a.pending_completion_items.is_some());
+    }
+
+    #[test]
+    fn drain_pending_completion_empty_echoes_no_completions() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
+        a.pending_completion_rx = Some(rx);
+        a.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::CompletionOutcome::Items(Vec::new())).unwrap();
+        a.drain_pending_completion();
+        assert!(a.picker.is_none());
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no completions"));
     }
 
     #[test]

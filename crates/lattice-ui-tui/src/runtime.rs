@@ -195,6 +195,9 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // Renders the active signature into the hover popup
         // pipeline.
         app.drain_pending_signature_help();
+        // Drain queued completion responses (Phase 4.2.g).
+        // Opens a picker over the merged item list.
+        app.drain_pending_completion();
         // Drain queued Event::LspLogPushed events (Phase 4) and
         // refresh any open log / trace buffers from the logger
         // snapshot. Cheap on an idle channel; cheap when no log

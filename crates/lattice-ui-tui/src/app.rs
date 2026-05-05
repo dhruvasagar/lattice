@@ -6811,6 +6811,7 @@ impl App {
             .into_iter()
             .map(lattice_completion::RenderedCandidate::from_scored)
             .collect();
+        dedup_rendered_by_text(&mut state.rendered);
         if !state.rendered.is_empty() && state.selected >= state.rendered.len() {
             state.selected = state.rendered.len() - 1;
         }
@@ -7811,6 +7812,7 @@ impl App {
             .into_iter()
             .map(lattice_completion::RenderedCandidate::from_scored)
             .collect();
+        dedup_rendered_by_text(&mut state.rendered);
         if state.selected >= state.rendered.len() {
             state.selected = state.rendered.len().saturating_sub(1);
         }
@@ -8361,6 +8363,7 @@ impl App {
             .into_iter()
             .map(lattice_completion::RenderedCandidate::from_scored)
             .collect();
+        dedup_rendered_by_text(&mut state.rendered);
         if !state.rendered.is_empty() && state.selected >= state.rendered.len() {
             state.selected = state.rendered.len() - 1;
         }
@@ -13815,6 +13818,23 @@ fn preview_register(s: &str) -> String {
 
 fn is_word_char_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Cross-source visual dedup for the insert-completion popup
+/// (Phase 4.2.g.7 polish). Keeps the FIRST occurrence of each
+/// `raw.text`; subsequent rows with the same text drop out.
+/// Called after the ranker has sorted descending by score, so
+/// the surviving row is the highest-ranked entry per text --
+/// the buffer-words copy of `outer` outranks the tree-sitter
+/// copy at the spec's 100/80 priority split, so the popup row
+/// for `outer` carries the buffer-words tag.
+///
+/// Selection / navigation / accept all index into the deduped
+/// vec naturally; this is the only place we coalesce rows
+/// across sources, and it runs before the popup paints.
+fn dedup_rendered_by_text(rendered: &mut Vec<lattice_completion::RenderedCandidate>) {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    rendered.retain(|cand| seen.insert(cand.raw.text.clone()));
 }
 
 /// True for bytes the path-completion source treats as part of
@@ -24823,11 +24843,12 @@ mod tests {
         // `outer` appears as a function definition (captured
         // by tree-sitter) AND as a referenced word (captured
         // by buffer-words). Both sources contribute their
-        // tagged copy in v1; the ranker orders them by
-        // per-source priority (buffer-words 100 > tree-sitter
-        // 80 -> buffer-words renders first when both match
-        // the same prefix). Visual dedup at the renderer
-        // level is a 4.2.g.7 polish item.
+        // tagged copy in `state.raw` -- the producers run
+        // independently. Visual dedup at the renderer (4.2.g.7
+        // polish) collapses them to a single popup row, so
+        // `state.rendered` has exactly one entry for `outer`,
+        // tagged with the higher-priority source (buffer-words
+        // at 100 > tree-sitter at 80).
         let source = "fn outer() {\n    outer();\n}\n";
         let mut a = app_with(source, 10);
         set_rust_syntax(&mut a, source);
@@ -24835,19 +24856,77 @@ mod tests {
         a.cursor = Position::new(2, 1);
         a.do_completion_trigger();
         let state = a.insert_completion.as_ref().expect("popup");
-        let outer_sources: Vec<&str> = state
+        let raw_sources: Vec<&str> = state
             .raw
             .iter()
             .filter(|c| c.text == "outer")
             .map(|c| c.source.as_ref().map(|s| s.as_str()).unwrap_or(""))
             .collect();
         assert!(
-            outer_sources.contains(&lattice_completion::BufferWordsSource::ID),
-            "buffer-words copy present in {outer_sources:?}",
+            raw_sources.contains(&lattice_completion::BufferWordsSource::ID),
+            "buffer-words copy present in raw set: {raw_sources:?}",
         );
         assert!(
-            outer_sources.contains(&lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID),
-            "tree-sitter copy present in {outer_sources:?}",
+            raw_sources.contains(&lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID),
+            "tree-sitter copy present in raw set: {raw_sources:?}",
+        );
+        let rendered_outer: Vec<&str> = state
+            .rendered
+            .iter()
+            .filter(|c| c.raw.text == "outer")
+            .map(|c| c.raw.source.as_ref().map(|s| s.as_str()).unwrap_or(""))
+            .collect();
+        assert_eq!(rendered_outer.len(), 1, "popup deduped to one row");
+        assert_eq!(
+            rendered_outer[0],
+            lattice_completion::BufferWordsSource::ID,
+            "higher-priority source's row survives the dedup",
+        );
+    }
+
+    #[test]
+    fn dedup_helper_keeps_first_occurrence_by_text() {
+        // Direct unit test on the dedup helper. Ranker has
+        // already sorted; we feed in a vec mimicking the
+        // post-rank state (highest-ranked entry first per
+        // text), confirm the deduped vec keeps the first
+        // occurrence and preserves order otherwise.
+        use lattice_completion::{
+            CandidateKind, MatchScore, RawCandidate, RenderedCandidate, ScoredCandidate,
+            SourceId,
+        };
+        let mk = |text: &str, source: &str, score: u32| {
+            let raw = RawCandidate::plain(text, CandidateKind::Plain)
+                .with_source(SourceId::new(source));
+            RenderedCandidate::from_scored(ScoredCandidate {
+                raw,
+                score: MatchScore(score),
+                match_ranges: Vec::new(),
+            })
+        };
+        let mut rendered = vec![
+            mk("outer", "gen:buffer-words", 200),
+            mk("alpha", "gen:buffer-words", 180),
+            mk("outer", "gen:tree-sitter-symbol", 180),
+            mk("beta", "gen:tree-sitter-symbol", 150),
+            mk("alpha", "gen:tree-sitter-symbol", 150),
+        ];
+        super::dedup_rendered_by_text(&mut rendered);
+        let texts: Vec<&str> = rendered.iter().map(|c| c.raw.text.as_str()).collect();
+        let sources: Vec<&str> = rendered
+            .iter()
+            .map(|c| c.raw.source.as_ref().map(|s| s.as_str()).unwrap_or(""))
+            .collect();
+        assert_eq!(texts, vec!["outer", "alpha", "beta"]);
+        // Each kept row carries the higher-ranked source's
+        // tag (the first occurrence of each text).
+        assert_eq!(
+            sources,
+            vec![
+                "gen:buffer-words",
+                "gen:buffer-words",
+                "gen:tree-sitter-symbol",
+            ],
         );
     }
 

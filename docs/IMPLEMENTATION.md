@@ -839,10 +839,17 @@ Remaining 4.2:
   prefix, and we're not in path-context;
   `compose_visible_lines` appends a dimmed-italic span on
   the cursor's row when the cursor is at end-of-line and
-  the helper returns Some) ✅. Remaining 4.2.g.7 polish
-  items: cross-source visual dedup at the popup renderer,
-  picker call sites flipping to typed routing payload via
-  `CandidateData::Extension`.
+  the helper returns Some) ✅; cross-source visual dedup
+  (new `dedup_rendered_by_text` helper retains the first
+  occurrence per `raw.text` after the ranker has sorted
+  descending, wired at all three refilter sites; the
+  surviving row is the highest-ranked one per text, so
+  the buffer-words copy of `outer` outranks the
+  tree-sitter copy at the spec's 100/80 priority split
+  and wins the popup row; selection / navigation / accept
+  index the deduped vec naturally) ✅. Remaining 4.2.g.7
+  polish items: picker call sites flipping to typed
+  routing payload via `CandidateData::Extension`.
 - `completionItem/resolve` (lazy doc / additional edits) --
   shipped as part of 4.2.g.3 + 4.2.g.7.
 - `workspaceSymbol/resolve` (lazy location).

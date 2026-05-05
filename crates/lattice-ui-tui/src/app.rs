@@ -2727,14 +2727,84 @@ impl App {
                 path: (**path).clone(),
             });
         }
+        // LSP textDocument/willSave (Phase 4.3) fan-out: every
+        // server attached to the buffer that advertises the
+        // notification gets a heads-up before the disk write.
+        // Manual reason today (`TextDocumentSaveReason::Manual`).
+        // `willSaveWaitUntil` for format-on-save is a separate
+        // hook in `do_lsp_save_format_on_save`.
+        self.fire_will_save_notifications();
         let result = block_on(self.document.save());
         if let Ok(path) = result.as_ref() {
             self.event_bus.publish(Event::DocumentSaved {
                 id: snap.id,
                 path: path.clone(),
             });
+            // Fire didSave to every server that wants it.
+            self.fire_did_save_notifications();
         }
         result
+    }
+
+    /// Walk the buffer's attached servers; fire
+    /// `textDocument/willSave` to each that advertises it.
+    /// Cheap on no-LSP buffers (the URI lookup short-circuits).
+    /// Notification only -- responses, if any, drop on the floor.
+    fn fire_will_save_notifications(&self) {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return;
+        };
+        let lsp = self.lsp.clone();
+        let uri = uri.clone();
+        let handles = match lsp.try_lock() {
+            Ok(g) => g.servers_for(&uri),
+            Err(_) => return,
+        };
+        let params = lsp_types::WillSaveTextDocumentParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri },
+            reason: lsp_types::TextDocumentSaveReason::MANUAL,
+        };
+        for h in handles {
+            if h.capabilities().wants_will_save() {
+                let _ = h.will_save(params.clone());
+            }
+        }
+    }
+
+    /// Walk the buffer's attached servers; fire
+    /// `textDocument/didSave` to each that wants it. When the
+    /// server requested `includeText`, attach the post-save
+    /// text from the rope.
+    fn fire_did_save_notifications(&self) {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return;
+        };
+        let lsp = self.lsp.clone();
+        let uri = uri.clone();
+        let handles = match lsp.try_lock() {
+            Ok(g) => g.servers_for(&uri),
+            Err(_) => return,
+        };
+        let snap = self.document.snapshot();
+        let full_text = snap.buffer.as_string();
+        for h in handles {
+            let caps = h.capabilities();
+            if !caps.wants_did_save() {
+                continue;
+            }
+            let text = if caps.did_save_include_text() {
+                Some(full_text.clone())
+            } else {
+                None
+            };
+            let params = lsp_types::DidSaveTextDocumentParams {
+                text_document: lsp_types::TextDocumentIdentifier {
+                    uri: uri.clone(),
+                },
+                text,
+            };
+            let _ = h.did_save(params);
+        }
     }
 
     pub fn save_as_blocking(&self, path: std::path::PathBuf) -> Result<(), RuntimeError> {

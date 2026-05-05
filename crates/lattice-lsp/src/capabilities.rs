@@ -299,6 +299,63 @@ impl Capabilities {
         }
     }
 
+    /// Whether the server wants `textDocument/willSave`
+    /// notifications. Reads `text_document_sync.will_save`
+    /// (Phase 4.3).
+    pub fn wants_will_save(&self) -> bool {
+        self.sync_options()
+            .and_then(|o| o.will_save)
+            .unwrap_or(false)
+    }
+
+    /// Whether the server wants `textDocument/willSaveWaitUntil`
+    /// requests. Used for format-on-save when true.
+    pub fn wants_will_save_wait_until(&self) -> bool {
+        self.sync_options()
+            .and_then(|o| o.will_save_wait_until)
+            .unwrap_or(false)
+    }
+
+    /// Whether the server wants `textDocument/didSave`
+    /// notifications. True when the server advertises any
+    /// save options (LSP spec: "if save is set, send didSave").
+    pub fn wants_did_save(&self) -> bool {
+        self.sync_options()
+            .map(|o| o.save.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Whether didSave should include the post-save text.
+    /// Reads `text_document_sync.save.include_text`.
+    pub fn did_save_include_text(&self) -> bool {
+        self.text_document_save_options()
+            .and_then(|s| s.include_text)
+            .unwrap_or(false)
+    }
+
+    /// Pull the negotiated `TextDocumentSyncOptions` if the
+    /// server advertised the options shape. Returns `None` for
+    /// the legacy `Kind(bool)` shape.
+    fn sync_options(&self) -> Option<&lsp_types::TextDocumentSyncOptions> {
+        match self.server.text_document_sync.as_ref()? {
+            lsp_types::TextDocumentSyncCapability::Options(o) => Some(o),
+            _ => None,
+        }
+    }
+
+    /// Pull the negotiated save-options shape (the modern
+    /// `SaveOptions` struct, not the legacy bool). Some servers
+    /// emit `Save(bool)` -- treat that as "default options" by
+    /// returning None here; callers fall back via
+    /// `wants_did_save`.
+    fn text_document_save_options(&self) -> Option<&lsp_types::SaveOptions> {
+        let opts = self.sync_options()?;
+        match opts.save.as_ref()? {
+            lsp_types::TextDocumentSyncSaveOptions::SaveOptions(s) => Some(s),
+            lsp_types::TextDocumentSyncSaveOptions::Supported(_) => None,
+        }
+    }
+
     /// Trigger characters that should fire `textDocument/signatureHelp`
     /// in Insert mode. Empty when the server doesn't advertise the
     /// provider or doesn't list any.

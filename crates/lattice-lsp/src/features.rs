@@ -223,6 +223,43 @@ impl ServerHandle {
     ) -> Pending<Option<WorkspaceEdit>> {
         self.request_with_cancel("textDocument/rename", params, token)
     }
+
+    /// `textDocument/willSave` (Phase 4.3 -- notification).
+    /// Fired before the editor commits the buffer to disk.
+    /// Servers use this to clean up state, finalise indexing,
+    /// or prepare didSave-driven validation.
+    pub fn will_save(
+        &self,
+        params: lsp_types::WillSaveTextDocumentParams,
+    ) -> crate::error::LspResult<()> {
+        self.notify("textDocument/willSave", params)
+    }
+
+    /// `textDocument/willSaveWaitUntil` (Phase 4.3). Same
+    /// trigger as `will_save` but request-shaped: server
+    /// returns a `Vec<TextEdit>` to apply pre-save.
+    /// format-on-save flows through here when the server
+    /// advertises `will_save_wait_until` on its
+    /// `TextDocumentSyncOptions.save`.
+    pub fn will_save_wait_until(
+        &self,
+        params: lsp_types::WillSaveTextDocumentParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<TextEdit>>> {
+        self.request_with_cancel("textDocument/willSaveWaitUntil", params, token)
+    }
+
+    /// `textDocument/didSave` (Phase 4.3 -- notification).
+    /// Fired after a successful disk write. Carries the
+    /// post-save text iff the server's
+    /// `TextDocumentSaveRegistrationOptions.include_text` is
+    /// true.
+    pub fn did_save(
+        &self,
+        params: lsp_types::DidSaveTextDocumentParams,
+    ) -> crate::error::LspResult<()> {
+        self.notify("textDocument/didSave", params)
+    }
 }
 
 #[cfg(test)]

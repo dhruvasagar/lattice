@@ -7556,7 +7556,48 @@ impl App {
             if let Some(spec) = self.pending_block_insert.as_mut() {
                 spec.live_edits = spec.live_edits.saturating_add(1);
             }
+            // SignatureHelp trigger autopilot (Phase 4.3). When
+            // the user types a server-advertised trigger char in
+            // Insert mode, fire `textDocument/signatureHelp`
+            // automatically. Common triggers: `(` (call site),
+            // `,` (next argument). Skipped silently when no
+            // attached server advertises any triggers, and when
+            // the inserted text is multi-character (paste, snippet
+            // expansion -- those land via different paths).
+            if matches!(self.modal, ModalState::Insert) && s.chars().count() == 1 {
+                let inserted_char = s.chars().next().unwrap_or('\0');
+                if self.signature_help_trigger_chars().contains(&inserted_char) {
+                    self.do_lsp_signature_help_request();
+                }
+            }
         }
+    }
+
+    /// Union of signature-help trigger characters across every
+    /// LSP server attached to the active document. Empty when
+    /// no server advertises the provider; common values for
+    /// rust-analyzer / clangd / gopls are `'('` and `','`.
+    fn signature_help_trigger_chars(&self) -> Vec<char> {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return Vec::new();
+        };
+        // Snapshot under the supervisor lock; the Vec is small
+        // (<10 chars across all servers) so allocation is cheap.
+        let lsp = self.lsp.clone();
+        let uri = uri.clone();
+        let handles = match lsp.try_lock() {
+            Ok(g) => g.servers_for(&uri),
+            Err(_) => return Vec::new(),
+        };
+        let mut chars: Vec<char> = Vec::new();
+        for h in handles {
+            for c in h.capabilities().signature_help_trigger_chars() {
+                if !chars.contains(&c) {
+                    chars.push(c);
+                }
+            }
+        }
+        chars
     }
 
     /// Format `:describe-command <name>` into a help overlay

@@ -116,10 +116,10 @@ Called by `:w`. Diff algorithm:
 
 1. Parse current rope lines → `Vec<String>` of names (skip blank lines; rope contains bare names so no prefix stripping needed).
 2. Compare against `snapshot` names:
-   - Name in snapshot, not in current → **delete candidate**
-   - Name in current, not in snapshot → **create candidate**
-   - If exactly one delete candidate + one create candidate at adjacent positions → treat as **rename** (`fs::rename`); otherwise treat as independent delete + create.
-3. Execute in order: **renames → deletes → creates**.
+   - Name in snapshot, not in current → **delete** (any number supported — remove as many lines as you like)
+   - Name in current, not in snapshot → **create** (any number supported — add as many lines as you like)
+   - Special case: if the totals are **exactly one delete + one create**, use `fs::rename` instead of separate delete+create, preserving file attributes and git history. With 2+ of either side, all ops execute as independent deletes and creates.
+3. Execute in order: **renames → deletes → creates** (renames first avoids transient name collisions).
 4. On any error: stop, echo the error, reload snapshot from disk state.
 5. On success: refresh `snapshot` to the new disk state.
 
@@ -165,7 +165,7 @@ Effect::OpenOil { dir: Option<PathBuf> }  // NEW
 | Ex-command | Maps to |
 |---|---|
 | `:oil [dir]` | `Effect::OpenOil { dir }` |
-| `:tree [dir]` | `Effect::OpenFileTree { root }` (existing, renamed from current invocation) |
+| `:filetree [dir]` | `Effect::OpenFileTree { root }` (existing, renamed from current invocation) |
 
 ---
 

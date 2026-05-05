@@ -23540,6 +23540,56 @@ mod tests {
     }
 
     #[test]
+    fn completion_trigger_includes_snippet_candidate_for_matching_prefix() {
+        let mut a = app_with("for", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} {}");
+        a.do_completion_trigger();
+        let state = a.insert_completion.as_ref().expect("popup open");
+        // `for-loop` snippet appears as a candidate. The
+        // candidate's text is the prefix; the meta sidecar
+        // carries the parsed body for the accept path.
+        assert!(state.rendered.iter().any(|r| r.raw.text == "for"));
+        // Sidecar populated -- one snippet candidate registered.
+        assert_eq!(a.insert_completion_snippet_meta.len(), 1);
+        assert_eq!(a.insert_completion_snippet_meta[0].name, "for-loop");
+    }
+
+    #[test]
+    fn completion_accept_on_snippet_candidate_starts_active_snippet() {
+        let mut a = app_with("for", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} {}");
+        a.do_completion_trigger();
+        // Find the snippet candidate index and select it.
+        let state = a.insert_completion.as_mut().expect("popup");
+        let idx = state
+            .rendered
+            .iter()
+            .position(|r| {
+                matches!(
+                    r.raw.data,
+                    lattice_completion::CandidateData::Extension {
+                        kind_id,
+                        ..
+                    } if kind_id == SNIPPET_COMPLETION_KIND_ID
+                )
+            })
+            .expect("snippet candidate present");
+        state.selected = idx;
+        a.do_completion_accept();
+        // Popup closed; active snippet is in flight focused on
+        // $1; buffer reflects expansion.
+        assert!(a.insert_completion.is_none());
+        let active = a.active_snippet.as_ref().expect("active snippet");
+        assert_eq!(active.current_index(), Some(1));
+        let text = a.document.snapshot().buffer.as_string();
+        assert_eq!(text, "for i in iter {}");
+    }
+
+    #[test]
     fn reload_snippets_with_no_dirs_reports_empty() {
         let mut a = app_with("", 10);
         a.do_reload_snippets();

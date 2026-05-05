@@ -58,7 +58,7 @@ Capability columns:
 | `textDocument/didChange` (Full)        | C → S     | 4.1   | ✅     | Auto-selected when server advertises `Full` sync mode.                                                           |
 | `textDocument/didChange` (None)        | C → S     | 4.1   | ✅     | No-op when server advertises `None`.                                                                             |
 | `textDocument/willSave`                | C → S     | 4.3   | ✅     | `App::save_blocking` fan-out via `fire_will_save_notifications`; only servers advertising `wants_will_save` receive it. `reason: Manual` for now -- AfterDelay / FocusOut land when those triggers exist. |
-| `textDocument/willSaveWaitUntil`       | C → S     | 4.3   | 🚧     | Typed wrapper shipped; App-side block-on-response (format-on-save) is the remaining piece.                                           |
+| `textDocument/willSaveWaitUntil`       | C → S     | 4.3   | ✅     | `App::save_blocking` runs `run_will_save_wait_until_blocking` between willSave and the disk write; per-server `Pending::await` with a 500ms timeout; collected TextEdits apply pre-save as one undo unit. Format-on-save flows through this path. |
 | `textDocument/didSave`                 | C → S     | 4.3   | ✅     | Post-save fan-out via `fire_did_save_notifications`; attaches the rope's text when the server's `did_save_include_text` says so. |
 | `textDocument/didClose`                | C → S     | 4.1   | ✅     | `DocSync::close` flushes pending then sends.                                                                     |
 
@@ -148,7 +148,7 @@ Capability columns:
 | `textDocument/prepareRename`      | 4.3   | ✅     | Runs before `rename` when the server advertises `prepare_provider`. RangeWithPlaceholder-shape responses pre-populate the new-name when the user types `:rename` with no arg; Range / DefaultBehavior responses fall through. NotRenameable echoes the server's reason. |
 | `textDocument/formatting`         | 4.3   | ✅     | `:format` (alias `:fmt`). Highest-priority server with `documentFormattingProvider`; returned `Vec<TextEdit>` applies as one undo unit. TextEdits sorted in REVERSE by start position before apply (LSP convention: non-overlapping edits relative to original document). Single-server strategy per architecture doc. |
 | `textDocument/rangeFormatting`    | 4.3   | ✅     | `:format-range`. Active Visual selection (when in Visual) or whole buffer; same dispatch as `formatting`. `=` operator on motions / objects -- queued. |
-| `textDocument/onTypeFormatting`   | 4.3   | ⏹️      | Trigger-character driven (e.g. `;` / `}` in C-family).                       |
+| `textDocument/onTypeFormatting`   | 4.3   | ✅     | Insert-mode trigger-character autopilot. `do_insert_text` fires the request when the typed char matches the server's `documentOnTypeFormattingProvider.first_trigger_character` / `more_trigger_character`. Edits land via the format-channel apply path (one undo unit).                       |
 | `textDocument/linkedEditingRange` | 4.5   | ⏹️      | Multi-cursor mode for linked identifiers (HTML tag pairs, etc.).             |
 
 ### Decorations / inline information
@@ -210,16 +210,16 @@ Counts as of 2026-05-05:
 
 | State          | Count |
 |----------------|-------|
-| ✅ Done        | 28    |
-| 🚧 In progress | 6     |
-| ⏹️ Planned      | 31    |
+| ✅ Done        | 30    |
+| 🚧 In progress | 5     |
+| ⏹️ Planned      | 30    |
 | ⛔ Deferred    | 4     |
 
 Phase rollup:
 
 - **4.1** Foundation: **complete**. Wire layer + actor/handshake + sync + diagnostics (broadcast → layer → renderer → buffer view + nav) + logging (rings + tracing fan-out + buffer views + commands) + supervisor + App-side wiring + edit-dispatch + open-on-`:e` all shipped.
 - **4.2** Navigation: **9/12 shipped + 1 partial**. ✅ hover (`K`), definition (`gd`), declaration (`gD`), typeDefinition (`gy`), implementation (`gI`), references (`gr`), documentSymbol (`:lsp-symbols`), workspaceSymbol (`:lsp-workspace-symbol`). 🚧 completion (`:complete`) -- bridge picker until buffer-level Insert-mode completion lands. All multi-result lookups + `:diagnostics` route through the unified vertico picker (`PickerSource::LspLocations` + `PickerAction::JumpToLspLocation`). Tag stack `<C-t>` pops `gd`-family drill-downs LIFO; jump list `<C-o>`/`<C-i>` walks every cursor jump chronologically. Remaining: completionItem/resolve + workspaceSymbol/resolve + Insert-mode completion shell.
-- **4.3** Edits: **7/9 shipped** (formatting + rangeFormatting; signatureHelp; rename + prepareRename; willSave / didSave notifications; codeAction + resolve + executeCommand). Remaining: onTypeFormatting, willSaveWaitUntil block-on-response (format-on-save), workspace/applyEdit (server-initiated edits).
+- **4.3** Edits: **9/9 shipped**. formatting + rangeFormatting; signatureHelp + Insert-mode autopilot; rename + prepareRename; willSave / didSave notifications; willSaveWaitUntil format-on-save (500ms per-server bound); codeAction + resolve + executeCommand; onTypeFormatting Insert-mode autopilot. `workspace/applyEdit` (server-initiated) is its own row above; codeAction Commands route through `executeCommand` so the immediate use cases don't depend on the inbound applyEdit channel.
 - **4.4** Polish: 0/19 -- queued.
 - **4.5** Expansion: 0/14 -- queued.
 - **post-1.0**: notebooks + multi-root workspaces.

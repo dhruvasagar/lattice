@@ -19,9 +19,13 @@ asynchronicity.
 > (`gr`), document outline (`:lsp-symbols`), workspace
 > symbols (`:lsp-workspace-symbol`), completion picker bridge
 > (`:complete`).
-> Phase 4.3 (edits) **3/9 shipped**: formatting (`:format` /
-> `:format-range`), signatureHelp (`:signature-help` +
-> Insert-mode trigger-char autopilot).
+> Phase 4.3 (edits) **9/9 shipped**: formatting (`:format` /
+> `:format-range`) + Insert-mode onTypeFormatting autopilot;
+> signatureHelp (`:signature-help` + Insert-mode autopilot);
+> rename + prepareRename (`:rename`); codeAction + resolve +
+> executeCommand (`:code-actions`); willSave + didSave +
+> willSaveWaitUntil format-on-save fan-out from
+> `:write` / `:w`.
 > All multi-result LSP lookups + `:diagnostics` route through
 > a unified vertico picker; tag stack `<C-t>` pops drill-down
 > chains. Per-feature status tracked in

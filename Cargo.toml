@@ -7,6 +7,7 @@ members = [
 	"crates/lattice-completion",
 	"crates/lattice-config",
 	"crates/lattice-syntax",
+	"crates/lattice-snippet",
 	"crates/lattice-runtime",
 	"crates/lattice-lsp",
 	"crates/lattice-ui-tui",

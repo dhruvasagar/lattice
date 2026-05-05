@@ -35,6 +35,14 @@ const PYTHON_FOLDS_QUERY: &str = include_str!("../queries/python/folds.scm");
 const JAVASCRIPT_FOLDS_QUERY: &str = include_str!("../queries/javascript/folds.scm");
 const MARKDOWN_FOLDS_QUERY: &str = include_str!("../queries/markdown/folds.scm");
 
+// Symbol queries -- one per language that supports the
+// `gen:tree-sitter-symbol` insert-completion source (Phase
+// 4.2.g.6 (1/2)). Markdown / markdown_inline don't ship one;
+// prose has no symbols-to-define semantic in this sense.
+const RUST_SYMBOLS_QUERY: &str = include_str!("../queries/rust/symbols.scm");
+const PYTHON_SYMBOLS_QUERY: &str = include_str!("../queries/python/symbols.scm");
+const JAVASCRIPT_SYMBOLS_QUERY: &str = include_str!("../queries/javascript/symbols.scm");
+
 /// Per-language compiled state held by the shared registry.
 ///
 /// Phase note: `highlight` is the legacy `tree_sitter_highlight`
@@ -73,6 +81,13 @@ pub(crate) struct LangConfig {
     /// inline + fenced code blocks → embedded language); some
     /// languages (rust, JS) include light-weight injections too.
     pub(crate) injections: Option<Query>,
+    /// Compiled `symbols.scm` query (Phase 4.2.g.6 (1/2)) --
+    /// captures definition-position identifiers the
+    /// `gen:tree-sitter-symbol` insert-completion source
+    /// surfaces. `None` for languages that don't ship a
+    /// symbols query (markdown family, currently); the source
+    /// emits no candidates for those buffers.
+    pub(crate) symbols: Option<Query>,
 }
 
 /// Catalog of every supported language's parser + highlight + injection
@@ -106,6 +121,7 @@ impl LangRegistry {
                 tree_sitter_rust::INJECTIONS_QUERY,
                 "",
                 Some(RUST_FOLDS_QUERY),
+                Some(RUST_SYMBOLS_QUERY),
             )?,
         );
         configs.insert(
@@ -117,6 +133,7 @@ impl LangRegistry {
                 "",
                 "",
                 Some(PYTHON_FOLDS_QUERY),
+                Some(PYTHON_SYMBOLS_QUERY),
             )?,
         );
         configs.insert(
@@ -128,6 +145,7 @@ impl LangRegistry {
                 tree_sitter_javascript::INJECTIONS_QUERY,
                 tree_sitter_javascript::LOCALS_QUERY,
                 Some(JAVASCRIPT_FOLDS_QUERY),
+                Some(JAVASCRIPT_SYMBOLS_QUERY),
             )?,
         );
 
@@ -148,6 +166,7 @@ impl LangRegistry {
                 tree_sitter_md::INJECTION_QUERY_BLOCK,
                 "",
                 Some(MARKDOWN_FOLDS_QUERY),
+                None,
             )?,
         );
         configs.insert(
@@ -158,6 +177,7 @@ impl LangRegistry {
                 tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
                 tree_sitter_md::INJECTION_QUERY_INLINE,
                 "",
+                None,
                 None,
             )?,
         );
@@ -192,6 +212,14 @@ impl LangRegistry {
     /// Compiled `injections.scm` query, when one is registered.
     pub fn injections_query(&self, name: &str) -> Option<&Query> {
         self.lookup(name).and_then(|c| c.injections.as_ref())
+    }
+
+    /// Compiled `symbols.scm` query for the
+    /// `gen:tree-sitter-symbol` insert-completion source
+    /// (Phase 4.2.g.6 (1/2)). `None` for languages that don't
+    /// ship a symbols query (markdown family today).
+    pub fn symbols_query(&self, name: &str) -> Option<&Query> {
+        self.lookup(name).and_then(|c| c.symbols.as_ref())
     }
 
     /// Resolve the `tree_sitter::Language` for `name` (with the same
@@ -235,6 +263,7 @@ fn build_config(
     injections: &str,
     locals: &str,
     folds: Option<&str>,
+    symbols: Option<&str>,
 ) -> Result<LangConfig, SyntaxError> {
     let folds = match folds {
         Some(src) => Some(
@@ -264,6 +293,14 @@ fn build_config(
             SyntaxError::Language(format!("compile {name} injections.scm: {e}"))
         })?)
     };
+    let symbols = match symbols {
+        Some(src) => Some(
+            Query::new(&language, src).map_err(|e| {
+                SyntaxError::Language(format!("compile {name} symbols.scm: {e}"))
+            })?,
+        ),
+        None => None,
+    };
     let _ = locals; // locals.scm support deferred to a follow-up commit.
     Ok(LangConfig {
         language,
@@ -272,6 +309,7 @@ fn build_config(
         highlight_styles,
         highlight_priorities,
         injections,
+        symbols,
     })
 }
 

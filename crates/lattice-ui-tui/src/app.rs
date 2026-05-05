@@ -6490,6 +6490,50 @@ impl App {
                 body: snip.body.clone(),
             });
         }
+        // Source 3: tree-sitter local symbols (Phase 4.2.g.6
+        // (1/2)). Walks the buffer's syntax tree per popup-
+        // trigger; emits definition-position identifiers
+        // (functions, structs, let bindings, parameters) as
+        // candidates. Skipped when:
+        //   - the per-language source filter excludes
+        //     `gen:tree-sitter-symbol`
+        //   - no `Syntax` is attached (e.g. plain-text buffer)
+        //   - the language ships no `symbols.scm` query
+        //     (`collect_symbols` returns empty)
+        // Duplicates against buffer-words are deduped by text;
+        // the tree-sitter-tagged copy wins so the ranker's
+        // per-source priority applies.
+        let tree_sitter_id = lattice_completion::SourceId::new(
+            lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID,
+        );
+        if effective.source_enabled(&tree_sitter_id)
+            && let Some(syntax) = self.syntax.as_ref()
+        {
+            // Each source emits independently. tree-sitter
+            // names overlap heavily with buffer-words (which
+            // walks every word in the rope), so cross-source
+            // dedup at the producer level would always erase
+            // tree-sitter -- buffer-words is a superset by
+            // construction. Per spec §3.4 the per-source
+            // priority handles ranking (buffer-words 100 vs
+            // tree-sitter 80) so the user-typed prefix surfaces
+            // the buffer-words copy ahead of the tree-sitter
+            // copy on ties; visual deduping of identical text
+            // in the popup is a 4.2.g.7 polish item that needs
+            // the renderer to merge same-text rows by source
+            // label.
+            for sym in syntax.collect_symbols() {
+                if sym == state.query {
+                    continue;
+                }
+                let cand = lattice_completion::RawCandidate::plain(
+                    sym,
+                    lattice_completion::CandidateKind::Plain,
+                )
+                .with_source(tree_sitter_id.clone());
+                raw.push(cand);
+            }
+        }
         state.raw = raw;
         self.refilter_insert_completion(state);
     }
@@ -6629,6 +6673,9 @@ impl App {
             "gen:snippet" => self.core_options.completion_source_snippet_priority,
             "gen:buffer-words" => {
                 self.core_options.completion_source_buffer_words_priority
+            }
+            "gen:tree-sitter-symbol" => {
+                self.core_options.completion_source_tree_sitter_priority
             }
             _ => return 0,
         };
@@ -24303,6 +24350,127 @@ mod tests {
         assert_ne!(Some(msg.clone()), pre, "new echo posted");
         assert_eq!(msg.level, EchoLevel::Warn);
         assert!(msg.text.contains("bogus_field"), "got `{}`", msg.text);
+    }
+
+    fn set_rust_syntax(a: &mut App, source: &str) {
+        let mut syntax = lattice_syntax::Syntax::for_language_with_registry(
+            lattice_syntax::Lang::Rust,
+            a.lang_registry.clone(),
+        )
+        .expect("rust syntax")
+        .expect("rust registered");
+        syntax.parse(source);
+        a.syntax = Some(syntax);
+    }
+
+    #[test]
+    fn tree_sitter_source_emits_definition_position_symbols_for_rust() {
+        let source = "fn outer(arg: i32) {\n    let local = arg;\n}\n";
+        let mut a = app_with(source, 10);
+        set_rust_syntax(&mut a, source);
+        a.modal = ModalState::Insert;
+        // Cursor at end-of-buffer with empty query so every
+        // candidate matches uniformly; the matcher won't drop
+        // anything for prefix mismatch.
+        a.cursor = Position::new(2, 1);
+        a.do_completion_trigger();
+        let state = a.insert_completion.as_ref().expect("popup");
+        let tree_sitter_id = lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
+        let ts_texts: Vec<&str> = state
+            .raw
+            .iter()
+            .filter(|c| c.source.as_ref().map(|s| s.as_str()) == Some(tree_sitter_id))
+            .map(|c| c.text.as_str())
+            .collect();
+        for expected in &["outer", "arg", "local"] {
+            assert!(
+                ts_texts.contains(expected),
+                "expected `{expected}` in tree-sitter candidates: {ts_texts:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn tree_sitter_source_skipped_by_per_language_override() {
+        let source = "fn outer() {\n    let local = 1;\n}\n";
+        let mut a = app_with(source, 10);
+        set_rust_syntax(&mut a, source);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(2, 1);
+        // Override the active language (test buffer has no
+        // path -> language id is "") to exclude tree-sitter.
+        a.per_language_completion.insert(
+            String::new(),
+            lattice_completion::PerLanguageOverrides {
+                sources: Some(vec![lattice_completion::SourceId::new(
+                    lattice_completion::BufferWordsSource::ID,
+                )]),
+                ..Default::default()
+            },
+        );
+        a.do_completion_trigger();
+        let state = a.insert_completion.as_ref().expect("popup");
+        let tree_sitter_id = lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
+        for cand in &state.raw {
+            let src = cand.source.as_ref().map(|s| s.as_str()).unwrap_or("");
+            assert_ne!(
+                src, tree_sitter_id,
+                "tree-sitter source filtered out for this language",
+            );
+        }
+    }
+
+    #[test]
+    fn tree_sitter_and_buffer_words_emit_independently_for_same_name() {
+        // `outer` appears as a function definition (captured
+        // by tree-sitter) AND as a referenced word (captured
+        // by buffer-words). Both sources contribute their
+        // tagged copy in v1; the ranker orders them by
+        // per-source priority (buffer-words 100 > tree-sitter
+        // 80 -> buffer-words renders first when both match
+        // the same prefix). Visual dedup at the renderer
+        // level is a 4.2.g.7 polish item.
+        let source = "fn outer() {\n    outer();\n}\n";
+        let mut a = app_with(source, 10);
+        set_rust_syntax(&mut a, source);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(2, 1);
+        a.do_completion_trigger();
+        let state = a.insert_completion.as_ref().expect("popup");
+        let outer_sources: Vec<&str> = state
+            .raw
+            .iter()
+            .filter(|c| c.text == "outer")
+            .map(|c| c.source.as_ref().map(|s| s.as_str()).unwrap_or(""))
+            .collect();
+        assert!(
+            outer_sources.contains(&lattice_completion::BufferWordsSource::ID),
+            "buffer-words copy present in {outer_sources:?}",
+        );
+        assert!(
+            outer_sources.contains(&lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID),
+            "tree-sitter copy present in {outer_sources:?}",
+        );
+    }
+
+    #[test]
+    fn tree_sitter_source_silent_without_syntax_attached() {
+        // No `set_rust_syntax` -> `app_with` leaves
+        // `self.syntax = None`; tree-sitter source emits
+        // nothing.
+        let mut a = app_with("alpha bravo charlie", 5);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 19);
+        a.do_completion_trigger();
+        if let Some(state) = a.insert_completion.as_ref() {
+            let tree_sitter_id = lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
+            for cand in &state.raw {
+                assert_ne!(
+                    cand.source.as_ref().map(|s| s.as_str()),
+                    Some(tree_sitter_id),
+                );
+            }
+        }
     }
 
     #[test]

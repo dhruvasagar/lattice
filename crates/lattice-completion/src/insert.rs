@@ -643,7 +643,7 @@ pub fn canonical_source_id(label: &str) -> SourceId {
         // ahead of the source landing -- the producer skips
         // unknown ids gracefully.
         "path" => SourceId::new("gen:path"),
-        "tree-sitter" | "treesitter" | "ts" => SourceId::new("gen:tree-sitter-symbol"),
+        "tree-sitter" | "treesitter" | "ts" => SourceId::new(TREE_SITTER_SYMBOL_SOURCE_ID),
         other => SourceId::new(other),
     }
 }
@@ -664,6 +664,11 @@ pub const LSP_COMPLETION_SOURCE_ID: &str = "gen:lsp-completion";
 
 /// Source id for the host-orchestrated snippet completion source.
 pub const SNIPPET_SOURCE_ID: &str = "gen:snippet";
+
+/// Source id for the host-orchestrated tree-sitter local-symbol
+/// source (Phase 4.2.g.6 (1/2)). Walks the buffer's syntax tree
+/// per popup-trigger via `lattice_syntax::Syntax::collect_symbols`.
+pub const TREE_SITTER_SYMBOL_SOURCE_ID: &str = "gen:tree-sitter-symbol";
 
 // ---- Built-in: gen:buffer-words ----
 

@@ -140,6 +140,50 @@ impl Syntax {
         &self.registry
     }
 
+    /// Run the language's `symbols.scm` query against the cached
+    /// tree and return the deduped list of `@symbol`-captured
+    /// names (definition-position identifiers). Empty when:
+    /// no parse yet, language has no symbols query, or the tree
+    /// contains no matches.
+    ///
+    /// Phase 4.2.g.6 (1/2): the host-orchestrated
+    /// `gen:tree-sitter-symbol` insert-completion source calls
+    /// this once per popup-trigger; cost is O(tree-size) for
+    /// the cursor walk, which is sub-millisecond even on
+    /// large source files.
+    pub fn collect_symbols(&self) -> Vec<String> {
+        let Some(tree) = self.tree.as_ref() else {
+            return Vec::new();
+        };
+        let Some(query) = self.registry.symbols_query(self.lang.name()) else {
+            return Vec::new();
+        };
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), self.source.as_slice());
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut out: Vec<String> = Vec::new();
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let n = cap.node;
+                let start = n.start_byte();
+                let end = n.end_byte();
+                if end > self.source.len() || start >= end {
+                    continue;
+                }
+                let Ok(text) = std::str::from_utf8(&self.source[start..end]) else {
+                    continue;
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                if seen.insert(text.to_string()) {
+                    out.push(text.to_string());
+                }
+            }
+        }
+        out
+    }
+
     /// Replace the cached source and drive a tree-sitter (re)parse.
     ///
     /// Step 1 stays a full reparse: we don't yet thread concrete
@@ -682,6 +726,67 @@ mod tests {
         let root = tree.root_node();
         assert_eq!(root.kind(), "source_file");
         assert!(root.child_count() > 0, "root has at least one child");
+    }
+
+    #[test]
+    fn rust_collect_symbols_captures_definitions() {
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(
+            "\
+fn outer(arg: i32) -> i32 {\n\
+    let local = arg + 1;\n\
+    local\n\
+}\n\
+struct Point { x: i32, y: i32 }\n\
+const MAX: i32 = 10;\n\
+",
+        );
+        let symbols = s.collect_symbols();
+        // Definition-position names captured.
+        for expected in &["outer", "arg", "local", "Point", "MAX"] {
+            assert!(
+                symbols.iter().any(|s| s == expected),
+                "expected `{expected}` in {symbols:?}",
+            );
+        }
+        // Reference-position uses NOT captured (e.g. the `i32`
+        // type references inside the function aren't @symbol
+        // captures because we only match on `name: ...` /
+        // `pattern: ...` field-introduced positions).
+        // Just sanity-check we don't double-count.
+        let count_outer = symbols.iter().filter(|s| s.as_str() == "outer").count();
+        assert_eq!(count_outer, 1, "no duplicates");
+    }
+
+    #[test]
+    fn python_collect_symbols_captures_def_and_class() {
+        let mut s = Syntax::for_language(Lang::Python).unwrap().unwrap();
+        s.parse(
+            "def greet(name):\n    message = name\n    return message\n\nclass Greeter:\n    pass\n",
+        );
+        let symbols = s.collect_symbols();
+        for expected in &["greet", "name", "message", "Greeter"] {
+            assert!(
+                symbols.iter().any(|s| s == expected),
+                "expected `{expected}` in {symbols:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn collect_symbols_empty_when_no_parse() {
+        // No parse() called -> tree is None -> empty result.
+        let s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        assert!(s.collect_symbols().is_empty());
+    }
+
+    #[test]
+    fn collect_symbols_empty_for_language_without_query() {
+        // markdown ships no symbols.scm -> empty result even
+        // after parse.
+        let mut s = Syntax::for_language(Lang::Markdown).unwrap().unwrap();
+        s.parse("# heading\n\nbody\n");
+        assert!(s.collect_symbols().is_empty());
     }
 
     #[test]

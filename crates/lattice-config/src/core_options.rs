@@ -35,6 +35,7 @@ pub struct CoreOptions {
     pub completion_source_lsp_priority: OptionHandle<i64>,
     pub completion_source_snippet_priority: OptionHandle<i64>,
     pub completion_source_buffer_words_priority: OptionHandle<i64>,
+    pub completion_source_tree_sitter_priority: OptionHandle<i64>,
 }
 
 /// Register every renderer-agnostic option against `registry` and
@@ -176,6 +177,20 @@ pub fn register_core_options(registry: &ConfigRegistry) -> CoreOptions {
         .validate(priority_validate)
         .build(),
     );
+    let completion_source_tree_sitter_priority = registry.register(
+        Option::<i64>::builder(
+            "completion.source.tree-sitter.priority",
+            80,
+            "Priority bucket for the `gen:tree-sitter-symbol` \
+             insert-mode source -- definition-position identifiers \
+             pulled from the buffer's syntax tree. Default 80, \
+             below buffer-words: when LSP is attached for the \
+             language, the LSP source has the same names with \
+             richer metadata.",
+        )
+        .validate(priority_validate)
+        .build(),
+    );
     CoreOptions {
         number,
         relativenumber,
@@ -189,6 +204,7 @@ pub fn register_core_options(registry: &ConfigRegistry) -> CoreOptions {
         completion_source_lsp_priority,
         completion_source_snippet_priority,
         completion_source_buffer_words_priority,
+        completion_source_tree_sitter_priority,
     }
 }
 
@@ -213,6 +229,7 @@ mod tests {
         assert_eq!(*r.get(h.completion_source_lsp_priority), 200);
         assert_eq!(*r.get(h.completion_source_snippet_priority), 150);
         assert_eq!(*r.get(h.completion_source_buffer_words_priority), 100);
+        assert_eq!(*r.get(h.completion_source_tree_sitter_priority), 80);
     }
 
     #[test]

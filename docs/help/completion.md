@@ -101,7 +101,7 @@ priority, set source-specific knobs (e.g.
 | `gen:lsp-completion` | `textDocument/completion` results from every LSP server attached to the buffer. Item adaptation: `filterText` (matcher target) / `sortText` (ranker tiebreaker) / `detail` (one-line signature) / `documentation` (markdown body for the docs popup) / `tags[Deprecated]` (strikethrough + ranker penalty in 4.2.g.5) / `commitCharacters` (auto-accept on type, 4.2.g.5) / `additionalTextEdits` (auto-imports, applied alongside the main insert as one undo unit). `isIncomplete: true` re-fires the request on every keystroke that mutates the query. | 4.2.g.2 ✅ |
 | `gen:snippet` | Per-language snippets from `lattice-snippet`. TextMate JSON format; drop-in compatible with VS Code / friendly-snippets. | 4.2.g.4 ✅ |
 | `gen:path` | Filesystem entries when typing a path inside a string literal. | 4.2.g.6 |
-| `gen:tree-sitter-symbol` | Local identifiers from the buffer's syntax tree (function defs, let-bindings, closure params). | 4.2.g.6 |
+| `gen:tree-sitter-symbol` | Definition-position identifiers from the buffer's syntax tree (function defs, struct / enum / trait / type names, `const` / `static`, `let` bindings, function parameters, modules). Per-language `symbols.scm` query in `lattice-syntax`; rust / python / javascript ship today. | 4.2.g.6 ✅ |
 | `gen:plugin-*` | Reserved for plugin-supplied sources via the WASM Component plugin host (Phase 7). | post-4.x |
 
 See `:help completion-sources` for per-source detail.
@@ -201,6 +201,49 @@ strings (joined with `\n`). Top-level keys are snippet names.
 |---|---|
 | `:snippet-expand` | Direct expansion at the cursor — alias of `<C-x><C-s>`. |
 | `:reload-snippets` | Re-read every configured snippet directory and rebuild the registry. |
+
+## Tree-sitter symbols (Phase 4.2.g.6)
+
+The `gen:tree-sitter-symbol` source pulls definition-position
+identifiers from the buffer's syntax tree -- the names you'd
+typically want to complete to within the file.
+
+### What gets captured
+
+Per-language `symbols.scm` queries in
+`crates/lattice-syntax/queries/<lang>/symbols.scm` define what
+counts as a definition. Today's coverage:
+
+| Language | Captures |
+|---|---|
+| Rust | `fn` / `fn`-signature names, `struct` / `enum` / `union` / `trait` / `type` names, `const` / `static` names, `let` bindings (flat patterns), function parameters, `mod` names. |
+| Python | `def` / `class` names, parameter identifiers (positional, default, typed, lambda), assignment targets, `for ... in` binding, `with ... as` binding. |
+| JavaScript | `function` / `class` / generator declaration names, method names, `var` / `let` / `const` declarators, formal parameters, single-identifier arrow-function params. |
+
+Markdown / markdown-inline ship no symbols query (prose has
+no symbol semantic in this sense); the source emits nothing
+for those buffers.
+
+### Versus buffer-words
+
+Both sources see the same definition-position names
+(buffer-words walks every alphanumeric run; tree-sitter
+walks the parse tree). Spec §3.4 puts `gen:buffer-words`
+at priority 100 and `gen:tree-sitter-symbol` at 80 so the
+buffer-words copy ranks first when both contribute the same
+name -- matching the popup ordering most users expect.
+Tree-sitter's value over the long run is its **structural
+signal** (it knows `outer` is a function, not just a word);
+future popup polish (4.2.g.7) will surface that as kind
+glyphs / source labels.
+
+### When LSP is attached
+
+LSP completions are usually richer (full signatures,
+documentation, additional edits) so they outrank both at
+priority 200. The tree-sitter source is most useful in
+unsaved scratch files, languages without an LSP server, and
+when the LSP is still warming up.
 
 ## Configuration
 

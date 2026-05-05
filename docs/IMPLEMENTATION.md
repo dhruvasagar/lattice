@@ -771,11 +771,31 @@ Remaining 4.2:
   `buffer-words`, `path`, `tree-sitter`) to canonical ids;
   help refresh in `docs/help/completion.md` lists the
   built-in defaults table + recognised keys + merge
-  semantics) ✅. **4.2.g.5 complete.** Then 4.2.g.6 (tree-sitter local symbols + path
-  source; commit chars + extending the typed routing
-  payload to picker call sites likely fold in here), 4.2.g.7
+  semantics) ✅. **4.2.g.5 complete.** 4.2.g.6 (1/2)
+  (tree-sitter local-symbol completion source --
+  per-language `symbols.scm` queries in
+  `crates/lattice-syntax/queries/{rust,python,javascript}/`
+  capture definition-position identifiers; `LangRegistry`
+  compiles them via `build_config(symbols, ...)` extension;
+  `Syntax::collect_symbols()` walks the cached tree and
+  returns deduped names; new
+  `TREE_SITTER_SYMBOL_SOURCE_ID = "gen:tree-sitter-symbol"`
+  constant; new typed option
+  `completion.source.tree-sitter.priority` (default 80 per
+  spec §3.4); App's `populate_insert_completion_sync`
+  emits tagged candidates after buffer-words / snippets;
+  `priority_for_source` resolves the new id; both sources
+  emit independently when they overlap (cross-source visual
+  dedup deferred to 4.2.g.7); help adds a dedicated
+  `## Tree-sitter symbols` section with per-language
+  capture coverage + ranking-vs-buffer-words explainer)
+  ✅. Remaining 4.2.g.6 slice: (2/2) path source +
+  trigger-char detection inside string literals + capped
+  filesystem walk + help. Then 4.2.g.7
   (polish: ghost text, additionalTextEdits coalesce
-  refactor, auto-insert-single).
+  refactor, auto-insert-single, cross-source visual dedup,
+  commit chars, extending the typed routing payload to
+  picker call sites).
 - `completionItem/resolve` (lazy doc / additional edits) --
   shipped as part of 4.2.g.3 + 4.2.g.7.
 - `workspaceSymbol/resolve` (lazy location).

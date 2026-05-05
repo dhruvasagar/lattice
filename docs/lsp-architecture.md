@@ -411,13 +411,18 @@ doesn't flip the toggle off:
 
 Why the split: `:lsp-trace` was previously a "toggle + open" action. Re-running it to inspect the buffer was the only way to view records, but that also flipped the toggle off. The pure-toggle form lets you turn tracing on, exercise hover/definition/etc., and read the records without losing tracing state.
 
-### LSP commands routed through the picker (Phase 3)
+### LSP commands routed through the picker (Phase 3 + 4.2)
 
-| Command                | Source              | Action                                                                       | Short-circuit when 1 match                |
-|------------------------|---------------------|------------------------------------------------------------------------------|-------------------------------------------|
-| `:lsp-log [server]`    | `LspInstances`      | `OpenLspLog` -- opens `*lsp:<server>*` in active pane                        | yes (`:lsp-log rust` with one rust ws)    |
-| `:lsp-trace-log [server]` | `LspInstances`   | `OpenLspTraceLog` -- opens `*lsp:<server>:trace*` in active pane             | yes                                       |
-| `:lsp-server-log`      | `LspInstances`      | `OpenLspLog` -- broad picker over every running actor                        | n/a (no prefilter)                        |
+| Command                   | Source              | Action                                                                       | Short-circuit when 1 match                |
+|---------------------------|---------------------|------------------------------------------------------------------------------|-------------------------------------------|
+| `:lsp-log [server]`       | `LspInstances`      | `OpenLspLog` -- opens `*lsp:<server>*` in active pane                        | yes (`:lsp-log rust` with one rust ws)    |
+| `:lsp-trace-log [server]` | `LspInstances`      | `OpenLspTraceLog` -- opens `*lsp:<server>:trace*` in active pane             | yes                                       |
+| `:lsp-server-log`         | `LspInstances`      | `OpenLspLog` -- broad picker over every running actor                        | n/a (no prefilter)                        |
+| `gd` / `gD` / `gy` / `gI` | `LspLocations`      | `JumpToLspLocation` -- jump to the picked target via `jump_to_file_line_col` | single-result jumps directly (vim convention) |
+| `gr`                      | `LspLocations`      | `JumpToLspLocation` -- references list always shows the picker               | n/a (always picker for ≥1 result)         |
+| `:lsp-symbols`            | `LspLocations`      | `JumpToLspLocation` -- merged outline; depth-indented display                | n/a                                       |
+| `:lsp-workspace-symbol [q]` | `LspLocations`    | `JumpToLspLocation` -- workspace-scoped fan-out via `LspSupervisor::all_running_handles` | n/a                                       |
+| `:diagnostics`            | `LspLocations`      | `JumpToLspLocation` -- severity glyph in marginalia (`[E]/[W]/[I]/[H]`)      | n/a                                       |
 
 The picker walks `LspSupervisor::running_actors()` snapshot under the supervisor lock, builds one row per `(workspace_root, server_id)` pair with marginalia `<buffer_count> bufs  <cap_summary>`, drops the lock, and hands the row vec to `Picker::set_lsp_instances`. Candidate `text` encodes the actor key as `"<server_id>\t<workspace_path>"`; `lsp_key_from_text` parses on accept. The opened buffer goes through `App::open_help_in_pane` (Phase 1) so it lives in `BufferRegistry`, splits, and is reachable via `:bn` / `:b N` / the buffer picker.
 

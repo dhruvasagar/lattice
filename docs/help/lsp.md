@@ -13,12 +13,16 @@ stall the editor. The four paramount goals (CLAUDE.md) apply
 unchanged: performance, extensibility, modal editing,
 asynchronicity.
 
-> **Status:** Phase 4 is in progress. Foundation (4.1) is
-> partially shipped: wire layer, per-server actor with
-> capability handshake, document synchronisation, and
-> diagnostics routing. Per-feature status is tracked in
+> **Status:** Phase 4.1 (foundation) **complete**. Phase 4.2
+> (navigation) **7/12 shipped**: hover (`K`), definition
+> family (`gd` / `gD` / `gy` / `gI`), references (`gr`),
+> document outline (`:lsp-symbols`), workspace symbols
+> (`:lsp-workspace-symbol`). All multi-result LSP lookups +
+> `:diagnostics` route through a unified vertico picker.
+> Remaining 4.2: completion + completionItem/resolve. Per-
+> feature status tracked in
 > [`../lsp-features.md`](../lsp-features.md). The keystrokes
-> below describe the planned v1 surface.
+> below describe the v1 surface; ✅ marks landed features.
 
 ---
 
@@ -90,6 +94,55 @@ editing.
 
 ---
 
+## Navigation
+
+The 4.2 navigation surface is wired through one consistent
+shape: `K` for hover, `g`-prefixed chords for jumps, `:lsp-*`
+ex commands for outlines / workspace search. Multi-result
+lookups + `:diagnostics` open a vertico picker
+(type-to-filter, `<CR>` to jump, `<Esc>` to dismiss);
+single-result jumps go directly per vim convention.
+
+### Hover
+
+| Keystroke   | Meaning                                                                                    |
+|-------------|--------------------------------------------------------------------------------------------|
+| `K`         | Show LSP hover documentation in a tooltip popup near the cursor (markdown-rendered).       |
+| `K` (again) | Move focus into the popup. Full vim grammar inside (search, motions, scroll); `<Esc>`/`q` returns. |
+
+### Jumps
+
+All four use the same dispatch path; differs only in which
+LSP method runs server-side. Single result jumps directly;
+multi-result opens the picker. `<C-o>` walks back via the
+position-history ring (§5.1.1) -- entries are tagged
+`PluginPush` so they coexist cleanly with vim-style
+`AutoJump` motions.
+
+| Chord | LSP method                  | What it asks                                              |
+|-------|-----------------------------|-----------------------------------------------------------|
+| `gd`  | `textDocument/definition`   | Where is the symbol defined?                              |
+| `gD`  | `textDocument/declaration`  | Where is the forward declaration / `extern`?              |
+| `gy`  | `textDocument/typeDefinition` | Where is the *type* of the expression defined?         |
+| `gI`  | `textDocument/implementation` | Where are the implementations of this trait / interface? Lowercase `gi` is reserved for vim's "go to last insert position". |
+
+### Lists
+
+| Keystroke / command          | Picker over                                                          |
+|------------------------------|----------------------------------------------------------------------|
+| `gr`                         | `textDocument/references` -- every call site of the symbol under cursor (`include_declaration: true`). |
+| `:lsp-symbols`               | `textDocument/documentSymbol` -- the active document's outline; nested DocumentSymbol responses keep their hierarchy as picker indent. |
+| `:lsp-workspace-symbol [q]`  | `workspace/symbol` -- workspace-scoped symbols matching `q` (server-side substring filter). Empty `q` returns the server's idea of "every workspace symbol". Fans out across **every running server**, not just the active buffer's. |
+| `:diagnostics`               | Every workspace diagnostic across attached servers; severity in marginalia.   |
+
+Each picker entry encodes `path:line:col` in its candidate
+text; accept dispatch parses through `jump_to_file_line_col`
+which pushes the pre-jump cursor onto position history. So
+the same `<C-o>` dance works regardless of whether you took
+a single-result `gd` jump or picked one of N references.
+
+---
+
 ## Diagnostics
 
 When the server reports problems, lattice renders them in
@@ -101,9 +154,10 @@ three places:
   hint). The most severe wins on lines with multiple.
 - **Inline** — squiggly underline under the affected range
   (utf-8 / utf-16 column converted from the server's units).
-- **`:diagnostics` buffer** — opens a new pane listing every
-  diagnostic in the workspace with file / line / message.
-  Standard motions navigate; `<CR>` jumps to the diagnostic.
+- **`:diagnostics` picker** — opens a vertico picker over
+  every workspace diagnostic. Severity glyph (`[E]/[W]/[I]/[H]`)
+  rides in the marginalia; type to filter; `<CR>` jumps; `<Esc>`
+  dismisses.
 
 ### Diagnostic navigation
 

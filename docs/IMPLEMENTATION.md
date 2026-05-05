@@ -39,7 +39,7 @@ rendering, and v1.0 polish.
 | 1     | Modal Editing                         | ✅ done                  | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch + substitute live preview) / folds / ex-commands (every command -- including `:s` / `:g` / `:v` via `Args::List` -- registered as `ExCommandSpec` peers, dispatched through unified `grammar::execute()` per §5.2.1, §B.2). Blockwise visual: per-row dispatch for `d` / `y` / `c` plus blockwise paste; `>` / `<` indent each line in the block; `I` / `A` enter Insert at the block's left/right column with the typed prefix replicated to every row on Esc. Every operator lands as a single undo unit -- counts on linewise ops (`2dd`, `2>>`), block-visual rectangle ops, and I/A replications all collapse to one `u`. |
 | 2     | Terminal UI Bootstrap                 | ✅ done                  | crossterm + ratatui; modal cursor; mode line; gutter                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | 3     | Tree-Sitter                           | ✅ done (Rust/Python/JS/Markdown) | Highlights wired through a shared `LangRegistry` (process-wide `Arc`); injection callback resolves fenced ` ```rust ``` ` blocks in markdown to the rust config (and any registered language to its config) without per-document copies. Markdown is the dual-grammar split (block + inline). Grammar extension API used by builtins, not yet by plugins. New `Style` variants (`Heading1..6`, `Bold`, `Italic`, `Link`, `Url`, `MarkupRaw`, `Markup`) for precise theme targeting. |
-| 4     | LSP                                   | 🚧 in progress (4.2)     | `lattice-lsp` crate: wire layer + per-server actor + document sync + diagnostics broadcast + supervisor + App-side wiring + edit-dispatch + open-on-`:e` (Phase 4.1 complete). Phase 4.2 in progress: typed feature wrappers in `actor.rs` + `features.rs` (4.2.a) + hover end-to-end via `K` (4.2.b) shipped. Cancellation tokens plumbed through every wrapper so motion / mode-change can drop stale responses. Multi-server first-non-empty merge today; concat-with-name-separator polish queued. Remaining 4.2: definition (4.2.c), references (4.2.d), document symbols (4.2.e), workspace symbols (4.2.f), LSP completion (4.2.g). Then 4.3 edits, 4.4 polish, 4.5 expansion. |
+| 4     | LSP                                   | 🚧 in progress (4.2)     | `lattice-lsp` crate: wire layer + per-server actor + document sync + diagnostics broadcast + supervisor + App-side wiring + edit-dispatch + open-on-`:e` (Phase 4.1 complete). Phase 4.2 navigation **7/12 shipped**: typed feature wrappers (4.2.a), hover via `K` (4.2.b), definition / declaration / typeDefinition / implementation via `gd` / `gD` / `gy` / `gI` through a unified `do_lsp_nav_request(LspNavKind)` (4.2.c+), references via `gr` (4.2.d), document outline via `:lsp-symbols` (4.2.e), workspace symbols via `:lsp-workspace-symbol` (4.2.f). All multi-result LSP lookups + `:diagnostics` route through one vertico picker (`PickerSource::LspLocations` + `PickerAction::JumpToLspLocation`); single-result nav still jumps directly. Cancellation tokens plumbed through every wrapper so motion / mode-change can drop stale responses. Remaining 4.2: completion + completionItem/resolve + workspaceSymbol/resolve. Then 4.3 edits, 4.4 polish, 4.5 expansion. |
 | 5     | GPU Rendering Foundation              | ⛔ not started           | TUI is the live renderer for v1; GPU is a separate paint surface                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | 6     | Document Renderer + UI Components     | ⛔ not started           | Popups, pickers, panels-as-buffers all live in §5.9                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 7     | Plugin Host                           | ⛔ not started           | wasmtime + Component Model + WIT scaffolding                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -615,7 +615,24 @@ snapshot_post_publish_read at 10/1k/50k lines).
 
 ## In-progress
 
-(none — pick the next item from "Up next" below.)
+**Phase 4.2 navigation -- 7/12 shipped.**
+
+- ✅ hover (`K`), definition (`gd`), declaration (`gD`),
+  typeDefinition (`gy`), implementation (`gI`), references
+  (`gr`), documentSymbol (`:lsp-symbols`), workspaceSymbol
+  (`:lsp-workspace-symbol`).
+- Multi-result lookups + `:diagnostics` route through one
+  vertico picker (`PickerSource::LspLocations` +
+  `PickerAction::JumpToLspLocation`); single-result nav still
+  jumps directly per vim convention.
+- The four nav flavours share `do_lsp_nav_request(LspNavKind)`
+  -- one dispatch path; the kind selects the LSP method and
+  drives the kind-aware echo verb ("no implementations found"
+  vs. "no definitions found").
+
+Remaining 4.2:
+- LSP completion (`gen:lsp-completion`) + `completionItem/resolve`.
+- `workspaceSymbol/resolve` (lazy location).
 
 Update this section when picking up the in-flight item.
 

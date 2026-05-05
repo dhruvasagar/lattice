@@ -2331,10 +2331,25 @@ mod tests {
                 "PageUp" => KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
                 "PageDown" => KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
                 other => {
-                    if let Some(rest) = other.strip_prefix("C-")
-                        && let Some(c) = rest.chars().next()
-                    {
-                        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+                    if let Some(rest) = other.strip_prefix("C-") {
+                        // Recognise `Space` as a token before falling
+                        // back to the single-char path so `<C-Space>`
+                        // parses to `Char(' ') + CONTROL`. Same shape
+                        // crossterm reports.
+                        let evt = match rest {
+                            "Space" => KeyEvent::new(
+                                KeyCode::Char(' '),
+                                KeyModifiers::CONTROL,
+                            ),
+                            _ => match rest.chars().next() {
+                                Some(c) => KeyEvent::new(
+                                    KeyCode::Char(c),
+                                    KeyModifiers::CONTROL,
+                                ),
+                                None => continue,
+                            },
+                        };
+                        evt
                     } else {
                         // Unrecognised special-key notation -- skip
                         // rather than panic; the drift test will fail
@@ -2359,7 +2374,10 @@ mod tests {
         use crate::keymap::BindingMode;
         let modal = match mode {
             BindingMode::Visual => ModalState::Visual(lattice_grammar::VisualKind::Charwise),
-            BindingMode::Insert => ModalState::Insert,
+            // CompletionPopup minor mode rides on top of Insert.
+            BindingMode::Insert | BindingMode::CompletionPopup | BindingMode::AfterCtrlX => {
+                ModalState::Insert
+            }
             BindingMode::Replace => ModalState::Replace,
             BindingMode::Command => ModalState::Command,
             BindingMode::Search => ModalState::Search(lattice_grammar::SearchDirection::Forward),
@@ -2374,6 +2392,13 @@ mod tests {
         } else {
             BufferKind::Document
         };
+        // After-* modes whose chord doesn't start with the prefix
+        // (e.g. `AfterCtrlX` whose chord is `<C-x><C-o>` -- which
+        // *does* start with `<C-x>`) need the prefix in the chord.
+        // The completion-popup minor mode is signalled host-side
+        // by `App.insert_completion.is_some()`; in this harness we
+        // toggle the equivalent context flag.
+        let insert_completion_open = matches!(mode, BindingMode::CompletionPopup);
         let mut pending = Pending::None;
         let mut last = Action::None;
         for event in parse_chord_for_test(chord) {
@@ -2387,7 +2412,7 @@ mod tests {
                 completion_open: false,
                 chord_capture: false,
                 picker_open: false,
-                insert_completion_open: false,
+                insert_completion_open,
             };
             last = translate(ctx, event);
             if let Action::SetPending(p) = &last {

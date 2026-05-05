@@ -68,6 +68,18 @@ pub enum BindingMode {
     /// After `<C-w>` -- waiting for the window-management
     /// resolution key.
     AfterCtrlW,
+    /// After `<C-x>` in Insert mode -- waiting for the
+    /// expansion-prefix resolution key (`<C-x><C-o>` ->
+    /// completion trigger; future siblings: `<C-x><C-s>`
+    /// snippet expand, `<C-x><C-f>` filename completion).
+    AfterCtrlX,
+    /// **Insert-mode completion popup minor mode** (Phase
+    /// 4.2.g.1). Active only while
+    /// `App.insert_completion.is_some()`. Bindings inside this
+    /// layer override Insert-mode + Normal-mode meanings for
+    /// the popup's lifetime; closing the popup deactivates the
+    /// layer.
+    CompletionPopup,
 }
 
 impl BindingMode {
@@ -92,6 +104,8 @@ impl BindingMode {
             BindingMode::AfterTextObject => "After-i/a (text-object)",
             BindingMode::Help => "Help-overlay",
             BindingMode::AfterCtrlW => "After-<C-w> (window-management)",
+            BindingMode::AfterCtrlX => "After-<C-x> (Insert expansion-prefix)",
+            BindingMode::CompletionPopup => "Completion popup (minor mode)",
         }
     }
 }
@@ -390,6 +404,24 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: Insert, chord: "<BS>", doc: "Delete char to the left" },
         keymap_entry! { mode: Insert, chord: "<CR>", doc: "Insert newline" },
         keymap_entry! { mode: Insert, chord: "<Tab>", doc: "Insert tab character" },
+        // ---- Insert-mode completion (Phase 4.2.g.1) ----
+        keymap_entry! { mode: Insert, chord: "<C-Space>", doc: "Manual completion trigger -- opens the popup with sources matching the prefix at the cursor" },
+        keymap_entry! { mode: Insert, chord: "<C-x>", doc: "Pending: vim's expansion-prefix family (`<C-x><C-o>` -> completion; future siblings: snippet / filename / etc.)" },
+        keymap_entry! { mode: AfterCtrlX, chord: "<C-x><C-o>", doc: "Manual completion trigger -- vim's omni-completion (alias of <C-Space>)" },
+        // Completion-popup minor mode -- bindings active only
+        // while `App.insert_completion.is_some()`. Override
+        // Insert-mode + Normal-mode meanings (notably <C-d>)
+        // for the popup's lifetime; closing the popup
+        // restores the original bindings.
+        keymap_entry! { mode: CompletionPopup, chord: "<C-n>", doc: "Completion popup: select next candidate" },
+        keymap_entry! { mode: CompletionPopup, chord: "<C-p>", doc: "Completion popup: select previous candidate" },
+        keymap_entry! { mode: CompletionPopup, chord: "<C-y>", doc: "Completion popup: accept selected candidate (vim convention)" },
+        keymap_entry! { mode: CompletionPopup, chord: "<Tab>", doc: "Completion popup: accept selected candidate" },
+        keymap_entry! { mode: CompletionPopup, chord: "<CR>", doc: "Completion popup: accept selected candidate" },
+        keymap_entry! { mode: CompletionPopup, chord: "<C-e>", doc: "Completion popup: cancel popup, stay in Insert (vim convention)" },
+        keymap_entry! { mode: CompletionPopup, chord: "<Esc>", doc: "Completion popup: cancel popup AND exit Insert (vim convention)" },
+        keymap_entry! { mode: CompletionPopup, chord: "<C-Space>", doc: "Completion popup: re-trigger / refresh (LSP isIncomplete path)" },
+        keymap_entry! { mode: CompletionPopup, chord: "<C-d>", doc: "Completion popup: toggle side documentation popup for the focused candidate" },
         // ---- Replace mode ----
         keymap_entry! { mode: Replace, chord: "<Esc>", doc: "Exit to Normal" },
         keymap_entry! { mode: Replace, chord: "<BS>", doc: "Restore last overwritten byte" },

@@ -207,6 +207,19 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
         // they're investigating per-language fold behaviour.
         related_command_patterns: vec!["language".into(), "syntax".into()],
     });
+    r.register(HelpTopic {
+        name: "completion".into(),
+        summary: "Insert-mode completion: triggers, sources, popup keymap, configuration, \
+                  troubleshooting."
+            .into(),
+        body: HelpTopicBody::Static(include_str!("../../../docs/help/completion.md")),
+        related_command_patterns: vec![
+            "complete".into(),
+            "completion".into(),
+            "snippet".into(),
+            "ex:complete".into(),
+        ],
+    });
     Arc::new(r)
 }
 

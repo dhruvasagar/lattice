@@ -110,6 +110,13 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     } else if completion_rows > 0 {
         draw_completion_popup(frame, chunks[3], app);
     }
+    // Insert-mode completion popup overlay (Phase 4.2.g.1).
+    // Anchored at the cursor; floats over the buffer; doesn't
+    // claim the cmdline row (so echoes can still appear).
+    // Painted last so it sits on top of any pane-area widgets.
+    if app.insert_completion.is_some() {
+        draw_insert_completion_popup(frame, chunks[0], app, snap);
+    }
 }
 
 /// Total rows the popup occupies (no borders -- vertico-style;
@@ -121,6 +128,212 @@ fn popup_height(candidate_count: usize) -> usize {
 }
 
 /// Vertico-style cmdline completion popup (DESIGN.md §5.11.3,
+/// **Insert-mode completion popup** (Phase 4.2.g.1, design
+/// in `docs/insert-completion.md` §5). Multi-column layout:
+/// `[kind glyph] [label]   [detail]   [src]`. Anchored below
+/// the cursor at the popup's `anchor` position; falls back to
+/// above when there's no room below. Selected row reverse-
+/// videoed; matched byte ranges in the label are painted with
+/// the match face.
+///
+/// Width capped at 60 cells; height capped at 12 rows. Doc-
+/// popup side panel + width-aware column dropping land in
+/// 4.2.g.3 / 4.2.g.5.
+fn draw_insert_completion_popup(
+    frame: &mut Frame,
+    buffer_area: Rect,
+    app: &App,
+    snap: &DocumentSnapshot,
+) {
+    let Some(state) = app.insert_completion.as_ref() else {
+        return;
+    };
+    if state.rendered.is_empty() {
+        return;
+    }
+    // Width: cap at 60 cells, fits at least 30.
+    let width: u16 = 60u16.min(buffer_area.width.saturating_sub(2)).max(30);
+    // Height: cap at 12, but never more than the candidate
+    // count + the selected row's surrounding band.
+    let max_h: u16 = 12;
+    let want_h = (state.rendered.len() as u16).min(max_h).max(1);
+    // Anchor screen position: the cursor's screen position
+    // is what we want, since the popup sits at the user's
+    // typing point. Active pane content rect computed via
+    // the helper from the hover popup path.
+    let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
+    let anchor_screen = cursor_screen_position_at(
+        app,
+        snap,
+        pane_rect,
+        app.cursor,
+        app.scroll,
+    );
+    let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
+    // Below if there's room, else above.
+    let area_bottom = buffer_area.y + buffer_area.height;
+    let space_below = area_bottom.saturating_sub(anchor_y + 1);
+    let space_above = anchor_y.saturating_sub(buffer_area.y);
+    let height = want_h.min(space_below.max(space_above));
+    if height == 0 {
+        return;
+    }
+    let y = if space_below >= height {
+        anchor_y + 1
+    } else {
+        anchor_y.saturating_sub(height)
+    };
+    let max_x = (buffer_area.x + buffer_area.width).saturating_sub(width);
+    let x = anchor_x.min(max_x).max(buffer_area.x);
+    let popup = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    // Window the visible slice so the selected row stays on
+    // screen. Selected sticks at the top band when reachable;
+    // scrolls down when the selection passes the visible-row
+    // count.
+    let visible_count = popup.height as usize;
+    let scroll = if state.selected < visible_count {
+        0
+    } else {
+        state.selected + 1 - visible_count
+    };
+    let lines: Vec<Line> = state
+        .rendered
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_count)
+        .map(|(i, c)| insert_candidate_line(c, i == state.selected, popup.width))
+        .collect();
+    let para = Paragraph::new(lines);
+    frame.render_widget(para, popup);
+}
+
+/// Render one Insert-mode-completion candidate row. Three
+/// columns: kind glyph (3 cells) / label with match-face
+/// highlighting (≤ 30 cells) / source tag right-aligned
+/// (3-4 cells). Detail column lands in 4.2.g.3 once LSP
+/// items carry signatures; for buffer-words there's no
+/// detail to show.
+fn insert_candidate_line<'a>(
+    c: &'a lattice_completion::RenderedCandidate,
+    selected: bool,
+    width: u16,
+) -> Line<'a> {
+    let row_style = if selected {
+        TuiStyle::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        TuiStyle::default()
+    };
+    let match_style = TuiStyle::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let glyph = candidate_kind_glyph(c.raw.kind);
+    // 3-cell kind column (selected/unselected) + leading space.
+    let mut spans: Vec<Span<'a>> = vec![Span::styled(
+        format!(" {glyph}  "),
+        row_style,
+    )];
+    // Label with match-face spans on `c.match_ranges`.
+    let label = &c.raw.display;
+    let mut cursor = 0usize;
+    let mut sorted: Vec<_> = c.match_ranges.clone();
+    sorted.sort_by_key(|r| r.start);
+    for range in sorted {
+        if range.start >= label.len() || range.end > label.len() || range.start >= range.end {
+            continue;
+        }
+        if range.start > cursor {
+            spans.push(Span::styled(
+                label[cursor..range.start].to_string(),
+                row_style,
+            ));
+        }
+        spans.push(Span::styled(
+            label[range.start..range.end].to_string(),
+            if selected {
+                match_style
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                match_style
+            },
+        ));
+        cursor = range.end;
+    }
+    if cursor < label.len() {
+        spans.push(Span::styled(
+            label[cursor..].to_string(),
+            row_style,
+        ));
+    }
+    // Source tag, right-aligned. Inferred from kind for v1 --
+    // CandidateData::Plain doesn't carry a source id today.
+    // 4.2.g.5 will plumb the SourceId into RenderedCandidate
+    // (typed routing payload work) and this falls out.
+    let source_tag = source_tag_for_kind(c.raw.kind);
+    // Pad to push the tag right-aligned. Computing the
+    // visible width of the spans we just emitted is cheap
+    // for v1 (labels are short).
+    let label_len: usize =
+        spans.iter().map(|s| s.content.chars().count()).sum();
+    let target_pad = (width as usize)
+        .saturating_sub(label_len + source_tag.len() + 1);
+    if target_pad > 0 {
+        spans.push(Span::styled(" ".repeat(target_pad), row_style));
+    }
+    spans.push(Span::styled(
+        format!(" {source_tag}"),
+        if selected {
+            row_style.fg(Color::DarkGray)
+        } else {
+            TuiStyle::default().fg(Color::DarkGray)
+        },
+    ));
+    Line::from(spans)
+}
+
+/// Single-glyph icon for a candidate's `CandidateKind`.
+/// Mirrors `symbol_kind_glyph` / `completion_kind_glyph` in
+/// the LSP path -- once the LSP source plugs into the popup
+/// (4.2.g.2) those map straight through.
+fn candidate_kind_glyph(kind: lattice_completion::CandidateKind) -> &'static str {
+    use lattice_completion::CandidateKind as K;
+    match kind {
+        K::Command => ":",
+        K::Option => "⚙",
+        K::File => "📄",
+        K::Directory => "📁",
+        K::Pattern => "/",
+        K::Buffer => "▤",
+        K::Register => "\"",
+        K::Mark => "'",
+        K::Chord => "⌘",
+        K::Plain => "·",
+        K::Extension(_) => "+",
+    }
+}
+
+/// Source tag rendered right-aligned in the popup row. Today
+/// inferred from kind; 4.2.g.5 plumbs the `SourceId` directly
+/// onto the candidate so the tag matches the actual source.
+fn source_tag_for_kind(kind: lattice_completion::CandidateKind) -> &'static str {
+    use lattice_completion::CandidateKind as K;
+    match kind {
+        K::File | K::Directory => "path",
+        K::Buffer => "buf",
+        K::Plain => "buf",
+        _ => "",
+    }
+}
+
 /// §5.9.7). Sits BELOW the `:` prompt; the selected candidate is
 /// the FIRST visible row (closest to the prompt above), alternatives
 /// fan downward. Same visual shape as

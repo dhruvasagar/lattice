@@ -113,7 +113,7 @@ Capability columns:
 | Method                          | Phase | Status | Notes                                                                                                                                                                                                                                                                                                                                                                |
 |---------------------------------|-------|--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `textDocument/hover`            | 4.2   | ✅     | `K` keystroke (Phase 4.2.b). Spawns the request on the LSP runtime; first non-empty body across attached servers wins; relay's cancellation token flips on a follow-up `K` so a stale response can't drop a popup over a moved cursor. Markdown body feeds the existing `HoverPopup` pipeline. Multi-server merge with `--- {name} ---` separators is a polish item. |
-| `textDocument/signatureHelp`    | 4.3   | ⏹️      | Trigger characters (`,`, `(`) drive auto-popup.                                                                                                                                                                                                                                                                                                                      |
+| `textDocument/signatureHelp`    | 4.3   | ✅     | `:signature-help` (alias `:sighelp`). Fan-out across attached servers; first non-empty wins. `signature_help_to_markdown` renders the active signature + active parameter (fenced-code label + `**param:**` highlight + parameter docs); body feeds `do_open_hover` so the popup pipeline (markdown highlight, anchored placement, State A/B focus model) is shared with `K` hover. Trigger-character autopilot (`(` / `,` etc.) in Insert mode is queued. |
 | `textDocument/completion`       | 4.2   | ⏹️      | Provider for `lattice-completion`. Snippet support, label details, insertReplace, resolveSupport advertised.                                                                                                                                                                                                                                                         |
 | `completionItem/resolve`        | 4.2   | ⏹️      | Lazy-resolve documentation / detail / additionalTextEdits when an item gains focus.                                                                                                                                                                                                                                                                                  |
 | `textDocument/inlineCompletion` | 4.5   | ⏹️      | LSP 3.18 / pre-spec. Inline ghost-text suggestions; integrates with copilot-like flows once landed.                                                                                                                                                                                                                                                                  |
@@ -210,16 +210,16 @@ Counts as of 2026-05-05:
 
 | State          | Count |
 |----------------|-------|
-| ✅ Done        | 20    |
+| ✅ Done        | 21    |
 | 🚧 In progress | 4     |
-| ⏹️ Planned      | 41    |
+| ⏹️ Planned      | 40    |
 | ⛔ Deferred    | 4     |
 
 Phase rollup:
 
 - **4.1** Foundation: **complete**. Wire layer + actor/handshake + sync + diagnostics (broadcast → layer → renderer → buffer view + nav) + logging (rings + tracing fan-out + buffer views + commands) + supervisor + App-side wiring + edit-dispatch + open-on-`:e` all shipped.
 - **4.2** Navigation: **8/12 shipped**. ✅ hover (`K`), definition (`gd`), declaration (`gD`), typeDefinition (`gy`), implementation (`gI`), references (`gr`), documentSymbol (`:lsp-symbols`), workspaceSymbol (`:lsp-workspace-symbol`). All multi-result lookups + `:diagnostics` route through the unified vertico picker (`PickerSource::LspLocations` + `PickerAction::JumpToLspLocation`). Tag stack `<C-t>` pops `gd`-family drill-downs LIFO; jump list `<C-o>`/`<C-i>` walks every cursor jump chronologically. Remaining: completion + completionItem/resolve + workspaceSymbol/resolve.
-- **4.3** Edits: **2/9 shipped** (formatting + rangeFormatting via `:format` / `:format-range`). Remaining: signatureHelp, codeAction (+ resolve), rename (+ prepareRename), onTypeFormatting, willSave / willSaveWaitUntil / didSave, applyEdit, executeCommand.
+- **4.3** Edits: **3/9 shipped** (formatting + rangeFormatting via `:format` / `:format-range`; signatureHelp via `:signature-help`). Remaining: codeAction (+ resolve), rename (+ prepareRename), onTypeFormatting, willSave / willSaveWaitUntil / didSave, applyEdit, executeCommand.
 - **4.4** Polish: 0/19 -- queued.
 - **4.5** Expansion: 0/14 -- queued.
 - **post-1.0**: notebooks + multi-root workspaces.

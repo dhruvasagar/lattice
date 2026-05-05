@@ -71,6 +71,8 @@ pub struct ExBuiltins {
     pub lsp_restart: ExCommandId,
     pub lsp_log_level: ExCommandId,
     pub lsp_log_clear: ExCommandId,
+    pub lsp_symbols: ExCommandId,
+    pub lsp_workspace_symbol: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -750,6 +752,46 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         },
     );
 
+    let lsp_symbols = registry.register_ex_command(
+        "ex:lsp-symbols",
+        "Open a vertico picker over the active document's symbol outline (`:lsp-symbols`, Phase 4.2.e).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::LspDocumentSymbol)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let lsp_workspace_symbol = registry.register_ex_command(
+        "ex:lsp-workspace-symbol",
+        "Open a vertico picker over workspace symbols matching `query` (server-side substring filter; `:lsp-workspace-symbol [query]`, Phase 4.2.f).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| {
+                let query = match &ctx.args {
+                    Args::String(s) => s.to_string(),
+                    _ => String::new(),
+                };
+                Ok(Effect::LspWorkspaceSymbol { query })
+            }),
+            args_schema: vec![ArgSpec {
+                name: "query",
+                kind: ArgKind::String,
+                doc: "Server-side substring filter; empty returns the server's idea of \"every workspace symbol\".",
+                prompt: "query:",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
     let list_diagnostics = registry.register_ex_command(
         "ex:diagnostics",
         "Open a help-style buffer listing every workspace diagnostic with clickable per-entry source links (`:diagnostics`).",
@@ -853,6 +895,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_restart,
         lsp_log_level,
         lsp_log_clear,
+        lsp_symbols,
+        lsp_workspace_symbol,
     }
 }
 

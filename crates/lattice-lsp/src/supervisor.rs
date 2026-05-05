@@ -180,6 +180,14 @@ impl LspSupervisor {
             .collect()
     }
 
+    /// Snapshot of every running actor's `ServerHandle`. Used by
+    /// workspace-scoped LSP requests (e.g. `workspace/symbol`)
+    /// that fan out across every server, not just servers
+    /// attached to one buffer.
+    pub fn all_running_handles(&self) -> Vec<ServerHandle> {
+        self.actors.values().cloned().collect()
+    }
+
     /// Number of buffers currently attached to the actor at
     /// `key`. Cheap walk over `attachments`; used by
     /// `:lsp-server-log` to surface per-server buffer counts in

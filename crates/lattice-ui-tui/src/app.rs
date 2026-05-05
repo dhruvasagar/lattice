@@ -449,6 +449,18 @@ pub enum Action {
     /// token rides on follow-up `gr` so a slow server can't
     /// drop a stale popup over a moved cursor.
     LspReferencesRequest,
+    /// `:lsp-symbols` (Phase 4.2.e). Send
+    /// `textDocument/documentSymbol` to every attached server;
+    /// render the merged outline as a vertico picker. Selecting
+    /// a row jumps to the symbol's location.
+    LspDocumentSymbolRequest,
+    /// `:lsp-workspace-symbol [query]` (Phase 4.2.f). Send
+    /// `workspace/symbol` to every attached server with the
+    /// user-supplied query string (server-side substring filter).
+    /// Empty query returns the server's idea of "everything"
+    /// (rust-analyzer streams all crate symbols). Picker UX
+    /// mirrors the document-symbol path.
+    LspWorkspaceSymbolRequest(String),
     /// `"<reg>` prefix -- stash the named register for the next operator
     /// / paste invocation.
     SelectRegister(Register),
@@ -816,6 +828,13 @@ pub struct App {
     /// Flipped on follow-up `gr` so a slow server's response
     /// can't open a list against a moved cursor.
     pub pending_references_token: Option<lattice_protocol::CancellationToken>,
+    /// Receiver for in-flight document-symbol responses (Phase
+    /// 4.2.e). Same shape as references -- the merged symbol
+    /// outline arrives as a `Vec<SymbolRow>` ready to seed the
+    /// picker.
+    pub pending_symbols_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<SymbolsOutcome>>,
+    pub pending_symbols_token: Option<lattice_protocol::CancellationToken>,
     /// Receiver end of the App's own subscription to
     /// `EventKind::OptionChanged` (DESIGN.md §5.10 + §5.12). The
     /// typed-options registry publishes through `event_bus` on
@@ -1241,6 +1260,37 @@ pub enum ReferencesOutcome {
     },
     /// The buffer's URI maps to no attached servers. Echo
     /// "no LSP server attached" so the user can investigate.
+    NoServers,
+}
+
+/// One row of a document-symbol / workspace-symbol picker. Carries
+/// the symbol's name, kind, depth (for in-document hierarchy
+/// indent), and the location to jump to. Built host-side from
+/// the LSP `DocumentSymbolResponse` / `Vec<SymbolInformation>`
+/// so the picker doesn't depend on lsp-types.
+#[derive(Debug, Clone)]
+pub struct SymbolRow {
+    pub name: String,
+    pub kind_glyph: &'static str,
+    pub container: Option<String>,
+    /// Indent depth (0 = top-level). Document-symbol responses
+    /// nest; workspace-symbol responses are flat (depth = 0).
+    pub depth: u32,
+    pub path: std::path::PathBuf,
+    /// LSP 0-based line.
+    pub line: u32,
+    /// utf-8 byte column.
+    pub col: u32,
+}
+
+/// Outcome of a document-symbol / workspace-symbol request --
+/// drained per frame and either opens a picker or echoes.
+#[derive(Debug, Clone)]
+pub enum SymbolsOutcome {
+    Found {
+        title: String,
+        rows: Vec<SymbolRow>,
+    },
     NoServers,
 }
 
@@ -1672,6 +1722,8 @@ impl App {
             pending_nav_kind: None,
             pending_references_rx: None,
             pending_references_token: None,
+            pending_symbols_rx: None,
+            pending_symbols_token: None,
             lang_registry,
             builtins,
             command_line: String::new(),
@@ -2835,6 +2887,10 @@ impl App {
                 self.do_lsp_nav_request(LspNavKind::Implementation)
             }
             Action::LspReferencesRequest => self.do_lsp_references_request(),
+            Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
+            Action::LspWorkspaceSymbolRequest(q) => {
+                self.do_lsp_workspace_symbol_request(&q)
+            }
             Action::SelectRegister(reg) => {
                 self.pending_register = Some(reg);
             }
@@ -5852,6 +5908,195 @@ impl App {
         });
     }
 
+    /// `:lsp-symbols` (Phase 4.2.e). Send
+    /// `textDocument/documentSymbol` to every attached server;
+    /// flatten the hierarchy + merge across servers; drain on
+    /// the next frame opens a picker.
+    fn do_lsp_document_symbol_request(&mut self) {
+        if let Some(token) = self.pending_symbols_token.take() {
+            token.cancel();
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let path = match lattice_lsp::actor::uri_to_path(&uri) {
+            Some(p) => p,
+            None => {
+                self.set_message(
+                    EchoLevel::Error,
+                    "documentSymbol: buffer URI is not a file".to_string(),
+                );
+                return;
+            }
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SymbolsOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_symbols_rx = Some(rx);
+        self.pending_symbols_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.lock().await.servers_for(&uri) };
+            if handles.is_empty() {
+                let _ = tx.send(SymbolsOutcome::NoServers);
+                return;
+            }
+            let mut all: Vec<SymbolRow> = Vec::new();
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                let params = lsp_types::DocumentSymbolParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                };
+                if let Ok(Some(resp)) = handle.document_symbol(params, token.clone()).await {
+                    flatten_document_symbol_response(resp, &path, &mut all);
+                }
+            }
+            // Dedup by (path, line, col, name); two servers may
+            // report the same symbol.
+            all.sort_by(|a, b| {
+                a.path
+                    .cmp(&b.path)
+                    .then_with(|| a.line.cmp(&b.line))
+                    .then_with(|| a.col.cmp(&b.col))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            all.dedup_by(|a, b| {
+                a.path == b.path && a.line == b.line && a.col == b.col && a.name == b.name
+            });
+            let title = format!("symbols ({})", all.len());
+            let _ = tx.send(SymbolsOutcome::Found { title, rows: all });
+        });
+    }
+
+    /// `:lsp-workspace-symbol [query]` (Phase 4.2.f).
+    fn do_lsp_workspace_symbol_request(&mut self, query: &str) {
+        if let Some(token) = self.pending_symbols_token.take() {
+            token.cancel();
+        }
+        // Workspace symbol is workspace-scoped, so we fan out
+        // over EVERY server the supervisor has running -- not
+        // just servers attached to the current buffer.
+        let lsp = self.lsp.clone();
+        let query = query.to_string();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SymbolsOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_symbols_rx = Some(rx);
+        self.pending_symbols_token = Some(token.clone());
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = {
+                let sup = lsp.lock().await;
+                sup.all_running_handles()
+            };
+            if handles.is_empty() {
+                let _ = tx.send(SymbolsOutcome::NoServers);
+                return;
+            }
+            let mut all: Vec<SymbolRow> = Vec::new();
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                let params = lsp_types::WorkspaceSymbolParams {
+                    query: query.clone(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                };
+                if let Ok(Some(syms)) = handle.workspace_symbol(params, token.clone()).await {
+                    for sym in syms {
+                        if let Some(row) = symbol_information_to_row(&sym) {
+                            all.push(row);
+                        }
+                    }
+                }
+            }
+            all.sort_by(|a, b| {
+                a.path
+                    .cmp(&b.path)
+                    .then_with(|| a.line.cmp(&b.line))
+                    .then_with(|| a.col.cmp(&b.col))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            all.dedup_by(|a, b| {
+                a.path == b.path && a.line == b.line && a.col == b.col && a.name == b.name
+            });
+            let title = if query.is_empty() {
+                format!("workspace-symbols ({})", all.len())
+            } else {
+                format!("workspace-symbols {query:?} ({})", all.len())
+            };
+            let _ = tx.send(SymbolsOutcome::Found { title, rows: all });
+        });
+    }
+
+    /// Drain queued document-symbol / workspace-symbol responses
+    /// and open the picker.
+    pub fn drain_pending_symbols(&mut self) {
+        let Some(mut rx) = self.pending_symbols_rx.take() else {
+            return;
+        };
+        let mut latest: Option<SymbolsOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_symbols_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_symbols_token = None;
+        match outcome {
+            SymbolsOutcome::NoServers => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no LSP server attached".to_string(),
+                );
+            }
+            SymbolsOutcome::Found { title, rows } => {
+                if rows.is_empty() {
+                    self.set_message(EchoLevel::Info, "no symbols".to_string());
+                    return;
+                }
+                let picker_rows: Vec<crate::picker::LspLocationRow> = rows
+                    .into_iter()
+                    .map(|r| {
+                        let indent = "  ".repeat(r.depth as usize);
+                        let preview = if let Some(c) = r.container {
+                            format!("{indent}{} {}  ({c})", r.kind_glyph, r.name)
+                        } else {
+                            format!("{indent}{} {}", r.kind_glyph, r.name)
+                        };
+                        crate::picker::LspLocationRow {
+                            path: r.path,
+                            line: r.line,
+                            col: r.col,
+                            preview,
+                            marginalia: String::new(),
+                        }
+                    })
+                    .collect();
+                let mut p = crate::picker::Picker::new(
+                    title,
+                    crate::picker::PickerSource::LspLocations,
+                    crate::picker::PickerAction::JumpToLspLocation,
+                );
+                p.set_lsp_locations(picker_rows);
+                self.picker = Some(p);
+            }
+        }
+    }
+
     /// Drain queued references results. The merged list is
     /// rendered as a `*lsp:references*` help buffer and opened
     /// in-pane via [`Self::open_help_in_pane`]; existing follow-
@@ -6613,6 +6858,10 @@ impl App {
                 self.do_set_lsp_log_level(server_id.as_deref(), &level)
             }
             Effect::LspLogClear { server_id } => self.do_lsp_log_clear(server_id.as_deref()),
+            Effect::LspDocumentSymbol => self.do_lsp_document_symbol_request(),
+            Effect::LspWorkspaceSymbol { query } => {
+                self.do_lsp_workspace_symbol_request(&query)
+            }
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -9322,7 +9571,9 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
         | Effect::SetLspLogLevel { .. }
-        | Effect::LspLogClear { .. } => false,
+        | Effect::LspLogClear { .. }
+        | Effect::LspDocumentSymbol
+        | Effect::LspWorkspaceSymbol { .. } => false,
     }
 }
 
@@ -9373,7 +9624,9 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
         | Effect::SetLspLogLevel { .. }
-        | Effect::LspLogClear { .. } => false,
+        | Effect::LspLogClear { .. }
+        | Effect::LspDocumentSymbol
+        | Effect::LspWorkspaceSymbol { .. } => false,
     }
 }
 
@@ -9452,6 +9705,95 @@ pub(crate) fn app_to_lsp_position(buffer: &Buffer, p: Position) -> Option<lsp_ty
         line: p.line,
         character,
     })
+}
+
+/// Flatten a `DocumentSymbolResponse` into our pre-rendered
+/// `SymbolRow` shape. The legacy `Flat(Vec<SymbolInformation>)`
+/// variant is one row per symbol with no nesting; the modern
+/// `Nested(Vec<DocumentSymbol>)` variant carries
+/// `children: Vec<DocumentSymbol>`, walked depth-first to
+/// preserve outline ordering.
+pub(crate) fn flatten_document_symbol_response(
+    resp: lsp_types::DocumentSymbolResponse,
+    path: &std::path::Path,
+    out: &mut Vec<SymbolRow>,
+) {
+    match resp {
+        lsp_types::DocumentSymbolResponse::Flat(syms) => {
+            for sym in syms {
+                if let Some(row) = symbol_information_to_row(&sym) {
+                    out.push(row);
+                }
+            }
+        }
+        lsp_types::DocumentSymbolResponse::Nested(syms) => {
+            fn walk(
+                syms: Vec<lsp_types::DocumentSymbol>,
+                path: &std::path::Path,
+                depth: u32,
+                out: &mut Vec<SymbolRow>,
+            ) {
+                for sym in syms {
+                    out.push(SymbolRow {
+                        name: sym.name.clone(),
+                        kind_glyph: symbol_kind_glyph(sym.kind),
+                        container: None,
+                        depth,
+                        path: path.to_path_buf(),
+                        line: sym.selection_range.start.line,
+                        col: sym.selection_range.start.character,
+                    });
+                    if let Some(children) = sym.children {
+                        walk(children, path, depth + 1, out);
+                    }
+                }
+            }
+            walk(syms, path, 0, out);
+        }
+    }
+}
+
+/// Map a flat `SymbolInformation` (legacy outline + workspace
+/// symbol shape) into our row type. Returns `None` when the
+/// location's URI doesn't resolve to a path.
+pub(crate) fn symbol_information_to_row(
+    sym: &lsp_types::SymbolInformation,
+) -> Option<SymbolRow> {
+    let path = lattice_lsp::actor::uri_to_path(&sym.location.uri)?;
+    Some(SymbolRow {
+        name: sym.name.clone(),
+        kind_glyph: symbol_kind_glyph(sym.kind),
+        container: sym.container_name.clone(),
+        depth: 0,
+        path,
+        line: sym.location.range.start.line,
+        col: sym.location.range.start.character,
+    })
+}
+
+/// Single-character glyph for an LSP `SymbolKind`. Picked to
+/// fit a fixed-width column in picker rows so the marginalia
+/// column stays aligned. Falls back to `?` for kinds we don't
+/// have a specific glyph for.
+pub(crate) fn symbol_kind_glyph(kind: lsp_types::SymbolKind) -> &'static str {
+    use lsp_types::SymbolKind as K;
+    match kind {
+        K::FILE => "📄",
+        K::MODULE | K::NAMESPACE | K::PACKAGE => "📦",
+        K::CLASS | K::INTERFACE => "🅒",
+        K::METHOD | K::FUNCTION => "ƒ",
+        K::CONSTRUCTOR => "🅒",
+        K::PROPERTY | K::FIELD => "•",
+        K::VARIABLE => "v",
+        K::CONSTANT => "K",
+        K::STRING | K::NUMBER | K::BOOLEAN | K::ARRAY | K::OBJECT => "≡",
+        K::ENUM | K::ENUM_MEMBER => "🅔",
+        K::STRUCT => "🅢",
+        K::EVENT => "🅔",
+        K::OPERATOR => "⊕",
+        K::TYPE_PARAMETER => "T",
+        _ => "?",
+    }
 }
 
 /// Word (alphanumeric + `_` run) under `cursor` in `buffer`, or
@@ -16228,6 +16570,183 @@ mod tests {
             super::word_under_cursor(&snap.buffer, a.cursor),
             Some("world".to_string())
         );
+    }
+
+    #[test]
+    fn flatten_document_symbol_response_flat_preserves_order() {
+        use lsp_types::{Range as LRange, Position as LPos, Location as LLoc};
+        let path = std::path::PathBuf::from("/tmp/x.rs");
+        #[allow(deprecated)]
+        let syms = vec![
+            lsp_types::SymbolInformation {
+                name: "foo".into(),
+                kind: lsp_types::SymbolKind::FUNCTION,
+                tags: None,
+                deprecated: None,
+                location: LLoc {
+                    uri: super::tests::fake_uri("/tmp/x.rs"),
+                    range: LRange {
+                        start: LPos { line: 5, character: 0 },
+                        end: LPos { line: 5, character: 3 },
+                    },
+                },
+                container_name: None,
+            },
+            lsp_types::SymbolInformation {
+                name: "bar".into(),
+                kind: lsp_types::SymbolKind::METHOD,
+                tags: None,
+                deprecated: None,
+                location: LLoc {
+                    uri: super::tests::fake_uri("/tmp/x.rs"),
+                    range: LRange {
+                        start: LPos { line: 10, character: 4 },
+                        end: LPos { line: 10, character: 7 },
+                    },
+                },
+                container_name: Some("Bag".into()),
+            },
+        ];
+        let resp = lsp_types::DocumentSymbolResponse::Flat(syms);
+        let mut out = Vec::new();
+        super::flatten_document_symbol_response(resp, &path, &mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "foo");
+        assert_eq!(out[0].depth, 0);
+        assert_eq!(out[1].name, "bar");
+        assert_eq!(out[1].container.as_deref(), Some("Bag"));
+    }
+
+    #[test]
+    fn flatten_document_symbol_response_nested_assigns_depth_via_dfs() {
+        use lsp_types::{Range as LRange, Position as LPos, DocumentSymbol};
+        let path = std::path::PathBuf::from("/tmp/x.rs");
+        // mod foo { fn bar() {} } -> outer at depth 0, bar at depth 1.
+        let inner_range = LRange {
+            start: LPos { line: 1, character: 4 },
+            end: LPos { line: 3, character: 5 },
+        };
+        let outer_range = LRange {
+            start: LPos { line: 0, character: 0 },
+            end: LPos { line: 4, character: 0 },
+        };
+        #[allow(deprecated)]
+        let inner = DocumentSymbol {
+            name: "bar".into(),
+            detail: None,
+            kind: lsp_types::SymbolKind::FUNCTION,
+            tags: None,
+            deprecated: None,
+            range: inner_range,
+            selection_range: inner_range,
+            children: None,
+        };
+        #[allow(deprecated)]
+        let outer = DocumentSymbol {
+            name: "foo".into(),
+            detail: None,
+            kind: lsp_types::SymbolKind::MODULE,
+            tags: None,
+            deprecated: None,
+            range: outer_range,
+            selection_range: outer_range,
+            children: Some(vec![inner]),
+        };
+        let resp = lsp_types::DocumentSymbolResponse::Nested(vec![outer]);
+        let mut out = Vec::new();
+        super::flatten_document_symbol_response(resp, &path, &mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "foo");
+        assert_eq!(out[0].depth, 0);
+        assert_eq!(out[1].name, "bar");
+        assert_eq!(out[1].depth, 1);
+    }
+
+    #[test]
+    fn symbol_kind_glyph_distinct_for_common_kinds() {
+        // We don't assert the *exact* glyph (those may evolve);
+        // we just want the common kinds to map to *distinct*
+        // glyphs so a glance distinguishes a fn from a struct.
+        use lsp_types::SymbolKind as K;
+        let f = super::symbol_kind_glyph(K::FUNCTION);
+        let s = super::symbol_kind_glyph(K::STRUCT);
+        let m = super::symbol_kind_glyph(K::MODULE);
+        let v = super::symbol_kind_glyph(K::VARIABLE);
+        assert_ne!(f, s);
+        assert_ne!(f, m);
+        assert_ne!(f, v);
+    }
+
+    #[test]
+    fn drain_pending_symbols_no_servers_outcome_echoes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
+        a.pending_symbols_rx = Some(rx);
+        a.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::SymbolsOutcome::NoServers).unwrap();
+        a.drain_pending_symbols();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no LSP server"));
+        assert!(a.pending_symbols_token.is_none());
+    }
+
+    #[test]
+    fn drain_pending_symbols_found_opens_picker() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
+        a.pending_symbols_rx = Some(rx);
+        a.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::SymbolsOutcome::Found {
+            title: "symbols (2)".into(),
+            rows: vec![
+                super::SymbolRow {
+                    name: "foo".into(),
+                    kind_glyph: "ƒ",
+                    container: None,
+                    depth: 0,
+                    path: std::path::PathBuf::from("/tmp/x.rs"),
+                    line: 5,
+                    col: 0,
+                },
+                super::SymbolRow {
+                    name: "bar".into(),
+                    kind_glyph: "v",
+                    container: None,
+                    depth: 1,
+                    path: std::path::PathBuf::from("/tmp/x.rs"),
+                    line: 10,
+                    col: 4,
+                },
+            ],
+        })
+        .unwrap();
+        a.drain_pending_symbols();
+        let picker = a.picker.as_ref().expect("picker");
+        assert_eq!(picker.title, "symbols (2)");
+        assert_eq!(picker.candidates.len(), 2);
+        // depth-1 row carries indentation in display.
+        let display = &picker.candidates[1].raw.display;
+        assert!(display.contains("  v bar"), "got: {display}");
+    }
+
+    #[test]
+    fn drain_pending_symbols_empty_echoes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
+        a.pending_symbols_rx = Some(rx);
+        a.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::SymbolsOutcome::Found {
+            title: "symbols (0)".into(),
+            rows: Vec::new(),
+        })
+        .unwrap();
+        a.drain_pending_symbols();
+        assert!(a.picker.is_none());
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no symbols"));
     }
 
     #[test]

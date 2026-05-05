@@ -269,6 +269,16 @@ pub enum Effect {
     LspLogClear {
         server_id: Option<String>,
     },
+    /// `:lsp-symbols` -- open a picker over the active document's
+    /// LSP symbol outline (`textDocument/documentSymbol`). Phase
+    /// 4.2.e.
+    LspDocumentSymbol,
+    /// `:lsp-workspace-symbol [query]` -- open a picker over
+    /// workspace-scoped symbols matching `query` (server-side
+    /// substring filter). Phase 4.2.f.
+    LspWorkspaceSymbol {
+        query: String,
+    },
 
     Many(Vec<Effect>),
 }

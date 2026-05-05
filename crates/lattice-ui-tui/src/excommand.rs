@@ -407,6 +407,11 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("lsploglevel", "ex:lsp-log-level"),
     ("lsp-log-clear", "ex:lsp-log-clear"),
     ("lsplogclear", "ex:lsp-log-clear"),
+    // Navigation pickers (Phase 4.2.e / 4.2.f).
+    ("lsp-symbols", "ex:lsp-symbols"),
+    ("lspsymbols", "ex:lsp-symbols"),
+    ("lsp-workspace-symbol", "ex:lsp-workspace-symbol"),
+    ("lspworkspacesymbol", "ex:lsp-workspace-symbol"),
 ];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests

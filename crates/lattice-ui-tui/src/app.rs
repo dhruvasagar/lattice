@@ -1290,6 +1290,16 @@ pub struct App {
     /// each effective field.
     pub per_language_completion:
         std::collections::HashMap<String, lattice_completion::PerLanguageOverrides>,
+    /// `true` while the active insert-completion popup is in
+    /// path-completion mode (Phase 4.2.g.6 (2/2)). Set at
+    /// popup-trigger time when the cursor sits inside a string
+    /// literal AND `gen:path` is enabled for the active
+    /// language; cleared on popup dismiss / accept. Drives
+    /// path-aware anchor resolution in `do_completion_trigger`
+    /// and source-set selection in
+    /// `populate_insert_completion_sync` (path source only;
+    /// other sync sources skip).
+    pub completion_in_path_context: bool,
     /// Live snippet expansion. `Some` while a snippet is
     /// active and `<Tab>` / `<S-Tab>` navigate placeholders.
     /// Dropped on `$0` consumption / `<Esc>` / cursor moving
@@ -2350,6 +2360,7 @@ impl App {
             completion_accept_freq: std::collections::HashMap::new(),
             pending_config_structural_sections: std::collections::BTreeMap::new(),
             per_language_completion: lattice_completion::per_language_defaults(),
+            completion_in_path_context: false,
             active_snippet: None,
             snippet_dirs: Vec::new(),
             picker: None,
@@ -6350,16 +6361,48 @@ impl App {
         }
         let snap = self.document.snapshot();
         let buffer = &snap.buffer;
-        // Anchor: walk back from the cursor over word characters.
-        // The query is the prefix `[anchor, cursor]`.
         let line_text = buffer.line(self.cursor.line).unwrap_or_default();
         let bytes = line_text.as_bytes();
         let cursor_byte = self.cursor.byte as usize;
+        // Detect path-completion context (Phase 4.2.g.6 (2/2)):
+        // cursor sits inside a string literal AND the active
+        // language enables `gen:path`. In that case the anchor
+        // walks back over path-shaped bytes and stops at `/` so
+        // the popup-supplied filename replaces just the current
+        // path segment; non-path sources skip emit so the popup
+        // doesn't show buffer words intermixed with filenames.
+        let path_id = lattice_completion::SourceId::new(
+            lattice_completion::PATH_SOURCE_ID,
+        );
+        let language = self.active_language_id();
+        let path_source_enabled = self
+            .effective_completion_for(&language)
+            .source_enabled(&path_id);
+        let path_context = path_source_enabled
+            && match buffer.position_to_byte(self.cursor) {
+                Ok(abs) => self
+                    .syntax
+                    .as_ref()
+                    .map(|s| s.cursor_in_string_scope(abs))
+                    .unwrap_or(false),
+                Err(_) => false,
+            };
+        self.completion_in_path_context = path_context;
+        // Anchor: walk back from the cursor. In path context we
+        // stop at `/` (dir/file boundary) or any non-path byte;
+        // outside path context we stop at any non-word byte.
+        // The query is the prefix `[anchor, cursor]`.
         let mut start = cursor_byte;
-        while start > 0
-            && start <= bytes.len()
-            && is_word_char_byte(bytes[start - 1])
-        {
+        while start > 0 && start <= bytes.len() {
+            let b = bytes[start - 1];
+            let is_boundary = if path_context {
+                b == b'/' || !is_path_byte(b)
+            } else {
+                !is_word_char_byte(b)
+            };
+            if is_boundary {
+                break;
+            }
             start -= 1;
         }
         let anchor = Position::new(self.cursor.line, start as u32);
@@ -6421,6 +6464,20 @@ impl App {
         buffer: &Buffer,
         trigger: &lattice_completion::CompletionTrigger,
     ) {
+        // Path-completion mode: when the cursor sits inside a
+        // string literal AND the language enables `gen:path`,
+        // the popup is path-only -- buffer-words / snippet /
+        // tree-sitter would emit non-filename candidates that
+        // confuse the experience (e.g., a buffer word matching
+        // partway through a filename). Spec §3.4 has
+        // `suppress_in = ["string", "comment"]` covering this
+        // for the other sources; until that knob is enforced,
+        // the path-context branch enforces the same effect.
+        if self.completion_in_path_context {
+            self.populate_path_completion(state);
+            self.refilter_insert_completion(state);
+            return;
+        }
         let ctx = lattice_completion::InsertContext {
             buffer,
             cursor: state.cursor,
@@ -6598,6 +6655,110 @@ impl App {
         self.insert_completion_snippet_meta.get(idx)
     }
 
+    /// Path-completion sync producer (Phase 4.2.g.6 (2/2)).
+    /// Walks the directory referenced by the partial path
+    /// the user has typed inside the active string literal and
+    /// emits one candidate per filesystem entry (capped at 200,
+    /// hidden / ignored entries skipped, directories carry a
+    /// trailing `/`). Resolves relative paths against the
+    /// active document's parent directory; falls back to
+    /// `std::env::current_dir()` for unsaved buffers.
+    fn populate_path_completion(
+        &mut self,
+        state: &mut lattice_completion::InsertCompletionState,
+    ) {
+        const MAX_ENTRIES: usize = 200;
+        // Hardcoded ignore set for v1; `.gitignore` integration
+        // queues for a follow-up (needs the `ignore` crate +
+        // the workspace-root resolution we already do for the
+        // config loader).
+        const IGNORE_NAMES: &[&str] = &[".git", "node_modules", "target", "dist"];
+
+        let snap = self.document.snapshot();
+        let line_text = snap.buffer.line(state.cursor.line).unwrap_or_default();
+        let line_bytes = line_text.as_bytes();
+        let cursor_in_line = (state.cursor.byte as usize).min(line_bytes.len());
+        // Walk back over path bytes (NOT stopping at `/`) to
+        // recover the full partial path the user has typed
+        // inside the string literal. The trigger anchor stops
+        // at `/` so the popup-supplied filename only replaces
+        // the tail; here we want the full thing so we know
+        // *which* directory to walk.
+        let mut path_start = cursor_in_line;
+        while path_start > 0 {
+            let b = line_bytes[path_start - 1];
+            if b == b'/' || is_path_byte(b) {
+                path_start -= 1;
+            } else {
+                break;
+            }
+        }
+        let partial: &str = &line_text[path_start..cursor_in_line];
+        // Split partial at the last `/` (boundary between dir
+        // and the filename prefix).
+        let dir_part = match partial.rfind('/') {
+            Some(i) => &partial[..=i], // keep trailing slash
+            None => "",
+        };
+        let base_dir: std::path::PathBuf = if dir_part.starts_with('/') {
+            std::path::PathBuf::from(dir_part)
+        } else {
+            let buffer_dir = snap
+                .path
+                .as_ref()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+            let base = buffer_dir
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            if dir_part.is_empty() {
+                base
+            } else {
+                base.join(dir_part)
+            }
+        };
+
+        let entries = match std::fs::read_dir(&base_dir) {
+            Ok(it) => it,
+            Err(_) => return, // directory unreadable / missing; popup stays empty
+        };
+        let path_id = lattice_completion::SourceId::new(
+            lattice_completion::PATH_SOURCE_ID,
+        );
+        let mut emitted = 0;
+        for entry in entries.flatten() {
+            if emitted >= MAX_ENTRIES {
+                break;
+            }
+            let name_os = entry.file_name();
+            let Some(name) = name_os.to_str() else { continue };
+            if name.starts_with('.') {
+                // Skip hidden entries by default. The user can
+                // type `.` and the popup will re-trigger to
+                // show them once `auto_trigger` lands.
+                continue;
+            }
+            if IGNORE_NAMES.contains(&name) {
+                continue;
+            }
+            let is_dir = entry
+                .file_type()
+                .map(|t| t.is_dir())
+                .unwrap_or(false);
+            let (text, kind) = if is_dir {
+                (
+                    format!("{name}/"),
+                    lattice_completion::CandidateKind::Directory,
+                )
+            } else {
+                (name.to_string(), lattice_completion::CandidateKind::File)
+            };
+            let cand = lattice_completion::RawCandidate::plain(text, kind)
+                .with_source(path_id.clone());
+            state.raw.push(cand);
+            emitted += 1;
+        }
+    }
+
     /// Re-run matcher + ranker over `state.raw` against the
     /// current `state.query`. Called every time the query
     /// mutates (each Insert-mode keystroke while the popup is
@@ -6677,6 +6838,7 @@ impl App {
             "gen:tree-sitter-symbol" => {
                 self.core_options.completion_source_tree_sitter_priority
             }
+            "gen:path" => self.core_options.completion_source_path_priority,
             _ => return 0,
         };
         let raw = *self.config.get(handle);
@@ -6766,11 +6928,16 @@ impl App {
     ///    cursor]` splice.
     pub fn do_completion_accept(&mut self) {
         let Some(state) = self.insert_completion.take() else {
+            self.completion_in_path_context = false;
             return;
         };
         let Some(item) = state.selected_candidate().cloned() else {
+            self.completion_in_path_context = false;
             return;
         };
+        // Clear the path-context flag now that the popup has
+        // closed; the next trigger re-evaluates from scratch.
+        self.completion_in_path_context = false;
         // Bump the accept-frequency counter for this item. Per
         // `docs/insert-completion.md` §3.6, the ranker rereads
         // this map and adds a bounded bonus so the user's
@@ -7227,6 +7394,7 @@ impl App {
 
     pub fn do_completion_cancel(&mut self) {
         self.insert_completion = None;
+        self.completion_in_path_context = false;
     }
 
     /// `<C-d>` inside the completion-popup minor mode.
@@ -7469,6 +7637,13 @@ impl App {
         const MAX_LSP_ITEMS: usize = 500;
         if let Some(token) = self.pending_insert_completion_lsp_token.take() {
             token.cancel();
+        }
+        // Path-completion mode (4.2.g.6 (2/2)) suppresses LSP
+        // completion -- the popup is showing filesystem
+        // entries; LSP suggestions don't make sense
+        // intermixed.
+        if self.completion_in_path_context {
+            return;
         }
         // Per-language sources filter (Phase 4.2.g.5 (3b/3)):
         // a language whose effective `sources` list excludes
@@ -13427,6 +13602,16 @@ fn preview_register(s: &str) -> String {
 
 fn is_word_char_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// True for bytes the path-completion source treats as part of
+/// a filename / directory component. Wider than `is_word_char_byte`
+/// so common filename characters (`.`, `-`, `~`) ride the same
+/// segment; the trigger anchor breaks at `/` (dir boundary)
+/// rather than at these characters.
+fn is_path_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(b, b'_' | b'-' | b'.' | b'~' | b'+' | b'@')
 }
 
 fn scan_forward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
@@ -24471,6 +24656,178 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn app_with_path(
+        text: &str,
+        viewport: u32,
+        path: std::path::PathBuf,
+    ) -> App {
+        let doc = lattice_core::DocumentBuilder::default()
+            .with_text(text)
+            .with_path(path)
+            .build();
+        let mut a = App::new(doc);
+        a.set_viewport_height(viewport);
+        a
+    }
+
+    fn fresh_path_workspace(name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "lattice-pathsource-test-{}-{}",
+            std::process::id(),
+            name,
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).expect("create workspace");
+        p
+    }
+
+    #[test]
+    fn path_source_emits_filesystem_entries_inside_string_literal() {
+        let ws = fresh_path_workspace("emits-entries");
+        // Populate the workspace with two files + one dir.
+        std::fs::write(ws.join("alpha.rs"), "// alpha").unwrap();
+        std::fs::write(ws.join("beta.rs"), "// beta").unwrap();
+        std::fs::create_dir_all(ws.join("subdir")).unwrap();
+        // Buffer with a string literal; we'll set the
+        // document path so relative resolution lands in `ws`.
+        let source = "let p = \"\";\n";
+        let doc_path = ws.join("buffer.rs");
+        let mut a = app_with_path(source, 10, doc_path);
+        set_rust_syntax(&mut a, source);
+        a.modal = ModalState::Insert;
+        // Cursor between the empty string's quotes -> string
+        // scope.
+        a.cursor = Position::new(0, source.find("\"\"").unwrap() as u32 + 1);
+        a.do_completion_trigger();
+        assert!(a.completion_in_path_context, "path-context detected");
+        let state = a.insert_completion.as_ref().expect("popup");
+        let path_id = lattice_completion::PATH_SOURCE_ID;
+        let texts: Vec<&str> = state
+            .raw
+            .iter()
+            .filter(|c| c.source.as_ref().map(|s| s.as_str()) == Some(path_id))
+            .map(|c| c.text.as_str())
+            .collect();
+        assert!(texts.contains(&"alpha.rs"), "alpha in {texts:?}");
+        assert!(texts.contains(&"beta.rs"), "beta in {texts:?}");
+        assert!(
+            texts.contains(&"subdir/"),
+            "subdir/ (with trailing slash) in {texts:?}",
+        );
+        // No buffer-words / tree-sitter / snippet candidates
+        // intermix with the path popup.
+        for cand in &state.raw {
+            let src = cand.source.as_ref().map(|s| s.as_str()).unwrap_or("");
+            assert_eq!(
+                src,
+                path_id,
+                "non-path source `{src}` slipped into path-context popup",
+            );
+        }
+    }
+
+    #[test]
+    fn path_source_skips_hidden_and_ignored_entries() {
+        let ws = fresh_path_workspace("skip-hidden");
+        std::fs::write(ws.join("visible.txt"), "v").unwrap();
+        std::fs::write(ws.join(".hidden"), "h").unwrap();
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
+        std::fs::create_dir_all(ws.join("node_modules")).unwrap();
+        let source = "let p = \"\";\n";
+        let mut a = app_with_path(source, 10, ws.join("buffer.rs"));
+        set_rust_syntax(&mut a, source);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, source.find("\"\"").unwrap() as u32 + 1);
+        a.do_completion_trigger();
+        let state = a.insert_completion.as_ref().expect("popup");
+        let texts: Vec<&str> = state
+            .raw
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect();
+        assert!(texts.contains(&"visible.txt"));
+        assert!(!texts.contains(&".hidden"), "dotfile filtered");
+        assert!(!texts.contains(&".git/"), ".git filtered");
+        assert!(
+            !texts.contains(&"node_modules/"),
+            "node_modules filtered",
+        );
+    }
+
+    #[test]
+    fn path_source_silent_outside_string_scope() {
+        let source = "fn main() { let x = 1; }\n";
+        let mut a = app_with(source, 10);
+        set_rust_syntax(&mut a, source);
+        a.modal = ModalState::Insert;
+        // Cursor at end of line -- outside any string.
+        a.cursor = Position::new(0, source.trim_end().len() as u32);
+        a.do_completion_trigger();
+        assert!(!a.completion_in_path_context);
+        if let Some(state) = a.insert_completion.as_ref() {
+            let path_id = lattice_completion::PATH_SOURCE_ID;
+            for cand in &state.raw {
+                assert_ne!(
+                    cand.source.as_ref().map(|s| s.as_str()),
+                    Some(path_id),
+                    "no path candidates outside string scope",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn path_source_skipped_by_per_language_override() {
+        let ws = fresh_path_workspace("disabled-via-override");
+        std::fs::write(ws.join("alpha.rs"), "//").unwrap();
+        let source = "let p = \"\";\n";
+        let mut a = app_with_path(source, 10, ws.join("buffer.rs"));
+        set_rust_syntax(&mut a, source);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, source.find("\"\"").unwrap() as u32 + 1);
+        // Override the active language ("rust", since the
+        // buffer path ends in `.rs`) to drop path source.
+        a.per_language_completion.insert(
+            "rust".into(),
+            lattice_completion::PerLanguageOverrides {
+                sources: Some(vec![lattice_completion::SourceId::new(
+                    lattice_completion::BufferWordsSource::ID,
+                )]),
+                ..Default::default()
+            },
+        );
+        a.do_completion_trigger();
+        assert!(
+            !a.completion_in_path_context,
+            "path source disabled -> no path context",
+        );
+    }
+
+    #[test]
+    fn path_source_resolves_subdirectory_from_partial_path() {
+        let ws = fresh_path_workspace("subdir-walk");
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        std::fs::write(ws.join("src/foo.rs"), "//").unwrap();
+        std::fs::write(ws.join("src/bar.rs"), "//").unwrap();
+        let source = "let p = \"src/\";\n";
+        let mut a = app_with_path(source, 10, ws.join("buffer.rs"));
+        set_rust_syntax(&mut a, source);
+        a.modal = ModalState::Insert;
+        // Cursor after `src/`.
+        let after_slash = source.find("src/").unwrap() + "src/".len();
+        a.cursor = Position::new(0, after_slash as u32);
+        a.do_completion_trigger();
+        assert!(a.completion_in_path_context);
+        let state = a.insert_completion.as_ref().expect("popup");
+        let texts: Vec<&str> = state
+            .raw
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect();
+        assert!(texts.contains(&"foo.rs"), "src/foo.rs surfaced -- got {texts:?}");
+        assert!(texts.contains(&"bar.rs"), "src/bar.rs surfaced");
     }
 
     #[test]

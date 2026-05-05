@@ -100,7 +100,7 @@ priority, set source-specific knobs (e.g.
 | `gen:buffer-words` | Words from the active buffer (and visible buffers in 4.2.g.6) — alphanumeric + underscore runs, deduped, default min length 3. | 4.2.g.1 ✅ |
 | `gen:lsp-completion` | `textDocument/completion` results from every LSP server attached to the buffer. Item adaptation: `filterText` (matcher target) / `sortText` (ranker tiebreaker) / `detail` (one-line signature) / `documentation` (markdown body for the docs popup) / `tags[Deprecated]` (strikethrough + ranker penalty in 4.2.g.5) / `commitCharacters` (auto-accept on type, 4.2.g.5) / `additionalTextEdits` (auto-imports, applied alongside the main insert as one undo unit). `isIncomplete: true` re-fires the request on every keystroke that mutates the query. | 4.2.g.2 ✅ |
 | `gen:snippet` | Per-language snippets from `lattice-snippet`. TextMate JSON format; drop-in compatible with VS Code / friendly-snippets. | 4.2.g.4 ✅ |
-| `gen:path` | Filesystem entries when typing a path inside a string literal. | 4.2.g.6 |
+| `gen:path` | Filesystem entries when typing a path inside a string literal. Tree-sitter scope detection identifies the string context (rust / python / javascript today); walk caps at 200 entries; hidden files + `.git` / `node_modules` / `target` / `dist` skipped. | 4.2.g.6 ✅ |
 | `gen:tree-sitter-symbol` | Definition-position identifiers from the buffer's syntax tree (function defs, struct / enum / trait / type names, `const` / `static`, `let` bindings, function parameters, modules). Per-language `symbols.scm` query in `lattice-syntax`; rust / python / javascript ship today. | 4.2.g.6 ✅ |
 | `gen:plugin-*` | Reserved for plugin-supplied sources via the WASM Component plugin host (Phase 7). | post-4.x |
 
@@ -244,6 +244,55 @@ documentation, additional edits) so they outrank both at
 priority 200. The tree-sitter source is most useful in
 unsaved scratch files, languages without an LSP server, and
 when the LSP is still warming up.
+
+## Path completion (Phase 4.2.g.6)
+
+The `gen:path` source surfaces filesystem entries when the
+cursor sits inside a string literal. Triggering completion
+inside `"src/|"` walks the `src/` directory and lists its
+entries; typing more of the filename narrows the popup; on
+accept the popup-supplied filename replaces just the current
+path segment (everything after the last `/`).
+
+### Scope detection
+
+A tree-sitter scope check classifies the cursor: any
+ancestor whose node kind matches a string-literal shape
+(`string`, `string_literal`, `raw_string_literal`,
+`byte_string_literal`, `template_string`, `string_fragment`)
+opens path-completion mode. Outside string scope the popup
+behaves normally; the path source contributes nothing.
+
+### Path resolution
+
+- Absolute paths (`"/etc/hosts"`) walk the filesystem from
+  `/`.
+- Relative paths walk from the active document's directory
+  when the buffer has a path on disk; unsaved buffers fall
+  back to `std::env::current_dir()`.
+
+### What's filtered
+
+The walk caps at 200 entries per directory and skips:
+
+- Dotfiles (any name starting with `.`).
+- `.git`, `node_modules`, `target`, `dist`.
+
+`.gitignore` integration queues for a follow-up.
+
+### Path-completion popup behaviour
+
+When the popup opens in path-completion mode:
+
+- Only `gen:path` candidates contribute. The buffer-words /
+  snippet / tree-sitter sources skip emit so the popup shows
+  filesystem entries cleanly. The LSP request short-circuits
+  for the same reason.
+- Directories carry a trailing `/` in the displayed text; on
+  accept, the cursor lands just past the slash, ready for the
+  next path segment.
+- The popup closes on whitespace / non-path characters as
+  usual; accept a directory and re-trigger to descend.
 
 ## Configuration
 

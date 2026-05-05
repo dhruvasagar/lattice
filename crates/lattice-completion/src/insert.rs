@@ -642,7 +642,7 @@ pub fn canonical_source_id(label: &str) -> SourceId {
         // recognised here so users can list them in TOML
         // ahead of the source landing -- the producer skips
         // unknown ids gracefully.
-        "path" => SourceId::new("gen:path"),
+        "path" => SourceId::new(PATH_SOURCE_ID),
         "tree-sitter" | "treesitter" | "ts" => SourceId::new(TREE_SITTER_SYMBOL_SOURCE_ID),
         other => SourceId::new(other),
     }
@@ -669,6 +669,13 @@ pub const SNIPPET_SOURCE_ID: &str = "gen:snippet";
 /// source (Phase 4.2.g.6 (1/2)). Walks the buffer's syntax tree
 /// per popup-trigger via `lattice_syntax::Syntax::collect_symbols`.
 pub const TREE_SITTER_SYMBOL_SOURCE_ID: &str = "gen:tree-sitter-symbol";
+
+/// Source id for the host-orchestrated path-completion source
+/// (Phase 4.2.g.6 (2/2)). Triggered when the cursor sits inside
+/// a string literal (per tree-sitter scope detection); walks
+/// the directory of the partial path and emits filesystem
+/// entries.
+pub const PATH_SOURCE_ID: &str = "gen:path";
 
 // ---- Built-in: gen:buffer-words ----
 

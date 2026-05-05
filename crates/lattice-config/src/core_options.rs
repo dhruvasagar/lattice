@@ -36,6 +36,7 @@ pub struct CoreOptions {
     pub completion_source_snippet_priority: OptionHandle<i64>,
     pub completion_source_buffer_words_priority: OptionHandle<i64>,
     pub completion_source_tree_sitter_priority: OptionHandle<i64>,
+    pub completion_source_path_priority: OptionHandle<i64>,
 }
 
 /// Register every renderer-agnostic option against `registry` and
@@ -191,6 +192,19 @@ pub fn register_core_options(registry: &ConfigRegistry) -> CoreOptions {
         .validate(priority_validate)
         .build(),
     );
+    let completion_source_path_priority = registry.register(
+        Option::<i64>::builder(
+            "completion.source.path.priority",
+            90,
+            "Priority bucket for the `gen:path` insert-mode \
+             source -- filesystem entries surfaced when the \
+             cursor sits inside a string literal. Default 90 \
+             per spec §3.4: below buffer-words 100 (which often \
+             matches partial paths too) and above tree-sitter 80.",
+        )
+        .validate(priority_validate)
+        .build(),
+    );
     CoreOptions {
         number,
         relativenumber,
@@ -205,6 +219,7 @@ pub fn register_core_options(registry: &ConfigRegistry) -> CoreOptions {
         completion_source_snippet_priority,
         completion_source_buffer_words_priority,
         completion_source_tree_sitter_priority,
+        completion_source_path_priority,
     }
 }
 
@@ -230,6 +245,7 @@ mod tests {
         assert_eq!(*r.get(h.completion_source_snippet_priority), 150);
         assert_eq!(*r.get(h.completion_source_buffer_words_priority), 100);
         assert_eq!(*r.get(h.completion_source_tree_sitter_priority), 80);
+        assert_eq!(*r.get(h.completion_source_path_priority), 90);
     }
 
     #[test]

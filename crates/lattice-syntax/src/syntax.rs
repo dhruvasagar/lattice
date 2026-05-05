@@ -140,6 +140,59 @@ impl Syntax {
         &self.registry
     }
 
+    /// True when the byte position `cursor_byte` falls inside a
+    /// string-literal node according to the cached tree.
+    /// Walks ancestors from the deepest descendant covering the
+    /// position and matches their `kind()` against a hardcoded
+    /// set of string-shaped node names that span the v1
+    /// language coverage (rust / python / javascript). Returns
+    /// `false` when no parse is cached, when the position falls
+    /// outside the source bytes, or when no ancestor matches.
+    ///
+    /// Used by the host's `gen:path` insert-completion source
+    /// (Phase 4.2.g.6 (2/2)) -- the spec triggers path-completion
+    /// inside string literals so file-path text is the only
+    /// place where `/` opens the popup.
+    pub fn cursor_in_string_scope(&self, cursor_byte: usize) -> bool {
+        // Hardcoded set across the v1 grammars. Source for the
+        // names: `tree-sitter-{rust,python,javascript}` node
+        // catalogues. New languages append entries here when
+        // they land. Substring matching ("kind contains
+        // 'string'") would catch more variants but also misfire
+        // on names like `string_concatenation` -- explicit list
+        // stays safer.
+        const STRING_NODE_KINDS: &[&str] = &[
+            "string",
+            "string_literal",
+            "raw_string_literal",
+            "byte_string_literal",
+            "template_string",
+            "string_fragment",
+            "interpolated_string_literal",
+        ];
+        let Some(tree) = self.tree.as_ref() else {
+            return false;
+        };
+        if cursor_byte > self.source.len() {
+            return false;
+        }
+        let root = tree.root_node();
+        let mut node = match root.descendant_for_byte_range(cursor_byte, cursor_byte) {
+            Some(n) => n,
+            None => return false,
+        };
+        loop {
+            let kind = node.kind();
+            if STRING_NODE_KINDS.iter().any(|k| *k == kind) {
+                return true;
+            }
+            match node.parent() {
+                Some(p) => node = p,
+                None => return false,
+            }
+        }
+    }
+
     /// Run the language's `symbols.scm` query against the cached
     /// tree and return the deduped list of `@symbol`-captured
     /// names (definition-position identifiers). Empty when:
@@ -778,6 +831,48 @@ const MAX: i32 = 10;\n\
         // No parse() called -> tree is None -> empty result.
         let s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
         assert!(s.collect_symbols().is_empty());
+    }
+
+    #[test]
+    fn cursor_in_string_scope_true_inside_rust_string_literal() {
+        let source = "fn main() { let p = \"src/foo.rs\"; }\n";
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(source);
+        // Pick a byte that's inside the literal -- between the
+        // opening quote and the closing one.
+        let lit_start = source.find('"').unwrap();
+        let lit_end = source.rfind('"').unwrap();
+        let inside = lit_start + 4; // somewhere mid-string
+        assert!(inside < lit_end);
+        assert!(s.cursor_in_string_scope(inside));
+    }
+
+    #[test]
+    fn cursor_in_string_scope_false_outside_string_literal() {
+        let source = "fn main() { let p = \"src/foo.rs\"; }\n";
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(source);
+        // Position at `let` keyword -- no string ancestor.
+        let outside = source.find("let").unwrap() + 1;
+        assert!(!s.cursor_in_string_scope(outside));
+    }
+
+    #[test]
+    fn cursor_in_string_scope_true_inside_python_string() {
+        let source = "p = \"src/foo.py\"\n";
+        let mut s = Syntax::for_language(Lang::Python).unwrap().unwrap();
+        s.parse(source);
+        let lit_start = source.find('"').unwrap();
+        let inside = lit_start + 3;
+        assert!(s.cursor_in_string_scope(inside));
+    }
+
+    #[test]
+    fn cursor_in_string_scope_false_when_no_parse() {
+        // Without a parse the helper returns false safely
+        // rather than panicking on missing tree.
+        let s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        assert!(!s.cursor_in_string_scope(0));
     }
 
     #[test]

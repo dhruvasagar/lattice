@@ -789,9 +789,28 @@ Remaining 4.2:
   dedup deferred to 4.2.g.7); help adds a dedicated
   `## Tree-sitter symbols` section with per-language
   capture coverage + ranking-vs-buffer-words explainer)
-  ✅. Remaining 4.2.g.6 slice: (2/2) path source +
-  trigger-char detection inside string literals + capped
-  filesystem walk + help. Then 4.2.g.7
+  ✅; 4.2.g.6 (2/2) (path completion source --
+  `Syntax::cursor_in_string_scope` walks tree-sitter
+  ancestors against a hardcoded string-shape set
+  (`string` / `string_literal` / `raw_string_literal` /
+  etc.); `App.completion_in_path_context` flag set by
+  `do_completion_trigger` when the cursor is in a string
+  scope and `gen:path` is enabled; path-aware anchor walks
+  back over alphanumeric + `_-./~+@` until `/` (the
+  dir/file boundary); `populate_path_completion` resolves
+  the partial path against the document's parent dir or
+  CWD, walks via `std::fs::read_dir` capped at 200 entries,
+  skips dotfiles + `.git` / `node_modules` / `target` /
+  `dist`, emits `File` / `Directory`-kind candidates with
+  trailing `/` for directories; LSP fan-out + non-path
+  sync sources short-circuit in path-completion mode so
+  the popup shows filesystem entries cleanly; new constant
+  `PATH_SOURCE_ID = "gen:path"`; new typed option
+  `completion.source.path.priority` (default 90 per spec
+  §3.4); `priority_for_source` wires the new id; help
+  refresh adds a dedicated `## Path completion` section
+  covering scope detection, resolution, ignore set, and
+  popup behaviour) ✅. **4.2.g.6 complete.** Then 4.2.g.7
   (polish: ghost text, additionalTextEdits coalesce
   refactor, auto-insert-single, cross-source visual dedup,
   commit chars, extending the typed routing payload to

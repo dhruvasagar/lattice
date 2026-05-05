@@ -29,6 +29,35 @@ Phases 0–3 land the foundation, modal engine, terminal UI, and tree-sitter.
 Phases 4–10 add LSP, GPU rendering, plugin host, modes, rich buffer
 rendering, and v1.0 polish.
 
+### Build order: core first, plugins later
+
+DESIGN.md §3.1 codifies the fast-path-vs-orchestration split:
+features that fire per-keystroke (LSP wire + dispatch, snippet
+engine, picker UI, completion engine, modal grammar) live in
+core; opinionated tools built *on top of* the editor (magit
+clone, fuzzy file finder, git inline overlays, markdown
+preview, test runners) ship as plugins.
+
+Concretely: Phases 4–6 grow the core surface. Phase 7 (plugin
+host) lands after, designing WIT against an exercised set of
+trait seams rather than speculative ones. Phase 8 / 8b
+build the bundled-plugin catalog on top of a stable host.
+
+Reasons this ordering wins:
+
+- **Performance guard.** WASM-call overhead (typed call p99
+  < 500ns; round-trip < 5μs) is real on the keystroke
+  hot-path. Per-keystroke subsystems amortize that cost
+  poorly even with batching.
+- **Trait surface quality.** Each phase-4 feature
+  (LspSupervisor, Picker, completion AsyncCandidateGenerator,
+  active-snippet engine) is itself the trait surface plugins
+  will eventually implement against. Designing WIT after we
+  see five concrete patterns is far better than after two.
+- **No sunk cost.** The crates we've built so far
+  (`lattice-lsp`, `lattice-completion`, the picker module)
+  are correctly placed -- no migration debt is accumulating.
+
 ---
 
 ## Phase status

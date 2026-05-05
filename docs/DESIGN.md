@@ -160,6 +160,32 @@ The editor is structured as **three strictly separated layers** communicating ex
 - **Render-prep workers** (rayon pool): parallel work -- syntax highlights, search/replace, indexing, text shaping for rich buffers.
 - **Blocking I/O thread pool** (`spawn_blocking`): file ops on slow filesystems, large files, tree-sitter parsing.
 
+### 3.1 Core vs plugin: the fast path / orchestration split
+
+CLAUDE.md goal #1 (performance) and goal #2 (extensibility) compete on every subsystem decision. The discipline that resolves the conflict:
+
+> **Fast path stays in core. Configuration / orchestration / authoring goes to plugins. The trait surface between them is the extensibility seam.**
+
+The WASM Component Model boundary has real cost (typed-call p99 budget < 500ns; round-trip < 5μs per §5.5). Anything that fires per-keystroke or holds keystroke-hot-path state pays that cost on every input event, and even with batching it accumulates against the 8ms-at-120Hz / 16ms-at-60Hz keystroke-to-glyph budget. We earn extensibility *around* those subsystems via traits, not *inside* them via WASM dispatch.
+
+Concretely:
+
+| Subsystem | Core (Rust crate) | Plugin (WASM Component) |
+|---|---|---|
+| **LSP** | wire layer, actor, document sync, diagnostics broadcast bus, supervisor primitives, position-encoding shim. Per-keystroke hot path (didChange, hover paint). | server installer / config UI / lifecycle preferences (`lighthouse`, Phase 8b); per-buffer source contributions (AI completion, project linters). |
+| **Snippets** | parser, body type, render walker, active-snippet state machine, placeholder navigation. Per-keystroke hot path during placeholder edits. | snippet pack discovery + management UI; project-snippet sync; authoring tools. |
+| **Picker** | widget, keymap, popup geometry, matcher / ranker default impls. Used by ~10 surfaces; each fires off the keystroke path. | picker *sources* (fuzzy file finder, project-grep, command palette content) via the existing trait surface. |
+| **Insert-mode completion** | state machine, aggregator, popup widget, completion-popup minor mode, matcher / ranker traits. | sources beyond the bundled set (LSP + snippets + buffer-words + path + tree-sitter): AI / Copilot, project-specific generators. |
+| **Modal engine** | grammar, dispatcher, builtins (motions / operators / text objects), modal state machine. | new motions / text objects / operators via the grammar-extension trait surface. |
+| **Renderer** | layered architecture (TUI, GPU, document), pane tree, popup primitives, sprite atlas. | renderer overlays (e.g. inline-error decorations, custom gutter content); status-line segments. |
+| **Buffer / Document** | rope, undo, edit dispatch, snapshot model. | content providers for non-file buffers (REPL, terminal, scratch:rust, magit-clone, diff viewer). |
+
+**What this isn't:** a closed shop. The trait surface is rich (CandidateGenerator / CandidateMatcher / CandidateRanker / CandidateAnnotator / SourceGenerator / Hook / EventSubscriber / SpriteSet / StatusSegment / FoldProvider / etc.). Plugins extend lattice through these traits — that's where extensibility lives. What the trait surface does *not* expose is the keystroke-frequency state machines themselves: those stay in core and the trait surface taps into them.
+
+**What goes plugin:** anything that's "an opinionated tool built on top of the editor" rather than "the editor's keystroke response." A magit clone, a fuzzy file finder, a git-blame inline overlay, a markdown-preview pane, a test-runner integration — all clearly plugin material. Phase 8b lists these explicitly.
+
+**Implication for build order:** core grows first (Phases 4–6), establishing the trait surfaces plugins will consume; the plugin host (Phase 7) then ships against a concrete, exercised set of seams rather than speculative ones.
+
 ---
 
 ## 4. Technology Stack

@@ -819,11 +819,21 @@ Remaining 4.2:
   `completion.extra_commit_chars`; popup layer claims
   unmodified character keys; non-commit chars fall through
   to plain `do_insert_text` so the popup refilters as
-  before) ✅. Remaining 4.2.g.7 polish items: ghost text
-  (top-ranked candidate's suffix as virtual text after
-  cursor), additionalTextEdits coalesce into one undo unit,
-  cross-source visual dedup at the popup renderer, picker
-  call sites flipping to typed routing payload via
+  before) ✅; additionalTextEdits coalesce for the LSP
+  snippet accept path (new
+  `expand_snippet_with_lsp_edits` builds one batch with the
+  auto-import edits + the snippet body's main splice,
+  reverse-sorts by start position so each edit's original-
+  document positions stay valid, applies via
+  `apply_edit_batch_blocking` so the whole accept lands as
+  ONE undo unit; recovers the snippet's post-batch origin
+  by indexing the applied vec at the main edit's
+  position-after-sort; non-snippet LSP path was already
+  coalesced via `apply_lsp_completion_accept`'s combined
+  Vec<TextEdit>) ✅. Remaining 4.2.g.7 polish items: ghost
+  text (top-ranked candidate's suffix as virtual text after
+  cursor), cross-source visual dedup at the popup renderer,
+  picker call sites flipping to typed routing payload via
   `CandidateData::Extension`.
 - `completionItem/resolve` (lazy doc / additional edits) --
   shipped as part of 4.2.g.3 + 4.2.g.7.

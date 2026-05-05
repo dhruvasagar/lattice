@@ -7030,24 +7030,32 @@ impl App {
                 meta.insert_text_format,
                 lsp_types::InsertTextFormat::SNIPPET
             ) {
-                // Apply additionalTextEdits first (auto-imports
-                // etc.), then expand the snippet body. Two
-                // logical edits but rolled together for the
-                // user's `<C-z>`.
-                if !meta.additional_text_edits.is_empty()
-                    && let Err(e) =
-                        self.apply_lsp_text_edits(meta.additional_text_edits.clone())
-                {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("completion: additional edits failed: {e}"),
-                    );
-                    return;
-                }
+                // Coalesce additionalTextEdits + the snippet
+                // body's main splice into ONE undo unit (Phase
+                // 4.2.g.7 polish). Pre-4.2.g.7 this path
+                // applied the additionals first, then a
+                // separate `expand_snippet`, leaving the user
+                // with two `<C-z>` steps to revert one logical
+                // accept.
                 match lattice_snippet::parse(&meta.insert_text) {
-                    Ok(body) => self.expand_snippet(&body, state.anchor),
+                    Ok(body) => {
+                        if let Err(e) = self.expand_snippet_with_lsp_edits(
+                            &body,
+                            state.anchor,
+                            meta.additional_text_edits.clone(),
+                        ) {
+                            self.set_message(
+                                EchoLevel::Error,
+                                format!("completion: apply failed: {e}"),
+                            );
+                            return;
+                        }
+                    }
                     Err(_) => {
                         // Body didn't parse -- splice as plain.
+                        // `apply_lsp_completion_accept` already
+                        // coalesces additionals + main into one
+                        // batch internally.
                         self.apply_lsp_completion_accept(meta, state.anchor);
                     }
                 }
@@ -7089,6 +7097,100 @@ impl App {
     /// and moves the cursor to the first tabstop's range.
     /// Pure-literal snippets (no tabstops) skip the active-
     /// snippet step and just leave the cursor at end-of-insert.
+    /// Expand a snippet body alongside LSP `additionalTextEdits`
+    /// as one undo unit (Phase 4.2.g.7 polish).
+    ///
+    /// Coalesces the auto-import edits the server sent back
+    /// with the snippet body's main splice into a single
+    /// `apply_edit_batch_blocking` call -- one `<C-z>` reverts
+    /// both. The main edit's position is recovered from the
+    /// `Vec<AppliedEdit>` (its index in the reverse-sorted
+    /// batch) so the active-snippet origin tracks the
+    /// post-batch buffer state correctly.
+    ///
+    /// Returns `Err(message)` when the batch apply fails; the
+    /// caller surfaces it via `set_message`. On success the
+    /// active-snippet bookkeeping mirrors `expand_snippet` --
+    /// focus the first tabstop, set `active_snippet`, etc.
+    fn expand_snippet_with_lsp_edits(
+        &mut self,
+        body: &lattice_snippet::SnippetBody,
+        anchor: Position,
+        additional: Vec<lsp_types::TextEdit>,
+    ) -> Result<(), String> {
+        let vars = self.snippet_variable_context();
+        let rendered = lattice_snippet::render::render(body, &vars);
+        // Build the main edit -- snippet body splices over
+        // `[anchor, cursor]`.
+        let main_range = lattice_protocol::position::Range::new(anchor, self.cursor);
+        let main_edit = Edit::replace(main_range, rendered.text.clone());
+        // Convert `additionalTextEdits` to lattice Edits.
+        let snap = self.document.snapshot();
+        let mut all_edits: Vec<Edit> = Vec::with_capacity(additional.len() + 1);
+        for te in &additional {
+            let start_byte = lsp_position_to_app_byte(
+                &snap.buffer,
+                te.range.start.line,
+                te.range.start.character,
+            );
+            let end_byte = lsp_position_to_app_byte(
+                &snap.buffer,
+                te.range.end.line,
+                te.range.end.character,
+            );
+            let r = lattice_protocol::position::Range::new(
+                Position::new(te.range.start.line, start_byte),
+                Position::new(te.range.end.line, end_byte),
+            );
+            all_edits.push(Edit::replace(r, te.new_text.clone()));
+        }
+        all_edits.push(main_edit.clone());
+        // Reverse-sort by start position so each edit's
+        // original-document positions stay valid as we apply
+        // sequentially. Same convention as `apply_lsp_text_edits`.
+        all_edits.sort_by(|a, b| {
+            b.range
+                .start
+                .line
+                .cmp(&a.range.start.line)
+                .then_with(|| b.range.start.byte.cmp(&a.range.start.byte))
+        });
+        // Track main's index post-sort so we can read its
+        // post-batch range out of the applied vec.
+        let main_idx = all_edits
+            .iter()
+            .position(|e| *e == main_edit)
+            .ok_or_else(|| "main edit lost during sort".to_string())?;
+        drop(snap);
+        let applied = self
+            .apply_edit_batch_blocking(all_edits)
+            .map_err(|e| format!("{e:?}"))?;
+        let main_applied = applied
+            .get(main_idx)
+            .ok_or_else(|| "main edit missing from applied batch".to_string())?;
+        let origin = self
+            .document
+            .snapshot()
+            .buffer
+            .position_to_byte(main_applied.inserted_range.start)
+            .unwrap_or(0);
+        if !rendered.tabstops.is_empty() {
+            let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
+            if let Some(group) = active.focus_first()
+                && let Some(first) = group.ranges.first()
+                && let Ok(pos) =
+                    self.document.snapshot().buffer.byte_to_position(first.start)
+            {
+                self.cursor = pos;
+            }
+            self.active_snippet = Some(active);
+            self.modal = ModalState::Insert;
+        } else {
+            self.cursor = main_applied.inserted_range.end;
+        }
+        Ok(())
+    }
+
     fn expand_snippet(
         &mut self,
         body: &lattice_snippet::SnippetBody,
@@ -25036,6 +25138,94 @@ mod tests {
         assert!(a.insert_completion.is_none());
         let text = a.document.snapshot().buffer.as_string();
         assert!(text.ends_with("alpha;"), "got `{text}`");
+    }
+
+    #[test]
+    fn lsp_snippet_with_additional_edits_lands_as_one_undo_unit() {
+        // Buffer has space for the auto-import on line 0 and
+        // the snippet expansion on line 2. The accept path
+        // applies BOTH edits in a single batch; one Ctrl-Z
+        // reverts both.
+        let mut a = app_with("\n\nfor", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(2, 3);
+        // Manually install the popup state: one candidate
+        // with snippet `insertTextFormat`, an auto-import
+        // additionalTextEdit at line 0, and a snippet body
+        // that splices `[anchor, cursor]`.
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::new(2, 0),
+            Position::new(2, 3),
+            "for".into(),
+        );
+        let mut raw = lattice_completion::RawCandidate::plain(
+            "for",
+            lattice_completion::CandidateKind::Plain,
+        )
+        .with_source(lattice_completion::SourceId::new(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID,
+        ));
+        raw.data = lattice_completion::CandidateData::Extension {
+            kind_id: LSP_COMPLETION_KIND_ID,
+            payload: 0u32.to_le_bytes().to_vec(),
+        };
+        state.raw.push(raw.clone());
+        state.rendered.push(lattice_completion::RenderedCandidate::from_scored(
+            lattice_completion::ScoredCandidate {
+                raw,
+                score: lattice_completion::MatchScore(100),
+                match_ranges: Vec::new(),
+            },
+        ));
+        a.insert_completion = Some(state);
+        a.insert_completion_lsp_meta.push(LspCompletionMeta {
+            label: "for-loop".into(),
+            // Snippet body with one tabstop -- expand_snippet_with_lsp_edits
+            // sets up the active snippet, focuses $1.
+            insert_text: "for ${1:i} in iter {}".into(),
+            filter_text: None,
+            sort_text: None,
+            detail: None,
+            documentation: None,
+            kind: Some(lsp_types::CompletionItemKind::SNIPPET),
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: vec![lsp_types::TextEdit {
+                range: lsp_types::Range {
+                    start: lsp_types::Position { line: 0, character: 0 },
+                    end: lsp_types::Position { line: 0, character: 0 },
+                },
+                new_text: "use std::iter;\n".into(),
+            }],
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::SNIPPET,
+            replace_range: None,
+            server_id: std::sync::Arc::from("test-server"),
+            original_item: lsp_types::CompletionItem::default(),
+            resolved: true,
+        });
+        a.do_completion_accept();
+        // After accept: line 0 has the auto-import, line 2
+        // (now line 3 after the import inserted a newline,
+        // wait -- the import is `use std::iter;\n` which adds
+        // an extra newline; existing line 0 was empty so the
+        // buffer is now: line 0 = "use std::iter;", line 1 = "",
+        // line 2 = "", line 3 = "for i in iter {}").
+        let after_accept = a.document.snapshot().buffer.as_string();
+        assert!(after_accept.contains("use std::iter;"), "auto-import applied: `{after_accept}`");
+        assert!(after_accept.contains("for i in iter {}"), "snippet expanded: `{after_accept}`");
+        // Active snippet focused on $1 ("i").
+        assert!(a.active_snippet.is_some(), "active snippet started");
+        // Undo ONCE -> both the auto-import AND the snippet
+        // expansion revert.
+        a.undo_blocking().expect("undo");
+        let after_undo = a.document.snapshot().buffer.as_string();
+        assert_eq!(
+            after_undo, "\n\nfor",
+            "single undo reverted both auto-import and snippet (`{after_undo}`)",
+        );
     }
 
     #[test]

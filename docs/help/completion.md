@@ -309,6 +309,7 @@ prose typing.
 | `completion.debounce_ms` | int | `50` | Per-keystroke debounce for refilter passes. |
 | `completion.docs_auto` | bool | `false` | Auto-show docs popup on selection change. (4.2.g.3) |
 | `completion.extra_commit_chars` | string | `""` | Editor-side commit characters unioned with each LSP server's per-item `commitCharacters`. Typing one of these while the popup is open accepts the focused candidate then inserts the character (e.g. `:set completion.extra_commit_chars=.,;` to accept on `.`, `,`, or `;` globally). (4.2.g.7) |
+| `completion.ghost_text` | bool | `false` | Render the top-ranked candidate's suffix as a dimmed inline overlay after the cursor while the popup is open. Off by default; flip on for vscode-style preview. Only fires when the cursor is at end-of-line and the top candidate is a case-insensitive prefix of the typed query. Suppressed in path-completion mode (filenames are already shown in full). (4.2.g.7) |
 | `completion.auto_insert_single` | bool | `true` | Auto-accept when only one candidate matches. |
 | `completion.fuzzy_threshold` | int | `5` | Minimum match score to render. |
 | `completion.suppress_in` | string list | `[]` | Tree-sitter scopes where completion is suppressed (e.g. `["string", "comment"]`). |

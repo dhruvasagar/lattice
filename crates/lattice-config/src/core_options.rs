@@ -38,6 +38,7 @@ pub struct CoreOptions {
     pub completion_source_tree_sitter_priority: OptionHandle<i64>,
     pub completion_source_path_priority: OptionHandle<i64>,
     pub completion_extra_commit_chars: OptionHandle<String>,
+    pub completion_ghost_text: OptionHandle<bool>,
 }
 
 /// Register every renderer-agnostic option against `registry` and
@@ -218,6 +219,18 @@ pub fn register_core_options(registry: &ConfigRegistry) -> CoreOptions {
          to e.g. `\".,;\"` to accept on any of those keys \
          globally.",
     ));
+    let completion_ghost_text = registry.register(Option::<bool>::new(
+        "completion.ghost_text",
+        false,
+        "Render the top-ranked candidate's suffix as a dimmed \
+         inline overlay after the cursor while the popup is \
+         open (Phase 4.2.g.7 polish). Off by default to keep \
+         the live buffer visually quiet; turn on for a \
+         vscode-style preview of the most likely completion. \
+         Only fires when the cursor sits at end-of-line and \
+         the top candidate is a case-insensitive prefix of \
+         the typed query.",
+    ));
     CoreOptions {
         number,
         relativenumber,
@@ -234,6 +247,7 @@ pub fn register_core_options(registry: &ConfigRegistry) -> CoreOptions {
         completion_source_tree_sitter_priority,
         completion_source_path_priority,
         completion_extra_commit_chars,
+        completion_ghost_text,
     }
 }
 
@@ -261,6 +275,7 @@ mod tests {
         assert_eq!(*r.get(h.completion_source_tree_sitter_priority), 80);
         assert_eq!(*r.get(h.completion_source_path_priority), 90);
         assert_eq!(r.get(h.completion_extra_commit_chars).as_str(), "");
+        assert!(!*r.get(h.completion_ghost_text));
     }
 
     #[test]

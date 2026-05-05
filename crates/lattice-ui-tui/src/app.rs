@@ -6969,6 +6969,51 @@ impl App {
         self.do_insert_text(&ch.to_string());
     }
 
+    /// Suffix of the top-ranked completion candidate that would
+    /// extend the user's current query, or `None` when the
+    /// renderer should paint nothing (Phase 4.2.g.7 ghost-text
+    /// polish). Returned suffix is the part of the candidate
+    /// `text` BEYOND the case-insensitive prefix-match against
+    /// `state.query`.
+    ///
+    /// Returns `None` when:
+    /// - `completion.ghost_text` option is off (default).
+    /// - The popup is closed.
+    /// - The top-ranked candidate doesn't case-insensitively
+    ///   prefix-match the query.
+    /// - The popup is in path-completion mode (filenames are
+    ///   already shown in full inside the string literal --
+    ///   ghost would double up).
+    /// - The query is empty (an empty popup just lists
+    ///   everything; ghosting the first arbitrary candidate
+    ///   would surprise the user).
+    pub fn completion_ghost_text_suffix(&self) -> Option<String> {
+        if !*self.config.get(self.core_options.completion_ghost_text) {
+            return None;
+        }
+        if self.completion_in_path_context {
+            return None;
+        }
+        let state = self.insert_completion.as_ref()?;
+        if state.query.is_empty() {
+            return None;
+        }
+        let top = state.rendered.first()?;
+        let text = top.raw.text.as_str();
+        let prefix = state.query.as_str();
+        if text.len() < prefix.len() {
+            return None;
+        }
+        let (head, tail) = text.split_at(prefix.len());
+        if !head.eq_ignore_ascii_case(prefix) {
+            return None;
+        }
+        if tail.is_empty() {
+            return None;
+        }
+        Some(tail.to_string())
+    }
+
     /// Effective commit characters for `candidate` -- per-item
     /// list (LSP-supplied via `LspCompletionMeta.commit_characters`)
     /// unioned with the global `completion.extra_commit_chars`
@@ -25226,6 +25271,117 @@ mod tests {
             after_undo, "\n\nfor",
             "single undo reverted both auto-import and snippet (`{after_undo}`)",
         );
+    }
+
+    fn open_popup_with_top_text(a: &mut App, query: &str, top_text: &str) {
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            a.cursor,
+            a.cursor,
+            query.to_string(),
+        );
+        let raw = lattice_completion::RawCandidate::plain(
+            top_text,
+            lattice_completion::CandidateKind::Plain,
+        );
+        state.raw.push(raw.clone());
+        state
+            .rendered
+            .push(lattice_completion::RenderedCandidate::from_scored(
+                lattice_completion::ScoredCandidate {
+                    raw,
+                    score: lattice_completion::MatchScore(800),
+                    match_ranges: Vec::new(),
+                },
+            ));
+        a.insert_completion = Some(state);
+    }
+
+    #[test]
+    fn ghost_text_off_by_default_returns_none() {
+        let mut a = app_with("foo", 5);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        open_popup_with_top_text(&mut a, "foo", "foobar");
+        // Default: completion.ghost_text = false -> no ghost.
+        assert!(a.completion_ghost_text_suffix().is_none());
+    }
+
+    #[test]
+    fn ghost_text_returns_suffix_for_prefix_matching_top_candidate() {
+        let mut a = app_with("foo", 5);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        a.do_set("completion.ghost_text=true");
+        open_popup_with_top_text(&mut a, "foo", "foobar");
+        assert_eq!(
+            a.completion_ghost_text_suffix(),
+            Some("bar".to_string()),
+            "ghost suffix is the part of the candidate beyond the query prefix",
+        );
+    }
+
+    #[test]
+    fn ghost_text_case_insensitive_prefix_match() {
+        let mut a = app_with("Foo", 5);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        a.do_set("completion.ghost_text=true");
+        open_popup_with_top_text(&mut a, "Foo", "foobar");
+        assert_eq!(
+            a.completion_ghost_text_suffix(),
+            Some("bar".to_string()),
+        );
+    }
+
+    #[test]
+    fn ghost_text_none_when_top_doesnt_prefix_match_query() {
+        let mut a = app_with("xyz", 5);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        a.do_set("completion.ghost_text=true");
+        // Top candidate is `bar`; query `xyz` doesn't prefix
+        // it (matcher's substring tier still puts it on
+        // screen, but ghost demands prefix-match).
+        open_popup_with_top_text(&mut a, "xyz", "bar");
+        assert!(a.completion_ghost_text_suffix().is_none());
+    }
+
+    #[test]
+    fn ghost_text_none_when_query_is_empty() {
+        let mut a = app_with("", 5);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 0);
+        a.do_set("completion.ghost_text=true");
+        open_popup_with_top_text(&mut a, "", "alpha");
+        assert!(
+            a.completion_ghost_text_suffix().is_none(),
+            "empty query -> no ghost (any candidate would match)",
+        );
+    }
+
+    #[test]
+    fn ghost_text_none_in_path_context() {
+        let mut a = app_with("\"\"", 5);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 1);
+        a.do_set("completion.ghost_text=true");
+        a.completion_in_path_context = true;
+        open_popup_with_top_text(&mut a, "src", "src/foo.rs");
+        assert!(
+            a.completion_ghost_text_suffix().is_none(),
+            "path popup already shows full filenames; ghost would double up",
+        );
+    }
+
+    #[test]
+    fn ghost_text_none_when_popup_closed() {
+        let mut a = app_with("foo", 5);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        a.do_set("completion.ghost_text=true");
+        // No open_popup_with_top_text call -> insert_completion = None.
+        assert!(a.completion_ghost_text_suffix().is_none());
     }
 
     #[test]

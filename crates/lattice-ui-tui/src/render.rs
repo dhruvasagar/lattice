@@ -1738,6 +1738,24 @@ pub fn compose_visible_lines(
                 TuiStyle::default().fg(Color::DarkGray),
             ));
         }
+        // Ghost text (Phase 4.2.g.7 polish). When the cursor
+        // sits at end-of-line on this row AND the popup's
+        // top-ranked candidate has a suffix to preview, paint
+        // it as a dimmed inline overlay so the user sees the
+        // most-likely accept inline. Cursor block visually
+        // overlays the first ghost char (the typed prefix
+        // ends right before it).
+        if line_idx == app.cursor.line
+            && (app.cursor.byte as usize) == line_text.len()
+            && let Some(suffix) = app.completion_ghost_text_suffix()
+        {
+            body.push(Span::styled(
+                suffix,
+                TuiStyle::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ));
+        }
         // LSP severity cell (Phase 4.1.d.iii). One cell pre-
         // pended to the gutter; severity glyph + colour when a
         // diagnostic touches the line, blank otherwise. Costs
@@ -2768,6 +2786,102 @@ mod tests {
         let out = apply_match_overlay(spans, 100, 110, style);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].content.as_ref(), "untouched");
+    }
+
+    #[test]
+    fn compose_visible_lines_appends_ghost_text_at_eol_when_enabled() {
+        // With completion.ghost_text on AND popup open with a
+        // prefix-matching top candidate, the cursor's line ends
+        // with a dimmed span carrying the suffix.
+        let mut app = app_with("foo", 5);
+        app.modal = lattice_grammar::ModalState::Insert;
+        app.cursor = pos(0, 3);
+        app.config
+            .set(app.core_options.completion_ghost_text, true)
+            .expect("set ghost_text");
+        // Install a popup with `foobar` as the top candidate
+        // and `foo` as the typed query.
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            app.cursor,
+            app.cursor,
+            "foo".into(),
+        );
+        let raw = lattice_completion::RawCandidate::plain(
+            "foobar",
+            lattice_completion::CandidateKind::Plain,
+        );
+        state.raw.push(raw.clone());
+        state
+            .rendered
+            .push(lattice_completion::RenderedCandidate::from_scored(
+                lattice_completion::ScoredCandidate {
+                    raw,
+                    score: lattice_completion::MatchScore(800),
+                    match_ranges: Vec::new(),
+                },
+            ));
+        app.insert_completion = Some(state);
+
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 1, 80);
+        let composed = line_text(&lines[0]);
+        // The line should contain BOTH the buffer text `foo`
+        // AND the ghost suffix `bar`.
+        assert!(
+            composed.contains("foo") && composed.contains("bar"),
+            "expected ghost suffix appended; got `{composed}`",
+        );
+        // The LAST span on the line is the ghost — confirm it's
+        // dim-styled (DarkGray) so it renders subtler than the
+        // buffer text.
+        let last = lines[0]
+            .spans
+            .last()
+            .expect("at least one span on the rendered line");
+        assert_eq!(last.content.as_ref(), "bar");
+        assert_eq!(last.style.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn compose_visible_lines_no_ghost_when_cursor_not_at_eol() {
+        // Cursor mid-line -> ghost would visually clash with
+        // existing buffer content; producer suppresses.
+        let mut app = app_with("foobaz", 5);
+        app.modal = lattice_grammar::ModalState::Insert;
+        app.cursor = pos(0, 3); // between `foo` and `baz`
+        app.config
+            .set(app.core_options.completion_ghost_text, true)
+            .expect("set ghost_text");
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            app.cursor,
+            app.cursor,
+            "foo".into(),
+        );
+        let raw = lattice_completion::RawCandidate::plain(
+            "foobar",
+            lattice_completion::CandidateKind::Plain,
+        );
+        state.raw.push(raw.clone());
+        state
+            .rendered
+            .push(lattice_completion::RenderedCandidate::from_scored(
+                lattice_completion::ScoredCandidate {
+                    raw,
+                    score: lattice_completion::MatchScore(800),
+                    match_ranges: Vec::new(),
+                },
+            ));
+        app.insert_completion = Some(state);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 1, 80);
+        let composed = line_text(&lines[0]);
+        // `foobaz` from the buffer is fine; `foobar` (ghost)
+        // mustn't sneak in.
+        assert!(composed.contains("foobaz"));
+        assert!(
+            !composed.contains("foobar"),
+            "ghost suppressed mid-line; got `{composed}`",
+        );
     }
 
     #[test]

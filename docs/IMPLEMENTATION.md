@@ -830,9 +830,17 @@ Remaining 4.2:
   by indexing the applied vec at the main edit's
   position-after-sort; non-snippet LSP path was already
   coalesced via `apply_lsp_completion_accept`'s combined
-  Vec<TextEdit>) ✅. Remaining 4.2.g.7 polish items: ghost
-  text (top-ranked candidate's suffix as virtual text after
-  cursor), cross-source visual dedup at the popup renderer,
+  Vec<TextEdit>) ✅; ghost text for the top-ranked
+  candidate (new typed option `completion.ghost_text`,
+  default off; new App helper
+  `completion_ghost_text_suffix()` returns the
+  case-insensitive-prefix suffix when the popup is open
+  with a non-empty query, the top candidate matches as
+  prefix, and we're not in path-context;
+  `compose_visible_lines` appends a dimmed-italic span on
+  the cursor's row when the cursor is at end-of-line and
+  the helper returns Some) ✅. Remaining 4.2.g.7 polish
+  items: cross-source visual dedup at the popup renderer,
   picker call sites flipping to typed routing payload via
   `CandidateData::Extension`.
 - `completionItem/resolve` (lazy doc / additional edits) --

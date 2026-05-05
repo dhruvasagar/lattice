@@ -96,6 +96,7 @@ impl<'a> Parser<'a> {
         b
     }
 
+    #[allow(dead_code)]
     fn starts_with(&self, lit: &[u8]) -> bool {
         self.src
             .get(self.pos..self.pos + lit.len())

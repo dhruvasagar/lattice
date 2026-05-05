@@ -709,15 +709,22 @@ Remaining 4.2:
   (shell + buffer-words + popup widget + minor-mode keymap)
   ✅; 4.2.g.2 (LSP source + isIncomplete refresh + typed
   routing payload via `CandidateData::Extension` /
-  `App.insert_completion_lsp_meta` sidecar) ✅. Remaining
-  phases: 4.2.g.3 (docs popup + completionItem/resolve),
-  4.2.g.4 (`lattice-snippet` crate +
-  friendly-snippets compat), 4.2.g.5 (frequency ranking +
-  commit chars + per-source priority + extend the typed
-  routing payload to picker call sites), 4.2.g.6
-  (tree-sitter local symbols + path source), 4.2.g.7
-  (polish: ghost text, additionalTextEdits coalesce
-  refactor, auto-insert-single).
+  `App.insert_completion_lsp_meta` sidecar) ✅; 4.2.g.3
+  (docs side popup + lazy `completionItem/resolve` +
+  `<C-f>` / `<C-b>` paging) ✅; 4.2.g.4 (`lattice-snippet`
+  crate -- TextMate JSON parser + render walker + variable
+  context + active-snippet state machine + friendly-snippets
+  compat; host integration -- `gen:snippet` source, accept
+  routing for snippet candidates AND LSP `insertTextFormat ==
+  Snippet` items, `<C-x><C-s>` direct expand,
+  active-snippet minor mode for `<Tab>` / `<S-Tab>` / `<Esc>`,
+  `:snippet-expand` / `:reload-snippets` ex-commands) ✅.
+  Remaining phases: 4.2.g.5 (frequency ranking + commit
+  chars + per-source priority + extend the typed routing
+  payload to picker call sites), 4.2.g.6 (tree-sitter local
+  symbols + path source), 4.2.g.7 (polish: ghost text,
+  additionalTextEdits coalesce refactor,
+  auto-insert-single).
 - `completionItem/resolve` (lazy doc / additional edits) --
   shipped as part of 4.2.g.3 + 4.2.g.7.
 - `workspaceSymbol/resolve` (lazy location).

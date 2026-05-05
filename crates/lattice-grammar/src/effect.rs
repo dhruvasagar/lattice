@@ -309,6 +309,18 @@ pub enum Effect {
     /// needed) and applies the action's WorkspaceEdit /
     /// command. Phase 4.3.
     LspCodeAction,
+    /// `:snippet-expand` -- direct snippet expansion at the
+    /// cursor (Phase 4.2.g.4). Looks up the word at the
+    /// cursor in the per-language snippet registry; expands
+    /// the first matching snippet without surfacing the
+    /// completion popup. No-op when no snippet matches.
+    /// Surface-form alias of the `<C-x><C-s>` chord.
+    SnippetExpand,
+    /// `:reload-snippets` -- re-read every snippet file from
+    /// disk and rebuild the per-language registry (Phase
+    /// 4.2.g.4). Useful after editing a `.code-snippets` /
+    /// `.json` file in the project's snippet directory.
+    ReloadSnippets,
 
     Many(Vec<Effect>),
 }

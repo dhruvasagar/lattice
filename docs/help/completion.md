@@ -8,19 +8,22 @@ registries, words in your buffers, paths under the cursor,
 local symbols from the syntax tree. They all converge in one
 list, ranked together.
 
-> **Status:** Phase 4.2.g.1 + 4.2.g.2 + 4.2.g.3 shipped.
-> Manual trigger via `<C-x><C-o>` / `<C-Space>`;
-> buffer-words **and** LSP sources contribute to the unified
-> popup; LSP items carry through with their `filterText` /
-> `sortText` / `detail` / `additionalTextEdits` /
-> `commitCharacters`; `isIncomplete` refresh re-fires LSP on
-> each keystroke when the server requests it. **`<C-d>`
-> toggles a side documentation popup** for the focused
-> candidate; `completionItem/resolve` fires lazily for items
-> that arrived without `documentation`; `<C-f>` / `<C-b>`
-> page through long docs bodies. Snippet engine (4.2.g.4),
-> per-source priority + frequency ranking (4.2.g.5),
-> tree-sitter / path sources (4.2.g.6) follow. The
+> **Status:** Phase 4.2.g.1 + 4.2.g.2 + 4.2.g.3 + 4.2.g.4
+> shipped. Manual trigger via `<C-x><C-o>` / `<C-Space>`;
+> buffer-words, LSP, **and snippet** sources contribute to
+> the unified popup; LSP items carry through with their
+> `filterText` / `sortText` / `detail` /
+> `additionalTextEdits` / `commitCharacters`; `isIncomplete`
+> refresh re-fires LSP on each keystroke when the server
+> requests it. **`<C-d>` toggles a side documentation popup**
+> for the focused candidate; `completionItem/resolve` fires
+> lazily for items that arrived without `documentation`;
+> `<C-f>` / `<C-b>` page through long docs bodies. **Snippets
+> ship with a TextMate JSON parser, render walker, active
+> state machine** (`<Tab>` / `<S-Tab>` / `<Esc>` minor mode)
+> + LSP `insertTextFormat == Snippet` routing through the
+> same engine. Per-source priority + frequency ranking
+> (4.2.g.5), tree-sitter / path sources (4.2.g.6) follow. The
 > behavioural spec for the full surface is in
 > [`docs/insert-completion.md`](../insert-completion.md).
 
@@ -96,12 +99,108 @@ priority, set source-specific knobs (e.g.
 |---|---|---|
 | `gen:buffer-words` | Words from the active buffer (and visible buffers in 4.2.g.6) — alphanumeric + underscore runs, deduped, default min length 3. | 4.2.g.1 ✅ |
 | `gen:lsp-completion` | `textDocument/completion` results from every LSP server attached to the buffer. Item adaptation: `filterText` (matcher target) / `sortText` (ranker tiebreaker) / `detail` (one-line signature) / `documentation` (markdown body for the docs popup) / `tags[Deprecated]` (strikethrough + ranker penalty in 4.2.g.5) / `commitCharacters` (auto-accept on type, 4.2.g.5) / `additionalTextEdits` (auto-imports, applied alongside the main insert as one undo unit). `isIncomplete: true` re-fires the request on every keystroke that mutates the query. | 4.2.g.2 ✅ |
-| `gen:snippet` | Per-language snippets from `lattice-snippet`. TextMate JSON format; drop-in compatible with VS Code / friendly-snippets. | 4.2.g.4 |
+| `gen:snippet` | Per-language snippets from `lattice-snippet`. TextMate JSON format; drop-in compatible with VS Code / friendly-snippets. | 4.2.g.4 ✅ |
 | `gen:path` | Filesystem entries when typing a path inside a string literal. | 4.2.g.6 |
 | `gen:tree-sitter-symbol` | Local identifiers from the buffer's syntax tree (function defs, let-bindings, closure params). | 4.2.g.6 |
 | `gen:plugin-*` | Reserved for plugin-supplied sources via the WASM Component plugin host (Phase 7). | post-4.x |
 
 See `:help completion-sources` for per-source detail.
+
+## Snippets (Phase 4.2.g.4)
+
+Snippets are templates with **placeholders** you cycle
+through. The engine implements TextMate / LSP snippet syntax,
+so VS Code's `friendly-snippets` pack drops in unchanged.
+
+### Two ways to expand
+
+- **Through the popup.** `gen:snippet` contributes candidates
+  to the unified popup. Select one and `<C-y>` / `<Tab>` /
+  `<CR>` expands the body and starts placeholder navigation.
+- **Direct chord.** `<C-x><C-s>` (or `:snippet-expand`) looks
+  up the word at the cursor in the per-language registry and
+  expands the first match without surfacing the popup. Quiet
+  no-op when no snippet matches.
+
+LSP-supplied items whose `insertTextFormat` is `Snippet` route
+through the same engine — the server's templated `insertText`
+becomes a real expansion with placeholders, not a literal
+splice.
+
+### Active-snippet minor mode
+
+While a snippet is in flight, an **active-snippet minor mode**
+overrides three Insert-mode keys until the snippet exits:
+
+| Chord | Action | Ex-command |
+|---|---|---|
+| `<Tab>` | Jump to next placeholder (or exit on `$0`) | `:snippet-next` |
+| `<S-Tab>` | Jump to previous placeholder | `:snippet-prev` |
+| `<Esc>` | Exit snippet (placeholders become plain text) and return to Normal | `:snippet-leave` |
+
+Other keys fall through to the regular Insert handlers, so you
+can keep typing inside a placeholder to overtype the default.
+The minor mode yields to the completion popup when both are
+open: `<Tab>` accepts a candidate first, then snippet
+navigation resumes.
+
+### Snippet syntax (TextMate / LSP)
+
+```text
+$1                       plain tabstop
+${1:default}             placeholder with default text
+${1|one,two,three|}      choice (cycled per index)
+$0                       exit position (last)
+$1 ... $1 ...            mirrors -- edits ripple
+${TM_FILENAME}           variable (see below)
+${1/pat/sub/flags}       transform on the captured text
+\$ \\                    escape
+```
+
+A handful of TextMate variables are wired today:
+`$TM_FILENAME`, `$TM_FILEPATH`, `$TM_DIRECTORY`,
+`$TM_LINE_INDEX` (0-based), `$TM_LINE_NUMBER` (1-based),
+`$TM_CURRENT_LINE`, `$TM_CURRENT_WORD`, `$CLIPBOARD`,
+`$CURRENT_YEAR`, `$CURRENT_YEAR_SHORT`, `$CURRENT_MONTH`,
+`$CURRENT_DATE`, `$CURRENT_HOUR`, `$CURRENT_MINUTE`,
+`$CURRENT_SECOND`, `$CURRENT_SECONDS_UNIX`,
+`$CURRENT_DAY_NAME`, `$CURRENT_DAY_NAME_SHORT`,
+`$CURRENT_MONTH_NAME`, `$CURRENT_MONTH_NAME_SHORT`,
+`$RANDOM`, `$RANDOM_HEX`, `$UUID`. Unknown variable names
+fall through to the literal `$NAME` so future additions are
+backwards-compatible.
+
+### Loading snippet packs
+
+`:reload-snippets` re-reads every directory configured in
+`App::snippet_dirs` and rebuilds the registry. Files are
+keyed by stem: `rust.json` → language `"rust"`,
+`_global.json` → the all-language `*` slot. Format is
+friendly-snippets-compatible TextMate JSON:
+
+```json
+{
+    "for loop": {
+        "prefix": "for",
+        "body": [
+            "for ${1:i} in ${2:iter} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "for-in loop"
+    }
+}
+```
+
+`prefix` and `body` accept either a string or an array of
+strings (joined with `\n`). Top-level keys are snippet names.
+
+### Ex-commands
+
+| Command | What it does |
+|---|---|
+| `:snippet-expand` | Direct expansion at the cursor — alias of `<C-x><C-s>`. |
+| `:reload-snippets` | Re-read every configured snippet directory and rebuild the registry. |
 
 ## Configuration
 

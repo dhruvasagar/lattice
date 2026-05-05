@@ -68,6 +68,14 @@ pub struct TranslateContext<'a> {
     /// "shift-left-indent" / "half-page-down"). Closing the
     /// popup deactivates the layer; original bindings restore.
     pub insert_completion_open: bool,
+    /// True when an `ActiveSnippet` is in flight (Phase
+    /// 4.2.g.4). Activates the active-snippet minor mode:
+    /// `<Tab>` jumps to the next placeholder, `<S-Tab>` to
+    /// the previous, `<Esc>` exits the snippet (and Insert).
+    /// The layer claims `<Tab>` ahead of Insert-mode's
+    /// "insert literal tab" so placeholder navigation is
+    /// stable; closing the snippet deactivates the layer.
+    pub snippet_active: bool,
 }
 
 pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
@@ -88,6 +96,22 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
     // §3.8).
     if ctx.insert_completion_open
         && let Some(action) = translate_insert_completion_popup(event)
+    {
+        return action;
+    }
+
+    // Active-snippet minor mode (Phase 4.2.g.4). Active only
+    // while `App.active_snippet.is_some()` AND we're in Insert
+    // mode AND the completion popup isn't open (popup wins for
+    // `<Tab>` -> accept). Claims `<Tab>` / `<S-Tab>` for
+    // placeholder navigation and `<Esc>` to exit the snippet
+    // before Insert-mode handlers see those keys; everything
+    // else flows through to the normal Insert dispatch so the
+    // user can keep typing inside placeholders.
+    if ctx.snippet_active
+        && matches!(ctx.modal, ModalState::Insert)
+        && !ctx.insert_completion_open
+        && let Some(action) = translate_active_snippet(event)
     {
         return action;
     }
@@ -349,6 +373,11 @@ fn translate_insert(event: KeyEvent, pending: Pending) -> Action {
         if event.modifiers.contains(KeyModifiers::CONTROL) {
             return match event.code {
                 KeyCode::Char('o') => Action::CompletionTrigger,
+                // `<C-x><C-s>` -- direct snippet expansion
+                // (Phase 4.2.g.4). Looks up the word at the
+                // cursor in the snippet registry and expands
+                // it without surfacing the popup.
+                KeyCode::Char('s') => Action::SnippetExpand,
                 // Unrecognised follow-up: drop the pending
                 // state and let the user retry.
                 _ => Action::SetPending(Pending::None),
@@ -423,6 +452,30 @@ fn translate_insert_completion_popup(event: KeyEvent) -> Option<Action> {
         // key resolves in Insert mode -- inside the popup we
         // accept that key as a re-trigger via the `<C-Space>`
         // path.
+        _ => None,
+    }
+}
+
+/// Active-snippet minor-mode keymap (Phase 4.2.g.4). Returns
+/// `Some(Action)` when the key is claimed by the layer; `None`
+/// when the host should fall through to Insert-mode handling
+/// so the user can keep typing inside the placeholder.
+///
+/// Claims:
+/// - `<Tab>` -> jump to next placeholder
+/// - `<S-Tab>` -> jump to previous placeholder
+/// - `<Esc>` -> exit the snippet (returns to Normal mode like
+///   plain Insert; placeholders become plain text)
+fn translate_active_snippet(event: KeyEvent) -> Option<Action> {
+    match event.code {
+        KeyCode::Tab if !event.modifiers.contains(KeyModifiers::SHIFT) => {
+            Some(Action::SnippetNextPlaceholder)
+        }
+        KeyCode::BackTab => Some(Action::SnippetPrevPlaceholder),
+        KeyCode::Tab if event.modifiers.contains(KeyModifiers::SHIFT) => {
+            Some(Action::SnippetPrevPlaceholder)
+        }
+        KeyCode::Esc => Some(Action::SnippetLeave),
         _ => None,
     }
 }
@@ -1131,6 +1184,7 @@ mod tests {
             chord_capture: false,
             picker_open: false,
             insert_completion_open: false,
+            snippet_active: false,
         }
     }
 
@@ -1151,6 +1205,7 @@ mod tests {
             chord_capture: false,
             picker_open: false,
             insert_completion_open: false,
+            snippet_active: false,
         }
     }
 
@@ -1170,6 +1225,7 @@ mod tests {
             chord_capture: false,
             picker_open: false,
             insert_completion_open: false,
+            snippet_active: false,
         }
     }
 
@@ -1185,6 +1241,7 @@ mod tests {
             chord_capture: true,
             picker_open: false,
             insert_completion_open: false,
+            snippet_active: false,
         }
     }
 
@@ -2104,6 +2161,7 @@ mod tests {
             chord_capture: false,
             picker_open: false,
             insert_completion_open: false,
+            snippet_active: false,
         }
     }
 
@@ -2337,6 +2395,23 @@ mod tests {
                 "PageUp" => KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
                 "PageDown" => KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
                 other => {
+                    if let Some(rest) = other.strip_prefix("S-") {
+                        // Shift-modified specials: `<S-Tab>` is the
+                        // primary user; crossterm reports it as
+                        // `BackTab` (no SHIFT modifier on the event).
+                        let evt = match rest {
+                            "Tab" => KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
+                            _ => match rest.chars().next() {
+                                Some(c) => KeyEvent::new(
+                                    KeyCode::Char(c),
+                                    KeyModifiers::SHIFT,
+                                ),
+                                None => continue,
+                            },
+                        };
+                        out.push(evt);
+                        continue;
+                    }
                     if let Some(rest) = other.strip_prefix("C-") {
                         // Recognise `Space` as a token before falling
                         // back to the single-char path so `<C-Space>`
@@ -2405,6 +2480,13 @@ mod tests {
         // by `App.insert_completion.is_some()`; in this harness we
         // toggle the equivalent context flag.
         let insert_completion_open = matches!(mode, BindingMode::CompletionPopup);
+        let snippet_active = matches!(mode, BindingMode::Snippet);
+        // Snippet minor mode rides on Insert.
+        let modal = if snippet_active {
+            ModalState::Insert
+        } else {
+            modal
+        };
         let mut pending = Pending::None;
         let mut last = Action::None;
         for event in parse_chord_for_test(chord) {
@@ -2419,6 +2501,7 @@ mod tests {
                 chord_capture: false,
                 picker_open: false,
                 insert_completion_open,
+                snippet_active,
             };
             last = translate(ctx, event);
             if let Action::SetPending(p) = &last {
@@ -2556,6 +2639,7 @@ mod tests {
             chord_capture: false,
             picker_open: false,
             insert_completion_open: true,
+            snippet_active: false,
         }
     }
 
@@ -2713,6 +2797,100 @@ mod tests {
         assert!(matches!(
             translate(ctx_insert_completion(&b), ctrl(KeyCode::Char(' '))),
             Action::CompletionTrigger
+        ));
+    }
+
+    // ---- Active-snippet minor mode (Phase 4.2.g.4) ----
+
+    fn ctx_snippet_active<'a>(b: &'a Builtins) -> TranslateContext<'a> {
+        TranslateContext {
+            modal: ModalState::Insert,
+            pending: Pending::None,
+            builtins: b,
+            pending_count: 0,
+            recording_macro: false,
+            active_buffer: BufferKind::Document,
+            completion_open: false,
+            chord_capture: false,
+            picker_open: false,
+            insert_completion_open: false,
+            snippet_active: true,
+        }
+    }
+
+    #[test]
+    fn snippet_active_tab_jumps_to_next_placeholder() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_snippet_active(&b), key(KeyCode::Tab)),
+            Action::SnippetNextPlaceholder
+        ));
+    }
+
+    #[test]
+    fn snippet_active_back_tab_jumps_to_prev_placeholder() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_snippet_active(&b), key(KeyCode::BackTab)),
+            Action::SnippetPrevPlaceholder
+        ));
+    }
+
+    #[test]
+    fn snippet_active_esc_leaves_snippet() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_snippet_active(&b), key(KeyCode::Esc)),
+            Action::SnippetLeave
+        ));
+    }
+
+    #[test]
+    fn snippet_active_other_keys_fall_through_to_insert() {
+        let (_, b) = fixture();
+        // A regular printable char inside a placeholder should
+        // still hit the Insert-mode handler so the user can
+        // overtype the default.
+        let action = translate(ctx_snippet_active(&b), key(KeyCode::Char('x')));
+        assert!(matches!(action, Action::Insert(s) if s == "x"));
+    }
+
+    #[test]
+    fn snippet_active_yields_to_completion_popup() {
+        // When both layers are active the popup wins for
+        // `<Tab>` (popup uses Tab to accept, snippet uses Tab
+        // to step). Otherwise navigating snippet placeholders
+        // through the popup would be impossible.
+        let (_, b) = fixture();
+        let mut ctx = ctx_snippet_active(&b);
+        ctx.insert_completion_open = true;
+        let action = translate(ctx, key(KeyCode::Tab));
+        assert!(matches!(action, Action::CompletionAccept));
+    }
+
+    #[test]
+    fn snippet_active_only_in_insert_mode() {
+        // Active-snippet layer must never claim keys outside
+        // Insert mode; otherwise a stuck snippet could swallow
+        // Normal-mode `<Tab>` (which is `<C-i>` -- jump-list
+        // forward).
+        let (_, b) = fixture();
+        let mut ctx = ctx_snippet_active(&b);
+        ctx.modal = ModalState::Normal;
+        let action = translate(ctx, key(KeyCode::Tab));
+        // Normal-mode `<Tab>` is `<C-i>` -- jump history forward.
+        assert!(!matches!(action, Action::SnippetNextPlaceholder));
+    }
+
+    #[test]
+    fn ctrl_x_ctrl_s_resolves_to_snippet_expand() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Insert, Pending::AfterCtrlX, &b),
+                ctrl(KeyCode::Char('s'))
+            ),
+            Action::SnippetExpand
         ));
     }
 

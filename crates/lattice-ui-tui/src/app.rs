@@ -508,6 +508,23 @@ pub enum Action {
     /// Scroll the docs side popup backward (`<C-b>` inside
     /// the completion-popup minor mode).
     CompletionDocsScrollUp,
+    /// `<C-x><C-s>` -- direct snippet expansion (Phase
+    /// 4.2.g.4). Looks up the word at the cursor in the
+    /// per-language snippet registry; expands the matching
+    /// snippet directly without surfacing the popup. No-op
+    /// when no snippet matches.
+    SnippetExpand,
+    /// `<Tab>` inside the active-snippet minor mode -- jump
+    /// to the next placeholder. Returns to no-op when at
+    /// `$0`; the minor mode then deactivates.
+    SnippetNextPlaceholder,
+    /// `<S-Tab>` inside the active-snippet minor mode --
+    /// jump to the previous placeholder.
+    SnippetPrevPlaceholder,
+    /// `<Esc>` while a snippet is active -- exit the snippet
+    /// (placeholders become plain text); also exits Insert
+    /// per vim convention.
+    SnippetLeave,
     /// `:lsp-symbols` (Phase 4.2.e). Send
     /// `textDocument/documentSymbol` to every attached server;
     /// render the merged outline as a vertico picker. Selecting
@@ -1227,6 +1244,32 @@ pub struct App {
         Option<tokio::sync::mpsc::UnboundedReceiver<CompletionResolveOutcome>>,
     pub pending_completion_resolve_token:
         Option<lattice_protocol::CancellationToken>,
+    /// Per-language snippet registry (Phase 4.2.g.4). Loaded
+    /// at startup from bundled / user / project paths via
+    /// `lattice-snippet::load`; the `gen:snippet` source
+    /// consults it per-popup-trigger.
+    pub snippet_registry: lattice_snippet::SnippetRegistry,
+    /// Sidecar metadata for snippet candidates in the active
+    /// insert-completion popup. Indexed by the candidate's
+    /// `CandidateData::Extension { payload }` (u32 LE) --
+    /// same shape as `insert_completion_lsp_meta` for the
+    /// LSP source.
+    pub insert_completion_snippet_meta: Vec<SnippetCandidateMeta>,
+    /// Live snippet expansion. `Some` while a snippet is
+    /// active and `<Tab>` / `<S-Tab>` navigate placeholders.
+    /// Dropped on `$0` consumption / `<Esc>` / cursor moving
+    /// outside the snippet's tabstop ranges.
+    pub active_snippet: Option<lattice_snippet::ActiveSnippet>,
+    /// Per-language directories from which snippet packs are
+    /// loaded on startup / `:reload-snippets` (Phase 4.2.g.4).
+    /// Each entry is a directory of `*.json` files in
+    /// friendly-snippets format; the file's stem is the
+    /// language id (e.g. `rust.json` -> language `"rust"`,
+    /// `_global.json` -> the all-language `*` slot). Tests
+    /// seed this with a tempdir; production reads from
+    /// `~/.config/lattice/snippets/` (wired in startup -- see
+    /// `App::default_snippet_dirs`).
+    pub snippet_dirs: Vec<std::path::PathBuf>,
     /// Active vertico-style picker (DESIGN.md §5.9.7, §5.9.10).
     /// `Some` while a picker is open over a buffer / LSP instance
     /// / future generator. Input routes here in
@@ -1473,6 +1516,22 @@ pub struct LspCompletionMeta {
 /// Values 0-99 reserved for first-party host data; plugins use
 /// 1000+.
 pub const LSP_COMPLETION_KIND_ID: u32 = 1;
+/// `Extension::kind_id` discriminant for snippet-sourced
+/// candidates (Phase 4.2.g.4). Sidecar metadata lives in
+/// `App.insert_completion_snippet_meta`.
+pub const SNIPPET_COMPLETION_KIND_ID: u32 = 2;
+
+/// Sidecar metadata for snippet candidates in the popup. The
+/// host renders the snippet body on accept and starts an
+/// `ActiveSnippet`; this struct carries the parsed body +
+/// the display fields the popup row uses.
+#[derive(Debug, Clone)]
+pub struct SnippetCandidateMeta {
+    pub name: String,
+    pub prefix: String,
+    pub description: Option<String>,
+    pub body: lattice_snippet::SnippetBody,
+}
 
 /// Drain payload for `completionItem/resolve` (Phase
 /// 4.2.g.3). Carries the meta-vec index alongside the
@@ -2162,6 +2221,10 @@ impl App {
             pending_insert_completion_lsp_token: None,
             pending_completion_resolve_rx: None,
             pending_completion_resolve_token: None,
+            snippet_registry: lattice_snippet::SnippetRegistry::new(),
+            insert_completion_snippet_meta: Vec::new(),
+            active_snippet: None,
+            snippet_dirs: Vec::new(),
             picker: None,
             previewing: false,
             lsp_log_event_rx: Some(lsp_log_event_rx),
@@ -3430,6 +3493,14 @@ impl App {
             Action::CompletionToggleDocs => self.do_completion_toggle_docs(),
             Action::CompletionDocsScrollDown => self.do_completion_docs_scroll_down(),
             Action::CompletionDocsScrollUp => self.do_completion_docs_scroll_up(),
+            Action::SnippetExpand => self.do_snippet_expand_at_cursor(),
+            Action::SnippetNextPlaceholder => self.do_snippet_next_placeholder(),
+            Action::SnippetPrevPlaceholder => self.do_snippet_prev_placeholder(),
+            Action::SnippetLeave => {
+                self.active_snippet = None;
+                self.modal = ModalState::Normal;
+                self.pending = Pending::None;
+            }
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
             Action::LspWorkspaceSymbolRequest(q) => {
                 self.do_lsp_workspace_symbol_request(&q)
@@ -6218,7 +6289,7 @@ impl App {
     /// sources (LSP) hook into `state.raw` directly via
     /// host-side channels in 4.2.g.2.
     fn populate_insert_completion_sync(
-        &self,
+        &mut self,
         state: &mut lattice_completion::InsertCompletionState,
         buffer: &Buffer,
         trigger: &lattice_completion::CompletionTrigger,
@@ -6231,11 +6302,107 @@ impl App {
             trigger,
             case_sensitive: false,
         };
-        // Buffer-words is the only sync source in 4.2.g.1.
-        // Future phases register a list and iterate.
-        let source = lattice_completion::BufferWordsSource::new();
-        state.raw = lattice_completion::InsertSource::produce(&source, &ctx);
+        let mut raw: Vec<lattice_completion::RawCandidate> = Vec::new();
+        // Source 1: buffer-words.
+        let buffer_words = lattice_completion::BufferWordsSource::new();
+        raw.extend(lattice_completion::InsertSource::produce(&buffer_words, &ctx));
+        // Source 2: snippets (Phase 4.2.g.4). Resolve the
+        // active language so per-language snippets surface
+        // ahead of any-language `*` packs. Snippet meta lives
+        // in a sidecar; the candidate's Extension payload
+        // points at the meta-vec index.
+        let language = self.active_language_id();
+        self.insert_completion_snippet_meta.clear();
+        for snip in self.snippet_registry.matching_prefix(&language, &state.query) {
+            let idx = self.insert_completion_snippet_meta.len() as u32;
+            let prefix = snip
+                .prefixes
+                .first()
+                .cloned()
+                .unwrap_or_else(|| snip.name.clone());
+            let display = match snip.description.as_deref() {
+                Some(d) if !d.is_empty() => format!("{prefix}  {d}"),
+                _ => prefix.clone(),
+            };
+            let mut cand = lattice_completion::RawCandidate::plain(
+                prefix.clone(),
+                lattice_completion::CandidateKind::Plain,
+            );
+            cand.display = display;
+            cand.data = lattice_completion::CandidateData::Extension {
+                kind_id: SNIPPET_COMPLETION_KIND_ID,
+                payload: idx.to_le_bytes().to_vec(),
+            };
+            raw.push(cand);
+            self.insert_completion_snippet_meta.push(SnippetCandidateMeta {
+                name: snip.name.clone(),
+                prefix,
+                description: snip.description.clone(),
+                body: snip.body.clone(),
+            });
+        }
+        state.raw = raw;
         self.refilter_insert_completion(state);
+    }
+
+    /// Active buffer's snippet language id. Maps the active
+    /// document's filename extension to a language string the
+    /// snippet registry indexes by (e.g. `"rs"` -> `"rust"`).
+    /// Falls back to the empty string when no path is set
+    /// (the registry's `"*"` any-language pack still applies).
+    fn active_language_id(&self) -> String {
+        let snap = self.document.snapshot();
+        let Some(path) = snap.path.as_ref() else {
+            return String::new();
+        };
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("rs") => "rust".into(),
+            Some("py") => "python".into(),
+            Some("go") => "go".into(),
+            Some("js") | Some("jsx") | Some("mjs") | Some("cjs") => {
+                "javascript".into()
+            }
+            Some("ts") | Some("tsx") => "typescript".into(),
+            Some("c") | Some("h") => "c".into(),
+            Some("cc") | Some("cpp") | Some("cxx") | Some("hpp") | Some("hxx") => {
+                "cpp".into()
+            }
+            Some("md") => "markdown".into(),
+            Some("toml") => "toml".into(),
+            Some("yaml") | Some("yml") => "yaml".into(),
+            Some("json") => "json".into(),
+            Some("sh") => "shellscript".into(),
+            Some("lua") => "lua".into(),
+            Some(other) => other.to_string(),
+            None => String::new(),
+        }
+    }
+
+    /// Look up the snippet meta sidecar entry for a candidate,
+    /// when it's a snippet-sourced one. Returns `None` for
+    /// non-snippet candidates.
+    pub(crate) fn snippet_meta_for(
+        &self,
+        candidate: &lattice_completion::RenderedCandidate,
+    ) -> Option<&SnippetCandidateMeta> {
+        let lattice_completion::CandidateData::Extension { kind_id, payload } =
+            &candidate.raw.data
+        else {
+            return None;
+        };
+        if *kind_id != SNIPPET_COMPLETION_KIND_ID {
+            return None;
+        }
+        if payload.len() != 4 {
+            return None;
+        }
+        let idx = u32::from_le_bytes([
+            payload[0],
+            payload[1],
+            payload[2],
+            payload[3],
+        ]) as usize;
+        self.insert_completion_snippet_meta.get(idx)
     }
 
     /// Re-run matcher + ranker over `state.raw` against the
@@ -6342,13 +6509,16 @@ impl App {
         }
     }
 
-    /// Accept the focused candidate. For LSP-sourced items,
-    /// applies the LSP-shaped insert (`textEdit` range when
-    /// present, else `[anchor, cursor]`) plus any
-    /// `additionalTextEdits` (auto-imports, etc.) as one
-    /// undo unit. For sync-source items (buffer-words /
-    /// snippets / etc.) just splices `text` into
-    /// `[anchor, cursor]`.
+    /// Accept the focused candidate. Three routing paths:
+    /// 1. **Snippet candidate** (sync source `gen:snippet` or
+    ///    LSP item with `insertTextFormat == Snippet`):
+    ///    expand the body via `lattice-snippet`, splice the
+    ///    rendered text, start an `ActiveSnippet`.
+    /// 2. **LSP candidate**: apply the LSP-shaped insert
+    ///    (`textEdit` range when present) plus any
+    ///    `additionalTextEdits` as one undo unit.
+    /// 3. **Sync-source candidate**: simple replace-`[anchor,
+    ///    cursor]` splice.
     pub fn do_completion_accept(&mut self) {
         let Some(state) = self.insert_completion.take() else {
             return;
@@ -6356,12 +6526,49 @@ impl App {
         let Some(item) = state.selected_candidate().cloned() else {
             return;
         };
-        // LSP path: use the typed metadata so `additionalTextEdits`
-        // (auto-imports, etc.) coalesce with the main edit into
-        // a single undo unit.
+        // Snippet (sync source) path -- snippet meta sidecar
+        // points at a fully-parsed body.
+        if let Some(meta) = self.snippet_meta_for(&item).cloned() {
+            self.expand_snippet(&meta.body, state.anchor);
+            self.insert_completion_snippet_meta.clear();
+            self.insert_completion_lsp_meta.clear();
+            return;
+        }
+        // LSP path: typed metadata + additionalTextEdits
+        // coalesce with the main edit. When the LSP item is
+        // snippet-flavoured, route through the engine.
         if let Some(meta) = self.lsp_completion_meta_for(&item).cloned() {
+            if matches!(
+                meta.insert_text_format,
+                lsp_types::InsertTextFormat::SNIPPET
+            ) {
+                // Apply additionalTextEdits first (auto-imports
+                // etc.), then expand the snippet body. Two
+                // logical edits but rolled together for the
+                // user's `<C-z>`.
+                if !meta.additional_text_edits.is_empty()
+                    && let Err(e) =
+                        self.apply_lsp_text_edits(meta.additional_text_edits.clone())
+                {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("completion: additional edits failed: {e}"),
+                    );
+                    return;
+                }
+                match lattice_snippet::parse(&meta.insert_text) {
+                    Ok(body) => self.expand_snippet(&body, state.anchor),
+                    Err(_) => {
+                        // Body didn't parse -- splice as plain.
+                        self.apply_lsp_completion_accept(meta, state.anchor);
+                    }
+                }
+                self.insert_completion_snippet_meta.clear();
+                self.insert_completion_lsp_meta.clear();
+                return;
+            }
             self.apply_lsp_completion_accept(meta, state.anchor);
-            // Drop the LSP meta sidecar -- popup closed.
+            self.insert_completion_snippet_meta.clear();
             self.insert_completion_lsp_meta.clear();
             return;
         }
@@ -6383,7 +6590,268 @@ impl App {
                 );
             }
         }
+        self.insert_completion_snippet_meta.clear();
         self.insert_completion_lsp_meta.clear();
+    }
+
+    /// Expand a parsed snippet body at the popup's anchor.
+    /// Renders the body (variables resolved against the
+    /// active buffer's context), splices the resulting text
+    /// over `[anchor, cursor]`, sets up an `ActiveSnippet`,
+    /// and moves the cursor to the first tabstop's range.
+    /// Pure-literal snippets (no tabstops) skip the active-
+    /// snippet step and just leave the cursor at end-of-insert.
+    fn expand_snippet(
+        &mut self,
+        body: &lattice_snippet::SnippetBody,
+        anchor: Position,
+    ) {
+        let vars = self.snippet_variable_context();
+        let rendered = lattice_snippet::render::render(body, &vars);
+        // Splice the rendered text over `[anchor, cursor]`.
+        let range = lattice_protocol::position::Range::new(anchor, self.cursor);
+        let edit = Edit::replace(range, rendered.text.clone());
+        let applied = match self.apply_edit_blocking(edit) {
+            Ok(a) => a,
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("snippet: apply failed: {e:?}"),
+                );
+                return;
+            }
+        };
+        // The host's offset of the snippet origin = anchor
+        // converted to a buffer byte offset. ActiveSnippet
+        // tracks ranges in buffer bytes; since our rope edit
+        // returned the inserted_range, we recompute the
+        // origin from the buffer's positional API.
+        let origin = match self
+            .document
+            .snapshot()
+            .buffer
+            .position_to_byte(applied.inserted_range.start)
+        {
+            Ok(b) => b,
+            Err(_) => 0,
+        };
+        if !rendered.tabstops.is_empty() {
+            let mut active =
+                lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
+            // Focus the first tabstop and move the cursor.
+            if let Some(group) = active.focus_first()
+                && let Some(first) = group.ranges.first()
+                && let Ok(pos) =
+                    self.document.snapshot().buffer.byte_to_position(first.start)
+            {
+                self.cursor = pos;
+            }
+            self.active_snippet = Some(active);
+            self.modal = ModalState::Insert;
+        } else {
+            self.cursor = applied.inserted_range.end;
+        }
+    }
+
+    /// Build a `VariableContext` for snippet expansion from
+    /// the active buffer / cursor / clipboard / etc. Powers
+    /// `$TM_FILENAME`, `$TM_CURRENT_LINE`, etc.
+    fn snippet_variable_context(&self) -> lattice_snippet::VariableContext {
+        let mut ctx = lattice_snippet::VariableContext::default();
+        let snap = self.document.snapshot();
+        if let Some(path) = snap.path.as_ref() {
+            ctx.filepath = Some(path.display().to_string());
+            ctx.filename = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string());
+            ctx.directory = path
+                .parent()
+                .map(|p| p.display().to_string());
+        }
+        ctx.line_index = Some(self.cursor.line);
+        if let Some(line) = snap.buffer.line(self.cursor.line) {
+            ctx.current_line = Some(line);
+        }
+        if let Some(word) = word_under_cursor(&snap.buffer, self.cursor) {
+            ctx.current_word = Some(word);
+        }
+        // CLIPBOARD via the system register.
+        if let Some(reg) = self.registers.get(&Register::System) {
+            ctx.clipboard = Some(reg.content.clone());
+        }
+        ctx
+    }
+
+    /// `<C-x><C-s>` -- direct snippet expansion (Phase
+    /// 4.2.g.4). Looks up the word at the cursor in the
+    /// per-language snippet registry; expands the matching
+    /// snippet directly without surfacing the popup.
+    pub fn do_snippet_expand_at_cursor(&mut self) {
+        if !matches!(self.modal, ModalState::Insert) {
+            return;
+        }
+        let snap = self.document.snapshot();
+        // Walk back from cursor over word chars to compute
+        // the prefix. Same heuristic as `do_completion_trigger`.
+        let line_text = snap.buffer.line(self.cursor.line).unwrap_or_default();
+        let bytes = line_text.as_bytes();
+        let cursor_byte = self.cursor.byte as usize;
+        let mut start = cursor_byte;
+        while start > 0
+            && start <= bytes.len()
+            && is_word_char_byte(bytes[start - 1])
+        {
+            start -= 1;
+        }
+        let anchor = Position::new(self.cursor.line, start as u32);
+        let prefix: String = line_text
+            .get(start..cursor_byte.min(line_text.len()))
+            .unwrap_or("")
+            .to_string();
+        if prefix.is_empty() {
+            self.set_message(EchoLevel::Info, "no snippet prefix at cursor");
+            return;
+        }
+        let language = self.active_language_id();
+        let snippet = self
+            .snippet_registry
+            .lookup(&language, &prefix)
+            .first()
+            .cloned()
+            .or_else(|| self.snippet_registry.lookup("*", &prefix).first().cloned())
+            .cloned();
+        let Some(snippet) = snippet else {
+            self.set_message(
+                EchoLevel::Info,
+                format!("no snippet for prefix `{prefix}`"),
+            );
+            return;
+        };
+        self.expand_snippet(&snippet.body, anchor);
+    }
+
+    /// `<Tab>` while a snippet is active -- jump to the next
+    /// placeholder. Exits the snippet on `$0`.
+    pub fn do_snippet_next_placeholder(&mut self) {
+        let Some(active) = self.active_snippet.as_mut() else {
+            return;
+        };
+        let next = active.next().cloned();
+        match next {
+            Some(group) => {
+                self.move_cursor_to_snippet_group(&group);
+            }
+            None => {
+                // Exit -- snippet is done.
+                self.active_snippet = None;
+            }
+        }
+    }
+
+    /// `<S-Tab>` -- jump to the previous placeholder.
+    pub fn do_snippet_prev_placeholder(&mut self) {
+        let Some(active) = self.active_snippet.as_mut() else {
+            return;
+        };
+        if let Some(group) = active.prev().cloned() {
+            self.move_cursor_to_snippet_group(&group);
+        }
+    }
+
+    /// `:reload-snippets` (Phase 4.2.g.4) -- re-read every
+    /// configured snippet directory and rebuild the
+    /// per-language registry. The previous registry is
+    /// replaced atomically; if no directories are configured
+    /// the user gets a clear "no snippet sources configured"
+    /// echo so the no-op doesn't look like a silent failure.
+    pub fn do_reload_snippets(&mut self) {
+        if self.snippet_dirs.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                "no snippet sources configured (set App::snippet_dirs)",
+            );
+            return;
+        }
+        let mut next = lattice_snippet::SnippetRegistry::new();
+        let mut total = 0usize;
+        let mut errors: Vec<String> = Vec::new();
+        let dirs = self.snippet_dirs.clone();
+        for dir in &dirs {
+            let entries = match std::fs::read_dir(dir) {
+                Ok(e) => e,
+                Err(e) => {
+                    errors.push(format!("{}: {e}", dir.display()));
+                    continue;
+                }
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                    continue;
+                }
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                // `_global.json` -> all-language slot.
+                let language = if stem == "_global" {
+                    "*".to_string()
+                } else {
+                    stem
+                };
+                let json = match std::fs::read_to_string(&path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        errors.push(format!("{}: {e}", path.display()));
+                        continue;
+                    }
+                };
+                match lattice_snippet::load::load_pack_from_str(&json) {
+                    Ok(snips) => {
+                        for s in snips {
+                            next.insert(&language, s);
+                            total += 1;
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(format!("{}: {e}", path.display()));
+                    }
+                }
+            }
+        }
+        self.snippet_registry = next;
+        if errors.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                format!("reloaded {total} snippets"),
+            );
+        } else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "reloaded {total} snippets ({} error(s); first: {})",
+                    errors.len(),
+                    errors[0]
+                ),
+            );
+        }
+    }
+
+    /// Helper: move the cursor to the start of the first
+    /// range in a tabstop group.
+    fn move_cursor_to_snippet_group(
+        &mut self,
+        group: &lattice_snippet::TabstopGroup,
+    ) {
+        let Some(first) = group.ranges.first() else {
+            return;
+        };
+        let snap = self.document.snapshot();
+        if let Ok(pos) = snap.buffer.byte_to_position(first.start) {
+            self.cursor = pos;
+        }
     }
 
     /// Apply an accepted LSP completion item. Routes the
@@ -9765,6 +10233,8 @@ impl App {
             Effect::LspComplete => self.do_lsp_completion_request(),
             Effect::LspRename { new_name } => self.do_lsp_rename_request(&new_name),
             Effect::LspCodeAction => self.do_lsp_code_action_request(),
+            Effect::SnippetExpand => self.do_snippet_expand_at_cursor(),
+            Effect::ReloadSnippets => self.do_reload_snippets(),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -12634,7 +13104,9 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspSignatureHelp
         | Effect::LspComplete
         | Effect::LspRename { .. }
-        | Effect::LspCodeAction => false,
+        | Effect::LspCodeAction
+        | Effect::SnippetExpand
+        | Effect::ReloadSnippets => false,
     }
 }
 
@@ -12693,7 +13165,9 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspSignatureHelp
         | Effect::LspComplete
         | Effect::LspRename { .. }
-        | Effect::LspCodeAction => false,
+        | Effect::LspCodeAction
+        | Effect::SnippetExpand
+        | Effect::ReloadSnippets => false,
     }
 }
 
@@ -22957,5 +23431,156 @@ mod tests {
         );
         app.drain_pending_lsp_opens().await;
         assert_eq!(app.pending_lsp_opens.len(), 0);
+    }
+
+    // ---- Snippet host integration (Phase 4.2.g.4) ----
+
+    fn install_snippet(a: &mut App, language: &str, name: &str, prefix: &str, body: &str) {
+        let parsed = lattice_snippet::parse::parse(body).unwrap();
+        a.snippet_registry.insert(
+            language,
+            lattice_snippet::Snippet {
+                name: name.into(),
+                prefixes: vec![prefix.into()],
+                body: parsed,
+                description: None,
+                scope: String::new(),
+            },
+        );
+    }
+
+    #[test]
+    fn snippet_expand_at_cursor_splices_body_and_focuses_first_tabstop() {
+        // Buffer: `for `; cursor sits past the prefix `for`
+        // so the lookup picks it up. After expansion we
+        // expect the snippet's literal text in the buffer
+        // and an active snippet pointing at $1.
+        let mut a = app_with("for", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} { $0 }");
+        a.do_snippet_expand_at_cursor();
+        // Buffer text should be the rendered snippet.
+        let text = a.document.snapshot().buffer.as_string();
+        assert_eq!(text, "for i in iter {  }");
+        // Active snippet present, focused on $1.
+        let active = a.active_snippet.as_ref().expect("snippet active");
+        assert_eq!(active.current_index(), Some(1));
+        // Cursor at start of `i`.
+        assert_eq!(a.cursor, Position::new(0, 4));
+    }
+
+    #[test]
+    fn snippet_next_placeholder_walks_through_groups_and_drops_on_zero() {
+        let mut a = app_with("for", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} { $0 }");
+        a.do_snippet_expand_at_cursor();
+        // Now at $1.
+        assert_eq!(
+            a.active_snippet.as_ref().unwrap().current_index(),
+            Some(1)
+        );
+        a.do_snippet_next_placeholder();
+        assert_eq!(
+            a.active_snippet.as_ref().unwrap().current_index(),
+            Some(2)
+        );
+        a.do_snippet_next_placeholder();
+        // $0 is the exit; at this point we're focused on it.
+        assert_eq!(
+            a.active_snippet.as_ref().unwrap().current_index(),
+            Some(0)
+        );
+        a.do_snippet_next_placeholder();
+        // Past $0 -> snippet dropped.
+        assert!(a.active_snippet.is_none());
+    }
+
+    #[test]
+    fn snippet_prev_placeholder_walks_back() {
+        let mut a = app_with("for", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} {}");
+        a.do_snippet_expand_at_cursor();
+        a.do_snippet_next_placeholder();
+        assert_eq!(
+            a.active_snippet.as_ref().unwrap().current_index(),
+            Some(2)
+        );
+        a.do_snippet_prev_placeholder();
+        assert_eq!(
+            a.active_snippet.as_ref().unwrap().current_index(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn snippet_expand_with_no_match_is_a_no_op() {
+        let mut a = app_with("xyz", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        a.do_snippet_expand_at_cursor();
+        assert!(a.active_snippet.is_none());
+        // Buffer unchanged.
+        assert_eq!(a.document.snapshot().buffer.as_string(), "xyz");
+    }
+
+    #[test]
+    fn snippet_expand_outside_insert_mode_is_a_no_op() {
+        let mut a = app_with("for", 10);
+        a.cursor = Position::new(0, 3);
+        // Stay in Normal -- guard inside `do_snippet_expand_at_cursor`.
+        install_snippet(&mut a, "*", "for-loop", "for", "for $1 {}");
+        a.do_snippet_expand_at_cursor();
+        assert!(a.active_snippet.is_none());
+        assert_eq!(a.document.snapshot().buffer.as_string(), "for");
+    }
+
+    #[test]
+    fn reload_snippets_with_no_dirs_reports_empty() {
+        let mut a = app_with("", 10);
+        a.do_reload_snippets();
+        // Idle; registry stays empty. Message echoed at Info.
+        assert_eq!(a.snippet_registry.len(), 0);
+    }
+
+    #[test]
+    fn reload_snippets_walks_configured_dirs_and_keys_by_filename() {
+        // Build a tempdir with `_global.json` (any-language)
+        // and `rust.json` (language-specific). Reload should
+        // route them into the right per-language slots.
+        let dir = std::env::temp_dir().join(format!(
+            "lattice-snippet-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("_global.json"),
+            r#"{ "anywhere": { "prefix": "any", "body": "anywhere" } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("rust.json"),
+            r#"{ "rust-for": { "prefix": "for", "body": "for $1 {}" } }"#,
+        )
+        .unwrap();
+        let mut a = app_with("", 10);
+        a.snippet_dirs.push(dir.clone());
+        a.do_reload_snippets();
+        // 2 snippets registered total (one per language).
+        assert_eq!(a.snippet_registry.len(), 2);
+        assert!(!a.snippet_registry.lookup("rust", "for").is_empty());
+        assert!(!a.snippet_registry.lookup("*", "any").is_empty());
+        // Global snippets are visible from any language --
+        // `lookup` walks the per-language slot then `*`.
+        assert!(!a.snippet_registry.lookup("rust", "any").is_empty());
+        // A rust-only snippet should NOT be visible from a
+        // different language slot.
+        assert!(a.snippet_registry.lookup("python", "for").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

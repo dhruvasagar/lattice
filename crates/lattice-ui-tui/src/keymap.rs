@@ -80,6 +80,16 @@ pub enum BindingMode {
     /// the popup's lifetime; closing the popup deactivates the
     /// layer.
     CompletionPopup,
+    /// **Active-snippet minor mode** (Phase 4.2.g.4). Active
+    /// only while `App.active_snippet.is_some()`. Bindings
+    /// inside this layer override Insert-mode meanings for the
+    /// snippet's lifetime: `<Tab>` jumps to the next
+    /// placeholder (instead of inserting a literal tab),
+    /// `<S-Tab>` to the previous, `<Esc>` exits the snippet
+    /// and Insert mode. Closing the snippet (reaching `$0`,
+    /// pressing `<Esc>`, or `:snippet-leave`) deactivates the
+    /// layer.
+    Snippet,
 }
 
 impl BindingMode {
@@ -106,6 +116,7 @@ impl BindingMode {
             BindingMode::AfterCtrlW => "After-<C-w> (window-management)",
             BindingMode::AfterCtrlX => "After-<C-x> (Insert expansion-prefix)",
             BindingMode::CompletionPopup => "Completion popup (minor mode)",
+            BindingMode::Snippet => "Active-snippet (minor mode)",
         }
     }
 }
@@ -424,6 +435,15 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: CompletionPopup, chord: "<C-d>", doc: "Completion popup: toggle side documentation popup for the focused candidate" },
         keymap_entry! { mode: CompletionPopup, chord: "<C-f>", doc: "Completion popup: page docs popup forward" },
         keymap_entry! { mode: CompletionPopup, chord: "<C-b>", doc: "Completion popup: page docs popup backward" },
+        // ---- Snippets (Phase 4.2.g.4) ----
+        keymap_entry! { mode: AfterCtrlX, chord: "<C-x><C-s>", doc: "Direct snippet expansion: look up the word at the cursor in the snippet registry; expand without surfacing the popup" },
+        // Active-snippet minor mode -- bindings active only
+        // while `App.active_snippet.is_some()`. Override
+        // Insert-mode `<Tab>` / `<Esc>` for placeholder
+        // navigation; deactivates when the snippet exits.
+        keymap_entry! { mode: Snippet, chord: "<Tab>", doc: "Snippet: jump to next placeholder (or exit on $0)" },
+        keymap_entry! { mode: Snippet, chord: "<S-Tab>", doc: "Snippet: jump to previous placeholder" },
+        keymap_entry! { mode: Snippet, chord: "<Esc>", doc: "Snippet: exit the snippet (placeholders become plain text) and return to Normal" },
         // ---- Replace mode ----
         keymap_entry! { mode: Replace, chord: "<Esc>", doc: "Exit to Normal" },
         keymap_entry! { mode: Replace, chord: "<BS>", doc: "Restore last overwritten byte" },

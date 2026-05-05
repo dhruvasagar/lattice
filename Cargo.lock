@@ -786,6 +786,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-snippet"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "lattice-syntax"
 version = "0.1.0"
 dependencies = [
@@ -814,6 +823,7 @@ dependencies = [
  "lattice-lsp",
  "lattice-protocol",
  "lattice-runtime",
+ "lattice-snippet",
  "lattice-syntax",
  "lsp-types",
  "ratatui",

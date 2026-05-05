@@ -79,6 +79,8 @@ pub struct ExBuiltins {
     pub lsp_complete: ExCommandId,
     pub lsp_rename: ExCommandId,
     pub lsp_code_action: ExCommandId,
+    pub snippet_expand: ExCommandId,
+    pub reload_snippets: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -933,6 +935,32 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let snippet_expand = registry.register_ex_command(
+        "ex:snippet-expand",
+        "Expand the snippet whose prefix matches the word at the cursor (`:snippet-expand`, Phase 4.2.g.4). Surface-form alias of `<C-x><C-s>`. No-op when no snippet matches.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::SnippetExpand)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let reload_snippets = registry.register_ex_command(
+        "ex:reload-snippets",
+        "Re-read every snippet file from disk and rebuild the per-language snippet registry (`:reload-snippets`, Phase 4.2.g.4).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::ReloadSnippets)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let help = registry.register_ex_command(
         "ex:help",
         "Open the topic index or a named help topic (`:help [topic]`).",
@@ -1005,6 +1033,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_complete,
         lsp_rename,
         lsp_code_action,
+        snippet_expand,
+        reload_snippets,
     }
 }
 

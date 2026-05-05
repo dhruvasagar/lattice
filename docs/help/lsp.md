@@ -13,16 +13,19 @@ stall the editor. The four paramount goals (CLAUDE.md) apply
 unchanged: performance, extensibility, modal editing,
 asynchronicity.
 
-> **Status:** Phase 4.1 (foundation) **complete**. Phase 4.2
-> (navigation) **7/12 shipped**: hover (`K`), definition
-> family (`gd` / `gD` / `gy` / `gI`), references (`gr`),
-> document outline (`:lsp-symbols`), workspace symbols
-> (`:lsp-workspace-symbol`). All multi-result LSP lookups +
-> `:diagnostics` route through a unified vertico picker.
-> Remaining 4.2: completion + completionItem/resolve. Per-
-> feature status tracked in
-> [`../lsp-features.md`](../lsp-features.md). The keystrokes
-> below describe the v1 surface; ✅ marks landed features.
+> **Status:** Phase 4.1 (foundation) **complete**.
+> Phase 4.2 (navigation) **9/12 + 1 partial**: hover (`K`),
+> definition family (`gd` / `gD` / `gy` / `gI`), references
+> (`gr`), document outline (`:lsp-symbols`), workspace
+> symbols (`:lsp-workspace-symbol`), completion picker bridge
+> (`:complete`).
+> Phase 4.3 (edits) **3/9 shipped**: formatting (`:format` /
+> `:format-range`), signatureHelp (`:signature-help` +
+> Insert-mode trigger-char autopilot).
+> All multi-result LSP lookups + `:diagnostics` route through
+> a unified vertico picker; tag stack `<C-t>` pops drill-down
+> chains. Per-feature status tracked in
+> [`../lsp-features.md`](../lsp-features.md).
 
 ---
 
@@ -148,6 +151,15 @@ references-picker rows, diagnostics jumps, etc.).
 | `:lsp-symbols`               | `textDocument/documentSymbol` -- the active document's outline; nested DocumentSymbol responses keep their hierarchy as picker indent. |
 | `:lsp-workspace-symbol [q]`  | `workspace/symbol` -- workspace-scoped symbols matching `q` (server-side substring filter). Empty `q` returns the server's idea of "every workspace symbol". Fans out across **every running server**, not just the active buffer's. |
 | `:diagnostics`               | Every workspace diagnostic across attached servers; severity in marginalia.   |
+| `:complete`                  | LSP completion items at the cursor (`textDocument/completion`). Plain-text insert; snippet expansion + lazy `completionItem/resolve` queued behind buffer-level Insert-mode completion. |
+
+### Edits
+
+| Command                | Effect                                                                                              |
+|------------------------|-----------------------------------------------------------------------------------------------------|
+| `:format` (`:fmt`)     | `textDocument/formatting` -- whole buffer; highest-priority server with the provider; one undo unit.|
+| `:format-range`        | `textDocument/rangeFormatting` over the active Visual selection (or whole buffer when not in Visual). |
+| `:signature-help`      | `textDocument/signatureHelp` -- popup with the active signature + parameter highlight. Auto-fires in Insert mode on server-advertised trigger characters (typically `(` and `,`). |
 
 Each picker entry encodes `path:line:col` in its candidate
 text; accept dispatch parses through `jump_to_file_line_col`

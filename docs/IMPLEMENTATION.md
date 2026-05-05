@@ -39,7 +39,7 @@ rendering, and v1.0 polish.
 | 1     | Modal Editing                         | ✅ done                  | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch + substitute live preview) / folds / ex-commands (every command -- including `:s` / `:g` / `:v` via `Args::List` -- registered as `ExCommandSpec` peers, dispatched through unified `grammar::execute()` per §5.2.1, §B.2). Blockwise visual: per-row dispatch for `d` / `y` / `c` plus blockwise paste; `>` / `<` indent each line in the block; `I` / `A` enter Insert at the block's left/right column with the typed prefix replicated to every row on Esc. Every operator lands as a single undo unit -- counts on linewise ops (`2dd`, `2>>`), block-visual rectangle ops, and I/A replications all collapse to one `u`. |
 | 2     | Terminal UI Bootstrap                 | ✅ done                  | crossterm + ratatui; modal cursor; mode line; gutter                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | 3     | Tree-Sitter                           | ✅ done (Rust/Python/JS/Markdown) | Highlights wired through a shared `LangRegistry` (process-wide `Arc`); injection callback resolves fenced ` ```rust ``` ` blocks in markdown to the rust config (and any registered language to its config) without per-document copies. Markdown is the dual-grammar split (block + inline). Grammar extension API used by builtins, not yet by plugins. New `Style` variants (`Heading1..6`, `Bold`, `Italic`, `Link`, `Url`, `MarkupRaw`, `Markup`) for precise theme targeting. |
-| 4     | LSP                                   | 🚧 in progress (4.2)     | `lattice-lsp` crate: wire layer + per-server actor + document sync + diagnostics broadcast + supervisor + App-side wiring + edit-dispatch + open-on-`:e` (Phase 4.1 complete). Phase 4.2 navigation **7/12 shipped**: typed feature wrappers (4.2.a), hover via `K` (4.2.b), definition / declaration / typeDefinition / implementation via `gd` / `gD` / `gy` / `gI` through a unified `do_lsp_nav_request(LspNavKind)` (4.2.c+), references via `gr` (4.2.d), document outline via `:lsp-symbols` (4.2.e), workspace symbols via `:lsp-workspace-symbol` (4.2.f). All multi-result LSP lookups + `:diagnostics` route through one vertico picker (`PickerSource::LspLocations` + `PickerAction::JumpToLspLocation`); single-result nav still jumps directly. Cancellation tokens plumbed through every wrapper so motion / mode-change can drop stale responses. Remaining 4.2: completion + completionItem/resolve + workspaceSymbol/resolve. Then 4.3 edits, 4.4 polish, 4.5 expansion. |
+| 4     | LSP                                   | 🚧 in progress (4.2 / 4.3) | `lattice-lsp` crate: wire layer + per-server actor + document sync + diagnostics broadcast + supervisor + App-side wiring + edit-dispatch + open-on-`:e` (Phase 4.1 complete). Phase 4.2 navigation **9/12 shipped + 1 partial**: hover via `K`, definition family (`gd` / `gD` / `gy` / `gI`) through a unified `do_lsp_nav_request(LspNavKind)`, references via `gr`, document outline via `:lsp-symbols`, workspace symbols via `:lsp-workspace-symbol`, plus a completion picker bridge via `:complete` (buffer-level Insert-mode completion shell still queued). Phase 4.3 **3/9 shipped**: formatting + rangeFormatting (`:format` / `:format-range` -- single-server priority + reverse-sort apply as one undo unit), signatureHelp (`:signature-help` + Insert-mode trigger-char autopilot). Tag stack `<C-t>` pops `gd`-family drill-downs (distinct from `<C-o>`/`<C-i>` jump list). All multi-result LSP lookups + `:diagnostics` route through one vertico picker. Cancellation tokens plumbed through every wrapper. Remaining 4.2: Insert-mode completion shell + completionItem/resolve + workspaceSymbol/resolve. Remaining 4.3: codeAction (+ resolve), rename (+ prepareRename), onTypeFormatting, willSave / willSaveWaitUntil / didSave, applyEdit, executeCommand. Then 4.4 polish, 4.5 expansion. |
 | 5     | GPU Rendering Foundation              | ⛔ not started           | TUI is the live renderer for v1; GPU is a separate paint surface                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | 6     | Document Renderer + UI Components     | ⛔ not started           | Popups, pickers, panels-as-buffers all live in §5.9                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 7     | Plugin Host                           | ⛔ not started           | wasmtime + Component Model + WIT scaffolding                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -615,15 +615,20 @@ snapshot_post_publish_read at 10/1k/50k lines).
 
 ## In-progress
 
-**Phase 4.2 navigation -- 8/12 shipped.** **Phase 4.3 -- 1/9
-shipped.**
+**Phase 4.2 navigation -- 9/12 shipped + 1 partial.**
+**Phase 4.3 -- 3/9 shipped.**
 
 - ✅ hover (`K`), definition (`gd`), declaration (`gD`),
   typeDefinition (`gy`), implementation (`gI`), references
   (`gr`), documentSymbol (`:lsp-symbols`), workspaceSymbol
   (`:lsp-workspace-symbol`).
-- ✅ formatting + rangeFormatting (`:format` / `:format-range`,
-  4.3 first item).
+- 🚧 completion (`:complete` picker bridge -- buffer-level
+  Insert-mode completion shell + snippet expansion + lazy
+  resolve queued behind it).
+- ✅ formatting + rangeFormatting (`:format` / `:format-range`).
+- ✅ signatureHelp via `:signature-help` + Insert-mode
+  trigger-char autopilot (typing `(` / `,` etc. fires the
+  request automatically).
 - Multi-result lookups + `:diagnostics` route through one
   vertico picker (`PickerSource::LspLocations` +
   `PickerAction::JumpToLspLocation`); single-result nav still
@@ -643,11 +648,12 @@ shipped.**
   gates on search submit + repeat search are gone.
 
 Remaining 4.2:
-- LSP completion (`gen:lsp-completion`) + `completionItem/resolve`.
+- Buffer-level Insert-mode completion shell (the `:complete`
+  picker is the bridge until it lands).
+- `completionItem/resolve` (lazy doc / additional edits).
 - `workspaceSymbol/resolve` (lazy location).
 
 Remaining 4.3:
-- signatureHelp on trigger characters.
 - codeAction + codeAction/resolve.
 - rename + prepareRename.
 - onTypeFormatting.

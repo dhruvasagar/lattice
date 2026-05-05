@@ -25,6 +25,7 @@
 pub mod builtins;
 pub mod cache;
 pub mod candidate;
+pub mod insert;
 pub mod pipeline;
 pub mod registry;
 pub mod slot;
@@ -35,6 +36,10 @@ pub use crate::cache::GeneratorCache;
 pub use crate::candidate::{
     CacheKey, CandidateData, CandidateKind, MatchScore, RawCandidate, RenderedCandidate,
     ScoredCandidate,
+};
+pub use crate::insert::{
+    BufferWordsSource, CompletionTrigger, DocPopupState, FuzzyInsertMatcher, InsertCompletionState,
+    InsertContext, InsertRanker, InsertSource, SourceId,
 };
 pub use crate::pipeline::CompletionPipeline;
 pub use crate::registry::{

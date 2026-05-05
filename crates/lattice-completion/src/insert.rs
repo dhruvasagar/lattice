@@ -122,6 +122,10 @@ pub struct DocPopupState {
     /// means "we haven't asked yet" (in which case the popup
     /// renders a placeholder while the resolve fires).
     pub body: Option<String>,
+    /// Per-row scroll offset into `body` -- `<C-f>` / `<C-b>`
+    /// page through long markdown bodies. Reset when
+    /// `for_index` changes.
+    pub scroll: u32,
 }
 
 /// Live state for an in-flight Insert-mode completion. Held by

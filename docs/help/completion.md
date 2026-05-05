@@ -8,16 +8,20 @@ registries, words in your buffers, paths under the cursor,
 local symbols from the syntax tree. They all converge in one
 list, ranked together.
 
-> **Status:** Phase 4.2.g.1 + 4.2.g.2 shipped. Manual trigger
-> via `<C-x><C-o>` / `<C-Space>`; buffer-words **and** LSP
-> sources contribute to the unified popup; LSP items carry
-> through with their `filterText` / `sortText` / `detail` /
-> `additionalTextEdits` / `commitCharacters`; `isIncomplete`
-> refresh re-fires LSP on each keystroke when the server
-> requests it. Docs popup (4.2.g.3), snippet engine
-> (4.2.g.4), per-source priority + frequency ranking
-> (4.2.g.5), tree-sitter / path sources (4.2.g.6) follow.
-> The behavioural spec for the full surface is in
+> **Status:** Phase 4.2.g.1 + 4.2.g.2 + 4.2.g.3 shipped.
+> Manual trigger via `<C-x><C-o>` / `<C-Space>`;
+> buffer-words **and** LSP sources contribute to the unified
+> popup; LSP items carry through with their `filterText` /
+> `sortText` / `detail` / `additionalTextEdits` /
+> `commitCharacters`; `isIncomplete` refresh re-fires LSP on
+> each keystroke when the server requests it. **`<C-d>`
+> toggles a side documentation popup** for the focused
+> candidate; `completionItem/resolve` fires lazily for items
+> that arrived without `documentation`; `<C-f>` / `<C-b>`
+> page through long docs bodies. Snippet engine (4.2.g.4),
+> per-source priority + frequency ranking (4.2.g.5),
+> tree-sitter / path sources (4.2.g.6) follow. The
+> behavioural spec for the full surface is in
 > [`docs/insert-completion.md`](../insert-completion.md).
 
 ---
@@ -58,7 +62,9 @@ deactivates the layer and the original bindings restore.
 | `<C-e>` | Cancel popup, stay in Insert (vim) | `:complete-cancel` |
 | `<Esc>` | Cancel popup AND exit to Normal (vim) | `:complete-cancel!` |
 | `<C-Space>` | Re-trigger / refresh | `:complete-trigger` |
-| `<C-d>` | Toggle docs side popup (4.2.g.3) | `:complete-docs` |
+| `<C-d>` | Toggle docs side popup | `:complete-docs` |
+| `<C-f>` | Page docs popup forward | `:complete-docs-down` |
+| `<C-b>` | Page docs popup backward | `:complete-docs-up` |
 
 Outside the popup, `<C-d>` keeps its Insert-mode
 shift-left-indent meaning and `<C-d>` in Normal stays

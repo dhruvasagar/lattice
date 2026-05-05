@@ -502,6 +502,12 @@ pub enum Action {
     /// candidate (`<C-d>`, only inside the completion-popup
     /// minor mode).
     CompletionToggleDocs,
+    /// Scroll the docs side popup forward (`<C-f>` inside
+    /// the completion-popup minor mode).
+    CompletionDocsScrollDown,
+    /// Scroll the docs side popup backward (`<C-b>` inside
+    /// the completion-popup minor mode).
+    CompletionDocsScrollUp,
     /// `:lsp-symbols` (Phase 4.2.e). Send
     /// `textDocument/documentSymbol` to every attached server;
     /// render the merged outline as a vertico picker. Selecting
@@ -1212,6 +1218,15 @@ pub struct App {
     /// slow server's stale response can't pollute the popup.
     pub pending_insert_completion_lsp_token:
         Option<lattice_protocol::CancellationToken>,
+    /// Receiver for in-flight `completionItem/resolve` results
+    /// (Phase 4.2.g.3). Populates the focused candidate's
+    /// LspCompletionMeta `documentation` field + the docs
+    /// popup body. Cancelled when selection changes / popup
+    /// closes / fresher resolve fires.
+    pub pending_completion_resolve_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<CompletionResolveOutcome>>,
+    pub pending_completion_resolve_token:
+        Option<lattice_protocol::CancellationToken>,
     /// Active vertico-style picker (DESIGN.md §5.9.7, §5.9.10).
     /// `Some` while a picker is open over a buffer / LSP instance
     /// / future generator. Input routes here in
@@ -1438,12 +1453,38 @@ pub struct LspCompletionMeta {
     /// Populated host-side at request time (the popup's anchor /
     /// cursor become the replace bounds when this is None).
     pub replace_range: Option<lsp_types::Range>,
+    /// Server that produced the item. Resolve / executeCommand
+    /// route back to the same server. Empty when the item came
+    /// from a non-LSP source (shouldn't happen in practice but
+    /// guard anyway).
+    pub server_id: std::sync::Arc<str>,
+    /// Original `CompletionItem` from the server, preserved
+    /// verbatim so `completionItem/resolve` round-trips it
+    /// unchanged. Servers use the `data` field as an opaque
+    /// blob; mutating any field would break resolve.
+    pub original_item: lsp_types::CompletionItem,
+    /// True once `completionItem/resolve` has filled in the
+    /// missing fields. Subsequent docs-popup focuses don't
+    /// re-fire the resolve.
+    pub resolved: bool,
 }
 
 /// `Extension::kind_id` discriminant for LSP-sourced candidates.
 /// Values 0-99 reserved for first-party host data; plugins use
 /// 1000+.
 pub const LSP_COMPLETION_KIND_ID: u32 = 1;
+
+/// Drain payload for `completionItem/resolve` (Phase
+/// 4.2.g.3). Carries the meta-vec index alongside the
+/// resolved item so the drain can update the right entry
+/// in `App.insert_completion_lsp_meta` when several resolves
+/// fire in sequence (selection change → cancel prior →
+/// fire new).
+#[derive(Debug, Clone)]
+pub struct CompletionResolveOutcome {
+    pub meta_index: usize,
+    pub resolved: lsp_types::CompletionItem,
+}
 
 /// Drain payload for the async LSP insert-completion source.
 /// Replaces (rather than appends to) the current LSP slice of
@@ -2119,6 +2160,8 @@ impl App {
             insert_completion_lsp_meta: Vec::new(),
             pending_insert_completion_lsp_rx: None,
             pending_insert_completion_lsp_token: None,
+            pending_completion_resolve_rx: None,
+            pending_completion_resolve_token: None,
             picker: None,
             previewing: false,
             lsp_log_event_rx: Some(lsp_log_event_rx),
@@ -3385,6 +3428,8 @@ impl App {
                 self.pending = Pending::None;
             }
             Action::CompletionToggleDocs => self.do_completion_toggle_docs(),
+            Action::CompletionDocsScrollDown => self.do_completion_docs_scroll_down(),
+            Action::CompletionDocsScrollUp => self.do_completion_docs_scroll_up(),
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
             Action::LspWorkspaceSymbolRequest(q) => {
                 self.do_lsp_workspace_symbol_request(&q)
@@ -6233,11 +6278,67 @@ impl App {
         if let Some(s) = self.insert_completion.as_mut() {
             s.select_next();
         }
+        self.refresh_docs_popup_for_selection();
     }
 
     pub fn do_completion_prev(&mut self) {
         if let Some(s) = self.insert_completion.as_mut() {
             s.select_prev();
+        }
+        self.refresh_docs_popup_for_selection();
+    }
+
+    /// Page the docs popup body forward (`<C-f>` inside the
+    /// completion-popup minor mode). Half-popup-height jump
+    /// per press; clamps at the body's last visible line.
+    pub fn do_completion_docs_scroll_down(&mut self) {
+        if let Some(state) = self.insert_completion.as_mut() {
+            if let Some(doc) = state.doc_popup.as_mut() {
+                doc.scroll = doc.scroll.saturating_add(8);
+            }
+        }
+    }
+
+    /// Page the docs popup body backward (`<C-b>` inside the
+    /// completion-popup minor mode).
+    pub fn do_completion_docs_scroll_up(&mut self) {
+        if let Some(state) = self.insert_completion.as_mut() {
+            if let Some(doc) = state.doc_popup.as_mut() {
+                doc.scroll = doc.scroll.saturating_sub(8);
+            }
+        }
+    }
+
+    /// When the focused candidate changes (next / prev /
+    /// refilter pinning), re-target the docs popup. If the
+    /// popup is open AND `for_index` no longer matches
+    /// `selected`, re-derive the body and (when needed) fire
+    /// a fresh `completionItem/resolve`.
+    fn refresh_docs_popup_for_selection(&mut self) {
+        let docs_open = self
+            .insert_completion
+            .as_ref()
+            .map(|s| s.doc_popup.is_some())
+            .unwrap_or(false);
+        if !docs_open {
+            return;
+        }
+        let new_index = self
+            .insert_completion
+            .as_ref()
+            .map(|s| s.selected)
+            .unwrap_or(0);
+        let body = self.docs_body_for_selected();
+        let needs_resolve = body.is_none() && self.selected_needs_resolve();
+        if let Some(state) = self.insert_completion.as_mut() {
+            if let Some(doc) = state.doc_popup.as_mut() {
+                doc.for_index = new_index;
+                doc.scroll = 0;
+                doc.body = body;
+            }
+        }
+        if needs_resolve {
+            self.do_completion_resolve_focused();
         }
     }
 
@@ -6405,22 +6506,110 @@ impl App {
         self.insert_completion = None;
     }
 
-    /// `<C-d>` inside the completion-popup minor mode. v1
-    /// stub: toggles `state.doc_popup` between None and a
-    /// placeholder; the renderer + lazy-resolve land in
-    /// Phase 4.2.g.3.
+    /// `<C-d>` inside the completion-popup minor mode.
+    /// Toggles the side documentation popup. When opening,
+    /// pre-fills `body` from the focused candidate's cached
+    /// metadata when available; fires
+    /// `completionItem/resolve` when the documentation is
+    /// missing AND the originating server advertises the
+    /// resolve provider.
     pub fn do_completion_toggle_docs(&mut self) {
         let Some(state) = self.insert_completion.as_mut() else {
             return;
         };
         if state.doc_popup.is_some() {
             state.doc_popup = None;
-        } else {
+            return;
+        }
+        let selected = state.selected;
+        // Pull the immediate body from the focused candidate
+        // when we already have it; this avoids paying a
+        // resolve round-trip for items that arrived with
+        // `documentation` already set.
+        let body = self.docs_body_for_selected();
+        let needs_resolve = body.is_none() && self.selected_needs_resolve();
+        if let Some(state) = self.insert_completion.as_mut() {
             state.doc_popup = Some(lattice_completion::DocPopupState {
-                for_index: state.selected,
-                body: None,
+                for_index: selected,
+                body,
+                scroll: 0,
             });
         }
+        if needs_resolve {
+            self.do_completion_resolve_focused();
+        }
+    }
+
+    /// Build the docs body for the popup's currently-focused
+    /// candidate from cached metadata. Returns `None` when
+    /// the candidate is sync-source (no docs) or LSP without
+    /// pre-resolved documentation. The caller decides whether
+    /// to fire resolve.
+    fn docs_body_for_selected(&self) -> Option<String> {
+        let state = self.insert_completion.as_ref()?;
+        let cand = state.rendered.get(state.selected)?;
+        let meta = self.lsp_completion_meta_for(cand)?;
+        // Header: signature / detail when present. The body
+        // joins detail + documentation so the popup feels like
+        // a hover panel for the candidate.
+        let detail = meta
+            .detail
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                // Render detail as a fenced code block so the
+                // popup's markdown highlighter (4.2.g.5+) picks
+                // up syntax highlighting once wired.
+                format!("```\n{s}\n```")
+            });
+        let docs = meta
+            .documentation
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .cloned();
+        match (detail, docs) {
+            (Some(d), Some(b)) => Some(format!("{d}\n\n{b}")),
+            (Some(d), None) => Some(d),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
+    }
+
+    /// True when the focused candidate is LSP-sourced, has no
+    /// documentation, and the originating server advertises
+    /// the resolve provider.
+    fn selected_needs_resolve(&self) -> bool {
+        let Some(state) = self.insert_completion.as_ref() else {
+            return false;
+        };
+        let Some(cand) = state.rendered.get(state.selected) else {
+            return false;
+        };
+        let Some(meta) = self.lsp_completion_meta_for(cand) else {
+            return false;
+        };
+        if meta.resolved {
+            return false;
+        }
+        if meta.documentation.is_some() {
+            return false;
+        }
+        // Walk attached servers; check if the originating one
+        // (by id) advertises `completionProvider.resolveProvider`.
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return false;
+        };
+        let lsp = self.lsp.clone();
+        let g = match lsp.try_lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        for h in g.servers_for(uri) {
+            if h.server_id() == &*meta.server_id {
+                return h.capabilities().completion_resolve_provider();
+            }
+        }
+        false
     }
 
     /// On every Insert-mode text insertion, if the popup is
@@ -6679,6 +6868,9 @@ impl App {
                             .insert_text_format
                             .unwrap_or(lsp_types::InsertTextFormat::PLAIN_TEXT),
                         replace_range,
+                        server_id: std::sync::Arc::from(handle.server_id()),
+                        original_item: ci,
+                        resolved: false,
                     });
                     if all.len() >= MAX_LSP_ITEMS {
                         break;
@@ -6693,6 +6885,198 @@ impl App {
                 is_incomplete: any_incomplete,
             });
         });
+    }
+
+    /// Fire `completionItem/resolve` for the focused
+    /// candidate (Phase 4.2.g.3). The original CompletionItem
+    /// is round-tripped to the originating server; the
+    /// response fills in `documentation` /
+    /// `additionalTextEdits` / `detail` per the LSP spec.
+    /// Drain updates the meta + the docs popup body in place.
+    fn do_completion_resolve_focused(&mut self) {
+        // Cancel any prior in-flight resolve -- the focus
+        // moved to a different candidate.
+        if let Some(token) = self.pending_completion_resolve_token.take() {
+            token.cancel();
+        }
+        let Some(state) = self.insert_completion.as_ref() else {
+            return;
+        };
+        let Some(cand) = state.rendered.get(state.selected) else {
+            return;
+        };
+        let Some(meta) = self.lsp_completion_meta_for(cand) else {
+            return;
+        };
+        if meta.resolved {
+            return;
+        }
+        let original = meta.original_item.clone();
+        let server_id = meta.server_id.clone();
+        // Index of this meta entry, computed by walking the
+        // sidecar -- the candidate's Extension payload encodes
+        // it but `lsp_completion_meta_for` returns a borrow
+        // that doesn't carry the index.
+        let lattice_completion::CandidateData::Extension { payload, .. } =
+            &cand.raw.data
+        else {
+            return;
+        };
+        if payload.len() != 4 {
+            return;
+        }
+        let meta_index = u32::from_le_bytes([
+            payload[0],
+            payload[1],
+            payload[2],
+            payload[3],
+        ]) as usize;
+        // Resolve URI to find the originating server handle.
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<CompletionResolveOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_completion_resolve_rx = Some(rx);
+        self.pending_completion_resolve_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handle = {
+                let g = lsp.lock().await;
+                g.servers_for(&uri)
+                    .into_iter()
+                    .find(|h| h.server_id() == &*server_id)
+            };
+            let Some(handle) = handle else {
+                return;
+            };
+            if !handle.capabilities().completion_resolve_provider() {
+                return;
+            }
+            if token.is_cancelled() {
+                return;
+            }
+            // `request_with_cancel` takes `&str` method name
+            // and a serializable param; the resolved item
+            // comes back as `CompletionItem`.
+            let pending = handle.request_with_cancel::<
+                lsp_types::CompletionItem,
+                lsp_types::CompletionItem,
+            >(
+                "completionItem/resolve",
+                original,
+                token.clone(),
+            );
+            let Ok(resolved) = pending.await else {
+                return;
+            };
+            let _ = tx.send(CompletionResolveOutcome {
+                meta_index,
+                resolved,
+            });
+        });
+    }
+
+    /// Drain queued `completionItem/resolve` responses --
+    /// fill in the meta entry, update the docs-popup body
+    /// when the resolved item is the popup's currently-focused
+    /// one.
+    pub fn drain_pending_completion_resolve(&mut self) {
+        let Some(mut rx) = self.pending_completion_resolve_rx.take() else {
+            return;
+        };
+        let mut latest: Option<CompletionResolveOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_completion_resolve_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        self.pending_completion_resolve_token = None;
+        // Fill the meta entry with the resolved fields. Don't
+        // touch fields the host already extracted (label,
+        // insert_text, etc.) -- only documentation +
+        // additionalTextEdits + detail are typically lazy.
+        let Some(meta) = self
+            .insert_completion_lsp_meta
+            .get_mut(outcome.meta_index)
+        else {
+            return;
+        };
+        let resolved = outcome.resolved;
+        if let Some(d) = resolved.documentation.as_ref() {
+            let body = match d {
+                lsp_types::Documentation::String(s) => s.clone(),
+                lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
+            };
+            meta.documentation = Some(body);
+        }
+        if let Some(detail) = resolved.detail.clone() {
+            meta.detail = Some(detail);
+        }
+        if let Some(adds) = resolved.additional_text_edits.clone() {
+            meta.additional_text_edits = adds;
+        }
+        if let Some(cmd) = resolved.command.clone() {
+            meta.command = Some(cmd);
+        }
+        meta.resolved = true;
+        // Refresh the docs popup body when this resolve was
+        // for the currently-focused candidate.
+        let Some(state) = self.insert_completion.as_mut() else {
+            return;
+        };
+        let Some(doc_popup) = state.doc_popup.as_mut() else {
+            return;
+        };
+        // Confirm the popup is still focused on the same item
+        // -- a fast re-navigate could have moved focus away.
+        let Some(cand) = state.rendered.get(state.selected) else {
+            return;
+        };
+        let payload = match &cand.raw.data {
+            lattice_completion::CandidateData::Extension { payload, .. } => payload,
+            _ => return,
+        };
+        if payload.len() != 4 {
+            return;
+        }
+        let active_idx = u32::from_le_bytes([
+            payload[0],
+            payload[1],
+            payload[2],
+            payload[3],
+        ]) as usize;
+        if active_idx != outcome.meta_index {
+            return;
+        }
+        // Build the body from the freshly-resolved meta.
+        // (Direct field access here, since `docs_body_for_selected`
+        // would re-borrow self.)
+        let detail = self
+            .insert_completion_lsp_meta
+            .get(outcome.meta_index)
+            .and_then(|m| m.detail.clone())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("```\n{s}\n```"));
+        let docs = self
+            .insert_completion_lsp_meta
+            .get(outcome.meta_index)
+            .and_then(|m| m.documentation.clone())
+            .filter(|s| !s.is_empty());
+        doc_popup.body = match (detail, docs) {
+            (Some(d), Some(b)) => Some(format!("{d}\n\n{b}")),
+            (Some(d), None) => Some(d),
+            (None, Some(b)) => Some(b),
+            (None, None) => Some("(no documentation)".to_string()),
+        };
+        doc_popup.scroll = 0;
     }
 
     /// Per-frame drain hook -- merge any LSP completion
@@ -20148,6 +20532,9 @@ mod tests {
                     command: None,
                     insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
                     replace_range: None,
+                    server_id: std::sync::Arc::from("test-server"),
+                    original_item: lsp_types::CompletionItem::default(),
+                    resolved: false,
                 },
                 super::LspCompletionMeta {
                     label: "foobar".into(),
@@ -20164,6 +20551,9 @@ mod tests {
                     command: None,
                     insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
                     replace_range: None,
+                    server_id: std::sync::Arc::from("test-server"),
+                    original_item: lsp_types::CompletionItem::default(),
+                    resolved: false,
                 },
             ],
             is_incomplete: false,
@@ -20213,6 +20603,9 @@ mod tests {
             command: None,
             insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
+            server_id: std::sync::Arc::from("test-server"),
+            original_item: lsp_types::CompletionItem::default(),
+            resolved: false,
         };
         // First batch.
         let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel::<
@@ -20270,6 +20663,340 @@ mod tests {
     }
 
     #[test]
+    fn docs_toggle_pulls_body_from_cached_metadata_documentation() {
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::ZERO;
+        // Seed popup state with a single LSP candidate that
+        // already has documentation cached.
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        );
+        let mut raw = lattice_completion::RawCandidate::plain(
+            "foo",
+            lattice_completion::CandidateKind::Plain,
+        );
+        raw.display = "foo".into();
+        raw.data = lattice_completion::CandidateData::Extension {
+            kind_id: super::LSP_COMPLETION_KIND_ID,
+            payload: 0u32.to_le_bytes().to_vec(),
+        };
+        let scored = lattice_completion::ScoredCandidate {
+            raw,
+            score: lattice_completion::MatchScore(100),
+            match_ranges: Vec::new(),
+        };
+        state
+            .rendered
+            .push(lattice_completion::RenderedCandidate::from_scored(scored));
+        a.insert_completion = Some(state);
+        a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
+            label: "foo".into(),
+            insert_text: "foo".into(),
+            filter_text: None,
+            sort_text: None,
+            detail: Some("fn foo() -> i32".into()),
+            documentation: Some("Returns 42.".into()),
+            kind: Some(lsp_types::CompletionItemKind::FUNCTION),
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: Vec::new(),
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            replace_range: None,
+            server_id: std::sync::Arc::from("test-server"),
+            original_item: lsp_types::CompletionItem::default(),
+            resolved: true,
+        });
+        a.do_completion_toggle_docs();
+        let body = a
+            .insert_completion
+            .as_ref()
+            .and_then(|s| s.doc_popup.as_ref())
+            .and_then(|d| d.body.clone())
+            .expect("body populated");
+        assert!(body.contains("fn foo() -> i32"));
+        assert!(body.contains("Returns 42."));
+    }
+
+    #[test]
+    fn docs_toggle_a_second_time_closes_popup() {
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::ZERO;
+        a.insert_completion = Some(
+            lattice_completion::InsertCompletionState::open(
+                lattice_completion::CompletionTrigger::Manual,
+                Position::ZERO,
+                Position::ZERO,
+                String::new(),
+            ),
+        );
+        a.do_completion_toggle_docs();
+        // Even with no candidate, the popup opens with an
+        // empty body slot. Toggling again closes it.
+        let was_open = a
+            .insert_completion
+            .as_ref()
+            .map(|s| s.doc_popup.is_some())
+            .unwrap_or(false);
+        assert!(was_open);
+        a.do_completion_toggle_docs();
+        let now_closed = a
+            .insert_completion
+            .as_ref()
+            .map(|s| s.doc_popup.is_none())
+            .unwrap_or(true);
+        assert!(now_closed);
+    }
+
+    #[test]
+    fn docs_scroll_clamps_at_zero_and_advances_by_eight() {
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::ZERO;
+        a.insert_completion = Some(
+            lattice_completion::InsertCompletionState::open(
+                lattice_completion::CompletionTrigger::Manual,
+                Position::ZERO,
+                Position::ZERO,
+                String::new(),
+            ),
+        );
+        a.do_completion_toggle_docs();
+        // Default scroll is 0; up clamps at 0.
+        assert_eq!(
+            a.insert_completion
+                .as_ref()
+                .and_then(|s| s.doc_popup.as_ref())
+                .map(|d| d.scroll),
+            Some(0)
+        );
+        a.apply(Action::CompletionDocsScrollUp);
+        assert_eq!(
+            a.insert_completion
+                .as_ref()
+                .and_then(|s| s.doc_popup.as_ref())
+                .map(|d| d.scroll),
+            Some(0)
+        );
+        a.apply(Action::CompletionDocsScrollDown);
+        assert_eq!(
+            a.insert_completion
+                .as_ref()
+                .and_then(|s| s.doc_popup.as_ref())
+                .map(|d| d.scroll),
+            Some(8)
+        );
+        a.apply(Action::CompletionDocsScrollDown);
+        assert_eq!(
+            a.insert_completion
+                .as_ref()
+                .and_then(|s| s.doc_popup.as_ref())
+                .map(|d| d.scroll),
+            Some(16)
+        );
+        a.apply(Action::CompletionDocsScrollUp);
+        assert_eq!(
+            a.insert_completion
+                .as_ref()
+                .and_then(|s| s.doc_popup.as_ref())
+                .map(|d| d.scroll),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn drain_pending_completion_resolve_fills_metadata_and_body() {
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::ZERO;
+        // Build state with one candidate pointing at meta[0].
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        );
+        let mut raw = lattice_completion::RawCandidate::plain(
+            "foo",
+            lattice_completion::CandidateKind::Plain,
+        );
+        raw.data = lattice_completion::CandidateData::Extension {
+            kind_id: super::LSP_COMPLETION_KIND_ID,
+            payload: 0u32.to_le_bytes().to_vec(),
+        };
+        state
+            .rendered
+            .push(lattice_completion::RenderedCandidate::from_scored(
+                lattice_completion::ScoredCandidate {
+                    raw,
+                    score: lattice_completion::MatchScore(100),
+                    match_ranges: Vec::new(),
+                },
+            ));
+        // Open the doc popup -- empty body initially because
+        // meta has no documentation yet.
+        state.doc_popup = Some(lattice_completion::DocPopupState {
+            for_index: 0,
+            body: None,
+            scroll: 5, // verify scroll resets on body refresh
+        });
+        a.insert_completion = Some(state);
+        a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
+            label: "foo".into(),
+            insert_text: "foo".into(),
+            filter_text: None,
+            sort_text: None,
+            detail: None,
+            documentation: None,
+            kind: None,
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: Vec::new(),
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            replace_range: None,
+            server_id: std::sync::Arc::from("test-server"),
+            original_item: lsp_types::CompletionItem::default(),
+            resolved: false,
+        });
+        // Push a resolve outcome that fills documentation.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            super::CompletionResolveOutcome,
+        >();
+        a.pending_completion_resolve_rx = Some(rx);
+        a.pending_completion_resolve_token =
+            Some(lattice_protocol::CancellationToken::new());
+        let mut resolved = lsp_types::CompletionItem::default();
+        resolved.label = "foo".into();
+        resolved.detail = Some("fn foo() -> i32".into());
+        resolved.documentation = Some(lsp_types::Documentation::String(
+            "Returns 42.".into(),
+        ));
+        tx.send(super::CompletionResolveOutcome {
+            meta_index: 0,
+            resolved,
+        })
+        .unwrap();
+        a.drain_pending_completion_resolve();
+        // Meta updated.
+        let meta = &a.insert_completion_lsp_meta[0];
+        assert!(meta.resolved);
+        assert_eq!(meta.detail.as_deref(), Some("fn foo() -> i32"));
+        assert_eq!(meta.documentation.as_deref(), Some("Returns 42."));
+        // Doc popup body refreshed; scroll reset to 0.
+        let popup = a
+            .insert_completion
+            .as_ref()
+            .and_then(|s| s.doc_popup.as_ref())
+            .expect("popup");
+        assert_eq!(popup.scroll, 0);
+        let body = popup.body.as_deref().unwrap_or("");
+        assert!(body.contains("fn foo() -> i32"));
+        assert!(body.contains("Returns 42."));
+    }
+
+    #[test]
+    fn drain_pending_completion_resolve_drops_stale_index_after_selection_moved() {
+        // Resolve arrives for meta[0] but selection has moved
+        // to meta[1]. The meta still updates (so a future
+        // refocus uses the cached docs) but the doc popup body
+        // doesn't change.
+        let mut a = app_with("xx", 10);
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        );
+        for i in 0..2u32 {
+            let mut raw = lattice_completion::RawCandidate::plain(
+                format!("c{i}"),
+                lattice_completion::CandidateKind::Plain,
+            );
+            raw.data = lattice_completion::CandidateData::Extension {
+                kind_id: super::LSP_COMPLETION_KIND_ID,
+                payload: i.to_le_bytes().to_vec(),
+            };
+            state.rendered.push(
+                lattice_completion::RenderedCandidate::from_scored(
+                    lattice_completion::ScoredCandidate {
+                        raw,
+                        score: lattice_completion::MatchScore(100),
+                        match_ranges: Vec::new(),
+                    },
+                ),
+            );
+        }
+        state.selected = 1; // user moved past meta[0]
+        state.doc_popup = Some(lattice_completion::DocPopupState {
+            for_index: 1,
+            body: Some("for c1".into()),
+            scroll: 0,
+        });
+        a.insert_completion = Some(state);
+        for i in 0..2 {
+            a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
+                label: format!("c{i}"),
+                insert_text: format!("c{i}"),
+                filter_text: None,
+                sort_text: None,
+                detail: None,
+                documentation: None,
+                kind: None,
+                deprecated: false,
+                preselect: false,
+                commit_characters: Vec::new(),
+                additional_text_edits: Vec::new(),
+                command: None,
+                insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+                replace_range: None,
+                server_id: std::sync::Arc::from("test-server"),
+                original_item: lsp_types::CompletionItem::default(),
+                resolved: false,
+            });
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            super::CompletionResolveOutcome,
+        >();
+        a.pending_completion_resolve_rx = Some(rx);
+        a.pending_completion_resolve_token =
+            Some(lattice_protocol::CancellationToken::new());
+        let mut resolved = lsp_types::CompletionItem::default();
+        resolved.label = "c0".into();
+        resolved.documentation = Some(lsp_types::Documentation::String(
+            "stale".into(),
+        ));
+        tx.send(super::CompletionResolveOutcome {
+            meta_index: 0,
+            resolved,
+        })
+        .unwrap();
+        a.drain_pending_completion_resolve();
+        // Meta[0] updated.
+        assert!(a.insert_completion_lsp_meta[0].resolved);
+        assert!(
+            a.insert_completion_lsp_meta[0]
+                .documentation
+                .as_deref()
+                == Some("stale")
+        );
+        // Doc popup body unchanged (still pointing at meta[1]).
+        let body = a
+            .insert_completion
+            .as_ref()
+            .and_then(|s| s.doc_popup.as_ref())
+            .and_then(|d| d.body.clone());
+        assert_eq!(body.as_deref(), Some("for c1"));
+    }
+
+    #[test]
     fn lsp_completion_meta_for_resolves_extension_payload_index() {
         let mut a = app_with("xx", 10);
         a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
@@ -20287,6 +21014,9 @@ mod tests {
             command: None,
             insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
+            server_id: std::sync::Arc::from("test-server"),
+            original_item: lsp_types::CompletionItem::default(),
+            resolved: false,
         });
         a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
             label: "second".into(),
@@ -20303,6 +21033,9 @@ mod tests {
             command: None,
             insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
+            server_id: std::sync::Arc::from("test-server"),
+            original_item: lsp_types::CompletionItem::default(),
+            resolved: false,
         });
         // Build a candidate pointing at index 1.
         let mut raw = lattice_completion::RawCandidate::plain(

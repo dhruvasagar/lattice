@@ -258,6 +258,31 @@ impl Capabilities {
         self.server.completion_provider.is_some()
     }
 
+    /// Whether the server advertises `resolveProvider` on its
+    /// completionProvider options. When true, completion items
+    /// may arrive with `documentation` / `additionalTextEdits`
+    /// missing and need `completionItem/resolve` before the
+    /// docs popup or accept paths read those fields.
+    pub fn completion_resolve_provider(&self) -> bool {
+        self.server
+            .completion_provider
+            .as_ref()
+            .and_then(|p| p.resolve_provider)
+            .unwrap_or(false)
+    }
+
+    /// Trigger characters the server wants completion to fire
+    /// on (auto-trigger mode). Empty when none advertised or
+    /// the provider is absent.
+    pub fn completion_trigger_chars(&self) -> Vec<char> {
+        self.server
+            .completion_provider
+            .as_ref()
+            .and_then(|p| p.trigger_characters.as_ref())
+            .map(|v| v.iter().filter_map(|s| s.chars().next()).collect())
+            .unwrap_or_default()
+    }
+
     /// Server's `documentFormattingProvider` presence -- gates
     /// `:format` (Phase 4.3).
     pub fn supports_formatting(&self) -> bool {

@@ -210,6 +210,10 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // 4.2.g.2). Merge into the active popup's `raw` set
         // and refilter; close the popup if everything dropped.
         app.drain_pending_insert_completion_lsp();
+        // Drain queued completionItem/resolve responses
+        // (Phase 4.2.g.3). Update the focused candidate's
+        // metadata + the docs popup body in place.
+        app.drain_pending_completion_resolve();
         // Drain queued Event::LspLogPushed events (Phase 4) and
         // refresh any open log / trace buffers from the logger
         // snapshot. Cheap on an idle channel; cheap when no log

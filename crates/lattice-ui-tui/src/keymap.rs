@@ -422,6 +422,8 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: CompletionPopup, chord: "<Esc>", doc: "Completion popup: cancel popup AND exit Insert (vim convention)" },
         keymap_entry! { mode: CompletionPopup, chord: "<C-Space>", doc: "Completion popup: re-trigger / refresh (LSP isIncomplete path)" },
         keymap_entry! { mode: CompletionPopup, chord: "<C-d>", doc: "Completion popup: toggle side documentation popup for the focused candidate" },
+        keymap_entry! { mode: CompletionPopup, chord: "<C-f>", doc: "Completion popup: page docs popup forward" },
+        keymap_entry! { mode: CompletionPopup, chord: "<C-b>", doc: "Completion popup: page docs popup backward" },
         // ---- Replace mode ----
         keymap_entry! { mode: Replace, chord: "<Esc>", doc: "Exit to Normal" },
         keymap_entry! { mode: Replace, chord: "<BS>", doc: "Restore last overwritten byte" },

@@ -116,6 +116,15 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // Painted last so it sits on top of any pane-area widgets.
     if app.insert_completion.is_some() {
         draw_insert_completion_popup(frame, chunks[0], app, snap);
+        // Side documentation popup (Phase 4.2.g.3) -- only
+        // rendered when the user has flipped it on with
+        // `<C-d>`. Anchored right of the candidate popup
+        // when there's room; below otherwise.
+        if let Some(state) = app.insert_completion.as_ref()
+            && state.doc_popup.is_some()
+        {
+            draw_insert_completion_docs_popup(frame, chunks[0], app, snap);
+        }
     }
 }
 
@@ -212,6 +221,111 @@ fn draw_insert_completion_popup(
         .collect();
     let para = Paragraph::new(lines);
     frame.render_widget(para, popup);
+}
+
+/// **Insert-mode completion docs side popup** (Phase
+/// 4.2.g.3). Anchored right of the candidate popup when
+/// there's room (typical wide terminals); falls back to
+/// below the candidate popup when narrow. Renders the
+/// focused item's `documentation` (lazy-resolved via
+/// `completionItem/resolve`) wrapped to the popup width.
+/// Title bar shows "docs" + the focused candidate's label.
+///
+/// `<C-f>` / `<C-b>` (inside the completion-popup minor
+/// mode) page through the body via `state.doc_popup.scroll`.
+fn draw_insert_completion_docs_popup(
+    frame: &mut Frame,
+    buffer_area: Rect,
+    app: &App,
+    snap: &DocumentSnapshot,
+) {
+    let Some(state) = app.insert_completion.as_ref() else {
+        return;
+    };
+    let Some(doc_popup) = state.doc_popup.as_ref() else {
+        return;
+    };
+    // Anchor: same anchor as the candidate popup. Pull the
+    // active pane rect for placement math.
+    let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
+    let anchor_screen = cursor_screen_position_at(
+        app,
+        snap,
+        pane_rect,
+        app.cursor,
+        app.scroll,
+    );
+    let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
+    // Candidate popup geometry (mirrors `draw_insert_completion_popup`).
+    let cand_width: u16 = 60u16.min(buffer_area.width.saturating_sub(2)).max(30);
+    let cand_height: u16 = 12u16.min(state.rendered.len() as u16).max(1);
+    let area_bottom = buffer_area.y + buffer_area.height;
+    let space_below = area_bottom.saturating_sub(anchor_y + 1);
+    let cand_y = if space_below >= cand_height {
+        anchor_y + 1
+    } else {
+        anchor_y.saturating_sub(cand_height)
+    };
+    let cand_max_x = (buffer_area.x + buffer_area.width).saturating_sub(cand_width);
+    let cand_x = anchor_x.min(cand_max_x).max(buffer_area.x);
+    // Docs popup: try to fit right of the candidate popup.
+    // If there's not enough room, place below the candidate
+    // popup instead.
+    let cand_right = cand_x + cand_width;
+    let space_right =
+        (buffer_area.x + buffer_area.width).saturating_sub(cand_right + 1);
+    let docs_width: u16 = 60u16.min(space_right).max(0);
+    let (x, y, width, height) = if docs_width >= 30 {
+        // Right side, same vertical extent as the candidate
+        // popup.
+        (
+            cand_right + 1,
+            cand_y,
+            docs_width,
+            cand_height,
+        )
+    } else {
+        // Below the candidate popup, full popup width, capped
+        // at remaining vertical space.
+        let below_y = cand_y + cand_height;
+        let below_h = area_bottom.saturating_sub(below_y).min(8);
+        if below_h < 3 {
+            return;
+        }
+        (cand_x, below_y, cand_width, below_h)
+    };
+    if width < 20 || height < 3 {
+        return;
+    }
+    let popup = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" docs (<C-d>) ");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    // Body. Plain-text rendering for v1; markdown highlight
+    // can layer on once the help-popup pipeline gets reused
+    // (4.2.g.5+). Wrap so long lines paginate naturally.
+    let body_text: String = doc_popup
+        .body
+        .clone()
+        .unwrap_or_else(|| "(loading…)".to_string());
+    // Apply scroll: skip the first `scroll` lines.
+    let visible_body: String = body_text
+        .lines()
+        .skip(doc_popup.scroll as usize)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let para = Paragraph::new(visible_body)
+        .wrap(Wrap { trim: false })
+        .style(TuiStyle::default().fg(Color::Gray));
+    frame.render_widget(para, inner);
 }
 
 /// Render one Insert-mode-completion candidate row. Three

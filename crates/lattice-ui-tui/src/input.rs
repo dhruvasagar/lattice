@@ -412,6 +412,12 @@ fn translate_insert_completion_popup(event: KeyEvent) -> Option<Action> {
         (KeyCode::Char(' '), true) => Some(Action::CompletionTrigger),
         // Toggle docs side popup -- `<C-d>`.
         (KeyCode::Char('d'), true) => Some(Action::CompletionToggleDocs),
+        // Page the docs popup -- `<C-f>` / `<C-b>`. The host
+        // ignores these when the docs popup isn't open, so
+        // they can claim the chord unconditionally inside the
+        // minor mode without breaking other features.
+        (KeyCode::Char('f'), true) => Some(Action::CompletionDocsScrollDown),
+        (KeyCode::Char('b'), true) => Some(Action::CompletionDocsScrollUp),
         // `<C-x><C-o>` etc. fall through to translate_insert,
         // which sets the AfterCtrlX pending state and the next
         // key resolves in Insert mode -- inside the popup we
@@ -2681,6 +2687,24 @@ mod tests {
             ctrl(KeyCode::Char('d')),
         );
         assert!(!matches!(half_down, Action::CompletionToggleDocs));
+    }
+
+    #[test]
+    fn popup_open_ctrl_f_pages_docs_down() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('f'))),
+            Action::CompletionDocsScrollDown
+        ));
+    }
+
+    #[test]
+    fn popup_open_ctrl_b_pages_docs_up() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('b'))),
+            Action::CompletionDocsScrollUp
+        ));
     }
 
     #[test]

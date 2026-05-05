@@ -37,6 +37,7 @@ pub struct CoreOptions {
     pub completion_source_buffer_words_priority: OptionHandle<i64>,
     pub completion_source_tree_sitter_priority: OptionHandle<i64>,
     pub completion_source_path_priority: OptionHandle<i64>,
+    pub completion_extra_commit_chars: OptionHandle<String>,
 }
 
 /// Register every renderer-agnostic option against `registry` and
@@ -205,6 +206,18 @@ pub fn register_core_options(registry: &ConfigRegistry) -> CoreOptions {
         .validate(priority_validate)
         .build(),
     );
+    let completion_extra_commit_chars = registry.register(Option::<String>::new(
+        "completion.extra_commit_chars",
+        String::new(),
+        "Editor-side commit characters unioned with each LSP \
+         server's per-item `commitCharacters`. When the \
+         insert-completion popup is open and the user types \
+         one of these characters, the focused candidate is \
+         accepted before the character is inserted. Default \
+         empty -- only LSP-supplied commit chars fire. Set \
+         to e.g. `\".,;\"` to accept on any of those keys \
+         globally.",
+    ));
     CoreOptions {
         number,
         relativenumber,
@@ -220,6 +233,7 @@ pub fn register_core_options(registry: &ConfigRegistry) -> CoreOptions {
         completion_source_buffer_words_priority,
         completion_source_tree_sitter_priority,
         completion_source_path_priority,
+        completion_extra_commit_chars,
     }
 }
 
@@ -246,6 +260,7 @@ mod tests {
         assert_eq!(*r.get(h.completion_source_buffer_words_priority), 100);
         assert_eq!(*r.get(h.completion_source_tree_sitter_priority), 80);
         assert_eq!(*r.get(h.completion_source_path_priority), 90);
+        assert_eq!(r.get(h.completion_extra_commit_chars).as_str(), "");
     }
 
     #[test]

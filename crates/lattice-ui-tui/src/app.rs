@@ -508,6 +508,24 @@ pub enum Action {
     /// Scroll the docs side popup backward (`<C-b>` inside
     /// the completion-popup minor mode).
     CompletionDocsScrollUp,
+    /// Insert-mode character key while the completion popup
+    /// is open (Phase 4.2.g.7 commit-char polish). The App's
+    /// handler decides at apply time:
+    ///
+    /// - If the typed `char` is in the focused candidate's
+    ///   effective commit-character set (LSP-supplied per-item
+    ///   list union'd with `completion.extra_commit_chars`),
+    ///   the popup accepts the candidate then inserts the
+    ///   typed `char` afterward (vim convention: a commit
+    ///   character behaves like "accept and continue typing").
+    /// - Otherwise the typed `char` flows through plain
+    ///   `do_insert_text`; the popup refilters against the
+    ///   updated query as if the layer had returned `None`.
+    ///
+    /// Routing every popup-time char through this single
+    /// action keeps the input layer ignorant of commit-char
+    /// state -- the App reads it once at apply time.
+    CompletionAcceptThenInsert(char),
     /// `<C-x><C-s>` -- direct snippet expansion (Phase
     /// 4.2.g.4). Looks up the word at the cursor in the
     /// per-language snippet registry; expands the matching
@@ -3631,6 +3649,9 @@ impl App {
             Action::CompletionToggleDocs => self.do_completion_toggle_docs(),
             Action::CompletionDocsScrollDown => self.do_completion_docs_scroll_down(),
             Action::CompletionDocsScrollUp => self.do_completion_docs_scroll_up(),
+            Action::CompletionAcceptThenInsert(c) => {
+                self.do_completion_accept_then_insert(c);
+            }
             Action::SnippetExpand => self.do_snippet_expand_at_cursor(),
             Action::SnippetNextPlaceholder => self.do_snippet_next_placeholder(),
             Action::SnippetPrevPlaceholder => self.do_snippet_prev_placeholder(),
@@ -6926,6 +6947,51 @@ impl App {
     ///    `additionalTextEdits` as one undo unit.
     /// 3. **Sync-source candidate**: simple replace-`[anchor,
     ///    cursor]` splice.
+    /// Insert-mode character key while the popup is open
+    /// (Phase 4.2.g.7 commit-char polish). Accepts the focused
+    /// candidate THEN inserts `ch` when `ch` is in the
+    /// effective commit-char set; otherwise inserts `ch`
+    /// plainly so the popup refilters as usual.
+    pub fn do_completion_accept_then_insert(&mut self, ch: char) {
+        let is_commit = self
+            .insert_completion
+            .as_ref()
+            .and_then(|s| s.selected_candidate())
+            .map(|cand| {
+                self.effective_commit_chars_for(cand)
+                    .iter()
+                    .any(|c| *c == ch)
+            })
+            .unwrap_or(false);
+        if is_commit {
+            self.do_completion_accept();
+        }
+        self.do_insert_text(&ch.to_string());
+    }
+
+    /// Effective commit characters for `candidate` -- per-item
+    /// list (LSP-supplied via `LspCompletionMeta.commit_characters`)
+    /// unioned with the global `completion.extra_commit_chars`
+    /// option. Sync sources (buffer-words, snippet,
+    /// tree-sitter) carry no per-item list, so they only honour
+    /// the global extras.
+    fn effective_commit_chars_for(
+        &self,
+        candidate: &lattice_completion::RenderedCandidate,
+    ) -> Vec<char> {
+        let mut chars: Vec<char> = self
+            .lsp_completion_meta_for(candidate)
+            .map(|meta| meta.commit_characters.clone())
+            .unwrap_or_default();
+        let extra = self.config.get(self.core_options.completion_extra_commit_chars);
+        for c in extra.chars() {
+            if !chars.contains(&c) {
+                chars.push(c);
+            }
+        }
+        chars
+    }
+
     pub fn do_completion_accept(&mut self) {
         let Some(state) = self.insert_completion.take() else {
             self.completion_in_path_context = false;
@@ -24828,6 +24894,148 @@ mod tests {
             .collect();
         assert!(texts.contains(&"foo.rs"), "src/foo.rs surfaced -- got {texts:?}");
         assert!(texts.contains(&"bar.rs"), "src/bar.rs surfaced");
+    }
+
+    fn install_lsp_candidate_with_commit_chars(
+        a: &mut App,
+        text: &str,
+        commit_chars: Vec<char>,
+        anchor: Position,
+    ) {
+        let cursor = a.cursor;
+        let snap = a.document.snapshot();
+        let line = snap.buffer.line(cursor.line).unwrap_or_default();
+        let query = line
+            .get(anchor.byte as usize..cursor.byte as usize)
+            .unwrap_or("")
+            .to_string();
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            anchor,
+            cursor,
+            query,
+        );
+        let payload = (a.insert_completion_lsp_meta.len() as u32).to_le_bytes().to_vec();
+        let mut raw = lattice_completion::RawCandidate::plain(
+            text,
+            lattice_completion::CandidateKind::Plain,
+        )
+        .with_source(lattice_completion::SourceId::new(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID,
+        ));
+        raw.data = lattice_completion::CandidateData::Extension {
+            kind_id: LSP_COMPLETION_KIND_ID,
+            payload,
+        };
+        state.raw.push(raw);
+        a.insert_completion_lsp_meta.push(LspCompletionMeta {
+            label: text.to_string(),
+            insert_text: text.to_string(),
+            filter_text: None,
+            sort_text: None,
+            detail: None,
+            documentation: None,
+            kind: Some(lsp_types::CompletionItemKind::FUNCTION),
+            deprecated: false,
+            preselect: false,
+            commit_characters: commit_chars,
+            additional_text_edits: Vec::new(),
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            replace_range: None,
+            server_id: std::sync::Arc::from("test-server"),
+            original_item: lsp_types::CompletionItem::new_simple(
+                text.to_string(),
+                String::new(),
+            ),
+            resolved: false,
+        });
+        a.refilter_insert_completion(&mut state);
+        a.insert_completion = Some(state);
+    }
+
+    #[test]
+    fn commit_char_in_lsp_item_accepts_then_inserts() {
+        let mut a = app_with("foo", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        install_lsp_candidate_with_commit_chars(
+            &mut a,
+            "foo",
+            vec!['.', '('],
+            Position::new(0, 0),
+        );
+        a.do_completion_accept_then_insert('.');
+        // Popup closed; accept replaced the partial with the
+        // full LSP insert, then `.` was appended.
+        assert!(a.insert_completion.is_none(), "popup closed on commit");
+        assert_eq!(a.document.snapshot().buffer.as_string(), "foo.");
+    }
+
+    #[test]
+    fn non_commit_char_is_plain_insert_popup_refilters() {
+        let mut a = app_with("foo", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        install_lsp_candidate_with_commit_chars(
+            &mut a,
+            "foo",
+            vec!['.'],
+            Position::new(0, 0),
+        );
+        a.do_completion_accept_then_insert('a');
+        // `a` isn't a commit char -> the focused candidate
+        // wasn't accepted; `a` was inserted plainly. The
+        // refresh hook closes the popup because the new
+        // query "fooa" no longer matches the candidate
+        // "foo" prefix-wise (matcher returns no rows).
+        assert_eq!(a.document.snapshot().buffer.as_string(), "fooa");
+    }
+
+    #[test]
+    fn extra_commit_chars_option_contributes_globally() {
+        let mut a = app_with("foo", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 3);
+        // Server says no commit chars; the global option
+        // adds `,`.
+        install_lsp_candidate_with_commit_chars(
+            &mut a,
+            "foo",
+            Vec::new(),
+            Position::new(0, 0),
+        );
+        a.do_set("completion.extra_commit_chars=,");
+        a.do_completion_accept_then_insert(',');
+        assert!(a.insert_completion.is_none());
+        assert_eq!(a.document.snapshot().buffer.as_string(), "foo,");
+    }
+
+    #[test]
+    fn sync_candidate_honors_extra_commit_chars_only() {
+        // A buffer-words candidate has no per-item commit
+        // list (sync sources don't carry one). The global
+        // extras still apply.
+        let mut a = app_with("alpha bravo ", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 12);
+        a.do_completion_trigger();
+        // Server-supplied list is empty for sync candidates;
+        // set the global extras to include `;`.
+        a.do_set("completion.extra_commit_chars=;");
+        // Focus the `alpha` candidate (insert at cursor).
+        if let Some(state) = a.insert_completion.as_mut() {
+            state.selected = state
+                .rendered
+                .iter()
+                .position(|r| r.raw.text == "alpha")
+                .expect("alpha");
+        }
+        a.do_completion_accept_then_insert(';');
+        // Popup closed; `alpha` inserted then `;`.
+        assert!(a.insert_completion.is_none());
+        let text = a.document.snapshot().buffer.as_string();
+        assert!(text.ends_with("alpha;"), "got `{text}`");
     }
 
     #[test]

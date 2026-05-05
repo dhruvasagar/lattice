@@ -447,6 +447,18 @@ fn translate_insert_completion_popup(event: KeyEvent) -> Option<Action> {
         // minor mode without breaking other features.
         (KeyCode::Char('f'), true) => Some(Action::CompletionDocsScrollDown),
         (KeyCode::Char('b'), true) => Some(Action::CompletionDocsScrollUp),
+        // Commit-char polish (Phase 4.2.g.7). Single
+        // unmodified character keys route through
+        // `CompletionAcceptThenInsert`; the App's handler
+        // checks the focused candidate's effective commit-
+        // char set and either accepts-then-inserts or just
+        // inserts (popup refilters as if this layer had
+        // returned `None`). Routing every char through one
+        // action keeps the input layer ignorant of the
+        // App-side commit-char state.
+        (KeyCode::Char(c), false) if !c.is_control() => {
+            Some(Action::CompletionAcceptThenInsert(c))
+        }
         // `<C-x><C-o>` etc. fall through to translate_insert,
         // which sets the AfterCtrlX pending state and the next
         // key resolves in Insert mode -- inside the popup we

@@ -98,7 +98,7 @@ priority, set source-specific knobs (e.g.
 | Source id | What it contributes | Ships in |
 |---|---|---|
 | `gen:buffer-words` | Words from the active buffer (and visible buffers in 4.2.g.6) — alphanumeric + underscore runs, deduped, default min length 3. | 4.2.g.1 ✅ |
-| `gen:lsp-completion` | `textDocument/completion` results from every LSP server attached to the buffer. Item adaptation: `filterText` (matcher target) / `sortText` (ranker tiebreaker) / `detail` (one-line signature) / `documentation` (markdown body for the docs popup) / `tags[Deprecated]` (strikethrough + ranker penalty in 4.2.g.5) / `commitCharacters` (auto-accept on type, 4.2.g.5) / `additionalTextEdits` (auto-imports, applied alongside the main insert as one undo unit). `isIncomplete: true` re-fires the request on every keystroke that mutates the query. | 4.2.g.2 ✅ |
+| `gen:lsp-completion` | `textDocument/completion` results from every LSP server attached to the buffer. Item adaptation: `filterText` (matcher target) / `sortText` (ranker tiebreaker) / `detail` (one-line signature) / `documentation` (markdown body for the docs popup) / `tags[Deprecated]` (strikethrough + ranker penalty in 4.2.g.5) / `commitCharacters` (auto-accept-then-insert on type, 4.2.g.7) / `additionalTextEdits` (auto-imports, applied alongside the main insert as one undo unit). `isIncomplete: true` re-fires the request on every keystroke that mutates the query. | 4.2.g.2 ✅ |
 | `gen:snippet` | Per-language snippets from `lattice-snippet`. TextMate JSON format; drop-in compatible with VS Code / friendly-snippets. | 4.2.g.4 ✅ |
 | `gen:path` | Filesystem entries when typing a path inside a string literal. Tree-sitter scope detection identifies the string context (rust / python / javascript today); walk caps at 200 entries; hidden files + `.git` / `node_modules` / `target` / `dist` skipped. | 4.2.g.6 ✅ |
 | `gen:tree-sitter-symbol` | Definition-position identifiers from the buffer's syntax tree (function defs, struct / enum / trait / type names, `const` / `static`, `let` bindings, function parameters, modules). Per-language `symbols.scm` query in `lattice-syntax`; rust / python / javascript ship today. | 4.2.g.6 ✅ |
@@ -308,7 +308,7 @@ prose typing.
 | `completion.min_chars` | int | `2` | Identifier-threshold characters before auto-trigger fires. |
 | `completion.debounce_ms` | int | `50` | Per-keystroke debounce for refilter passes. |
 | `completion.docs_auto` | bool | `false` | Auto-show docs popup on selection change. (4.2.g.3) |
-| `completion.extra_commit_chars` | string | `""` | Editor-side commit characters. (4.2.g.2) |
+| `completion.extra_commit_chars` | string | `""` | Editor-side commit characters unioned with each LSP server's per-item `commitCharacters`. Typing one of these while the popup is open accepts the focused candidate then inserts the character (e.g. `:set completion.extra_commit_chars=.,;` to accept on `.`, `,`, or `;` globally). (4.2.g.7) |
 | `completion.auto_insert_single` | bool | `true` | Auto-accept when only one candidate matches. |
 | `completion.fuzzy_threshold` | int | `5` | Minimum match score to render. |
 | `completion.suppress_in` | string list | `[]` | Tree-sitter scopes where completion is suppressed (e.g. `["string", "comment"]`). |

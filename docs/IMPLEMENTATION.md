@@ -810,11 +810,21 @@ Remaining 4.2:
   §3.4); `priority_for_source` wires the new id; help
   refresh adds a dedicated `## Path completion` section
   covering scope detection, resolution, ignore set, and
-  popup behaviour) ✅. **4.2.g.6 complete.** Then 4.2.g.7
-  (polish: ghost text, additionalTextEdits coalesce
-  refactor, auto-insert-single, cross-source visual dedup,
-  commit chars, extending the typed routing payload to
-  picker call sites).
+  popup behaviour) ✅. **4.2.g.6 complete.** 4.2.g.7 polish
+  (sliced as independent items): commit chars
+  (`Action::CompletionAcceptThenInsert(char)` routes every
+  popup-time char through one handler;
+  `effective_commit_chars_for` unions the focused candidate's
+  per-item LSP `commitCharacters` with the new typed option
+  `completion.extra_commit_chars`; popup layer claims
+  unmodified character keys; non-commit chars fall through
+  to plain `do_insert_text` so the popup refilters as
+  before) ✅. Remaining 4.2.g.7 polish items: ghost text
+  (top-ranked candidate's suffix as virtual text after
+  cursor), additionalTextEdits coalesce into one undo unit,
+  cross-source visual dedup at the popup renderer, picker
+  call sites flipping to typed routing payload via
+  `CandidateData::Extension`.
 - `completionItem/resolve` (lazy doc / additional edits) --
   shipped as part of 4.2.g.3 + 4.2.g.7.
 - `workspaceSymbol/resolve` (lazy location).

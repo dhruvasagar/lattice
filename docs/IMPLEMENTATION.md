@@ -873,11 +873,41 @@ Remaining 4.2:
 Remaining 4.3:
 - workspace/applyEdit (server-initiated -- inbound channel
   on the actor that calls back into the App's
-  `apply_workspace_edit` path; codeAction Commands
-  frequently route side-effects through this. Many
-  in-the-wild flows already work via the Command +
-  executeCommand fire-and-forget path; the inbound
-  applyEdit channel is the polish piece).
+  `apply_workspace_edit` path) ✅. New
+  `lattice-lsp::apply_edit` module exposes
+  `ApplyEditBus` (mpsc Sender side cloned into every actor
+  at spawn) + `InboundApplyEdit` (server_id + label + edit
+  + oneshot for the response) + `ApplyEditOutcome` (the
+  reply the App writes back). Actor's request branch routes
+  `workspace/applyEdit` through a spawned task that
+  dispatches via the bus, awaits the App's oneshot, and
+  ferries the LSP `ApplyWorkspaceEditResponse` back to the
+  wire; other server-initiated requests still resolve
+  inline. Supervisor exposes
+  `set_apply_edit_bus` for the App; `LspSupervisor::new`
+  now starts with `apply_edit_bus = None` so existing
+  tests / mocks that don't care about applyEdit see the
+  pre-4.3 METHOD_NOT_FOUND fallback. App's
+  `build_lsp_subsystem` creates the bus + receiver pair
+  and stashes the receiver in
+  `App.pending_apply_edit_rx`; `runtime::main_loop`
+  invokes `App::drain_inbound_apply_edits` once per
+  iteration alongside the other LSP drains. The drain
+  flattens each WorkspaceEdit via the existing
+  `flatten_workspace_edit` (same path `:rename` uses),
+  applies per-file (active buffer direct, cross-file via
+  `:e` then apply), echoes a status summary at Info
+  (success) / Warn (partial), and replies via the
+  embedded oneshot with `applied: bool` +
+  `failure_reason`. Empty edits reply
+  `applied: true` with the "empty workspace edit" reason
+  so server logs see the no-op. v1 doesn't track
+  `failed_change` (atomic-rollback queued for the
+  follow-up `apply_workspace_edit_atomic`). Tests:
+  lattice-lsp dispatch round-trip + drop-side error +
+  oneshot round-trip; App drain applies edits to active
+  buffer, replies applied=true on empty edit, and is a
+  no-op when the channel is empty.
 
 Update this section when picking up the in-flight item.
 

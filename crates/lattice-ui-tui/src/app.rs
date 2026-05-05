@@ -51,6 +51,7 @@ fn build_lsp_subsystem() -> (
     std::sync::Arc<tokio::sync::Mutex<LspSupervisor>>,
     DiagnosticsLayer,
     LspLogger,
+    tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundApplyEdit>,
 ) {
     let logger = LspLogger::with_defaults();
     let mut sup = LspSupervisor::new(logger.clone());
@@ -59,10 +60,18 @@ fn build_lsp_subsystem() -> (
     // Users override via lsp.toml when §5.12 lands.
     sup.set_configs(lattice_lsp::builtin_servers());
     let diagnostics = sup.diagnostics().clone();
+    // Apply-edit bus (Phase 4.3): App owns the receiver, every
+    // actor spawned via the supervisor gets a clone of the
+    // sender. Server-initiated `workspace/applyEdit` requests
+    // ferry through this channel; the App's drain applies them
+    // and replies via the embedded oneshot.
+    let (apply_edit_bus, apply_edit_rx) = lattice_lsp::ApplyEditBus::new();
+    sup.set_apply_edit_bus(apply_edit_bus);
     (
         std::sync::Arc::new(tokio::sync::Mutex::new(sup)),
         diagnostics,
         logger,
+        apply_edit_rx,
     )
 }
 use crate::excommand;
@@ -1386,6 +1395,18 @@ pub struct App {
     /// Cloned handle to the supervisor's logger. Same lock-
     /// free read pattern as `lsp_diagnostics`.
     pub lsp_logger: LspLogger,
+    /// Server-initiated `workspace/applyEdit` request stream
+    /// (Phase 4.3). Drained per-frame by
+    /// [`Self::drain_inbound_apply_edits`]: each request lands
+    /// as an [`lattice_lsp::InboundApplyEdit`] carrying a
+    /// `WorkspaceEdit` + a oneshot the App fills with the
+    /// outcome. The receiver is taken once at App init; `None`
+    /// after the runtime hands it off to the drain (we
+    /// take-and-restore around `try_recv` so the drain's loop
+    /// can run without holding `&mut self` on the receiver
+    /// itself; matches `drain_option_changes` etc.).
+    pub pending_apply_edit_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundApplyEdit>>,
     /// `BufferId` → `Uri` map. Maintained by buffer-open /
     /// buffer-close paths; the supervisor's API is keyed by
     /// `Uri`, so this is the bridge.
@@ -2132,7 +2153,8 @@ impl App {
         // the App's `lsp_diagnostics` / `lsp_logger` reads land
         // on the same Arc-shared state the supervisor's actors
         // push to.
-        let (lsp, lsp_diagnostics, lsp_logger) = build_lsp_subsystem();
+        let (lsp, lsp_diagnostics, lsp_logger, lsp_apply_edit_rx) =
+            build_lsp_subsystem();
         let mut registry = CommandRegistry::new();
         let builtins = populate(&mut registry);
         // Register the built-in ex-commands as peers of motions /
@@ -2388,6 +2410,7 @@ impl App {
             lsp,
             lsp_diagnostics,
             lsp_logger,
+            pending_apply_edit_rx: Some(lsp_apply_edit_rx),
             buffer_uris: std::collections::HashMap::new(),
             pending_lsp_opens: Vec::new(),
             lsp_flush_signal: None,
@@ -8765,6 +8788,142 @@ impl App {
     /// missing the title. When buffers ARE open the rebuild walks
     /// the logger ring (≤ 10k records) and replaces the rope --
     /// well within frame budget for the editor's scale.
+    /// Drain server-initiated `workspace/applyEdit` requests
+    /// (Phase 4.3). Each request lands as an
+    /// [`lattice_lsp::InboundApplyEdit`] carrying a typed
+    /// `WorkspaceEdit` + a oneshot for the response. We
+    /// flatten the edit into per-file `Vec<TextEdit>` batches
+    /// (same `flatten_workspace_edit` path the `:rename`
+    /// drain uses), apply each, and reply via the oneshot.
+    ///
+    /// Apply semantics mirror `apply_rename_workspace_edit`:
+    /// edits to the active buffer land directly via
+    /// `apply_lsp_text_edits` (one undo unit per file);
+    /// cross-file edits open the target via `do_edit` and
+    /// apply there. Failures on individual files echo a
+    /// warning but don't roll back successfully-applied
+    /// files -- spec lets the client report partial success
+    /// via `applied: true` + a `failure_reason` describing
+    /// the failed slice. v1 doesn't track which slice failed
+    /// (that's `failed_change`, queued for the
+    /// atomic-rollback follow-up).
+    ///
+    /// Called once per main-loop iteration. Cheap when the
+    /// channel is empty; the `try_recv` returns immediately.
+    pub fn drain_inbound_apply_edits(&mut self) {
+        let Some(mut rx) = self.pending_apply_edit_rx.take() else {
+            return;
+        };
+        let mut requests: Vec<lattice_lsp::InboundApplyEdit> = Vec::new();
+        while let Ok(req) = rx.try_recv() {
+            requests.push(req);
+        }
+        self.pending_apply_edit_rx = Some(rx);
+        for req in requests {
+            let outcome = self.apply_inbound_workspace_edit(&req.server_id, req.label.as_deref(), req.edit);
+            let _ = req.response.send(outcome);
+        }
+    }
+
+    /// Apply one server-initiated WorkspaceEdit to the
+    /// editor's buffers. Returns the [`lattice_lsp::ApplyEditOutcome`]
+    /// the actor's response task ferries back to the server.
+    fn apply_inbound_workspace_edit(
+        &mut self,
+        server_id: &std::sync::Arc<str>,
+        label: Option<&str>,
+        edit: lsp_types::WorkspaceEdit,
+    ) -> lattice_lsp::ApplyEditOutcome {
+        let per_file = flatten_workspace_edit(edit);
+        if per_file.is_empty() {
+            // Spec: when the edit is empty there's nothing to
+            // do; reply applied=true with a clarifying note so
+            // the server-side log shows the no-op.
+            return lattice_lsp::ApplyEditOutcome {
+                applied: true,
+                failure_reason: Some("empty workspace edit".into()),
+            };
+        }
+        let mut applied_files = 0usize;
+        let mut failed_files: Vec<String> = Vec::new();
+        let mut total_edits = 0usize;
+        for (uri, edits) in per_file {
+            let target_path = match lattice_lsp::actor::uri_to_path(&uri) {
+                Some(p) => p,
+                None => {
+                    failed_files.push(format!("{uri:?} (malformed URI)"));
+                    continue;
+                }
+            };
+            let edit_count = edits.len();
+            if self
+                .document
+                .path()
+                .map(|p| p == target_path)
+                .unwrap_or(false)
+            {
+                if let Err(e) = self.apply_lsp_text_edits(edits) {
+                    failed_files.push(format!("{}: {e}", target_path.display()));
+                    continue;
+                }
+                applied_files += 1;
+                total_edits += edit_count;
+            } else {
+                // Cross-file edits: open via `:e` then apply.
+                // Same pattern as `apply_rename_workspace_edit`.
+                self.do_edit(Some(target_path.clone()), false);
+                if matches!(
+                    self.last_message.as_ref().map(|m| m.level),
+                    Some(EchoLevel::Error)
+                ) {
+                    failed_files
+                        .push(format!("{}: open failed", target_path.display()));
+                    continue;
+                }
+                if let Err(e) = self.apply_lsp_text_edits(edits) {
+                    failed_files.push(format!("{}: {e}", target_path.display()));
+                    continue;
+                }
+                applied_files += 1;
+                total_edits += edit_count;
+            }
+        }
+        // Echo a status line for the user.
+        let label_text = label.map(|l| format!(" `{l}`")).unwrap_or_default();
+        let summary = if failed_files.is_empty() {
+            format!(
+                "{server_id}: applyEdit{label_text} -> {total_edits} edit{} across {applied_files} file{}",
+                if total_edits == 1 { "" } else { "s" },
+                if applied_files == 1 { "" } else { "s" },
+            )
+        } else {
+            format!(
+                "{server_id}: applyEdit{label_text} partial -- {applied_files} ok, {} failed: {}",
+                failed_files.len(),
+                failed_files.join("; "),
+            )
+        };
+        let echo_level = if failed_files.is_empty() {
+            EchoLevel::Info
+        } else {
+            EchoLevel::Warn
+        };
+        self.set_message(echo_level, summary.clone());
+        lattice_lsp::ApplyEditOutcome {
+            applied: applied_files > 0,
+            failure_reason: if failed_files.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{} file{} failed: {}",
+                    failed_files.len(),
+                    if failed_files.len() == 1 { "" } else { "s" },
+                    failed_files.join("; "),
+                ))
+            },
+        }
+    }
+
     pub fn drain_lsp_log_events(&mut self) {
         let Some(mut rx) = self.lsp_log_event_rx.take() else {
             return;
@@ -24967,6 +25126,110 @@ mod tests {
         let mut a = App::new(doc);
         a.set_viewport_height(viewport);
         a
+    }
+
+    /// Inject an `InboundApplyEdit` into the App's drain
+    /// receiver. Replaces whatever was there; tests start with
+    /// an empty receiver so this is fine.
+    fn inject_inbound_apply_edit(
+        a: &mut App,
+        inbound: lattice_lsp::InboundApplyEdit,
+    ) {
+        let (bus, new_rx) = lattice_lsp::ApplyEditBus::new();
+        bus.dispatch(inbound).expect("dispatch");
+        a.pending_apply_edit_rx = Some(new_rx);
+    }
+
+    #[test]
+    fn drain_inbound_apply_edits_applies_active_buffer_edit() {
+        // Synthesise an inbound `workspace/applyEdit` against
+        // the active buffer. Drain should apply the edit and
+        // signal `applied: true` on the oneshot.
+        let dir = std::env::temp_dir().join(format!(
+            "lattice-applyedit-test-{}",
+            std::process::id(),
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("buffer.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let mut a = app_with_path("fn main() {}\n", 5, path.clone());
+        let uri: lsp_types::Uri = format!("file://{}", path.display()).parse().unwrap();
+        // Edit replaces `main` (line 0, char 3..7) with `xyz`.
+        let edit = lsp_types::TextEdit {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: 0, character: 3 },
+                end: lsp_types::Position { line: 0, character: 7 },
+            },
+            new_text: "xyz".into(),
+        };
+        let mut changes = std::collections::HashMap::new();
+        changes.insert(uri, vec![edit]);
+        let workspace_edit = lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        };
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        inject_inbound_apply_edit(
+            &mut a,
+            lattice_lsp::InboundApplyEdit {
+                server_id: std::sync::Arc::from("test-server"),
+                label: Some("rename main".into()),
+                edit: workspace_edit,
+                response: resp_tx,
+            },
+        );
+        a.drain_inbound_apply_edits();
+        // Drain ran synchronously; the oneshot is already
+        // populated -- `try_recv` returns Ok.
+        let outcome = resp_rx
+            .try_recv()
+            .expect("drain replied via oneshot");
+        assert!(
+            outcome.applied,
+            "edit applied: {:?}",
+            outcome.failure_reason,
+        );
+        let after = a.document.snapshot().buffer.as_string();
+        assert_eq!(after, "fn xyz() {}\n");
+    }
+
+    #[test]
+    fn drain_inbound_apply_edits_empty_workspace_edit_replies_applied_true() {
+        // An empty WorkspaceEdit (no changes, no
+        // document_changes) is a server no-op. Spec: reply
+        // applied=true so the server doesn't think we
+        // failed -- just nothing to do.
+        let mut a = app_with("", 5);
+        let workspace_edit = lsp_types::WorkspaceEdit::default();
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        inject_inbound_apply_edit(
+            &mut a,
+            lattice_lsp::InboundApplyEdit {
+                server_id: std::sync::Arc::from("test-server"),
+                label: None,
+                edit: workspace_edit,
+                response: resp_tx,
+            },
+        );
+        a.drain_inbound_apply_edits();
+        let outcome = resp_rx.try_recv().expect("drain replied");
+        assert!(outcome.applied);
+        assert_eq!(
+            outcome.failure_reason.as_deref(),
+            Some("empty workspace edit"),
+        );
+    }
+
+    #[test]
+    fn drain_inbound_apply_edits_no_op_when_channel_empty() {
+        // Idle drain: no requests, no outgoing oneshots, no
+        // panic. Cheap path that runs every frame.
+        let mut a = app_with("", 5);
+        a.drain_inbound_apply_edits();
+        // Receiver is restored after the drain (the take + put-back).
+        assert!(a.pending_apply_edit_rx.is_some());
     }
 
     fn fresh_path_workspace(name: &str) -> std::path::PathBuf {

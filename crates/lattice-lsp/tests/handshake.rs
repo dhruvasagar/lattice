@@ -98,6 +98,7 @@ async fn handshake_fails_when_server_rejects_initialize() {
         None,
         None,
         lattice_lsp::LspLogger::with_defaults(),
+        None,
     )
     .await;
     match result {
@@ -376,6 +377,7 @@ async fn server_pipe_close_resolves_pending_with_actor_gone() {
         None,
         None,
         lattice_lsp::LspLogger::with_defaults(),
+        None,
     )
     .await
     .unwrap();

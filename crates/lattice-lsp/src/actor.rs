@@ -323,6 +323,7 @@ pub async fn spawn(
     config: ServerConfig,
     workspace_root: std::path::PathBuf,
     logger: LspLogger,
+    apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
 ) -> LspResult<ServerHandle> {
     let transport = ChildTransport::spawn(&config.binary, &config.args, Some(&workspace_root))
         .await
@@ -336,6 +337,7 @@ pub async fn spawn(
         stderr,
         Some(child),
         logger,
+        apply_edit_bus,
     )
     .await
 }
@@ -356,6 +358,7 @@ pub async fn spawn_with_io<R, W>(
     stderr: Option<ChildStderr>,
     child: Option<Child>,
     logger: LspLogger,
+    apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
 ) -> LspResult<ServerHandle>
 where
     R: AsyncBufRead + Unpin + Send + 'static,
@@ -400,6 +403,7 @@ where
         init_options,
         diagnostics.clone(),
         logger.clone(),
+        apply_edit_bus,
     ));
 
     let capabilities = handshake_rx
@@ -522,6 +526,7 @@ pub fn uri_from_path(p: &std::path::Path) -> Uri {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn actor_main<R, W>(
     reader: LspReader<R>,
     writer: LspWriter<W>,
@@ -535,6 +540,7 @@ async fn actor_main<R, W>(
     init_options: Option<Value>,
     diagnostics: DiagnosticsBus,
     logger: LspLogger,
+    apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
 ) where
     R: AsyncBufRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -752,13 +758,38 @@ async fn actor_main<R, W>(
                         handle_server_notification(&server_id_arc, &n, &diagnostics, &logger);
                     }
                     Some(Message::Request(req)) => {
-                        // Server-initiated request. Reply with a
-                        // structured no-op for now; per-method
-                        // handlers (workspace/configuration,
-                        // workspace/applyEdit, ...) land in 4.1.d
-                        // and 4.3.
-                        let resp = handle_server_request(&server_id_arc, &req, &logger);
-                        let _ = out_tx.send(Message::Response(resp));
+                        // `workspace/applyEdit` (Phase 4.3) is
+                        // async: the App must apply the edit on
+                        // the UI thread, so we forward the
+                        // request through the apply-edit bus and
+                        // a spawned task awaits the response
+                        // before writing it back to the wire.
+                        // All other server-initiated requests
+                        // resolve synchronously inline.
+                        if req.method == "workspace/applyEdit"
+                            && let Some(bus) = apply_edit_bus.as_ref()
+                        {
+                            let bus = bus.clone();
+                            let server_id_clone = Arc::clone(&server_id_arc);
+                            let logger_clone = logger.clone();
+                            let out_tx_clone = out_tx.clone();
+                            let req_id = req.id.clone();
+                            let params = req.params.clone();
+                            tokio::spawn(async move {
+                                let resp = handle_apply_edit_request(
+                                    server_id_clone,
+                                    req_id,
+                                    params,
+                                    &bus,
+                                    &logger_clone,
+                                )
+                                .await;
+                                let _ = out_tx_clone.send(Message::Response(resp));
+                            });
+                        } else {
+                            let resp = handle_server_request(&server_id_arc, &req, &logger);
+                            let _ = out_tx.send(Message::Response(resp));
+                        }
                     }
                     None => {
                         // read_loop ended -- server exited or pipe
@@ -895,6 +926,101 @@ fn compact_params(params: &Option<Value>) -> String {
     match params {
         Some(v) => serde_json::to_string(v).unwrap_or_else(|_| "<unprintable>".into()),
         None => String::new(),
+    }
+}
+
+/// Handle a `workspace/applyEdit` request asynchronously
+/// (Phase 4.3). Parses the LSP params, dispatches them through
+/// the apply-edit bus to the App's drain, awaits the App's
+/// outcome via the embedded oneshot, and converts that into the
+/// LSP `Response` body. Spec response shape:
+/// `ApplyWorkspaceEditResponse { applied, failure_reason,
+/// failed_change }`. We don't track `failed_change` today (the
+/// per-file apply path is non-atomic), so it stays `None`.
+///
+/// Failure modes that surface as `applied: false`:
+/// - The request params don't deserialize into
+///   `ApplyWorkspaceEditParams`.
+/// - The receiver dropped before the App could process the
+///   edit (App is shutting down).
+/// - The App reports `applied: false` with its own
+///   `failure_reason`.
+async fn handle_apply_edit_request(
+    server_id: Arc<str>,
+    req_id: RequestId,
+    params: Option<Value>,
+    bus: &crate::apply_edit::ApplyEditBus,
+    logger: &LspLogger,
+) -> Response {
+    let parsed: lsp_types::ApplyWorkspaceEditParams = match params {
+        Some(v) => match serde_json::from_value(v) {
+            Ok(p) => p,
+            Err(e) => {
+                logger.log(
+                    Some(&server_id),
+                    LogLevel::Warn,
+                    LogSource::Client,
+                    format!("workspace/applyEdit: malformed params: {e}"),
+                );
+                return apply_edit_response(req_id, false, Some(format!("malformed params: {e}")));
+            }
+        },
+        None => {
+            return apply_edit_response(
+                req_id,
+                false,
+                Some("workspace/applyEdit: missing params".into()),
+            );
+        }
+    };
+    let (response_tx, response_rx) = oneshot::channel();
+    let inbound = crate::apply_edit::InboundApplyEdit {
+        server_id: Arc::clone(&server_id),
+        label: parsed.label,
+        edit: parsed.edit,
+        response: response_tx,
+    };
+    if bus.dispatch(inbound).is_err() {
+        return apply_edit_response(
+            req_id,
+            false,
+            Some("client cannot apply edits (no receiver)".into()),
+        );
+    }
+    match response_rx.await {
+        Ok(outcome) => apply_edit_response(req_id, outcome.applied, outcome.failure_reason),
+        Err(_) => apply_edit_response(
+            req_id,
+            false,
+            Some("client did not respond before drop".into()),
+        ),
+    }
+}
+
+/// Build an `ApplyWorkspaceEditResponse`-shaped LSP `Response`.
+/// The `failed_change` field stays `None` -- atomic-rollback +
+/// per-change failure indexing land alongside future
+/// `apply_workspace_edit_atomic` work.
+fn apply_edit_response(
+    req_id: RequestId,
+    applied: bool,
+    failure_reason: Option<String>,
+) -> Response {
+    let body = lsp_types::ApplyWorkspaceEditResponse {
+        applied,
+        failure_reason,
+        failed_change: None,
+    };
+    match serde_json::to_value(body) {
+        Ok(v) => Response::ok(req_id, v),
+        Err(e) => Response::err(
+            req_id,
+            crate::jsonrpc::ResponseError {
+                code: crate::jsonrpc::error_codes::INTERNAL_ERROR,
+                message: format!("encode response: {e}"),
+                data: None,
+            },
+        ),
     }
 }
 

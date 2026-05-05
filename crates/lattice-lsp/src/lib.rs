@@ -46,6 +46,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::panic))]
 
 pub mod actor;
+pub mod apply_edit;
 pub mod capabilities;
 pub mod codec;
 pub mod config;
@@ -63,6 +64,7 @@ pub mod sync;
 pub mod transport;
 
 pub use actor::{ServerHandle, spawn, spawn_with_io};
+pub use apply_edit::{ApplyEditBus, ApplyEditOutcome, InboundApplyEdit};
 pub use capabilities::{Capabilities, client_capabilities};
 pub use codec::{LspReader, LspWriter};
 pub use config::{ServerConfig, builtin_servers, resolve_workspace_root};

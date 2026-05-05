@@ -126,6 +126,15 @@ pub struct LspSupervisor {
     /// Shared diagnostics layer. Every actor's
     /// `DiagnosticsBus` is pumped into this.
     diagnostics: DiagnosticsLayer,
+    /// Server-initiated `workspace/applyEdit` bus (Phase 4.3).
+    /// `Some` once the App has called
+    /// [`Self::set_apply_edit_bus`] at startup; cloned into
+    /// every actor at spawn so they all forward inbound
+    /// applyEdit requests through the same channel. `None`
+    /// disables the feature -- the actor falls back to a
+    /// METHOD_NOT_FOUND response (matches the pre-4.3
+    /// behaviour).
+    apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
 }
 
 impl LspSupervisor {
@@ -141,7 +150,19 @@ impl LspSupervisor {
             attachments: HashMap::new(),
             logger,
             diagnostics,
+            apply_edit_bus: None,
         }
+    }
+
+    /// Install the apply-edit bus (Phase 4.3). The App calls
+    /// this once at startup with the sender side of the channel
+    /// it created; every actor spawned after this point gets a
+    /// clone and forwards inbound `workspace/applyEdit`
+    /// requests through it. Calling twice replaces the bus;
+    /// any actors already spawned keep their original clone
+    /// (we don't track them for retro-fitting in v1).
+    pub fn set_apply_edit_bus(&mut self, bus: crate::apply_edit::ApplyEditBus) {
+        self.apply_edit_bus = Some(bus);
     }
 
     /// Borrow the shared logger (so callers can register their
@@ -261,6 +282,7 @@ impl LspSupervisor {
                         (*config).clone(),
                         workspace.clone(),
                         self.logger.clone(),
+                        self.apply_edit_bus.clone(),
                     )
                     .await
                     {

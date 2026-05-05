@@ -3497,12 +3497,11 @@ impl App {
             }
             return;
         }
-        // Save the pre-search position so Ctrl-O returns. Position
-        // history is currently document-only; help / tree don't
-        // participate yet.
-        if matches!(self.active_buffer, BufferKind::Document) {
-            self.push_position_history(line.origin, PositionSource::AutoJump);
-        }
+        // Save the pre-search position so Ctrl-O returns.
+        // Records the active buffer kind alongside the position
+        // so cross-buffer walks (search in a help buffer ->
+        // back to the document) work uniformly.
+        self.push_position_history(line.origin, PositionSource::AutoJump);
         // Compile once for both find + find_all + later n/N replays.
         let regex = match compile_search_pattern(&line.pattern) {
             Ok(r) => r,
@@ -3587,10 +3586,11 @@ impl App {
             );
             return;
         };
-        if matches!(self.active_buffer, BufferKind::Document) {
-            let cur = self.cursor;
-            self.push_position_history(cur, PositionSource::AutoJump);
-        }
+        // Push pre-jump cursor onto the unified ring regardless
+        // of buffer kind so `<C-o>` walks back across help /
+        // tree / document boundaries.
+        let cur = self.cursor;
+        self.push_position_history(cur, PositionSource::AutoJump);
         let direction = match (last.direction, reverse) {
             (SearchDirection::Forward, false) | (SearchDirection::Backward, true) => {
                 SearchDirection::Forward

@@ -615,12 +615,15 @@ snapshot_post_publish_read at 10/1k/50k lines).
 
 ## In-progress
 
-**Phase 4.2 navigation -- 7/12 shipped.**
+**Phase 4.2 navigation -- 8/12 shipped.** **Phase 4.3 -- 1/9
+shipped.**
 
 - ✅ hover (`K`), definition (`gd`), declaration (`gD`),
   typeDefinition (`gy`), implementation (`gI`), references
   (`gr`), documentSymbol (`:lsp-symbols`), workspaceSymbol
   (`:lsp-workspace-symbol`).
+- ✅ formatting + rangeFormatting (`:format` / `:format-range`,
+  4.3 first item).
 - Multi-result lookups + `:diagnostics` route through one
   vertico picker (`PickerSource::LspLocations` +
   `PickerAction::JumpToLspLocation`); single-result nav still
@@ -629,10 +632,27 @@ snapshot_post_publish_read at 10/1k/50k lines).
   -- one dispatch path; the kind selects the LSP method and
   drives the kind-aware echo verb ("no implementations found"
   vs. "no definitions found").
+- ✅ Tag stack: `gd` family + multi-result picker accept push
+  onto `App.tag_stack`; `<C-t>` pops. Distinct from the jump
+  list (`<C-o>`/`<C-i>`); the two have different push semantics
+  and may have different lengths.
+- ✅ Jump list propagation audited: every LSP nav, picker
+  accept, search submit, `n`/`N`, help-link follow records
+  `(BufferKind, BufferId, Position, source)` so cross-buffer
+  walks just work. The previous `active_buffer == Document`
+  gates on search submit + repeat search are gone.
 
 Remaining 4.2:
 - LSP completion (`gen:lsp-completion`) + `completionItem/resolve`.
 - `workspaceSymbol/resolve` (lazy location).
+
+Remaining 4.3:
+- signatureHelp on trigger characters.
+- codeAction + codeAction/resolve.
+- rename + prepareRename.
+- onTypeFormatting.
+- willSave / willSaveWaitUntil / didSave + format-on-save.
+- workspace/applyEdit, workspace/executeCommand.
 
 Update this section when picking up the in-flight item.
 

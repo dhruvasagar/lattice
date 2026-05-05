@@ -146,8 +146,8 @@ Capability columns:
 | `codeAction/resolve`              | 4.3   | ⏹️      | Lazy-resolve `edit` from the action's `data`.                                |
 | `textDocument/rename`             | 4.3   | ⏹️      | Multi-file edit applied atomically (one undo step per doc).                  |
 | `textDocument/prepareRename`      | 4.3   | ⏹️      | Validates the cursor is on a renameable identifier; returns the placeholder. |
-| `textDocument/formatting`         | 4.3   | ⏹️      | Whole-buffer formatter; `=G` mapped.                                         |
-| `textDocument/rangeFormatting`    | 4.3   | ⏹️      | Range formatter; `=` operator on motions / objects.                          |
+| `textDocument/formatting`         | 4.3   | ✅     | `:format` (alias `:fmt`). Highest-priority server with `documentFormattingProvider`; returned `Vec<TextEdit>` applies as one undo unit. TextEdits sorted in REVERSE by start position before apply (LSP convention: non-overlapping edits relative to original document). Single-server strategy per architecture doc. |
+| `textDocument/rangeFormatting`    | 4.3   | ✅     | `:format-range`. Active Visual selection (when in Visual) or whole buffer; same dispatch as `formatting`. `=` operator on motions / objects -- queued. |
 | `textDocument/onTypeFormatting`   | 4.3   | ⏹️      | Trigger-character driven (e.g. `;` / `}` in C-family).                       |
 | `textDocument/linkedEditingRange` | 4.5   | ⏹️      | Multi-cursor mode for linked identifiers (HTML tag pairs, etc.).             |
 
@@ -210,16 +210,16 @@ Counts as of 2026-05-05:
 
 | State          | Count |
 |----------------|-------|
-| ✅ Done        | 18    |
+| ✅ Done        | 20    |
 | 🚧 In progress | 4     |
-| ⏹️ Planned      | 43    |
+| ⏹️ Planned      | 41    |
 | ⛔ Deferred    | 4     |
 
 Phase rollup:
 
 - **4.1** Foundation: **complete**. Wire layer + actor/handshake + sync + diagnostics (broadcast → layer → renderer → buffer view + nav) + logging (rings + tracing fan-out + buffer views + commands) + supervisor + App-side wiring + edit-dispatch + open-on-`:e` all shipped.
-- **4.2** Navigation: **7/12 shipped**. ✅ hover (`K`), definition (`gd`), declaration (`gD`), typeDefinition (`gy`), implementation (`gI`), references (`gr`), documentSymbol (`:lsp-symbols`), workspaceSymbol (`:lsp-workspace-symbol`). All multi-result lookups + `:diagnostics` route through the unified vertico picker (`PickerSource::LspLocations` + `PickerAction::JumpToLspLocation`). Remaining: completion + completionItem/resolve + workspaceSymbol/resolve.
-- **4.3** Edits: 0/9 -- queued.
+- **4.2** Navigation: **8/12 shipped**. ✅ hover (`K`), definition (`gd`), declaration (`gD`), typeDefinition (`gy`), implementation (`gI`), references (`gr`), documentSymbol (`:lsp-symbols`), workspaceSymbol (`:lsp-workspace-symbol`). All multi-result lookups + `:diagnostics` route through the unified vertico picker (`PickerSource::LspLocations` + `PickerAction::JumpToLspLocation`). Tag stack `<C-t>` pops `gd`-family drill-downs LIFO; jump list `<C-o>`/`<C-i>` walks every cursor jump chronologically. Remaining: completion + completionItem/resolve + workspaceSymbol/resolve.
+- **4.3** Edits: **2/9 shipped** (formatting + rangeFormatting via `:format` / `:format-range`). Remaining: signatureHelp, codeAction (+ resolve), rename (+ prepareRename), onTypeFormatting, willSave / willSaveWaitUntil / didSave, applyEdit, executeCommand.
 - **4.4** Polish: 0/19 -- queued.
 - **4.5** Expansion: 0/14 -- queued.
 - **post-1.0**: notebooks + multi-root workspaces.

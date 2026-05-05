@@ -114,10 +114,24 @@ single-result jumps go directly per vim convention.
 
 All four use the same dispatch path; differs only in which
 LSP method runs server-side. Single result jumps directly;
-multi-result opens the picker. `<C-o>` walks back via the
-position-history ring (§5.1.1) -- entries are tagged
-`PluginPush` so they coexist cleanly with vim-style
-`AutoJump` motions.
+multi-result opens the picker. **Two persistence shapes
+record where you've been:**
+
+- **Jump list** (`<C-o>` back, `<C-i>` forward) -- chronological
+  history of every "big jump". Every LSP nav, picker accept,
+  search submit, `n`/`N` repeat, and `gg`/`G`-style motion
+  pushes onto it.
+- **Tag stack** (`<C-t>` to pop) -- LIFO chain of `gd` / `gD` /
+  `gy` / `gI` drill-downs only. Distinct from the jump list:
+  the user's mental model for `<C-t>` is "undo the drill-down
+  chain", not "step through every cursor jump". The two have
+  different lengths and different push semantics.
+
+`<C-o>` and `<C-t>` coexist deliberately: walk a chain of
+five `gd` calls, then `<C-t>` pops one drill-down at a time
+back to the original symbol; `<C-o>` walks every cursor
+position you've visited along the way (which may include
+references-picker rows, diagnostics jumps, etc.).
 
 | Chord | LSP method                  | What it asks                                              |
 |-------|-----------------------------|-----------------------------------------------------------|

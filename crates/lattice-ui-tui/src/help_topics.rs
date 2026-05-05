@@ -154,6 +154,7 @@ impl CandidateGenerator for HelpTopicsGenerator {
                 display: t.name.clone(),
                 kind: CandidateKind::Plain,
                 data: CandidateData::Plain,
+                source: None,
             })
             .collect()
     }

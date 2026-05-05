@@ -61,6 +61,7 @@ impl CandidateGenerator for CommandsGenerator {
                         kind_label: spec.kind.label().to_string(),
                         source: spec.source.clone(),
                     },
+                    source: None,
                 })
             })
             .collect();
@@ -145,6 +146,7 @@ impl CandidateGenerator for FilesGenerator {
                     is_dir,
                     size,
                 },
+                source: None,
             });
         }
         out.sort_by(|a, b| a.text.cmp(&b.text));

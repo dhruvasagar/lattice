@@ -42,7 +42,7 @@ use crate::traits::{CandidateMatcher, CandidateRanker};
 /// config keys off this string so users see the same name in
 /// `:set completion.source.<id>.priority=…` and in `:help
 /// completion-sources`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SourceId(pub String);
 
 impl SourceId {
@@ -495,25 +495,32 @@ impl InsertRanker {
         Self
     }
 
-    /// Rank with a frequency bias supplied by the host. The
-    /// `lookup` closure returns the raw accept-count for a
-    /// candidate; the ranker clamps the bonus at
-    /// [`Self::FREQUENCY_BONUS_CAP`] before adding it to the
-    /// matcher's score and re-sorting descending.
+    /// Rank by `score + bonus(raw)`, descending. The host
+    /// owns the bonus composition: per
+    /// `docs/insert-completion.md` §3.6,
     ///
-    /// The host owns the count map (App-level
-    /// `(text, kind) -> u32` per `docs/insert-completion.md` §3.6
-    /// and §11/Phase 4.2.g.5); this crate stays state-free so
-    /// per-source-priority and per-language slots can plug in via
-    /// the same closure shape later without growing the trait.
-    pub fn rank_with_frequency(
+    /// ```text
+    /// final_score = base_score
+    ///             + per_source_priority
+    ///             + frequency_bonus       // capped at FREQUENCY_BONUS_CAP
+    ///             + preselect_bonus
+    ///             - deprecated_penalty
+    /// ```
+    ///
+    /// Each term has its own clamp; the ranker doesn't apply
+    /// policy because the per-term ranges and signs differ
+    /// (frequency is bounded; preselect is a fixed jolt;
+    /// deprecated subtracts). Hosts wrap the live lookups
+    /// (`App::completion_accept_freq`,
+    /// `App::priority_for_source`, ...) into a single bonus
+    /// closure.
+    pub fn rank_with_bonus(
         &self,
         scored: &mut Vec<ScoredCandidate>,
-        lookup: impl Fn(&RawCandidate) -> u32,
+        bonus: impl Fn(&RawCandidate) -> u32,
     ) {
         scored.sort_by_cached_key(|s| {
-            let bonus = lookup(&s.raw).min(Self::FREQUENCY_BONUS_CAP);
-            std::cmp::Reverse(s.score.0.saturating_add(bonus))
+            std::cmp::Reverse(s.score.0.saturating_add(bonus(&s.raw)))
         });
     }
 }
@@ -523,6 +530,23 @@ impl CandidateRanker for InsertRanker {
         scored.sort_by(|a, b| b.score.0.cmp(&a.score.0));
     }
 }
+
+// ---- Source id constants (host-orchestrated sources) ----
+//
+// `BufferWordsSource::ID` lives on the impl below; the LSP and
+// snippet sources are orchestrated host-side (LSP via the
+// async tokio path, snippet via the app's per-language
+// registry) and have no `InsertSource` struct to hang an `ID`
+// off. Surface their canonical ids here so the host's tagging
+// matches the strings used in `:set
+// completion.source.<id>.priority=…` and in `:help
+// completion-sources`.
+
+/// Source id for the host-orchestrated LSP completion source.
+pub const LSP_COMPLETION_SOURCE_ID: &str = "gen:lsp-completion";
+
+/// Source id for the host-orchestrated snippet completion source.
+pub const SNIPPET_SOURCE_ID: &str = "gen:snippet";
 
 // ---- Built-in: gen:buffer-words ----
 
@@ -589,10 +613,13 @@ impl InsertSource for BufferWordsSource {
             if seen.insert(word.to_string(), ()).is_some() {
                 continue;
             }
-            out.push(RawCandidate::plain(
-                word.to_string(),
-                crate::candidate::CandidateKind::Plain,
-            ));
+            out.push(
+                RawCandidate::plain(
+                    word.to_string(),
+                    crate::candidate::CandidateKind::Plain,
+                )
+                .with_source(self.id().clone()),
+            );
             if out.len() >= self.max_words {
                 break;
             }
@@ -884,9 +911,9 @@ mod tests {
     }
 
     #[test]
-    fn rank_with_frequency_lifts_previously_accepted_above_peers() {
-        // Two candidates tied on matcher score; the one the
-        // user has accepted before should sort above the peer.
+    fn rank_with_bonus_lifts_higher_bonus_above_tied_peer() {
+        // Two candidates tied on matcher score; the one with
+        // the larger host-supplied bonus sorts above the peer.
         let r = InsertRanker::new();
         let mut scored = vec![
             ScoredCandidate {
@@ -900,7 +927,7 @@ mod tests {
                 match_ranges: Vec::new(),
             },
         ];
-        r.rank_with_frequency(&mut scored, |raw| match raw.text.as_str() {
+        r.rank_with_bonus(&mut scored, |raw| match raw.text.as_str() {
             "bravo" => 5,
             _ => 0,
         });
@@ -909,37 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn rank_with_frequency_caps_bonus_at_fifty() {
-        // A huge accept-count never lets a low-scoring item
-        // overtake a high-scoring one beyond the +50 cap.
-        let r = InsertRanker::new();
-        let mut scored = vec![
-            ScoredCandidate {
-                raw: RawCandidate::plain("rare-but-strong", CandidateKind::Plain),
-                score: crate::candidate::MatchScore(200),
-                match_ranges: Vec::new(),
-            },
-            ScoredCandidate {
-                raw: RawCandidate::plain("frequent-but-weak", CandidateKind::Plain),
-                score: crate::candidate::MatchScore(100),
-                match_ranges: Vec::new(),
-            },
-        ];
-        // Count = 9999 -> bonus clamped to 50; weak still <
-        // strong (100 + 50 < 200).
-        r.rank_with_frequency(&mut scored, |raw| {
-            if raw.text == "frequent-but-weak" {
-                9999
-            } else {
-                0
-            }
-        });
-        assert_eq!(scored[0].raw.text, "rare-but-strong");
-        assert_eq!(scored[1].raw.text, "frequent-but-weak");
-    }
-
-    #[test]
-    fn rank_with_frequency_zero_bonus_matches_plain_rank() {
+    fn rank_with_bonus_zero_bonus_matches_plain_rank() {
         // With every lookup returning 0, behaviour matches the
         // plain `rank` call: pure descending sort by score.
         let r = InsertRanker::new();
@@ -955,8 +952,81 @@ mod tests {
                 match_ranges: Vec::new(),
             },
         ];
-        r.rank_with_frequency(&mut scored, |_| 0);
+        r.rank_with_bonus(&mut scored, |_| 0);
         assert_eq!(scored[0].raw.text, "high");
         assert_eq!(scored[1].raw.text, "low");
+    }
+
+    #[test]
+    fn rank_with_bonus_respects_host_supplied_cap() {
+        // Host caps the frequency bonus at FREQUENCY_BONUS_CAP
+        // (50) before passing it in; even a huge raw count
+        // can't overtake a much higher base score.
+        let r = InsertRanker::new();
+        let mut scored = vec![
+            ScoredCandidate {
+                raw: RawCandidate::plain("rare-but-strong", CandidateKind::Plain),
+                score: crate::candidate::MatchScore(200),
+                match_ranges: Vec::new(),
+            },
+            ScoredCandidate {
+                raw: RawCandidate::plain("frequent-but-weak", CandidateKind::Plain),
+                score: crate::candidate::MatchScore(100),
+                match_ranges: Vec::new(),
+            },
+        ];
+        let raw_count = 9999_u32;
+        r.rank_with_bonus(&mut scored, |raw| {
+            if raw.text == "frequent-but-weak" {
+                raw_count.min(InsertRanker::FREQUENCY_BONUS_CAP)
+            } else {
+                0
+            }
+        });
+        // 100 + 50 = 150 < 200, so strong stays first.
+        assert_eq!(scored[0].raw.text, "rare-but-strong");
+        assert_eq!(scored[1].raw.text, "frequent-but-weak");
+    }
+
+    #[test]
+    fn rank_with_bonus_combines_priority_and_frequency_terms() {
+        // Spec §3.6 stacks per-source priority on top of the
+        // frequency bonus. Demonstrate that the host can roll
+        // both into one closure: high-priority source wins at
+        // tied matcher score, even when the low-priority side
+        // has a larger frequency count.
+        let r = InsertRanker::new();
+        let lsp_src = SourceId::new("gen:lsp-completion");
+        let words_src = SourceId::new("gen:buffer-words");
+        let mut scored = vec![
+            ScoredCandidate {
+                raw: RawCandidate::plain("from_lsp", CandidateKind::Plain)
+                    .with_source(lsp_src.clone()),
+                score: crate::candidate::MatchScore(100),
+                match_ranges: Vec::new(),
+            },
+            ScoredCandidate {
+                raw: RawCandidate::plain("from_words", CandidateKind::Plain)
+                    .with_source(words_src.clone()),
+                score: crate::candidate::MatchScore(100),
+                match_ranges: Vec::new(),
+            },
+        ];
+        r.rank_with_bonus(&mut scored, |raw| {
+            let priority = match raw.source.as_ref().map(|s| s.as_str()) {
+                Some("gen:lsp-completion") => 200,
+                Some("gen:buffer-words") => 100,
+                _ => 0,
+            };
+            let freq = if raw.text == "from_words" {
+                InsertRanker::FREQUENCY_BONUS_CAP
+            } else {
+                0
+            };
+            priority + freq
+        });
+        // LSP: 100 + 200 = 300; words: 100 + 100 + 50 = 250.
+        // LSP wins despite the freq lift.
+        assert_eq!(scored[0].raw.text, "from_lsp");
     }
 }

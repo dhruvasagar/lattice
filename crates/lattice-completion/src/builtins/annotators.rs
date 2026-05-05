@@ -78,6 +78,7 @@ mod tests {
                 display: text.into(),
                 kind,
                 data,
+                source: None,
             },
             score: MatchScore::PERFECT,
             match_ranges: Vec::new(),

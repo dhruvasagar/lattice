@@ -28,6 +28,13 @@ pub struct CoreOptions {
     pub foldmethod: OptionHandle<FoldMethod>,
     pub scrolloff: OptionHandle<i64>,
     pub completion_auto_insert_single: OptionHandle<bool>,
+    /// Priority bucket for the LSP source. Higher buckets sort
+    /// above lower; ties broken by the matcher score + frequency
+    /// bonus per `docs/insert-completion.md` §3.6. Defaults
+    /// follow §3.4: lsp 200, snippet 150, buffer-words 100.
+    pub completion_source_lsp_priority: OptionHandle<i64>,
+    pub completion_source_snippet_priority: OptionHandle<i64>,
+    pub completion_source_buffer_words_priority: OptionHandle<i64>,
 }
 
 /// Register every renderer-agnostic option against `registry` and
@@ -125,6 +132,50 @@ pub fn register_core_options(registry: &ConfigRegistry) -> CoreOptions {
          `:set nocompletion.auto_insert_single` to always require an \
          explicit confirm.",
     ));
+    let priority_validate = |i: &i64| {
+        if (0..=9999).contains(i) {
+            Ok(())
+        } else {
+            Err(format!("priority out of range [0, 9999]: {i}"))
+        }
+    };
+    let completion_source_lsp_priority = registry.register(
+        Option::<i64>::builder(
+            "completion.source.lsp.priority",
+            200,
+            "Priority bucket for the `gen:lsp-completion` insert-mode \
+             completion source. Higher numbers float that source's \
+             items above ties from lower-priority sources \
+             (`docs/insert-completion.md` §3.4 / §3.6). Default 200; \
+             LSP-driven IDE completions usually want to win against \
+             local buffer words and snippets at tied score.",
+        )
+        .validate(priority_validate)
+        .build(),
+    );
+    let completion_source_snippet_priority = registry.register(
+        Option::<i64>::builder(
+            "completion.source.snippet.priority",
+            150,
+            "Priority bucket for the `gen:snippet` insert-mode source. \
+             Default 150 -- above buffer-words, below LSP. Per-language \
+             overrides land in 4.2.g.5 (3/3); today the value is \
+             global.",
+        )
+        .validate(priority_validate)
+        .build(),
+    );
+    let completion_source_buffer_words_priority = registry.register(
+        Option::<i64>::builder(
+            "completion.source.buffer-words.priority",
+            100,
+            "Priority bucket for the `gen:buffer-words` insert-mode \
+             source. Default 100 -- baseline; LSP and snippets both \
+             outrank it at tied matcher score.",
+        )
+        .validate(priority_validate)
+        .build(),
+    );
     CoreOptions {
         number,
         relativenumber,
@@ -135,6 +186,9 @@ pub fn register_core_options(registry: &ConfigRegistry) -> CoreOptions {
         foldmethod,
         scrolloff,
         completion_auto_insert_single,
+        completion_source_lsp_priority,
+        completion_source_snippet_priority,
+        completion_source_buffer_words_priority,
     }
 }
 
@@ -156,6 +210,19 @@ mod tests {
         assert_eq!(*r.get(h.foldmethod), FoldMethod::Manual);
         assert_eq!(*r.get(h.scrolloff), 0);
         assert!(*r.get(h.completion_auto_insert_single));
+        assert_eq!(*r.get(h.completion_source_lsp_priority), 200);
+        assert_eq!(*r.get(h.completion_source_snippet_priority), 150);
+        assert_eq!(*r.get(h.completion_source_buffer_words_priority), 100);
+    }
+
+    #[test]
+    fn completion_source_priority_validate_rejects_out_of_range() {
+        let r = ConfigRegistry::new();
+        let h = register_core_options(&r);
+        assert!(r.set(h.completion_source_lsp_priority, -1).is_err());
+        assert!(r.set(h.completion_source_lsp_priority, 10_000).is_err());
+        assert!(r.set(h.completion_source_lsp_priority, 0).is_ok());
+        assert!(r.set(h.completion_source_lsp_priority, 9999).is_ok());
     }
 
     #[test]

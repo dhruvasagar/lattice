@@ -6339,7 +6339,10 @@ impl App {
             let mut cand = lattice_completion::RawCandidate::plain(
                 prefix.clone(),
                 lattice_completion::CandidateKind::Plain,
-            );
+            )
+            .with_source(lattice_completion::SourceId::new(
+                lattice_completion::SNIPPET_SOURCE_ID,
+            ));
             cand.display = display;
             cand.data = lattice_completion::CandidateData::Extension {
                 kind_id: SNIPPET_COMPLETION_KIND_ID,
@@ -6443,7 +6446,7 @@ impl App {
             })
             .collect();
         let ranker = lattice_completion::InsertRanker::new();
-        ranker.rank_with_frequency(&mut scored, |raw| self.frequency_bonus_for(raw));
+        ranker.rank_with_bonus(&mut scored, |raw| self.completion_total_bonus(raw));
         state.rendered = scored
             .into_iter()
             .map(lattice_completion::RenderedCandidate::from_scored)
@@ -6453,17 +6456,53 @@ impl App {
         }
     }
 
-    /// Raw accept-count for a candidate -- the ranker clamps
-    /// to `InsertRanker::FREQUENCY_BONUS_CAP`. Returns 0 for
-    /// items the user has never accepted in this session.
-    fn frequency_bonus_for(
+    /// Total ranker bonus for a candidate -- per-source priority
+    /// (`docs/insert-completion.md` §3.4 / §3.6) plus the capped
+    /// frequency lift. Future bonus terms (preselect,
+    /// deprecated penalty) compose into this same closure as
+    /// 4.2.g.5 / 4.2.g.6 land them.
+    fn completion_total_bonus(
         &self,
         raw: &lattice_completion::RawCandidate,
     ) -> u32 {
-        self.completion_accept_freq
+        let priority = raw
+            .source
+            .as_ref()
+            .map(|s| self.priority_for_source(s))
+            .unwrap_or(0);
+        let freq = self
+            .completion_accept_freq
             .get(&(raw.text.clone(), raw.kind))
             .copied()
             .unwrap_or(0)
+            .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
+        priority.saturating_add(freq)
+    }
+
+    /// Effective per-source priority for the insert-completion
+    /// ranker. Reads the typed `completion.source.<id>.priority`
+    /// option for known v1 sources (LSP / snippet /
+    /// buffer-words). Unknown source ids -- plugin sources or
+    /// future built-ins not yet wired into config -- get 0;
+    /// the ranker still sorts them by their matcher score so
+    /// they're not discarded, just not boosted.
+    fn priority_for_source(
+        &self,
+        source: &lattice_completion::SourceId,
+    ) -> u32 {
+        let handle = match source.as_str() {
+            "gen:lsp-completion" => self.core_options.completion_source_lsp_priority,
+            "gen:snippet" => self.core_options.completion_source_snippet_priority,
+            "gen:buffer-words" => {
+                self.core_options.completion_source_buffer_words_priority
+            }
+            _ => return 0,
+        };
+        let raw = *self.config.get(handle);
+        // Validator clamps to [0, 9999] so this saturating cast
+        // is a no-op in practice; defend against config writes
+        // that bypass the validator (none today, but cheap).
+        raw.clamp(0, u32::MAX as i64) as u32
     }
 
     pub fn do_completion_next(&mut self) {
@@ -7177,11 +7216,34 @@ impl App {
                 })
             })
             .collect();
+        // Disjoint-field borrows: `state` aliases
+        // `self.insert_completion` mutably, so the bonus closure
+        // captures `freq` / `config` / `core_options` through
+        // direct field refs (mirrors `completion_total_bonus`,
+        // which can't be called here without re-borrowing self).
         let freq = &self.completion_accept_freq;
-        ranker.rank_with_frequency(&mut scored, |raw| {
-            freq.get(&(raw.text.clone(), raw.kind))
+        let config = &self.config;
+        let opts = &self.core_options;
+        ranker.rank_with_bonus(&mut scored, |raw| {
+            let priority = match raw.source.as_ref().map(|s| s.as_str()) {
+                Some("gen:lsp-completion") => {
+                    *config.get(opts.completion_source_lsp_priority)
+                }
+                Some("gen:snippet") => {
+                    *config.get(opts.completion_source_snippet_priority)
+                }
+                Some("gen:buffer-words") => {
+                    *config.get(opts.completion_source_buffer_words_priority)
+                }
+                _ => 0,
+            }
+            .clamp(0, u32::MAX as i64) as u32;
+            let freq_bonus = freq
+                .get(&(raw.text.clone(), raw.kind))
                 .copied()
                 .unwrap_or(0)
+                .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
+            priority.saturating_add(freq_bonus)
         });
         state.rendered = scored
             .into_iter()
@@ -7648,7 +7710,10 @@ impl App {
                     let mut raw = lattice_completion::RawCandidate::plain(
                         match_text,
                         lattice_completion::CandidateKind::Plain,
-                    );
+                    )
+                    .with_source(lattice_completion::SourceId::new(
+                        lattice_completion::LSP_COMPLETION_SOURCE_ID,
+                    ));
                     raw.display = display;
                     raw.data = lattice_completion::CandidateData::Extension {
                         kind_id: LSP_COMPLETION_KIND_ID,
@@ -7682,11 +7747,32 @@ impl App {
             })
             .collect();
         let ranker = lattice_completion::InsertRanker::new();
+        // Same disjoint-borrow shape as the post-edit refresh
+        // path; combines per-source priority with the capped
+        // frequency lift.
         let freq = &self.completion_accept_freq;
-        ranker.rank_with_frequency(&mut scored, |raw| {
-            freq.get(&(raw.text.clone(), raw.kind))
+        let config = &self.config;
+        let opts = &self.core_options;
+        ranker.rank_with_bonus(&mut scored, |raw| {
+            let priority = match raw.source.as_ref().map(|s| s.as_str()) {
+                Some("gen:lsp-completion") => {
+                    *config.get(opts.completion_source_lsp_priority)
+                }
+                Some("gen:snippet") => {
+                    *config.get(opts.completion_source_snippet_priority)
+                }
+                Some("gen:buffer-words") => {
+                    *config.get(opts.completion_source_buffer_words_priority)
+                }
+                _ => 0,
+            }
+            .clamp(0, u32::MAX as i64) as u32;
+            let freq_bonus = freq
+                .get(&(raw.text.clone(), raw.kind))
                 .copied()
                 .unwrap_or(0)
+                .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
+            priority.saturating_add(freq_bonus)
         });
         state.rendered = scored
             .into_iter()
@@ -18667,6 +18753,7 @@ mod tests {
                     kind_label: "ex-command".into(),
                     source: SourceLocation::synthetic("test"),
                 },
+                source: None,
             },
             score: MatchScore::PERFECT,
             match_ranges: vec![],
@@ -18695,6 +18782,7 @@ mod tests {
                     is_dir: false,
                     size: None,
                 },
+                source: None,
             },
             score: MatchScore::PERFECT,
             match_ranges: vec![0..3],
@@ -23688,6 +23776,137 @@ mod tests {
         // First rendered candidate is the previously-accepted
         // one, ahead of its tied peers.
         assert_eq!(state.rendered.first().expect("at least one").raw.text, "bravo");
+    }
+
+    #[test]
+    fn completion_high_priority_source_beats_tied_low_priority_peer() {
+        // Two candidates tied on matcher score: one tagged
+        // gen:lsp-completion (default priority 200), one tagged
+        // gen:buffer-words (default 100). The LSP candidate
+        // sorts above the buffer-words peer.
+        let mut a = app_with("", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 0);
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        );
+        state.raw.push(
+            lattice_completion::RawCandidate::plain(
+                "from_words",
+                lattice_completion::CandidateKind::Plain,
+            )
+            .with_source(lattice_completion::SourceId::new(
+                lattice_completion::BufferWordsSource::ID,
+            )),
+        );
+        state.raw.push(
+            lattice_completion::RawCandidate::plain(
+                "from_lsp",
+                lattice_completion::CandidateKind::Plain,
+            )
+            .with_source(lattice_completion::SourceId::new(
+                lattice_completion::LSP_COMPLETION_SOURCE_ID,
+            )),
+        );
+        a.refilter_insert_completion(&mut state);
+        assert_eq!(state.rendered[0].raw.text, "from_lsp");
+        assert_eq!(state.rendered[1].raw.text, "from_words");
+    }
+
+    #[test]
+    fn completion_priority_override_via_set_flips_source_order() {
+        // After `:set completion.source.buffer-words.priority=300`
+        // the buffer-words candidate outranks the LSP one
+        // (300 > 200) at tied matcher score.
+        let mut a = app_with("", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 0);
+        a.do_set("completion.source.buffer-words.priority=300");
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        );
+        state.raw.push(
+            lattice_completion::RawCandidate::plain(
+                "from_lsp",
+                lattice_completion::CandidateKind::Plain,
+            )
+            .with_source(lattice_completion::SourceId::new(
+                lattice_completion::LSP_COMPLETION_SOURCE_ID,
+            )),
+        );
+        state.raw.push(
+            lattice_completion::RawCandidate::plain(
+                "from_words",
+                lattice_completion::CandidateKind::Plain,
+            )
+            .with_source(lattice_completion::SourceId::new(
+                lattice_completion::BufferWordsSource::ID,
+            )),
+        );
+        a.refilter_insert_completion(&mut state);
+        assert_eq!(state.rendered[0].raw.text, "from_words");
+        assert_eq!(state.rendered[1].raw.text, "from_lsp");
+    }
+
+    #[test]
+    fn completion_untagged_candidate_gets_no_priority_lift() {
+        // Candidate with no source field (plugin source not yet
+        // wired into config, or test fixture) gets 0 priority
+        // bonus; sorts below a tagged peer at tied matcher
+        // score, but still appears in the rendered list.
+        let mut a = app_with("", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 0);
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        );
+        state.raw.push(lattice_completion::RawCandidate::plain(
+            "untagged",
+            lattice_completion::CandidateKind::Plain,
+        ));
+        state.raw.push(
+            lattice_completion::RawCandidate::plain(
+                "tagged",
+                lattice_completion::CandidateKind::Plain,
+            )
+            .with_source(lattice_completion::SourceId::new(
+                lattice_completion::BufferWordsSource::ID,
+            )),
+        );
+        a.refilter_insert_completion(&mut state);
+        assert_eq!(state.rendered[0].raw.text, "tagged");
+        assert_eq!(state.rendered[1].raw.text, "untagged");
+    }
+
+    #[test]
+    fn completion_buffer_words_candidates_carry_their_source_tag() {
+        // Regression: the buffer-words `InsertSource` impl
+        // tags every produced candidate with its own id so the
+        // ranker can apply per-source priority without the host
+        // having to remember to tag.
+        let mut a = app_with("alpha bravo ", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 12);
+        a.do_completion_trigger();
+        let state = a.insert_completion.as_ref().expect("popup");
+        assert!(!state.rendered.is_empty());
+        for cand in &state.rendered {
+            let src = cand
+                .raw
+                .source
+                .as_ref()
+                .unwrap_or_else(|| panic!("candidate `{}` missing source tag", cand.raw.text));
+            assert_eq!(src.as_str(), lattice_completion::BufferWordsSource::ID);
+        }
     }
 
     #[test]

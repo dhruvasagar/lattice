@@ -57,6 +57,7 @@ impl CandidateGenerator for OptionsGenerator {
                         display: text,
                         kind: CandidateKind::Plain,
                         data: CandidateData::Plain,
+                        source: None,
                     });
                 }
             }
@@ -70,6 +71,7 @@ impl CandidateGenerator for OptionsGenerator {
                 display: spec.name().to_string(),
                 kind: CandidateKind::Plain,
                 data: CandidateData::Plain,
+                source: None,
             });
             for alt in spec.name_forms() {
                 out.push(RawCandidate {
@@ -77,6 +79,7 @@ impl CandidateGenerator for OptionsGenerator {
                     display: alt,
                     kind: CandidateKind::Plain,
                     data: CandidateData::Plain,
+                    source: None,
                 });
             }
         }

@@ -721,15 +721,24 @@ Remaining 4.2:
   `:snippet-expand` / `:reload-snippets` ex-commands) ✅;
   4.2.g.5 sliced 3 ways for landing -- (1/3) frequency
   ranking (App-side `(text, kind) -> u32` accept map bumped
-  in `do_completion_accept`; `InsertRanker::rank_with_frequency`
-  threads a host-supplied lookup closure through, capping
-  the bonus at +50; all three refilter sites swapped over)
-  ✅. Remaining 4.2.g.5 slices: (2/3) per-source priority
-  via `:set completion.source.<id>.priority`; (3/3)
-  per-language source filter + `auto_trigger` /
-  `auto_insert_single` / `suppress_in` overrides + the
-  `:help completion-sources` / `:help completion-options`
-  refresh. Then 4.2.g.6 (tree-sitter local symbols + path
+  in `do_completion_accept`; ranker threads a host-supplied
+  lookup closure through, capping the bonus at +50; all
+  three refilter sites swapped over) ✅; (2/3) per-source
+  priority (RawCandidate gains a `source: Option<SourceId>`
+  field; `BufferWordsSource::produce` self-tags, host tags
+  the snippet + LSP candidates with constants
+  `SNIPPET_SOURCE_ID` / `LSP_COMPLETION_SOURCE_ID`; ranker
+  surface renamed `rank_with_frequency` -> `rank_with_bonus`
+  taking a single host-composed closure; three new typed
+  options `completion.source.{lsp,snippet,buffer-words}.priority`
+  with defaults 200 / 150 / 100 per spec §3.4; App's
+  `priority_for_source` reads them and the closure adds
+  `priority + freq.min(50)` for every candidate;
+  unknown-source candidates get 0 priority gracefully) ✅.
+  Remaining 4.2.g.5 slice: (3/3) per-language source
+  filter + `auto_trigger` / `auto_insert_single` /
+  `suppress_in` overrides + the `:help completion-sources`
+  / `:help completion-options` refresh. Then 4.2.g.6 (tree-sitter local symbols + path
   source; commit chars + extending the typed routing
   payload to picker call sites likely fold in here), 4.2.g.7
   (polish: ghost text, additionalTextEdits coalesce

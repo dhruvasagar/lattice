@@ -99,10 +99,21 @@ pub struct RawCandidate {
     pub display: String,
     pub kind: CandidateKind,
     pub data: CandidateData,
+    /// Source that produced this candidate. `None` for legacy /
+    /// non-insert callers (cmdline pickers, plain test
+    /// fixtures); insert-mode generators tag themselves so the
+    /// per-source-priority ranker (Phase 4.2.g.5) can resolve
+    /// the right priority bucket. The string is the same id
+    /// surfaced in `:set completion.source.<id>.priority=…` and
+    /// in `:help completion-sources`.
+    #[serde(default)]
+    pub source: Option<crate::insert::SourceId>,
 }
 
 impl RawCandidate {
     /// Convenience for plain text candidates with no metadata.
+    /// Leaves `source` unset; insert-mode producers chain
+    /// [`Self::with_source`] to tag themselves.
     pub fn plain(text: impl Into<String>, kind: CandidateKind) -> Self {
         let text = text.into();
         Self {
@@ -110,7 +121,18 @@ impl RawCandidate {
             text,
             kind,
             data: CandidateData::Plain,
+            source: None,
         }
+    }
+
+    /// Tag the candidate with its producing source. Used by
+    /// insert-mode generators so the ranker can apply per-source
+    /// priority (Phase 4.2.g.5 (2/3)). Picker generators leave
+    /// the field unset -- their pipeline doesn't apply
+    /// per-source priority.
+    pub fn with_source(mut self, source: crate::insert::SourceId) -> Self {
+        self.source = Some(source);
+        self
     }
 }
 

@@ -107,6 +107,7 @@ mod tests {
             display: text.into(),
             kind: CandidateKind::Plain,
             data: CandidateData::Plain,
+            source: None,
         }
     }
 

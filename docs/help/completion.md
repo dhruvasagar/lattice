@@ -8,13 +8,17 @@ registries, words in your buffers, paths under the cursor,
 local symbols from the syntax tree. They all converge in one
 list, ranked together.
 
-> **Status:** Phase 4.2.g.1 ships the foundation — manual
-> trigger via `<C-x><C-o>` / `<C-Space>`; buffer-words source
-> only. LSP source (4.2.g.2), docs popup (4.2.g.3), snippet
-> engine (4.2.g.4), per-source priority + frequency ranking
-> (4.2.g.5), tree-sitter / path sources (4.2.g.6) follow in
-> their own commits. The behavioural spec for the full
-> surface is in [`docs/insert-completion.md`](../insert-completion.md).
+> **Status:** Phase 4.2.g.1 + 4.2.g.2 shipped. Manual trigger
+> via `<C-x><C-o>` / `<C-Space>`; buffer-words **and** LSP
+> sources contribute to the unified popup; LSP items carry
+> through with their `filterText` / `sortText` / `detail` /
+> `additionalTextEdits` / `commitCharacters`; `isIncomplete`
+> refresh re-fires LSP on each keystroke when the server
+> requests it. Docs popup (4.2.g.3), snippet engine
+> (4.2.g.4), per-source priority + frequency ranking
+> (4.2.g.5), tree-sitter / path sources (4.2.g.6) follow.
+> The behavioural spec for the full surface is in
+> [`docs/insert-completion.md`](../insert-completion.md).
 
 ---
 
@@ -85,7 +89,7 @@ priority, set source-specific knobs (e.g.
 | Source id | What it contributes | Ships in |
 |---|---|---|
 | `gen:buffer-words` | Words from the active buffer (and visible buffers in 4.2.g.6) — alphanumeric + underscore runs, deduped, default min length 3. | 4.2.g.1 ✅ |
-| `gen:lsp-completion` | `textDocument/completion` results from every LSP server attached to the buffer. | 4.2.g.2 |
+| `gen:lsp-completion` | `textDocument/completion` results from every LSP server attached to the buffer. Item adaptation: `filterText` (matcher target) / `sortText` (ranker tiebreaker) / `detail` (one-line signature) / `documentation` (markdown body for the docs popup) / `tags[Deprecated]` (strikethrough + ranker penalty in 4.2.g.5) / `commitCharacters` (auto-accept on type, 4.2.g.5) / `additionalTextEdits` (auto-imports, applied alongside the main insert as one undo unit). `isIncomplete: true` re-fires the request on every keystroke that mutates the query. | 4.2.g.2 ✅ |
 | `gen:snippet` | Per-language snippets from `lattice-snippet`. TextMate JSON format; drop-in compatible with VS Code / friendly-snippets. | 4.2.g.4 |
 | `gen:path` | Filesystem entries when typing a path inside a string literal. | 4.2.g.6 |
 | `gen:tree-sitter-symbol` | Local identifiers from the buffer's syntax tree (function defs, let-bindings, closure params). | 4.2.g.6 |
@@ -149,9 +153,21 @@ once `setlocal` lands; the global form works today.
 auto-dismisses when no candidates fuzzy-match the prefix.
 Echo line says "no completions". Type a different prefix.
 
-**LSP completions don't appear.** 4.2.g.2 hasn't shipped
-yet. The bridge `:complete` command opens an LSP picker
-instead — until 4.2.g.2 lands.
+**LSP completions don't appear.** Check:
+
+1. `:lsp-status` shows the server is running for the
+   buffer's language.
+2. The server advertises `completionProvider` (most do).
+3. The cursor is on a position the server recognises as
+   completion-eligible (typically inside an identifier).
+4. The LSP request didn't time out — server logs at
+   `:lsp-log <server>` show response activity.
+
+The legacy `:complete` ex-command still works as an
+alternative — it opens a vertico picker over the LSP items
+(useful when you want a fixed-size scrollable list).
+`<C-x><C-o>` / `<C-Space>` is the recommended path for
+typing-flow completion.
 
 ## Cross-references
 

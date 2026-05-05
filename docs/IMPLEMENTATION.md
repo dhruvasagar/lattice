@@ -705,15 +705,19 @@ snapshot_post_publish_read at 10/1k/50k lines).
 
 Remaining 4.2:
 - **Buffer-level Insert-mode completion** -- design spec at
-  [`insert-completion.md`](insert-completion.md). Multi-source
-  (LSP / snippets / buffer-words / path / tree-sitter /
-  plugin), async-first aggregator, multi-column popup with
-  match highlights, side documentation popup with lazy
-  resolve, snippet engine with placeholder navigation,
-  frequency-aware ranking. Implementation phased as 4.2.g.1
-  through 4.2.g.7 (shell → LSP → docs popup → snippets →
-  ranking → ts/path → polish). The current `:complete`
-  picker is the bridge until 4.2.g.2 lands.
+  [`insert-completion.md`](insert-completion.md). 4.2.g.1
+  (shell + buffer-words + popup widget + minor-mode keymap)
+  ✅; 4.2.g.2 (LSP source + isIncomplete refresh + typed
+  routing payload via `CandidateData::Extension` /
+  `App.insert_completion_lsp_meta` sidecar) ✅. Remaining
+  phases: 4.2.g.3 (docs popup + completionItem/resolve),
+  4.2.g.4 (`lattice-snippet` crate +
+  friendly-snippets compat), 4.2.g.5 (frequency ranking +
+  commit chars + per-source priority + extend the typed
+  routing payload to picker call sites), 4.2.g.6
+  (tree-sitter local symbols + path source), 4.2.g.7
+  (polish: ghost text, additionalTextEdits coalesce
+  refactor, auto-insert-single).
 - `completionItem/resolve` (lazy doc / additional edits) --
   shipped as part of 4.2.g.3 + 4.2.g.7.
 - `workspaceSymbol/resolve` (lazy location).

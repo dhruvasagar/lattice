@@ -206,6 +206,10 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // Items open a picker; resolve responses (post-accept)
         // apply directly.
         app.drain_pending_code_actions();
+        // Drain queued LSP insert-completion responses (Phase
+        // 4.2.g.2). Merge into the active popup's `raw` set
+        // and refilter; close the popup if everything dropped.
+        app.drain_pending_insert_completion_lsp();
         // Drain queued Event::LspLogPushed events (Phase 4) and
         // refresh any open log / trace buffers from the logger
         // snapshot. Cheap on an idle channel; cheap when no log

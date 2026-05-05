@@ -1190,6 +1190,28 @@ pub struct App {
     /// keymap layer while it's `Some`. Behavioural spec lives in
     /// [`docs/insert-completion.md`](../../docs/insert-completion.md).
     pub insert_completion: Option<lattice_completion::InsertCompletionState>,
+    /// Sidecar metadata for LSP-sourced candidates in the
+    /// active insert-completion popup. Indexed by the
+    /// candidate's `CandidateData::Extension { payload }`
+    /// (which carries a `u32` little-endian index into this
+    /// vec). Holds everything the accept / docs / commit-char
+    /// paths need that doesn't fit into `RawCandidate.text`:
+    /// `insertText`, `additionalTextEdits`, `kind` glyph,
+    /// `documentation`, etc. v1 of the typed-routing-payload
+    /// pattern (#19) -- the picker's bespoke `text`-stuffing
+    /// follows the same approach when 4.2.g.5 lands.
+    pub insert_completion_lsp_meta: Vec<LspCompletionMeta>,
+    /// Receiver for in-flight LSP insert-completion responses.
+    /// Drained per-frame; the drain merges new items into
+    /// `insert_completion.raw` and refilters.
+    pub pending_insert_completion_lsp_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<InsertCompletionLspOutcome>>,
+    /// Cancellation token for the most recent LSP insert-
+    /// completion request. Flipped on every re-trigger
+    /// (isIncomplete refresh, manual `<C-Space>` re-fire) so a
+    /// slow server's stale response can't pollute the popup.
+    pub pending_insert_completion_lsp_token:
+        Option<lattice_protocol::CancellationToken>,
     /// Active vertico-style picker (DESIGN.md §5.9.7, §5.9.10).
     /// `Some` while a picker is open over a buffer / LSP instance
     /// / future generator. Input routes here in
@@ -1382,6 +1404,57 @@ pub enum ReferencesOutcome {
     },
     /// The buffer's URI maps to no attached servers. Echo
     /// "no LSP server attached" so the user can investigate.
+    NoServers,
+}
+
+/// LSP-sourced insert-completion candidate metadata. Sidecar
+/// to the `RawCandidate` -- the candidate carries
+/// `CandidateData::Extension { kind_id: LSP_COMPLETION_KIND_ID,
+/// payload: u32_le_bytes }` pointing at this struct's index in
+/// `App.insert_completion_lsp_meta`. The accept / docs / commit-
+/// char / additional-edits paths read the metadata via that
+/// index.
+///
+/// Why a sidecar (rather than another `CandidateData` variant):
+/// `lattice-completion` doesn't depend on `lsp-types` and we
+/// don't want to add the dep just for this. The sidecar stays
+/// in the host crate where lsp-types is already in scope.
+#[derive(Debug, Clone)]
+pub struct LspCompletionMeta {
+    pub label: String,
+    pub insert_text: String,
+    pub filter_text: Option<String>,
+    pub sort_text: Option<String>,
+    pub detail: Option<String>,
+    pub documentation: Option<String>,
+    pub kind: Option<lsp_types::CompletionItemKind>,
+    pub deprecated: bool,
+    pub preselect: bool,
+    pub commit_characters: Vec<char>,
+    pub additional_text_edits: Vec<lsp_types::TextEdit>,
+    pub command: Option<lsp_types::Command>,
+    pub insert_text_format: lsp_types::InsertTextFormat,
+    /// Range to replace, when the LSP item carries `textEdit.range`.
+    /// Populated host-side at request time (the popup's anchor /
+    /// cursor become the replace bounds when this is None).
+    pub replace_range: Option<lsp_types::Range>,
+}
+
+/// `Extension::kind_id` discriminant for LSP-sourced candidates.
+/// Values 0-99 reserved for first-party host data; plugins use
+/// 1000+.
+pub const LSP_COMPLETION_KIND_ID: u32 = 1;
+
+/// Drain payload for the async LSP insert-completion source.
+/// Replaces (rather than appends to) the current LSP slice of
+/// `state.raw` -- previous items get pruned by the drain so the
+/// popup reflects the freshest server response.
+#[derive(Debug, Clone)]
+pub enum InsertCompletionLspOutcome {
+    Items {
+        items: Vec<LspCompletionMeta>,
+        is_incomplete: bool,
+    },
     NoServers,
 }
 
@@ -2043,6 +2116,9 @@ impl App {
             completion_registry,
             completion_state: None,
             insert_completion: None,
+            insert_completion_lsp_meta: Vec::new(),
+            pending_insert_completion_lsp_rx: None,
+            pending_insert_completion_lsp_token: None,
             picker: None,
             previewing: false,
             lsp_log_event_rx: Some(lsp_log_event_rx),
@@ -6065,14 +6141,30 @@ impl App {
             query.clone(),
         );
         self.populate_insert_completion_sync(&mut state, buffer, &trigger);
-        if state.rendered.is_empty() {
-            // No candidates -- echo a one-liner and bail. v1
-            // doesn't keep an empty popup open.
-            self.set_message(EchoLevel::Info, "no completions");
-            self.insert_completion = None;
-            return;
-        }
         self.insert_completion = Some(state);
+        // Fire the async LSP source in parallel. It pushes
+        // results back via `pending_insert_completion_lsp_rx`;
+        // the runtime drains them per frame and merges into
+        // `state.raw`. The popup stays open even when sync
+        // sources produce nothing -- the LSP response may
+        // still arrive with candidates.
+        self.do_lsp_insert_completion_request();
+        // If sync produced nothing AND no LSP server is
+        // attached, close the popup with the standard echo.
+        // We can detect "no LSP attached" without waiting on
+        // the request: the URI lookup either succeeded (LSP is
+        // attached and a response is in flight) or didn't
+        // (in which case `do_lsp_insert_completion_request`
+        // returned early without spawning).
+        let lsp_pending = self.pending_insert_completion_lsp_token.is_some();
+        if !lsp_pending {
+            if let Some(state) = self.insert_completion.as_ref()
+                && state.rendered.is_empty()
+            {
+                self.set_message(EchoLevel::Info, "no completions");
+                self.insert_completion = None;
+            }
+        }
     }
 
     /// Run sync sources against the supplied state, populating
@@ -6149,16 +6241,30 @@ impl App {
         }
     }
 
-    /// Accept the focused candidate. Replaces
-    /// `[anchor, cursor]` with the candidate's `text`; closes
-    /// the popup.
+    /// Accept the focused candidate. For LSP-sourced items,
+    /// applies the LSP-shaped insert (`textEdit` range when
+    /// present, else `[anchor, cursor]`) plus any
+    /// `additionalTextEdits` (auto-imports, etc.) as one
+    /// undo unit. For sync-source items (buffer-words /
+    /// snippets / etc.) just splices `text` into
+    /// `[anchor, cursor]`.
     pub fn do_completion_accept(&mut self) {
         let Some(state) = self.insert_completion.take() else {
             return;
         };
-        let Some(item) = state.selected_candidate() else {
+        let Some(item) = state.selected_candidate().cloned() else {
             return;
         };
+        // LSP path: use the typed metadata so `additionalTextEdits`
+        // (auto-imports, etc.) coalesce with the main edit into
+        // a single undo unit.
+        if let Some(meta) = self.lsp_completion_meta_for(&item).cloned() {
+            self.apply_lsp_completion_accept(meta, state.anchor);
+            // Drop the LSP meta sidecar -- popup closed.
+            self.insert_completion_lsp_meta.clear();
+            return;
+        }
+        // Sync-source path: simple replace.
         let insert_text = item.raw.text.clone();
         let range = lattice_protocol::position::Range::new(
             state.anchor,
@@ -6174,6 +6280,123 @@ impl App {
                     EchoLevel::Error,
                     format!("completion: apply failed: {e:?}"),
                 );
+            }
+        }
+        self.insert_completion_lsp_meta.clear();
+    }
+
+    /// Apply an accepted LSP completion item. Routes the
+    /// main insert (with `textEdit.range` honoured when
+    /// present) plus `additionalTextEdits` through
+    /// `apply_lsp_text_edits` so the whole set lands as one
+    /// undo unit. Snippet-flavoured items (`insertTextFormat
+    /// == Snippet`) currently splice the literal body --
+    /// placeholder navigation lands in 4.2.g.4 with
+    /// `lattice-snippet`.
+    fn apply_lsp_completion_accept(
+        &mut self,
+        meta: LspCompletionMeta,
+        anchor: Position,
+    ) {
+        // Main edit: prefer the server-supplied range when
+        // present; else replace `[anchor, cursor]`.
+        let main_range = match meta.replace_range {
+            Some(r) => r,
+            None => {
+                let start = lsp_types::Position {
+                    line: anchor.line,
+                    character: lattice_lsp::position::utf8_byte_to_utf16_column(
+                        &self
+                            .document
+                            .snapshot()
+                            .buffer
+                            .line(anchor.line)
+                            .unwrap_or_default(),
+                        anchor.byte,
+                    ),
+                };
+                let end = lsp_types::Position {
+                    line: self.cursor.line,
+                    character: lattice_lsp::position::utf8_byte_to_utf16_column(
+                        &self
+                            .document
+                            .snapshot()
+                            .buffer
+                            .line(self.cursor.line)
+                            .unwrap_or_default(),
+                        self.cursor.byte,
+                    ),
+                };
+                lsp_types::Range { start, end }
+            }
+        };
+        // Apply additionalTextEdits + main as one batch via
+        // the existing path. Sort + reverse-apply is handled
+        // there; pass everything together so undo is atomic.
+        let mut edits: Vec<lsp_types::TextEdit> = meta
+            .additional_text_edits
+            .clone();
+        edits.push(lsp_types::TextEdit {
+            range: main_range,
+            new_text: meta.insert_text.clone(),
+        });
+        if let Err(e) = self.apply_lsp_text_edits(edits) {
+            self.set_message(
+                EchoLevel::Error,
+                format!("completion: apply failed: {e}"),
+            );
+            return;
+        }
+        // Position the cursor at the end of the just-inserted
+        // text. apply_edit_batch_blocking returns the applied
+        // edits in order; the main edit is last so its end
+        // position is where we want to land. apply_lsp_text_edits
+        // doesn't return the post-state cursor today (it
+        // reverse-sorts internally), so compute it from the
+        // inserted text length.
+        let inserted_lines: Vec<&str> = meta.insert_text.split('\n').collect();
+        if inserted_lines.len() == 1 {
+            self.cursor = Position::new(
+                main_range.start.line,
+                lattice_lsp::position::utf16_column_to_utf8_byte(
+                    &self
+                        .document
+                        .snapshot()
+                        .buffer
+                        .line(main_range.start.line)
+                        .unwrap_or_default(),
+                    main_range.start.character + inserted_lines[0].len() as u32,
+                ),
+            );
+        } else {
+            // Multi-line insert (rare for plain completions;
+            // common for snippets once 4.2.g.4 lands).
+            let last_line_idx =
+                main_range.start.line + (inserted_lines.len() as u32 - 1);
+            let last_line_text = inserted_lines.last().unwrap_or(&"");
+            self.cursor = Position::new(last_line_idx, last_line_text.len() as u32);
+        }
+        // Optional: fire the LSP `command` payload (e.g.
+        // server-side post-accept hooks). Most servers don't
+        // emit one for plain completion; the codeAction path
+        // already handles `executeCommand`. Reuse that path.
+        if let Some(cmd) = meta.command.clone() {
+            // Pick any handle that supports executeCommand
+            // and dispatch.
+            let lsp = self.lsp.clone();
+            let uri = self
+                .buffer_uris
+                .get(&self.document_buffer_id)
+                .cloned();
+            if let Some(uri) = uri {
+                let handle = match lsp.try_lock() {
+                    Ok(g) => g
+                        .servers_for(&uri)
+                        .into_iter()
+                        .find(|h| h.capabilities().supports_execute_command()),
+                    Err(_) => None,
+                };
+                self.execute_lsp_command(handle, cmd);
             }
         }
     }
@@ -6238,6 +6461,7 @@ impl App {
         }
         state.query = query;
         state.cursor = self.cursor;
+        let was_incomplete = state.lsp_incomplete;
         // Refilter against the current raw set.
         let ranker = lattice_completion::InsertRanker::new();
         let matcher = lattice_completion::FuzzyInsertMatcher::new();
@@ -6265,10 +6489,347 @@ impl App {
         if state.selected >= state.rendered.len() {
             state.selected = state.rendered.len().saturating_sub(1);
         }
-        // If nothing matches, close the popup.
-        if state.rendered.is_empty() {
+        // If nothing matches, close the popup -- unless the
+        // last LSP response said `isIncomplete`, in which
+        // case we re-fire LSP and let the response arrive.
+        if state.rendered.is_empty() && !was_incomplete {
             self.insert_completion = None;
+            return;
         }
+        // isIncomplete refresh: re-fire LSP on every keystroke
+        // that mutates the query so the server's freshest set
+        // shows up.
+        if was_incomplete {
+            // Mark the trigger as IncompleteRefresh so the
+            // LSP request reports the right `triggerKind`.
+            if let Some(state) = self.insert_completion.as_mut() {
+                state.trigger =
+                    lattice_completion::CompletionTrigger::IncompleteRefresh;
+            }
+            self.do_lsp_insert_completion_request();
+        }
+    }
+
+    /// Fire `textDocument/completion` for the active Insert-
+    /// mode popup (Phase 4.2.g.2). The response merges into
+    /// `state.raw` via the per-frame drain. Cancellation
+    /// token rides on every keystroke that mutates the query
+    /// when `isIncomplete: true`; manual re-triggers always
+    /// re-fire fresh.
+    ///
+    /// Multi-server fan-out + dedup (label + kind) is the
+    /// architecture-doc strategy. Items beyond `MAX_LSP_ITEMS`
+    /// are dropped -- the popup would be unusable past the
+    /// first few hundred anyway.
+    fn do_lsp_insert_completion_request(&mut self) {
+        const MAX_LSP_ITEMS: usize = 500;
+        if let Some(token) = self.pending_insert_completion_lsp_token.take() {
+            token.cancel();
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            // No URI -- no LSP. Sync sources still populate
+            // the popup; just skip the LSP request silently.
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => return,
+        };
+        // Pull the trigger context out of the popup state so
+        // the LSP request faithfully reports `triggerKind`.
+        let (lsp_trigger_kind, lsp_trigger_char) = match self
+            .insert_completion
+            .as_ref()
+            .map(|s| s.trigger.clone())
+        {
+            Some(lattice_completion::CompletionTrigger::TriggerChar(c)) => (
+                lsp_types::CompletionTriggerKind::TRIGGER_CHARACTER,
+                Some(c.to_string()),
+            ),
+            Some(lattice_completion::CompletionTrigger::IncompleteRefresh) => (
+                lsp_types::CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS,
+                None,
+            ),
+            _ => (lsp_types::CompletionTriggerKind::INVOKED, None),
+        };
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<InsertCompletionLspOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_insert_completion_lsp_rx = Some(rx);
+        self.pending_insert_completion_lsp_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.lock().await.servers_for(&uri) };
+            if handles.is_empty() {
+                let _ = tx.send(InsertCompletionLspOutcome::NoServers);
+                return;
+            }
+            let mut all: Vec<LspCompletionMeta> = Vec::new();
+            let mut any_incomplete = false;
+            let mut seen_keys: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                if !handle.capabilities().supports_completion() {
+                    continue;
+                }
+                let params = lsp_types::CompletionParams {
+                    text_document_position: lsp_types::TextDocumentPositionParams {
+                        text_document: lsp_types::TextDocumentIdentifier {
+                            uri: uri.clone(),
+                        },
+                        position: lsp_position,
+                    },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    context: Some(lsp_types::CompletionContext {
+                        trigger_kind: lsp_trigger_kind,
+                        trigger_character: lsp_trigger_char.clone(),
+                    }),
+                };
+                let Ok(Some(resp)) = handle.completion(params, token.clone()).await
+                else {
+                    continue;
+                };
+                let (items, is_incomplete) = match resp {
+                    lsp_types::CompletionResponse::Array(items) => (items, false),
+                    lsp_types::CompletionResponse::List(list) => {
+                        (list.items, list.is_incomplete)
+                    }
+                };
+                if is_incomplete {
+                    any_incomplete = true;
+                }
+                for ci in items {
+                    let kind = ci.kind;
+                    let label = ci.label.clone();
+                    // Discriminate by the kind's name string;
+                    // `CompletionItemKind` is a struct wrapper
+                    // around an integer in lsp-types and `as u8`
+                    // doesn't apply directly.
+                    let kind_tag = kind
+                        .map(|k| format!("{k:?}"))
+                        .unwrap_or_else(|| "none".to_string());
+                    let key = (label.clone(), kind_tag);
+                    if !seen_keys.insert(key) {
+                        continue;
+                    }
+                    let deprecated = ci
+                        .tags
+                        .as_ref()
+                        .map(|t| t.contains(&lsp_types::CompletionItemTag::DEPRECATED))
+                        .unwrap_or(false)
+                        || ci.deprecated.unwrap_or(false);
+                    // Insert text resolution: textEdit.newText >
+                    // insertText > label.
+                    let (insert_text, replace_range) = match ci.text_edit.as_ref() {
+                        Some(lsp_types::CompletionTextEdit::Edit(te)) => {
+                            (te.new_text.clone(), Some(te.range))
+                        }
+                        Some(lsp_types::CompletionTextEdit::InsertAndReplace(ir)) => {
+                            // Prefer `replace` for insert-and-replace;
+                            // covers the user's existing word.
+                            (ir.new_text.clone(), Some(ir.replace))
+                        }
+                        None => {
+                            (ci.insert_text.clone().unwrap_or_else(|| label.clone()), None)
+                        }
+                    };
+                    let documentation = ci.documentation.as_ref().map(|d| match d {
+                        lsp_types::Documentation::String(s) => s.clone(),
+                        lsp_types::Documentation::MarkupContent(mc) => {
+                            mc.value.clone()
+                        }
+                    });
+                    let commit_characters = ci
+                        .commit_characters
+                        .as_ref()
+                        .map(|chars| {
+                            chars
+                                .iter()
+                                .filter_map(|s| s.chars().next())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    all.push(LspCompletionMeta {
+                        label,
+                        insert_text,
+                        filter_text: ci.filter_text.clone(),
+                        sort_text: ci.sort_text.clone(),
+                        detail: ci.detail.clone(),
+                        documentation,
+                        kind,
+                        deprecated,
+                        preselect: ci.preselect.unwrap_or(false),
+                        commit_characters,
+                        additional_text_edits: ci
+                            .additional_text_edits
+                            .clone()
+                            .unwrap_or_default(),
+                        command: ci.command.clone(),
+                        insert_text_format: ci
+                            .insert_text_format
+                            .unwrap_or(lsp_types::InsertTextFormat::PLAIN_TEXT),
+                        replace_range,
+                    });
+                    if all.len() >= MAX_LSP_ITEMS {
+                        break;
+                    }
+                }
+                if all.len() >= MAX_LSP_ITEMS {
+                    break;
+                }
+            }
+            let _ = tx.send(InsertCompletionLspOutcome::Items {
+                items: all,
+                is_incomplete: any_incomplete,
+            });
+        });
+    }
+
+    /// Per-frame drain hook -- merge any LSP completion
+    /// response into the active popup's `raw` set, refilter,
+    /// and update the `lsp_incomplete` flag.
+    pub fn drain_pending_insert_completion_lsp(&mut self) {
+        let Some(mut rx) = self.pending_insert_completion_lsp_rx.take() else {
+            return;
+        };
+        let mut latest: Option<InsertCompletionLspOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_insert_completion_lsp_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_insert_completion_lsp_token = None;
+        let Some(state) = self.insert_completion.as_mut() else {
+            // Popup closed before the response arrived; drop it.
+            self.insert_completion_lsp_meta.clear();
+            return;
+        };
+        match outcome {
+            InsertCompletionLspOutcome::NoServers => {
+                // Nothing to merge; sync sources stand alone.
+            }
+            InsertCompletionLspOutcome::Items {
+                items,
+                is_incomplete,
+            } => {
+                // Drop any prior LSP rows from raw + meta.
+                state.raw.retain(|c| {
+                    !matches!(
+                        c.data,
+                        lattice_completion::CandidateData::Extension {
+                            kind_id: LSP_COMPLETION_KIND_ID,
+                            ..
+                        }
+                    )
+                });
+                self.insert_completion_lsp_meta.clear();
+                // Append fresh items. Index into the meta vec
+                // is encoded as the candidate's
+                // Extension.payload.
+                for (i, meta) in items.into_iter().enumerate() {
+                    let display = match meta.detail.as_ref() {
+                        Some(d) => format!("{}  {}", meta.label, d),
+                        None => meta.label.clone(),
+                    };
+                    let match_text = meta
+                        .filter_text
+                        .clone()
+                        .unwrap_or_else(|| meta.label.clone());
+                    let payload = (i as u32).to_le_bytes().to_vec();
+                    let mut raw = lattice_completion::RawCandidate::plain(
+                        match_text,
+                        lattice_completion::CandidateKind::Plain,
+                    );
+                    raw.display = display;
+                    raw.data = lattice_completion::CandidateData::Extension {
+                        kind_id: LSP_COMPLETION_KIND_ID,
+                        payload,
+                    };
+                    state.raw.push(raw);
+                    self.insert_completion_lsp_meta.push(meta);
+                }
+                state.lsp_incomplete = is_incomplete;
+            }
+        }
+        // Refilter against the (now-merged) raw set.
+        // Inline mirror of `refilter_insert_completion`'s body
+        // (we have a mutable borrow on `state` here so calling
+        // the helper would re-borrow).
+        let matcher = lattice_completion::FuzzyInsertMatcher::new();
+        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
+            .raw
+            .iter()
+            .filter_map(|raw| {
+                lattice_completion::CandidateMatcher::matches(
+                    &matcher,
+                    &state.query,
+                    raw,
+                )
+                .map(|(score, ranges)| lattice_completion::ScoredCandidate {
+                    raw: raw.clone(),
+                    score,
+                    match_ranges: ranges,
+                })
+            })
+            .collect();
+        let ranker = lattice_completion::InsertRanker::new();
+        lattice_completion::CandidateRanker::rank(&ranker, &mut scored);
+        state.rendered = scored
+            .into_iter()
+            .map(lattice_completion::RenderedCandidate::from_scored)
+            .collect();
+        if !state.rendered.is_empty() && state.selected >= state.rendered.len() {
+            state.selected = state.rendered.len() - 1;
+        }
+        if state.rendered.is_empty() {
+            // No matches after merge -- close the popup.
+            self.insert_completion = None;
+            self.insert_completion_lsp_meta.clear();
+        }
+    }
+
+    /// Look up the LSP metadata for a candidate via its
+    /// `CandidateData::Extension` payload. Returns `None` for
+    /// non-LSP candidates (buffer-words / future sync sources)
+    /// or when the index is out of range (shouldn't happen but
+    /// guard anyway).
+    pub(crate) fn lsp_completion_meta_for(
+        &self,
+        candidate: &lattice_completion::RenderedCandidate,
+    ) -> Option<&LspCompletionMeta> {
+        let lattice_completion::CandidateData::Extension {
+            kind_id,
+            payload,
+        } = &candidate.raw.data
+        else {
+            return None;
+        };
+        if *kind_id != LSP_COMPLETION_KIND_ID {
+            return None;
+        }
+        if payload.len() != 4 {
+            return None;
+        }
+        let idx = u32::from_le_bytes([
+            payload[0],
+            payload[1],
+            payload[2],
+            payload[3],
+        ]) as usize;
+        self.insert_completion_lsp_meta.get(idx)
     }
 
     // ---- end Insert-mode completion ----
@@ -19521,6 +20082,248 @@ mod tests {
         // Type a space -- pushes the cursor past the word.
         a.apply(Action::Insert(" ".into()));
         assert!(a.insert_completion.is_none());
+    }
+
+    #[test]
+    fn drain_pending_insert_completion_lsp_no_servers_keeps_popup_open_if_sync_had_results() {
+        // When sync sources gave us candidates and LSP says
+        // NoServers, the popup stays open with the sync set.
+        let mut a = app_with("alpha alphabet alligator\nal", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(1, 2);
+        a.do_completion_trigger();
+        // No URI mapped -> LSP request didn't fire; the popup
+        // is open from the sync sources alone. Manually push
+        // a NoServers outcome to verify the drain handles it
+        // without exploding.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            super::InsertCompletionLspOutcome,
+        >();
+        a.pending_insert_completion_lsp_rx = Some(rx);
+        a.pending_insert_completion_lsp_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::InsertCompletionLspOutcome::NoServers).unwrap();
+        a.drain_pending_insert_completion_lsp();
+        // Popup still open from sync sources.
+        assert!(a.insert_completion.is_some());
+    }
+
+    #[test]
+    fn drain_pending_insert_completion_lsp_items_merge_into_popup() {
+        let mut a = app_with("\nfo", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(1, 2);
+        // Seed the popup state directly -- skip do_completion_trigger
+        // so the test doesn't depend on sync sources producing
+        // matches first. The drain merges LSP items into
+        // whatever raw set is present.
+        a.insert_completion = Some(
+            lattice_completion::InsertCompletionState::open(
+                lattice_completion::CompletionTrigger::Manual,
+                Position::new(1, 0),
+                Position::new(1, 2),
+                "fo".to_string(),
+            ),
+        );
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            super::InsertCompletionLspOutcome,
+        >();
+        a.pending_insert_completion_lsp_rx = Some(rx);
+        a.pending_insert_completion_lsp_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::InsertCompletionLspOutcome::Items {
+            items: vec![
+                super::LspCompletionMeta {
+                    label: "foo".into(),
+                    insert_text: "foo".into(),
+                    filter_text: None,
+                    sort_text: None,
+                    detail: Some("fn() -> i32".into()),
+                    documentation: None,
+                    kind: Some(lsp_types::CompletionItemKind::FUNCTION),
+                    deprecated: false,
+                    preselect: false,
+                    commit_characters: Vec::new(),
+                    additional_text_edits: Vec::new(),
+                    command: None,
+                    insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+                    replace_range: None,
+                },
+                super::LspCompletionMeta {
+                    label: "foobar".into(),
+                    insert_text: "foobar".into(),
+                    filter_text: None,
+                    sort_text: None,
+                    detail: None,
+                    documentation: None,
+                    kind: Some(lsp_types::CompletionItemKind::VARIABLE),
+                    deprecated: false,
+                    preselect: false,
+                    commit_characters: Vec::new(),
+                    additional_text_edits: Vec::new(),
+                    command: None,
+                    insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+                    replace_range: None,
+                },
+            ],
+            is_incomplete: false,
+        })
+        .unwrap();
+        a.drain_pending_insert_completion_lsp();
+        let state = a.insert_completion.as_ref().expect("popup open");
+        // Both items render; "foo" prefix matches both.
+        let labels: Vec<String> = state
+            .rendered
+            .iter()
+            .map(|c| c.raw.display.clone())
+            .collect();
+        assert!(labels.iter().any(|l| l.starts_with("foo")));
+        assert!(labels.iter().any(|l| l.starts_with("foobar")));
+        // Sidecar meta is populated.
+        assert_eq!(a.insert_completion_lsp_meta.len(), 2);
+    }
+
+    #[test]
+    fn drain_pending_insert_completion_lsp_drops_prior_lsp_rows_on_refresh() {
+        // First merge populates LSP rows; second merge with
+        // a different item set should REPLACE (not append).
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::ZERO;
+        a.insert_completion = Some(
+            lattice_completion::InsertCompletionState::open(
+                lattice_completion::CompletionTrigger::Manual,
+                Position::ZERO,
+                Position::ZERO,
+                String::new(),
+            ),
+        );
+        let mk_item = |label: &str| super::LspCompletionMeta {
+            label: label.into(),
+            insert_text: label.into(),
+            filter_text: None,
+            sort_text: None,
+            detail: None,
+            documentation: None,
+            kind: None,
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: Vec::new(),
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            replace_range: None,
+        };
+        // First batch.
+        let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel::<
+            super::InsertCompletionLspOutcome,
+        >();
+        a.pending_insert_completion_lsp_rx = Some(rx1);
+        a.pending_insert_completion_lsp_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx1.send(super::InsertCompletionLspOutcome::Items {
+            items: vec![mk_item("alpha"), mk_item("alphabet")],
+            is_incomplete: false,
+        })
+        .unwrap();
+        a.drain_pending_insert_completion_lsp();
+        assert_eq!(a.insert_completion_lsp_meta.len(), 2);
+        let pre = a
+            .insert_completion
+            .as_ref()
+            .map(|s| s.raw.len())
+            .unwrap_or(0);
+        assert_eq!(pre, 2);
+        // Second batch -- only one item, "beta". Prior LSP
+        // rows should be pruned.
+        let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel::<
+            super::InsertCompletionLspOutcome,
+        >();
+        a.pending_insert_completion_lsp_rx = Some(rx2);
+        a.pending_insert_completion_lsp_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx2.send(super::InsertCompletionLspOutcome::Items {
+            items: vec![mk_item("beta")],
+            is_incomplete: false,
+        })
+        .unwrap();
+        a.drain_pending_insert_completion_lsp();
+        assert_eq!(a.insert_completion_lsp_meta.len(), 1);
+        assert_eq!(a.insert_completion_lsp_meta[0].label, "beta");
+    }
+
+    #[test]
+    fn lsp_completion_meta_for_returns_none_for_sync_sourced_candidates() {
+        let a = app_with("xx", 10);
+        let raw = lattice_completion::RawCandidate::plain(
+            "foo",
+            lattice_completion::CandidateKind::Plain,
+        );
+        let scored = lattice_completion::ScoredCandidate {
+            raw,
+            score: lattice_completion::MatchScore(100),
+            match_ranges: Vec::new(),
+        };
+        let rendered =
+            lattice_completion::RenderedCandidate::from_scored(scored);
+        assert!(a.lsp_completion_meta_for(&rendered).is_none());
+    }
+
+    #[test]
+    fn lsp_completion_meta_for_resolves_extension_payload_index() {
+        let mut a = app_with("xx", 10);
+        a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
+            label: "first".into(),
+            insert_text: "first".into(),
+            filter_text: None,
+            sort_text: None,
+            detail: None,
+            documentation: None,
+            kind: None,
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: Vec::new(),
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            replace_range: None,
+        });
+        a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
+            label: "second".into(),
+            insert_text: "second".into(),
+            filter_text: None,
+            sort_text: None,
+            detail: None,
+            documentation: None,
+            kind: None,
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: Vec::new(),
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            replace_range: None,
+        });
+        // Build a candidate pointing at index 1.
+        let mut raw = lattice_completion::RawCandidate::plain(
+            "second",
+            lattice_completion::CandidateKind::Plain,
+        );
+        raw.data = lattice_completion::CandidateData::Extension {
+            kind_id: super::LSP_COMPLETION_KIND_ID,
+            payload: 1u32.to_le_bytes().to_vec(),
+        };
+        let scored = lattice_completion::ScoredCandidate {
+            raw,
+            score: lattice_completion::MatchScore(100),
+            match_ranges: Vec::new(),
+        };
+        let rendered =
+            lattice_completion::RenderedCandidate::from_scored(scored);
+        let meta = a
+            .lsp_completion_meta_for(&rendered)
+            .expect("meta resolves");
+        assert_eq!(meta.label, "second");
     }
 
     #[test]

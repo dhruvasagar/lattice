@@ -191,6 +191,10 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // the returned edits as one undo unit; echoes when no
         // provider was found or no changes were needed.
         app.drain_pending_format();
+        // Drain queued signatureHelp responses (Phase 4.3).
+        // Renders the active signature into the hover popup
+        // pipeline.
+        app.drain_pending_signature_help();
         // Drain queued Event::LspLogPushed events (Phase 4) and
         // refresh any open log / trace buffers from the logger
         // snapshot. Cheap on an idle channel; cheap when no log

@@ -449,6 +449,13 @@ pub enum Action {
     /// token rides on follow-up `gr` so a slow server can't
     /// drop a stale popup over a moved cursor.
     LspReferencesRequest,
+    /// `:lsp-signature-help` (Phase 4.3). Sends
+    /// `textDocument/signatureHelp` to attached servers; the
+    /// first non-empty response renders into a popup near the
+    /// cursor. In Insert mode the same request fires
+    /// automatically when the user types a server-advertised
+    /// trigger character (commonly `(` and `,`).
+    LspSignatureHelpRequest,
     /// `<C-t>` -- pop the tag stack (vim's tag-stack
     /// `:pop`). Walks back through the LIFO chain of `gd` /
     /// `gD` / `gy` / `gI` drill-downs. Independent of the
@@ -845,6 +852,13 @@ pub struct App {
     pub pending_format_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<FormatOutcome>>,
     pub pending_format_token: Option<lattice_protocol::CancellationToken>,
+    /// Receiver for in-flight signature help responses (Phase
+    /// 4.3). The drain feeds the markdown body into the same
+    /// popup pipeline `K` uses, so the user can dismiss with
+    /// `<Esc>` or move the cursor to clear.
+    pub pending_signature_help_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<SignatureHelpOutcome>>,
+    pub pending_signature_help_token: Option<lattice_protocol::CancellationToken>,
     /// Receiver end of the App's own subscription to
     /// `EventKind::OptionChanged` (DESIGN.md §5.10 + §5.12). The
     /// typed-options registry publishes through `event_bus` on
@@ -1285,6 +1299,20 @@ pub enum ReferencesOutcome {
     },
     /// The buffer's URI maps to no attached servers. Echo
     /// "no LSP server attached" so the user can investigate.
+    NoServers,
+}
+
+/// Outcome of a `textDocument/signatureHelp` request. The
+/// response carries multiple signatures (one per overload) plus
+/// the active signature/parameter indices. We collapse to the
+/// active overload + parameter highlight for the popup body.
+#[derive(Debug, Clone)]
+pub enum SignatureHelpOutcome {
+    /// Pre-rendered markdown body for the popup. Empty body
+    /// means "no signature info" (server returned None or an
+    /// empty `signatures` array).
+    Body(String),
+    /// No server attached / no provider advertised.
     NoServers,
 }
 
@@ -1790,6 +1818,8 @@ impl App {
             pending_symbols_token: None,
             pending_format_rx: None,
             pending_format_token: None,
+            pending_signature_help_rx: None,
+            pending_signature_help_token: None,
             lang_registry,
             builtins,
             command_line: String::new(),
@@ -2960,6 +2990,7 @@ impl App {
                 self.do_lsp_nav_request(LspNavKind::Implementation)
             }
             Action::LspReferencesRequest => self.do_lsp_references_request(),
+            Action::LspSignatureHelpRequest => self.do_lsp_signature_help_request(),
             Action::TagStackPop => self.do_tag_stack_pop(),
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
             Action::LspWorkspaceSymbolRequest(q) => {
@@ -4967,6 +4998,103 @@ impl App {
                     self.tag_stack.push(origin);
                 }
                 self.jump_to_file_line_col(&path, line, col);
+            }
+        }
+    }
+
+    /// `:lsp-signature-help` (Phase 4.3). Fan-out across
+    /// attached servers; first non-empty `SignatureHelp`
+    /// response wins (per docs/lsp-architecture.md §7b
+    /// "First non-empty wins. Signatures are usually language-
+    /// specific; merging rarely useful.").
+    fn do_lsp_signature_help_request(&mut self) {
+        if let Some(token) = self.pending_signature_help_token.take() {
+            token.cancel();
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => return,
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SignatureHelpOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_signature_help_rx = Some(rx);
+        self.pending_signature_help_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.lock().await.servers_for(&uri) };
+            if handles.is_empty() {
+                let _ = tx.send(SignatureHelpOutcome::NoServers);
+                return;
+            }
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                if !handle.capabilities().supports_signature_help() {
+                    continue;
+                }
+                let params = lsp_types::SignatureHelpParams {
+                    text_document_position_params: lsp_types::TextDocumentPositionParams {
+                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                        position: lsp_position,
+                    },
+                    work_done_progress_params: Default::default(),
+                    context: None,
+                };
+                if let Ok(Some(sh)) = handle.signature_help(params, token.clone()).await {
+                    let body = signature_help_to_markdown(&sh);
+                    if !body.is_empty() {
+                        let _ = tx.send(SignatureHelpOutcome::Body(body));
+                        return;
+                    }
+                }
+            }
+            let _ = tx.send(SignatureHelpOutcome::Body(String::new()));
+        });
+    }
+
+    /// Drain queued signature-help responses. A non-empty body
+    /// renders into the popup; empty echoes "no signature info";
+    /// `NoServers` echoes the standard "no LSP server" message.
+    pub fn drain_pending_signature_help(&mut self) {
+        let Some(mut rx) = self.pending_signature_help_rx.take() else {
+            return;
+        };
+        let mut latest: Option<SignatureHelpOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_signature_help_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_signature_help_token = None;
+        match outcome {
+            SignatureHelpOutcome::NoServers => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no LSP server attached to current buffer".to_string(),
+                );
+            }
+            SignatureHelpOutcome::Body(body) if body.is_empty() => {
+                self.set_message(EchoLevel::Info, "no signature info".to_string());
+            }
+            SignatureHelpOutcome::Body(body) => {
+                self.do_open_hover(&body);
             }
         }
     }
@@ -7259,6 +7387,7 @@ impl App {
             }
             Effect::LspFormat => self.do_lsp_format_request(false),
             Effect::LspFormatRange => self.do_lsp_format_request(true),
+            Effect::LspSignatureHelp => self.do_lsp_signature_help_request(),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -9972,7 +10101,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspDocumentSymbol
         | Effect::LspWorkspaceSymbol { .. }
         | Effect::LspFormat
-        | Effect::LspFormatRange => false,
+        | Effect::LspFormatRange
+        | Effect::LspSignatureHelp => false,
     }
 }
 
@@ -10027,7 +10157,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspDocumentSymbol
         | Effect::LspWorkspaceSymbol { .. }
         | Effect::LspFormat
-        | Effect::LspFormatRange => false,
+        | Effect::LspFormatRange
+        | Effect::LspSignatureHelp => false,
     }
 }
 
@@ -10099,6 +10230,73 @@ pub(crate) fn raw_buffer_candidates(
 /// `PositionEncodingKind` through here so utf-8 / utf-32 servers
 /// don't pay the utf-16 conversion. For 4.2.b utf-16 is correct
 /// for every server we care about today.
+/// Render an LSP `SignatureHelp` response into a markdown body
+/// the popup renderer can display. Picks the active signature
+/// (server-supplied `active_signature` index, default 0) and
+/// inlines the active parameter's documentation when present.
+/// Returns the empty string when the response carries no
+/// signatures.
+pub(crate) fn signature_help_to_markdown(sh: &lsp_types::SignatureHelp) -> String {
+    if sh.signatures.is_empty() {
+        return String::new();
+    }
+    let active_sig_idx = sh.active_signature.unwrap_or(0) as usize;
+    let sig = sh
+        .signatures
+        .get(active_sig_idx)
+        .or_else(|| sh.signatures.first())
+        .expect("non-empty checked above");
+    let mut out = String::new();
+    // Active signature's call form -- renders as a fenced code
+    // block so the popup's markdown highlighter picks up
+    // syntax highlighting (whatever language the server says
+    // -- we don't know, so default to text).
+    out.push_str("```text\n");
+    out.push_str(&sig.label);
+    out.push_str("\n```\n");
+    // Parameter highlight: append a short note pointing at the
+    // active parameter's name. The popup overlay doesn't yet
+    // do per-character paragraph styling, so this is the
+    // friendliest representation we have without bespoke
+    // rendering.
+    if let Some(active_param_idx) = sig.active_parameter.or(sh.active_parameter)
+        && let Some(params) = sig.parameters.as_ref()
+        && let Some(param) = params.get(active_param_idx as usize)
+    {
+        let label_str = match &param.label {
+            lsp_types::ParameterLabel::Simple(s) => s.clone(),
+            lsp_types::ParameterLabel::LabelOffsets(_) => String::new(),
+        };
+        if !label_str.is_empty() {
+            out.push_str(&format!("\n**param:** `{label_str}`\n"));
+        }
+        if let Some(doc) = param.documentation.as_ref() {
+            let doc_str = match doc {
+                lsp_types::Documentation::String(s) => s.clone(),
+                lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
+            };
+            if !doc_str.is_empty() {
+                out.push('\n');
+                out.push_str(&doc_str);
+                out.push('\n');
+            }
+        }
+    }
+    // Signature-level documentation when present.
+    if let Some(doc) = sig.documentation.as_ref() {
+        let doc_str = match doc {
+            lsp_types::Documentation::String(s) => s.clone(),
+            lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
+        };
+        if !doc_str.is_empty() {
+            out.push('\n');
+            out.push_str(&doc_str);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// Inverse of `app_to_lsp_position` -- LSP utf-16 character
 /// column → utf-8 byte column on the given line. Used by
 /// `apply_lsp_text_edits` to convert TextEdit ranges back to
@@ -17166,6 +17364,83 @@ mod tests {
         // Cursor on the space.
         let p = Position::new(0, 3);
         assert_eq!(super::word_under_cursor(&snap.buffer, p), None);
+    }
+
+    #[test]
+    fn signature_help_to_markdown_renders_active_signature() {
+        let sh = lsp_types::SignatureHelp {
+            signatures: vec![
+                lsp_types::SignatureInformation {
+                    label: "fn foo(a: i32, b: &str) -> i32".into(),
+                    documentation: Some(lsp_types::Documentation::String(
+                        "Adds.".into(),
+                    )),
+                    parameters: Some(vec![
+                        lsp_types::ParameterInformation {
+                            label: lsp_types::ParameterLabel::Simple("a: i32".into()),
+                            documentation: Some(lsp_types::Documentation::String(
+                                "the first.".into(),
+                            )),
+                        },
+                        lsp_types::ParameterInformation {
+                            label: lsp_types::ParameterLabel::Simple("b: &str".into()),
+                            documentation: None,
+                        },
+                    ]),
+                    active_parameter: Some(0),
+                },
+            ],
+            active_signature: Some(0),
+            active_parameter: None,
+        };
+        let body = super::signature_help_to_markdown(&sh);
+        assert!(body.contains("fn foo(a: i32"));
+        assert!(body.contains("**param:** `a: i32`"));
+        assert!(body.contains("the first."));
+        assert!(body.contains("Adds."));
+    }
+
+    #[test]
+    fn signature_help_to_markdown_empty_when_no_signatures() {
+        let sh = lsp_types::SignatureHelp {
+            signatures: vec![],
+            active_signature: None,
+            active_parameter: None,
+        };
+        assert_eq!(super::signature_help_to_markdown(&sh), "");
+    }
+
+    #[test]
+    fn drain_pending_signature_help_body_opens_popup() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::SignatureHelpOutcome>();
+        a.pending_signature_help_rx = Some(rx);
+        a.pending_signature_help_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::SignatureHelpOutcome::Body(
+            "```text\nfn x()\n```\n".into(),
+        ))
+        .unwrap();
+        a.drain_pending_signature_help();
+        let h = a.help_buffer.as_ref().expect("popup");
+        assert_eq!(h.title, "hover");
+        assert!(a.pending_signature_help_token.is_none());
+    }
+
+    #[test]
+    fn drain_pending_signature_help_empty_body_echoes_no_signature_info() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::SignatureHelpOutcome>();
+        a.pending_signature_help_rx = Some(rx);
+        a.pending_signature_help_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::SignatureHelpOutcome::Body(String::new())).unwrap();
+        a.drain_pending_signature_help();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no signature info"));
+        assert!(a.help_buffer.is_none());
     }
 
     #[test]

@@ -418,6 +418,10 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("lspformat", "ex:lsp-format"),
     ("format-range", "ex:lsp-format-range"),
     ("fmtrange", "ex:lsp-format-range"),
+    ("signature-help", "ex:lsp-signature-help"),
+    ("signaturehelp", "ex:lsp-signature-help"),
+    ("sighelp", "ex:lsp-signature-help"),
+    ("lspsighelp", "ex:lsp-signature-help"),
 ];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests

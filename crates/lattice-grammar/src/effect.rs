@@ -288,6 +288,10 @@ pub enum Effect {
     /// or the supplied line range. Apply edits atomically.
     /// Phase 4.3.
     LspFormatRange,
+    /// `:signature-help` (or trigger-character driven). Send
+    /// `textDocument/signatureHelp` to attached servers; first
+    /// non-empty response renders into the hover popup.
+    LspSignatureHelp,
 
     Many(Vec<Effect>),
 }

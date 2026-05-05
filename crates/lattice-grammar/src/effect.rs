@@ -303,6 +303,12 @@ pub enum Effect {
     LspRename {
         new_name: String,
     },
+    /// `:code-actions` -- run textDocument/codeAction at the
+    /// cursor / selection; open the merged item list as a
+    /// vertico picker. Accept routes through resolve (when
+    /// needed) and applies the action's WorkspaceEdit /
+    /// command. Phase 4.3.
+    LspCodeAction,
 
     Many(Vec<Effect>),
 }

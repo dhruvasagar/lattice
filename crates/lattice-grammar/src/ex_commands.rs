@@ -78,6 +78,7 @@ pub struct ExBuiltins {
     pub lsp_signature_help: ExCommandId,
     pub lsp_complete: ExCommandId,
     pub lsp_rename: ExCommandId,
+    pub lsp_code_action: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -797,6 +798,20 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         },
     );
 
+    let lsp_code_action = registry.register_ex_command(
+        "ex:lsp-code-action",
+        "Open a vertico picker over LSP code actions at the cursor / selection (`:code-actions`, Phase 4.3).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: true,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::LspCodeAction)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
     let lsp_rename = registry.register_ex_command(
         "ex:lsp-rename",
         "Rename the symbol under cursor across the workspace via textDocument/rename. Empty name uses prepareRename's placeholder when advertised (`:rename [new-name]`, Phase 4.3).",
@@ -989,6 +1004,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_signature_help,
         lsp_complete,
         lsp_rename,
+        lsp_code_action,
     }
 }
 

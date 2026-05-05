@@ -886,6 +886,22 @@ pub struct App {
     pub pending_rename_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<RenameOutcome>>,
     pub pending_rename_token: Option<lattice_protocol::CancellationToken>,
+    /// Receiver for in-flight `:code-actions` responses (Phase
+    /// 4.3). Drained per-frame; the Items arm pins items on
+    /// the App and opens a picker.
+    pub pending_code_action_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<CodeActionOutcome>>,
+    pub pending_code_action_token: Option<lattice_protocol::CancellationToken>,
+    /// Pinned code-action items, indexed by the picker's
+    /// candidate `text` (`#<idx>`). Cleared on dismiss /
+    /// outcome consumption / accept.
+    pub pending_code_action_items: Option<Vec<CodeActionRow>>,
+    /// The handle that produced the in-flight code-action
+    /// request, kept alive so the resolve / executeCommand
+    /// follow-up routes to the same server. v1 picks the first
+    /// server that advertises the provider; the handle clone
+    /// is cheap (Arc-backed).
+    pub pending_code_action_handle: Option<lattice_lsp::ServerHandle>,
     /// Receiver end of the App's own subscription to
     /// `EventKind::OptionChanged` (DESIGN.md §5.10 + §5.12). The
     /// typed-options registry publishes through `event_bus` on
@@ -1356,6 +1372,29 @@ pub struct CompletionItemRow {
 pub enum CompletionOutcome {
     Items(Vec<CompletionItemRow>),
     NoServers,
+}
+
+/// One row of a code-action picker. Carries the action title,
+/// kind glyph, and the original `CodeAction` payload (or its
+/// raw `Command`-only form). Action items survive on the App
+/// across the request → picker accept gap so the resolve / apply
+/// path can read them by index.
+#[derive(Debug, Clone)]
+pub struct CodeActionRow {
+    pub title: String,
+    pub kind_glyph: &'static str,
+    pub action: lsp_types::CodeActionOrCommand,
+}
+
+/// Outcome of a `:code-actions` request. Drained per frame.
+#[derive(Debug, Clone)]
+pub enum CodeActionOutcome {
+    /// Fresh code-action result list. Drain opens a picker.
+    Items(Vec<CodeActionRow>),
+    /// Resolved action (post-`codeAction/resolve`). Drain
+    /// applies directly -- the picker is already gone.
+    Resolved(lsp_types::CodeAction),
+    NoProvider,
 }
 
 /// Outcome of a `:rename` request. The success arm pre-flattens
@@ -1905,6 +1944,10 @@ impl App {
             pending_completion_items: None,
             pending_rename_rx: None,
             pending_rename_token: None,
+            pending_code_action_rx: None,
+            pending_code_action_token: None,
+            pending_code_action_items: None,
+            pending_code_action_handle: None,
             lang_registry,
             builtins,
             command_line: String::new(),
@@ -4942,7 +4985,8 @@ impl App {
                 }
                 crate::picker::PickerAction::SwitchToBuffer
                 | crate::picker::PickerAction::JumpToLspLocation
-                | crate::picker::PickerAction::AcceptLspCompletion => {}
+                | crate::picker::PickerAction::AcceptLspCompletion
+                | crate::picker::PickerAction::AcceptLspCodeAction => {}
             }
             return;
         }
@@ -5176,7 +5220,162 @@ impl App {
                 };
                 self.apply_lsp_completion_item(&item);
             }
+            crate::picker::PickerAction::AcceptLspCodeAction => {
+                let Some(idx) = crate::picker::buffer_id_from_text(&payload) else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: malformed code-action idx {payload:?}"),
+                    );
+                    return;
+                };
+                let Some(items) = self.pending_code_action_items.take() else {
+                    return;
+                };
+                let handle = self.pending_code_action_handle.take();
+                let Some(row) = items.into_iter().nth(idx as usize) else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: code-action idx {idx} out of range"),
+                    );
+                    return;
+                };
+                self.apply_lsp_code_action(row, handle);
+            }
         }
+    }
+
+    /// Apply a chosen code-action. The action may carry an
+    /// inline `WorkspaceEdit`, a `Command`, both, or neither
+    /// (resolve required). The `handle` is the server that
+    /// produced the action -- resolve / executeCommand routes
+    /// back to it.
+    fn apply_lsp_code_action(
+        &mut self,
+        row: CodeActionRow,
+        handle: Option<lattice_lsp::ServerHandle>,
+    ) {
+        let action = match row.action {
+            // Bare command -- skip resolve, route through
+            // executeCommand.
+            lsp_types::CodeActionOrCommand::Command(cmd) => {
+                self.execute_lsp_command(handle, cmd);
+                return;
+            }
+            lsp_types::CodeActionOrCommand::CodeAction(ca) => ca,
+        };
+        // Resolve when the action arrived without `edit` AND a
+        // handle is available. The lazy-resolve seam: actions
+        // without an inline edit need codeAction/resolve to
+        // fill it in.
+        let needs_resolve = action.edit.is_none() && action.command.is_none();
+        if needs_resolve {
+            let Some(handle) = handle else {
+                self.set_message(
+                    EchoLevel::Error,
+                    "code-action: cannot resolve (no server handle)".to_string(),
+                );
+                return;
+            };
+            self.spawn_code_action_resolve_apply(handle, action);
+            return;
+        }
+        // We have the action ready -- apply edit + command.
+        self.apply_resolved_code_action(handle, action);
+    }
+
+    /// Async path for codeAction/resolve. Spawns a task that
+    /// resolves the action then queues the resolved version
+    /// back to the App for apply via the same channel the
+    /// initial code-action request used. Cheap to ride the
+    /// existing channel because the picker is already gone --
+    /// the next outcome we send is interpreted as "resolved
+    /// action; apply it directly".
+    fn spawn_code_action_resolve_apply(
+        &mut self,
+        handle: lattice_lsp::ServerHandle,
+        action: lsp_types::CodeAction,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CodeActionOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        // Stash the original handle so the post-resolve
+        // dispatch (workspace/executeCommand) can route back
+        // to the same server.
+        self.pending_code_action_rx = Some(rx);
+        self.pending_code_action_token = Some(token.clone());
+        self.pending_code_action_handle = Some(handle.clone());
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            if token.is_cancelled() {
+                return;
+            }
+            let resolved = match handle.code_action_resolve(action.clone(), token).await {
+                Ok(r) => r,
+                Err(_) => action,
+            };
+            let _ = tx.send(CodeActionOutcome::Resolved(resolved));
+        });
+    }
+
+    /// Apply a fully-resolved code-action: WorkspaceEdit (when
+    /// present) lands as one undo unit per affected buffer;
+    /// `Command` (when present) routes through
+    /// `workspace/executeCommand`. Both can fire for the same
+    /// action -- LSP spec allows it.
+    fn apply_resolved_code_action(
+        &mut self,
+        handle: Option<lattice_lsp::ServerHandle>,
+        action: lsp_types::CodeAction,
+    ) {
+        if let Some(edit) = action.edit {
+            let per_file = flatten_workspace_edit(edit);
+            if !per_file.is_empty() {
+                self.apply_rename_workspace_edit(per_file, action.title.clone());
+            }
+        }
+        if let Some(cmd) = action.command {
+            self.execute_lsp_command(handle, cmd);
+        }
+    }
+
+    /// Fire `workspace/executeCommand` for a code-action's
+    /// command payload. Server response is opaque (most
+    /// servers return null + side-effect via
+    /// `workspace/applyEdit` -- which lands as a follow-up
+    /// when we wire the server-initiated edit channel).
+    fn execute_lsp_command(
+        &mut self,
+        handle: Option<lattice_lsp::ServerHandle>,
+        cmd: lsp_types::Command,
+    ) {
+        let Some(handle) = handle else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("execute_command: no server handle for `{}`", cmd.command),
+            );
+            return;
+        };
+        if !handle.capabilities().supports_execute_command() {
+            self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "execute_command: server doesn't advertise executeCommandProvider for `{}`",
+                    cmd.command
+                ),
+            );
+            return;
+        }
+        let params = lsp_types::ExecuteCommandParams {
+            command: cmd.command.clone(),
+            arguments: cmd.arguments.unwrap_or_default(),
+            work_done_progress_params: Default::default(),
+        };
+        let title = cmd.title.clone();
+        let token = lattice_protocol::CancellationToken::new();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            // Fire-and-forget; the response is rarely useful
+            // beyond error logging.
+            let _ = handle.execute_command(params, token).await;
+        });
+        self.set_message(EchoLevel::Info, format!("dispatched: {title}"));
     }
 
     /// Splice a chosen completion item into the buffer at its
@@ -5201,6 +5400,254 @@ impl App {
                 );
             }
         }
+    }
+
+    /// `:code-actions` (Phase 4.3). Run textDocument/codeAction
+    /// at the cursor (or active Visual selection); open the
+    /// merged item list as a vertico picker. v1 picks the
+    /// first server with `codeActionProvider`; multi-server
+    /// merge per architecture doc §7b is queued.
+    fn do_lsp_code_action_request(&mut self) {
+        if let Some(token) = self.pending_code_action_token.take() {
+            token.cancel();
+        }
+        // Browse-style; not a tag-intent drill-down.
+        self.pending_tag_origin = None;
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        // Range source: active Visual selection if present,
+        // else cursor → cursor (point range) so quick-fixes /
+        // refactors at the cursor still surface.
+        let range = self.code_action_range(&snapshot.buffer);
+        let context = lsp_types::CodeActionContext {
+            diagnostics: self.diagnostics_for_range(&uri, &range),
+            only: None,
+            trigger_kind: Some(lsp_types::CodeActionTriggerKind::INVOKED),
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CodeActionOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_code_action_rx = Some(rx);
+        self.pending_code_action_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        let stash = std::sync::Arc::new(std::sync::Mutex::new(
+            None::<lattice_lsp::ServerHandle>,
+        ));
+        let stash_for_task = stash.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.lock().await.servers_for(&uri) };
+            let chosen = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_code_action());
+            let Some(handle) = chosen else {
+                let _ = tx.send(CodeActionOutcome::NoProvider);
+                return;
+            };
+            // Stash the handle so the post-pick resolve /
+            // executeCommand path can reach the same server.
+            *stash_for_task.lock().unwrap() = Some(handle.clone());
+            let params = lsp_types::CodeActionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                range,
+                context,
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            if let Ok(Some(resp)) = handle.code_action(params, token.clone()).await {
+                let rows: Vec<CodeActionRow> = resp
+                    .into_iter()
+                    .map(|act| {
+                        let (title, kind_glyph) = match &act {
+                            lsp_types::CodeActionOrCommand::Command(c) => {
+                                (c.title.clone(), code_action_kind_glyph(None))
+                            }
+                            lsp_types::CodeActionOrCommand::CodeAction(ca) => (
+                                ca.title.clone(),
+                                code_action_kind_glyph(ca.kind.as_ref()),
+                            ),
+                        };
+                        CodeActionRow {
+                            title,
+                            kind_glyph,
+                            action: act,
+                        }
+                    })
+                    .collect();
+                let _ = tx.send(CodeActionOutcome::Items(rows));
+            } else {
+                let _ = tx.send(CodeActionOutcome::Items(Vec::new()));
+            }
+        });
+        // Pull the handle stash off the spawn task once the
+        // first `try_lock` succeeds. This is racy by design --
+        // the drain path also reads from the App field, and
+        // the spawned task writes through the Arc<Mutex> when
+        // it picks the server. v1 acceptable; a cleaner
+        // channel-based stash lands with the multi-server
+        // merge work.
+        // Instead of polling, the request task itself updates
+        // App's field directly is impossible (Send / borrow);
+        // we rely on the drain to pick the handle from the
+        // outcome's first row by walking attached servers
+        // again. Simpler approach: drain re-walks servers_for
+        // and picks the first one that advertises the provider.
+        // That's `apply_lsp_code_action`'s contract.
+        let _ = stash;
+    }
+
+    /// LSP-shape range for the current code-action request.
+    /// Visual selection when active; point range at cursor
+    /// otherwise.
+    fn code_action_range(
+        &self,
+        buffer: &lattice_core::Buffer,
+    ) -> lsp_types::Range {
+        if let ModalState::Visual(_) = self.modal {
+            let anchor = self.visual_anchor.unwrap_or(self.cursor);
+            let head = self.cursor;
+            let (start_pos, end_pos) =
+                if (anchor.line, anchor.byte) <= (head.line, head.byte) {
+                    (anchor, head)
+                } else {
+                    (head, anchor)
+                };
+            let start = app_to_lsp_position(buffer, start_pos)
+                .unwrap_or(lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                });
+            let end = app_to_lsp_position(buffer, end_pos).unwrap_or(start);
+            lsp_types::Range { start, end }
+        } else {
+            let p = app_to_lsp_position(buffer, self.cursor).unwrap_or(
+                lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+            );
+            lsp_types::Range { start: p, end: p }
+        }
+    }
+
+    /// Diagnostics overlapping `range` in `uri`, converted to
+    /// the LSP shape codeAction servers expect in
+    /// `CodeActionContext`. Servers use these to emit
+    /// quick-fix actions tied to specific diagnostics.
+    fn diagnostics_for_range(
+        &self,
+        uri: &lattice_lsp::Uri,
+        range: &lsp_types::Range,
+    ) -> Vec<lattice_lsp::Diagnostic> {
+        self.lsp_diagnostics
+            .diagnostics_for(uri)
+            .into_iter()
+            .filter(|d| {
+                // Overlap check: the diagnostic's range
+                // intersects `range` (LSP positions, half-open).
+                d.range.end.line > range.start.line
+                    || (d.range.end.line == range.start.line
+                        && d.range.end.character > range.start.character)
+            })
+            .filter(|d| {
+                d.range.start.line < range.end.line
+                    || (d.range.start.line == range.end.line
+                        && d.range.start.character <= range.end.character)
+            })
+            .collect()
+    }
+
+    /// Drain queued code-action responses. Items pin to App
+    /// + open a picker. Resolve responses (single-row
+    /// outcomes seeded with the resolved action) apply
+    /// directly when the original handle is still pinned.
+    pub fn drain_pending_code_actions(&mut self) {
+        let Some(mut rx) = self.pending_code_action_rx.take() else {
+            return;
+        };
+        let mut latest: Option<CodeActionOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_code_action_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_code_action_token = None;
+        match outcome {
+            CodeActionOutcome::NoProvider => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no server with codeActionProvider".to_string(),
+                );
+            }
+            CodeActionOutcome::Resolved(action) => {
+                let handle = self.pending_code_action_handle.take();
+                self.apply_resolved_code_action(handle, action);
+            }
+            CodeActionOutcome::Items(items) => {
+                if items.is_empty() {
+                    self.set_message(EchoLevel::Info, "no code actions".to_string());
+                    return;
+                }
+                // Fresh code-action results -> open picker.
+                let total = items.len();
+                let raw: Vec<lattice_completion::RawCandidate> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        let mut c = lattice_completion::RawCandidate::plain(
+                            format!("#{i}"),
+                            lattice_completion::CandidateKind::Plain,
+                        );
+                        c.display = format!("{} {}", item.kind_glyph, item.title);
+                        c
+                    })
+                    .collect();
+                // Re-walk attached servers to pin a handle for
+                // the post-accept resolve / executeCommand
+                // path. v1 acceptable; the spawn task that
+                // produced the items already chose this same
+                // handle deterministically (first with
+                // `supports_code_action`), so the re-walk
+                // matches.
+                let handle = self.first_code_action_handle();
+                self.pending_code_action_items = Some(items);
+                self.pending_code_action_handle = handle;
+                let mut p = crate::picker::Picker::new(
+                    format!("code-actions ({total})"),
+                    crate::picker::PickerSource::LspLocations,
+                    crate::picker::PickerAction::AcceptLspCodeAction,
+                );
+                p.set_raw_candidates(raw);
+                self.picker = Some(p);
+            }
+        }
+    }
+
+    /// Pick the first attached server that advertises
+    /// `codeActionProvider` -- mirrors the choice the spawn
+    /// task made when firing the original request. Used by
+    /// the drain to pin a handle for the post-accept
+    /// resolve / executeCommand path.
+    fn first_code_action_handle(&self) -> Option<lattice_lsp::ServerHandle> {
+        let uri = self.buffer_uris.get(&self.document_buffer_id)?;
+        let lsp = self.lsp.clone();
+        let g = lsp.try_lock().ok()?;
+        let handles = g.servers_for(uri);
+        handles
+            .into_iter()
+            .find(|h| h.capabilities().supports_code_action())
     }
 
     /// `:rename <new-name>` (Phase 4.3). Fires
@@ -7996,6 +8443,7 @@ impl App {
             Effect::LspSignatureHelp => self.do_lsp_signature_help_request(),
             Effect::LspComplete => self.do_lsp_completion_request(),
             Effect::LspRename { new_name } => self.do_lsp_rename_request(&new_name),
+            Effect::LspCodeAction => self.do_lsp_code_action_request(),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -10753,7 +11201,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp
         | Effect::LspComplete
-        | Effect::LspRename { .. } => false,
+        | Effect::LspRename { .. }
+        | Effect::LspCodeAction => false,
     }
 }
 
@@ -10811,7 +11260,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp
         | Effect::LspComplete
-        | Effect::LspRename { .. } => false,
+        | Effect::LspRename { .. }
+        | Effect::LspCodeAction => false,
     }
 }
 
@@ -11098,6 +11548,38 @@ pub(crate) fn flatten_workspace_edit(
         }
     }
     out
+}
+
+/// Single-character glyph for an LSP `CodeActionKind`. Maps
+/// the standard kinds (quickfix, refactor*, source*) to a
+/// short visual marker for the picker margin. Unknown / custom
+/// kinds and bare `Command` payloads land on `?`.
+pub(crate) fn code_action_kind_glyph(
+    kind: Option<&lsp_types::CodeActionKind>,
+) -> &'static str {
+    use lsp_types::CodeActionKind as K;
+    let Some(kind) = kind else {
+        return "?";
+    };
+    if *kind == K::QUICKFIX {
+        "🛠"
+    } else if *kind == K::REFACTOR {
+        "♻"
+    } else if *kind == K::REFACTOR_EXTRACT {
+        "↗"
+    } else if *kind == K::REFACTOR_INLINE {
+        "↘"
+    } else if *kind == K::REFACTOR_REWRITE {
+        "↺"
+    } else if *kind == K::SOURCE {
+        "★"
+    } else if *kind == K::SOURCE_ORGANIZE_IMPORTS {
+        "≡"
+    } else if *kind == K::SOURCE_FIX_ALL {
+        "✓"
+    } else {
+        "?"
+    }
 }
 
 /// Single-character glyph for an LSP `CompletionItemKind`.
@@ -18110,6 +18592,84 @@ mod tests {
         // Cursor on the space.
         let p = Position::new(0, 3);
         assert_eq!(super::word_under_cursor(&snap.buffer, p), None);
+    }
+
+    #[test]
+    fn code_action_kind_glyph_distinct_for_common_kinds() {
+        use lsp_types::CodeActionKind as K;
+        let qf = super::code_action_kind_glyph(Some(&K::QUICKFIX));
+        let rf = super::code_action_kind_glyph(Some(&K::REFACTOR));
+        let sr = super::code_action_kind_glyph(Some(&K::SOURCE));
+        assert_ne!(qf, rf);
+        assert_ne!(qf, sr);
+        assert_ne!(rf, sr);
+    }
+
+    #[test]
+    fn drain_pending_code_actions_no_provider_echoes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
+        a.pending_code_action_rx = Some(rx);
+        a.pending_code_action_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::CodeActionOutcome::NoProvider).unwrap();
+        a.drain_pending_code_actions();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("codeActionProvider"));
+    }
+
+    #[test]
+    fn drain_pending_code_actions_empty_echoes_no_actions() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
+        a.pending_code_action_rx = Some(rx);
+        a.pending_code_action_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::CodeActionOutcome::Items(Vec::new())).unwrap();
+        a.drain_pending_code_actions();
+        assert!(a.picker.is_none());
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no code actions"));
+    }
+
+    #[test]
+    fn drain_pending_code_actions_items_open_picker() {
+        let mut a = app_with("foo\n", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
+        a.pending_code_action_rx = Some(rx);
+        a.pending_code_action_token =
+            Some(lattice_protocol::CancellationToken::new());
+        let act = lsp_types::CodeAction {
+            title: "Add `mut` modifier".into(),
+            kind: Some(lsp_types::CodeActionKind::QUICKFIX),
+            diagnostics: None,
+            edit: None,
+            command: None,
+            is_preferred: None,
+            disabled: None,
+            data: None,
+        };
+        tx.send(super::CodeActionOutcome::Items(vec![super::CodeActionRow {
+            title: act.title.clone(),
+            kind_glyph: "🛠",
+            action: lsp_types::CodeActionOrCommand::CodeAction(act),
+        }]))
+        .unwrap();
+        a.drain_pending_code_actions();
+        let picker = a.picker.as_ref().expect("picker");
+        assert!(picker.title.starts_with("code-actions"));
+        assert!(matches!(
+            picker.on_accept,
+            crate::picker::PickerAction::AcceptLspCodeAction
+        ));
+        assert_eq!(picker.candidates.len(), 1);
+        let display = &picker.candidates[0].raw.display;
+        assert!(display.contains("🛠 Add `mut` modifier"));
+        // Items pinned for the accept path.
+        assert!(a.pending_code_action_items.is_some());
     }
 
     #[test]

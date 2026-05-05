@@ -287,6 +287,70 @@ impl Capabilities {
         }
     }
 
+    /// Server's `codeActionProvider` presence -- gates
+    /// `:code-actions` (Phase 4.3). Returns true for both
+    /// bool and options shapes the LSP spec allows.
+    pub fn supports_code_action(&self) -> bool {
+        match self.server.code_action_provider.as_ref() {
+            Some(lsp_types::CodeActionProviderCapability::Simple(b)) => *b,
+            Some(lsp_types::CodeActionProviderCapability::Options(_)) => true,
+            None => false,
+        }
+    }
+
+    /// Whether the server advertises `resolveProvider` on its
+    /// codeActionProvider options. When true, codeAction
+    /// items may arrive without `edit` and need
+    /// `codeAction/resolve` before apply.
+    pub fn code_action_resolve_provider(&self) -> bool {
+        match self.server.code_action_provider.as_ref() {
+            Some(lsp_types::CodeActionProviderCapability::Options(o)) => {
+                o.resolve_provider.unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+
+    /// Server's `executeCommandProvider` presence -- gates
+    /// `workspace/executeCommand` for codeAction items that
+    /// carry a `Command` payload.
+    pub fn supports_execute_command(&self) -> bool {
+        self.server.execute_command_provider.is_some()
+    }
+
+    /// Server's `documentOnTypeFormattingProvider` presence
+    /// (Phase 4.3). Trigger-character driven formatting in
+    /// Insert mode -- returns the first character that fires
+    /// the request, plus more in `more_trigger_character`.
+    pub fn supports_on_type_formatting(&self) -> bool {
+        self.server
+            .document_on_type_formatting_provider
+            .is_some()
+    }
+
+    /// Trigger characters for onTypeFormatting. Empty when
+    /// the provider isn't advertised.
+    pub fn on_type_formatting_trigger_chars(&self) -> Vec<char> {
+        let Some(p) = self.server.document_on_type_formatting_provider.as_ref()
+        else {
+            return Vec::new();
+        };
+        let mut out: Vec<char> = Vec::new();
+        if let Some(c) = p.first_trigger_character.chars().next() {
+            out.push(c);
+        }
+        if let Some(more) = p.more_trigger_character.as_ref() {
+            for s in more {
+                if let Some(c) = s.chars().next() {
+                    if !out.contains(&c) {
+                        out.push(c);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Whether the server advertises `prepareProvider` on its
     /// rename options -- if so, `prepareRename` should run
     /// before `rename` to validate the cursor and pick up the

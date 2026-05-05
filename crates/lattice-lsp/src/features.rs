@@ -260,6 +260,62 @@ impl ServerHandle {
     ) -> crate::error::LspResult<()> {
         self.notify("textDocument/didSave", params)
     }
+
+    /// `textDocument/codeAction` (Phase 4.3). Returns the list
+    /// of quick fixes / refactors / source actions available
+    /// for the supplied range. Each item carries either an
+    /// inline `edit` (apply directly), a `command` (route
+    /// through `executeCommand`), or both. Items with neither
+    /// need `codeAction/resolve` to fill in the missing
+    /// `edit`.
+    pub fn code_action(
+        &self,
+        params: lsp_types::CodeActionParams,
+        token: CancellationToken,
+    ) -> Pending<Option<lsp_types::CodeActionResponse>> {
+        self.request_with_cancel("textDocument/codeAction", params, token)
+    }
+
+    /// `codeAction/resolve` (Phase 4.3). Lazy-resolve a
+    /// codeAction that arrived without `edit`. Servers that
+    /// advertise `codeActionProvider.resolveProvider` may
+    /// return action stubs (label + kind only) and fill in
+    /// `edit` here, on demand. Cheaper than computing every
+    /// edit upfront.
+    pub fn code_action_resolve(
+        &self,
+        action: lsp_types::CodeAction,
+        token: CancellationToken,
+    ) -> Pending<lsp_types::CodeAction> {
+        self.request_with_cancel("codeAction/resolve", action, token)
+    }
+
+    /// `workspace/executeCommand` (Phase 4.3). Run a server-
+    /// registered command identified by string id. Used by
+    /// codeAction items that carry a `command` rather than an
+    /// inline `edit`. Response shape varies per command --
+    /// servers usually return null + side-effect via
+    /// `workspace/applyEdit`.
+    pub fn execute_command(
+        &self,
+        params: lsp_types::ExecuteCommandParams,
+        token: CancellationToken,
+    ) -> Pending<Option<serde_json::Value>> {
+        self.request_with_cancel("workspace/executeCommand", params, token)
+    }
+
+    /// `textDocument/onTypeFormatting` (Phase 4.3). Trigger-
+    /// character driven formatting that adjusts surrounding
+    /// whitespace / indentation as the user types (commonly
+    /// fires on `;`, `}`, `\n` for C-family). Returns the same
+    /// `Vec<TextEdit>` shape as the other formatting flavours.
+    pub fn on_type_formatting(
+        &self,
+        params: lsp_types::DocumentOnTypeFormattingParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<TextEdit>>> {
+        self.request_with_cancel("textDocument/onTypeFormatting", params, token)
+    }
 }
 
 #[cfg(test)]

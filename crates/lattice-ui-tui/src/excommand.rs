@@ -427,6 +427,10 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("rename", "ex:lsp-rename"),
     ("rn", "ex:lsp-rename"),
     ("lsprename", "ex:lsp-rename"),
+    ("code-actions", "ex:lsp-code-action"),
+    ("codeactions", "ex:lsp-code-action"),
+    ("ca", "ex:lsp-code-action"),
+    ("lspcodeaction", "ex:lsp-code-action"),
 ];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests

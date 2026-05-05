@@ -202,6 +202,10 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // the WorkspaceEdit per-file (one undo unit per
         // affected buffer in v1) and echoes a summary.
         app.drain_pending_rename();
+        // Drain queued code-action responses (Phase 4.3).
+        // Items open a picker; resolve responses (post-accept)
+        // apply directly.
+        app.drain_pending_code_actions();
         // Drain queued Event::LspLogPushed events (Phase 4) and
         // refresh any open log / trace buffers from the logger
         // snapshot. Cheap on an idle channel; cheap when no log

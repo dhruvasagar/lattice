@@ -113,6 +113,12 @@ pub enum PickerAction {
     /// and splices it into the buffer at the captured replace
     /// range. Used by `:complete` (Phase 4.2.g).
     AcceptLspCompletion,
+    /// Selected candidate's `text` is `"#<idx>"` -- a numeric
+    /// index into the host's `pending_code_action_items`
+    /// snapshot. Accept resolves the action (when needed)
+    /// then applies its WorkspaceEdit / executeCommand.
+    /// Used by `:code-actions` (Phase 4.3).
+    AcceptLspCodeAction,
 }
 
 /// One open vertico-style picker. Lives on `App.picker` while

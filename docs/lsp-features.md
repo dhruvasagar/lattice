@@ -144,8 +144,8 @@ Capability columns:
 |-----------------------------------|-------|--------|------------------------------------------------------------------------------|
 | `textDocument/codeAction`         | 4.3   | ⏹️      | Picker popup; supports `WorkspaceEdit` + `Command` payloads.                 |
 | `codeAction/resolve`              | 4.3   | ⏹️      | Lazy-resolve `edit` from the action's `data`.                                |
-| `textDocument/rename`             | 4.3   | ⏹️      | Multi-file edit applied atomically (one undo step per doc).                  |
-| `textDocument/prepareRename`      | 4.3   | ⏹️      | Validates the cursor is on a renameable identifier; returns the placeholder. |
+| `textDocument/rename`             | 4.3   | ✅     | `:rename <new-name>` (alias `:rn`). Single highest-priority server with `renameProvider`. WorkspaceEdit flattens both legacy `changes` map and modern `document_changes` Edits arm; `AnnotatedTextEdit` unwraps to plain TextEdit. Active buffer applies as one undo unit; cross-file edits open via `:e` then apply (cross-file atomic rollback is a follow-up). |
+| `textDocument/prepareRename`      | 4.3   | ✅     | Runs before `rename` when the server advertises `prepare_provider`. RangeWithPlaceholder-shape responses pre-populate the new-name when the user types `:rename` with no arg; Range / DefaultBehavior responses fall through. NotRenameable echoes the server's reason. |
 | `textDocument/formatting`         | 4.3   | ✅     | `:format` (alias `:fmt`). Highest-priority server with `documentFormattingProvider`; returned `Vec<TextEdit>` applies as one undo unit. TextEdits sorted in REVERSE by start position before apply (LSP convention: non-overlapping edits relative to original document). Single-server strategy per architecture doc. |
 | `textDocument/rangeFormatting`    | 4.3   | ✅     | `:format-range`. Active Visual selection (when in Visual) or whole buffer; same dispatch as `formatting`. `=` operator on motions / objects -- queued. |
 | `textDocument/onTypeFormatting`   | 4.3   | ⏹️      | Trigger-character driven (e.g. `;` / `}` in C-family).                       |
@@ -210,16 +210,16 @@ Counts as of 2026-05-05:
 
 | State          | Count |
 |----------------|-------|
-| ✅ Done        | 21    |
+| ✅ Done        | 23    |
 | 🚧 In progress | 5     |
-| ⏹️ Planned      | 39    |
+| ⏹️ Planned      | 37    |
 | ⛔ Deferred    | 4     |
 
 Phase rollup:
 
 - **4.1** Foundation: **complete**. Wire layer + actor/handshake + sync + diagnostics (broadcast → layer → renderer → buffer view + nav) + logging (rings + tracing fan-out + buffer views + commands) + supervisor + App-side wiring + edit-dispatch + open-on-`:e` all shipped.
 - **4.2** Navigation: **9/12 shipped + 1 partial**. ✅ hover (`K`), definition (`gd`), declaration (`gD`), typeDefinition (`gy`), implementation (`gI`), references (`gr`), documentSymbol (`:lsp-symbols`), workspaceSymbol (`:lsp-workspace-symbol`). 🚧 completion (`:complete`) -- bridge picker until buffer-level Insert-mode completion lands. All multi-result lookups + `:diagnostics` route through the unified vertico picker (`PickerSource::LspLocations` + `PickerAction::JumpToLspLocation`). Tag stack `<C-t>` pops `gd`-family drill-downs LIFO; jump list `<C-o>`/`<C-i>` walks every cursor jump chronologically. Remaining: completionItem/resolve + workspaceSymbol/resolve + Insert-mode completion shell.
-- **4.3** Edits: **3/9 shipped** (formatting + rangeFormatting via `:format` / `:format-range`; signatureHelp via `:signature-help`). Remaining: codeAction (+ resolve), rename (+ prepareRename), onTypeFormatting, willSave / willSaveWaitUntil / didSave, applyEdit, executeCommand.
+- **4.3** Edits: **4/9 shipped** (formatting + rangeFormatting via `:format` / `:format-range`; signatureHelp via `:signature-help`; rename + prepareRename via `:rename`). Remaining: codeAction (+ resolve), onTypeFormatting, willSave / willSaveWaitUntil / didSave, applyEdit, executeCommand.
 - **4.4** Polish: 0/19 -- queued.
 - **4.5** Expansion: 0/14 -- queued.
 - **post-1.0**: notebooks + multi-root workspaces.

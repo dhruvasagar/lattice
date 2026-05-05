@@ -160,6 +160,7 @@ references-picker rows, diagnostics jumps, etc.).
 | `:format` (`:fmt`)     | `textDocument/formatting` -- whole buffer; highest-priority server with the provider; one undo unit.|
 | `:format-range`        | `textDocument/rangeFormatting` over the active Visual selection (or whole buffer when not in Visual). |
 | `:signature-help`      | `textDocument/signatureHelp` -- popup with the active signature + parameter highlight. Auto-fires in Insert mode on server-advertised trigger characters (typically `(` and `,`). |
+| `:rename <name>` (`:rn`) | `textDocument/rename` after `textDocument/prepareRename`. Replaces the symbol under cursor across the workspace. Empty `<name>` uses the server's prepareRename placeholder. Active buffer's edits apply as one undo unit; cross-file edits open via `:e` and apply per-file. |
 
 Each picker entry encodes `path:line:col` in its candidate
 text; accept dispatch parses through `jump_to_file_line_col`

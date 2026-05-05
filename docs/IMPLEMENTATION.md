@@ -629,6 +629,11 @@ snapshot_post_publish_read at 10/1k/50k lines).
 - ✅ signatureHelp via `:signature-help` + Insert-mode
   trigger-char autopilot (typing `(` / `,` etc. fires the
   request automatically).
+- ✅ rename + prepareRename via `:rename <name>` (alias
+  `:rn`). Active buffer applies as one undo unit; cross-file
+  edits open via `:e` then apply per-file. WorkspaceEdit
+  flattening covers both legacy `changes` map and modern
+  `document_changes` shape.
 - Multi-result lookups + `:diagnostics` route through one
   vertico picker (`PickerSource::LspLocations` +
   `PickerAction::JumpToLspLocation`); single-result nav still
@@ -655,7 +660,6 @@ Remaining 4.2:
 
 Remaining 4.3:
 - codeAction + codeAction/resolve.
-- rename + prepareRename.
 - onTypeFormatting.
 - willSave / willSaveWaitUntil / didSave + format-on-save.
 - workspace/applyEdit, workspace/executeCommand.

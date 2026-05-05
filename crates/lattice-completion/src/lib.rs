@@ -39,8 +39,8 @@ pub use crate::candidate::{
 };
 pub use crate::insert::{
     BufferWordsSource, CompletionTrigger, DocPopupState, FuzzyInsertMatcher, InsertCompletionState,
-    InsertContext, InsertRanker, InsertSource, LSP_COMPLETION_SOURCE_ID, SNIPPET_SOURCE_ID,
-    SourceId, fuzzy_match,
+    InsertContext, InsertRanker, InsertSource, LSP_COMPLETION_SOURCE_ID, PerLanguageOverrides,
+    SNIPPET_SOURCE_ID, SourceId, canonical_source_id, fuzzy_match, per_language_defaults,
 };
 pub use crate::pipeline::CompletionPipeline;
 pub use crate::registry::{

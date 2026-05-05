@@ -531,6 +531,123 @@ impl CandidateRanker for InsertRanker {
     }
 }
 
+// ---- Per-language overrides ----
+
+/// Per-language overrides for the insert-completion popup. Each
+/// field is `Option` so a TOML override at
+/// `[completion.per-language.<lang>]` can flip exactly the keys
+/// it cares about; unset fields fall back to the global typed
+/// option (or, for `sources`, "every enabled source contributes").
+///
+/// The host (App) layers a TOML override on top of the spec-
+/// driven defaults from [`per_language_defaults`]; the
+/// effective-config resolver in the host walks
+/// `per_language -> global option -> hardcoded fallback` for
+/// every read.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PerLanguageOverrides {
+    /// Subset of source ids that contribute for this language.
+    /// `None` = every enabled source contributes (the global
+    /// default). The producer layer skips emit + LSP fan-out
+    /// for sources outside this list.
+    pub sources: Option<Vec<SourceId>>,
+    /// Whether typing identifier chars opens the popup
+    /// automatically. `None` = inherit
+    /// `completion.auto_trigger`. Plumbed today; auto-trigger
+    /// firing itself lands later.
+    pub auto_trigger: Option<bool>,
+    /// Whether a single-candidate popup auto-accepts. `None` =
+    /// inherit `completion.auto_insert_single`.
+    pub auto_insert_single: Option<bool>,
+    /// Tree-sitter scope strings (e.g. `"string"`, `"comment"`)
+    /// where the popup should not fire. `None` = inherit; empty
+    /// list = "fire everywhere." Plumbed today; scope-detect
+    /// enforcement lands with the tree-sitter scope queries
+    /// slice.
+    pub suppress_in: Option<Vec<String>>,
+}
+
+impl PerLanguageOverrides {
+    /// Layer `other` on top of `self`: every `Some` field in
+    /// `other` wins; `None` fields preserve `self`'s value.
+    /// Used when a TOML override merges onto the spec defaults.
+    pub fn merge(&mut self, other: PerLanguageOverrides) {
+        if other.sources.is_some() {
+            self.sources = other.sources;
+        }
+        if other.auto_trigger.is_some() {
+            self.auto_trigger = other.auto_trigger;
+        }
+        if other.auto_insert_single.is_some() {
+            self.auto_insert_single = other.auto_insert_single;
+        }
+        if other.suppress_in.is_some() {
+            self.suppress_in = other.suppress_in;
+        }
+    }
+}
+
+/// Spec-driven defaults shipping with v1
+/// (`docs/insert-completion.md` §9). Markdown / text restrict
+/// to snippet + buffer-words (no LSP for prose); rust enables
+/// auto-fire + auto-insert-single since rust-analyzer's items
+/// are precise.
+///
+/// Returned as a fresh map -- callers (App init) own the data
+/// and merge TOML overrides on top.
+pub fn per_language_defaults() -> std::collections::HashMap<String, PerLanguageOverrides> {
+    let mut m = std::collections::HashMap::new();
+    let prose_sources = vec![
+        SourceId::new(SNIPPET_SOURCE_ID),
+        SourceId::new(BufferWordsSource::ID),
+    ];
+    m.insert(
+        "markdown".into(),
+        PerLanguageOverrides {
+            sources: Some(prose_sources.clone()),
+            auto_trigger: Some(false),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "text".into(),
+        PerLanguageOverrides {
+            sources: Some(prose_sources),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "rust".into(),
+        PerLanguageOverrides {
+            auto_trigger: Some(true),
+            auto_insert_single: Some(true),
+            ..Default::default()
+        },
+    );
+    m
+}
+
+/// Map a user-friendly source label (`"lsp"`, `"snippet"`,
+/// `"buffer-words"`) to its canonical source id. Unknown labels
+/// pass through as-is, so plugin sources can be referenced by
+/// their full id (`"plugin:my-source"`).
+pub fn canonical_source_id(label: &str) -> SourceId {
+    match label {
+        "lsp" => SourceId::new(LSP_COMPLETION_SOURCE_ID),
+        "snippet" | "snippets" => SourceId::new(SNIPPET_SOURCE_ID),
+        "buffer-words" | "buffer_words" | "words" => {
+            SourceId::new(BufferWordsSource::ID)
+        }
+        // `path` (4.2.g.6) and `tree-sitter` (4.2.g.6) are
+        // recognised here so users can list them in TOML
+        // ahead of the source landing -- the producer skips
+        // unknown ids gracefully.
+        "path" => SourceId::new("gen:path"),
+        "tree-sitter" | "treesitter" | "ts" => SourceId::new("gen:tree-sitter-symbol"),
+        other => SourceId::new(other),
+    }
+}
+
 // ---- Source id constants (host-orchestrated sources) ----
 //
 // `BufferWordsSource::ID` lives on the impl below; the LSP and
@@ -986,6 +1103,76 @@ mod tests {
         // 100 + 50 = 150 < 200, so strong stays first.
         assert_eq!(scored[0].raw.text, "rare-but-strong");
         assert_eq!(scored[1].raw.text, "frequent-but-weak");
+    }
+
+    #[test]
+    fn per_language_overrides_merge_replaces_only_some_fields() {
+        let mut base = PerLanguageOverrides {
+            sources: Some(vec![SourceId::new("a")]),
+            auto_trigger: Some(false),
+            auto_insert_single: Some(false),
+            suppress_in: Some(vec!["string".into()]),
+        };
+        let overlay = PerLanguageOverrides {
+            auto_trigger: Some(true),
+            ..Default::default()
+        };
+        base.merge(overlay);
+        // Only auto_trigger flipped; the others survive.
+        assert_eq!(base.auto_trigger, Some(true));
+        assert_eq!(base.auto_insert_single, Some(false));
+        assert_eq!(base.sources, Some(vec![SourceId::new("a")]));
+        assert_eq!(base.suppress_in, Some(vec!["string".into()]));
+    }
+
+    #[test]
+    fn per_language_defaults_match_spec_examples() {
+        let m = per_language_defaults();
+        let md = m.get("markdown").expect("markdown default");
+        assert_eq!(md.auto_trigger, Some(false));
+        let md_sources = md.sources.as_ref().expect("markdown sources set");
+        assert!(md_sources.iter().any(|s| s.as_str() == SNIPPET_SOURCE_ID));
+        assert!(
+            md_sources
+                .iter()
+                .any(|s| s.as_str() == BufferWordsSource::ID),
+        );
+        assert!(
+            !md_sources
+                .iter()
+                .any(|s| s.as_str() == LSP_COMPLETION_SOURCE_ID),
+            "markdown drops LSP per spec",
+        );
+        let rust = m.get("rust").expect("rust default");
+        assert_eq!(rust.auto_trigger, Some(true));
+        assert_eq!(rust.auto_insert_single, Some(true));
+    }
+
+    #[test]
+    fn canonical_source_id_maps_short_labels() {
+        assert_eq!(
+            canonical_source_id("lsp").as_str(),
+            LSP_COMPLETION_SOURCE_ID,
+        );
+        assert_eq!(canonical_source_id("snippet").as_str(), SNIPPET_SOURCE_ID);
+        assert_eq!(
+            canonical_source_id("snippets").as_str(),
+            SNIPPET_SOURCE_ID,
+        );
+        assert_eq!(
+            canonical_source_id("buffer-words").as_str(),
+            BufferWordsSource::ID,
+        );
+        assert_eq!(
+            canonical_source_id("words").as_str(),
+            BufferWordsSource::ID,
+        );
+        // Unknown label passes through verbatim so plugin
+        // sources work by full id.
+        assert_eq!(
+            canonical_source_id("plugin:my-source").as_str(),
+            "plugin:my-source",
+        );
     }
 
     #[test]

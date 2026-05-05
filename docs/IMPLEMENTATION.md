@@ -749,12 +749,29 @@ Remaining 4.2:
   language layer + future plugin host to drain;
   `runtime::run` invokes loader between `App::new` and LSP
   boot with workspace root walked up from CWD to first
-  `.git` / `.lattice/` marker) ✅. Remaining 4.2.g.5 slice:
-  (3b/3) per-language source filter +
-  `auto_trigger` / `auto_insert_single` / `suppress_in`
-  overrides drained from the structural bucket + producer-
-  side enforcement + the `:help completion-sources` /
-  `:help completion-options` refresh. Then 4.2.g.6 (tree-sitter local symbols + path
+  `.git` / `.lattice/` marker) ✅;
+  (3b/3) per-language overrides
+  (`PerLanguageOverrides { sources, auto_trigger,
+  auto_insert_single, suppress_in }` in
+  `lattice-completion::insert`; spec defaults seeded at
+  `App::new` via `per_language_defaults()` --
+  markdown / text drop LSP for prose, rust enables auto-fire
+  + auto-insert-single; TOML drains
+  `[completion.per-language.<lang>]` structural sections via
+  `apply_per_language_toml_overrides` with per-key merge onto
+  defaults; `effective_completion_for(language)` walks
+  per-language -> global option -> spec fallback;
+  enforcement at `populate_insert_completion_sync` (skip
+  emit for disabled sync sources) and
+  `do_lsp_insert_completion_request` (short-circuit before
+  the URI lookup); `auto_trigger` and `suppress_in` plumbed
+  but not yet enforced -- auto-fire as a feature and
+  tree-sitter scope detection are their own slices;
+  `canonical_source_id` maps short labels (`lsp`, `snippet`,
+  `buffer-words`, `path`, `tree-sitter`) to canonical ids;
+  help refresh in `docs/help/completion.md` lists the
+  built-in defaults table + recognised keys + merge
+  semantics) ✅. **4.2.g.5 complete.** Then 4.2.g.6 (tree-sitter local symbols + path
   source; commit chars + extending the typed routing
   payload to picker call sites likely fold in here), 4.2.g.7
   (polish: ghost text, additionalTextEdits coalesce

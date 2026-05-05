@@ -35,6 +35,10 @@ pub fn run(document: Document) -> Result<()> {
     // the App's echo, never abort startup.
     let workspace_root = workspace_root_from_cwd();
     app.load_persistent_config(workspace_root.as_deref());
+    // Drain `[completion.per-language.<lang>]` sections the
+    // loader bucketed -- spec defaults seed the map at App
+    // init; TOML overrides layer on top here.
+    app.apply_per_language_toml_overrides();
     // LSP boot. Spawns matching language servers for the
     // initial document (if it has a path) + attaches them.
     // Async because the LSP handshake awaits an `initialize`

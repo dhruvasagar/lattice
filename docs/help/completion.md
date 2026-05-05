@@ -217,7 +217,7 @@ prose typing.
 | `completion.debounce_ms` | int | `50` | Per-keystroke debounce for refilter passes. |
 | `completion.docs_auto` | bool | `false` | Auto-show docs popup on selection change. (4.2.g.3) |
 | `completion.extra_commit_chars` | string | `""` | Editor-side commit characters. (4.2.g.2) |
-| `completion.auto_insert_single` | bool | `false` | Auto-accept when only one candidate matches. |
+| `completion.auto_insert_single` | bool | `true` | Auto-accept when only one candidate matches. |
 | `completion.fuzzy_threshold` | int | `5` | Minimum match score to render. |
 | `completion.suppress_in` | string list | `[]` | Tree-sitter scopes where completion is suppressed (e.g. `["string", "comment"]`). |
 | `completion.source.<id>.enabled` | bool | `true` | Toggle a source on/off. |
@@ -229,18 +229,65 @@ explanations and examples (`:help` topic auto-rendered from
 
 ## Per-language overrides
 
+Lattice ships sensible per-language defaults out of the box;
+the TOML form below lets you override any of them. Values
+parse from `~/.config/lattice/lattice.toml` (user) and
+`<workspace>/.lattice/config.toml` (project, takes precedence)
+at startup.
+
+### Built-in defaults
+
+| Language | `sources` | `auto_trigger` | `auto_insert_single` |
+|---|---|---|---|
+| `markdown` | `snippet`, `buffer-words` (no LSP for prose) | `false` | inherits global |
+| `text` | `snippet`, `buffer-words` | inherits | inherits |
+| `rust` | inherits (all enabled sources) | `true` | `true` |
+
+Other languages inherit every global option.
+
+### TOML form
+
 ```toml
 [completion.per-language.markdown]
-sources = ["snippet", "buffer-words", "path"]
+sources = ["snippet", "buffer-words"]
 auto_trigger = false
 
 [completion.per-language.rust]
 auto_trigger = true
 auto_insert_single = true
+
+[completion.per-language.python]
+sources = ["lsp", "snippet"]    # LSP-led; skip noisy buffer words
 ```
 
-Per-buffer override via `:setlocal completion.auto_trigger=true`
-once `setlocal` lands; the global form works today.
+### Recognised keys
+
+- **`sources`** (`string[]`) — restrict the popup to these
+  source ids. Short labels: `lsp`, `snippet`, `buffer-words`,
+  `path`, `tree-sitter`. Plugin sources work by full id
+  (`plugin:my-source`). Unset = every enabled source
+  contributes. Sources outside this list short-circuit at
+  emit time, so an LSP-disabled language never even fires
+  the `textDocument/completion` request.
+- **`auto_trigger`** (`bool`) — whether typing identifier
+  characters opens the popup automatically. Plumbed today;
+  the auto-fire feature itself lands in a future slice.
+- **`auto_insert_single`** (`bool`) — whether the popup
+  auto-accepts when only one candidate matches. Inherits
+  the global `completion.auto_insert_single` when unset.
+- **`suppress_in`** (`string[]`) — tree-sitter scopes where
+  the popup should not fire (e.g. `["string", "comment"]`).
+  Plumbed today; scope-detect enforcement awaits the
+  tree-sitter scope-query slice.
+
+Per-key TOML overrides merge onto the built-in defaults — a
+markdown override that only sets `auto_trigger = true`
+preserves the default `sources` list (snippet +
+buffer-words). Override a key with `[]` for an empty list to
+explicitly clear the default.
+
+Per-buffer overrides land with `:setlocal` (post-1.0); today
+the per-language form is the supported runtime control.
 
 ## Troubleshooting
 

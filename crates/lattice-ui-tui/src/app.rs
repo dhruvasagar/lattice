@@ -1278,6 +1278,18 @@ pub struct App {
     /// up when it registers.
     pub pending_config_structural_sections:
         std::collections::BTreeMap<String, toml::Table>,
+    /// Per-language insert-completion overrides (Phase 4.2.g.5
+    /// (3b/3); spec at `docs/insert-completion.md` §9). Seeded
+    /// at App init from
+    /// [`lattice_completion::per_language_defaults`] (markdown
+    /// drops LSP, rust enables auto-fire, etc.); user TOML in
+    /// `[completion.per-language.<lang>]` sections layers on top
+    /// via [`Self::apply_per_language_toml_overrides`]. Read by
+    /// [`Self::effective_completion_for`] which walks
+    /// per-language -> global option -> hardcoded fallback for
+    /// each effective field.
+    pub per_language_completion:
+        std::collections::HashMap<String, lattice_completion::PerLanguageOverrides>,
     /// Live snippet expansion. `Some` while a snippet is
     /// active and `<Tab>` / `<S-Tab>` navigate placeholders.
     /// Dropped on `$0` consumption / `<Esc>` / cursor moving
@@ -1554,6 +1566,95 @@ pub struct SnippetCandidateMeta {
     pub prefix: String,
     pub description: Option<String>,
     pub body: lattice_snippet::SnippetBody,
+}
+
+/// Effective insert-completion config for a given language.
+/// Materialised by [`App::effective_completion_for`] from the
+/// per-language overrides + global typed options + spec
+/// fallbacks. Carried as a value type so the producer / fan-out
+/// paths read it without re-resolving for every candidate.
+#[derive(Debug, Clone)]
+pub struct EffectiveCompletionConfig {
+    /// `Some(list)` -> only sources whose id appears in the list
+    /// contribute. `None` -> every enabled source contributes
+    /// (the "no per-language override" case).
+    pub sources: Option<Vec<lattice_completion::SourceId>>,
+    pub auto_trigger: bool,
+    pub auto_insert_single: bool,
+    /// Tree-sitter scopes where the popup should not fire.
+    /// Plumbed today; enforcement awaits the scope-detect slice.
+    pub suppress_in: Vec<String>,
+}
+
+impl EffectiveCompletionConfig {
+    /// True if `source` contributes for this language. `None`
+    /// effective `sources` means "every source contributes."
+    pub fn source_enabled(&self, source: &lattice_completion::SourceId) -> bool {
+        match &self.sources {
+            Some(list) => list.contains(source),
+            None => true,
+        }
+    }
+}
+
+/// Parse a `[completion.per-language.<lang>]` TOML sub-table
+/// into [`PerLanguageOverrides`]. Unknown keys + wrong-typed
+/// values append warnings to `warnings` (caller surfaces them
+/// in one echo); recognised keys with valid values populate the
+/// struct.
+fn parse_per_language_overrides_table(
+    section_path: &str,
+    table: &toml::Table,
+    warnings: &mut Vec<String>,
+) -> lattice_completion::PerLanguageOverrides {
+    let mut out = lattice_completion::PerLanguageOverrides::default();
+    for (key, value) in table {
+        match key.as_str() {
+            "sources" => match value.as_array() {
+                Some(arr) => {
+                    let sources: Vec<lattice_completion::SourceId> = arr
+                        .iter()
+                        .filter_map(|v| {
+                            v.as_str().map(lattice_completion::canonical_source_id)
+                        })
+                        .collect();
+                    out.sources = Some(sources);
+                }
+                None => warnings.push(format!(
+                    "{section_path}.sources: expected array of strings",
+                )),
+            },
+            "auto_trigger" => match value.as_bool() {
+                Some(b) => out.auto_trigger = Some(b),
+                None => warnings.push(format!(
+                    "{section_path}.auto_trigger: expected bool",
+                )),
+            },
+            "auto_insert_single" => match value.as_bool() {
+                Some(b) => out.auto_insert_single = Some(b),
+                None => warnings.push(format!(
+                    "{section_path}.auto_insert_single: expected bool",
+                )),
+            },
+            "suppress_in" => match value.as_array() {
+                Some(arr) => {
+                    out.suppress_in = Some(
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect(),
+                    );
+                }
+                None => warnings.push(format!(
+                    "{section_path}.suppress_in: expected array of strings",
+                )),
+            },
+            other => warnings.push(format!(
+                "{section_path}.{other}: unknown per-language key (recognised: \
+                 sources, auto_trigger, auto_insert_single, suppress_in)",
+            )),
+        }
+    }
+    out
 }
 
 /// Drain payload for `completionItem/resolve` (Phase
@@ -2248,6 +2349,7 @@ impl App {
             insert_completion_snippet_meta: Vec::new(),
             completion_accept_freq: std::collections::HashMap::new(),
             pending_config_structural_sections: std::collections::BTreeMap::new(),
+            per_language_completion: lattice_completion::per_language_defaults(),
             active_snippet: None,
             snippet_dirs: Vec::new(),
             picker: None,
@@ -6327,18 +6429,37 @@ impl App {
             trigger,
             case_sensitive: false,
         };
+        // Resolve the active language's effective config once;
+        // both sync sources (buffer-words, snippet) gate emit on
+        // it. The global default (no override) returns
+        // `sources = None` -> every source contributes.
+        let language = self.active_language_id();
+        let effective = self.effective_completion_for(&language);
         let mut raw: Vec<lattice_completion::RawCandidate> = Vec::new();
         // Source 1: buffer-words.
-        let buffer_words = lattice_completion::BufferWordsSource::new();
-        raw.extend(lattice_completion::InsertSource::produce(&buffer_words, &ctx));
+        let buffer_words_id = lattice_completion::SourceId::new(
+            lattice_completion::BufferWordsSource::ID,
+        );
+        if effective.source_enabled(&buffer_words_id) {
+            let buffer_words = lattice_completion::BufferWordsSource::new();
+            raw.extend(lattice_completion::InsertSource::produce(&buffer_words, &ctx));
+        }
         // Source 2: snippets (Phase 4.2.g.4). Resolve the
         // active language so per-language snippets surface
         // ahead of any-language `*` packs. Snippet meta lives
         // in a sidecar; the candidate's Extension payload
         // points at the meta-vec index.
-        let language = self.active_language_id();
         self.insert_completion_snippet_meta.clear();
-        for snip in self.snippet_registry.matching_prefix(&language, &state.query) {
+        let snippet_id = lattice_completion::SourceId::new(
+            lattice_completion::SNIPPET_SOURCE_ID,
+        );
+        let snippet_matches: Vec<&lattice_snippet::Snippet> =
+            if effective.source_enabled(&snippet_id) {
+                self.snippet_registry.matching_prefix(&language, &state.query)
+            } else {
+                Vec::new()
+            };
+        for snip in snippet_matches {
             let idx = self.insert_completion_snippet_meta.len() as u32;
             let prefix = snip
                 .prefixes
@@ -7301,6 +7422,20 @@ impl App {
         const MAX_LSP_ITEMS: usize = 500;
         if let Some(token) = self.pending_insert_completion_lsp_token.take() {
             token.cancel();
+        }
+        // Per-language sources filter (Phase 4.2.g.5 (3b/3)):
+        // a language whose effective `sources` list excludes
+        // `gen:lsp-completion` short-circuits the request entirely.
+        // Markdown / text default to the prose set (snippet +
+        // buffer-words) so this is the path that drops LSP for
+        // those languages by default.
+        let language = self.active_language_id();
+        let effective = self.effective_completion_for(&language);
+        let lsp_id = lattice_completion::SourceId::new(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID,
+        );
+        if !effective.source_enabled(&lsp_id) {
+            return;
         }
         let Some(uri) = self
             .buffer_uris
@@ -8507,6 +8642,70 @@ impl App {
             )
         };
         self.set_message(echo_level, body);
+    }
+
+    /// Drain every `completion.per-language.<lang>` structural
+    /// section the loader bucketed and merge each into
+    /// `self.per_language_completion`. Per-key TOML wins over
+    /// the spec defaults seeded at `App::new`; unset keys leave
+    /// the default in place.
+    ///
+    /// Called by the runtime startup right after
+    /// `load_persistent_config` finishes. Idempotent (the bucket
+    /// empties as we drain). Per-key parse warnings collapse
+    /// into a single echo at `Warn` level the same way the
+    /// loader's other diagnostics do.
+    pub fn apply_per_language_toml_overrides(&mut self) {
+        let paths = self.pending_structural_section_paths("completion.per-language");
+        let mut warnings: Vec<String> = Vec::new();
+        for path in paths {
+            let lang = match path.strip_prefix("completion.per-language.") {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => continue,
+            };
+            let Some(table) = self.take_pending_structural_section(&path) else {
+                continue;
+            };
+            let parsed = parse_per_language_overrides_table(&path, &table, &mut warnings);
+            self.per_language_completion
+                .entry(lang)
+                .or_default()
+                .merge(parsed);
+        }
+        if !warnings.is_empty() {
+            let count = warnings.len();
+            let body = if count == 1 {
+                format!("config: {}", warnings[0])
+            } else {
+                format!("config: {count} per-language warnings (first: {})", warnings[0])
+            };
+            self.set_message(EchoLevel::Warn, body);
+        }
+    }
+
+    /// Effective completion config for `language` -- per-language
+    /// override lays over the global typed option which lays
+    /// over the spec fallback. Used at every producer-side
+    /// enforcement seam (sync source filter, LSP fan-out, the
+    /// `auto_insert_single` check at popup-open).
+    pub fn effective_completion_for(
+        &self,
+        language: &str,
+    ) -> EffectiveCompletionConfig {
+        let overrides = self.per_language_completion.get(language);
+        EffectiveCompletionConfig {
+            sources: overrides.and_then(|o| o.sources.clone()),
+            // No global `completion.auto_trigger` typed option
+            // yet (auto-trigger firing itself lands in a future
+            // slice); fall back to false per spec.
+            auto_trigger: overrides.and_then(|o| o.auto_trigger).unwrap_or(false),
+            auto_insert_single: overrides
+                .and_then(|o| o.auto_insert_single)
+                .unwrap_or_else(|| self.completion_auto_insert_single()),
+            suppress_in: overrides
+                .and_then(|o| o.suppress_in.clone())
+                .unwrap_or_default(),
+        }
     }
 
     /// Drain the structural section at `prefix` (an entry
@@ -24001,6 +24200,150 @@ mod tests {
             "got `{}`",
             msg.text,
         );
+    }
+
+    #[test]
+    fn effective_completion_for_markdown_default_excludes_lsp() {
+        // Spec default: markdown drops LSP for prose. The
+        // App's seeded map should reflect this without any
+        // TOML being loaded.
+        let a = app_with("", 5);
+        let eff = a.effective_completion_for("markdown");
+        let lsp_id = lattice_completion::SourceId::new(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID,
+        );
+        assert!(!eff.source_enabled(&lsp_id), "markdown default drops LSP");
+        let snippet_id = lattice_completion::SourceId::new(
+            lattice_completion::SNIPPET_SOURCE_ID,
+        );
+        assert!(eff.source_enabled(&snippet_id), "markdown keeps snippet");
+        assert_eq!(eff.auto_trigger, false);
+    }
+
+    #[test]
+    fn effective_completion_for_language_with_no_override_allows_all_sources() {
+        // A language without any per-language entry returns
+        // `sources = None` -> every source contributes
+        // (`source_enabled` is unconditionally true).
+        let a = app_with("", 5);
+        let eff = a.effective_completion_for("zigzig-not-a-language");
+        let any_id = lattice_completion::SourceId::new("plugin:custom");
+        assert!(eff.source_enabled(&any_id));
+        assert!(eff.sources.is_none());
+    }
+
+    #[test]
+    fn apply_per_language_toml_overrides_merges_with_spec_defaults() {
+        // User flips markdown's `auto_trigger = true`; the
+        // spec default `sources` (no LSP) should still apply.
+        let ws = fresh_workspace("merge-with-defaults");
+        write_workspace_config(
+            &ws,
+            "[completion.per-language.markdown]\n\
+             auto_trigger = true\n",
+        );
+        let mut a = app_with("", 5);
+        a.load_persistent_config(Some(&ws));
+        a.apply_per_language_toml_overrides();
+        let eff = a.effective_completion_for("markdown");
+        assert_eq!(eff.auto_trigger, true, "TOML wins for auto_trigger");
+        let lsp_id = lattice_completion::SourceId::new(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID,
+        );
+        assert!(
+            !eff.source_enabled(&lsp_id),
+            "default `sources` (no LSP) preserved when TOML didn't set it",
+        );
+    }
+
+    #[test]
+    fn apply_per_language_toml_overrides_seeds_new_language() {
+        // `python` isn't in the spec defaults; a TOML entry
+        // creates the slot.
+        let ws = fresh_workspace("new-language");
+        write_workspace_config(
+            &ws,
+            "[completion.per-language.python]\n\
+             sources = [\"lsp\"]\n\
+             auto_insert_single = true\n",
+        );
+        let mut a = app_with("", 5);
+        a.load_persistent_config(Some(&ws));
+        a.apply_per_language_toml_overrides();
+        let eff = a.effective_completion_for("python");
+        let lsp_id = lattice_completion::SourceId::new(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID,
+        );
+        assert!(eff.source_enabled(&lsp_id));
+        let buffer_words_id = lattice_completion::SourceId::new(
+            lattice_completion::BufferWordsSource::ID,
+        );
+        assert!(
+            !eff.source_enabled(&buffer_words_id),
+            "`sources = [\"lsp\"]` excludes buffer-words",
+        );
+        assert_eq!(eff.auto_insert_single, true);
+    }
+
+    #[test]
+    fn apply_per_language_toml_overrides_warns_on_unknown_key() {
+        let ws = fresh_workspace("unknown-perlang-key");
+        write_workspace_config(
+            &ws,
+            "[completion.per-language.markdown]\n\
+             bogus_field = 5\n",
+        );
+        let mut a = app_with("", 5);
+        a.load_persistent_config(Some(&ws));
+        // Loader echo handles structural sections silently
+        // until `apply_per_language_toml_overrides` runs.
+        let pre = a.last_message.clone();
+        a.apply_per_language_toml_overrides();
+        let msg = a.last_message.as_ref().expect("warning echoed");
+        assert_ne!(Some(msg.clone()), pre, "new echo posted");
+        assert_eq!(msg.level, EchoLevel::Warn);
+        assert!(msg.text.contains("bogus_field"), "got `{}`", msg.text);
+    }
+
+    #[test]
+    fn populate_insert_completion_sync_drops_disabled_source() {
+        // Inject a per-language override that limits rust to
+        // snippets only -> buffer-words emit is suppressed even
+        // though the buffer is full of word-completion fodder.
+        let mut a = app_with("foo bar baz qux quux ", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 21);
+        // Pretend the active language is rust by overriding
+        // the `rust` slot. (Test buffer has no path so
+        // active_language_id() returns ""; insert that as the
+        // key directly to land the override.)
+        a.per_language_completion.insert(
+            String::new(),
+            lattice_completion::PerLanguageOverrides {
+                sources: Some(vec![lattice_completion::SourceId::new(
+                    lattice_completion::SNIPPET_SOURCE_ID,
+                )]),
+                ..Default::default()
+            },
+        );
+        a.do_completion_trigger();
+        // Popup either closed (no candidates) or has only
+        // snippet items. Buffer-words mustn't appear.
+        if let Some(state) = a.insert_completion.as_ref() {
+            for cand in &state.rendered {
+                let src = cand
+                    .raw
+                    .source
+                    .as_ref()
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                assert_ne!(
+                    src,
+                    lattice_completion::BufferWordsSource::ID,
+                    "buffer-words filtered out",
+                );
+            }
+        }
     }
 
     #[test]

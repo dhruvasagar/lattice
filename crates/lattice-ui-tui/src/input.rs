@@ -633,6 +633,16 @@ fn resolve_after_g(event: KeyEvent, builtins: &Builtins) -> Action {
         // (uri, range). Single result jumps in-place; multiple
         // results open a `*lsp:definitions*` picker.
         KeyCode::Char('d') => Action::LspDefinitionRequest,
+        // `gD`: textDocument/declaration (forward declaration /
+        // header pointer in C-family, `extern` in Rust).
+        KeyCode::Char('D') => Action::LspDeclarationRequest,
+        // `gy`: textDocument/typeDefinition (the type of the
+        // expression under the cursor).
+        KeyCode::Char('y') => Action::LspTypeDefinitionRequest,
+        // `gI` (capital): textDocument/implementation. Lowercase
+        // `gi` belongs to vim's "go to last insert position" --
+        // not yet wired.
+        KeyCode::Char('I') => Action::LspImplementationRequest,
         _ => Action::SetPending(Pending::None),
     }
 }
@@ -2324,6 +2334,56 @@ mod tests {
                 key(KeyCode::Char(','))
             ),
             Action::WalkMarkHistoryForward
+        ));
+    }
+
+    // ---- LSP navigation (gd / gD / gy / gI) ----
+
+    #[test]
+    fn gd_after_g_emits_lsp_definition_request() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterG, &b),
+                key(KeyCode::Char('d'))
+            ),
+            Action::LspDefinitionRequest
+        ));
+    }
+
+    #[test]
+    fn capital_g_d_after_g_emits_lsp_declaration_request() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterG, &b),
+                key(KeyCode::Char('D'))
+            ),
+            Action::LspDeclarationRequest
+        ));
+    }
+
+    #[test]
+    fn gy_after_g_emits_lsp_type_definition_request() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterG, &b),
+                key(KeyCode::Char('y'))
+            ),
+            Action::LspTypeDefinitionRequest
+        ));
+    }
+
+    #[test]
+    fn capital_g_i_after_g_emits_lsp_implementation_request() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterG, &b),
+                key(KeyCode::Char('I'))
+            ),
+            Action::LspImplementationRequest
         ));
     }
 

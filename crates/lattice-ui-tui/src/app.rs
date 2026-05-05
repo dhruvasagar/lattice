@@ -424,6 +424,22 @@ pub enum Action {
     /// so `<C-o>` walks back. Cancellation token rides on
     /// motion / mode change.
     LspDefinitionRequest,
+    /// `gD` (Phase 4.2.c follow-up). Same dispatch shape as
+    /// [`Self::LspDefinitionRequest`] but routes
+    /// `textDocument/declaration`. Useful for languages where
+    /// declaration ≠ definition (header / forward declaration in
+    /// C-family, `extern` in Rust, etc.).
+    LspDeclarationRequest,
+    /// `gy` (Phase 4.2.c follow-up). `textDocument/typeDefinition`
+    /// -- "where is the *type* of this expression defined?".
+    /// Steps from a value's call-site to its struct / class /
+    /// interface declaration.
+    LspTypeDefinitionRequest,
+    /// `gI` (Phase 4.2.c follow-up). `textDocument/implementation`
+    /// -- "where are the implementations of this trait /
+    /// interface?". Often returns multiple locations; shares
+    /// definition's pick-or-list dispatch.
+    LspImplementationRequest,
     /// `"<reg>` prefix -- stash the named register for the next operator
     /// / paste invocation.
     SelectRegister(Register),
@@ -767,6 +783,18 @@ pub struct App {
     /// request. Flipped on a follow-up `gd` so a slow server's
     /// stale response can't drop a popup over a moved cursor.
     pub pending_definition_token: Option<lattice_protocol::CancellationToken>,
+    /// Which navigation flavour the in-flight request is for. Used
+    /// by [`Self::drain_pending_definitions`] to pick the right
+    /// "no X found" echo and the pre-jump history-source tag.
+    /// `None` when no nav request is in flight; matches the
+    /// nullness of `pending_definition_token`.
+    ///
+    /// All four nav requests (definition / declaration /
+    /// typeDefinition / implementation) share the same
+    /// `pending_definition_*` slot because there's never a
+    /// reason to have more than one in flight at once -- a
+    /// follow-up nav cancels its predecessor.
+    pub pending_nav_kind: Option<LspNavKind>,
     /// Receiver end of the App's own subscription to
     /// `EventKind::OptionChanged` (DESIGN.md §5.10 + §5.12). The
     /// typed-options registry publishes through `event_bus` on
@@ -1174,6 +1202,43 @@ pub enum HoverOutcome {
     NoServers,
 }
 
+/// Which navigation request flavour produced an in-flight nav
+/// response (Phase 4.2.c). All four share the same dispatch
+/// shape (per-server `Vec<Location>` merge + dedup + jump-or-
+/// list) -- the kind only changes the LSP method called and
+/// the user-facing "no X found" echo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspNavKind {
+    Definition,
+    Declaration,
+    TypeDefinition,
+    Implementation,
+}
+
+impl LspNavKind {
+    /// Verb used in echoes ("no definitions found",
+    /// "3 implementations; jumping to first", etc.).
+    pub fn noun_plural(self) -> &'static str {
+        match self {
+            Self::Definition => "definitions",
+            Self::Declaration => "declarations",
+            Self::TypeDefinition => "type definitions",
+            Self::Implementation => "implementations",
+        }
+    }
+
+    /// Single-word noun used in error contexts ("definition target
+    /// uri is not a file", etc.).
+    pub fn noun_singular(self) -> &'static str {
+        match self {
+            Self::Definition => "definition",
+            Self::Declaration => "declaration",
+            Self::TypeDefinition => "type definition",
+            Self::Implementation => "implementation",
+        }
+    }
+}
+
 /// Hot-path read cache for the typed-options registry's core
 /// options (DESIGN.md §5.12). The renderer reads these once per
 /// visible line in the gutter / wrap / tabstop logic; going
@@ -1562,6 +1627,7 @@ impl App {
             pending_hover_token: None,
             pending_definition_rx: None,
             pending_definition_token: None,
+            pending_nav_kind: None,
             lang_registry,
             builtins,
             command_line: String::new(),
@@ -2673,7 +2739,14 @@ impl App {
                 self.drain_option_changes();
             }
             Action::LspHoverRequest => self.do_lsp_hover_request(),
-            Action::LspDefinitionRequest => self.do_lsp_definition_request(),
+            Action::LspDefinitionRequest => self.do_lsp_nav_request(LspNavKind::Definition),
+            Action::LspDeclarationRequest => self.do_lsp_nav_request(LspNavKind::Declaration),
+            Action::LspTypeDefinitionRequest => {
+                self.do_lsp_nav_request(LspNavKind::TypeDefinition)
+            }
+            Action::LspImplementationRequest => {
+                self.do_lsp_nav_request(LspNavKind::Implementation)
+            }
             Action::SelectRegister(reg) => {
                 self.pending_register = Some(reg);
             }
@@ -5307,7 +5380,16 @@ impl App {
     /// `gd` (Phase 4.2.c). Send `textDocument/definition` to every
     /// LSP server attached to the active document. Same async
     /// shape as [`Self::do_lsp_hover_request`]: spawn on the LSP
-    /// runtime, route the merged + deduped location list back via
+    /// Generic dispatch for the four navigation flavours
+    /// (definition / declaration / typeDefinition / implementation
+    /// -- DESIGN.md §5.4 / docs/lsp-features.md). All share the
+    /// same `Vec<Location>` shape, so dispatch is parameterised
+    /// by [`LspNavKind`]; the kind selects the LSP method and
+    /// drives the user-facing echo from
+    /// [`Self::drain_pending_definitions`].
+    ///
+    /// Spawn the per-server walk on the LSP runtime, route the
+    /// merged + deduped location list back via
     /// [`Self::pending_definition_rx`], drain on next frame.
     ///
     /// **Multi-server merge**: every server's response is
@@ -5317,7 +5399,7 @@ impl App {
     /// jumps; multiple results today echo a count and jump to the
     /// first (the picker buffer lands with 4.2.d's references
     /// view -- same shape, no point building it twice).
-    fn do_lsp_definition_request(&mut self) {
+    fn do_lsp_nav_request(&mut self, kind: LspNavKind) {
         if let Some(token) = self.pending_definition_token.take() {
             token.cancel();
         }
@@ -5338,7 +5420,7 @@ impl App {
             None => {
                 self.set_message(
                     EchoLevel::Error,
-                    "definition: cursor out of buffer".to_string(),
+                    format!("{}: cursor out of buffer", kind.noun_singular()),
                 );
                 return;
             }
@@ -5348,6 +5430,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_definition_rx = Some(rx);
         self.pending_definition_token = Some(token.clone());
+        self.pending_nav_kind = Some(kind);
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> =
@@ -5357,17 +5440,69 @@ impl App {
                 if token.is_cancelled() {
                     return;
                 }
-                let params = lsp_types::GotoDefinitionParams {
-                    text_document_position_params: lsp_types::TextDocumentPositionParams {
-                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
-                        position: lsp_position,
-                    },
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
+                let pos_params = lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    position: lsp_position,
                 };
-                if let Ok(Some(resp)) = handle.goto_definition(params, token.clone()).await {
-                    all.extend(definition_response_to_locations(resp));
-                }
+                let resp_locs = match kind {
+                    LspNavKind::Definition => {
+                        let params = lsp_types::GotoDefinitionParams {
+                            text_document_position_params: pos_params,
+                            work_done_progress_params: Default::default(),
+                            partial_result_params: Default::default(),
+                        };
+                        handle
+                            .goto_definition(params, token.clone())
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(definition_response_to_locations)
+                            .unwrap_or_default()
+                    }
+                    LspNavKind::Declaration => {
+                        let params = lsp_types::request::GotoDeclarationParams {
+                            text_document_position_params: pos_params,
+                            work_done_progress_params: Default::default(),
+                            partial_result_params: Default::default(),
+                        };
+                        handle
+                            .goto_declaration(params, token.clone())
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(definition_response_to_locations)
+                            .unwrap_or_default()
+                    }
+                    LspNavKind::TypeDefinition => {
+                        let params = lsp_types::request::GotoTypeDefinitionParams {
+                            text_document_position_params: pos_params,
+                            work_done_progress_params: Default::default(),
+                            partial_result_params: Default::default(),
+                        };
+                        handle
+                            .goto_type_definition(params, token.clone())
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(definition_response_to_locations)
+                            .unwrap_or_default()
+                    }
+                    LspNavKind::Implementation => {
+                        let params = lsp_types::request::GotoImplementationParams {
+                            text_document_position_params: pos_params,
+                            work_done_progress_params: Default::default(),
+                            partial_result_params: Default::default(),
+                        };
+                        handle
+                            .goto_implementation(params, token.clone())
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(definition_response_to_locations)
+                            .unwrap_or_default()
+                    }
+                };
+                all.extend(resp_locs);
             }
             // Dedup by (uri, range.start). Some servers emit the
             // same location for overloaded methods; the picker
@@ -5386,11 +5521,22 @@ impl App {
         });
     }
 
-    /// Drain queued goto-definition results and act on them:
-    /// 0 → echo, 1 → jump, N>1 → echo count + jump to first
-    /// (picker is 4.2.d's job; we share its buffer surface
-    /// rather than build two of them). Pushes the pre-jump
-    /// cursor onto the position history so `<C-o>` walks back.
+    /// Backwards-compat wrapper. Tests + plugin contributions may
+    /// reach for the named `do_lsp_definition_request`; this
+    /// keeps the public surface intact while the unified
+    /// [`Self::do_lsp_nav_request`] handles the actual work.
+    pub fn do_lsp_definition_request(&mut self) {
+        self.do_lsp_nav_request(LspNavKind::Definition)
+    }
+
+    /// Drain queued nav (definition / declaration / typeDef /
+    /// impl) results and act on them: 0 → echo, 1 → jump, N>1 →
+    /// echo count + jump to first (picker is 4.2.d's job; we
+    /// share its buffer surface rather than build two of them).
+    /// Pushes the pre-jump cursor onto the position history so
+    /// `<C-o>` walks back. The verb in echoes (`definitions` vs.
+    /// `implementations` etc.) reads from
+    /// [`Self::pending_nav_kind`].
     pub fn drain_pending_definitions(&mut self) {
         let Some(mut rx) = self.pending_definition_rx.take() else {
             return;
@@ -5406,10 +5552,12 @@ impl App {
         };
         // Result delivered; clear the in-flight token.
         self.pending_definition_token = None;
+        let kind = self.pending_nav_kind.take().unwrap_or(LspNavKind::Definition);
+        let noun = kind.noun_plural();
 
         match locs.len() {
             0 => {
-                self.set_message(EchoLevel::Info, "no definitions found".to_string());
+                self.set_message(EchoLevel::Info, format!("no {noun} found"));
             }
             1 => {
                 self.jump_to_lsp_location(&locs[0]);
@@ -5417,7 +5565,7 @@ impl App {
             n => {
                 self.set_message(
                     EchoLevel::Info,
-                    format!("{n} definitions; jumping to first (picker comes in 4.2.d)"),
+                    format!("{n} {noun}; jumping to first (picker comes in 4.2.d)"),
                 );
                 self.jump_to_lsp_location(&locs[0]);
             }
@@ -15538,6 +15686,88 @@ mod tests {
         let msg = a.last_message.as_ref().expect("echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn lsp_declaration_request_routes_through_unified_nav_dispatch() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::LspDeclarationRequest);
+        // No URI mapped, same "no LSP server" guard fires.
+        let msg = a.last_message.as_ref().expect("echo");
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn lsp_type_definition_request_routes_through_unified_nav_dispatch() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::LspTypeDefinitionRequest);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn lsp_implementation_request_routes_through_unified_nav_dispatch() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::LspImplementationRequest);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn drain_pending_no_implementations_echoes_kind_specific_message() {
+        // Verify the kind drives the verb in the "no X found" echo.
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        a.pending_definition_rx = Some(rx);
+        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.pending_nav_kind = Some(super::LspNavKind::Implementation);
+        tx.send(Vec::new()).unwrap();
+        a.drain_pending_definitions();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(
+            msg.text.contains("no implementations"),
+            "expected implementations echo, got: {}",
+            msg.text
+        );
+        assert!(a.pending_nav_kind.is_none());
+    }
+
+    #[test]
+    fn drain_pending_no_type_definitions_echoes_kind_specific_message() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        a.pending_definition_rx = Some(rx);
+        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.pending_nav_kind = Some(super::LspNavKind::TypeDefinition);
+        tx.send(Vec::new()).unwrap();
+        a.drain_pending_definitions();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no type definitions"));
+    }
+
+    #[test]
+    fn drain_pending_no_declarations_echoes_kind_specific_message() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        a.pending_definition_rx = Some(rx);
+        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.pending_nav_kind = Some(super::LspNavKind::Declaration);
+        tx.send(Vec::new()).unwrap();
+        a.drain_pending_definitions();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no declarations"));
+    }
+
+    #[test]
+    fn lsp_nav_request_pre_cancels_prior_token_regardless_of_kind() {
+        // A new nav request of any kind must cancel a still-in-flight
+        // request of any other kind -- they all share one slot.
+        let mut a = app_with("xx", 10);
+        let stale = lattice_protocol::CancellationToken::new();
+        a.pending_definition_token = Some(stale.clone());
+        a.apply(Action::LspImplementationRequest);
+        assert!(stale.is_cancelled());
     }
 
     #[test]

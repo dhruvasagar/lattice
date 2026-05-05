@@ -28,6 +28,10 @@ use lsp_types::{
     CompletionParams, CompletionResponse, DocumentSymbolParams, DocumentSymbolResponse,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, Location, ReferenceParams,
     SymbolInformation, WorkspaceSymbolParams,
+    request::{
+        GotoDeclarationParams, GotoDeclarationResponse, GotoImplementationParams,
+        GotoImplementationResponse, GotoTypeDefinitionParams, GotoTypeDefinitionResponse,
+    },
 };
 
 use crate::actor::ServerHandle;
@@ -60,6 +64,43 @@ impl ServerHandle {
         token: CancellationToken,
     ) -> Pending<Option<GotoDefinitionResponse>> {
         self.request_with_cancel("textDocument/definition", params, token)
+    }
+
+    /// `textDocument/declaration` (DESIGN.md §5.4 /
+    /// docs/lsp-features.md). `gD` family. Same response shape as
+    /// `goto_definition`; servers usually point at the *forward
+    /// declaration* (header file in C / extern statement in Rust)
+    /// rather than the implementation. Multi-server merge dedups
+    /// by (uri, range.start) like definition.
+    pub fn goto_declaration(
+        &self,
+        params: GotoDeclarationParams,
+        token: CancellationToken,
+    ) -> Pending<Option<GotoDeclarationResponse>> {
+        self.request_with_cancel("textDocument/declaration", params, token)
+    }
+
+    /// `textDocument/typeDefinition` (DESIGN.md §5.4). `gy` family.
+    /// "Where is the *type* of this expression defined?" Useful
+    /// for stepping from a value to its struct / class / interface.
+    pub fn goto_type_definition(
+        &self,
+        params: GotoTypeDefinitionParams,
+        token: CancellationToken,
+    ) -> Pending<Option<GotoTypeDefinitionResponse>> {
+        self.request_with_cancel("textDocument/typeDefinition", params, token)
+    }
+
+    /// `textDocument/implementation` (DESIGN.md §5.4). `gI` family.
+    /// "Where are the implementations of this trait / interface?"
+    /// Often returns multiple locations (one per impl); we share
+    /// definition's pick-or-list dispatch.
+    pub fn goto_implementation(
+        &self,
+        params: GotoImplementationParams,
+        token: CancellationToken,
+    ) -> Pending<Option<GotoImplementationResponse>> {
+        self.request_with_cancel("textDocument/implementation", params, token)
     }
 
     /// `textDocument/references` (DESIGN.md §5.4). Returns every
@@ -159,6 +200,30 @@ mod tests {
         ));
         drop::<Pending<Option<GotoDefinitionResponse>>>(handle.goto_definition(
             GotoDefinitionParams {
+                text_document_position_params: pos.clone(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            token.clone(),
+        ));
+        drop::<Pending<Option<GotoDeclarationResponse>>>(handle.goto_declaration(
+            GotoDeclarationParams {
+                text_document_position_params: pos.clone(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            token.clone(),
+        ));
+        drop::<Pending<Option<GotoTypeDefinitionResponse>>>(handle.goto_type_definition(
+            GotoTypeDefinitionParams {
+                text_document_position_params: pos.clone(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            token.clone(),
+        ));
+        drop::<Pending<Option<GotoImplementationResponse>>>(handle.goto_implementation(
+            GotoImplementationParams {
                 text_document_position_params: pos.clone(),
                 work_done_progress_params: Default::default(),
                 partial_result_params: Default::default(),

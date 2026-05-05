@@ -42,12 +42,29 @@ follow-on.
    `[kind glyph] [label]   [detail]   [src]` per row;
    selecting a row optionally opens a side popup with the
    full documentation.
-5. **Vim-grammar compatible.** Existing `<C-x>`-prefixed
-   chords + `<C-n>` / `<C-p>` semantics work; the popup
-   doesn't fight Insert-mode bindings the user already has.
-6. **Snippet engine.** First-class. Tab-stop placeholder
-   navigation, choice placeholders, transformations, and
-   server-supplied snippets all expand the same way.
+5. **Vim-grammar compatible, command-first.** Bindings lean
+   vim — `<C-x>`-prefixed family, `<C-n>` / `<C-p>` for
+   next / prev, `<C-y>` to accept, `<C-e>` to dismiss. Every
+   action is also a registered command in `CommandRegistry`,
+   reachable from `:` and from the API. Bindings are the
+   convenience layer over the canonical command surface
+   (DESIGN.md §5.2.1).
+6. **Snippet engine that ships with the snippet ecosystem.**
+   TextMate-format JSON, drop-in compatible with VS Code's
+   snippet repositories (and thus with the
+   `friendly-snippets` corpus most editors already pull
+   from). Snippets are one source in the unified popup, with
+   a dedicated chord (`<C-x><C-s>`) for snippet-only
+   expansion when the user wants to skip the popup.
+7. **Manual trigger by default.** Auto-trigger is opt-in via
+   configuration. The default user model is "I press a key
+   to ask for completion," matching vim's `<C-x><C-o>` /
+   `<C-n>` heritage and avoiding noisy popups during prose
+   typing. The minute-one experience is predictable.
+8. **Comprehensive help.** Every option, every source, every
+   binding ships with a `:help completion-*` topic at the
+   same time the feature lands. The help is part of the
+   feature, not a follow-up.
 
 Non-goals (deferred to follow-up):
 
@@ -65,17 +82,18 @@ from this matrix.
 
 | Editor | Trigger | Sources | Matcher | Docs popup | Snippets | Notes |
 |---|---|---|---|---|---|---|
-| VS Code | trigger chars + alpha + `<C-Space>` | LSP + snippets + word + plugin | fuzzy (FZF) | side panel, lazy-resolve | textmate, full | "suggestion mode" toggle (insert vs replace), commit chars |
-| Neovim (`blink.cmp` / `nvim-cmp`) | per-source debounce | LSP + snippets + buffer + path + tree-sitter + LSP-snippet + AI | per-source matcher | side popup, configurable | LuaSnip / vsnip | per-source priority + `min_keyword_length`, ghost text |
-| Helix | trigger chars + alpha | LSP + snippets + word + path | fuzzy (FZF) | side popup | textmate | async pipeline; preselect honoured |
+| VS Code | trigger chars + alpha + `<C-Space>` | LSP + snippets + word + plugin | fuzzy (FZF) | side panel, lazy-resolve | TextMate, full | "suggestion mode" toggle (insert vs replace), commit chars |
+| Neovim (`blink.cmp` / `nvim-cmp`) | per-source debounce | LSP + snippets + buffer + path + tree-sitter + LSP-snippet + AI | per-source matcher | side popup, configurable | LuaSnip / vsnip (TextMate) | per-source priority + `min_keyword_length`, ghost text |
+| Helix | trigger chars + alpha | LSP + snippets + word + path | fuzzy (FZF) | side popup | TextMate | async pipeline; preselect honoured |
 | JetBrains | trigger + `<C-Space>` (basic) / `<C-S-Space>` (smart) | LSP + LiveTemplates + word + DB-aware | substring + camelCase | popup right (`<C-Q>`) | LiveTemplates | statistics-based ranking, postfix templates, type-aware filter |
-| Sublime | alpha auto | snippets + word | fuzzy | n/a | textmate | one of the original "fast feel" benchmarks |
+| Sublime | alpha auto | snippets + word | fuzzy | n/a | TextMate | one of the original "fast feel" benchmarks |
 | Emacs (`corfu` + `cape`) | trigger + alpha | per-major-mode generators | orderless (multi-substring) | side popup or echo area | yasnippet | great composability — every mode plugs its own generators |
 
-Common patterns lattice should ship:
+Common patterns lattice ships:
 
-- **Trigger chars + alpha + manual.** All three; users get
-  what they expect from any of the three "fingers."
+- **Manual trigger first; auto-trigger as opt-in.** vim's
+  default heritage; users who want VS Code-style live
+  popups flip a config knob.
 - **Per-source priority and matchers.** Sources don't all
   need the same matcher (snippets benefit from prefix +
   abbreviation; LSP is fine with fuzzy).
@@ -193,10 +211,11 @@ pub enum CompletionTrigger {
 	/// User typed a server-advertised character. `char` is
 	/// the trigger; `request_kind` rides on the LSP request.
 	TriggerChar(char),
-	/// User typed an identifier character past the threshold
-	/// (default: 2 chars).
+	/// Auto-trigger: identifier-character threshold reached
+	/// (default off; opt-in via `completion.auto_trigger`).
 	IdentifierThreshold,
-	/// `<C-Space>` / `<C-x><C-o>` -- explicit user request.
+	/// Manual: user pressed `<C-x><C-o>` / `<C-Space>` /
+	/// `<Tab>` (smart-tab) / called `cmd:completion-trigger`.
 	Manual,
 	/// Server returned `isIncomplete: true` and the user kept
 	/// typing.
@@ -274,7 +293,7 @@ async overhead.
 | Source | Trait | Priority | Auto-trigger | Notes |
 |---|---|---|---|---|
 | `gen:lsp-completion` | async | 200 | yes | Per-server fan-out; merges + dedups (label, kind). Cancel on each keystroke; `isIncomplete` refresh. |
-| `gen:snippet` | sync (bridged) | 150 | yes | Reads from `lattice-snippet` registry; matches on prefix + abbreviation. |
+| `gen:snippet` | sync (bridged) | 150 | yes | Reads from `lattice-snippet` registry; matches on prefix + abbreviation. Snippets are one source in the unified popup. |
 | `gen:buffer-words` | sync (bridged) | 100 | yes | Walks visible buffers' rope text; words >= 3 chars; deduped. |
 | `gen:path` | sync (bridged) | 90 | trigger-char `'/'` in string contexts | Filesystem walk capped at 200 entries. |
 | `gen:tree-sitter-symbol` | sync (bridged) | 80 | yes | Local symbols from the buffer's syntax tree (functions, vars in scope). |
@@ -339,13 +358,89 @@ Coalescing the run on a tick (rather than per-receive) keeps
 the renderer from thrashing during a flurry of source pushes
 (e.g. tree-sitter walk emitting 100 symbols at once).
 
+### 3.8 Completion-popup minor mode
+
+While the popup is open, lattice activates a transient
+**completion-popup minor mode**: a thin keymap layer above the
+existing Insert-mode bindings. Bindings inside this layer
+take effect *only* when `App.insert_completion.is_some()`.
+Closing the popup deactivates the layer; the original Insert
+bindings (and Normal-mode bindings post-`<Esc>`) restore
+unchanged.
+
+This is the architectural answer to "what happens when
+`<C-d>` means two things?" (popup-docs-toggle vs Normal-mode
+half-page-down vs Insert-mode shift-left-indent). The minor
+mode owns those keys for the duration of the popup; the rest
+of the editor never sees them.
+
+The same pattern handles snippet placeholder navigation: an
+**active-snippet minor mode** is layered above Insert mode
+while a snippet expansion has live placeholders, and over-
+rides `<Tab>` / `<S-Tab>` to step through placeholders. When
+the user exits the snippet (`$0` reached, `<Esc>` pressed,
+or cursor moved outside placeholder range), the minor mode
+deactivates and `<Tab>` falls back to its Insert-mode
+default.
+
+Implementation sketch: lattice's input layer already routes
+through `translate(ctx, event)` with `ctx` carrying mode +
+pending state. We add a `MinorModeLayer` consult before the
+mode dispatch:
+
+```rust
+fn translate(ctx: &TranslateContext<'_>, event: KeyEvent) -> Action {
+	if ctx.completion_popup_open {
+		if let Some(action) = COMPLETION_POPUP_LAYER.lookup(event) {
+			return action;
+		}
+	}
+	if ctx.snippet_active {
+		if let Some(action) = SNIPPET_LAYER.lookup(event) {
+			return action;
+		}
+	}
+	// Fallback to mode-specific translation (Insert / Normal /
+	// Visual / etc.).
+	default_translate(ctx, event)
+}
+```
+
+The layer tables live in `lattice-ui-tui::keymap` next to the
+main keymap; users can override them via the standard
+`:keymap completion-popup <chord> <ex-command>` /
+`:keymap snippet <chord> <ex-command>` commands once the
+keymap registry grows the per-layer surface (queued with the
+keymap.rs cleanup in Phase 4.2.g.1).
+
 ---
 
 ## 4. Triggering
 
-### 4.1 Auto-trigger rules
+### 4.1 Default: manual trigger only
 
-In Insert mode, after every text insertion:
+Out of the box, the popup opens **only** when the user asks
+for it. Three paths trigger:
+
+- `<C-x><C-o>` — vim's standard "omni-completion" chord. The
+  vim-native muscle memory.
+- `<C-Space>` — modern-editor muscle memory (VS Code,
+  IntelliJ, Helix, etc.).
+- `<Tab>` smart-tab — when the cursor is right after a word
+  character, `<Tab>` triggers completion. When the cursor
+  is on whitespace / start-of-line, `<Tab>` inserts a tab
+  literal (vim's default Insert-mode `<Tab>` behaviour).
+  Smart-tab keeps the literal-tab use case intact while
+  giving "type some letters then `<Tab>`" the obvious
+  meaning.
+
+All three resolve to the same command:
+`cmd:completion-trigger` with `manual = true`. Users can
+rebind freely; the chord is the convenience layer.
+
+### 4.2 Auto-trigger (opt-in)
+
+When `completion.auto_trigger = true`:
 
 1. **Trigger character.** If the inserted char is in any
    active source's `trigger_chars`, open the popup with
@@ -353,8 +448,16 @@ In Insert mode, after every text insertion:
 2. **Identifier threshold.** Otherwise, if the inserted char
    is a word character AND the prefix
    `buffer[anchor..cursor]` length is `>= completion.min_chars`
-   (default 2), open with `CompletionTrigger::IdentifierThreshold`.
+   (default 2), open with
+   `CompletionTrigger::IdentifierThreshold`.
 3. **Otherwise.** No popup.
+
+Auto-trigger can be enabled per-language via
+`[completion.per-language.<lang>] auto_trigger = true` for
+users who want noise-free prose typing but live completion
+in code buffers.
+
+### 4.3 Once-open behaviour
 
 The popup, once open, stays open across non-trigger chars and
 re-filters live until:
@@ -363,25 +466,19 @@ re-filters live until:
   char → close.
 - The user moves the cursor outside `[anchor, cursor]` →
   close.
-- `<Esc>` → close popup AND exit Insert.
-- `<C-e>` → close popup, stay in Insert.
+- `<Esc>` → close popup AND exit Insert (vim semantics).
+- `<C-e>` → close popup, stay in Insert (vim semantics).
 
-### 4.2 Manual trigger
-
-`<C-Space>` (default) or `<C-x><C-o>`:
-
-- Always opens the popup, even if the cursor is on whitespace
-  or zero typed chars.
-- Sets `CompletionTrigger::Manual` -- sources that
-  `auto_trigger() == false` participate too.
-- The user can override the binding via `:keymap`.
-
-### 4.3 isIncomplete refresh
+### 4.4 isIncomplete refresh
 
 When the LSP source returns `isIncomplete: true`, every
 subsequent keystroke that mutates `query` re-fires the LSP
 request. Without `isIncomplete`, the matcher filters
 client-side over the last fetched set.
+
+Manual `<C-x><C-o>` / `<C-Space>` always re-fires the LSP
+source regardless of `isIncomplete` — manual trigger means
+"give me the freshest set."
 
 ---
 
@@ -445,19 +542,19 @@ Side popup showing the focused item's full documentation:
 └──────────────────────────────┘ └──────────────────────────────┘
 ```
 
-Triggered by **`<C-d>`** (default) — toggles the doc popup
-on / off. Once open, the body re-fetches (lazy resolve via
-`completionItem/resolve` for LSP items that arrived
-without `documentation`) every time the focused candidate
-changes.
+Triggered by **`<C-d>`** — toggles the doc popup on / off.
+The chord is bound *only* in the completion-popup minor mode
+(§3.8), so Normal-mode `<C-d>` (half-page-down) and Insert-
+mode `<C-d>` (shift-left-indent) keep their original
+meanings as soon as the popup closes.
 
-`<C-f>` / `<C-b>` scroll the doc popup contents when it has
-focus; otherwise they continue to scroll the buffer behind.
+`<C-f>` / `<C-b>` scroll the doc popup contents when it's
+open and focused; otherwise they fall through to their
+Insert-mode defaults.
 
-Auto-show option: `:set completion.docs_auto=true` opens
-the doc popup whenever the candidate selection changes.
-Default false to keep the popup compact for fast typing
-flows.
+Auto-show option: `completion.docs_auto = true` opens the
+doc popup whenever the candidate selection changes. Default
+false to keep the popup compact for fast typing flows.
 
 ### 5.4 Ghost text (deferred)
 
@@ -471,67 +568,109 @@ primary surface.
 
 ## 6. Keystroke model
 
-Default Insert-mode keymap with the popup open:
+### 6.1 Default keymap (completion-popup minor mode)
 
-| Chord | Action |
-|---|---|
-| `<C-n>` / `<Down>` | Select next |
-| `<C-p>` / `<Up>` | Select previous |
-| `<C-y>` | Accept selected |
-| `<Tab>` | Accept; if accepted item is a snippet, jump to first placeholder |
-| `<CR>` | Accept; if no selection, insert newline (vim default) |
-| `<C-e>` | Cancel popup, keep typing |
-| `<C-Space>` / `<C-x><C-o>` | Re-trigger / cycle next |
-| `<C-x><C-p>` | Cycle previous |
-| `<C-d>` | Toggle doc popup |
-| `<C-f>` / `<C-b>` | Scroll doc popup (when open) |
-| `<commit-char>` | Auto-accept current item, then insert the char |
+Active *only* while the completion popup is open. All bindings
+resolve to ex-commands; users override via
+`:keymap completion-popup <chord> ex:<command>`.
 
-Every binding above is registered through the existing
-`keymap` registry so users can rebind via the standard
-`:keymap insert <chord> ex:<command>` interface.
+| Chord | Ex-command | Behaviour |
+|---|---|---|
+| `<C-n>` / `<Down>` | `ex:completion-next` | Select next candidate |
+| `<C-p>` / `<Up>` | `ex:completion-prev` | Select previous candidate |
+| `<C-y>` | `ex:completion-accept` | Accept current selection (vim convention) |
+| `<Tab>` | `ex:completion-accept` | Accept (also; smart-tab open path becomes accept once popup is up) |
+| `<CR>` | `ex:completion-accept` | Accept; if no selection committed yet, falls through to newline |
+| `<C-e>` | `ex:completion-cancel` | Close popup, stay in Insert (vim convention) |
+| `<Esc>` | `ex:completion-cancel-and-exit-insert` | Close popup AND exit Insert (vim convention) |
+| `<C-x><C-o>` / `<C-Space>` | `ex:completion-trigger` | Re-trigger / refresh (`isIncomplete` re-fires) |
+| `<C-x><C-p>` | `ex:completion-prev` | Cycle previous (vim's omni-cycle-back convention) |
+| `<C-d>` | `ex:completion-toggle-docs` | Toggle docs side popup |
+| `<C-f>` (when docs open) | `ex:completion-scroll-docs-down` | Page docs down |
+| `<C-b>` (when docs open) | `ex:completion-scroll-docs-up` | Page docs up |
+| any commit-char (LSP-supplied) | `ex:completion-accept-then-insert` | Auto-accept current item, then insert the typed char |
 
-Vim purists who want pure `<C-x><C-o>` etc. without
-auto-trigger get it via `:set completion.auto=false`.
+### 6.2 Default keymap (Insert mode, popup closed)
 
-`<Esc>` closes the popup AND exits Insert (vim semantics).
-The popup-close-only escape hatch is `<C-e>`.
+| Chord | Ex-command | Behaviour |
+|---|---|---|
+| `<C-x><C-o>` | `ex:completion-trigger` | Manual trigger |
+| `<C-Space>` | `ex:completion-trigger` | Manual trigger (alternate) |
+| `<Tab>` | smart-tab | Trigger if cursor is right after a word char; insert tab otherwise |
+| `<C-x><C-s>` | `ex:snippet-expand` | Snippet-only expansion (skips the popup; expands a snippet matching the word at cursor, if any) |
 
-### 6.1 Commit characters
+### 6.3 Default keymap (active-snippet minor mode)
 
-LSP items may carry `commitCharacters: Vec<String>` (each
-string is a single char). Typing one auto-accepts the
-selected item then inserts the typed char. Example:
-typing `(` after `foo_bar` accepts `foo_bar` then inserts
-`(`, taking you straight to the function-call site.
+Active when a snippet expansion has live placeholders.
 
-When no LSP item supplies `commitCharacters`, no chars
-auto-commit; the user accepts explicitly. Configurable
-default extras via `:set completion.extra_commit_chars=";.()"`
-for users who want vim-style behaviour.
+| Chord | Ex-command | Behaviour |
+|---|---|---|
+| `<Tab>` | `ex:snippet-next-placeholder` | Jump to next `$N` |
+| `<S-Tab>` | `ex:snippet-prev-placeholder` | Jump to previous `$N` |
+| `<C-l>` | `ex:snippet-next-placeholder` | Alternate (consistent with completion `<C-x><C-o>` family) |
+| `<C-h>` | `ex:snippet-prev-placeholder` | Alternate |
+| `<Esc>` | `ex:snippet-leave` | Exit snippet mode (placeholders become plain text); also exits Insert by vim convention |
 
-### 6.2 Snippet placeholder navigation
+When a snippet is active AND the completion popup is open
+(e.g. user typed inside a placeholder), the completion-popup
+layer wins for `<Tab>` / `<C-n>` etc. -- the popup is the
+foreground UI. `<Esc>` cascades: closes popup → exits
+snippet → exits Insert.
 
-When the accepted item is a snippet (kind `Snippet` or
-`insertTextFormat == Snippet`), the snippet body is parsed
-and inserted with placeholders. After insertion, Insert
-mode enters a sub-state where:
+### 6.4 Picker / completion consistency
 
-| Chord | Action |
-|---|---|
-| `<Tab>` | Jump to next placeholder |
-| `<S-Tab>` | Jump to previous placeholder |
-| `<Esc>` | Exit snippet mode (placeholders become plain text) |
-| any motion / edit | Updates the active placeholder; mirrored into all references |
+Lattice's vertico picker uses `<C-n>` / `<C-p>` for
+navigation already. The completion popup follows the same
+convention: **`<C-n>` / `<C-p>` are the cross-feature next /
+prev keys**, in pickers and the completion popup. `<Tab>` is
+also bound for completion specifically (no conflict — pickers
+don't bind `<Tab>` for navigation).
 
-Placeholders ($1, $2, …, $0) navigate in numeric order;
-`$0` is the final cursor position, exited automatically.
+This way users learn one navigation pattern and it works
+across every list-shaped surface.
 
-Choice placeholders (`${1|a,b,c|}`) open a mini-picker
-inline.
+### 6.5 Command surface (every binding has a command)
 
-Transformation placeholders (`${1/pat/repl/}`) re-evaluate
-the regex on each character of the active placeholder.
+Every action above is registered as an ex-command in the
+unified `CommandRegistry` (DESIGN.md §5.2.1). Users can
+invoke any of them from `:`, from a macro, from a plugin,
+or from `init.rs`:
+
+| Ex-command | Surface form | Notes |
+|---|---|---|
+| `ex:completion-trigger` | `:complete` (renamed from the picker bridge once 4.2.g.2 ships) | `bang!` form forces refresh past `isIncomplete` cache |
+| `ex:completion-next` | `:complete-next` | |
+| `ex:completion-prev` | `:complete-prev` | |
+| `ex:completion-accept` | `:complete-accept` | |
+| `ex:completion-cancel` | `:complete-cancel` | |
+| `ex:completion-cancel-and-exit-insert` | `:complete-cancel!` | Bang variant; same semantics as `<Esc>` shortcut |
+| `ex:completion-toggle-docs` | `:complete-docs` | |
+| `ex:completion-scroll-docs-down` | `:complete-docs-down` | |
+| `ex:completion-scroll-docs-up` | `:complete-docs-up` | |
+| `ex:completion-accept-then-insert` | n/a (commit-char internal; commands surface accept then `feedkey` separately) | |
+| `ex:snippet-expand` | `:snippet-expand` | Optional `<word>` arg; without, expands the snippet at cursor |
+| `ex:snippet-next-placeholder` | `:snippet-next` | |
+| `ex:snippet-prev-placeholder` | `:snippet-prev` | |
+| `ex:snippet-leave` | `:snippet-leave` | |
+
+Plugin-supplied sources register their own commands (e.g.
+`:complete-source-toggle <id>`) via the standard registry
+APIs.
+
+### 6.6 Keymap query surface
+
+`:describe-key <chord>` already resolves to the bound
+command; the same path works inside the minor modes when
+the user passes the layer name:
+
+```
+:describe-key completion-popup <C-d>
+```
+
+→ "Toggle docs side popup (`ex:completion-toggle-docs`)."
+
+Help cross-link from `:help completion-keymap` lists every
+binding with its command + the layer it belongs to.
 
 ---
 
@@ -604,50 +743,229 @@ insertion.
 
 ## 8. Snippet engine
 
-A new `lattice-snippet` crate with:
+### 8.1 Format: TextMate JSON (drop-in compatible)
 
-- **Parser.** TextMate / LSP snippet syntax (`$0`, `$1`,
-  `${2:placeholder}`, `${3|a,b,c|}`, `${4/pat/repl/}`,
-  `\$`, `\\`, variables `$TM_FILENAME` etc.).
-- **Body type.** `Snippet { tokens: Vec<SnippetToken> }`.
-- **Renderer.** Walks tokens producing the inserted text +
-  the per-placeholder ranges to track post-insert.
-- **Variables.** Built-ins:
-  - `$TM_SELECTED_TEXT` — last visual selection.
-  - `$TM_CURRENT_LINE` — current line text.
-  - `$TM_CURRENT_WORD` — word under cursor.
-  - `$TM_FILENAME`, `$TM_FILEPATH`, `$TM_DIRECTORY`.
-  - `$CLIPBOARD` — current `"+` register.
-  - `$WORKSPACE_NAME`, `$WORKSPACE_FOLDER`.
-  - `$CURRENT_YEAR`, `$CURRENT_MONTH`, `$CURRENT_DATE`,
-    `$CURRENT_HOUR`, `$CURRENT_MINUTE`, etc.
-  - `$RANDOM`, `$UUID`.
-  - `$LINE_COMMENT`, `$BLOCK_COMMENT_START`,
-    `$BLOCK_COMMENT_END` — from the major mode's
-    `comment_string` table (Phase 8).
+A new `lattice-snippet` crate parses **TextMate-format JSON**,
+the format VS Code uses. This is the dominant format in the
+ecosystem — every modern editor reads it, every snippet
+repository ships in it. Critically, lattice can drop in the
+`friendly-snippets` corpus (a 30+-language collection of
+hand-curated snippets pulled from VS Code marketplace
+packages, used by neovim's LuaSnip, vim-vsnip, and others)
+with **no conversion**.
 
-- **Custom snippet registry** at
-  `~/.config/lattice/snippets/<lang>.json` (textmate
-  format) + per-project `.lattice/snippets/<lang>.json`.
+```json
+{
+	"for loop": {
+		"prefix": "for",
+		"body": [
+			"for ${1:i} in ${2:iter} {",
+			"\t$0",
+			"}"
+		],
+		"description": "for-in loop"
+	},
+	"impl Display": {
+		"prefix": ["impl_display", "displ"],
+		"body": [
+			"impl ::std::fmt::Display for ${1:Ty} {",
+			"\tfn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {",
+			"\t\twrite!(f, \"${2:fmt}\"$0)",
+			"\t}",
+			"}"
+		]
+	}
+}
+```
 
-- **LSP-supplied snippets** flow through the same engine;
-  the LSP source flags items `insertTextFormat == Snippet`
-  and the accept path routes them through the engine
-  rather than `apply_lsp_completion_item`'s plain insert.
+Top-level keys are snippet names (free-form). Each value
+carries:
+
+- `prefix`: string or array of strings — what the user types
+  to trigger.
+- `body`: string or array of lines (joined with `\n`).
+- `description`: optional one-liner shown in the popup's
+  detail column.
+- `scope`: optional comma-separated list of source scopes
+  (`source.rust,source.markdown.injection.rust`) the
+  snippet applies in. v1 maps `source.<name>` to the
+  buffer's tree-sitter language; richer scope expressions
+  land later.
+
+### 8.2 Body syntax (TextMate / LSP-compatible)
+
+The body uses the same syntax LSP servers emit and VS Code
+parses:
+
+| Construct | Meaning |
+|---|---|
+| `$1`, `$2`, ..., `$0` | Tab-stops. `$0` is the final cursor position, exited automatically. |
+| `${1:placeholder}` | Tab-stop with default text. |
+| `${1\|opt1,opt2,opt3\|}` | Choice placeholder — opens a mini-picker over the options. |
+| `${1/pattern/replacement/flags}` | Transformation — regex against the placeholder's current text. |
+| `\$`, `\\`, `\}` | Escapes. |
+| `$VAR_NAME`, `${VAR_NAME}` | Variable substitution. |
+| `${VAR_NAME:default}` | Variable with fallback if undefined. |
+| `${VAR_NAME/pat/repl/flags}` | Variable with regex transform. |
+
+Built-in variables (TextMate / VS Code parity):
+
+| Variable | Value |
+|---|---|
+| `TM_SELECTED_TEXT` | Last visual selection |
+| `TM_CURRENT_LINE` | Current line text |
+| `TM_CURRENT_WORD` | Word under cursor |
+| `TM_LINE_INDEX` | 0-based current line |
+| `TM_LINE_NUMBER` | 1-based current line |
+| `TM_FILENAME` | Current filename |
+| `TM_FILENAME_BASE` | Filename without extension |
+| `TM_DIRECTORY` | Containing directory (absolute) |
+| `TM_FILEPATH` | Full path |
+| `WORKSPACE_NAME`, `WORKSPACE_FOLDER` | Workspace root info |
+| `CLIPBOARD` | Current `"+` register |
+| `CURRENT_YEAR`, `CURRENT_MONTH`, `CURRENT_DATE`, `CURRENT_DAY_NAME`, `CURRENT_HOUR`, `CURRENT_MINUTE`, `CURRENT_SECOND`, etc. | Timestamps |
+| `RANDOM`, `RANDOM_HEX` | Random ints |
+| `UUID` | Random UUID |
+| `LINE_COMMENT`, `BLOCK_COMMENT_START`, `BLOCK_COMMENT_END` | Per-major-mode comment strings (Phase 8) |
+
+### 8.3 Loading paths
+
+Loaded at startup; `:reload-snippets` re-reads on demand.
+
+Lookup order (later overrides earlier):
+
+1. **Bundled.** Shipped with the lattice binary (a small
+   curated set in `bundled-snippets/`).
+2. **friendly-snippets-style packages.** Any directory in
+   `~/.config/lattice/snippet-packs/` — typically
+   `~/.config/lattice/snippet-packs/friendly-snippets/`
+   cloned from upstream.
+3. **User snippets.** `~/.config/lattice/snippets/<lang>.json`.
+4. **Project snippets.** `.lattice/snippets/<lang>.json` in
+   the workspace root.
+
+Per-language registry: each language indexes by prefix; the
+`gen:snippet` source filters by the active buffer's
+language. Multi-prefix snippets register under each prefix.
+
+### 8.4 Crate structure
+
+```
+lattice-snippet/
+├── src/
+│   ├── lib.rs           — public re-exports
+│   ├── parse.rs         — TextMate body parser
+│   ├── token.rs         — `Snippet`, `SnippetToken`, `Placeholder`
+│   ├── render.rs        — token walk → inserted text + placeholder ranges
+│   ├── variables.rs     — built-in variable resolver
+│   ├── registry.rs      — per-language snippet store + loader
+│   └── load.rs          — JSON ingestion (TextMate format)
+├── tests/
+│   ├── parse.rs         — body-syntax round-trip
+│   ├── friendly_snippets.rs   — load a slice of friendly-snippets, assert parses
+│   └── render.rs        — placeholder navigation, transforms
+└── bundled-snippets/    — shipped corpus
+```
+
+### 8.5 Active-snippet state
+
+When a snippet expands:
+
+```rust
+pub struct ActiveSnippet {
+	/// Buffer position the snippet was inserted at.
+	pub origin: Position,
+	/// Per-tabstop ranges in the buffer; mirrored entries
+	/// share an index so editing one updates all.
+	pub tabstops: Vec<TabstopGroup>,
+	/// Currently focused tabstop index (1-based; `$0` is the
+	/// final position).
+	pub current: usize,
+	/// `$N -> ranges` map for fast jump.
+	pub by_index: HashMap<u32, Vec<Range>>,
+}
+```
+
+Edits inside a tabstop range shift the matching ranges in
+its mirror group; ranges in adjacent tabstops shift too as
+the buffer text grows. Buffer events from outside the
+snippet (LSP didChange, format-on-save) flow through
+unchanged — the snippet ranges adjust via the same
+position-update path the rest of the editor uses.
+
+Exit triggers:
+
+- `$0` reached.
+- `<Esc>` (also exits Insert, vim convention).
+- Cursor moved outside any tabstop range.
+- New snippet expanded (the prior snippet exits before the
+  new one begins).
+
+### 8.6 Snippets in the unified popup
+
+The user's primary path is the popup: trigger completion,
+type a few characters, see snippets alongside LSP / buffer-
+words / etc. results, accept any of them. The
+`gen:snippet` source produces candidates whose
+`CandidateData` carries the snippet body; on accept, the
+host routes the candidate through the snippet engine
+instead of the plain insert path.
+
+The dedicated `<C-x><C-s>` chord (`:snippet-expand`) is the
+escape hatch for "I know the snippet's prefix; expand it
+without seeing the popup." It looks up the prefix at cursor
+in the registry, expands directly, and skips the popup
+entirely.
 
 ---
 
 ## 9. Configuration surface
 
+Every option is a typed `lattice-config` registration with
+help text the user can read via
+`:help completion-options` (an alias of
+`:describe-option completion.*`). Defaults shown.
+
 ```toml
 [completion]
-auto                 = true   # auto-trigger on identifier threshold
-min_chars            = 2      # for identifier-threshold trigger
-debounce_ms          = 50     # per-keystroke debounce
-docs_auto            = false  # auto-show docs popup on selection
-extra_commit_chars   = ""     # editor-side commit chars (server's union with this)
-auto_insert_single   = false  # auto-accept when only one match remains
-fuzzy_threshold      = 5      # min match score to render
+# Manual trigger (default). When false, popup opens only
+# on explicit `<C-x><C-o>` / `<C-Space>` / smart-tab.
+auto_trigger         = false
+
+# Minimum prefix length before identifier-threshold auto-
+# trigger fires. Only consulted when auto_trigger = true.
+min_chars            = 2
+
+# Per-keystroke debounce for refilter / re-rank passes.
+# Lower = more responsive; higher = less work on rapid
+# typing.
+debounce_ms          = 50
+
+# Auto-show docs popup on selection change. Off by default
+# to keep the popup compact.
+docs_auto            = false
+
+# Editor-side commit characters (union with each LSP
+# server's advertised set). Empty = LSP-only.
+extra_commit_chars   = ""
+
+# Auto-accept when the popup has only one candidate.
+# Off by default; rust users typically flip this on.
+auto_insert_single   = false
+
+# Minimum match score for a candidate to render. Filters out
+# very weak fuzzy matches that would otherwise waste popup
+# rows.
+fuzzy_threshold      = 5
+
+# Tree-sitter scope query targets where completion should be
+# suppressed. Default empty -- completion fires everywhere.
+# Example: ["string", "comment"] suppresses popups inside
+# string literals + comments. Per-language overridable.
+suppress_in          = []
+
+# Per-source enable / priority. `enabled = false` removes
+# the source from the popup entirely.
 
 [completion.source.lsp]
 enabled    = true
@@ -661,38 +979,98 @@ priority   = 150
 enabled    = true
 priority   = 100
 min_word_length = 3
+# Visible buffers + recently-active ones.
+scope            = "visible-and-recent"
 
 [completion.source.path]
 enabled    = true
 priority   = 90
+# Filesystem walk depth from the typed prefix.
+max_depth  = 3
+# Skip entries matching these glob patterns.
+ignore     = ["node_modules", ".git", "target"]
 
 [completion.source.tree-sitter]
 enabled    = true
 priority   = 80
 
+# Per-language overrides. Any [completion] key can be set
+# per-language.
 [completion.per-language.markdown]
-sources    = ["snippet", "buffer-words", "path"]   # no LSP / ts for prose
+sources       = ["snippet", "buffer-words", "path"]   # no LSP / ts for prose
+auto_trigger  = false                                  # explicit only
 
 [completion.per-language.rust]
-auto_insert_single = true   # rust users like `single-match-auto-accept`
+auto_insert_single = true
+auto_trigger       = true
+
+[completion.per-language.text]
+sources       = ["snippet", "buffer-words"]
+suppress_in   = []
 ```
 
-Per-buffer override path: `:setlocal completion.auto=false`
+Per-buffer override path: `:setlocal completion.auto_trigger=true`
 (once `setlocal` lands; today only the global form works).
 
-The plugin host eventually exposes
+Plugin host eventually exposes
 `completion.source.<plugin-id>` keys for plugin-supplied
 sources.
 
 ---
 
-## 10. Implementation plan
+## 10. Help system
 
-### Phase 4.2.g.1 — Insert-mode shell + sync sources
+Every option, source, binding, and command lands with a
+`:help completion-*` topic. The help pages are part of the
+feature, not an afterthought. Topic structure:
 
-Goal: `<C-Space>` opens a popup with buffer-words completion;
-`<Tab>` / `<C-y>` accept; `<C-n>` / `<C-p>` navigate;
-`<Esc>` / `<C-e>` dismiss. No LSP, no async.
+| Topic | Body |
+|---|---|
+| `completion` | Overview: what completion is, how to invoke it (manual default), how the popup looks, key bindings cheat-sheet, links to sub-topics. |
+| `completion-keymap` | Every binding in every layer (Insert default, completion-popup minor mode, active-snippet minor mode), with chord + ex-command + behaviour. |
+| `completion-trigger` | Manual vs. auto-trigger, smart-tab, identifier threshold, trigger characters. |
+| `completion-popup` | Multi-column layout, kind glyphs legend, source tags, deprecated styling. |
+| `completion-docs-popup` | Side documentation popup, `<C-d>` toggle, lazy resolve, scroll keys. |
+| `completion-sources` | The six built-in sources + plugin source slot. Per-source priority, enable/disable, source-specific options. |
+| `completion-sources-lsp` | LSP source: filterText / sortText / preselect / commit chars / additional edits. |
+| `completion-sources-snippet` | Snippet source: TextMate format, prefix lookup, integration with the popup. |
+| `completion-sources-buffer-words` | Word-completion from visible buffers. |
+| `completion-sources-path` | Path source: trigger inside string contexts. |
+| `completion-sources-tree-sitter` | Local symbols from the syntax tree. |
+| `completion-snippets` | Snippet authoring: TextMate body syntax, placeholders, choices, transformations, variables, scope. |
+| `completion-snippet-loading` | Where snippets load from, in priority order; bundled / friendly-snippets / user / project. |
+| `completion-snippet-keymap` | Snippet expansion + placeholder navigation bindings. |
+| `completion-options` | Every config option with type, default, valid values, examples. Alias of `:describe-option completion.*`. |
+| `completion-commands` | Every ex-command + Rust API entry-point. |
+| `completion-troubleshooting` | "Why doesn't completion fire?" / "popup is empty" / "LSP source not contributing" diagnosis flowchart. |
+| `completion-glossary` | "Anchor", "tab-stop", "trigger char", "isIncomplete" defined. |
+
+`:help completion` is the entry point; it renders an index
+linking to every sub-topic. Sub-topics cross-link each
+other and `:help lsp`, `:help keymap`, `:help options`.
+
+The help authoring is gated to ship **with** each phase —
+4.2.g.1 lands `completion`, `completion-keymap`,
+`completion-popup`, `completion-options`,
+`completion-troubleshooting` before the phase closes.
+Subsequent phases extend the index as they introduce new
+surfaces (4.2.g.2 adds `completion-sources-lsp`; 4.2.g.4
+adds the snippet topics; etc.).
+
+The wider help directive — every feature ships with help —
+extends beyond completion. Documented separately as a
+project convention.
+
+---
+
+## 11. Implementation plan
+
+### Phase 4.2.g.1 — Insert-mode shell + sync sources + help skeleton
+
+Goal: `<C-x><C-o>` / `<C-Space>` opens a popup with buffer-
+words completion; `<Tab>` / `<C-y>` / `<CR>` accept; `<C-n>` /
+`<C-p>` navigate; `<Esc>` / `<C-e>` dismiss. No LSP, no
+async. Help index landed.
 
 Deliverables:
 
@@ -707,17 +1085,30 @@ Deliverables:
 - New fuzzy matcher
   `match:fuzzy-insert`.
 - `App::insert_completion: Option<InsertCompletionState>`.
-- Insert-mode key bindings: `<C-Space>` opens; `<C-n>` /
-  `<C-p>` / `<Tab>` / `<CR>` / `<C-y>` / `<C-e>` /
-  `<Esc>` route through the popup.
+- Insert-mode key bindings: `<C-x><C-o>` / `<C-Space>` /
+  smart-tab open the popup; routes through the new
+  ex-commands `ex:completion-trigger` /
+  `ex:completion-next` / `ex:completion-prev` /
+  `ex:completion-accept` / `ex:completion-cancel` /
+  `ex:completion-cancel-and-exit-insert`.
+- `MinorModeLayer` plumbing: `translate(ctx, event)`
+  consults the completion-popup layer when the popup is
+  open.
 - Renderer: completion popup widget anchored at cursor;
   multi-column rendering with kind glyph + label + source
   tag (no detail / docs popup yet).
 - Tests: trigger / dismiss / accept / refilter on
-  keystroke; snapshot tests for renderer columns.
+  keystroke; smart-tab branching; minor-mode layer
+  isolation (Normal-mode `<C-d>` unchanged when popup
+  closed); snapshot tests for renderer columns.
+- **Help**: `:help completion` (overview), `:help
+  completion-keymap`, `:help completion-popup`,
+  `:help completion-options`, `:help
+  completion-troubleshooting`, `:help completion-commands`.
 
-Done when: `<C-Space>` shows buffer words and `<C-y>`
-inserts the chosen one.
+Done when: `<C-x><C-o>` shows buffer words; `<C-y>` inserts;
+`:help completion` walks the user through it without
+referencing source code.
 
 ### Phase 4.2.g.2 — LSP source
 
@@ -734,25 +1125,29 @@ Deliverables:
 - `isIncomplete` refresh path -- the aggregator re-fires
   the LSP source on every keystroke when the last response
   was incomplete.
-- Trigger-character detection: walk attached servers'
+- Trigger-character detection (when `auto_trigger = true`):
+  walk attached servers'
   `completionProvider.triggerCharacters`, union with
   `completion.extra_commit_chars`.
 - Item adaptation: `filterText` / `sortText` /
   `preselect` / `tags[Deprecated]` / commit characters;
   `textEdit.range` overrides anchor.
-- Auto-trigger on identifier threshold (`min_chars`);
-  manual trigger as before.
 - Phase out the `:complete` ex command (the inline popup
-  replaces it).
+  replaces it; the alias keeps working but echoes a
+  one-liner pointing at `<C-x><C-o>`).
+- **Help**: `:help completion-sources`, `:help
+  completion-sources-lsp`, `:help completion-trigger`
+  (extended with auto-trigger + trigger-character
+  semantics).
 
-Done when: typing `foo.` in a `.rs` buffer pops up
+Done when: typing `foo<C-Space>` in a `.rs` buffer pops up
 rust-analyzer's completions inline.
 
 ### Phase 4.2.g.3 — Documentation side popup
 
-Goal: `<C-d>` toggles a side popup showing the focused
-candidate's full documentation; `completionItem/resolve`
-fires lazily.
+Goal: `<C-d>` (within the completion-popup minor mode)
+toggles a side popup showing the focused candidate's full
+documentation; `completionItem/resolve` fires lazily.
 
 Deliverables:
 
@@ -764,45 +1159,65 @@ Deliverables:
 - Existing markdown-render path (the hover popup's renderer)
   reused for the doc popup body.
 - Auto-show option: `:set completion.docs_auto=true`.
+- `<C-f>` / `<C-b>` scroll the doc popup when open.
 - Tests: focus toggles popup; resolve fills body once;
-  cancellation drops the popup on dismiss.
+  cancellation drops the popup on dismiss; `<C-d>` outside
+  the minor mode does NOT toggle docs (Normal-mode
+  half-page-down still wins).
+- **Help**: `:help completion-docs-popup`.
 
 Done when: `<C-d>` on a function candidate shows its
-signature + doc comment; `<C-f>` scrolls.
+signature + doc comment; `<C-f>` scrolls; `<Esc>` closes
+both popups.
 
-### Phase 4.2.g.4 — Snippet engine
+### Phase 4.2.g.4 — Snippet engine + friendly-snippets compat
 
-Goal: snippet items expand with placeholder navigation;
-LSP items with `insertTextFormat == Snippet` route through
-the engine.
+Goal: snippet items expand with placeholder navigation; LSP
+items with `insertTextFormat == Snippet` route through the
+engine; `friendly-snippets` repo loads as-is.
 
 Deliverables:
 
 - New `lattice-snippet` crate:
-  parser + body type + renderer + variable resolver.
-- Insert-mode sub-state for placeholder navigation:
-  `<Tab>` next, `<S-Tab>` prev, `<Esc>` exit. Cursor jumps
-  apply the same `Position`-tracking the buffer-words path
-  uses; mirrored placeholders re-render on edit.
-- Snippet registry: load `~/.config/lattice/snippets/<lang>.json`
-  at startup; `:reload-snippets` re-reads.
-- LSP item routing: items flagged `Snippet` go through the
-  engine; plain-text items use the existing splice path.
-- `gen:snippet` source fed by the registry.
-- Choice placeholders inline-picker (mini-picker over the
-  choices); transformation placeholders re-evaluate per-
-  edit.
-- Tests: textmate parse round-trip; placeholder navigation;
-  variable substitution; LSP-snippet end-to-end (mock
-  server).
+  - `parse.rs` — TextMate body parser (full syntax:
+    placeholders, choices, transforms, variables,
+    escapes).
+  - `load.rs` — JSON ingestion (TextMate format VS Code
+    uses).
+  - `registry.rs` — per-language store with lookup by
+    prefix.
+  - `render.rs` — token walk producing inserted text +
+    placeholder range tracking.
+  - `variables.rs` — built-in variable resolver.
+- Active-snippet minor mode in the input layer: `<Tab>` /
+  `<S-Tab>` (and `<C-l>` / `<C-h>` aliases) navigate
+  placeholders; `<Esc>` exits.
+- Snippet registry loads bundled + friendly-snippets-style
+  packs + user + project snippets in priority order.
+- `gen:snippet` source feeds into the unified popup.
+- `<C-x><C-s>` (`:snippet-expand`) for direct expansion.
+- Choice placeholders open an inline mini-picker;
+  transformation placeholders re-evaluate per-edit.
+- LSP item routing: `insertTextFormat == Snippet` items go
+  through the engine.
+- **Help**: `:help completion-sources-snippet`, `:help
+  completion-snippets`, `:help completion-snippet-loading`,
+  `:help completion-snippet-keymap`.
+- Tests: TextMate parse round-trip; placeholder
+  navigation; variable substitution; LSP-snippet end-to-
+  end (mock server); friendly-snippets corpus parses
+  without panic.
 
-Done when: typing `for<C-Space>` and accepting expands
-`for x in y { z }` with placeholder hops on `<Tab>`.
+Done when: typing `for<C-x><C-s>` expands `for x in y { z }`
+with placeholder hops on `<Tab>`; cloning friendly-snippets
+into `~/.config/lattice/snippet-packs/` makes its
+language packs immediately available.
 
-### Phase 4.2.g.5 — Frequency ranking + per-source priority
+### Phase 4.2.g.5 — Frequency ranking + per-source priority + per-language config
 
 Goal: items the user has accepted recently bubble to the
-top; per-source priority is configurable.
+top; per-source priority is configurable; per-language
+filters work.
 
 Deliverables:
 
@@ -812,9 +1227,13 @@ Deliverables:
 - Per-source priority override via `:set
   completion.source.<id>.priority=<n>`.
 - Per-language source filter:
-  `[completion.per-language.<lang>]
-  sources = ["snippet", "buffer-words", "lsp"]`.
-- Tests: accepted item ranks above peers next time.
+  `[completion.per-language.<lang>] sources = [...]`.
+- Per-language `auto_trigger`, `auto_insert_single`,
+  `suppress_in` overrides.
+- Tests: accepted item ranks above peers next time; per-
+  language sources list filters the popup.
+- **Help**: extend `:help completion-sources` and `:help
+  completion-options` with the per-language patterns.
 
 ### Phase 4.2.g.6 — Tree-sitter + path sources
 
@@ -827,23 +1246,26 @@ Deliverables:
   closure params).
 - `gen:path`: triggered by `'/'` inside a string literal
   (detected via tree-sitter scope query); filesystem walk
-  capped at 200 entries; respects `.gitignore`.
+  capped at 200 entries; respects `.gitignore` plus
+  configured `ignore` globs.
+- **Help**: `:help completion-sources-tree-sitter`, `:help
+  completion-sources-path`.
 
 ### Phase 4.2.g.7 — Polish
 
 - Ghost text for the top-ranked item (optional, off by
   default).
-- Auto-insert single match (`completion.auto_insert_single`).
 - `additionalTextEdits` apply path coalesces with the main
-  insert into one undo unit (refactor existing
-  `apply_lsp_completion_item`).
+  insert into one undo unit.
 - Postfix-completion seam (deferred to plugin host).
 - Persistent frequency tracking (post-1.0; needs privacy
   story).
+- **Help**: `:help completion-glossary`, top-up of every
+  prior topic.
 
 ---
 
-## 11. Performance commitments
+## 12. Performance commitments
 
 | Path | Budget | Notes |
 |---|---|---|
@@ -860,7 +1282,7 @@ budget (8 ms at 120 Hz / 16 ms at 60 Hz, CLAUDE.md goal #1).
 
 ---
 
-## 12. Open questions
+## 13. Open questions
 
 1. **Snippet placeholder mirroring with concurrent edits.**
    What if the user types in one mirror and a buffer event
@@ -868,43 +1290,40 @@ budget (8 ms at 120 Hz / 16 ms at 60 Hz, CLAUDE.md goal #1).
    place? v1: ignore (mirrors are fully client-side); the
    server's didChange covers our insert anyway.
 
-2. **isIncomplete + manual trigger.** When the LSP source
-   is `isIncomplete`, manual `<C-Space>` should re-fire?
-   Probably yes — manual is "show me the latest." Verify
-   against rust-analyzer's behaviour before final.
+2. **isIncomplete + manual trigger.** Manual `<C-x><C-o>` /
+   `<C-Space>` always re-fires the LSP source — manual
+   trigger means "give me the freshest set."
+   (Resolved here; verify against rust-analyzer when 4.2.g.2
+   lands.)
 
-3. **Multi-server LSP completion ordering.** Two servers
-   on a `.cpp` file (clangd + a linter bridge) both return
+3. **Multi-server LSP completion ordering.** Two servers on
+   a `.cpp` file (clangd + a linter bridge) both return
    items. Order: union, dedup by `(label, kind)`, sort by
    ranker. Per-server priority breaks ties. Verify the
    architecture doc's "score-merging" wording matches this.
 
-4. **Plugin generator security.** WASM plugins must
-   honour `token.is_cancelled()`; a misbehaving plugin
-   that ignores cancellation can starve the aggregator.
-   Mitigation: aggregator drops slow-source pushes after
-   a deadline (e.g. 500 ms past the keystroke that
-   triggered them).
+4. **Plugin generator security.** WASM plugins must honour
+   `token.is_cancelled()`; a misbehaving plugin that
+   ignores cancellation can starve the aggregator.
+   Mitigation: aggregator drops slow-source pushes after a
+   deadline (e.g. 500 ms past the keystroke that triggered
+   them).
 
-5. **Documentation popup width when wrapping is on.**
-   The doc body is markdown; long lines wrap. Cap at 60
-   cells and let wrap handle overflow. Detail (column 3
-   in the main popup) doesn't wrap — it's a one-liner.
-
-6. **Auto-trigger off in comments / strings?** Some users
-   want LSP completion suppressed inside string literals.
-   Tree-sitter scope query on the cursor position + a
-   `completion.suppress_in = ["string", "comment"]`
-   option. Default empty (suppress nothing).
+5. **Documentation popup width when wrapping is on.** The
+   doc body is markdown; long lines wrap. Cap at 60 cells
+   and let wrap handle overflow. Detail (column 3 in the
+   main popup) doesn't wrap — it's a one-liner.
 
 ---
 
-## 13. Cross-references
+## 14. Cross-references
 
 - DESIGN.md §5.11.3 — completion pipeline (cmdline today;
   Insert-mode peer formalised by this doc).
 - DESIGN.md §5.9.10 — rich minibuffer (the picker UX this
   doc's popup descends from).
+- DESIGN.md §5.2.1 — unified command/grammar dispatch (why
+  every binding here is also a registered command).
 - [`lsp-architecture.md`](lsp-architecture.md) §10 — LSP
   request fan-out, cancellation tokens.
 - [`crates/lattice-completion/`](../crates/lattice-completion/)
@@ -914,4 +1333,6 @@ budget (8 ms at 120 Hz / 16 ms at 60 Hz, CLAUDE.md goal #1).
 - `help/lsp.md` — user-facing LSP completion blurb (will
   pivot from `:complete` picker to inline popup once
   4.2.g.2 lands).
-
+- `friendly-snippets` upstream:
+  https://github.com/rafamadriz/friendly-snippets — the
+  default snippet corpus we target compatibility with.

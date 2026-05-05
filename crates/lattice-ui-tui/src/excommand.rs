@@ -412,6 +412,12 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("lspsymbols", "ex:lsp-symbols"),
     ("lsp-workspace-symbol", "ex:lsp-workspace-symbol"),
     ("lspworkspacesymbol", "ex:lsp-workspace-symbol"),
+    // Phase 4.3 edits.
+    ("format", "ex:lsp-format"),
+    ("fmt", "ex:lsp-format"),
+    ("lspformat", "ex:lsp-format"),
+    ("format-range", "ex:lsp-format-range"),
+    ("fmtrange", "ex:lsp-format-range"),
 ];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests

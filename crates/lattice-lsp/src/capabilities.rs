@@ -258,6 +258,36 @@ impl Capabilities {
         self.server.completion_provider.is_some()
     }
 
+    /// Server's `documentFormattingProvider` presence -- gates
+    /// `:format` (Phase 4.3).
+    pub fn supports_formatting(&self) -> bool {
+        self.server.document_formatting_provider.is_some()
+    }
+
+    /// Server's `documentRangeFormattingProvider` presence --
+    /// gates `:format-range` / `=` operator on motions / objects.
+    pub fn supports_range_formatting(&self) -> bool {
+        self.server.document_range_formatting_provider.is_some()
+    }
+
+    /// Server's `signatureHelpProvider` presence -- gates the
+    /// trigger-character signature popup (Phase 4.3).
+    pub fn supports_signature_help(&self) -> bool {
+        self.server.signature_help_provider.is_some()
+    }
+
+    /// Trigger characters that should fire `textDocument/signatureHelp`
+    /// in Insert mode. Empty when the server doesn't advertise the
+    /// provider or doesn't list any.
+    pub fn signature_help_trigger_chars(&self) -> Vec<char> {
+        self.server
+            .signature_help_provider
+            .as_ref()
+            .and_then(|p| p.trigger_characters.as_ref())
+            .map(|v| v.iter().filter_map(|s| s.chars().next()).collect())
+            .unwrap_or_default()
+    }
+
     /// Server's text-document sync mode -- determines whether we
     /// send incremental or full content on `didChange`. None is
     /// the LSP signal that the server doesn't want sync at all.

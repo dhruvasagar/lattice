@@ -279,6 +279,15 @@ pub enum Effect {
     LspWorkspaceSymbol {
         query: String,
     },
+    /// `:format` -- run `textDocument/formatting` on the highest-
+    /// priority server with `documentFormattingProvider` and
+    /// apply the returned edits as one undo unit. Phase 4.3.
+    LspFormat,
+    /// `:format-range` -- run `textDocument/rangeFormatting`
+    /// over the active Visual selection (when in Visual mode)
+    /// or the supplied line range. Apply edits atomically.
+    /// Phase 4.3.
+    LspFormatRange,
 
     Many(Vec<Effect>),
 }

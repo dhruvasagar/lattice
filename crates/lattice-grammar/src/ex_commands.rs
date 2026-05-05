@@ -73,6 +73,8 @@ pub struct ExBuiltins {
     pub lsp_log_clear: ExCommandId,
     pub lsp_symbols: ExCommandId,
     pub lsp_workspace_symbol: ExCommandId,
+    pub lsp_format: ExCommandId,
+    pub lsp_format_range: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -765,6 +767,33 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let lsp_format = registry.register_ex_command(
+        "ex:lsp-format",
+        "Run `textDocument/formatting` on the active buffer's highest-priority LSP server; apply the returned edits as one undo unit (`:format`, Phase 4.3).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::LspFormat)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let lsp_format_range = registry.register_ex_command(
+        "ex:lsp-format-range",
+        "Run `textDocument/rangeFormatting` over the active Visual selection or the supplied line range (`:[range]format-range`, Phase 4.3).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: true,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::LspFormatRange)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
     let lsp_workspace_symbol = registry.register_ex_command(
         "ex:lsp-workspace-symbol",
         "Open a vertico picker over workspace symbols matching `query` (server-side substring filter; `:lsp-workspace-symbol [query]`, Phase 4.2.f).",
@@ -897,6 +926,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_log_clear,
         lsp_symbols,
         lsp_workspace_symbol,
+        lsp_format,
+        lsp_format_range,
     }
 }
 

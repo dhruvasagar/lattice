@@ -187,6 +187,10 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // flight; a follow-up `:lsp-symbols` cancels its
         // predecessor.
         app.drain_pending_symbols();
+        // Drain queued formatting responses (Phase 4.3). Applies
+        // the returned edits as one undo unit; echoes when no
+        // provider was found or no changes were needed.
+        app.drain_pending_format();
         // Drain queued Event::LspLogPushed events (Phase 4) and
         // refresh any open log / trace buffers from the logger
         // snapshot. Cheap on an idle channel; cheap when no log

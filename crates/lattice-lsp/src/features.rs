@@ -25,9 +25,10 @@
 
 use lattice_protocol::CancellationToken;
 use lsp_types::{
-    CompletionParams, CompletionResponse, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, Location, ReferenceParams,
-    SymbolInformation, WorkspaceSymbolParams,
+    CompletionParams, CompletionResponse, DocumentFormattingParams, DocumentRangeFormattingParams,
+    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
+    Hover, HoverParams, Location, ReferenceParams, SignatureHelp, SignatureHelpParams,
+    SymbolInformation, TextEdit, WorkspaceSymbolParams,
     request::{
         GotoDeclarationParams, GotoDeclarationResponse, GotoImplementationParams,
         GotoImplementationResponse, GotoTypeDefinitionParams, GotoTypeDefinitionResponse,
@@ -157,6 +158,42 @@ impl ServerHandle {
         token: CancellationToken,
     ) -> Pending<Option<CompletionResponse>> {
         self.request_with_cancel("textDocument/completion", params, token)
+    }
+
+    /// `textDocument/formatting` (DESIGN.md §5.4 / Phase 4.3).
+    /// Whole-buffer formatter; the response is a `Vec<TextEdit>`
+    /// the editor applies as a single undo unit. Single-server
+    /// strategy per the architecture doc -- highest-priority
+    /// server with `documentFormattingProvider` advertised wins.
+    pub fn formatting(
+        &self,
+        params: DocumentFormattingParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<TextEdit>>> {
+        self.request_with_cancel("textDocument/formatting", params, token)
+    }
+
+    /// `textDocument/rangeFormatting` (Phase 4.3). Same shape as
+    /// `formatting` but bounded to the supplied range -- bound to
+    /// the `=` operator on motions / objects / Visual selection.
+    pub fn range_formatting(
+        &self,
+        params: DocumentRangeFormattingParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<TextEdit>>> {
+        self.request_with_cancel("textDocument/rangeFormatting", params, token)
+    }
+
+    /// `textDocument/signatureHelp` (Phase 4.3). Trigger-character
+    /// driven (`,`, `(`) when the server advertises the trigger.
+    /// Response carries the active signature + parameter; renderer
+    /// integration overlays a popup similar to hover.
+    pub fn signature_help(
+        &self,
+        params: SignatureHelpParams,
+        token: CancellationToken,
+    ) -> Pending<Option<SignatureHelp>> {
+        self.request_with_cancel("textDocument/signatureHelp", params, token)
     }
 }
 

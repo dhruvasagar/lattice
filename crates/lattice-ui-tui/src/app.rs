@@ -835,6 +835,10 @@ pub struct App {
     pub pending_symbols_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<SymbolsOutcome>>,
     pub pending_symbols_token: Option<lattice_protocol::CancellationToken>,
+    /// Receiver for in-flight format responses (Phase 4.3).
+    pub pending_format_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<FormatOutcome>>,
+    pub pending_format_token: Option<lattice_protocol::CancellationToken>,
     /// Receiver end of the App's own subscription to
     /// `EventKind::OptionChanged` (DESIGN.md §5.10 + §5.12). The
     /// typed-options registry publishes through `event_bus` on
@@ -1261,6 +1265,22 @@ pub enum ReferencesOutcome {
     /// The buffer's URI maps to no attached servers. Echo
     /// "no LSP server attached" so the user can investigate.
     NoServers,
+}
+
+/// Outcome of a `:format` / `:format-range` request. Drained
+/// per frame; the App applies the edits as one undo unit or
+/// echoes the appropriate failure / no-op state.
+#[derive(Debug, Clone)]
+pub enum FormatOutcome {
+    /// Server returned a (possibly empty) edit list. Empty == no
+    /// changes needed; non-empty == apply.
+    Edits(Vec<lsp_types::TextEdit>),
+    /// No attached server advertises the relevant formatting
+    /// provider (`is_range` distinguishes whole-buffer from
+    /// range-format providers since they're separate caps).
+    NoProvider {
+        is_range: bool,
+    },
 }
 
 /// One row of a document-symbol / workspace-symbol picker. Carries
@@ -1724,6 +1744,8 @@ impl App {
             pending_references_token: None,
             pending_symbols_rx: None,
             pending_symbols_token: None,
+            pending_format_rx: None,
+            pending_format_token: None,
             lang_registry,
             builtins,
             command_line: String::new(),
@@ -5908,6 +5930,232 @@ impl App {
         });
     }
 
+    /// `:format` / `:format-range` (Phase 4.3). Picks the
+    /// highest-priority server with `documentFormattingProvider`
+    /// (or `documentRangeFormattingProvider` when `is_range`),
+    /// fires the request, applies the returned edits as one
+    /// undo unit.
+    ///
+    /// Single-server strategy per docs/lsp-architecture.md §7b:
+    /// "Two formatters can't agree on whitespace." -- so unlike
+    /// nav we don't fan out / merge.
+    ///
+    /// Range source for `is_range`: active Visual selection (if
+    /// in Visual mode), else the whole buffer.
+    fn do_lsp_format_request(&mut self, is_range: bool) {
+        if let Some(token) = self.pending_format_token.take() {
+            token.cancel();
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let last_line = last_addressable_line(&snapshot.buffer);
+        // Range resolution.
+        let range_lines: Option<(u32, u32)> = if is_range {
+            // Use the active Visual selection if any, else the
+            // whole buffer (caller can :2,5format-range with the
+            // ex command parser pre-clamping; we fall back to
+            // the whole buffer when no selection is active so
+            // `:format-range` from Normal mode does the right
+            // thing rather than echoing an error).
+            if let ModalState::Visual(_) = self.modal {
+                let anchor = self.visual_anchor.unwrap_or(self.cursor);
+                let head = self.cursor;
+                let (s, e): (u32, u32) = if anchor.line <= head.line {
+                    (anchor.line, head.line)
+                } else {
+                    (head.line, anchor.line)
+                };
+                Some((s, e.min(last_line)))
+            } else {
+                Some((0u32, last_line))
+            }
+        } else {
+            None
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FormatOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_format_rx = Some(rx);
+        self.pending_format_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        // Compute the LSP range parameters when needed.
+        let lsp_range = range_lines.map(|(s, e)| {
+            let end_line_text_len = line_byte_len(&snapshot.buffer, e);
+            // utf-16 column at end-of-line.
+            let line_text = snapshot.buffer.line(e).unwrap_or_default();
+            let end_char =
+                lattice_lsp::position::utf8_byte_to_utf16_column(&line_text, end_line_text_len);
+            lsp_types::Range {
+                start: lsp_types::Position {
+                    line: s,
+                    character: 0,
+                },
+                end: lsp_types::Position {
+                    line: e,
+                    character: end_char,
+                },
+            }
+        });
+        // Conservative formatting options: 4-space tab, no insert
+        // tab override. Server respects its own .editorconfig
+        // when ours doesn't match.
+        let options = lsp_types::FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            properties: Default::default(),
+            trim_trailing_whitespace: Some(true),
+            insert_final_newline: Some(true),
+            trim_final_newlines: Some(true),
+        };
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.lock().await.servers_for(&uri) };
+            // Pick the first server advertising the right
+            // provider. (Priority sorting from the architecture
+            // doc lands once `ServerConfig.priority` is wired
+            // through `servers_for`'s sort -- TODO follow-up.)
+            let chosen: Option<lattice_lsp::ServerHandle> = handles
+                .into_iter()
+                .find(|h| {
+                    let caps = h.capabilities();
+                    if lsp_range.is_some() {
+                        caps.supports_range_formatting()
+                    } else {
+                        caps.supports_formatting()
+                    }
+                });
+            let Some(handle) = chosen else {
+                let _ = tx.send(FormatOutcome::NoProvider {
+                    is_range: lsp_range.is_some(),
+                });
+                return;
+            };
+            let edits: Option<Vec<lsp_types::TextEdit>> = if let Some(range) = lsp_range {
+                let params = lsp_types::DocumentRangeFormattingParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    range,
+                    options: options.clone(),
+                    work_done_progress_params: Default::default(),
+                };
+                handle
+                    .range_formatting(params, token.clone())
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                let params = lsp_types::DocumentFormattingParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    options,
+                    work_done_progress_params: Default::default(),
+                };
+                handle
+                    .formatting(params, token.clone())
+                    .await
+                    .ok()
+                    .flatten()
+            };
+            let edits = edits.unwrap_or_default();
+            let _ = tx.send(FormatOutcome::Edits(edits));
+        });
+    }
+
+    /// Drain the format response channel and apply the returned
+    /// edits as one undo unit. Echoes when the server returned
+    /// no edits ("already formatted") or no provider was
+    /// available.
+    pub fn drain_pending_format(&mut self) {
+        let Some(mut rx) = self.pending_format_rx.take() else {
+            return;
+        };
+        let mut latest: Option<FormatOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_format_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_format_token = None;
+        match outcome {
+            FormatOutcome::NoProvider { is_range } => {
+                let kind = if is_range { "range " } else { "" };
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("no server with {kind}formatting provider"),
+                );
+            }
+            FormatOutcome::Edits(edits) => {
+                if edits.is_empty() {
+                    self.set_message(
+                        EchoLevel::Info,
+                        "format: no changes (already formatted)".to_string(),
+                    );
+                    return;
+                }
+                let n = edits.len();
+                match self.apply_lsp_text_edits(edits) {
+                    Ok(()) => self.set_message(
+                        EchoLevel::Info,
+                        format!("format: applied {n} edit{}", if n == 1 { "" } else { "s" }),
+                    ),
+                    Err(e) => self.set_message(
+                        EchoLevel::Error,
+                        format!("format: apply failed: {e}"),
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Apply a `Vec<TextEdit>` (LSP utf-16 ranges) to the active
+    /// buffer as one undo unit. TextEdits are sorted in reverse
+    /// by start position so each application doesn't shift the
+    /// positions of the later ones (LSP convention: edits are
+    /// non-overlapping and reference the original document).
+    fn apply_lsp_text_edits(
+        &mut self,
+        mut edits: Vec<lsp_types::TextEdit>,
+    ) -> Result<(), String> {
+        edits.sort_by(|a, b| {
+            b.range
+                .start
+                .line
+                .cmp(&a.range.start.line)
+                .then_with(|| b.range.start.character.cmp(&a.range.start.character))
+        });
+        let snap = self.document.snapshot();
+        let mut lattice_edits: Vec<Edit> = Vec::with_capacity(edits.len());
+        for te in edits {
+            let start_line = te.range.start.line;
+            let end_line = te.range.end.line;
+            let start_byte = lsp_position_to_app_byte(
+                &snap.buffer,
+                start_line,
+                te.range.start.character,
+            );
+            let end_byte =
+                lsp_position_to_app_byte(&snap.buffer, end_line, te.range.end.character);
+            let range = lattice_protocol::position::Range::new(
+                Position::new(start_line, start_byte),
+                Position::new(end_line, end_byte),
+            );
+            lattice_edits.push(Edit::replace(range, te.new_text));
+        }
+        self.apply_edit_batch_blocking(lattice_edits)
+            .map(|_| ())
+            .map_err(|e| format!("{e:?}"))
+    }
+
     /// `:lsp-symbols` (Phase 4.2.e). Send
     /// `textDocument/documentSymbol` to every attached server;
     /// flatten the hierarchy + merge across servers; drain on
@@ -6862,6 +7110,8 @@ impl App {
             Effect::LspWorkspaceSymbol { query } => {
                 self.do_lsp_workspace_symbol_request(&query)
             }
+            Effect::LspFormat => self.do_lsp_format_request(false),
+            Effect::LspFormatRange => self.do_lsp_format_request(true),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
@@ -9573,7 +9823,9 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::SetLspLogLevel { .. }
         | Effect::LspLogClear { .. }
         | Effect::LspDocumentSymbol
-        | Effect::LspWorkspaceSymbol { .. } => false,
+        | Effect::LspWorkspaceSymbol { .. }
+        | Effect::LspFormat
+        | Effect::LspFormatRange => false,
     }
 }
 
@@ -9626,7 +9878,9 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::SetLspLogLevel { .. }
         | Effect::LspLogClear { .. }
         | Effect::LspDocumentSymbol
-        | Effect::LspWorkspaceSymbol { .. } => false,
+        | Effect::LspWorkspaceSymbol { .. }
+        | Effect::LspFormat
+        | Effect::LspFormatRange => false,
     }
 }
 
@@ -9698,6 +9952,15 @@ pub(crate) fn raw_buffer_candidates(
 /// `PositionEncodingKind` through here so utf-8 / utf-32 servers
 /// don't pay the utf-16 conversion. For 4.2.b utf-16 is correct
 /// for every server we care about today.
+/// Inverse of `app_to_lsp_position` -- LSP utf-16 character
+/// column → utf-8 byte column on the given line. Used by
+/// `apply_lsp_text_edits` to convert TextEdit ranges back to
+/// the App's `Position` shape.
+pub(crate) fn lsp_position_to_app_byte(buffer: &Buffer, line: u32, character: u32) -> u32 {
+    let line_text = buffer.line(line).unwrap_or_default();
+    lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, character)
+}
+
 pub(crate) fn app_to_lsp_position(buffer: &Buffer, p: Position) -> Option<lsp_types::Position> {
     let line_text = buffer.line(p.line)?;
     let character = lattice_lsp::position::utf8_byte_to_utf16_column(&line_text, p.byte);

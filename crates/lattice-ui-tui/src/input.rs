@@ -370,6 +370,12 @@ fn translate_normal(
             KeyCode::Char('r') => Action::Redo,
             KeyCode::Char('o') => Action::JumpHistoryBack,
             KeyCode::Char('i') => Action::JumpHistoryForward,
+            // `<C-t>` -- pop the tag stack (vim's `:pop`). The
+            // tag stack is the LIFO chain of `gd` / `gD` / `gy`
+            // / `gI` drill-downs, distinct from `<C-o>`'s jump
+            // list. Both walks coexist with different push
+            // semantics.
+            KeyCode::Char('t') => Action::TagStackPop,
             // `<C-l>` -- vim's "redraw screen" key. Reparses syntax
             // and tells the runtime to clear the terminal so any
             // visual glitch (stale highlight cache, leftover ANSI

@@ -449,6 +449,12 @@ pub enum Action {
     /// token rides on follow-up `gr` so a slow server can't
     /// drop a stale popup over a moved cursor.
     LspReferencesRequest,
+    /// `<C-t>` -- pop the tag stack (vim's tag-stack
+    /// `:pop`). Walks back through the LIFO chain of `gd` /
+    /// `gD` / `gy` / `gI` drill-downs. Independent of the
+    /// jump-list `<C-o>` walk: the stack and the list have
+    /// different push semantics and can have different lengths.
+    TagStackPop,
     /// `:lsp-symbols` (Phase 4.2.e). Send
     /// `textDocument/documentSymbol` to every attached server;
     /// render the merged outline as a vertico picker. Selecting
@@ -958,6 +964,21 @@ pub struct App {
     /// entry; the navigation action chooses both direction and filter.
     pub position_history: Vec<PositionEntry>,
     pub position_history_cursor: usize,
+    /// Vim-style tag stack (DESIGN.md §5.1.1 follow-up). Distinct
+    /// from the jump list: every "drill-down" navigation
+    /// (`gd` / `gD` / `gy` / `gI` and their multi-result picker
+    /// accept variants) pushes one entry; `<C-t>` pops the most
+    /// recent entry and walks back to the recorded position.
+    /// The user's mental model: `<C-o>` walks all jumps in
+    /// chronological order; `<C-t>` pops only the LIFO tag-style
+    /// drill-downs. They coexist deliberately and can have
+    /// different lengths.
+    pub tag_stack: Vec<TagStackEntry>,
+    /// Pre-jump origin captured when an LSP nav request fires;
+    /// transferred to `tag_stack` on the actual jump (single-
+    /// result drain or multi-result picker accept). Cleared on
+    /// picker dismiss / nav cancellation / drain with no results.
+    pub pending_tag_origin: Option<TagStackEntry>,
     /// Macros: completed recordings keyed by register name. Replays go
     /// through `do_play_macro`. v1 records `Action` streams; insert-mode
     /// keystrokes ARE captured (every Action::Insert is recorded), but
@@ -1416,6 +1437,29 @@ pub struct MacroRecording {
 
 const POSITION_HISTORY_CAP: usize = 100;
 
+/// One entry on the vim-style tag stack. Pushed by `gd` (and
+/// the goto-* family) at the pre-jump cursor; popped by `<C-t>`
+/// to walk back. Distinct from the jump list because the user's
+/// mental model for `<C-t>` is "undo the drill-down chain", not
+/// "step through every cursor jump in chronological order".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagStackEntry {
+    /// Buffer the user was looking at when they fired the
+    /// `gd` (or sibling) chord. Used to switch back to the
+    /// right buffer kind on `<C-t>` -- e.g. drilling out of a
+    /// help buffer pops back into the help buffer, not the
+    /// document.
+    pub buffer: BufferKind,
+    pub buffer_id: BufferId,
+    /// Cursor position at the time of the drill-down.
+    pub position: Position,
+    /// Symbol the user drilled into (e.g. `"foo"` for `gd` on
+    /// `foo`). Empty when no symbol was under cursor at the
+    /// time of the request. Renders in the `:tags` view (when
+    /// added) so users can see their walked chain.
+    pub label: String,
+}
+
 /// One entry in the unified position history (§5.1.1). v1 carries
 /// the originating [`BufferKind`] + [`BufferId`] so `<C-o>` /
 /// `<C-i>` walks across buffer boundaries cleanly (jumping from the
@@ -1771,6 +1815,8 @@ impl App {
             pending_register: None,
             position_history: Vec::new(),
             position_history_cursor: 0,
+            tag_stack: Vec::new(),
+            pending_tag_origin: None,
             macros: HashMap::new(),
             macro_recording: None,
             last_played_macro: None,
@@ -2136,6 +2182,11 @@ impl App {
     /// marginalia (`[E]` / `[W]` / `[I]` / `[H]`) and the
     /// diagnostic message as the preview text.
     pub fn do_list_diagnostics(&mut self) {
+        // `:diagnostics` is a browse-style picker, not a tag-
+        // intent drill-down -- clear any stale nav origin so a
+        // later JumpToLspLocation accept doesn't push a phantom
+        // tag stack entry.
+        self.pending_tag_origin = None;
         let snapshot = self.lsp_diagnostics.snapshot();
         if snapshot.is_empty() {
             self.set_message(EchoLevel::Info, "no diagnostics".to_string());
@@ -2909,6 +2960,7 @@ impl App {
                 self.do_lsp_nav_request(LspNavKind::Implementation)
             }
             Action::LspReferencesRequest => self.do_lsp_references_request(),
+            Action::TagStackPop => self.do_tag_stack_pop(),
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
             Action::LspWorkspaceSymbolRequest(q) => {
                 self.do_lsp_workspace_symbol_request(&q)
@@ -4804,6 +4856,12 @@ impl App {
     /// pane to whatever buffer it was on at picker-open. Tested
     /// by `picker_dismiss_restores_origin_when_previewing`.
     fn do_picker_dismiss(&mut self) {
+        // Drop any pending tag origin -- the user dismissed the
+        // picker, so no drill-down happened. Without this clear
+        // a subsequent `:lsp-symbols` (or any picker open) would
+        // inherit the stale origin and a later accept would
+        // push the wrong entry.
+        self.pending_tag_origin = None;
         let Some(picker) = self.picker.take() else {
             return;
         };
@@ -4898,9 +4956,66 @@ impl App {
                     );
                     return;
                 };
+                // If this picker came from a tag-intent nav
+                // (`gd` / `gD` / `gy` / `gI` multi-result),
+                // push the captured pre-jump origin onto the
+                // tag stack now -- the user has committed to
+                // a drill-down candidate. References /
+                // `:diagnostics` / symbol pickers don't set
+                // the origin so this is a no-op for them.
+                if let Some(origin) = self.pending_tag_origin.take() {
+                    self.tag_stack.push(origin);
+                }
                 self.jump_to_file_line_col(&path, line, col);
             }
         }
+    }
+
+    /// `<C-t>` -- pop the tag stack (vim's `:pop`). LIFO walk
+    /// back through the chain of `gd` / `gD` / `gy` / `gI`
+    /// drill-downs. Echoes "tag stack empty" with no entries.
+    /// Restores the recorded buffer (when cross-file) and
+    /// position; pushes the post-pop cursor onto the unified
+    /// position-history ring (PluginPush) so `<C-o>` continues
+    /// to walk the chronological jump record after a `<C-t>`
+    /// step.
+    fn do_tag_stack_pop(&mut self) {
+        let Some(entry) = self.tag_stack.pop() else {
+            self.set_message(EchoLevel::Info, "tag stack empty".to_string());
+            return;
+        };
+        // Push the *current* cursor onto the jump list before
+        // walking back so `<C-i>` returns to the post-pop spot.
+        self.push_position_history(self.cursor, PositionSource::PluginPush);
+        // If the recorded buffer differs from the active one,
+        // switch to it. The match is structural: prefer the
+        // exact `buffer_id` if it still exists in the registry,
+        // else any buffer of the recorded `buffer` kind.
+        let active_id = self.active_pane_buffer_id();
+        if entry.buffer_id != active_id {
+            // Best-effort activate; if the original buffer is
+            // gone (closed) the cursor still moves on whatever
+            // buffer is active. Acceptable v1 behaviour --
+            // future passes can echo "tag origin buffer gone"
+            // or hop to the alternate of the same kind.
+            if self.buffers.get(entry.buffer_id).is_some() {
+                self.activate_buffer(entry.buffer_id);
+            }
+        }
+        // Clamp to current buffer extents in case the doc was
+        // edited after the tag-stack push.
+        let buffer = self.active_text();
+        let last = last_addressable_line(&buffer);
+        let line = entry.position.line.min(last);
+        let len = line_byte_len(&buffer, line);
+        let col = entry.position.byte.min(len);
+        self.cursor = Position::new(line, col);
+        let label = if entry.label.is_empty() {
+            format!("tag pop -> ({},{})", line + 1, col + 1)
+        } else {
+            format!("tag pop -> {} ({},{})", entry.label, line + 1, col + 1)
+        };
+        self.set_message(EchoLevel::Info, label);
     }
 
     /// Jump to `path:line:col` (LSP 0-based line, utf-8 byte
@@ -5693,6 +5808,21 @@ impl App {
                 return;
             }
         };
+        // Capture the pre-jump origin for the tag stack -- the
+        // `gd` family is "drill down" navigation, so users
+        // expect `<C-t>` to walk back even after navigating
+        // through a chain of definitions. Keeps the active
+        // pane's buffer kind so dismissing into a help buffer
+        // pops correctly. The origin is consumed by the eventual
+        // jump (single-result drain or picker accept) and
+        // cleared otherwise.
+        let label = word_under_cursor(&snapshot.buffer, self.cursor).unwrap_or_default();
+        self.pending_tag_origin = Some(TagStackEntry {
+            buffer: self.active_buffer,
+            buffer_id: self.active_pane_buffer_id(),
+            position: self.cursor,
+            label,
+        });
         let (tx, rx) =
             tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
         let token = lattice_protocol::CancellationToken::new();
@@ -5825,15 +5955,26 @@ impl App {
 
         match locs.len() {
             0 => {
+                // No drill-down happened; drop the captured
+                // tag origin so a follow-up nav doesn't see a
+                // stale value.
+                self.pending_tag_origin = None;
                 self.set_message(EchoLevel::Info, format!("no {noun} found"));
             }
             1 => {
                 // Vim-style "do what I mean" -- a single-result
                 // nav request still jumps directly. Multi-result
-                // opens the picker below.
+                // opens the picker below. Single-result jump
+                // pushes the tag stack now.
+                if let Some(origin) = self.pending_tag_origin.take() {
+                    self.tag_stack.push(origin);
+                }
                 self.jump_to_lsp_location(&locs[0]);
             }
             _ => {
+                // Multi-result -- the picker will consume the
+                // pending tag origin on accept (see
+                // `do_picker_accept`); leave it set.
                 self.open_lsp_locations_picker(format!("lsp:{noun}"), &locs);
             }
         }
@@ -5851,6 +5992,8 @@ impl App {
         if let Some(token) = self.pending_references_token.take() {
             token.cancel();
         }
+        // Browse-style; not a tag-intent drill-down.
+        self.pending_tag_origin = None;
         let Some(uri) = self
             .buffer_uris
             .get(&self.document_buffer_id)
@@ -6164,6 +6307,8 @@ impl App {
         if let Some(token) = self.pending_symbols_token.take() {
             token.cancel();
         }
+        // Outline browse; not a tag-intent drill-down.
+        self.pending_tag_origin = None;
         let Some(uri) = self
             .buffer_uris
             .get(&self.document_buffer_id)
@@ -6233,6 +6378,8 @@ impl App {
         if let Some(token) = self.pending_symbols_token.take() {
             token.cancel();
         }
+        // Workspace search browse; not a tag-intent drill-down.
+        self.pending_tag_origin = None;
         // Workspace symbol is workspace-scoped, so we fan out
         // over EVERY server the supervisor has running -- not
         // just servers attached to the current buffer.
@@ -17019,6 +17166,99 @@ mod tests {
         // Cursor on the space.
         let p = Position::new(0, 3);
         assert_eq!(super::word_under_cursor(&snap.buffer, p), None);
+    }
+
+    #[test]
+    fn tag_stack_pop_on_empty_echoes_message() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::TagStackPop);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("tag stack empty"));
+    }
+
+    #[test]
+    fn tag_stack_drives_pop_back_to_origin() {
+        let mut a = app_with("alpha\nbeta\ngamma\ndelta\n", 10);
+        // Pretend we drilled down from line 0 col 2 to line 3
+        // col 1 (the gd-like `do_lsp_nav_request` -> drain
+        // single-result path normally pushes; we synthesise
+        // the entry directly to keep the test free of LSP wire).
+        a.tag_stack.push(super::TagStackEntry {
+            buffer: a.active_buffer,
+            buffer_id: a.active_pane_buffer_id(),
+            position: Position::new(0, 2),
+            label: "foo".into(),
+        });
+        a.cursor = Position::new(3, 1);
+        a.apply(Action::TagStackPop);
+        assert_eq!(a.cursor, Position::new(0, 2));
+        assert!(a.tag_stack.is_empty());
+        // Pop pushes the post-pop cursor onto position history
+        // (PluginPush) so a follow-up `<C-i>` returns to (3, 1).
+        let last = a.position_history.last().expect("history entry");
+        assert!(matches!(last.source, PositionSource::PluginPush));
+        assert_eq!(last.position, Position::new(3, 1));
+    }
+
+    #[test]
+    fn nav_request_captures_tag_origin_for_picker_consumption() {
+        // `do_lsp_nav_request` should set `pending_tag_origin`
+        // so a subsequent picker accept (multi-result) pushes
+        // the right entry onto the tag stack.
+        let mut a = app_with("foo bar\nbaz\n", 10);
+        a.cursor = Position::new(0, 1);
+        // Manually set a uri so do_lsp_nav_request gets past
+        // the "no LSP server" guard.
+        use std::str::FromStr;
+        a.buffer_uris.insert(
+            a.document_buffer_id,
+            lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap(),
+        );
+        a.apply(Action::LspDefinitionRequest);
+        let origin = a.pending_tag_origin.as_ref().expect("origin set");
+        assert_eq!(origin.position, Position::new(0, 1));
+        assert_eq!(origin.label, "foo");
+    }
+
+    #[test]
+    fn picker_dismiss_clears_pending_tag_origin() {
+        let mut a = app_with("foo\n", 10);
+        a.pending_tag_origin = Some(super::TagStackEntry {
+            buffer: a.active_buffer,
+            buffer_id: a.active_pane_buffer_id(),
+            position: Position::new(0, 0),
+            label: "foo".into(),
+        });
+        // Open + dismiss a picker. We don't need real candidates;
+        // a non-Some picker dismiss already takes the picker
+        // first. Simulate by setting picker Some.
+        let mut p = crate::picker::Picker::new(
+            "test",
+            crate::picker::PickerSource::LspLocations,
+            crate::picker::PickerAction::JumpToLspLocation,
+        );
+        p.set_lsp_locations(Vec::new());
+        a.picker = Some(p);
+        a.apply(Action::PickerDismiss);
+        assert!(a.pending_tag_origin.is_none());
+    }
+
+    #[test]
+    fn diagnostics_picker_clears_stale_tag_origin() {
+        // If a stale nav-intent origin was set (race scenario:
+        // gd fired but drain hasn't run; user invokes
+        // :diagnostics), opening the diagnostics picker MUST
+        // clear the origin so a later JumpToLspLocation accept
+        // doesn't push the wrong entry.
+        let mut a = app_with("foo\n", 10);
+        a.pending_tag_origin = Some(super::TagStackEntry {
+            buffer: a.active_buffer,
+            buffer_id: a.active_pane_buffer_id(),
+            position: Position::new(0, 0),
+            label: "stale".into(),
+        });
+        a.do_list_diagnostics();
+        assert!(a.pending_tag_origin.is_none());
     }
 
     #[test]

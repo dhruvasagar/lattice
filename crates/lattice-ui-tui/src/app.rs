@@ -2758,7 +2758,7 @@ impl App {
         result
     }
 
-    pub fn save_blocking(&self) -> Result<std::path::PathBuf, RuntimeError> {
+    pub fn save_blocking(&mut self) -> Result<std::path::PathBuf, RuntimeError> {
         // BeforeSave fires before the actor commits, so a future
         // veto-class handler (§5.10.2) can format / sanitize the
         // buffer before it hits disk. v1 is observation-only, so
@@ -2774,9 +2774,14 @@ impl App {
         // server attached to the buffer that advertises the
         // notification gets a heads-up before the disk write.
         // Manual reason today (`TextDocumentSaveReason::Manual`).
-        // `willSaveWaitUntil` for format-on-save is a separate
-        // hook in `do_lsp_save_format_on_save`.
         self.fire_will_save_notifications();
+        // willSaveWaitUntil block-on-response (Phase 4.3).
+        // Each server advertising the request returns a Vec<
+        // TextEdit> the editor applies pre-save. Format-on-
+        // save flows through here when the server emits one.
+        // Bounded by a 500ms timeout so a buggy server can't
+        // hang the save.
+        self.run_will_save_wait_until_blocking();
         let result = block_on(self.document.save());
         if let Ok(path) = result.as_ref() {
             self.event_bus.publish(Event::DocumentSaved {
@@ -2810,6 +2815,67 @@ impl App {
         for h in handles {
             if h.capabilities().wants_will_save() {
                 let _ = h.will_save(params.clone());
+            }
+        }
+    }
+
+    /// Run `textDocument/willSaveWaitUntil` against every
+    /// server advertising the request; collect their TextEdits
+    /// and apply them pre-save. Bounded by 500ms per server so
+    /// a buggy / slow server can't hang the save.
+    fn run_will_save_wait_until_blocking(&mut self) {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned()
+        else {
+            return;
+        };
+        let lsp = self.lsp.clone();
+        let handles = match lsp.try_lock() {
+            Ok(g) => g.servers_for(&uri),
+            Err(_) => return,
+        };
+        let interested: Vec<lattice_lsp::ServerHandle> = handles
+            .into_iter()
+            .filter(|h| h.capabilities().wants_will_save_wait_until())
+            .collect();
+        if interested.is_empty() {
+            return;
+        }
+        let params = lsp_types::WillSaveTextDocumentParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri },
+            reason: lsp_types::TextDocumentSaveReason::MANUAL,
+        };
+        // Collect edits from every interested server. Edits
+        // are applied per-server in order; later edits ride on
+        // top of earlier ones (same as multiple formatters
+        // chained). The 500ms bound is per-server.
+        let mut all_edits: Vec<lsp_types::TextEdit> = Vec::new();
+        for handle in interested {
+            let token = lattice_protocol::CancellationToken::new();
+            let pending = handle.will_save_wait_until(params.clone(), token.clone());
+            // Block on the response with a deadline. Pending
+            // implements `Future` directly, so we can `.await`
+            // it. 500ms timeout keeps a buggy / slow server
+            // from hanging the save.
+            let edits = block_on(async move {
+                tokio::select! {
+                    r = pending => r.ok().flatten().unwrap_or_default(),
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                        token.cancel();
+                        Vec::new()
+                    }
+                }
+            });
+            all_edits.extend(edits);
+        }
+        if !all_edits.is_empty() {
+            // Apply pre-save edits as one undo unit. A failed
+            // apply echoes but doesn't abort the save -- the
+            // user's data still hits disk.
+            if let Err(e) = self.apply_lsp_text_edits(all_edits) {
+                self.set_message(
+                    EchoLevel::Warn,
+                    format!("willSaveWaitUntil: apply failed: {e}"),
+                );
             }
         }
     }
@@ -8625,8 +8691,111 @@ impl App {
                 if self.signature_help_trigger_chars().contains(&inserted_char) {
                     self.do_lsp_signature_help_request();
                 }
+                // OnTypeFormatting trigger autopilot (Phase
+                // 4.3). C-family servers commonly advertise
+                // `;` / `}` / `\n`; the server returns small
+                // text edits adjusting the surrounding
+                // indentation. Skipped when no server
+                // advertises any triggers.
+                if self
+                    .on_type_formatting_trigger_chars()
+                    .contains(&inserted_char)
+                {
+                    self.do_lsp_on_type_formatting_request(inserted_char);
+                }
             }
         }
+    }
+
+    /// Union of onTypeFormatting trigger characters across LSP
+    /// servers attached to the active document.
+    fn on_type_formatting_trigger_chars(&self) -> Vec<char> {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return Vec::new();
+        };
+        let lsp = self.lsp.clone();
+        let uri = uri.clone();
+        let handles = match lsp.try_lock() {
+            Ok(g) => g.servers_for(&uri),
+            Err(_) => return Vec::new(),
+        };
+        let mut chars: Vec<char> = Vec::new();
+        for h in handles {
+            for c in h.capabilities().on_type_formatting_trigger_chars() {
+                if !chars.contains(&c) {
+                    chars.push(c);
+                }
+            }
+        }
+        chars
+    }
+
+    /// Fire `textDocument/onTypeFormatting` to the highest-
+    /// priority server advertising the trigger; apply the
+    /// returned edits as one undo unit. Synchronous response
+    /// path -- onTypeFormatting is small / fast and the user
+    /// expects the indent fix immediately on type.
+    fn do_lsp_on_type_formatting_request(&mut self, trigger: char) {
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let pos = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => return,
+        };
+        let lsp = self.lsp.clone();
+        let trigger_str = trigger.to_string();
+        let options = lsp_types::FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            properties: Default::default(),
+            trim_trailing_whitespace: Some(true),
+            insert_final_newline: Some(true),
+            trim_final_newlines: Some(true),
+        };
+        // OnTypeFormatting fires per-character; apply the
+        // result via the same async drain path the format
+        // request uses. Reuse `pending_format_*` since onType
+        // and `:format` are mutually exclusive in time
+        // (format-on-save fires only on the explicit save).
+        if let Some(token) = self.pending_format_token.take() {
+            token.cancel();
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FormatOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_format_rx = Some(rx);
+        self.pending_format_token = Some(token.clone());
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.lock().await.servers_for(&uri) };
+            let chosen = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_on_type_formatting());
+            let Some(handle) = chosen else {
+                let _ = tx.send(FormatOutcome::NoProvider { is_range: false });
+                return;
+            };
+            let params = lsp_types::DocumentOnTypeFormattingParams {
+                text_document_position: lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri },
+                    position: pos,
+                },
+                ch: trigger_str,
+                options,
+            };
+            let edits = handle
+                .on_type_formatting(params, token)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let _ = tx.send(FormatOutcome::Edits(edits));
+        });
     }
 
     /// Union of signature-help trigger characters across every

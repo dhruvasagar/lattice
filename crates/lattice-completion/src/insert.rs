@@ -304,69 +304,79 @@ impl CandidateMatcher for FuzzyInsertMatcher {
         query: &str,
         candidate: &RawCandidate,
     ) -> Option<(crate::candidate::MatchScore, Vec<Range<usize>>)> {
-        let text = &candidate.text;
-        if query.is_empty() {
-            return Some((crate::candidate::MatchScore(100), Vec::new()));
-        }
-        // Lowercase folding for the comparisons. The ranges we
-        // return are byte ranges into the *original* text.
-        let q_lower: String = query.to_lowercase();
-        let t_lower: String = text.to_lowercase();
-        let q_bytes = q_lower.as_bytes();
-        let t_bytes = t_lower.as_bytes();
-
-        // Tier 1: exact (case-insensitive).
-        if q_lower == t_lower {
-            return Some((
-                crate::candidate::MatchScore(1000),
-                vec![0..text.len()],
-            ));
-        }
-
-        // Tier 2: prefix (case-insensitive). Match range is the
-        // prefix bytes in the original text.
-        if t_lower.starts_with(&q_lower) {
-            // The original-text prefix length matches the
-            // lowercase prefix length when both are pure-ASCII;
-            // for non-ASCII inputs we still highlight up to the
-            // shared codepoint count.
-            let prefix_len = shared_prefix_byte_len(text, query);
-            return Some((
-                crate::candidate::MatchScore(800),
-                vec![0..prefix_len.max(query.len())],
-            ));
-        }
-
-        // Tier 3: word-boundary subsequence. Each query char
-        // matches at a word boundary (start of text, after a
-        // non-alpha, or at a camelCase boundary).
-        if let Some(ranges) = match_word_boundary(text, query) {
-            return Some((crate::candidate::MatchScore(600), ranges));
-        }
-
-        // Tier 4: contiguous substring (case-insensitive).
-        if let Some(start) = t_lower.find(&q_lower) {
-            return Some((
-                crate::candidate::MatchScore(400),
-                vec![start..start + q_lower.len()],
-            ));
-        }
-
-        // Tier 5: subsequence. Walk t with q's characters in
-        // order; the score decays with the number of skipped
-        // characters between matches.
-        let (matched, ranges) = subsequence_match(t_bytes, q_bytes);
-        if matched {
-            let skipped = text.len().saturating_sub(query.len());
-            let score = 200u32.saturating_sub(skipped as u32 * 5);
-            return Some((
-                crate::candidate::MatchScore(score.max(1)),
-                ranges,
-            ));
-        }
-
-        None
+        // The trait matches on `candidate.text` -- the canonical
+        // searchable form. Surfaces that want to match on a
+        // different field (e.g. picker rows whose `text` carries
+        // routing payload separate from the user-visible label)
+        // call [`fuzzy_match`] directly with their target string.
+        fuzzy_match(query, &candidate.text)
     }
+}
+
+/// Free-function fuzzy match -- the algorithm beneath
+/// [`FuzzyInsertMatcher`]. Exposed so surfaces that need to
+/// match on a string other than `RawCandidate.text` (e.g. the
+/// vertico picker, which matches on the user-visible `display`
+/// while `text` carries a routing payload) get the same
+/// 5-tier scoring without duplicating the algorithm.
+///
+/// Empty `query` yields a uniform score of 100; non-matches
+/// return `None`. Returned byte ranges are into `target`.
+pub fn fuzzy_match(
+    query: &str,
+    target: &str,
+) -> Option<(crate::candidate::MatchScore, Vec<Range<usize>>)> {
+    if query.is_empty() {
+        return Some((crate::candidate::MatchScore(100), Vec::new()));
+    }
+    let q_lower: String = query.to_lowercase();
+    let t_lower: String = target.to_lowercase();
+    let q_bytes = q_lower.as_bytes();
+    let t_bytes = t_lower.as_bytes();
+
+    // Tier 1: exact (case-insensitive).
+    if q_lower == t_lower {
+        return Some((
+            crate::candidate::MatchScore(1000),
+            vec![0..target.len()],
+        ));
+    }
+
+    // Tier 2: prefix (case-insensitive).
+    if t_lower.starts_with(&q_lower) {
+        let prefix_len = shared_prefix_byte_len(target, query);
+        return Some((
+            crate::candidate::MatchScore(800),
+            vec![0..prefix_len.max(query.len())],
+        ));
+    }
+
+    // Tier 3: word-boundary subsequence (camelCase /
+    // snake_case / after-separator).
+    if let Some(ranges) = match_word_boundary(target, query) {
+        return Some((crate::candidate::MatchScore(600), ranges));
+    }
+
+    // Tier 4: contiguous substring.
+    if let Some(start) = t_lower.find(&q_lower) {
+        return Some((
+            crate::candidate::MatchScore(400),
+            vec![start..start + q_lower.len()],
+        ));
+    }
+
+    // Tier 5: subsequence with skip-decay.
+    let (matched, ranges) = subsequence_match(t_bytes, q_bytes);
+    if matched {
+        let skipped = target.len().saturating_sub(query.len());
+        let score = 200u32.saturating_sub(skipped as u32 * 5);
+        return Some((
+            crate::candidate::MatchScore(score.max(1)),
+            ranges,
+        ));
+    }
+
+    None
 }
 
 fn shared_prefix_byte_len(text: &str, query: &str) -> usize {

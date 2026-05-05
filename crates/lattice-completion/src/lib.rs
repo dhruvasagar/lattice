@@ -39,7 +39,7 @@ pub use crate::candidate::{
 };
 pub use crate::insert::{
     BufferWordsSource, CompletionTrigger, DocPopupState, FuzzyInsertMatcher, InsertCompletionState,
-    InsertContext, InsertRanker, InsertSource, SourceId,
+    InsertContext, InsertRanker, InsertSource, SourceId, fuzzy_match,
 };
 pub use crate::pipeline::CompletionPipeline;
 pub use crate::registry::{

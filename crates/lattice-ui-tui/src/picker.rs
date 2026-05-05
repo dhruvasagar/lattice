@@ -47,10 +47,9 @@
 //! `lattice-completion`. No file-by-file edits required because
 //! every coupling already lives in the host.
 
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use lattice_completion::{MatchScore, RawCandidate, RenderedCandidate};
+use lattice_completion::{MatchScore, RawCandidate, RenderedCandidate, fuzzy_match};
 
 /// Where a picker pulls its raw candidates from. The App resolves
 /// this on `populate` / `refresh` and walks the appropriate source.
@@ -214,34 +213,28 @@ impl Picker {
     }
 
     /// Filter `raw` against the current `query` and write the
-    /// matches into `candidates`. Substring + case-insensitive,
-    /// scored by match offset (earlier match = higher score) so
-    /// the first hit becomes the natural top row.
+    /// matches into `candidates`. Routes through
+    /// [`lattice_completion::fuzzy_match`] -- the same 5-tier
+    /// algorithm Insert-mode completion uses (exact / prefix /
+    /// word-boundary / substring / subsequence). Picker rows
+    /// match against `display` because their `text` field
+    /// often carries a routing payload (e.g.
+    /// `"<server_id>\t<workspace>"`) the user never sees.
+    /// Empty query yields a uniform score so every candidate
+    /// passes through; the rust stdlib's stable sort preserves
+    /// the host-supplied insertion order on ties (callers like
+    /// the buffer switcher depend on this -- alternate-buffer
+    /// floats to the top via insertion order).
     pub fn refilter(&mut self) {
-        let q = self.query.to_lowercase();
-        let mut scored: Vec<(RawCandidate, MatchScore, Vec<Range<usize>>)> = Vec::new();
+        let mut scored: Vec<(RawCandidate, MatchScore, Vec<std::ops::Range<usize>>)> =
+            Vec::new();
         for raw in &self.raw {
-            if q.is_empty() {
-                scored.push((raw.clone(), MatchScore::PERFECT, Vec::new()));
-                continue;
-            }
-            let display_lc = raw.display.to_lowercase();
-            if let Some(start) = display_lc.find(&q) {
-                let end = start + q.len();
-                // Score: earlier match wins; prefix-at-zero gets
-                // PREFIX, otherwise SUBSTRING with a small bonus
-                // inversely proportional to the offset so 'foo'
-                // landing at byte 1 still ranks above 'foo' at
-                // byte 20.
-                let score = if start == 0 {
-                    MatchScore::PREFIX
-                } else {
-                    let bonus = 200u32.saturating_sub(start as u32 * 4);
-                    MatchScore(MatchScore::SUBSTRING.get() + bonus)
-                };
-                scored.push((raw.clone(), score, vec![Range { start, end }]));
+            if let Some((score, ranges)) = fuzzy_match(&self.query, &raw.display) {
+                scored.push((raw.clone(), score, ranges));
             }
         }
+        // Stable sort by score descending -- equal-score
+        // candidates retain insertion order.
         scored.sort_by(|a, b| b.1.cmp(&a.1));
         self.candidates = scored
             .into_iter()

@@ -177,6 +177,10 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // `gd` spawns a request; single-result jumps in-place,
         // multi-result echoes a count + jumps to first.
         app.drain_pending_definitions();
+        // Drain queued LSP references responses (Phase 4.2.d).
+        // `gr` spawns a request; the merged + deduped list opens
+        // as a `*lsp:references*` help-style buffer in-pane.
+        app.drain_pending_references();
         // Drain queued Event::LspLogPushed events (Phase 4) and
         // refresh any open log / trace buffers from the logger
         // snapshot. Cheap on an idle channel; cheap when no log

@@ -643,6 +643,11 @@ fn resolve_after_g(event: KeyEvent, builtins: &Builtins) -> Action {
         // `gi` belongs to vim's "go to last insert position" --
         // not yet wired.
         KeyCode::Char('I') => Action::LspImplementationRequest,
+        // `gr`: textDocument/references. Opens a buffer-backed
+        // list view of every call site. Vim's default `gr`
+        // (virtual replace one char) isn't currently bound, so
+        // no conflict.
+        KeyCode::Char('r') => Action::LspReferencesRequest,
         _ => Action::SetPending(Pending::None),
     }
 }
@@ -2384,6 +2389,18 @@ mod tests {
                 key(KeyCode::Char('I'))
             ),
             Action::LspImplementationRequest
+        ));
+    }
+
+    #[test]
+    fn gr_after_g_emits_lsp_references_request() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Normal, Pending::AfterG, &b),
+                key(KeyCode::Char('r'))
+            ),
+            Action::LspReferencesRequest
         ));
     }
 

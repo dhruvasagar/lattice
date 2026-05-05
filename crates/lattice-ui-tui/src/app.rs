@@ -440,6 +440,15 @@ pub enum Action {
     /// interface?". Often returns multiple locations; shares
     /// definition's pick-or-list dispatch.
     LspImplementationRequest,
+    /// `gr` (Phase 4.2.d). Send `textDocument/references` to
+    /// every attached LSP server; render the merged + deduped
+    /// list as a `*lsp:references*` help-style buffer with one
+    /// `[path:line:col](file:...)` row per hit. `<CR>` on a row
+    /// jumps to the location via the existing
+    /// `do_help_follow_link` Source-link path. Cancellation
+    /// token rides on follow-up `gr` so a slow server can't
+    /// drop a stale popup over a moved cursor.
+    LspReferencesRequest,
     /// `"<reg>` prefix -- stash the named register for the next operator
     /// / paste invocation.
     SelectRegister(Register),
@@ -795,6 +804,18 @@ pub struct App {
     /// reason to have more than one in flight at once -- a
     /// follow-up nav cancels its predecessor.
     pub pending_nav_kind: Option<LspNavKind>,
+    /// Receiver for in-flight references responses (Phase 4.2.d).
+    /// References gets its own slot (separate from
+    /// `pending_definition_*`) because the result handling differs
+    /// -- references opens a buffer-backed list view rather than
+    /// jumping. The two surfaces could coexist (a hover popup +
+    /// a references list), so they don't fight over the slot.
+    pub pending_references_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<ReferencesOutcome>>,
+    /// Cancellation token for the most recent references request.
+    /// Flipped on follow-up `gr` so a slow server's response
+    /// can't open a list against a moved cursor.
+    pub pending_references_token: Option<lattice_protocol::CancellationToken>,
     /// Receiver end of the App's own subscription to
     /// `EventKind::OptionChanged` (DESIGN.md §5.10 + §5.12). The
     /// typed-options registry publishes through `event_bus` on
@@ -1199,6 +1220,27 @@ pub enum HoverOutcome {
     /// servers' spawn failed at boot, or the file extension
     /// isn't covered). Echo so the user can `:lsp-status` /
     /// `:lsp-log` to investigate.
+    NoServers,
+}
+
+/// Result of a `gr` (LSP references) request, sent from the
+/// spawned task to the App's main thread via
+/// [`App::pending_references_rx`]. Carries the symbol-under-
+/// cursor verbatim so the rendered help buffer's title reads
+/// `References for "foo"` and the user has confirmation of what
+/// they searched for.
+#[derive(Debug, Clone)]
+pub enum ReferencesOutcome {
+    /// Merged + deduped reference list across attached servers.
+    /// May be empty (Found(symbol, [])) when servers know about
+    /// the symbol but it has no other call sites; the help buffer
+    /// renders an explicit "(no references)" line.
+    Found {
+        symbol: String,
+        locations: Vec<lsp_types::Location>,
+    },
+    /// The buffer's URI maps to no attached servers. Echo
+    /// "no LSP server attached" so the user can investigate.
     NoServers,
 }
 
@@ -1628,6 +1670,8 @@ impl App {
             pending_definition_rx: None,
             pending_definition_token: None,
             pending_nav_kind: None,
+            pending_references_rx: None,
+            pending_references_token: None,
             lang_registry,
             builtins,
             command_line: String::new(),
@@ -2747,6 +2791,7 @@ impl App {
             Action::LspImplementationRequest => {
                 self.do_lsp_nav_request(LspNavKind::Implementation)
             }
+            Action::LspReferencesRequest => self.do_lsp_references_request(),
             Action::SelectRegister(reg) => {
                 self.pending_register = Some(reg);
             }
@@ -5568,6 +5613,135 @@ impl App {
                     format!("{n} {noun}; jumping to first (picker comes in 4.2.d)"),
                 );
                 self.jump_to_lsp_location(&locs[0]);
+            }
+        }
+    }
+
+    /// `gr` (Phase 4.2.d). Send `textDocument/references` to
+    /// every attached LSP server with `include_declaration: true`
+    /// (vim convention -- `gr` includes the symbol's own
+    /// declaration in the list). Spawn the per-server walk on
+    /// the LSP runtime; drain on the next frame opens a buffer-
+    /// backed `*lsp:references*` view in the active pane.
+    ///
+    /// Multi-server merge: union, deduped by `(uri, range.start)`.
+    fn do_lsp_references_request(&mut self) {
+        if let Some(token) = self.pending_references_token.take() {
+            token.cancel();
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => {
+                self.set_message(
+                    EchoLevel::Error,
+                    "references: cursor out of buffer".to_string(),
+                );
+                return;
+            }
+        };
+        // Capture the symbol under cursor for the help-buffer's
+        // title. Best-effort -- empty string when the cursor isn't
+        // on a word (the title falls back to "(symbol)").
+        let symbol = word_under_cursor(&snapshot.buffer, self.cursor).unwrap_or_default();
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<ReferencesOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_references_rx = Some(rx);
+        self.pending_references_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.lock().await.servers_for(&uri) };
+            if handles.is_empty() {
+                let _ = tx.send(ReferencesOutcome::NoServers);
+                return;
+            }
+            let mut all: Vec<lsp_types::Location> = Vec::new();
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                let params = lsp_types::ReferenceParams {
+                    text_document_position: lsp_types::TextDocumentPositionParams {
+                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                        position: lsp_position,
+                    },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    context: lsp_types::ReferenceContext {
+                        include_declaration: true,
+                    },
+                };
+                if let Ok(Some(locs)) = handle.references(params, token.clone()).await {
+                    all.extend(locs);
+                }
+            }
+            // Sort + dedup by (uri, range.start) so the rendered
+            // buffer is stable + free of duplicates from
+            // overlapping multi-server responses.
+            all.sort_by(|a, b| {
+                let au = a.uri.as_str();
+                let bu = b.uri.as_str();
+                au.cmp(bu)
+                    .then_with(|| a.range.start.line.cmp(&b.range.start.line))
+                    .then_with(|| a.range.start.character.cmp(&b.range.start.character))
+            });
+            all.dedup_by(|a, b| {
+                a.uri.as_str() == b.uri.as_str() && a.range.start == b.range.start
+            });
+            let _ = tx.send(ReferencesOutcome::Found {
+                symbol,
+                locations: all,
+            });
+        });
+    }
+
+    /// Drain queued references results. The merged list is
+    /// rendered as a `*lsp:references*` help buffer and opened
+    /// in-pane via [`Self::open_help_in_pane`]; existing follow-
+    /// link machinery (`<CR>` on a Source link) handles jumps.
+    /// `NoServers` echoes "no LSP server attached"; an empty
+    /// `Found(_, [])` opens the buffer with a "(no references)"
+    /// placeholder so the user gets clear feedback.
+    pub fn drain_pending_references(&mut self) {
+        let Some(mut rx) = self.pending_references_rx.take() else {
+            return;
+        };
+        let mut latest: Option<ReferencesOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_references_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        // Delivered; clear the in-flight token regardless of
+        // shape so a follow-up gr fires fresh.
+        self.pending_references_token = None;
+        match outcome {
+            ReferencesOutcome::NoServers => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no LSP server attached to current buffer".to_string(),
+                );
+            }
+            ReferencesOutcome::Found { symbol, locations } => {
+                let buffer = crate::help::HelpBuffer::lsp_references(&symbol, &locations)
+                    .with_markdown_syntax(self.lang_registry.clone());
+                self.open_help_in_pane(buffer);
             }
         }
     }
@@ -9119,6 +9293,35 @@ pub(crate) fn app_to_lsp_position(buffer: &Buffer, p: Position) -> Option<lsp_ty
         line: p.line,
         character,
     })
+}
+
+/// Word (alphanumeric + `_` run) under `cursor` in `buffer`, or
+/// `None` when the cursor isn't on a word byte. Mirrors vim's
+/// `<cword>` for the simple case that `:references` needs to
+/// label its results buffer ("References for \"foo\""). Walks
+/// the line once at the cursor column; doesn't scan forward to
+/// the next word like `do_search_word_under_cursor` does --
+/// "no symbol under cursor" is preferable to a label that
+/// jumps to a different identifier than the user pointed at.
+pub(crate) fn word_under_cursor(buffer: &Buffer, cursor: Position) -> Option<String> {
+    let line = buffer.line(cursor.line)?;
+    let bytes = line.as_bytes();
+    let byte_idx = cursor.byte as usize;
+    if byte_idx >= bytes.len() || !is_word_char_byte(bytes[byte_idx]) {
+        return None;
+    }
+    let mut start = byte_idx;
+    while start > 0 && is_word_char_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = byte_idx;
+    while end < bytes.len() && is_word_char_byte(bytes[end]) {
+        end += 1;
+    }
+    if start == end {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&bytes[start..end]).into_owned())
 }
 
 /// Flatten an LSP `GotoDefinitionResponse` (Scalar / Array /
@@ -15757,6 +15960,119 @@ mod tests {
         a.drain_pending_definitions();
         let msg = a.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no declarations"));
+    }
+
+    #[test]
+    fn lsp_references_request_with_no_uri_echoes_no_lsp_attached() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::LspReferencesRequest);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn lsp_references_request_pre_cancels_in_flight_token() {
+        let mut a = app_with("xx", 10);
+        let stale = lattice_protocol::CancellationToken::new();
+        a.pending_references_token = Some(stale.clone());
+        a.apply(Action::LspReferencesRequest);
+        assert!(stale.is_cancelled());
+    }
+
+    #[test]
+    fn drain_pending_references_no_servers_outcome_echoes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
+        a.pending_references_rx = Some(rx);
+        a.pending_references_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::ReferencesOutcome::NoServers).unwrap();
+        a.drain_pending_references();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no LSP server"));
+        assert!(a.pending_references_token.is_none());
+    }
+
+    #[test]
+    fn drain_pending_references_found_opens_lsp_references_buffer() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
+        a.pending_references_rx = Some(rx);
+        a.pending_references_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::ReferencesOutcome::Found {
+            symbol: "foo".into(),
+            locations: vec![loc("/tmp/notarealfile.rs", 3, 5)],
+        })
+        .unwrap();
+        a.drain_pending_references();
+        // Help buffer opened in the active pane via the registry.
+        let id = a.pane_tree.active().buffer_id;
+        let entry = a.buffers.help(id).expect("help buffer");
+        assert_eq!(entry.title, "lsp:references");
+        let body = entry.content.as_string();
+        assert!(body.contains("References for \"foo\""), "got: {body}");
+        // The rope stores the cleaned link *label* only; the
+        // target lives in `entry.links` as a HelpLinkTarget::Source
+        // with the LSP 0-based line. The label uses 1-based for
+        // display, so look for `:4:6` (line 3+1, char 5+1).
+        assert!(body.contains("/tmp/notarealfile.rs:4:6"), "got: {body}");
+        // Verify the link's source target carries the 0-based line.
+        let has_source_link = entry.links.iter().any(|l| matches!(
+            &l.target,
+            crate::help::HelpLinkTarget::Source { path, line }
+                if path == "/tmp/notarealfile.rs" && *line == 3
+        ));
+        assert!(
+            has_source_link,
+            "expected Source link target, got links: {:?}",
+            entry.links
+        );
+    }
+
+    #[test]
+    fn drain_pending_references_empty_renders_no_references_placeholder() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
+        a.pending_references_rx = Some(rx);
+        a.pending_references_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::ReferencesOutcome::Found {
+            symbol: "missing".into(),
+            locations: Vec::new(),
+        })
+        .unwrap();
+        a.drain_pending_references();
+        let id = a.pane_tree.active().buffer_id;
+        let entry = a.buffers.help(id).expect("help buffer");
+        let body = entry.content.as_string();
+        assert!(body.contains("0 found"));
+        assert!(body.contains("(no references)"));
+    }
+
+    #[test]
+    fn word_under_cursor_returns_alphanumeric_run() {
+        let mut a = app_with("hello world", 10);
+        a.cursor = Position::new(0, 0);
+        let snap = a.document.snapshot();
+        assert_eq!(
+            super::word_under_cursor(&snap.buffer, a.cursor),
+            Some("hello".to_string())
+        );
+        a.cursor = Position::new(0, 6);
+        assert_eq!(
+            super::word_under_cursor(&snap.buffer, a.cursor),
+            Some("world".to_string())
+        );
+    }
+
+    #[test]
+    fn word_under_cursor_returns_none_off_word() {
+        let a = app_with("foo bar", 10);
+        let snap = a.document.snapshot();
+        // Cursor on the space.
+        let p = Position::new(0, 3);
+        assert_eq!(super::word_under_cursor(&snap.buffer, p), None);
     }
 
     #[test]

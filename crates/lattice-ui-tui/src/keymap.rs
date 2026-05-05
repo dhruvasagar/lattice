@@ -344,6 +344,7 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: AfterG, chord: "gD", doc: "LSP: go to declaration (textDocument/declaration)" },
         keymap_entry! { mode: AfterG, chord: "gy", doc: "LSP: go to type definition (textDocument/typeDefinition)" },
         keymap_entry! { mode: AfterG, chord: "gI", doc: "LSP: go to implementation (textDocument/implementation)" },
+        keymap_entry! { mode: AfterG, chord: "gr", doc: "LSP: list references (textDocument/references)" },
         // ---- LSP top-level keys ----
         keymap_entry! { mode: Normal, chord: "K", doc: "LSP: hover documentation popup at cursor (textDocument/hover)" },
         // ---- After-z sub-commands (scroll + folds) ----

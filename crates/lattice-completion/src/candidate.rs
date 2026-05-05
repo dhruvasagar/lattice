@@ -25,7 +25,7 @@ use lattice_grammar::source::SourceLocation;
 /// What kind of thing this candidate is. Drives icon / colour /
 /// grouping in the popup, and (for CommandKind) hints at the
 /// follow-up `:describe-*` target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CandidateKind {
     Command,
     Option,

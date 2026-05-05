@@ -487,8 +487,34 @@ pub struct InsertRanker;
 impl InsertRanker {
     pub const ID: &'static str = "rank:insert";
 
+    /// Cap on the per-item frequency bonus, per
+    /// `docs/insert-completion.md` §3.6.
+    pub const FREQUENCY_BONUS_CAP: u32 = 50;
+
     pub fn new() -> Self {
         Self
+    }
+
+    /// Rank with a frequency bias supplied by the host. The
+    /// `lookup` closure returns the raw accept-count for a
+    /// candidate; the ranker clamps the bonus at
+    /// [`Self::FREQUENCY_BONUS_CAP`] before adding it to the
+    /// matcher's score and re-sorting descending.
+    ///
+    /// The host owns the count map (App-level
+    /// `(text, kind) -> u32` per `docs/insert-completion.md` §3.6
+    /// and §11/Phase 4.2.g.5); this crate stays state-free so
+    /// per-source-priority and per-language slots can plug in via
+    /// the same closure shape later without growing the trait.
+    pub fn rank_with_frequency(
+        &self,
+        scored: &mut Vec<ScoredCandidate>,
+        lookup: impl Fn(&RawCandidate) -> u32,
+    ) {
+        scored.sort_by_cached_key(|s| {
+            let bonus = lookup(&s.raw).min(Self::FREQUENCY_BONUS_CAP);
+            std::cmp::Reverse(s.score.0.saturating_add(bonus))
+        });
     }
 }
 
@@ -855,5 +881,82 @@ mod tests {
         assert_eq!(scored[0].raw.text, "high");
         assert_eq!(scored[1].raw.text, "mid");
         assert_eq!(scored[2].raw.text, "low");
+    }
+
+    #[test]
+    fn rank_with_frequency_lifts_previously_accepted_above_peers() {
+        // Two candidates tied on matcher score; the one the
+        // user has accepted before should sort above the peer.
+        let r = InsertRanker::new();
+        let mut scored = vec![
+            ScoredCandidate {
+                raw: RawCandidate::plain("alpha", CandidateKind::Plain),
+                score: crate::candidate::MatchScore(100),
+                match_ranges: Vec::new(),
+            },
+            ScoredCandidate {
+                raw: RawCandidate::plain("bravo", CandidateKind::Plain),
+                score: crate::candidate::MatchScore(100),
+                match_ranges: Vec::new(),
+            },
+        ];
+        r.rank_with_frequency(&mut scored, |raw| match raw.text.as_str() {
+            "bravo" => 5,
+            _ => 0,
+        });
+        assert_eq!(scored[0].raw.text, "bravo");
+        assert_eq!(scored[1].raw.text, "alpha");
+    }
+
+    #[test]
+    fn rank_with_frequency_caps_bonus_at_fifty() {
+        // A huge accept-count never lets a low-scoring item
+        // overtake a high-scoring one beyond the +50 cap.
+        let r = InsertRanker::new();
+        let mut scored = vec![
+            ScoredCandidate {
+                raw: RawCandidate::plain("rare-but-strong", CandidateKind::Plain),
+                score: crate::candidate::MatchScore(200),
+                match_ranges: Vec::new(),
+            },
+            ScoredCandidate {
+                raw: RawCandidate::plain("frequent-but-weak", CandidateKind::Plain),
+                score: crate::candidate::MatchScore(100),
+                match_ranges: Vec::new(),
+            },
+        ];
+        // Count = 9999 -> bonus clamped to 50; weak still <
+        // strong (100 + 50 < 200).
+        r.rank_with_frequency(&mut scored, |raw| {
+            if raw.text == "frequent-but-weak" {
+                9999
+            } else {
+                0
+            }
+        });
+        assert_eq!(scored[0].raw.text, "rare-but-strong");
+        assert_eq!(scored[1].raw.text, "frequent-but-weak");
+    }
+
+    #[test]
+    fn rank_with_frequency_zero_bonus_matches_plain_rank() {
+        // With every lookup returning 0, behaviour matches the
+        // plain `rank` call: pure descending sort by score.
+        let r = InsertRanker::new();
+        let mut scored = vec![
+            ScoredCandidate {
+                raw: RawCandidate::plain("low", CandidateKind::Plain),
+                score: crate::candidate::MatchScore(10),
+                match_ranges: Vec::new(),
+            },
+            ScoredCandidate {
+                raw: RawCandidate::plain("high", CandidateKind::Plain),
+                score: crate::candidate::MatchScore(100),
+                match_ranges: Vec::new(),
+            },
+        ];
+        r.rank_with_frequency(&mut scored, |_| 0);
+        assert_eq!(scored[0].raw.text, "high");
+        assert_eq!(scored[1].raw.text, "low");
     }
 }

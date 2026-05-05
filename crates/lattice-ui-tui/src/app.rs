@@ -1255,6 +1255,17 @@ pub struct App {
     /// same shape as `insert_completion_lsp_meta` for the
     /// LSP source.
     pub insert_completion_snippet_meta: Vec<SnippetCandidateMeta>,
+    /// Per-session accept-count map for the insert-mode
+    /// completion popup (Phase 4.2.g.5). Each accepted candidate
+    /// bumps the counter for its `(text, kind)` pair; the ranker
+    /// reads this map and adds a bounded bonus
+    /// (`InsertRanker::FREQUENCY_BONUS_CAP`) so recently-accepted
+    /// items bubble above tied peers next time. In-memory only
+    /// in v1 -- cleared on process exit; persistence with a
+    /// privacy story lands later (Phase 4.2.g.7 polish queue per
+    /// `docs/insert-completion.md` §11).
+    pub completion_accept_freq:
+        std::collections::HashMap<(String, lattice_completion::CandidateKind), u32>,
     /// Live snippet expansion. `Some` while a snippet is
     /// active and `<Tab>` / `<S-Tab>` navigate placeholders.
     /// Dropped on `$0` consumption / `<Esc>` / cursor moving
@@ -2223,6 +2234,7 @@ impl App {
             pending_completion_resolve_token: None,
             snippet_registry: lattice_snippet::SnippetRegistry::new(),
             insert_completion_snippet_meta: Vec::new(),
+            completion_accept_freq: std::collections::HashMap::new(),
             active_snippet: None,
             snippet_dirs: Vec::new(),
             picker: None,
@@ -6431,7 +6443,7 @@ impl App {
             })
             .collect();
         let ranker = lattice_completion::InsertRanker::new();
-        lattice_completion::CandidateRanker::rank(&ranker, &mut scored);
+        ranker.rank_with_frequency(&mut scored, |raw| self.frequency_bonus_for(raw));
         state.rendered = scored
             .into_iter()
             .map(lattice_completion::RenderedCandidate::from_scored)
@@ -6439,6 +6451,19 @@ impl App {
         if !state.rendered.is_empty() && state.selected >= state.rendered.len() {
             state.selected = state.rendered.len() - 1;
         }
+    }
+
+    /// Raw accept-count for a candidate -- the ranker clamps
+    /// to `InsertRanker::FREQUENCY_BONUS_CAP`. Returns 0 for
+    /// items the user has never accepted in this session.
+    fn frequency_bonus_for(
+        &self,
+        raw: &lattice_completion::RawCandidate,
+    ) -> u32 {
+        self.completion_accept_freq
+            .get(&(raw.text.clone(), raw.kind))
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn do_completion_next(&mut self) {
@@ -6526,6 +6551,16 @@ impl App {
         let Some(item) = state.selected_candidate().cloned() else {
             return;
         };
+        // Bump the accept-frequency counter for this item. Per
+        // `docs/insert-completion.md` §3.6, the ranker rereads
+        // this map and adds a bounded bonus so the user's
+        // recently-accepted picks float above tied peers next
+        // time the popup opens. We bump unconditionally here:
+        // if the apply path below fails, the user still
+        // *intended* to accept this item -- recording that
+        // intent matches expected behaviour.
+        let freq_key = (item.raw.text.clone(), item.raw.kind);
+        *self.completion_accept_freq.entry(freq_key).or_insert(0) += 1;
         // Snippet (sync source) path -- snippet meta sidecar
         // points at a fully-parsed body.
         if let Some(meta) = self.snippet_meta_for(&item).cloned() {
@@ -7119,7 +7154,11 @@ impl App {
         state.query = query;
         state.cursor = self.cursor;
         let was_incomplete = state.lsp_incomplete;
-        // Refilter against the current raw set.
+        // Refilter against the current raw set. We hold a
+        // mutable borrow on `state` here so calling the helper
+        // would re-borrow self -- pull the freq map by direct
+        // field reference (disjoint from `self.insert_completion`)
+        // and feed it into the ranker's closure.
         let ranker = lattice_completion::InsertRanker::new();
         let matcher = lattice_completion::FuzzyInsertMatcher::new();
         let mut scored: Vec<lattice_completion::ScoredCandidate> = state
@@ -7138,7 +7177,12 @@ impl App {
                 })
             })
             .collect();
-        lattice_completion::CandidateRanker::rank(&ranker, &mut scored);
+        let freq = &self.completion_accept_freq;
+        ranker.rank_with_frequency(&mut scored, |raw| {
+            freq.get(&(raw.text.clone(), raw.kind))
+                .copied()
+                .unwrap_or(0)
+        });
         state.rendered = scored
             .into_iter()
             .map(lattice_completion::RenderedCandidate::from_scored)
@@ -7638,7 +7682,12 @@ impl App {
             })
             .collect();
         let ranker = lattice_completion::InsertRanker::new();
-        lattice_completion::CandidateRanker::rank(&ranker, &mut scored);
+        let freq = &self.completion_accept_freq;
+        ranker.rank_with_frequency(&mut scored, |raw| {
+            freq.get(&(raw.text.clone(), raw.kind))
+                .copied()
+                .unwrap_or(0)
+        });
         state.rendered = scored
             .into_iter()
             .map(lattice_completion::RenderedCandidate::from_scored)
@@ -23587,6 +23636,81 @@ mod tests {
         assert_eq!(active.current_index(), Some(1));
         let text = a.document.snapshot().buffer.as_string();
         assert_eq!(text, "for i in iter {}");
+    }
+
+    #[test]
+    fn completion_accept_bumps_frequency_map_for_text_kind_pair() {
+        // Trigger completion against a buffer-words source and
+        // accept a candidate. The App's accept-frequency map
+        // gets a new entry keyed by `(text, kind)` with count 1.
+        let mut a = app_with("alpha bravo charlie ", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 20);
+        a.do_completion_trigger();
+        // Empty query at end of line -> all three buffer words
+        // surface as candidates. Find `bravo` and select it.
+        let state = a.insert_completion.as_mut().expect("popup");
+        let idx = state
+            .rendered
+            .iter()
+            .position(|r| r.raw.text == "bravo")
+            .expect("bravo present");
+        state.selected = idx;
+        a.do_completion_accept();
+        // Map records exactly one accept of (bravo, Plain).
+        let key = (
+            "bravo".to_string(),
+            lattice_completion::CandidateKind::Plain,
+        );
+        assert_eq!(a.completion_accept_freq.get(&key).copied(), Some(1));
+    }
+
+    #[test]
+    fn completion_trigger_ranks_previously_accepted_above_tied_peer() {
+        // Two buffer words tie on matcher score (empty query
+        // -> uniform 100); a previous accept of `bravo` lifts
+        // it to the top of the rendered list.
+        let mut a = app_with("alpha bravo charlie ", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 20);
+        // Seed the freq map directly -- this is the integration
+        // boundary we care about (the App's map fed into the
+        // ranker), not the accept-then-retrigger cycle.
+        a.completion_accept_freq.insert(
+            (
+                "bravo".to_string(),
+                lattice_completion::CandidateKind::Plain,
+            ),
+            3,
+        );
+        a.do_completion_trigger();
+        let state = a.insert_completion.as_ref().expect("popup");
+        // First rendered candidate is the previously-accepted
+        // one, ahead of its tied peers.
+        assert_eq!(state.rendered.first().expect("at least one").raw.text, "bravo");
+    }
+
+    #[test]
+    fn completion_accept_increments_existing_frequency_count() {
+        // Two accepts of the same item bump the count to 2.
+        let mut a = app_with("alpha bravo charlie ", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 20);
+        let key = (
+            "bravo".to_string(),
+            lattice_completion::CandidateKind::Plain,
+        );
+        a.completion_accept_freq.insert(key.clone(), 4);
+        a.do_completion_trigger();
+        let state = a.insert_completion.as_mut().expect("popup");
+        let idx = state
+            .rendered
+            .iter()
+            .position(|r| r.raw.text == "bravo")
+            .expect("bravo present");
+        state.selected = idx;
+        a.do_completion_accept();
+        assert_eq!(a.completion_accept_freq.get(&key).copied(), Some(5));
     }
 
     #[test]

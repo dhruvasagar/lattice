@@ -718,13 +718,22 @@ Remaining 4.2:
   routing for snippet candidates AND LSP `insertTextFormat ==
   Snippet` items, `<C-x><C-s>` direct expand,
   active-snippet minor mode for `<Tab>` / `<S-Tab>` / `<Esc>`,
-  `:snippet-expand` / `:reload-snippets` ex-commands) ✅.
-  Remaining phases: 4.2.g.5 (frequency ranking + commit
-  chars + per-source priority + extend the typed routing
-  payload to picker call sites), 4.2.g.6 (tree-sitter local
-  symbols + path source), 4.2.g.7 (polish: ghost text,
-  additionalTextEdits coalesce refactor,
-  auto-insert-single).
+  `:snippet-expand` / `:reload-snippets` ex-commands) ✅;
+  4.2.g.5 sliced 3 ways for landing -- (1/3) frequency
+  ranking (App-side `(text, kind) -> u32` accept map bumped
+  in `do_completion_accept`; `InsertRanker::rank_with_frequency`
+  threads a host-supplied lookup closure through, capping
+  the bonus at +50; all three refilter sites swapped over)
+  ✅. Remaining 4.2.g.5 slices: (2/3) per-source priority
+  via `:set completion.source.<id>.priority`; (3/3)
+  per-language source filter + `auto_trigger` /
+  `auto_insert_single` / `suppress_in` overrides + the
+  `:help completion-sources` / `:help completion-options`
+  refresh. Then 4.2.g.6 (tree-sitter local symbols + path
+  source; commit chars + extending the typed routing
+  payload to picker call sites likely fold in here), 4.2.g.7
+  (polish: ghost text, additionalTextEdits coalesce
+  refactor, auto-insert-single).
 - `completionItem/resolve` (lazy doc / additional edits) --
   shipped as part of 4.2.g.3 + 4.2.g.7.
 - `workspaceSymbol/resolve` (lazy location).

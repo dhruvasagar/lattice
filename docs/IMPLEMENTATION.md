@@ -847,9 +847,25 @@ Remaining 4.2:
   the buffer-words copy of `outer` outranks the
   tree-sitter copy at the spec's 100/80 priority split
   and wins the popup row; selection / navigation / accept
-  index the deduped vec naturally) ✅. Remaining 4.2.g.7
-  polish items: picker call sites flipping to typed
-  routing payload via `CandidateData::Extension`.
+  index the deduped vec naturally) ✅; picker-call-site
+  typed routing payload (new `RoutingPayload` enum +
+  `PICKER_ROUTING_KIND_ID` const + `Picker.routing_meta`
+  sidecar Vec; new `set_raw_candidates_with_routing(items:
+  Vec<(RawCandidate, RoutingPayload)>)` zips producer
+  pairs into the picker, stamping each candidate with
+  `Extension { kind_id, payload: index_le_bytes }`;
+  `routing_for(candidate)` decodes the index and returns
+  the typed `&RoutingPayload`; producers
+  `LspInstanceRow::into_candidate_with_routing`,
+  `LspLocationRow::into_candidate_with_routing`,
+  App's `raw_buffer_candidates`, the LSP-completion picker
+  open, and the code-action picker open all return pairs;
+  `do_picker_accept` matches on the typed `RoutingPayload`
+  variant; the string parsers `buffer_id_from_text`,
+  `lsp_key_from_text`, `jump_target_from_text` are gone;
+  `RawCandidate.text` is now user-facing label everywhere;
+  no UX change -- pure technical-debt cleanup) ✅.
+  **4.2.g.7 complete; 4.2.g done.**
 - `completionItem/resolve` (lazy doc / additional edits) --
   shipped as part of 4.2.g.3 + 4.2.g.7.
 - `workspaceSymbol/resolve` (lazy location).

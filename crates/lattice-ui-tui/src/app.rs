@@ -5506,8 +5506,8 @@ impl App {
         );
         // Host-side candidate build (the picker module is
         // renderer-agnostic and doesn't import `BufferRegistry`).
-        let raw = raw_buffer_candidates(&self.buffers, active);
-        p.set_raw_candidates(raw);
+        let pairs = raw_buffer_candidates(&self.buffers, active);
+        p.set_raw_candidates_with_routing(pairs);
         // Stash the original active buffer id so dismiss can
         // restore. None on no-buffer pickers (LSP); for the
         // buffer switcher we always have one. Encoded as `u32`
@@ -5539,10 +5539,12 @@ impl App {
         let Some(c) = picker.selected_candidate() else {
             return;
         };
-        let Some(raw_id) = crate::picker::buffer_id_from_text(&c.raw.text) else {
+        let Some(crate::picker::RoutingPayload::Buffer { id: raw_id }) =
+            picker.routing_for(c)
+        else {
             return;
         };
-        let id = BufferId(raw_id);
+        let id = BufferId(*raw_id);
         if id == self.active_pane_buffer_id() {
             // Already showing this buffer; nothing to preview.
             return;
@@ -5600,22 +5602,29 @@ impl App {
             }
             return;
         };
-        let payload = c.raw.text.clone();
-        match picker.on_accept {
-            crate::picker::PickerAction::SwitchToBuffer => {
-                let Some(raw_id) = crate::picker::buffer_id_from_text(&payload) else {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("picker: malformed buffer id {payload:?}"),
-                    );
-                    // Malformed -- restore origin if we'd previewed.
-                    if let Some(origin) = picker.preview_origin {
-                        self.previewing = true;
-                        self.activate_buffer(BufferId(origin));
-                        self.previewing = false;
-                    }
-                    return;
-                };
+        // Snapshot the typed routing payload (Phase 4.2.g.7
+        // polish). Pre-polish the dispatch parsed `c.raw.text`
+        // with per-action string parsers; now each candidate's
+        // `Extension { kind_id, payload }` indexes the picker's
+        // typed `routing_meta` sidecar.
+        let routing = match picker.routing_for(c).cloned() {
+            Some(r) => r,
+            None => {
+                self.set_message(
+                    EchoLevel::Error,
+                    "picker: candidate carries no routing payload"
+                        .to_string(),
+                );
+                if let Some(origin) = picker.preview_origin {
+                    self.previewing = true;
+                    self.activate_buffer(BufferId(origin));
+                    self.previewing = false;
+                }
+                return;
+            }
+        };
+        match routing {
+            crate::picker::RoutingPayload::Buffer { id: raw_id } => {
                 let id = BufferId(raw_id);
                 // Already on the target via preview; no additional
                 // action needed beyond letting the picker drop.
@@ -5623,40 +5632,24 @@ impl App {
                     self.activate_buffer(id);
                 }
             }
-            crate::picker::PickerAction::OpenLspLog => {
-                let Some((_workspace, server_id)) =
-                    crate::picker::lsp_key_from_text(&payload)
-                else {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("picker: malformed lsp key {payload:?}"),
-                    );
-                    return;
-                };
-                self.open_lsp_log_in_pane(&server_id);
+            crate::picker::RoutingPayload::LspInstance { server_id, .. } => {
+                match picker.on_accept {
+                    crate::picker::PickerAction::OpenLspLog => {
+                        self.open_lsp_log_in_pane(&server_id);
+                    }
+                    crate::picker::PickerAction::OpenLspTraceLog => {
+                        self.open_lsp_trace_log_in_pane(&server_id);
+                    }
+                    _ => {
+                        self.set_message(
+                            EchoLevel::Error,
+                            "picker: lsp-instance routing on non-lsp-log action"
+                                .to_string(),
+                        );
+                    }
+                }
             }
-            crate::picker::PickerAction::OpenLspTraceLog => {
-                let Some((_workspace, server_id)) =
-                    crate::picker::lsp_key_from_text(&payload)
-                else {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("picker: malformed lsp key {payload:?}"),
-                    );
-                    return;
-                };
-                self.open_lsp_trace_log_in_pane(&server_id);
-            }
-            crate::picker::PickerAction::JumpToLspLocation => {
-                let Some((path, line, col)) =
-                    crate::picker::jump_target_from_text(&payload)
-                else {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("picker: malformed location {payload:?}"),
-                    );
-                    return;
-                };
+            crate::picker::RoutingPayload::LspLocation { path, line, col } => {
                 // If this picker came from a tag-intent nav
                 // (`gd` / `gD` / `gy` / `gI` multi-result),
                 // push the captured pre-jump origin onto the
@@ -5669,42 +5662,28 @@ impl App {
                 }
                 self.jump_to_file_line_col(&path, line, col);
             }
-            crate::picker::PickerAction::AcceptLspCompletion => {
-                let Some(idx) = crate::picker::buffer_id_from_text(&payload) else {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("picker: malformed completion idx {payload:?}"),
-                    );
-                    return;
-                };
+            crate::picker::RoutingPayload::LspCompletion { index } => {
                 let Some(items) = self.pending_completion_items.take() else {
                     return;
                 };
-                let Some(item) = items.into_iter().nth(idx as usize) else {
+                let Some(item) = items.into_iter().nth(index as usize) else {
                     self.set_message(
                         EchoLevel::Error,
-                        format!("picker: completion idx {idx} out of range"),
+                        format!("picker: completion idx {index} out of range"),
                     );
                     return;
                 };
                 self.apply_lsp_completion_item(&item);
             }
-            crate::picker::PickerAction::AcceptLspCodeAction => {
-                let Some(idx) = crate::picker::buffer_id_from_text(&payload) else {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("picker: malformed code-action idx {payload:?}"),
-                    );
-                    return;
-                };
+            crate::picker::RoutingPayload::LspCodeAction { index } => {
                 let Some(items) = self.pending_code_action_items.take() else {
                     return;
                 };
                 let handle = self.pending_code_action_handle.take();
-                let Some(row) = items.into_iter().nth(idx as usize) else {
+                let Some(row) = items.into_iter().nth(index as usize) else {
                     self.set_message(
                         EchoLevel::Error,
-                        format!("picker: code-action idx {idx} out of range"),
+                        format!("picker: code-action idx {index} out of range"),
                     );
                     return;
                 };
@@ -6071,16 +6050,24 @@ impl App {
                 }
                 // Fresh code-action results -> open picker.
                 let total = items.len();
-                let raw: Vec<lattice_completion::RawCandidate> = items
+                let pairs: Vec<(
+                    lattice_completion::RawCandidate,
+                    crate::picker::RoutingPayload,
+                )> = items
                     .iter()
                     .enumerate()
                     .map(|(i, item)| {
                         let mut c = lattice_completion::RawCandidate::plain(
-                            format!("#{i}"),
+                            item.title.clone(),
                             lattice_completion::CandidateKind::Plain,
                         );
                         c.display = format!("{} {}", item.kind_glyph, item.title);
-                        c
+                        (
+                            c,
+                            crate::picker::RoutingPayload::LspCodeAction {
+                                index: i as u32,
+                            },
+                        )
                     })
                     .collect();
                 // Re-walk attached servers to pin a handle for
@@ -6098,7 +6085,7 @@ impl App {
                     crate::picker::PickerSource::LspLocations,
                     crate::picker::PickerAction::AcceptLspCodeAction,
                 );
-                p.set_raw_candidates(raw);
+                p.set_raw_candidates_with_routing(pairs);
                 self.picker = Some(p);
             }
         }
@@ -8538,19 +8525,27 @@ impl App {
                     return;
                 }
                 let total = items.len();
-                let raw: Vec<lattice_completion::RawCandidate> = items
+                let pairs: Vec<(
+                    lattice_completion::RawCandidate,
+                    crate::picker::RoutingPayload,
+                )> = items
                     .iter()
                     .enumerate()
                     .map(|(i, item)| {
                         let mut c = lattice_completion::RawCandidate::plain(
-                            format!("#{i}"),
+                            item.label.clone(),
                             lattice_completion::CandidateKind::Plain,
                         );
                         c.display = match &item.detail {
                             Some(d) => format!("{} {}  {d}", item.kind_glyph, item.label),
                             None => format!("{} {}", item.kind_glyph, item.label),
                         };
-                        c
+                        (
+                            c,
+                            crate::picker::RoutingPayload::LspCompletion {
+                                index: i as u32,
+                            },
+                        )
                     })
                     .collect();
                 self.pending_completion_items = Some(items);
@@ -8559,7 +8554,7 @@ impl App {
                     crate::picker::PickerSource::LspLocations,
                     crate::picker::PickerAction::AcceptLspCompletion,
                 );
-                p.set_raw_candidates(raw);
+                p.set_raw_candidates_with_routing(pairs);
                 self.picker = Some(p);
             }
         }
@@ -14117,7 +14112,7 @@ fn effect_mutates(effect: &Effect) -> bool {
 pub(crate) fn raw_buffer_candidates(
     registry: &BufferRegistry,
     active: BufferId,
-) -> Vec<lattice_completion::RawCandidate> {
+) -> Vec<(lattice_completion::RawCandidate, crate::picker::RoutingPayload)> {
     let mut ids = registry.sorted_ids();
     ids.sort_by_key(|id| (*id == active, *id));
     let mut out = Vec::with_capacity(ids.len());
@@ -14148,15 +14143,15 @@ pub(crate) fn raw_buffer_candidates(
                 format!("help{active_marker}"),
             ),
         };
-        // `text` is the dispatch payload (`#<id>`, parsed by
-        // `picker::buffer_id_from_text`); `display` is what the
-        // popup paints (body + kind marginalia).
+        // `text` is the user-facing buffer id; matcher matches
+        // against `display`. The typed routing payload carries
+        // the buffer id the accept dispatch consumes.
         let mut raw = lattice_completion::RawCandidate::plain(
             format!("#{}", id.0),
             lattice_completion::CandidateKind::Buffer,
         );
         raw.display = format!("{body:<60} {kind_label}");
-        out.push(raw);
+        out.push((raw, crate::picker::RoutingPayload::Buffer { id: id.0 }));
     }
     out
 }
@@ -21189,12 +21184,16 @@ mod tests {
             picker.on_accept,
             crate::picker::PickerAction::JumpToLspLocation
         ));
-        // The candidate's text routes via the location parser.
+        // The candidate's typed routing payload carries the
+        // jump target -- post-4.2.g.7 this replaces the prior
+        // tab-encoded `text` parsing.
         let c = picker.selected_candidate().expect("one row");
-        let parsed = crate::picker::jump_target_from_text(&c.raw.text);
-        let (path, line, _col) = parsed.expect("parses");
-        assert_eq!(path, std::path::PathBuf::from("/tmp/notarealfile.rs"));
-        assert_eq!(line, 3);
+        let routing = picker.routing_for(c).expect("routing payload set");
+        let crate::picker::RoutingPayload::LspLocation { path, line, .. } = routing else {
+            panic!("expected LspLocation routing, got {routing:?}");
+        };
+        assert_eq!(*path, std::path::PathBuf::from("/tmp/notarealfile.rs"));
+        assert_eq!(*line, 3);
         // Column round-trips through utf-16→utf-8 conversion that
         // reads from the file's actual line text. For a missing
         // file the preview is empty so the conversion bottoms out
@@ -22505,12 +22504,18 @@ mod tests {
         let display = &picker.candidates[0].raw.display;
         assert!(display.contains("ƒ foo_bar"));
         assert!(display.contains("fn foo_bar()"));
-        // Text round-trips through `buffer_id_from_text` (the
-        // `#<idx>` encoding shared with the buffer switcher).
-        assert_eq!(
-            crate::picker::buffer_id_from_text(&picker.candidates[0].raw.text),
-            Some(0u32)
-        );
+        // Routing payload carries the typed LspCompletion index
+        // (post-4.2.g.7 typed routing replaces the prior `#<idx>`
+        // string encoding).
+        let routing = picker
+            .routing_for(&picker.candidates[0])
+            .expect("routing payload set");
+        match routing {
+            crate::picker::RoutingPayload::LspCompletion { index } => {
+                assert_eq!(*index, 0);
+            }
+            other => panic!("expected LspCompletion routing, got {other:?}"),
+        }
         // Items survive on the App for the accept path.
         assert!(a.pending_completion_items.is_some());
     }

@@ -47,9 +47,67 @@
 //! `lattice-completion`. No file-by-file edits required because
 //! every coupling already lives in the host.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use lattice_completion::{MatchScore, RawCandidate, RenderedCandidate, fuzzy_match};
+use lattice_completion::{
+    CandidateData, MatchScore, RawCandidate, RenderedCandidate, fuzzy_match,
+};
+
+/// `CandidateData::Extension { kind_id }` value the picker stamps
+/// on every candidate it builds. Each candidate's payload bytes
+/// are a `u32` LE index into the picker's `routing_meta` sidecar
+/// vec; the sidecar holds the typed [`RoutingPayload`] enum the
+/// accept dispatch matches on.
+///
+/// Same shape used by the insert-completion crate's snippet +
+/// LSP-completion sidecars (see `app::SNIPPET_COMPLETION_KIND_ID`
+/// / `LSP_COMPLETION_KIND_ID`); a distinct id keeps picker
+/// candidates from colliding with insert-completion ones if the
+/// surfaces ever share a list (they don't today, but the type
+/// system stays honest).
+pub const PICKER_ROUTING_KIND_ID: u32 = 200;
+
+/// Typed payload the picker accept dispatch reads to figure out
+/// which side effect to run. Replaces the tab-encoded string
+/// payloads stuffed into `RawCandidate.text` in earlier phases
+/// (Phase 4.2.g.7 polish).
+///
+/// One variant per [`PickerAction`]; the variant naturally
+/// communicates the dispatch path AND carries the typed data the
+/// handler needs (no string parsing, no fragility around `\t` in
+/// paths). The `PickerAction` tag stays for now -- the App's
+/// dispatch matches on it first to choose the code path; future
+/// cleanup could pivot to matching on the payload variant alone
+/// since the two always agree, but the redundancy is harmless.
+#[derive(Debug, Clone)]
+pub enum RoutingPayload {
+    /// `PickerAction::SwitchToBuffer` -- the host's buffer id
+    /// (newtype-wrapped `u32` host-side; we hold the raw value
+    /// to keep the picker module renderer-agnostic).
+    Buffer { id: u32 },
+    /// `PickerAction::OpenLspLog` / `OpenLspTraceLog` -- the
+    /// supervisor key. `workspace` rides for completeness but
+    /// today's handlers only use `server_id`.
+    LspInstance {
+        server_id: String,
+        workspace: PathBuf,
+    },
+    /// `PickerAction::JumpToLspLocation` -- canonical `(path,
+    /// line, col)` the host's `jump_to_file_line_col` consumes.
+    /// LSP 0-based line + utf-8 byte column; the host already
+    /// converted these utf-8 host-side at ingestion time.
+    LspLocation {
+        path: PathBuf,
+        line: u32,
+        col: u32,
+    },
+    /// `PickerAction::AcceptLspCompletion` -- numeric index into
+    /// the host's `pending_completion_items` snapshot.
+    LspCompletion { index: u32 },
+    /// `PickerAction::AcceptLspCodeAction` -- numeric index into
+    /// the host's `pending_code_action_items` snapshot.
+    LspCodeAction { index: u32 },
+}
 
 /// Where a picker pulls its raw candidates from. The App resolves
 /// this on `populate` / `refresh` and walks the appropriate source.
@@ -74,9 +132,9 @@ pub enum PickerSource {
     /// Static location list -- multi-result LSP navigation
     /// (`gd` / `gD` / `gy` / `gI`), `gr` references, and the
     /// `:diagnostics` workspace list. Each row encodes one
-    /// `file:line:col` target; candidate `text` is the
-    /// canonical `"<path>\t<line>\t<col>"` form, parsed by
-    /// [`jump_target_from_text`] on accept. Display is
+    /// `file:line:col` target; the typed
+    /// [`RoutingPayload::LspLocation`] carries `(path, line,
+    /// col)` to the accept dispatch. Display is
     /// `<rel-path>:<line>:<col>  <line preview>` so the user
     /// sees a ripgrep-style row.
     LspLocations,
@@ -145,6 +203,15 @@ pub struct Picker {
     /// [`Self::set_raw_candidates`] (or
     /// [`Self::set_lsp_instances`] for the LSP shape).
     raw: Vec<RawCandidate>,
+    /// Typed routing payloads keyed by the candidate's
+    /// `Extension { kind_id, payload }` u32 LE index (Phase
+    /// 4.2.g.7 polish). Indexed lookup at accept time replaces
+    /// the prior tab-encoded string-parsing dispatch. Built
+    /// alongside `raw` by [`Self::set_raw_candidates_with_routing`];
+    /// the `text`-only constructor leaves it empty (legacy
+    /// pickers without typed routing fall back to the
+    /// `Plain`-data path -- not used today).
+    routing_meta: Vec<RoutingPayload>,
     /// For [`PickerAction::SwitchToBuffer`]: the host's buffer
     /// id encoded as `u32` so this module stays renderer-agnostic
     /// (the TUI host newtype-wraps it). The host's preview path
@@ -169,6 +236,7 @@ impl Picker {
             source,
             on_accept,
             raw: Vec::new(),
+            routing_meta: Vec::new(),
             preview_origin: None,
         }
     }
@@ -180,7 +248,59 @@ impl Picker {
     /// [`Self::set_lsp_instances`]) routes through this.
     pub fn set_raw_candidates(&mut self, raw: Vec<RawCandidate>) {
         self.raw = raw;
+        self.routing_meta.clear();
         self.refilter();
+    }
+
+    /// Replace the raw candidate list AND the typed routing
+    /// sidecar (Phase 4.2.g.7 polish). Each input pair is a
+    /// `(RawCandidate, RoutingPayload)` -- the picker stores
+    /// the payload at index `i` in `routing_meta` and stamps
+    /// the candidate's `data` with `Extension { kind_id:
+    /// PICKER_ROUTING_KIND_ID, payload: i.to_le_bytes() }`. The
+    /// accept dispatch reads the index back, indexes the
+    /// sidecar, and matches on the typed enum variant. Replaces
+    /// the prior `text`-tab-encoded string-parsing path.
+    pub fn set_raw_candidates_with_routing(
+        &mut self,
+        items: Vec<(RawCandidate, RoutingPayload)>,
+    ) {
+        let mut raw: Vec<RawCandidate> = Vec::with_capacity(items.len());
+        let mut routing: Vec<RoutingPayload> = Vec::with_capacity(items.len());
+        for (mut cand, payload) in items {
+            let idx = routing.len() as u32;
+            cand.data = CandidateData::Extension {
+                kind_id: PICKER_ROUTING_KIND_ID,
+                payload: idx.to_le_bytes().to_vec(),
+            };
+            raw.push(cand);
+            routing.push(payload);
+        }
+        self.raw = raw;
+        self.routing_meta = routing;
+        self.refilter();
+    }
+
+    /// Look up the routing payload for `candidate` -- returns
+    /// `None` for candidates that don't carry a picker-routing
+    /// `Extension` payload (defensive; the picker only ever
+    /// builds candidates through [`Self::set_raw_candidates_with_routing`]
+    /// in the new world). Used by the accept dispatch.
+    pub fn routing_for(
+        &self,
+        candidate: &RenderedCandidate,
+    ) -> Option<&RoutingPayload> {
+        let CandidateData::Extension { kind_id, payload } = &candidate.raw.data else {
+            return None;
+        };
+        if *kind_id != PICKER_ROUTING_KIND_ID {
+            return None;
+        }
+        if payload.len() != 4 {
+            return None;
+        }
+        let idx = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
+        self.routing_meta.get(idx)
     }
 
     /// Replace the raw candidate list with externally-built LSP
@@ -188,8 +308,9 @@ impl Picker {
     /// diagnostics. Caller builds + sorts + dedups the `Vec`
     /// host-side; the picker just stores + refilters.
     pub fn set_lsp_locations(&mut self, rows: Vec<LspLocationRow>) {
-        let raw: Vec<RawCandidate> = rows.into_iter().map(|r| r.into_candidate()).collect();
-        self.set_raw_candidates(raw);
+        let items: Vec<(RawCandidate, RoutingPayload)> =
+            rows.into_iter().map(|r| r.into_candidate_with_routing()).collect();
+        self.set_raw_candidates_with_routing(items);
     }
 
     /// Replace the raw candidate list with externally-built LSP
@@ -201,15 +322,15 @@ impl Picker {
             PickerSource::LspInstances { prefilter } => prefilter.clone(),
             _ => None,
         };
-        let raw: Vec<RawCandidate> = rows
+        let items: Vec<(RawCandidate, RoutingPayload)> = rows
             .into_iter()
             .filter(|r| match &prefilter {
                 Some(want) => r.server_id == *want,
                 None => true,
             })
-            .map(|r| r.into_candidate())
+            .map(|r| r.into_candidate_with_routing())
             .collect();
-        self.set_raw_candidates(raw);
+        self.set_raw_candidates_with_routing(items);
     }
 
     /// Filter `raw` against the current `query` and write the
@@ -295,18 +416,6 @@ impl Picker {
     }
 }
 
-/// Parse a candidate's dispatch text (`"#<id>"`) back into the
-/// host's buffer-id raw value (a `u32`; the host newtype-wraps
-/// it). Returns `None` if the format doesn't match; callers
-/// treat that as "selection no longer routable" and echo an error
-/// rather than crashing.
-///
-/// Returns `u32` rather than a host type so this module stays
-/// renderer-agnostic.
-pub fn buffer_id_from_text(text: &str) -> Option<u32> {
-    text.strip_prefix('#')?.parse().ok()
-}
-
 /// One row of the LSP-instance source. The picker host (App)
 /// snapshots this from `LspSupervisor::running_actors()` under
 /// the supervisor lock, then drops the lock before handing the
@@ -325,14 +434,16 @@ pub struct LspInstanceRow {
 }
 
 impl LspInstanceRow {
-    /// Render this row as a [`RawCandidate`]. Encodes the
-    /// `(server_id, workspace)` pair as `text` for round-tripping
-    /// through [`lsp_key_from_text`]; `display` is the body +
-    /// marginalia the popup paints.
-    pub fn into_candidate(self) -> RawCandidate {
+    /// Render this row as a `(RawCandidate, RoutingPayload)`
+    /// pair (Phase 4.2.g.7 polish). The candidate's `text`
+    /// holds the user-facing server id (the matcher matches
+    /// against `display`, so `text`'s value is observational
+    /// only); the routing payload carries the typed
+    /// `(server_id, workspace)` pair the accept dispatch reads.
+    pub fn into_candidate_with_routing(self) -> (RawCandidate, RoutingPayload) {
         let workspace_str = self.workspace.display().to_string();
         let mut raw = RawCandidate::plain(
-            format!("{}\t{}", self.server_id, workspace_str),
+            self.server_id.clone(),
             lattice_completion::CandidateKind::Plain,
         );
         let marginalia = format!(
@@ -343,7 +454,11 @@ impl LspInstanceRow {
         );
         let body = format!("{:<20} {workspace_str}", self.server_id);
         raw.display = format!("{body:<70} {marginalia}");
-        raw
+        let routing = RoutingPayload::LspInstance {
+            server_id: self.server_id,
+            workspace: self.workspace,
+        };
+        (raw, routing)
     }
 }
 
@@ -354,11 +469,12 @@ impl LspInstanceRow {
 /// presentation pieces.
 ///
 /// `display` is what the picker paints (e.g.
-/// `src/foo.rs:42:7  let bar = ...`); `text` is the dispatch
-/// payload the picker round-trips through accept and is parsed
-/// by [`jump_target_from_text`]. `marginalia` is optional and
-/// renders right-aligned (e.g. severity `[E]` for diagnostics,
-/// kind `[fn]` for symbols once we add documentSymbol picker).
+/// `src/foo.rs:42:7  let bar = ...`); the typed
+/// [`RoutingPayload::LspLocation`] carries the `(path, line,
+/// col)` triple to the accept dispatch. `marginalia` is
+/// optional and renders right-aligned (e.g. severity `[E]` for
+/// diagnostics, kind `[fn]` for symbols once we add
+/// documentSymbol picker).
 #[derive(Debug, Clone)]
 pub struct LspLocationRow {
     pub path: PathBuf,
@@ -392,18 +508,16 @@ impl LspLocationRow {
         }
     }
 
-    /// Convert to a [`RawCandidate`] for the picker. `text` is
-    /// the canonical `"<path>\t<line>\t<col>"` form;
-    /// `display` is the user-visible row.
-    pub fn into_candidate(self) -> RawCandidate {
+    /// Render as a `(RawCandidate, RoutingPayload)` pair (Phase
+    /// 4.2.g.7 polish). `text` carries the user-visible
+    /// `path:line:col` form (matcher matches on `display`, so
+    /// `text` is observational); the routing payload carries
+    /// the typed `(path, line, col)` triple the jump dispatch
+    /// consumes.
+    pub fn into_candidate_with_routing(self) -> (RawCandidate, RoutingPayload) {
         let path_str = self.path.display().to_string();
-        // `text` is the routing payload only -- the picker's
-        // accept dispatcher parses this back into the jump
-        // target. Keep `display` separate so filter / search
-        // queries match against the human-readable form.
-        let text = format!("{path_str}\t{}\t{}", self.line, self.col);
         // 1-based line / col in the display; LSP 0-based line +
-        // utf-8 byte column ride in `text`.
+        // utf-8 byte column ride in the routing payload.
         let display = if self.preview.is_empty() && self.marginalia.is_empty() {
             format!("{path_str}:{}:{}", self.line + 1, self.col + 1)
         } else if self.marginalia.is_empty() {
@@ -422,29 +536,18 @@ impl LspLocationRow {
                 self.preview.trim_start()
             )
         };
-        let mut raw = RawCandidate::plain(text, lattice_completion::CandidateKind::Plain);
+        let mut raw = RawCandidate::plain(
+            format!("{path_str}:{}:{}", self.line + 1, self.col + 1),
+            lattice_completion::CandidateKind::Plain,
+        );
         raw.display = display;
-        raw
+        let routing = RoutingPayload::LspLocation {
+            path: self.path,
+            line: self.line,
+            col: self.col,
+        };
+        (raw, routing)
     }
-}
-
-/// Parse a candidate's dispatch text (`"<path>\t<line>\t<col>"`)
-/// back into the jump target tuple. Returns `None` on malformed
-/// payload (caller echoes an error).
-pub fn jump_target_from_text(text: &str) -> Option<(PathBuf, u32, u32)> {
-    let mut parts = text.splitn(3, '\t');
-    let path = parts.next()?;
-    let line: u32 = parts.next()?.parse().ok()?;
-    let col: u32 = parts.next()?.parse().ok()?;
-    Some((PathBuf::from(path), line, col))
-}
-
-/// Parse a candidate's dispatch text (`"<server_id>\t<workspace>"`)
-/// back into the `(workspace, server_id)` pair the supervisor
-/// keys actors by.
-pub fn lsp_key_from_text(text: &str) -> Option<(PathBuf, String)> {
-    let (server_id, workspace) = text.split_once('\t')?;
-    Some((Path::new(workspace).to_path_buf(), server_id.to_string()))
 }
 
 #[cfg(test)]
@@ -531,13 +634,22 @@ mod tests {
     }
 
     #[test]
-    fn buffer_id_from_text_round_trips() {
+    fn routing_for_buffer_returns_typed_payload() {
+        // Build the candidates with typed routing the same way
+        // the App's `raw_buffer_candidates_with_routing` does:
+        // each (RawCandidate, RoutingPayload::Buffer { id }) pair.
+        let pairs: Vec<(RawCandidate, RoutingPayload)> = vec![
+            (buffer_candidate(1, "lsp:rust", "help", false), RoutingPayload::Buffer { id: 1 }),
+            (buffer_candidate(2, "describe-command write", "help", false), RoutingPayload::Buffer { id: 2 }),
+        ];
         let mut p =
             Picker::new("buffers", PickerSource::Buffers, PickerAction::SwitchToBuffer);
-        p.set_raw_candidates(buffer_fixture());
-        let text = &p.candidates[0].raw.text;
-        let id = buffer_id_from_text(text).expect("parses");
-        assert_eq!(id, 1);
+        p.set_raw_candidates_with_routing(pairs);
+        let c = p.selected_candidate().expect("first candidate");
+        match p.routing_for(c) {
+            Some(RoutingPayload::Buffer { id }) => assert_eq!(*id, 1),
+            other => panic!("expected Buffer routing, got {other:?}"),
+        }
     }
 
     #[test]
@@ -573,7 +685,12 @@ mod tests {
         // Only the two rust rows survive the prefilter.
         assert_eq!(p.candidates.len(), 2);
         for c in &p.candidates {
-            assert!(c.raw.text.starts_with("rust\t"));
+            match p.routing_for(c) {
+                Some(RoutingPayload::LspInstance { server_id, .. }) => {
+                    assert_eq!(server_id, "rust");
+                }
+                other => panic!("expected LspInstance routing, got {other:?}"),
+            }
         }
     }
 
@@ -603,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn lsp_key_round_trips_from_candidate_text() {
+    fn routing_for_lsp_instance_returns_typed_payload() {
         let rows = vec![LspInstanceRow {
             workspace: PathBuf::from("/proj/example"),
             server_id: "rust".into(),
@@ -616,10 +733,14 @@ mod tests {
             PickerAction::OpenLspLog,
         );
         p.set_lsp_instances(rows);
-        let text = &p.candidates[0].raw.text;
-        let (ws, sid) = lsp_key_from_text(text).expect("parses");
-        assert_eq!(sid, "rust");
-        assert_eq!(ws, PathBuf::from("/proj/example"));
+        let c = p.selected_candidate().expect("first candidate");
+        match p.routing_for(c) {
+            Some(RoutingPayload::LspInstance { server_id, workspace }) => {
+                assert_eq!(server_id, "rust");
+                assert_eq!(*workspace, PathBuf::from("/proj/example"));
+            }
+            other => panic!("expected LspInstance routing, got {other:?}"),
+        }
     }
 
     #[test]

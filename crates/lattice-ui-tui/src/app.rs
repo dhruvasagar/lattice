@@ -2052,13 +2052,56 @@ impl App {
 
     // ---- LSP diagnostic navigation (Phase 4.1.d.iv) ---------
 
-    /// `:diagnostics` -- open a help-style buffer listing every
-    /// workspace diagnostic with clickable per-entry source
-    /// links.
+    /// `:diagnostics` -- open a vertico-style picker listing every
+    /// workspace diagnostic. `<CR>` jumps to the selected entry,
+    /// `<Esc>` dismisses, type-to-filter walks substrings against
+    /// the rendered `path:line:col message` rows.
+    ///
+    /// Empty layer echoes "no diagnostics" so the user always
+    /// gets feedback. The picker rows carry severity in the
+    /// marginalia (`[E]` / `[W]` / `[I]` / `[H]`) and the
+    /// diagnostic message as the preview text.
     pub fn do_list_diagnostics(&mut self) {
-        let buffer = crate::help::HelpBuffer::diagnostics(&self.lsp_diagnostics)
-            .with_markdown_syntax(self.lang_registry.clone());
-        self.open_help(buffer);
+        let snapshot = self.lsp_diagnostics.snapshot();
+        if snapshot.is_empty() {
+            self.set_message(EchoLevel::Info, "no diagnostics".to_string());
+            return;
+        }
+        let mut rows: Vec<crate::picker::LspLocationRow> = Vec::new();
+        for (uri, diags) in snapshot {
+            let path = match lattice_lsp::actor::uri_to_path(&uri) {
+                Some(p) => p,
+                None => continue,
+            };
+            for d in diags {
+                let sev = match d.severity {
+                    Some(lattice_lsp::DiagnosticSeverity::ERROR) => "[E]",
+                    Some(lattice_lsp::DiagnosticSeverity::WARNING) => "[W]",
+                    Some(lattice_lsp::DiagnosticSeverity::INFORMATION) => "[I]",
+                    Some(lattice_lsp::DiagnosticSeverity::HINT) => "[H]",
+                    _ => "[?]",
+                };
+                rows.push(crate::picker::LspLocationRow {
+                    path: path.clone(),
+                    line: d.range.start.line,
+                    col: d.range.start.character,
+                    preview: crate::help::one_line(&d.message),
+                    marginalia: sev.to_string(),
+                });
+            }
+        }
+        if rows.is_empty() {
+            self.set_message(EchoLevel::Info, "no diagnostics".to_string());
+            return;
+        }
+        let total = rows.len();
+        let mut p = crate::picker::Picker::new(
+            format!("diagnostics ({total})"),
+            crate::picker::PickerSource::LspLocations,
+            crate::picker::PickerAction::JumpToLspLocation,
+        );
+        p.set_lsp_locations(rows);
+        self.picker = Some(p);
     }
 
     /// `]d` / `:diag-next` / `:cnext` -- move the cursor to the
@@ -4472,6 +4515,66 @@ impl App {
             .collect()
     }
 
+    /// Build + open an LSP location picker (multi-result `gd` /
+    /// `gr` / `:diagnostics` / future symbol pickers).
+    ///
+    /// Reads the line text from each location's file once
+    /// (cached per file in a `HashMap`) so the displayed rows
+    /// look like ripgrep output. Empty `locations` is a no-op
+    /// (caller already echoed "no X found" in that case).
+    pub fn open_lsp_locations_picker(
+        &mut self,
+        title: impl Into<String>,
+        locations: &[lsp_types::Location],
+    ) {
+        if locations.is_empty() {
+            return;
+        }
+        let mut file_cache: std::collections::HashMap<std::path::PathBuf, Vec<String>> =
+            std::collections::HashMap::new();
+        let rows: Vec<crate::picker::LspLocationRow> = locations
+            .iter()
+            .filter_map(|loc| {
+                let path = lattice_lsp::actor::uri_to_path(&loc.uri)?;
+                let line = loc.range.start.line;
+                let lines_cache = file_cache.entry(path.clone()).or_insert_with(|| {
+                    std::fs::read_to_string(&path)
+                        .ok()
+                        .map(|s| s.lines().map(|l| l.to_string()).collect())
+                        .unwrap_or_default()
+                });
+                let preview = lines_cache.get(line as usize).cloned().unwrap_or_default();
+                // utf-16 char column → utf-8 byte column for jump.
+                let line_text = lines_cache.get(line as usize).cloned().unwrap_or_default();
+                let col = lattice_lsp::position::utf16_column_to_utf8_byte(
+                    &line_text,
+                    loc.range.start.character,
+                );
+                Some(crate::picker::LspLocationRow {
+                    path,
+                    line,
+                    col,
+                    preview,
+                    marginalia: String::new(),
+                })
+            })
+            .collect();
+        if rows.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                "no usable locations (non-file URIs?)".to_string(),
+            );
+            return;
+        }
+        let mut p = crate::picker::Picker::new(
+            title,
+            crate::picker::PickerSource::LspLocations,
+            crate::picker::PickerAction::JumpToLspLocation,
+        );
+        p.set_lsp_locations(rows);
+        self.picker = Some(p);
+    }
+
     /// Build + open an LSP instance picker. Called by `:lsp-log`,
     /// `:lsp-server-log`, and `:lsp-trace-log`. The `prefilter`
     /// arg pre-narrows the candidate list to one server id while
@@ -4520,7 +4623,8 @@ impl App {
                 crate::picker::PickerAction::OpenLspTraceLog => {
                     self.open_lsp_trace_log_in_pane(&server_id)
                 }
-                crate::picker::PickerAction::SwitchToBuffer => {}
+                crate::picker::PickerAction::SwitchToBuffer
+                | crate::picker::PickerAction::JumpToLspLocation => {}
             }
             return;
         }
@@ -4706,7 +4810,48 @@ impl App {
                 };
                 self.open_lsp_trace_log_in_pane(&server_id);
             }
+            crate::picker::PickerAction::JumpToLspLocation => {
+                let Some((path, line, col)) =
+                    crate::picker::jump_target_from_text(&payload)
+                else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: malformed location {payload:?}"),
+                    );
+                    return;
+                };
+                self.jump_to_file_line_col(&path, line, col);
+            }
         }
+    }
+
+    /// Jump to `path:line:col` (LSP 0-based line, utf-8 byte
+    /// column). Single entrypoint shared by the picker accept
+    /// path (`JumpToLspLocation`) and the `do_help_follow_link`
+    /// Source-link dispatch. Pushes the pre-jump cursor onto
+    /// position history with `PluginPush` so `<C-o>` walks back.
+    fn jump_to_file_line_col(&mut self, path: &std::path::Path, line: u32, col: u32) {
+        // Push pre-jump cursor before any state mutates.
+        self.push_position_history(self.cursor, PositionSource::PluginPush);
+
+        let same_buffer = self
+            .document
+            .path()
+            .map(|p| p == path)
+            .unwrap_or(false);
+        if !same_buffer {
+            self.do_edit(Some(path.to_path_buf()), false);
+        }
+        // Clamp the target line to the buffer's line count so a
+        // stale picker entry doesn't crash with an out-of-range
+        // cursor (e.g. user edited the file after the picker
+        // populated). `last_addressable_line` accounts for
+        // ropey's trailing-newline pseudo-line.
+        let snap = self.document.snapshot();
+        let line = line.min(last_addressable_line(&snap.buffer));
+        let line_len = line_byte_len(&snap.buffer, line);
+        let col = col.min(line_len);
+        self.cursor = Position::new(line, col);
     }
 
     /// Open `*lsp:<server_id>*` in the active pane via the
@@ -5605,14 +5750,13 @@ impl App {
                 self.set_message(EchoLevel::Info, format!("no {noun} found"));
             }
             1 => {
+                // Vim-style "do what I mean" -- a single-result
+                // nav request still jumps directly. Multi-result
+                // opens the picker below.
                 self.jump_to_lsp_location(&locs[0]);
             }
-            n => {
-                self.set_message(
-                    EchoLevel::Info,
-                    format!("{n} {noun}; jumping to first (picker comes in 4.2.d)"),
-                );
-                self.jump_to_lsp_location(&locs[0]);
+            _ => {
+                self.open_lsp_locations_picker(format!("lsp:{noun}"), &locs);
             }
         }
     }
@@ -5739,9 +5883,24 @@ impl App {
                 );
             }
             ReferencesOutcome::Found { symbol, locations } => {
-                let buffer = crate::help::HelpBuffer::lsp_references(&symbol, &locations)
-                    .with_markdown_syntax(self.lang_registry.clone());
-                self.open_help_in_pane(buffer);
+                if locations.is_empty() {
+                    let label = if symbol.is_empty() {
+                        "(symbol)".to_string()
+                    } else {
+                        format!("\"{symbol}\"")
+                    };
+                    self.set_message(
+                        EchoLevel::Info,
+                        format!("no references for {label}"),
+                    );
+                    return;
+                }
+                let title = if symbol.is_empty() {
+                    "lsp:references".to_string()
+                } else {
+                    format!("references: {symbol}")
+                };
+                self.open_lsp_locations_picker(title, &locations);
             }
         }
     }
@@ -15994,7 +16153,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_pending_references_found_opens_lsp_references_buffer() {
+    fn drain_pending_references_found_opens_lsp_locations_picker() {
         let mut a = app_with("xx", 10);
         let (tx, rx) =
             tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
@@ -16006,32 +16165,38 @@ mod tests {
         })
         .unwrap();
         a.drain_pending_references();
-        // Help buffer opened in the active pane via the registry.
-        let id = a.pane_tree.active().buffer_id;
-        let entry = a.buffers.help(id).expect("help buffer");
-        assert_eq!(entry.title, "lsp:references");
-        let body = entry.content.as_string();
-        assert!(body.contains("References for \"foo\""), "got: {body}");
-        // The rope stores the cleaned link *label* only; the
-        // target lives in `entry.links` as a HelpLinkTarget::Source
-        // with the LSP 0-based line. The label uses 1-based for
-        // display, so look for `:4:6` (line 3+1, char 5+1).
-        assert!(body.contains("/tmp/notarealfile.rs:4:6"), "got: {body}");
-        // Verify the link's source target carries the 0-based line.
-        let has_source_link = entry.links.iter().any(|l| matches!(
-            &l.target,
-            crate::help::HelpLinkTarget::Source { path, line }
-                if path == "/tmp/notarealfile.rs" && *line == 3
+        // Picker opened, NOT a help buffer (the pre-picker shape).
+        let picker = a.picker.as_ref().expect("picker");
+        assert_eq!(picker.title, "references: foo");
+        assert!(matches!(
+            picker.source,
+            crate::picker::PickerSource::LspLocations
         ));
-        assert!(
-            has_source_link,
-            "expected Source link target, got links: {:?}",
-            entry.links
-        );
+        assert!(matches!(
+            picker.on_accept,
+            crate::picker::PickerAction::JumpToLspLocation
+        ));
+        // The candidate's text routes via the location parser.
+        let c = picker.selected_candidate().expect("one row");
+        let parsed = crate::picker::jump_target_from_text(&c.raw.text);
+        let (path, line, _col) = parsed.expect("parses");
+        assert_eq!(path, std::path::PathBuf::from("/tmp/notarealfile.rs"));
+        assert_eq!(line, 3);
+        // Column round-trips through utf-16→utf-8 conversion that
+        // reads from the file's actual line text. For a missing
+        // file the preview is empty so the conversion bottoms out
+        // at 0; ASCII files round-trip cleanly. We don't assert on
+        // col here because the conversion needs the line text and
+        // the test fixture's path doesn't exist.
     }
 
     #[test]
-    fn drain_pending_references_empty_renders_no_references_placeholder() {
+    fn drain_pending_references_empty_echoes_not_found() {
+        // After the picker pivot, the empty-Found case echoes
+        // rather than opening a buffer with a placeholder. The
+        // picker UX expects "show the user a list to choose
+        // from" -- showing an empty picker would be worse UX
+        // than the echo.
         let mut a = app_with("xx", 10);
         let (tx, rx) =
             tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
@@ -16043,11 +16208,10 @@ mod tests {
         })
         .unwrap();
         a.drain_pending_references();
-        let id = a.pane_tree.active().buffer_id;
-        let entry = a.buffers.help(id).expect("help buffer");
-        let body = entry.content.as_string();
-        assert!(body.contains("0 found"));
-        assert!(body.contains("(no references)"));
+        assert!(a.picker.is_none());
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no references"));
+        assert!(msg.text.contains("missing"));
     }
 
     #[test]
@@ -16152,7 +16316,11 @@ mod tests {
     }
 
     #[test]
-    fn drain_pending_definitions_with_multiple_jumps_to_first_with_count_echo() {
+    fn drain_pending_definitions_with_multiple_opens_picker() {
+        // After the picker pivot, multi-result nav opens the
+        // vertico picker rather than auto-jumping to the first
+        // result. Single-result jump path is still tested by
+        // `drain_pending_definitions_with_single_same_buffer_jumps_in_place`.
         let path = std::env::temp_dir()
             .join(format!("lattice-defmulti-{}.rs", std::process::id()));
         std::fs::write(&path, "alpha\nbeta\ngamma\n").unwrap();
@@ -16162,6 +16330,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
         a.pending_definition_rx = Some(rx);
         a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.pending_nav_kind = Some(super::LspNavKind::Definition);
         let target_path = path.to_str().unwrap();
         tx.send(vec![
             super::tests::loc(target_path, 1, 0),
@@ -16169,10 +16338,16 @@ mod tests {
         ])
         .unwrap();
         a.drain_pending_definitions();
-        // Jumped to the first.
-        assert_eq!(a.cursor.line, 1);
-        let msg = a.last_message.as_ref().expect("echo");
-        assert!(msg.text.contains("2 definitions"));
+        let picker = a.picker.as_ref().expect("multi-result opens picker");
+        assert_eq!(picker.title, "lsp:definitions");
+        assert_eq!(picker.candidates.len(), 2);
+        assert!(matches!(
+            picker.on_accept,
+            crate::picker::PickerAction::JumpToLspLocation
+        ));
+        // Cursor should NOT have moved (no auto-jump).
+        assert_eq!(a.cursor.line, 0);
+        let _ = std::fs::remove_file(path);
     }
 
     // ---- :help (DESIGN.md §5.11) ----
@@ -17015,30 +17190,38 @@ mod tests {
     }
 
     #[test]
-    fn list_diagnostics_opens_help_buffer() {
+    fn list_diagnostics_opens_picker() {
         let mut app = app_with("hi\n", 5);
         seed_diags_at_lines(&mut app, &[0, 1]);
         app.do_list_diagnostics();
-        let help = app.help_buffer.as_ref().expect("help buffer should open");
-        assert_eq!(help.title, "diagnostics");
-        let body = help.content.as_string();
-        // Header summary + per-URI section + per-diagnostic rows.
-        assert!(body.contains("Workspace diagnostics"));
-        assert!(body.contains("file:///tmp/x.rs") || body.contains("/tmp/x.rs"));
-        assert!(body.contains("err on line 0"));
-        assert!(body.contains("err on line 1"));
-        // Two diagnostic links to follow.
-        assert_eq!(help.links.len(), 2);
+        let picker = app.picker.as_ref().expect("picker should open");
+        assert!(picker.title.starts_with("diagnostics"));
+        assert!(matches!(
+            picker.source,
+            crate::picker::PickerSource::LspLocations
+        ));
+        assert!(matches!(
+            picker.on_accept,
+            crate::picker::PickerAction::JumpToLspLocation
+        ));
+        // Two diagnostic rows.
+        assert_eq!(picker.candidates.len(), 2);
+        // Severity prefix marginalia in display.
+        let display = &picker.candidates[0].raw.display;
+        assert!(display.starts_with("[E]"), "got: {display}");
+        // Help buffer is NOT opened (the pre-picker shape).
+        assert!(app.help_buffer.is_none());
     }
 
     #[test]
-    fn list_diagnostics_with_empty_layer_renders_none() {
+    fn list_diagnostics_with_empty_layer_echoes() {
         let mut app = app_with("hi\n", 5);
         // No diagnostics seeded.
         app.do_list_diagnostics();
-        let help = app.help_buffer.as_ref().expect("help buffer should open");
-        let body = help.content.as_string();
-        assert!(body.contains("(none)"));
+        // Empty diagnostics: no picker, just an echo.
+        assert!(app.picker.is_none());
+        let msg = app.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no diagnostics"));
     }
 
     // ---- LSP introspection tests (Phase 4.1.g) ---------------

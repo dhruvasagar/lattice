@@ -72,6 +72,15 @@ pub enum PickerSource {
     /// the picker still appears so the user can disambiguate
     /// when multiple workspaces have a rust server.
     LspInstances { prefilter: Option<String> },
+    /// Static location list -- multi-result LSP navigation
+    /// (`gd` / `gD` / `gy` / `gI`), `gr` references, and the
+    /// `:diagnostics` workspace list. Each row encodes one
+    /// `file:line:col` target; candidate `text` is the
+    /// canonical `"<path>\t<line>\t<col>"` form, parsed by
+    /// [`jump_target_from_text`] on accept. Display is
+    /// `<rel-path>:<line>:<col>  <line preview>` so the user
+    /// sees a ripgrep-style row.
+    LspLocations,
 }
 
 /// What `<CR>` does to the selected candidate. Variants stay
@@ -91,6 +100,13 @@ pub enum PickerAction {
     /// without flipping the trace toggle. Pair with `:lsp-trace
     /// <server>` to actually start tracing.
     OpenLspTraceLog,
+    /// Selected candidate's `text` is
+    /// `"<path>\t<line>\t<col>"` (LSP 0-based line + utf-8
+    /// byte column); jump to that location via the same
+    /// `jump_to_file_line` path the help-link click uses.
+    /// Used by multi-result `gd` / `gD` / `gy` / `gI`, by
+    /// `gr` references, and by `:diagnostics`.
+    JumpToLspLocation,
 }
 
 /// One open vertico-style picker. Lives on `App.picker` while
@@ -154,6 +170,15 @@ impl Picker {
     pub fn set_raw_candidates(&mut self, raw: Vec<RawCandidate>) {
         self.raw = raw;
         self.refilter();
+    }
+
+    /// Replace the raw candidate list with externally-built LSP
+    /// location rows -- multi-result navigation, references,
+    /// diagnostics. Caller builds + sorts + dedups the `Vec`
+    /// host-side; the picker just stores + refilters.
+    pub fn set_lsp_locations(&mut self, rows: Vec<LspLocationRow>) {
+        let raw: Vec<RawCandidate> = rows.into_iter().map(|r| r.into_candidate()).collect();
+        self.set_raw_candidates(raw);
     }
 
     /// Replace the raw candidate list with externally-built LSP
@@ -315,6 +340,98 @@ impl LspInstanceRow {
         raw.display = format!("{body:<70} {marginalia}");
         raw
     }
+}
+
+/// One row of an LSP-location source -- multi-result navigation,
+/// references, diagnostics. Carries the canonical
+/// `(path, line, col)` triple the host needs to jump (LSP 0-based
+/// line, utf-8 byte column already converted host-side) plus the
+/// presentation pieces.
+///
+/// `display` is what the picker paints (e.g.
+/// `src/foo.rs:42:7  let bar = ...`); `text` is the dispatch
+/// payload the picker round-trips through accept and is parsed
+/// by [`jump_target_from_text`]. `marginalia` is optional and
+/// renders right-aligned (e.g. severity `[E]` for diagnostics,
+/// kind `[fn]` for symbols once we add documentSymbol picker).
+#[derive(Debug, Clone)]
+pub struct LspLocationRow {
+    pub path: PathBuf,
+    /// LSP 0-based line.
+    pub line: u32,
+    /// utf-8 byte column.
+    pub col: u32,
+    /// Optional preview text (e.g. the line content from the file)
+    /// to append after the `path:line:col` prefix. Empty string
+    /// is fine -- only the prefix renders.
+    pub preview: String,
+    /// Right-aligned annotation. Empty string skips the column.
+    pub marginalia: String,
+}
+
+impl LspLocationRow {
+    /// Build a row from a fully-resolved location triple. Reads
+    /// the line text from disk best-effort (callers may also
+    /// pre-populate `preview`).
+    pub fn from_path_line_col(
+        path: impl Into<PathBuf>,
+        line: u32,
+        col: u32,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            line,
+            col,
+            preview: String::new(),
+            marginalia: String::new(),
+        }
+    }
+
+    /// Convert to a [`RawCandidate`] for the picker. `text` is
+    /// the canonical `"<path>\t<line>\t<col>"` form;
+    /// `display` is the user-visible row.
+    pub fn into_candidate(self) -> RawCandidate {
+        let path_str = self.path.display().to_string();
+        // `text` is the routing payload only -- the picker's
+        // accept dispatcher parses this back into the jump
+        // target. Keep `display` separate so filter / search
+        // queries match against the human-readable form.
+        let text = format!("{path_str}\t{}\t{}", self.line, self.col);
+        // 1-based line / col in the display; LSP 0-based line +
+        // utf-8 byte column ride in `text`.
+        let display = if self.preview.is_empty() && self.marginalia.is_empty() {
+            format!("{path_str}:{}:{}", self.line + 1, self.col + 1)
+        } else if self.marginalia.is_empty() {
+            format!(
+                "{path_str}:{}:{}  {}",
+                self.line + 1,
+                self.col + 1,
+                self.preview.trim_start()
+            )
+        } else {
+            format!(
+                "{}  {path_str}:{}:{}  {}",
+                self.marginalia,
+                self.line + 1,
+                self.col + 1,
+                self.preview.trim_start()
+            )
+        };
+        let mut raw = RawCandidate::plain(text, lattice_completion::CandidateKind::Plain);
+        raw.display = display;
+        raw
+    }
+}
+
+/// Parse a candidate's dispatch text (`"<path>\t<line>\t<col>"`)
+/// back into the jump target tuple. Returns `None` on malformed
+/// payload (caller echoes an error).
+pub fn jump_target_from_text(text: &str) -> Option<(PathBuf, u32, u32)> {
+    let mut parts = text.splitn(3, '\t');
+    let path = parts.next()?;
+    let line: u32 = parts.next()?.parse().ok()?;
+    let col: u32 = parts.next()?.parse().ok()?;
+    Some((PathBuf::from(path), line, col))
 }
 
 /// Parse a candidate's dispatch text (`"<server_id>\t<workspace>"`)

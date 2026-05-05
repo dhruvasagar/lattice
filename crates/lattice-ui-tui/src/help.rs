@@ -757,7 +757,7 @@ pub fn topic_link(name: &str) -> String {
 /// "expected `Foo`, found `Bar`\n  -- in fn::method"). The
 /// help-buffer's row layout assumes one row per entry; squash
 /// to keep visual alignment.
-fn one_line(s: &str) -> String {
+pub(crate) fn one_line(s: &str) -> String {
     s.lines().collect::<Vec<_>>().join(" / ")
 }
 

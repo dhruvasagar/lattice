@@ -27,6 +27,14 @@ use crate::render::draw_frame;
 pub fn run(document: Document) -> Result<()> {
     let mut terminal = setup().context("setup terminal")?;
     let mut app = App::new(document);
+    // Load persistent config (TOML) before LSP boot so any
+    // overrides that affect LSP behaviour land before the
+    // supervisor reads them. Workspace root is the CWD walked
+    // up to the first `.git` / `.lattice/` marker (or the CWD
+    // itself if neither is found). Failures are surfaced via
+    // the App's echo, never abort startup.
+    let workspace_root = workspace_root_from_cwd();
+    app.load_persistent_config(workspace_root.as_deref());
     // LSP boot. Spawns matching language servers for the
     // initial document (if it has a path) + attaches them.
     // Async because the LSP handshake awaits an `initialize`
@@ -36,6 +44,27 @@ pub fn run(document: Document) -> Result<()> {
     let result = main_loop(&mut terminal, app);
     teardown(&mut terminal).context("teardown terminal")?;
     result
+}
+
+/// Walk up from `std::env::current_dir()` looking for a `.git`
+/// directory or a `.lattice/` directory. Returns the first
+/// match, or the CWD itself if neither marker is found. The
+/// workspace root is the path the project-config TOML lookup
+/// (`<root>/.lattice/config.toml`) joins onto. `None` only when
+/// the CWD itself is unreadable -- a rare boot failure mode in
+/// which case the loader falls back to user config alone.
+fn workspace_root_from_cwd() -> Option<std::path::PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let mut cursor = cwd.as_path();
+    loop {
+        if cursor.join(".git").exists() || cursor.join(".lattice").exists() {
+            return Some(cursor.to_path_buf());
+        }
+        match cursor.parent() {
+            Some(parent) => cursor = parent,
+            None => return Some(cwd),
+        }
+    }
 }
 
 /// Drive [`App::initialize_lsp`] from the synchronous `run`

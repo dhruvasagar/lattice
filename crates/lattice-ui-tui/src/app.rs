@@ -1266,6 +1266,18 @@ pub struct App {
     /// `docs/insert-completion.md` §11).
     pub completion_accept_freq:
         std::collections::HashMap<(String, lattice_completion::CandidateKind), u32>,
+    /// TOML structural sections collected by the config loader at
+    /// startup but not yet routed to their owners. Keyed by full
+    /// dotted path (e.g. `"completion.per-language.markdown"`,
+    /// `"plugin.rust-analyzer"`); value is the sub-table verbatim.
+    /// Phase 4.2.g.5 (3b/3) drains the `completion.per-language.*`
+    /// entries into `per_language_completion`; the plugin host
+    /// (Phase 7) will drain `plugin.*`. v1's bucket means a user
+    /// who writes `[plugin.X]` optimistically doesn't lose the
+    /// content -- it's preserved here for the plugin host to pick
+    /// up when it registers.
+    pub pending_config_structural_sections:
+        std::collections::BTreeMap<String, toml::Table>,
     /// Live snippet expansion. `Some` while a snippet is
     /// active and `<Tab>` / `<S-Tab>` navigate placeholders.
     /// Dropped on `$0` consumption / `<Esc>` / cursor moving
@@ -2235,6 +2247,7 @@ impl App {
             snippet_registry: lattice_snippet::SnippetRegistry::new(),
             insert_completion_snippet_meta: Vec::new(),
             completion_accept_freq: std::collections::HashMap::new(),
+            pending_config_structural_sections: std::collections::BTreeMap::new(),
             active_snippet: None,
             snippet_dirs: Vec::new(),
             picker: None,
@@ -8413,6 +8426,121 @@ impl App {
     /// (`relativenumber` ⇒ `number`, `foldmethod` ⇒ recompute folds,
     /// every `ui.*` change ⇒ refresh derived theme styles) are
     /// applied after a successful set in [`Self::apply_post_set`].
+    /// Load `~/.config/lattice/lattice.toml` (user) and
+    /// `<workspace_root>/.lattice/config.toml` (project) in
+    /// precedence order, applying scalar overrides to
+    /// `self.config` and bucketing structural sub-tables (per-
+    /// language overrides, plugin sections) into
+    /// `self.pending_config_structural_sections` for their
+    /// owners to drain.
+    ///
+    /// Called once by the runtime startup before the main loop
+    /// (so the first frame already reflects user overrides).
+    /// NOT called from `App::new` -- tests stay isolated from
+    /// the user's real `~/.config/lattice/`. Test fixtures that
+    /// want to exercise the load path can call this directly
+    /// with a synthesized workspace root.
+    ///
+    /// Loader diagnostics (parse errors, unknown keys,
+    /// validation rejects) collapse into a single echo at the
+    /// most-severe level: `Error` if any file failed to
+    /// parse / read, `Warn` if any key was rejected, otherwise
+    /// silent. Per-file `path:body` detail rides the message
+    /// body so the user can see *which* file complained.
+    pub fn load_persistent_config(&mut self, workspace_root: Option<&std::path::Path>) {
+        // The structural prefixes the App / future plugin host
+        // own. The per-language layer drains
+        // `completion.per-language.*`; the plugin host (Phase 7)
+        // will drain `plugin.*`. Both buckets accumulate here
+        // without further interpretation in this slice.
+        let prefixes = ["completion.per-language", "plugin"];
+        let outcome = lattice_config::load_default_paths(
+            &self.config,
+            workspace_root,
+            &prefixes,
+        );
+        // Re-derive theme + hot-path option cache after the
+        // loader's writes. ui.* and the cached options may have
+        // changed; missing this would leave the first frame
+        // rendering with stale derived state.
+        self.sync_theme_from_config();
+        self.rebuild_option_cache();
+        // Stash structural sections for the layers that own
+        // them. Subsequent slices drain via
+        // `take_pending_structural_section(prefix)`.
+        for (k, v) in outcome.structural {
+            self.pending_config_structural_sections.insert(k, v);
+        }
+        // Surface a single echo summarising loader diagnostics.
+        // The renderer's modeline only shows the latest echo,
+        // so multi-warn configs collapse into "<count> issues
+        // (first: <body>)". Severity is the max across the run.
+        if outcome.messages.is_empty() {
+            return;
+        }
+        let max_level = outcome
+            .messages
+            .iter()
+            .map(|m| m.level)
+            .max_by_key(|l| match l {
+                lattice_config::LoadMessageLevel::Error => 1,
+                lattice_config::LoadMessageLevel::Warning => 0,
+            })
+            .unwrap_or(lattice_config::LoadMessageLevel::Warning);
+        let echo_level = match max_level {
+            lattice_config::LoadMessageLevel::Error => EchoLevel::Error,
+            lattice_config::LoadMessageLevel::Warning => EchoLevel::Warn,
+        };
+        let count = outcome.messages.len();
+        let first = &outcome.messages[0];
+        let body = if count == 1 {
+            format!(
+                "config: {}: {}",
+                first.source.display(),
+                first.body,
+            )
+        } else {
+            format!(
+                "config: {count} issues (first: {}: {})",
+                first.source.display(),
+                first.body,
+            )
+        };
+        self.set_message(echo_level, body);
+    }
+
+    /// Drain the structural section at `prefix` (an entry
+    /// matching one of the loader's structural prefixes,
+    /// e.g. `"completion.per-language.markdown"`). Removes it
+    /// from `pending_config_structural_sections`; subsequent
+    /// drains return `None`. Used by the per-language /
+    /// plugin-host layers to consume their TOML config without
+    /// leaving stale entries behind.
+    pub fn take_pending_structural_section(
+        &mut self,
+        full_path: &str,
+    ) -> Option<toml::Table> {
+        self.pending_config_structural_sections.remove(full_path)
+    }
+
+    /// Iterate the dotted paths of every pending structural
+    /// section whose path starts with `namespace.` (e.g.
+    /// `"completion.per-language"` returns the language ids).
+    /// Returned as owned `String`s to keep the borrow short --
+    /// callers typically follow up with
+    /// `take_pending_structural_section(full)` mutating the map.
+    pub fn pending_structural_section_paths(
+        &self,
+        namespace: &str,
+    ) -> Vec<String> {
+        let prefix = format!("{namespace}.");
+        self.pending_config_structural_sections
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect()
+    }
+
     fn do_set(&mut self, option: &str) {
         let echo = match self.config.parse_and_set_command(option) {
             Ok(echo) => echo,
@@ -23776,6 +23904,116 @@ mod tests {
         // First rendered candidate is the previously-accepted
         // one, ahead of its tied peers.
         assert_eq!(state.rendered.first().expect("at least one").raw.text, "bravo");
+    }
+
+    fn write_workspace_config(workspace: &std::path::Path, contents: &str) {
+        let dir = workspace.join(".lattice");
+        std::fs::create_dir_all(&dir).expect("create .lattice dir");
+        std::fs::write(dir.join("config.toml"), contents).expect("write config.toml");
+    }
+
+    fn fresh_workspace(name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "lattice-config-test-{}-{}",
+            std::process::id(),
+            name,
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).expect("create workspace");
+        p
+    }
+
+    #[test]
+    fn load_persistent_config_applies_scalar_override_from_project_toml() {
+        let ws = fresh_workspace("scalar-override");
+        write_workspace_config(&ws, "tabstop = 4\n");
+        let mut a = app_with("", 5);
+        // tabstop default is 8; override should land before
+        // first frame.
+        assert_eq!(*a.config.get(a.core_options.tabstop), 8);
+        a.load_persistent_config(Some(&ws));
+        assert_eq!(*a.config.get(a.core_options.tabstop), 4);
+    }
+
+    #[test]
+    fn load_persistent_config_buckets_per_language_section() {
+        let ws = fresh_workspace("per-lang-bucket");
+        write_workspace_config(
+            &ws,
+            "[completion.per-language.markdown]\n\
+             auto_trigger = false\n\
+             [completion.per-language.rust]\n\
+             auto_trigger = true\n",
+        );
+        let mut a = app_with("", 5);
+        a.load_persistent_config(Some(&ws));
+        // Both per-language entries land in the structural
+        // bucket, keyed by full dotted path.
+        let paths = a.pending_structural_section_paths("completion.per-language");
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&"completion.per-language.markdown".to_string()));
+        assert!(paths.contains(&"completion.per-language.rust".to_string()));
+        // Drain markdown -> sub-table accessible.
+        let md = a
+            .take_pending_structural_section("completion.per-language.markdown")
+            .expect("markdown section drained");
+        assert_eq!(
+            md.get("auto_trigger").and_then(|v| v.as_bool()),
+            Some(false),
+        );
+        // After drain, only rust remains.
+        let after = a.pending_structural_section_paths("completion.per-language");
+        assert_eq!(after, vec!["completion.per-language.rust".to_string()]);
+    }
+
+    #[test]
+    fn load_persistent_config_collects_unknown_plugin_section_for_later_drain() {
+        // Extensibility: a user writes `[plugin.X]` before the
+        // plugin host exists. Loader buckets it; nothing warns;
+        // the host (Phase 7) drains it when it registers.
+        let ws = fresh_workspace("plugin-deferred");
+        write_workspace_config(
+            &ws,
+            "[plugin.rust-analyzer]\nclippy = true\n",
+        );
+        let mut a = app_with("", 5);
+        a.load_persistent_config(Some(&ws));
+        let paths = a.pending_structural_section_paths("plugin");
+        assert_eq!(paths, vec!["plugin.rust-analyzer".to_string()]);
+        let body = a
+            .take_pending_structural_section("plugin.rust-analyzer")
+            .expect("plugin section drained");
+        assert_eq!(body.get("clippy").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[test]
+    fn load_persistent_config_warning_surfaces_on_unknown_key() {
+        let ws = fresh_workspace("unknown-key");
+        write_workspace_config(&ws, "no_such_option = 42\n");
+        let mut a = app_with("", 5);
+        a.load_persistent_config(Some(&ws));
+        // The echo carries the loader's warning.
+        let msg = a.last_message.as_ref().expect("warning echoed");
+        assert_eq!(msg.level, EchoLevel::Warn);
+        assert!(msg.text.contains("config:"), "got `{}`", msg.text);
+        assert!(
+            msg.text.contains("no_such_option"),
+            "got `{}`",
+            msg.text,
+        );
+    }
+
+    #[test]
+    fn load_persistent_config_silent_when_no_files_present() {
+        let ws = fresh_workspace("no-files");
+        // Empty workspace -- no .lattice/config.toml. Loader
+        // produces no messages; the modeline stays clean.
+        let mut a = app_with("", 5);
+        let prior = a.last_message.clone();
+        a.load_persistent_config(Some(&ws));
+        // No new echo (modeline message is whatever the test
+        // setup left, which for app_with is None).
+        assert_eq!(a.last_message, prior);
     }
 
     #[test]

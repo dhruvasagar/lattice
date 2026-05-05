@@ -59,6 +59,16 @@ rayon = "1.10"
 # Serialization (Phase 0 just uses serde for protocol type derives)
 serde = { version = "1.0", features = ["derive"] }
 
+# Static config file parsing (lattice-config::loader). Read-only at
+# load time; we don't need toml_edit's round-trip preservation
+# until the post-1.0 `:customize` view writes back.
+toml = "0.8"
+
+# Cross-platform config-dir resolution (XDG on Linux, Application
+# Support on macOS, FOLDERID_RoamingAppData on Windows). Used by
+# the loader to locate ~/.config/lattice/lattice.toml and friends.
+dirs = "5"
+
 # LSP (Phase 4 -- lattice-lsp). `lsp-types` models the LSP 3.17
 # wire types; we hand-roll the JSON-RPC client + framing per
 # DESIGN.md §5.4 (tower-lsp is server-side). `serde_json` is the

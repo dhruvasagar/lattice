@@ -60,6 +60,7 @@ pub mod completion;
 mod core_options;
 mod domain;
 mod erased;
+pub mod loader;
 mod option;
 mod option_type;
 mod parse;
@@ -68,6 +69,10 @@ mod registry;
 pub use completion::OptionsGenerator;
 pub use core_options::{CoreOptions, register_core_options};
 pub use erased::ErasedOption;
+pub use loader::{
+    LoadMessage, LoadMessageLevel, LoadOutcome, default_user_config_path, load_default_paths,
+    load_file, project_config_path,
+};
 pub use option::{Option, OptionBuilder, OptionHandle};
 pub use option_type::OptionType;
 pub use parse::{ParsedSet, parse_set};

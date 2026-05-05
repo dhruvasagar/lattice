@@ -12,6 +12,8 @@ lattice-grammar = { path = "../lattice-grammar" }
 lattice-completion = { path = "../lattice-completion" }
 arc-swap = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

@@ -735,10 +735,26 @@ Remaining 4.2:
   `priority_for_source` reads them and the closure adds
   `priority + freq.min(50)` for every candidate;
   unknown-source candidates get 0 priority gracefully) ✅.
-  Remaining 4.2.g.5 slice: (3/3) per-language source
-  filter + `auto_trigger` / `auto_insert_single` /
-  `suppress_in` overrides + the `:help completion-sources`
-  / `:help completion-options` refresh. Then 4.2.g.6 (tree-sitter local symbols + path
+  (3a/3) bare TOML loader infrastructure
+  (`lattice-config::loader`: walks user config
+  `~/.config/lattice/lattice.toml` and project config
+  `<root>/.lattice/config.toml`, applies scalar leaves via
+  `parse_and_set_command`, buckets structural namespaces
+  (`completion.per-language.*`, `plugin.*`) keyed by
+  full dotted path; warnings for unknown keys / validation
+  rejects / list-at-scalar / read failures, never aborts
+  startup; `App.pending_config_structural_sections` +
+  `take_pending_structural_section` /
+  `pending_structural_section_paths` API for the per-
+  language layer + future plugin host to drain;
+  `runtime::run` invokes loader between `App::new` and LSP
+  boot with workspace root walked up from CWD to first
+  `.git` / `.lattice/` marker) ✅. Remaining 4.2.g.5 slice:
+  (3b/3) per-language source filter +
+  `auto_trigger` / `auto_insert_single` / `suppress_in`
+  overrides drained from the structural bucket + producer-
+  side enforcement + the `:help completion-sources` /
+  `:help completion-options` refresh. Then 4.2.g.6 (tree-sitter local symbols + path
   source; commit chars + extending the typed routing
   payload to picker call sites likely fold in here), 4.2.g.7
   (polish: ghost text, additionalTextEdits coalesce

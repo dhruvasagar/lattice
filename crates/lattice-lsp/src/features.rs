@@ -28,8 +28,8 @@ use lsp_types::{
     CompletionParams, CompletionResponse, DocumentFormattingParams, DocumentRangeFormattingParams,
     DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
     Hover, HoverParams, Location, PrepareRenameResponse, ReferenceParams, RenameParams,
-    SignatureHelp, SignatureHelpParams, SymbolInformation, TextDocumentPositionParams, TextEdit,
-    WorkspaceEdit, WorkspaceSymbolParams,
+    SignatureHelp, SignatureHelpParams, TextDocumentPositionParams, TextEdit, WorkspaceEdit,
+    WorkspaceSymbolParams,
     request::{
         GotoDeclarationParams, GotoDeclarationResponse, GotoImplementationParams,
         GotoImplementationResponse, GotoTypeDefinitionParams, GotoTypeDefinitionResponse,
@@ -135,17 +135,37 @@ impl ServerHandle {
     /// symbol search. The `query` string filters server-side; the
     /// editor sends `query=""` for an everything-list and
     /// re-queries as the user types in the picker (Phase 4.2.f).
-    /// Response shape: `Vec<SymbolInformation>` -- the modern
-    /// `WorkspaceSymbol` variant carries `location` as a
-    /// `OneOf<Location, WorkspaceLocation>` which most servers
-    /// don't emit yet, so we deserialize as the legacy shape and
-    /// upgrade later if servers start populating the modern one.
+    ///
+    /// Response shape: `WorkspaceSymbolResponse` -- the
+    /// `Flat(Vec<SymbolInformation>)` variant is the legacy
+    /// shape every server emits; the
+    /// `Nested(Vec<WorkspaceSymbol>)` variant (LSP 3.17+) lets
+    /// the server defer the `location.range` and have the
+    /// client fire `workspaceSymbol/resolve` on accept. The
+    /// editor handles both shapes -- legacy rows jump
+    /// immediately; nested rows with a `WorkspaceLocation`
+    /// route through the resolve path before jumping.
     pub fn workspace_symbol(
         &self,
         params: WorkspaceSymbolParams,
         token: CancellationToken,
-    ) -> Pending<Option<Vec<SymbolInformation>>> {
+    ) -> Pending<Option<lsp_types::WorkspaceSymbolResponse>> {
         self.request_with_cancel("workspace/symbol", params, token)
+    }
+
+    /// `workspaceSymbol/resolve` (LSP 3.17+, Phase 4.2 follow-up).
+    /// Sent for `WorkspaceSymbol` rows whose `location` came back
+    /// as the `WorkspaceLocation` (URI-only) variant; the server
+    /// returns the same symbol with `location.range` populated.
+    /// Wired into the `:workspace-symbols` picker accept path
+    /// when the server advertises
+    /// `workspaceSymbolProvider.resolveProvider`.
+    pub fn workspace_symbol_resolve(
+        &self,
+        symbol: lsp_types::WorkspaceSymbol,
+        token: CancellationToken,
+    ) -> Pending<lsp_types::WorkspaceSymbol> {
+        self.request_with_cancel("workspaceSymbol/resolve", symbol, token)
     }
 
     /// `textDocument/completion` (DESIGN.md §5.4 / Phase 4.2.g).
@@ -407,7 +427,7 @@ mod tests {
             },
             token.clone(),
         ));
-        drop::<Pending<Option<Vec<SymbolInformation>>>>(handle.workspace_symbol(
+        drop::<Pending<Option<lsp_types::WorkspaceSymbolResponse>>>(handle.workspace_symbol(
             WorkspaceSymbolParams {
                 query: "foo".into(),
                 work_done_progress_params: Default::default(),

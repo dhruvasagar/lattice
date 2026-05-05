@@ -868,7 +868,35 @@ Remaining 4.2:
   **4.2.g.7 complete; 4.2.g done.**
 - `completionItem/resolve` (lazy doc / additional edits) --
   shipped as part of 4.2.g.3 + 4.2.g.7.
-- `workspaceSymbol/resolve` (lazy location).
+- `workspaceSymbol/resolve` (lazy location) ✅. Client
+  capability now advertises
+  `workspace.symbol.resolveSupport.properties = ["location.range"]`;
+  `Capabilities::workspace_symbol_resolve_provider` reads
+  the server's matching flag from
+  `workspaceSymbolProvider.resolveProvider`. New
+  `ServerHandle::workspace_symbol_resolve(symbol, token)`
+  client method routes the LSP `workspaceSymbol/resolve`
+  request. The `workspace_symbol` response type upgrades
+  from `Option<Vec<SymbolInformation>>` (legacy-only) to
+  `Option<lsp_types::WorkspaceSymbolResponse>` -- the
+  spec's `Flat | Nested` union covering both LSP 3.16 and
+  3.17+ shapes. App's `do_lsp_workspace_symbol_request`
+  handles both: `Flat(Vec<SymbolInformation>)` flows
+  through `symbol_information_to_row` (range inline);
+  `Nested(Vec<WorkspaceSymbol>)` flows through the new
+  `workspace_symbol_to_row(handle, sym, token)` async
+  helper which fires `workspaceSymbol/resolve` against
+  the originating server when the location came back as
+  `WorkspaceLocation` (URI only) and uses the resolved
+  range. Eager-resolve at fan-out keeps picker rows
+  uniform (every row is `(path, line, col)` resolved);
+  the picker's accept path stays unchanged. Servers that
+  don't advertise `resolveProvider` fall back to
+  `(path, 0, 0)` so the user can still navigate to the
+  file. Tests: legacy `Flat` shape round-trips; modern
+  `Nested` shape with `WorkspaceLocation` decodes
+  correctly; `workspaceSymbol/resolve` round-trip
+  upgrades the location.
 
 Remaining 4.3:
 - workspace/applyEdit (server-initiated -- inbound channel

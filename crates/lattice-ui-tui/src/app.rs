@@ -10432,10 +10432,37 @@ impl App {
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
                 };
-                if let Ok(Some(syms)) = handle.workspace_symbol(params, token.clone()).await {
-                    for sym in syms {
-                        if let Some(row) = symbol_information_to_row(&sym) {
-                            all.push(row);
+                let Ok(Some(resp)) = handle.workspace_symbol(params, token.clone()).await
+                else {
+                    continue;
+                };
+                match resp {
+                    // Legacy `Vec<SymbolInformation>` shape -- every
+                    // symbol carries its location range inline.
+                    lsp_types::WorkspaceSymbolResponse::Flat(syms) => {
+                        for sym in syms {
+                            if let Some(row) = symbol_information_to_row(&sym) {
+                                all.push(row);
+                            }
+                        }
+                    }
+                    // Modern `Vec<WorkspaceSymbol>` shape (LSP 3.17+).
+                    // The `location` is `OneOf<Location, WorkspaceLocation>`:
+                    // - `Left(Location)`: range is inline; emit row.
+                    // - `Right(WorkspaceLocation)` (URI only): fire
+                    //   `workspaceSymbol/resolve` against the same
+                    //   server, then emit row from the resolved
+                    //   shape. Eager resolve keeps the picker rows
+                    //   uniform; the cost is one extra round-trip
+                    //   per unresolved symbol per fan-out, bounded
+                    //   by the workspace's symbol count.
+                    lsp_types::WorkspaceSymbolResponse::Nested(syms) => {
+                        for sym in syms {
+                            if let Some(row) =
+                                workspace_symbol_to_row(&handle, sym, &token).await
+                            {
+                                all.push(row);
+                            }
                         }
                     }
                 }
@@ -14454,6 +14481,68 @@ pub(crate) fn flatten_document_symbol_response(
 /// Map a flat `SymbolInformation` (legacy outline + workspace
 /// symbol shape) into our row type. Returns `None` when the
 /// location's URI doesn't resolve to a path.
+/// Convert a modern (LSP 3.17+) `WorkspaceSymbol` into a
+/// `SymbolRow` (Phase 4.2 follow-up). When the symbol's
+/// `location` came back as the `WorkspaceLocation` (URI-only)
+/// variant, fires `workspaceSymbol/resolve` against the
+/// originating server to upgrade to a real `Location` with
+/// `range`. Returns `None` when:
+/// - The URI doesn't map to a path.
+/// - Resolve fails (server doesn't actually advertise it,
+///   or returns a still-unresolved shape).
+/// - Cancellation fires while we're awaiting resolve.
+pub(crate) async fn workspace_symbol_to_row(
+    handle: &lattice_lsp::ServerHandle,
+    sym: lsp_types::WorkspaceSymbol,
+    token: &lattice_protocol::CancellationToken,
+) -> Option<SymbolRow> {
+    use lsp_types::OneOf;
+    let (path, line, col) = match &sym.location {
+        OneOf::Left(loc) => (
+            lattice_lsp::actor::uri_to_path(&loc.uri)?,
+            loc.range.start.line,
+            loc.range.start.character,
+        ),
+        OneOf::Right(wsl) => {
+            let path = lattice_lsp::actor::uri_to_path(&wsl.uri)?;
+            // Server's resolveProvider absent -> no point firing.
+            // Fall back to (0, 0); the user can still navigate
+            // to the file.
+            if !handle.capabilities().workspace_symbol_resolve_provider() {
+                (path, 0, 0)
+            } else {
+                match handle.workspace_symbol_resolve(sym.clone(), token.clone()).await {
+                    Ok(resolved) => match resolved.location {
+                        OneOf::Left(loc) => (
+                            lattice_lsp::actor::uri_to_path(&loc.uri)
+                                .unwrap_or(path),
+                            loc.range.start.line,
+                            loc.range.start.character,
+                        ),
+                        // Server replied without populating range
+                        // -- spec violation, but defensive: fall
+                        // back to (0, 0) instead of dropping.
+                        OneOf::Right(_) => (path, 0, 0),
+                    },
+                    // Resolve failed -- log via the symbol's
+                    // path-only fallback. Caller still gets a
+                    // navigable row.
+                    Err(_) => (path, 0, 0),
+                }
+            }
+        }
+    };
+    Some(SymbolRow {
+        name: sym.name,
+        kind_glyph: symbol_kind_glyph(sym.kind),
+        container: sym.container_name,
+        depth: 0,
+        path,
+        line,
+        col,
+    })
+}
+
 pub(crate) fn symbol_information_to_row(
     sym: &lsp_types::SymbolInformation,
 ) -> Option<SymbolRow> {

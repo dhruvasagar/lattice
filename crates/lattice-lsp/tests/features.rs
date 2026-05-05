@@ -219,7 +219,7 @@ async fn workspace_symbol_returns_legacy_symbol_information() {
         })
         .await;
 
-    let syms: Vec<SymbolInformation> = mock
+    let resp = mock
         .handle
         .workspace_symbol(
             WorkspaceSymbolParams {
@@ -232,8 +232,105 @@ async fn workspace_symbol_returns_legacy_symbol_information() {
         .await
         .expect("workspace/symbol succeeds")
         .expect("server returned symbols");
+    let syms: Vec<SymbolInformation> = match resp {
+        lsp_types::WorkspaceSymbolResponse::Flat(s) => s,
+        lsp_types::WorkspaceSymbolResponse::Nested(_) => {
+            panic!("expected Flat shape from this mock fixture")
+        }
+    };
     assert_eq!(syms.len(), 1);
     assert_eq!(syms[0].name, "Foo");
+}
+
+#[tokio::test]
+async fn workspace_symbol_returns_nested_workspace_symbol_with_workspace_location() {
+    // Modern LSP 3.17+ shape: server returns a
+    // `WorkspaceSymbol` whose `location` is the
+    // `WorkspaceLocation` (URI only) variant -- the editor is
+    // expected to fire `workspaceSymbol/resolve` on accept.
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("workspace/symbol", |_params| {
+            MockResult::Ok(json!([
+                {
+                    "name": "Bar",
+                    "kind": 5,
+                    "location": {
+                        "uri": "file:///tmp/other.rs"
+                    }
+                }
+            ]))
+        })
+        .await;
+    let resp = mock
+        .handle
+        .workspace_symbol(
+            WorkspaceSymbolParams {
+                query: "Bar".into(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("workspace/symbol succeeds")
+        .expect("server returned symbols");
+    match resp {
+        lsp_types::WorkspaceSymbolResponse::Nested(syms) => {
+            assert_eq!(syms.len(), 1);
+            assert_eq!(syms[0].name, "Bar");
+            assert!(matches!(
+                syms[0].location,
+                lsp_types::OneOf::Right(_),
+            ));
+        }
+        lsp_types::WorkspaceSymbolResponse::Flat(_) => {
+            panic!("expected Nested shape -- payload had no `range`")
+        }
+    }
+}
+
+#[tokio::test]
+async fn workspace_symbol_resolve_fills_in_range() {
+    // The server returns a Nested symbol with WorkspaceLocation
+    // and resolves it on the follow-up `workspaceSymbol/resolve`
+    // by upgrading the location to a full `Location` with range.
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("workspaceSymbol/resolve", |_params| {
+            MockResult::Ok(json!({
+                "name": "Bar",
+                "kind": 5,
+                "location": {
+                    "uri": "file:///tmp/other.rs",
+                    "range": {
+                        "start": {"line": 7, "character": 3},
+                        "end": {"line": 7, "character": 6}
+                    }
+                }
+            }))
+        })
+        .await;
+    let unresolved = lsp_types::WorkspaceSymbol {
+        name: "Bar".into(),
+        kind: lsp_types::SymbolKind::CLASS,
+        tags: None,
+        container_name: None,
+        location: lsp_types::OneOf::Right(lsp_types::WorkspaceLocation {
+            uri: "file:///tmp/other.rs".parse().unwrap(),
+        }),
+        data: None,
+    };
+    let resolved = mock
+        .handle
+        .workspace_symbol_resolve(unresolved, CancellationToken::never())
+        .await
+        .expect("workspaceSymbol/resolve succeeds");
+    let lsp_types::OneOf::Left(loc) = resolved.location else {
+        panic!("resolve returned still-unresolved shape")
+    };
+    assert_eq!(loc.range.start.line, 7);
+    assert_eq!(loc.range.start.character, 3);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

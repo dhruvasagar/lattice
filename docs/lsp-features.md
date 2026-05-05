@@ -57,9 +57,9 @@ Capability columns:
 | `textDocument/didChange` (Incremental) | C → S     | 4.1   | ✅     | `DocSync::record_edit` queues; `DocSync::flush` sends. utf-8 / utf-16 / utf-32 conversion via `position` module. |
 | `textDocument/didChange` (Full)        | C → S     | 4.1   | ✅     | Auto-selected when server advertises `Full` sync mode.                                                           |
 | `textDocument/didChange` (None)        | C → S     | 4.1   | ✅     | No-op when server advertises `None`.                                                                             |
-| `textDocument/willSave`                | C → S     | 4.3   | ⏹️      | Will fire from the App's Save hook before disk write.                                                            |
-| `textDocument/willSaveWaitUntil`       | C → S     | 4.3   | ⏹️      | For format-on-save; waits for the server's response (timeout-bounded).                                           |
-| `textDocument/didSave`                 | C → S     | 4.3   | ⏹️      | Sent after a successful disk write; carries text iff server requested it via `save.includeText`.                 |
+| `textDocument/willSave`                | C → S     | 4.3   | ✅     | `App::save_blocking` fan-out via `fire_will_save_notifications`; only servers advertising `wants_will_save` receive it. `reason: Manual` for now -- AfterDelay / FocusOut land when those triggers exist. |
+| `textDocument/willSaveWaitUntil`       | C → S     | 4.3   | 🚧     | Typed wrapper shipped; App-side block-on-response (format-on-save) is the remaining piece.                                           |
+| `textDocument/didSave`                 | C → S     | 4.3   | ✅     | Post-save fan-out via `fire_did_save_notifications`; attaches the rope's text when the server's `did_save_include_text` says so. |
 | `textDocument/didClose`                | C → S     | 4.1   | ✅     | `DocSync::close` flushes pending then sends.                                                                     |
 
 ## Server → client notifications
@@ -210,16 +210,16 @@ Counts as of 2026-05-05:
 
 | State          | Count |
 |----------------|-------|
-| ✅ Done        | 23    |
-| 🚧 In progress | 5     |
-| ⏹️ Planned      | 37    |
+| ✅ Done        | 25    |
+| 🚧 In progress | 6     |
+| ⏹️ Planned      | 34    |
 | ⛔ Deferred    | 4     |
 
 Phase rollup:
 
 - **4.1** Foundation: **complete**. Wire layer + actor/handshake + sync + diagnostics (broadcast → layer → renderer → buffer view + nav) + logging (rings + tracing fan-out + buffer views + commands) + supervisor + App-side wiring + edit-dispatch + open-on-`:e` all shipped.
 - **4.2** Navigation: **9/12 shipped + 1 partial**. ✅ hover (`K`), definition (`gd`), declaration (`gD`), typeDefinition (`gy`), implementation (`gI`), references (`gr`), documentSymbol (`:lsp-symbols`), workspaceSymbol (`:lsp-workspace-symbol`). 🚧 completion (`:complete`) -- bridge picker until buffer-level Insert-mode completion lands. All multi-result lookups + `:diagnostics` route through the unified vertico picker (`PickerSource::LspLocations` + `PickerAction::JumpToLspLocation`). Tag stack `<C-t>` pops `gd`-family drill-downs LIFO; jump list `<C-o>`/`<C-i>` walks every cursor jump chronologically. Remaining: completionItem/resolve + workspaceSymbol/resolve + Insert-mode completion shell.
-- **4.3** Edits: **4/9 shipped** (formatting + rangeFormatting via `:format` / `:format-range`; signatureHelp via `:signature-help`; rename + prepareRename via `:rename`). Remaining: codeAction (+ resolve), onTypeFormatting, willSave / willSaveWaitUntil / didSave, applyEdit, executeCommand.
+- **4.3** Edits: **6/9 shipped** (formatting + rangeFormatting; signatureHelp; rename + prepareRename; willSave / didSave notifications fan-out from `App::save_blocking`). Remaining: codeAction (+ resolve), onTypeFormatting, willSaveWaitUntil block-on-response (format-on-save), applyEdit, executeCommand.
 - **4.4** Polish: 0/19 -- queued.
 - **4.5** Expansion: 0/14 -- queued.
 - **post-1.0**: notebooks + multi-root workspaces.

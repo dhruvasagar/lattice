@@ -634,6 +634,13 @@ snapshot_post_publish_read at 10/1k/50k lines).
   edits open via `:e` then apply per-file. WorkspaceEdit
   flattening covers both legacy `changes` map and modern
   `document_changes` shape.
+- ✅ willSave / didSave notifications fan out from
+  `App::save_blocking`. Each attached server advertising
+  the matching capability gets a fire-and-forget
+  notification; didSave attaches the post-save rope text
+  when `includeText` is set. willSaveWaitUntil typed
+  wrapper exists; the App-side block-on-response
+  (format-on-save) is queued.
 - Multi-result lookups + `:diagnostics` route through one
   vertico picker (`PickerSource::LspLocations` +
   `PickerAction::JumpToLspLocation`); single-result nav still
@@ -661,7 +668,7 @@ Remaining 4.2:
 Remaining 4.3:
 - codeAction + codeAction/resolve.
 - onTypeFormatting.
-- willSave / willSaveWaitUntil / didSave + format-on-save.
+- willSaveWaitUntil block-on-response (format-on-save).
 - workspace/applyEdit, workspace/executeCommand.
 
 Update this section when picking up the in-flight item.

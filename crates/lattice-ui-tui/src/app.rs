@@ -76,6 +76,12 @@ pub enum Pending {
     /// First `<C-w>` of a window-management chord (split / close /
     /// navigate). Resolves on the next key.
     AfterCtrlW,
+    /// First `<C-x>` of vim's expansion-prefix family
+    /// (Phase 4.2.g.1). Resolves on the next key:
+    /// `<C-x><C-o>` -> manual completion trigger;
+    /// future: `<C-x><C-s>` snippet expand,
+    /// `<C-x><C-f>` filename completion, etc.
+    AfterCtrlX,
     /// First `g` of a `gg`-style two-key sequence.
     AfterG,
     /// Operator key pressed; awaiting motion or text-object.
@@ -471,6 +477,31 @@ pub enum Action {
     /// jump-list `<C-o>` walk: the stack and the list have
     /// different push semantics and can have different lengths.
     TagStackPop,
+    /// **Insert-mode completion** (Phase 4.2.g.1). Manually
+    /// open the popup at the cursor or refresh an open one.
+    /// Bound by default to `<C-x><C-o>` / `<C-Space>` /
+    /// smart-tab.
+    CompletionTrigger,
+    /// Move the popup selection down (`<C-n>` / `<Down>` /
+    /// `<Tab>` cycle).
+    CompletionNext,
+    /// Move the popup selection up (`<C-p>` / `<Up>` /
+    /// `<S-Tab>` cycle).
+    CompletionPrev,
+    /// Accept the focused candidate (`<C-y>` / `<Tab>` /
+    /// `<CR>`). Splices the candidate's insert text into the
+    /// buffer at the popup's anchor and closes the popup.
+    CompletionAccept,
+    /// Close the popup, stay in Insert (`<C-e>`).
+    CompletionCancel,
+    /// Close the popup AND exit Insert mode (`<Esc>`). Mirrors
+    /// vim's `<Esc>` semantics with one extra step (drop the
+    /// popup before the modal switch).
+    CompletionCancelAndExitInsert,
+    /// Toggle the side documentation popup for the focused
+    /// candidate (`<C-d>`, only inside the completion-popup
+    /// minor mode).
+    CompletionToggleDocs,
     /// `:lsp-symbols` (Phase 4.2.e). Send
     /// `textDocument/documentSymbol` to every attached server;
     /// render the merged outline as a vertico picker. Selecting
@@ -1150,6 +1181,15 @@ pub struct App {
     /// Active completion popup. `Some` while the user has Tab-
     /// triggered completion in the `:` line.
     pub completion_state: Option<CompletionState>,
+    /// Active **Insert-mode** completion popup (Phase 4.2.g).
+    /// Distinct from `completion_state` (which drives the `:` line
+    /// completion popup): this one floats over the buffer, shows
+    /// candidates from sources (LSP / snippets / buffer-words /
+    /// path / tree-sitter / plugin), and the host's keystroke
+    /// dispatcher routes through a "completion-popup minor mode"
+    /// keymap layer while it's `Some`. Behavioural spec lives in
+    /// [`docs/insert-completion.md`](../../docs/insert-completion.md).
+    pub insert_completion: Option<lattice_completion::InsertCompletionState>,
     /// Active vertico-style picker (DESIGN.md §5.9.7, §5.9.10).
     /// `Some` while a picker is open over a buffer / LSP instance
     /// / future generator. Input routes here in
@@ -2002,6 +2042,7 @@ impl App {
             help_display_mode: HelpDisplayMode::default(),
             completion_registry,
             completion_state: None,
+            insert_completion: None,
             picker: None,
             previewing: false,
             lsp_log_event_rx: Some(lsp_log_event_rx),
@@ -3257,6 +3298,17 @@ impl App {
             Action::LspSignatureHelpRequest => self.do_lsp_signature_help_request(),
             Action::LspCompletionRequest => self.do_lsp_completion_request(),
             Action::TagStackPop => self.do_tag_stack_pop(),
+            Action::CompletionTrigger => self.do_completion_trigger(),
+            Action::CompletionNext => self.do_completion_next(),
+            Action::CompletionPrev => self.do_completion_prev(),
+            Action::CompletionAccept => self.do_completion_accept(),
+            Action::CompletionCancel => self.do_completion_cancel(),
+            Action::CompletionCancelAndExitInsert => {
+                self.do_completion_cancel();
+                self.modal = ModalState::Normal;
+                self.pending = Pending::None;
+            }
+            Action::CompletionToggleDocs => self.do_completion_toggle_docs(),
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
             Action::LspWorkspaceSymbolRequest(q) => {
                 self.do_lsp_workspace_symbol_request(&q)
@@ -5962,6 +6014,264 @@ impl App {
         }
         self.set_message(EchoLevel::Info, summary);
     }
+
+    // ---- Insert-mode completion (Phase 4.2.g.1) ----
+
+    /// Manual trigger / refresh. Opens the popup if it's
+    /// closed; refreshes raw + rendered candidates if it's
+    /// already open. Sources contributing today: buffer-words.
+    /// LSP / snippets / path / tree-sitter follow in 4.2.g.2+.
+    pub fn do_completion_trigger(&mut self) {
+        if !matches!(self.modal, ModalState::Insert) {
+            // Manual trigger from any other mode is a no-op
+            // (completion is an Insert-mode surface). The
+            // explicit echo-free no-op is intentional -- no
+            // EchoLevel::Info clutter.
+            return;
+        }
+        let snap = self.document.snapshot();
+        let buffer = &snap.buffer;
+        // Anchor: walk back from the cursor over word characters.
+        // The query is the prefix `[anchor, cursor]`.
+        let line_text = buffer.line(self.cursor.line).unwrap_or_default();
+        let bytes = line_text.as_bytes();
+        let cursor_byte = self.cursor.byte as usize;
+        let mut start = cursor_byte;
+        while start > 0
+            && start <= bytes.len()
+            && is_word_char_byte(bytes[start - 1])
+        {
+            start -= 1;
+        }
+        let anchor = Position::new(self.cursor.line, start as u32);
+        let query: String = line_text
+            .get(start..cursor_byte.min(line_text.len()))
+            .unwrap_or("")
+            .to_string();
+        let trigger = if self.insert_completion.is_some() {
+            // Refresh path: keep the original trigger so LSP's
+            // `triggerKind` doesn't flip mid-popup.
+            self.insert_completion
+                .as_ref()
+                .map(|s| s.trigger.clone())
+                .unwrap_or(lattice_completion::CompletionTrigger::Manual)
+        } else {
+            lattice_completion::CompletionTrigger::Manual
+        };
+        let mut state = lattice_completion::InsertCompletionState::open(
+            trigger.clone(),
+            anchor,
+            self.cursor,
+            query.clone(),
+        );
+        self.populate_insert_completion_sync(&mut state, buffer, &trigger);
+        if state.rendered.is_empty() {
+            // No candidates -- echo a one-liner and bail. v1
+            // doesn't keep an empty popup open.
+            self.set_message(EchoLevel::Info, "no completions");
+            self.insert_completion = None;
+            return;
+        }
+        self.insert_completion = Some(state);
+    }
+
+    /// Run sync sources against the supplied state, populating
+    /// `state.raw` and re-running matcher + ranker so
+    /// `state.rendered` reflects the current `query`. Async
+    /// sources (LSP) hook into `state.raw` directly via
+    /// host-side channels in 4.2.g.2.
+    fn populate_insert_completion_sync(
+        &self,
+        state: &mut lattice_completion::InsertCompletionState,
+        buffer: &Buffer,
+        trigger: &lattice_completion::CompletionTrigger,
+    ) {
+        let ctx = lattice_completion::InsertContext {
+            buffer,
+            cursor: state.cursor,
+            anchor: state.anchor,
+            query: &state.query,
+            trigger,
+            case_sensitive: false,
+        };
+        // Buffer-words is the only sync source in 4.2.g.1.
+        // Future phases register a list and iterate.
+        let source = lattice_completion::BufferWordsSource::new();
+        state.raw = lattice_completion::InsertSource::produce(&source, &ctx);
+        self.refilter_insert_completion(state);
+    }
+
+    /// Re-run matcher + ranker over `state.raw` against the
+    /// current `state.query`. Called every time the query
+    /// mutates (each Insert-mode keystroke while the popup is
+    /// open).
+    fn refilter_insert_completion(
+        &self,
+        state: &mut lattice_completion::InsertCompletionState,
+    ) {
+        let matcher = lattice_completion::FuzzyInsertMatcher::new();
+        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
+            .raw
+            .iter()
+            .filter_map(|raw| {
+                lattice_completion::CandidateMatcher::matches(
+                    &matcher,
+                    &state.query,
+                    raw,
+                )
+                .map(|(score, ranges)| lattice_completion::ScoredCandidate {
+                    raw: raw.clone(),
+                    score,
+                    match_ranges: ranges,
+                })
+            })
+            .collect();
+        let ranker = lattice_completion::InsertRanker::new();
+        lattice_completion::CandidateRanker::rank(&ranker, &mut scored);
+        state.rendered = scored
+            .into_iter()
+            .map(lattice_completion::RenderedCandidate::from_scored)
+            .collect();
+        if !state.rendered.is_empty() && state.selected >= state.rendered.len() {
+            state.selected = state.rendered.len() - 1;
+        }
+    }
+
+    pub fn do_completion_next(&mut self) {
+        if let Some(s) = self.insert_completion.as_mut() {
+            s.select_next();
+        }
+    }
+
+    pub fn do_completion_prev(&mut self) {
+        if let Some(s) = self.insert_completion.as_mut() {
+            s.select_prev();
+        }
+    }
+
+    /// Accept the focused candidate. Replaces
+    /// `[anchor, cursor]` with the candidate's `text`; closes
+    /// the popup.
+    pub fn do_completion_accept(&mut self) {
+        let Some(state) = self.insert_completion.take() else {
+            return;
+        };
+        let Some(item) = state.selected_candidate() else {
+            return;
+        };
+        let insert_text = item.raw.text.clone();
+        let range = lattice_protocol::position::Range::new(
+            state.anchor,
+            self.cursor,
+        );
+        let edit = Edit::replace(range, insert_text);
+        match self.apply_edit_blocking(edit) {
+            Ok(applied) => {
+                self.cursor = applied.inserted_range.end;
+            }
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("completion: apply failed: {e:?}"),
+                );
+            }
+        }
+    }
+
+    pub fn do_completion_cancel(&mut self) {
+        self.insert_completion = None;
+    }
+
+    /// `<C-d>` inside the completion-popup minor mode. v1
+    /// stub: toggles `state.doc_popup` between None and a
+    /// placeholder; the renderer + lazy-resolve land in
+    /// Phase 4.2.g.3.
+    pub fn do_completion_toggle_docs(&mut self) {
+        let Some(state) = self.insert_completion.as_mut() else {
+            return;
+        };
+        if state.doc_popup.is_some() {
+            state.doc_popup = None;
+        } else {
+            state.doc_popup = Some(lattice_completion::DocPopupState {
+                for_index: state.selected,
+                body: None,
+            });
+        }
+    }
+
+    /// On every Insert-mode text insertion, if the popup is
+    /// open: re-derive the live query from
+    /// `buffer[anchor..cursor]` and re-filter. If the cursor
+    /// has moved outside the popup's anchor range, dismiss
+    /// the popup (the user typed something that took them
+    /// past the word boundary).
+    pub(crate) fn maybe_refresh_insert_completion_after_edit(&mut self) {
+        let Some(state) = self.insert_completion.as_mut() else {
+            return;
+        };
+        // Cursor must still be on the anchor's line and at /
+        // past the anchor.
+        if self.cursor.line != state.anchor.line || self.cursor.byte < state.anchor.byte {
+            self.insert_completion = None;
+            return;
+        }
+        // Re-derive query.
+        let snap_buf = self.document.snapshot().buffer.clone();
+        let line_text = snap_buf.line(state.anchor.line).unwrap_or_default();
+        let start = state.anchor.byte as usize;
+        let end = (self.cursor.byte as usize).min(line_text.len());
+        if end < start {
+            self.insert_completion = None;
+            return;
+        }
+        let query = line_text.get(start..end).unwrap_or("").to_string();
+        // If the user typed past the word (e.g. inserted a
+        // space), close the popup.
+        if query
+            .as_bytes()
+            .iter()
+            .any(|b| !is_word_char_byte(*b))
+        {
+            self.insert_completion = None;
+            return;
+        }
+        state.query = query;
+        state.cursor = self.cursor;
+        // Refilter against the current raw set.
+        let ranker = lattice_completion::InsertRanker::new();
+        let matcher = lattice_completion::FuzzyInsertMatcher::new();
+        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
+            .raw
+            .iter()
+            .filter_map(|raw| {
+                lattice_completion::CandidateMatcher::matches(
+                    &matcher,
+                    &state.query,
+                    raw,
+                )
+                .map(|(score, ranges)| lattice_completion::ScoredCandidate {
+                    raw: raw.clone(),
+                    score,
+                    match_ranges: ranges,
+                })
+            })
+            .collect();
+        lattice_completion::CandidateRanker::rank(&ranker, &mut scored);
+        state.rendered = scored
+            .into_iter()
+            .map(lattice_completion::RenderedCandidate::from_scored)
+            .collect();
+        if state.selected >= state.rendered.len() {
+            state.selected = state.rendered.len().saturating_sub(1);
+        }
+        // If nothing matches, close the popup.
+        if state.rendered.is_empty() {
+            self.insert_completion = None;
+        }
+    }
+
+    // ---- end Insert-mode completion ----
 
     /// `:complete` (Phase 4.2.g). Fires
     /// `textDocument/completion` at the cursor; the merged
@@ -8677,6 +8987,14 @@ impl App {
             // single batched undo unit.
             if let Some(spec) = self.pending_block_insert.as_mut() {
                 spec.live_edits = spec.live_edits.saturating_add(1);
+            }
+            // Insert-mode completion live-refresh (Phase 4.2.g.1).
+            // While the popup is open, every keystroke either
+            // refilters the candidate set against the new query
+            // or dismisses the popup (if the user moved past the
+            // word boundary).
+            if self.insert_completion.is_some() {
+                self.maybe_refresh_insert_completion_after_edit();
             }
             // SignatureHelp trigger autopilot (Phase 4.3). When
             // the user types a server-advertised trigger char in
@@ -19011,6 +19329,198 @@ mod tests {
         let v = super::completion_kind_glyph(Some(K::VARIABLE));
         assert_ne!(f, s);
         assert_ne!(f, v);
+    }
+
+    #[test]
+    fn insert_completion_trigger_outside_insert_is_noop() {
+        let mut a = app_with("foo bar baz", 10);
+        // Normal mode by default -- trigger should no-op.
+        a.do_completion_trigger();
+        assert!(a.insert_completion.is_none());
+    }
+
+    #[test]
+    fn insert_completion_trigger_with_no_matches_echoes_no_completions() {
+        let mut a = app_with("hello world hello\nfoo bar baz qux", 10);
+        a.modal = ModalState::Insert;
+        // Cursor at end of `hello` on line 0 -- prefix "hello".
+        // BufferWordsSource skips the cursor's own word, and
+        // none of the remaining buffer words fuzzy-match
+        // "hello", so the popup auto-closes with the
+        // "no completions" echo.
+        a.cursor = Position::new(0, 5);
+        a.do_completion_trigger();
+        assert!(a.insert_completion.is_none());
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no completions"));
+    }
+
+    #[test]
+    fn insert_completion_open_with_matching_query_keeps_popup() {
+        let mut a = app_with("hello world helper helmet hi", 10);
+        a.modal = ModalState::Insert;
+        // Cursor right after `hel` -- prefix "hel". Buffer words:
+        // "hello", "world", "helper", "helmet", "hi".
+        a.cursor = Position::new(0, 3);
+        // Place hel at the cursor: rewrite content via cursor
+        // positioning (the buffer already has "hel" as part of
+        // hello). For the test, just place cursor on a different
+        // line.
+        let _ = a.apply_edit_blocking(Edit::insert(
+            Position::new(0, 28),
+            "\nhel",
+        ));
+        a.cursor = Position::new(1, 3);
+        a.do_completion_trigger();
+        let state = a.insert_completion.as_ref().expect("popup opened");
+        assert_eq!(state.query, "hel");
+        // hello / helper / helmet all start with "hel" -- prefix
+        // tier (score 800) matches. Order may vary by stable
+        // sort over insertion order.
+        let labels: Vec<String> = state
+            .rendered
+            .iter()
+            .map(|c| c.raw.text.clone())
+            .collect();
+        assert!(labels.contains(&"hello".to_string()));
+        assert!(labels.contains(&"helper".to_string()));
+        assert!(labels.contains(&"helmet".to_string()));
+        // "hi" doesn't fuzzy-match "hel", "world" doesn't either.
+        assert!(!labels.contains(&"hi".to_string()));
+        assert!(!labels.contains(&"world".to_string()));
+    }
+
+    #[test]
+    fn insert_completion_next_prev_navigates_with_wrap() {
+        let mut a = app_with("alpha alphabet alligator", 10);
+        a.modal = ModalState::Insert;
+        let _ = a.apply_edit_blocking(Edit::insert(
+            Position::new(0, 24),
+            "\nal",
+        ));
+        a.cursor = Position::new(1, 2);
+        a.do_completion_trigger();
+        let total = a
+            .insert_completion
+            .as_ref()
+            .expect("popup")
+            .rendered
+            .len();
+        assert!(total >= 2, "need ≥ 2 candidates for wrap test");
+        assert_eq!(a.insert_completion.as_ref().unwrap().selected, 0);
+        a.do_completion_next();
+        assert_eq!(a.insert_completion.as_ref().unwrap().selected, 1);
+        // Wrap to last via prev from 1 -> 0 -> total-1.
+        a.do_completion_prev();
+        a.do_completion_prev();
+        assert_eq!(
+            a.insert_completion.as_ref().unwrap().selected,
+            total - 1
+        );
+    }
+
+    #[test]
+    fn insert_completion_accept_replaces_prefix_and_closes() {
+        let mut a = app_with("alphabet alligator\nal", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(1, 2);
+        a.do_completion_trigger();
+        // Pick the first candidate.
+        let first_text = a
+            .insert_completion
+            .as_ref()
+            .and_then(|s| s.selected_candidate())
+            .map(|c| c.raw.text.clone())
+            .expect("at least one candidate");
+        a.do_completion_accept();
+        assert!(a.insert_completion.is_none());
+        // Buffer line 1 should now be the chosen word.
+        let snap = a.document.snapshot();
+        let line1 = snap.buffer.line(1).unwrap_or_default();
+        assert_eq!(line1.trim_end(), first_text);
+    }
+
+    #[test]
+    fn insert_completion_cancel_drops_popup() {
+        let mut a = app_with("alpha alphabet\nal", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(1, 2);
+        a.do_completion_trigger();
+        assert!(a.insert_completion.is_some());
+        a.do_completion_cancel();
+        assert!(a.insert_completion.is_none());
+        // Modal stays Insert.
+        assert!(matches!(a.modal, ModalState::Insert));
+    }
+
+    #[test]
+    fn insert_completion_cancel_and_exit_insert_drops_popup_and_exits() {
+        let mut a = app_with("alpha alphabet\nal", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(1, 2);
+        a.do_completion_trigger();
+        assert!(a.insert_completion.is_some());
+        a.apply(Action::CompletionCancelAndExitInsert);
+        assert!(a.insert_completion.is_none());
+        assert!(matches!(a.modal, ModalState::Normal));
+    }
+
+    #[test]
+    fn insert_completion_toggle_docs_flips_state() {
+        let mut a = app_with("alpha alphabet\nal", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(1, 2);
+        a.do_completion_trigger();
+        assert!(
+            a.insert_completion
+                .as_ref()
+                .map(|s| s.doc_popup.is_none())
+                .unwrap_or(false)
+        );
+        a.do_completion_toggle_docs();
+        assert!(a.insert_completion.as_ref().unwrap().doc_popup.is_some());
+        a.do_completion_toggle_docs();
+        assert!(a.insert_completion.as_ref().unwrap().doc_popup.is_none());
+    }
+
+    #[test]
+    fn insert_completion_refilters_on_keystroke() {
+        let mut a = app_with("alpha alphabet alligator\nal", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(1, 2);
+        a.do_completion_trigger();
+        let pre_count = a
+            .insert_completion
+            .as_ref()
+            .expect("popup")
+            .rendered
+            .len();
+        // Type 'p' -- query becomes "alp"; only "alpha" /
+        // "alphabet" survive (alligator drops out).
+        a.apply(Action::Insert("p".into()));
+        let state = a.insert_completion.as_ref().expect("popup still open");
+        assert_eq!(state.query, "alp");
+        let labels: Vec<String> = state
+            .rendered
+            .iter()
+            .map(|c| c.raw.text.clone())
+            .collect();
+        assert!(labels.contains(&"alpha".to_string()));
+        assert!(labels.contains(&"alphabet".to_string()));
+        assert!(!labels.contains(&"alligator".to_string()));
+        assert!(state.rendered.len() < pre_count);
+    }
+
+    #[test]
+    fn insert_completion_closes_when_query_leaves_word_boundary() {
+        let mut a = app_with("alpha alphabet\nal", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(1, 2);
+        a.do_completion_trigger();
+        assert!(a.insert_completion.is_some());
+        // Type a space -- pushes the cursor past the word.
+        a.apply(Action::Insert(" ".into()));
+        assert!(a.insert_completion.is_none());
     }
 
     #[test]

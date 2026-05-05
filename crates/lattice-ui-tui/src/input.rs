@@ -58,6 +58,16 @@ pub struct TranslateContext<'a> {
     /// keys append to the query, `<Up>` / `<C-p>` / `<Down>` /
     /// `<C-n>` move selection, `<CR>` accepts, `<Esc>` dismisses.
     pub picker_open: bool,
+    /// True when the **Insert-mode completion popup** is open
+    /// (Phase 4.2.g.1). Activates the completion-popup minor
+    /// mode: `<C-n>` / `<C-p>` navigate, `<C-y>` / `<Tab>` /
+    /// `<CR>` accept, `<C-e>` cancels, `<Esc>` cancels and
+    /// exits Insert. Bindings inside this layer override the
+    /// usual Insert-mode + Normal-mode meanings (notably
+    /// `<C-d>` becomes "toggle docs popup" instead of
+    /// "shift-left-indent" / "half-page-down"). Closing the
+    /// popup deactivates the layer; original bindings restore.
+    pub insert_completion_open: bool,
 }
 
 pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
@@ -68,6 +78,18 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
     // app so an open picker isn't a foot-gun.
     if ctx.picker_open {
         return translate_picker(event);
+    }
+
+    // Insert-mode completion popup minor mode (Phase 4.2.g.1).
+    // Active only while `App.insert_completion.is_some()`. Owns
+    // the keys it overrides for the popup's lifetime; closing
+    // the popup deactivates the layer and Insert-mode + Normal-
+    // mode defaults restore (see `docs/insert-completion.md`
+    // §3.8).
+    if ctx.insert_completion_open
+        && let Some(action) = translate_insert_completion_popup(event)
+    {
+        return action;
     }
 
     // Chord-capture overlay precedes the universal `<C-c>` -> Quit
@@ -104,7 +126,7 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
     }
 
     match ctx.modal {
-        ModalState::Insert => translate_insert(event),
+        ModalState::Insert => translate_insert(event, ctx.pending),
         ModalState::Normal => translate_normal(
             event,
             ctx.pending,
@@ -318,7 +340,39 @@ fn translate_picker(event: KeyEvent) -> Action {
     }
 }
 
-fn translate_insert(event: KeyEvent) -> Action {
+fn translate_insert(event: KeyEvent, pending: Pending) -> Action {
+    // Resolve `<C-x>...` chord first. The previous keystroke
+    // armed `Pending::AfterCtrlX`; this one picks the family
+    // entry (`<C-o>` -> completion, future: `<C-s>` snippet,
+    // `<C-f>` filename, ...).
+    if matches!(pending, Pending::AfterCtrlX) {
+        if event.modifiers.contains(KeyModifiers::CONTROL) {
+            return match event.code {
+                KeyCode::Char('o') => Action::CompletionTrigger,
+                // Unrecognised follow-up: drop the pending
+                // state and let the user retry.
+                _ => Action::SetPending(Pending::None),
+            };
+        }
+        return Action::SetPending(Pending::None);
+    }
+    // `<C-Space>` -- modern-editor manual completion trigger.
+    // Crossterm reports Space-with-Ctrl as `Char(' ')` with the
+    // CONTROL modifier set.
+    if event.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(event.code, KeyCode::Char(' '))
+    {
+        return Action::CompletionTrigger;
+    }
+    // `<C-x>` -- vim's "expansion-prefix." Today only routes to
+    // `<C-x><C-o>` (omni-completion); future phases add
+    // `<C-x><C-s>` (snippet expand) etc. Stash a pending state
+    // for the next key.
+    if event.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(event.code, KeyCode::Char('x'))
+    {
+        return Action::SetPending(Pending::AfterCtrlX);
+    }
     match event.code {
         KeyCode::Esc => Action::EnterMode(ModalState::Normal),
         KeyCode::Backspace => Action::DeleteCharBackward,
@@ -328,6 +382,42 @@ fn translate_insert(event: KeyEvent) -> Action {
             Action::Insert(c.to_string())
         }
         _ => Action::None,
+    }
+}
+
+/// Completion-popup minor-mode keymap (Phase 4.2.g.1). Returns
+/// `Some(Action)` when a key is claimed by the layer; `None`
+/// when the host should fall through to Insert-mode handling.
+/// Overrides Insert-mode + Normal-mode defaults for the popup's
+/// lifetime; closing the popup deactivates this layer entirely.
+///
+/// See `docs/insert-completion.md` §6.1 for the full default
+/// keymap.
+fn translate_insert_completion_popup(event: KeyEvent) -> Option<Action> {
+    let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+    match (event.code, ctrl) {
+        // Navigation -- `<C-n>` / `<C-p>` / `<Down>` / `<Up>`.
+        (KeyCode::Char('n'), true) | (KeyCode::Down, _) => Some(Action::CompletionNext),
+        (KeyCode::Char('p'), true) | (KeyCode::Up, _) => Some(Action::CompletionPrev),
+        // Accept -- `<C-y>` / `<Tab>` / `<CR>`.
+        (KeyCode::Char('y'), true) => Some(Action::CompletionAccept),
+        (KeyCode::Tab, _) => Some(Action::CompletionAccept),
+        (KeyCode::Enter, _) => Some(Action::CompletionAccept),
+        // Cancel-but-stay-in-Insert -- `<C-e>` (vim convention).
+        (KeyCode::Char('e'), true) => Some(Action::CompletionCancel),
+        // Cancel + exit Insert -- `<Esc>`.
+        (KeyCode::Esc, _) => Some(Action::CompletionCancelAndExitInsert),
+        // Re-trigger (LSP `isIncomplete` refresh path) --
+        // `<C-Space>`.
+        (KeyCode::Char(' '), true) => Some(Action::CompletionTrigger),
+        // Toggle docs side popup -- `<C-d>`.
+        (KeyCode::Char('d'), true) => Some(Action::CompletionToggleDocs),
+        // `<C-x><C-o>` etc. fall through to translate_insert,
+        // which sets the AfterCtrlX pending state and the next
+        // key resolves in Insert mode -- inside the popup we
+        // accept that key as a re-trigger via the `<C-Space>`
+        // path.
+        _ => None,
     }
 }
 
@@ -356,6 +446,11 @@ fn translate_normal(
         Pending::AfterRegister => return resolve_after_register(event),
         Pending::AfterMacroStart => return resolve_after_macro_start(event),
         Pending::AfterMacroPlay => return resolve_after_macro_play(event),
+        // Insert-mode-only pending (Phase 4.2.g.1). If we
+        // somehow end up in Normal mode with this pending
+        // state, drop it -- the chord doesn't have a Normal-
+        // mode meaning.
+        Pending::AfterCtrlX => return Action::SetPending(Pending::None),
         Pending::None => {}
     }
 
@@ -1029,6 +1124,7 @@ mod tests {
             completion_open: false,
             chord_capture: false,
             picker_open: false,
+            insert_completion_open: false,
         }
     }
 
@@ -1048,6 +1144,7 @@ mod tests {
             completion_open: false,
             chord_capture: false,
             picker_open: false,
+            insert_completion_open: false,
         }
     }
 
@@ -1066,6 +1163,7 @@ mod tests {
             completion_open: false,
             chord_capture: false,
             picker_open: false,
+            insert_completion_open: false,
         }
     }
 
@@ -1080,6 +1178,7 @@ mod tests {
             completion_open: false,
             chord_capture: true,
             picker_open: false,
+            insert_completion_open: false,
         }
     }
 
@@ -1998,6 +2097,7 @@ mod tests {
             completion_open: false,
             chord_capture: false,
             picker_open: false,
+            insert_completion_open: false,
         }
     }
 
@@ -2287,6 +2387,7 @@ mod tests {
                 completion_open: false,
                 chord_capture: false,
                 picker_open: false,
+                insert_completion_open: false,
             };
             last = translate(ctx, event);
             if let Action::SetPending(p) = &last {
@@ -2407,6 +2508,162 @@ mod tests {
                 key(KeyCode::Char('r'))
             ),
             Action::LspReferencesRequest
+        ));
+    }
+
+    // ---- Insert-mode completion (Phase 4.2.g.1) ----
+
+    fn ctx_insert_completion<'a>(b: &'a Builtins) -> TranslateContext<'a> {
+        TranslateContext {
+            modal: ModalState::Insert,
+            pending: Pending::None,
+            builtins: b,
+            pending_count: 0,
+            recording_macro: false,
+            active_buffer: BufferKind::Document,
+            completion_open: false,
+            chord_capture: false,
+            picker_open: false,
+            insert_completion_open: true,
+        }
+    }
+
+    #[test]
+    fn ctrl_space_in_insert_triggers_completion() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Insert, Pending::None, &b),
+                ctrl(KeyCode::Char(' '))
+            ),
+            Action::CompletionTrigger
+        ));
+    }
+
+    #[test]
+    fn ctrl_x_in_insert_arms_after_ctrl_x_pending() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Insert, Pending::None, &b),
+                ctrl(KeyCode::Char('x'))
+            ),
+            Action::SetPending(Pending::AfterCtrlX)
+        ));
+    }
+
+    #[test]
+    fn ctrl_x_ctrl_o_resolves_to_completion_trigger() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Insert, Pending::AfterCtrlX, &b),
+                ctrl(KeyCode::Char('o'))
+            ),
+            Action::CompletionTrigger
+        ));
+    }
+
+    #[test]
+    fn ctrl_x_followed_by_unrecognised_clears_pending() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(
+                ctx(ModalState::Insert, Pending::AfterCtrlX, &b),
+                ctrl(KeyCode::Char('z'))
+            ),
+            Action::SetPending(Pending::None)
+        ));
+    }
+
+    #[test]
+    fn popup_open_ctrl_n_navigates_next() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('n'))),
+            Action::CompletionNext
+        ));
+    }
+
+    #[test]
+    fn popup_open_ctrl_p_navigates_prev() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('p'))),
+            Action::CompletionPrev
+        ));
+    }
+
+    #[test]
+    fn popup_open_tab_accepts() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_insert_completion(&b), key(KeyCode::Tab)),
+            Action::CompletionAccept
+        ));
+    }
+
+    #[test]
+    fn popup_open_ctrl_y_accepts() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('y'))),
+            Action::CompletionAccept
+        ));
+    }
+
+    #[test]
+    fn popup_open_enter_accepts() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_insert_completion(&b), key(KeyCode::Enter)),
+            Action::CompletionAccept
+        ));
+    }
+
+    #[test]
+    fn popup_open_ctrl_e_cancels_keeps_insert() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('e'))),
+            Action::CompletionCancel
+        ));
+    }
+
+    #[test]
+    fn popup_open_esc_cancels_and_exits_insert() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_insert_completion(&b), key(KeyCode::Esc)),
+            Action::CompletionCancelAndExitInsert
+        ));
+    }
+
+    #[test]
+    fn popup_open_ctrl_d_toggles_docs_only_inside_minor_mode() {
+        let (_, b) = fixture();
+        // Inside the popup minor mode -- claim it.
+        assert!(matches!(
+            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('d'))),
+            Action::CompletionToggleDocs
+        ));
+        // OUTSIDE the minor mode (Normal mode) -- the popup
+        // layer doesn't fire; falls through to Normal-mode
+        // half-page-down. This verifies the layer's
+        // confinement.
+        let half_down = translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            ctrl(KeyCode::Char('d')),
+        );
+        assert!(!matches!(half_down, Action::CompletionToggleDocs));
+    }
+
+    #[test]
+    fn popup_open_ctrl_space_re_triggers() {
+        let (_, b) = fixture();
+        assert!(matches!(
+            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char(' '))),
+            Action::CompletionTrigger
         ));
     }
 

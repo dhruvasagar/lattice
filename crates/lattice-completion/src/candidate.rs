@@ -158,7 +158,7 @@ pub struct RenderedCandidate {
 }
 
 impl RenderedCandidate {
-    pub(crate) fn from_scored(s: ScoredCandidate) -> Self {
+    pub fn from_scored(s: ScoredCandidate) -> Self {
         Self {
             raw: s.raw,
             score: s.score,

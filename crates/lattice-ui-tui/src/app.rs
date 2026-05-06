@@ -2442,11 +2442,14 @@ impl App {
             lang_registry,
             builtins,
             keymap: {
-                // Slice 8.d: register the Replace-mode catalog
-                // into the Builtin layer at startup. Subsequent
-                // slices populate the other modes.
+                // Slices 8.d / 8.e: register the per-mode
+                // built-in catalogs into the Builtin layer at
+                // startup. Subsequent slices populate the
+                // remaining modes (Insert in 8.f, Normal in
+                // 8.g).
                 let h = crate::keymap_registry::KeymapHandle::new();
                 crate::keymap_replace::register_replace_bindings(&h);
+                crate::keymap_visual::register_visual_bindings(&h, &builtins);
                 h
             },
             command_line: String::new(),

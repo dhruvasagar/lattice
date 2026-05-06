@@ -480,14 +480,35 @@ graceful error handling.
   per-mode arm of `input::translate` switches to the
   registry-driven path.
 
-### Slice 8.e -- Migrate Visual mode
+### Slice 8.e -- Migrate Visual mode ✅ landed
 
-- ~40 flat bindings (no multi-key chords).
-- `translate_visual` becomes the thin layer.
-- Same drift-test extension.
-- Operator-on-selection bindings (`d` / `c` / `y` / `>` / `<`
-  in Visual) bind to the selection-range form of the
-  invocation.
+- ~30 chord registrations covering exits (`<Esc>` / `v` / `V`),
+  motions (`hjkl`, `0$^`, `wbe`, `WBE`, `{}` / `()`, `G`,
+  arrow / Home / End aliases), and operators on selection
+  (`d` / `x`, `c` / `s`, `y`, `>` / `<`).
+- Motions and operators register through
+  `BoundCommand::from_invocation` -- the dispatcher returns
+  `Action::Invoke(command.clone())`. Only the three
+  `ExitVisual` exits and the two block-only `Enter*` paths
+  still carry a `legacy_action` (no `CommandInvocation` peer
+  today; slice 8.i's bridge retirement closes that gap).
+- Block-only `I` / `A` are pre-lookup overrides in
+  `dispatch_visual` until the architecture's
+  minor-mode-on-Visual layer push lands; the drift test pins
+  the kind branch so a future graduation to `push_layer` is
+  mechanical.
+- `input::translate`'s `ModalState::Visual(kind)` arm now
+  calls `dispatch_visual(ctx.keymap, &event, kind)`; the
+  legacy `translate_visual` body is gone.
+- Drift test in `keymap_visual::tests` walks the cross-product
+  of {key code} × {modifier set} × {VisualKind}, asserting
+  parity with a frozen reference body of the legacy
+  `translate_visual`. Existing `input::tests::*_in_visual_*`
+  cover the wiring end-to-end through `translate`.
+- The test fixture in `input::tests` now shares one process-
+  wide `(Builtins, KeymapHandle)` pair so trie-bound
+  `CommandInvocation` ids match the `Builtins` each test
+  references.
 
 ### Slice 8.f -- Migrate Insert mode
 

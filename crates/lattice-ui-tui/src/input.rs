@@ -22,6 +22,7 @@ use crate::app::{Action, FindKind, Pending, ScrollPos, ViewportPos};
 use crate::buffers::BufferKind;
 use crate::keymap_registry::KeymapHandle;
 use crate::keymap_replace::dispatch_replace;
+use crate::keymap_visual::dispatch_visual;
 use crate::pane::PaneDirection;
 
 pub struct TranslateContext<'a> {
@@ -182,7 +183,14 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         ),
         ModalState::Command => translate_command(event, ctx.completion_open, ctx.chord_capture),
         ModalState::Search(_) => translate_search(event),
-        ModalState::Visual(kind) => translate_visual(event, kind, ctx.builtins),
+        // Slice 8.e: Visual mode dispatches through the layered
+        // registry. The hand-rolled match table moved to
+        // `keymap_visual::register_visual_bindings`; the
+        // `kind`-specific block-only `I` / `A` overrides stay
+        // pre-lookup in `dispatch_visual` until the architecture's
+        // minor-mode-on-Visual layer push lands. The drift test
+        // in `keymap_visual::tests` is the regression net.
+        ModalState::Visual(kind) => dispatch_visual(ctx.keymap, &event, kind),
         // Slice 8.d: Replace mode dispatches through the
         // layered registry. `translate_replace`'s legacy match
         // table moved to `keymap_replace::register_replace_bindings`
@@ -192,77 +200,6 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         ModalState::Replace => dispatch_replace(ctx.keymap, &event),
         // OperatorPending routes to no-op (it's a transient resolution
         // state inside translate_normal, not a top-level reachable state).
-        _ => Action::None,
-    }
-}
-
-fn translate_visual(event: KeyEvent, kind: VisualKind, builtins: &Builtins) -> Action {
-    if event.modifiers.contains(KeyModifiers::CONTROL) {
-        return Action::None;
-    }
-    // Block-visual-only: I / A enter Insert with multi-line replay
-    // wired in App::do_enter_block_visual_insert. In charwise /
-    // linewise we don't bind these (vim's behavior is also distinct
-    // there -- linewise `I` is a separate v2 feature).
-    if matches!(kind, VisualKind::Blockwise) {
-        match event.code {
-            KeyCode::Char('I') => return Action::EnterBlockVisualInsert,
-            KeyCode::Char('A') => return Action::EnterBlockVisualAppend,
-            _ => {}
-        }
-    }
-    match event.code {
-        KeyCode::Esc => Action::ExitVisual,
-        // Toggle: pressing `v` while in Visual exits.
-        KeyCode::Char('v') => Action::ExitVisual,
-        KeyCode::Char('V') => Action::ExitVisual,
-
-        // Motions extend the selection. Reuse the same builtins; the
-        // App layer rewrites the resulting SelectionChange so the anchor
-        // is preserved.
-        KeyCode::Char('h') | KeyCode::Left => invoke(builtins.char_left),
-        KeyCode::Char('j') | KeyCode::Down => invoke(builtins.line_down),
-        KeyCode::Char('k') | KeyCode::Up => invoke(builtins.line_up),
-        KeyCode::Char('l') | KeyCode::Right => invoke(builtins.char_right),
-        KeyCode::Char('0') | KeyCode::Home => invoke(builtins.line_start),
-        KeyCode::Char('$') | KeyCode::End => invoke(builtins.line_end),
-        KeyCode::Char('^') => invoke(builtins.first_non_blank),
-        KeyCode::Char('w') => invoke(builtins.word_forward),
-        KeyCode::Char('b') => invoke(builtins.word_backward),
-        KeyCode::Char('e') => invoke(builtins.word_end),
-        KeyCode::Char('W') => invoke(builtins.big_word_forward),
-        KeyCode::Char('B') => invoke(builtins.big_word_backward),
-        KeyCode::Char('E') => invoke(builtins.big_word_end),
-        KeyCode::Char('}') => invoke(builtins.paragraph_forward),
-        KeyCode::Char('{') => invoke(builtins.paragraph_backward),
-        KeyCode::Char(')') => invoke(builtins.sentence_forward),
-        KeyCode::Char('(') => invoke(builtins.sentence_backward),
-        KeyCode::Char('G') => invoke(builtins.goto_last_line),
-
-        // Operators on the selection. `Range::Selection` resolves to the
-        // current document.selections().primary() in the dispatcher.
-        KeyCode::Char('d') | KeyCode::Char('x') => Action::Invoke(
-            CommandInvocation::of(builtins.delete.0).with_range(lattice_grammar::Range::Selection),
-        ),
-        KeyCode::Char('c') | KeyCode::Char('s') => Action::Invoke(
-            CommandInvocation::of(builtins.change.0).with_range(lattice_grammar::Range::Selection),
-        ),
-        KeyCode::Char('y') => Action::Invoke(
-            CommandInvocation::of(builtins.yank.0).with_range(lattice_grammar::Range::Selection),
-        ),
-        // Indent / dedent the lines covered by the selection.
-        // Operator's range-walker iterates lines top-down so the
-        // selection kind (charwise / linewise / blockwise) doesn't
-        // change the result -- only the line span matters.
-        KeyCode::Char('>') => Action::Invoke(
-            CommandInvocation::of(builtins.indent_right.0)
-                .with_range(lattice_grammar::Range::Selection),
-        ),
-        KeyCode::Char('<') => Action::Invoke(
-            CommandInvocation::of(builtins.indent_left.0)
-                .with_range(lattice_grammar::Range::Selection),
-        ),
-
         _ => Action::None,
     }
 }
@@ -1196,26 +1133,42 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::CONTROL)
     }
 
-    fn fixture() -> (CommandRegistry, Builtins) {
-        let mut r = CommandRegistry::new();
-        let b = populate(&mut r);
-        (r, b)
-    }
-
-    /// Lazily-populated, process-wide `KeymapHandle` for the
-    /// `ctx*` test builders. Mirrors what `App::new` registers
-    /// at startup (Replace-mode catalog today; subsequent
-    /// migration slices will extend this) so tests that fire
-    /// `translate(ctx(ModalState::Replace, ...), ...)` route
-    /// through the same dispatcher production runs.
-    fn test_keymap() -> &'static KeymapHandle {
+    /// Process-wide shared `Builtins` + populated `KeymapHandle`
+    /// pair for the `ctx*` test builders. Built once on first
+    /// access; mirrors what `App::new` registers at startup so
+    /// tests that fire `translate(ctx(...))` route through the
+    /// same dispatcher production runs AND the trie's bound
+    /// `CommandInvocation` ids match the per-test `Builtins` the
+    /// caller compares against (`assert_eq!(inv.command,
+    /// b.line_down.0)`). `fixture()` returns a *copy* of the
+    /// shared `Builtins` (`Builtins: Copy`); `test_keymap()`
+    /// returns a borrow of the shared handle.
+    fn shared_test_state() -> &'static (Builtins, KeymapHandle) {
         use std::sync::OnceLock;
-        static H: OnceLock<KeymapHandle> = OnceLock::new();
-        H.get_or_init(|| {
+        static SHARED: OnceLock<(Builtins, KeymapHandle)> = OnceLock::new();
+        SHARED.get_or_init(|| {
+            let mut r = CommandRegistry::new();
+            let b = populate(&mut r);
+            let _ex = lattice_grammar::ex_commands::populate(&mut r);
             let h = KeymapHandle::new();
             crate::keymap_replace::register_replace_bindings(&h);
-            h
+            crate::keymap_visual::register_visual_bindings(&h, &b);
+            (b, h)
         })
+    }
+
+    fn fixture() -> (CommandRegistry, Builtins) {
+        // Tests discard the registry (every caller binds `_`);
+        // we still return one for signature compat. The shared
+        // `Builtins` carries the canonical ids the keymap
+        // registry references.
+        let r = CommandRegistry::new();
+        let (b, _) = shared_test_state();
+        (r, *b)
+    }
+
+    fn test_keymap() -> &'static KeymapHandle {
+        &shared_test_state().1
     }
 
     fn ctx<'a>(modal: ModalState, pending: Pending, b: &'a Builtins) -> TranslateContext<'a> {

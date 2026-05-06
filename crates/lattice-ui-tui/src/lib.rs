@@ -30,6 +30,7 @@ pub mod keymap;
 pub mod keymap_registry;
 pub mod keymap_replace;
 pub mod keymap_trie;
+pub mod keymap_visual;
 pub mod pane;
 pub mod picker;
 pub mod render;

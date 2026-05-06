@@ -78,7 +78,7 @@ pub use logging::{LogLevel, LogRecord, LogRing, LogSource, LspLogger};
 pub use framing::{FrameError, FrameHeader};
 pub use jsonrpc::{Message, Notification, Request, RequestId, Response, ResponseError};
 pub use pending::{InvocationId, Pending};
-pub use supervisor::LspSupervisor;
+pub use supervisor::{ActorKey, LspSupervisor, LspSupervisorHandle, SupervisorSnapshot};
 pub use sync::{DocSync, uri_from_str};
 
 // Re-export commonly-used LSP types so consumers don't need

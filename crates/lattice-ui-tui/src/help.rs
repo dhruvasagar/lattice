@@ -436,7 +436,7 @@ impl HelpBuffer {
     /// Build the `:lsp-status` view -- one row per running
     /// actor (id, workspace root, server-side capability
     /// summary).
-    pub fn lsp_status(supervisor: &lattice_lsp::LspSupervisor) -> Self {
+    pub fn lsp_status(supervisor: &lattice_lsp::LspSupervisorHandle) -> Self {
         let actors = supervisor.running_actors();
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!(

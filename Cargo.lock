@@ -784,6 +784,7 @@ dependencies = [
 name = "lattice-lsp"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "criterion",
  "futures",
  "lattice-core",

@@ -88,17 +88,21 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use lsp_types::Uri;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::actor::{self, ServerHandle};
 use crate::config::{ServerConfig, resolve_workspace_root};
 use crate::diagnostics_layer::{DiagnosticsLayer, pump_diagnostics};
-use crate::error::LspResult;
+use crate::error::{LspError, LspResult};
 use crate::logging::{LogLevel, LogSource, LspLogger};
 use lattice_protocol::edit::Edit;
 
-/// Stable key for an actor: workspace root + server id.
-type ActorKey = (PathBuf, String);
+/// Stable key for an actor: workspace root + server id. Public
+/// so [`SupervisorSnapshot`] consumers can pattern-match on the
+/// actor map without re-typing the tuple.
+pub type ActorKey = (PathBuf, String);
 
 /// One LSP subsystem per editor instance.
 pub struct LspSupervisor {
@@ -616,6 +620,83 @@ impl LspSupervisor {
     }
 }
 
+impl LspSupervisor {
+    /// Snapshot the current attachment + actor state for the
+    /// handle's `ArcSwap`. Pre-resolves attachments to
+    /// `Vec<ServerHandle>` so `LspSupervisorHandle::servers_for`
+    /// is one map lookup + one Vec clone -- no second walk.
+    pub(crate) fn build_snapshot(&self) -> SupervisorSnapshot {
+        let attachments = self
+            .attachments
+            .iter()
+            .map(|(uri, keys)| {
+                let handles = keys
+                    .iter()
+                    .filter_map(|k| self.actors.get(k).cloned())
+                    .collect::<Vec<_>>();
+                (uri.clone(), handles)
+            })
+            .collect();
+        SupervisorSnapshot {
+            configs: self.configs.clone(),
+            actors: self.actors.clone(),
+            attachments,
+        }
+    }
+
+    /// Consume the configured supervisor and start the supervisor
+    /// task. Returns the [`LspSupervisorHandle`] App-side code uses
+    /// for the rest of the editor's lifetime.
+    ///
+    /// After this call, all mutating operations route through the
+    /// returned handle's mailbox; reads come from the wait-free
+    /// `ArcSwap<SupervisorSnapshot>`. The `LspSupervisor` itself
+    /// is owned exclusively by the spawned task -- no `Arc`, no
+    /// `Mutex`, no contention possible with the UI thread.
+    ///
+    /// Configuration calls (`set_event_bus`, `set_apply_edit_bus`,
+    /// `set_configuration_bus`, `add_config`, `set_configs`) must
+    /// happen *before* `spawn` -- the post-spawn handle does not
+    /// expose them. This matches the editor's actual lifecycle:
+    /// the App configures the supervisor at startup before any
+    /// buffer opens.
+    pub fn spawn(self) -> LspSupervisorHandle {
+        let initial_snapshot = Arc::new(self.build_snapshot());
+        let snapshot_cell = Arc::new(ArcSwap::from(initial_snapshot));
+        let diagnostics = self.diagnostics.clone();
+        let logger = self.logger.clone();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SupervisorCmd>();
+        let snapshot_for_task = snapshot_cell.clone();
+        // Spawn the supervisor task on the ambient tokio runtime
+        // when one is available. Sync unit tests build `App::new`
+        // without a runtime; in that case we keep the handle but
+        // do not spawn a task -- reads against the snapshot work,
+        // and write attempts return `LspError::ActorGone` from
+        // the dropped receiver. Production always has a runtime
+        // (the App lives inside `runtime::main_loop` which sets
+        // one up at startup).
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(supervisor_main(self, cmd_rx, snapshot_for_task));
+            }
+            Err(_) => {
+                // No runtime; explicitly drop cmd_rx so any
+                // accidental write from a sync test path surfaces
+                // as ActorGone immediately rather than queuing
+                // forever.
+                drop(cmd_rx);
+                drop(self);
+            }
+        }
+        LspSupervisorHandle {
+            snapshot: snapshot_cell,
+            cmd_tx,
+            diagnostics,
+            logger,
+        }
+    }
+}
+
 impl std::fmt::Debug for LspSupervisor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LspSupervisor")
@@ -623,6 +704,395 @@ impl std::fmt::Debug for LspSupervisor {
             .field("actors", &self.actors.len())
             .field("attached_buffers", &self.attachments.len())
             .finish_non_exhaustive()
+    }
+}
+
+// ---------------------------------------------------------------
+// Snapshot + handle (the public, post-spawn API).
+//
+// The audit (docs/lsp-architecture.md §11 + post-fix audit) found
+// that 14+ App methods called `try_lock` on
+// `Arc<tokio::sync::Mutex<LspSupervisor>>` from the UI thread
+// (modeline render, Insert-mode trigger probes, etc.) and silently
+// dropped work whenever an async path -- typically `:e <path>`
+// holding the mutex across the LSP `initialize` handshake -- was
+// in flight. Same class of bug as the pre-fan-in LSP-edit drop.
+//
+// Resolution: split the supervisor's surface in two.
+//
+//   - `SupervisorSnapshot` carries everything readers need
+//     (configs, actors, pre-resolved per-URI attachments). It
+//     lives in an `ArcSwap` cell; readers do one wait-free
+//     `load_full()` and clone what they need from the returned
+//     `Arc`.
+//   - `LspSupervisorHandle` is what the App holds. Reads return
+//     directly from the snapshot (lock-free); writes send a
+//     typed `SupervisorCmd` on the task's mailbox.
+//   - The supervisor task owns `LspSupervisor` exclusively; it
+//     processes cmds, mutates state, then publishes a fresh
+//     snapshot via `ArcSwap::store`. No shared mutex anywhere.
+//
+// This makes "UI thread takes no LSP-related lock" a structural
+// guarantee, not a discipline -- you can't write the contended
+// pattern even by accident.
+// ---------------------------------------------------------------
+
+/// Wait-free read view of supervisor state.
+///
+/// Built by [`LspSupervisor::build_snapshot`] after every cmd
+/// that mutates state; held in [`LspSupervisorHandle::snapshot`]
+/// inside an `ArcSwap` cell. Readers `load_full()` and clone
+/// per-field as needed. All fields are public so callers can
+/// project freely without growing the handle's API.
+#[derive(Debug, Clone, Default)]
+pub struct SupervisorSnapshot {
+    /// Curated config registry. Order is preference order: when
+    /// multiple configs match a path, all of them attach.
+    pub configs: Vec<Arc<ServerConfig>>,
+    /// Per-(workspace, server-id) live actor handles. Cloning
+    /// is cheap (`ServerHandle` is `Arc<HandleInner>` internally).
+    pub actors: HashMap<ActorKey, ServerHandle>,
+    /// Per-URI attachments, pre-resolved to `ServerHandle`s so
+    /// `servers_for(uri)` is one map lookup + one small clone.
+    pub attachments: HashMap<Uri, Vec<ServerHandle>>,
+}
+
+/// Commands the [`LspSupervisorHandle`] sends to the supervisor
+/// task. Every state-mutating operation flows through here so the
+/// task is the single writer to `LspSupervisor` state.
+enum SupervisorCmd {
+    /// Open a buffer + spawn / reuse matching actors.
+    OpenBuffer {
+        path: PathBuf,
+        text: String,
+        reply: oneshot::Sender<LspResult<Vec<ServerHandle>>>,
+    },
+    /// Attach a buffer to a pre-built [`ServerHandle`] (tests +
+    /// custom transports).
+    AttachHandle {
+        uri: Uri,
+        workspace_root: PathBuf,
+        server_id: String,
+        language_id: String,
+        text: String,
+        handle: ServerHandle,
+        reply: oneshot::Sender<LspResult<()>>,
+    },
+    /// Detach a buffer + emit `didClose` per server. Reply
+    /// resolves once the supervisor has processed (used by tests
+    /// that need ordering).
+    CloseBuffer {
+        uri: Uri,
+        reply: oneshot::Sender<LspResult<()>>,
+    },
+    /// Force-flush queued changes for `uri`.
+    Flush { uri: Uri },
+    /// Force-flush every URI; reply resolves after all flushes
+    /// have been issued (used by `shutdown`).
+    FlushAll { reply: oneshot::Sender<()> },
+    /// Drive a single edit through the per-actor mailbox. Used by
+    /// tests + admin tooling; production edits flow through the
+    /// event-bus fan-in (see `lattice_lsp::fan_in`).
+    RecordEdit { uri: Uri, edit: Edit },
+    /// Editor exit: close every buffer, drop fan-ins, shut down
+    /// every actor. Reply resolves after the supervisor task
+    /// itself is exiting (next iteration drops `cmd_rx`).
+    Shutdown {
+        reply: oneshot::Sender<LspResult<()>>,
+    },
+}
+
+/// Editor-facing handle to the LSP subsystem. Cheap to clone
+/// (every field is `Arc`-shaped internally); the App holds one
+/// instance and shares it with helpers that need to read or
+/// mutate supervisor state.
+///
+/// **Reads are wait-free.** [`Self::servers_for`],
+/// [`Self::running_actors`], [`Self::configs`], and the count
+/// helpers all go through `ArcSwap::load`. The UI thread can
+/// call them on the keystroke / render path without ever
+/// blocking.
+///
+/// **Writes are mailbox-routed.** [`Self::open_buffer`],
+/// [`Self::attach_handle`], [`Self::shutdown`], and
+/// [`Self::flush_all`] are async (await processing); the
+/// fire-and-forget variants ([`Self::close_buffer`],
+/// [`Self::flush`], [`Self::record_edit`]) send the cmd and
+/// return immediately, with the effect observable on the next
+/// snapshot publish.
+#[derive(Clone)]
+pub struct LspSupervisorHandle {
+    snapshot: Arc<ArcSwap<SupervisorSnapshot>>,
+    cmd_tx: mpsc::UnboundedSender<SupervisorCmd>,
+    diagnostics: DiagnosticsLayer,
+    logger: LspLogger,
+}
+
+impl LspSupervisorHandle {
+    // ----- read API (wait-free) --------------------------------
+
+    /// One wait-free `ArcSwap::load_full` returning the current
+    /// snapshot. Callers that need many fields project from the
+    /// returned `Arc`; one-off readers should prefer the
+    /// projection helpers below to avoid retaining the snapshot
+    /// across awaits.
+    pub fn snapshot(&self) -> Arc<SupervisorSnapshot> {
+        self.snapshot.load_full()
+    }
+
+    /// Every server attached to `uri`. Empty when the URI is not
+    /// open or no config matched its path. Cheap clone.
+    pub fn servers_for(&self, uri: &Uri) -> Vec<ServerHandle> {
+        self.snapshot
+            .load()
+            .attachments
+            .get(uri)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Snapshot of every running actor's `(key, handle)` pair.
+    pub fn running_actors(&self) -> Vec<(ActorKey, ServerHandle)> {
+        self.snapshot
+            .load()
+            .actors
+            .iter()
+            .map(|(k, h)| (k.clone(), h.clone()))
+            .collect()
+    }
+
+    /// Snapshot of every running actor's `ServerHandle`. Used by
+    /// workspace-scoped LSP requests (e.g. `workspace/symbol`)
+    /// that fan out across every server, not just servers
+    /// attached to one buffer.
+    pub fn all_running_handles(&self) -> Vec<ServerHandle> {
+        self.snapshot.load().actors.values().cloned().collect()
+    }
+
+    /// Number of buffers currently attached to the actor at `key`.
+    /// Used by `:lsp-server-log` for the picker margin.
+    pub fn buffer_count_for(&self, key: &ActorKey) -> usize {
+        let snap = self.snapshot.load();
+        let handle = match snap.actors.get(key) {
+            Some(h) => h,
+            None => return 0,
+        };
+        snap.attachments
+            .values()
+            .filter(|handles| {
+                handles.iter().any(|h| h.server_id() == handle.server_id())
+            })
+            .count()
+    }
+
+    /// Curated config registry (preference-ordered). Cheap clone.
+    pub fn configs(&self) -> Vec<Arc<ServerConfig>> {
+        self.snapshot.load().configs.clone()
+    }
+
+    /// Number of currently-attached buffers.
+    pub fn attached_buffer_count(&self) -> usize {
+        self.snapshot.load().attachments.len()
+    }
+
+    /// Number of currently-running actors.
+    pub fn running_actor_count(&self) -> usize {
+        self.snapshot.load().actors.len()
+    }
+
+    /// Borrow the shared logger. Cloning is cheap (`LspLogger`
+    /// wraps an `Arc` internally) but most callers just want a
+    /// borrow to call `.log(...)`.
+    pub fn logger(&self) -> &LspLogger {
+        &self.logger
+    }
+
+    /// Borrow the shared diagnostics layer.
+    pub fn diagnostics(&self) -> &DiagnosticsLayer {
+        &self.diagnostics
+    }
+
+    // ----- write API (async; await mailbox processing) ---------
+
+    /// Open a buffer. Returns the list of attached
+    /// `ServerHandle`s; empty if no config matched the path.
+    /// May spawn new actors (each one pays the LSP `initialize`
+    /// handshake cost). The supervisor task runs the open;
+    /// awaiting here parks the caller while it does, but does
+    /// NOT block any *other* read of the supervisor.
+    pub async fn open_buffer(
+        &self,
+        path: PathBuf,
+        text: String,
+    ) -> LspResult<Vec<ServerHandle>> {
+        let (reply, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SupervisorCmd::OpenBuffer { path, text, reply })
+            .map_err(|_| LspError::ActorGone)?;
+        rx.await.map_err(|_| LspError::ActorGone)?
+    }
+
+    /// Attach a buffer to a pre-built handle (tests + custom
+    /// transports).
+    pub async fn attach_handle(
+        &self,
+        uri: Uri,
+        workspace_root: PathBuf,
+        server_id: String,
+        language_id: String,
+        text: String,
+        handle: ServerHandle,
+    ) -> LspResult<()> {
+        let (reply, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SupervisorCmd::AttachHandle {
+                uri,
+                workspace_root,
+                server_id,
+                language_id,
+                text,
+                handle,
+                reply,
+            })
+            .map_err(|_| LspError::ActorGone)?;
+        rx.await.map_err(|_| LspError::ActorGone)?
+    }
+
+    // ----- write API (fire-and-forget; effect via snapshot) ----
+
+    /// Close a buffer. Fire-and-forget: the supervisor task
+    /// processes the cmd asynchronously, fires `didClose` per
+    /// attached server, and publishes a fresh snapshot. Tests
+    /// that need to assert post-close state should call
+    /// [`Self::close_buffer_ack`].
+    pub fn close_buffer(&self, uri: Uri) {
+        let (reply, _rx) = oneshot::channel();
+        let _ = self.cmd_tx.send(SupervisorCmd::CloseBuffer { uri, reply });
+    }
+
+    /// Close a buffer + await acknowledgement. Used by tests +
+    /// shutdown paths that need to observe the next snapshot.
+    pub async fn close_buffer_ack(&self, uri: Uri) -> LspResult<()> {
+        let (reply, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SupervisorCmd::CloseBuffer { uri, reply })
+            .map_err(|_| LspError::ActorGone)?;
+        rx.await.map_err(|_| LspError::ActorGone)?
+    }
+
+    /// Force-flush queued changes for `uri`. Fire-and-forget.
+    pub fn flush(&self, uri: Uri) {
+        let _ = self.cmd_tx.send(SupervisorCmd::Flush { uri });
+    }
+
+    /// Force-flush every URI; awaits the supervisor task's ack.
+    pub async fn flush_all(&self) -> LspResult<()> {
+        let (reply, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SupervisorCmd::FlushAll { reply })
+            .map_err(|_| LspError::ActorGone)?;
+        rx.await.map_err(|_| LspError::ActorGone)?;
+        Ok(())
+    }
+
+    /// Drive an edit through the supervisor (test / admin path;
+    /// production edits ride the event-bus fan-in).
+    pub fn record_edit(&self, uri: Uri, edit: Edit) {
+        let _ = self.cmd_tx.send(SupervisorCmd::RecordEdit { uri, edit });
+    }
+
+    /// Editor exit: close every buffer, drop fan-ins, shut down
+    /// every actor. Awaits the supervisor task's final ack.
+    pub async fn shutdown(&self) -> LspResult<()> {
+        let (reply, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SupervisorCmd::Shutdown { reply })
+            .map_err(|_| LspError::ActorGone)?;
+        rx.await.map_err(|_| LspError::ActorGone)?
+    }
+}
+
+impl std::fmt::Debug for LspSupervisorHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snap = self.snapshot.load();
+        f.debug_struct("LspSupervisorHandle")
+            .field("configs", &snap.configs.len())
+            .field("actors", &snap.actors.len())
+            .field("attached_buffers", &snap.attachments.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The supervisor task. Owns `LspSupervisor` exclusively;
+/// processes `SupervisorCmd`s in FIFO order; publishes a fresh
+/// snapshot via `ArcSwap::store` after every state mutation.
+///
+/// Exits when `cmd_rx` returns `None` (every handle dropped) or
+/// after a successful `Shutdown` cmd. The mailbox is unbounded;
+/// publishers never block on a full queue, and the supervisor
+/// always drains in order so e.g. `OpenBuffer` -> `CloseBuffer`
+/// is processed open-first regardless of timing.
+async fn supervisor_main(
+    mut state: LspSupervisor,
+    mut cmd_rx: mpsc::UnboundedReceiver<SupervisorCmd>,
+    snapshot: Arc<ArcSwap<SupervisorSnapshot>>,
+) {
+    while let Some(cmd) = cmd_rx.recv().await {
+        match cmd {
+            SupervisorCmd::OpenBuffer { path, text, reply } => {
+                let result = state.open_buffer(path, text).await;
+                snapshot.store(Arc::new(state.build_snapshot()));
+                let _ = reply.send(result);
+            }
+            SupervisorCmd::AttachHandle {
+                uri,
+                workspace_root,
+                server_id,
+                language_id,
+                text,
+                handle,
+                reply,
+            } => {
+                let result = state.attach_handle(
+                    uri,
+                    workspace_root,
+                    server_id,
+                    language_id,
+                    text,
+                    handle,
+                );
+                snapshot.store(Arc::new(state.build_snapshot()));
+                let _ = reply.send(result);
+            }
+            SupervisorCmd::CloseBuffer { uri, reply } => {
+                let result = state.close_buffer(&uri);
+                snapshot.store(Arc::new(state.build_snapshot()));
+                let _ = reply.send(result);
+            }
+            SupervisorCmd::Flush { uri } => {
+                // `flush` returns Ok unless the URI is unknown;
+                // either way no state changes, so no snapshot
+                // republish needed.
+                let _ = state.flush(&uri);
+            }
+            SupervisorCmd::FlushAll { reply } => {
+                let _ = state.flush_all();
+                let _ = reply.send(());
+            }
+            SupervisorCmd::RecordEdit { uri, edit } => {
+                let _ = state.record_edit(&uri, &edit);
+            }
+            SupervisorCmd::Shutdown { reply } => {
+                let result = state.shutdown().await;
+                snapshot.store(Arc::new(state.build_snapshot()));
+                let _ = reply.send(result);
+                // Drain anything still in the queue (likely
+                // empty), then exit. Closing cmd_rx here would
+                // be racey -- the runtime is the one dropping
+                // senders.
+                break;
+            }
+        }
     }
 }
 

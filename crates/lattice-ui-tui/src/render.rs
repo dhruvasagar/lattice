@@ -1492,19 +1492,17 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Modeline segment listing the LSP servers attached to the active
 /// document buffer. Empty string when no servers are attached, when
-/// the active buffer has no URI yet, or when the supervisor mutex
-/// is contended (the modeline never blocks the render thread -- the
-/// next frame picks the indicator up). Multiple servers are joined
-/// with `+` (`[lsp:rust+typos]`); the §5.4 multi-server merge model
-/// means more than one is legitimate.
+/// the active buffer has no URI yet. Reads are wait-free against
+/// the supervisor's `ArcSwap<SupervisorSnapshot>`; the previous
+/// `try_lock` fallback (would blank the modeline whenever an
+/// async path held the supervisor mutex) is gone. Multiple
+/// servers are joined with `+` (`[lsp:rust+typos]`); the §5.4
+/// multi-server merge model means more than one is legitimate.
 fn active_lsp_segment(app: &App) -> String {
     let Some(uri) = app.buffer_uris.get(&app.document_buffer_id) else {
         return String::new();
     };
-    let Ok(sup) = app.lsp.try_lock() else {
-        return String::new();
-    };
-    let handles = sup.servers_for(uri);
+    let handles = app.lsp.servers_for(uri);
     if handles.is_empty() {
         return String::new();
     }

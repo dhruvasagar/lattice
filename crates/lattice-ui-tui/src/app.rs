@@ -30,7 +30,7 @@ use lattice_protocol::Event;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
-use lattice_lsp::{DiagnosticsLayer, LogLevel, LspLogger, LspSupervisor};
+use lattice_lsp::{DiagnosticsLayer, LogLevel, LspLogger, LspSupervisor, LspSupervisorHandle};
 use lattice_runtime::{
     CancellationToken, DocumentHandle, EventBus, RuntimeError, SnapshotCache, block_on,
     spawn_document,
@@ -47,8 +47,22 @@ use crate::buffers::{BufferFlags, BufferId, BufferKind};
 /// in `Arc<Mutex>` for App-side sharing, plus cloned handles
 /// to the diagnostics layer + logger so the renderer's
 /// per-frame reads can skip the supervisor lock.
-fn build_lsp_subsystem() -> (
-    std::sync::Arc<tokio::sync::Mutex<LspSupervisor>>,
+/// Configure + spawn the LSP subsystem. The returned handle is
+/// what the App holds for the editor's lifetime; reads are
+/// wait-free against an `ArcSwap<SupervisorSnapshot>`, writes
+/// route through the supervisor task's mailbox. The
+/// `Arc<tokio::sync::Mutex<LspSupervisor>>` of the previous
+/// shape is gone -- the UI thread can no longer take a
+/// supervisor lock by accident (the audit's class-of-bug
+/// finding from the LSP-edit refactor).
+///
+/// `event_bus` is wired in here (pre-spawn) so the supervisor
+/// task is born already knowing about it; subsequent actor
+/// spawns get their per-actor edit fan-in for free.
+fn build_lsp_subsystem(
+    event_bus: std::sync::Arc<lattice_runtime::EventBus>,
+) -> (
+    LspSupervisorHandle,
     DiagnosticsLayer,
     LspLogger,
     tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundApplyEdit>,
@@ -74,13 +88,12 @@ fn build_lsp_subsystem() -> (
     // requested item.
     let (configuration_bus, configuration_rx) = lattice_lsp::ConfigurationBus::new();
     sup.set_configuration_bus(configuration_bus);
-    (
-        std::sync::Arc::new(tokio::sync::Mutex::new(sup)),
-        diagnostics,
-        logger,
-        apply_edit_rx,
-        configuration_rx,
-    )
+    // Event bus is wired pre-spawn so every actor born in this
+    // supervisor task gets its per-actor edit fan-in
+    // automatically (lattice_lsp::fan_in).
+    sup.set_event_bus(event_bus);
+    let handle = sup.spawn();
+    (handle, diagnostics, logger, apply_edit_rx, configuration_rx)
 }
 use crate::excommand;
 use crate::file_tree::{FileTreeBuffer, FileTreeEntryKind};
@@ -1382,18 +1395,19 @@ pub struct App {
     /// auto-fires [`Action::CommandLineSubmit`] without an
     /// explicit `<CR>`. Reset on cancel / submit.
     pub auto_submit_after_chord: bool,
-    /// LSP supervisor (DESIGN.md §5.4, Phase 4.1.h). Owns the
-    /// per-(workspace, server-id) actor map, per-buffer
-    /// attachments, and the shared logger / diagnostics layer
-    /// references the App needs to manipulate. Wrapped in
-    /// `Arc<tokio::sync::Mutex>` (Phase 4.1.i.2) so async open
-    /// / close paths and sync record / flush paths can both
-    /// borrow without rippling `&mut self` through the App's
-    /// 44 edit call sites. The mutex is cheap (uncontended
-    /// during normal operation -- App methods are
-    /// single-threaded; only `:e <path>` async open contends
-    /// briefly with idle-flush).
-    pub lsp: std::sync::Arc<tokio::sync::Mutex<lattice_lsp::LspSupervisor>>,
+    /// LSP subsystem handle (DESIGN.md §5.4, Phase 4.1.h +
+    /// audit slice 1). Reads (`servers_for`, `running_actors`,
+    /// `configs`, ...) are wait-free against an
+    /// `ArcSwap<SupervisorSnapshot>`; writes (`open_buffer`,
+    /// `attach_handle`, `close_buffer`, `flush*`, `shutdown`)
+    /// route through the supervisor task's mailbox. The UI
+    /// thread can call any read on the keystroke / render path
+    /// without ever blocking, and the previous
+    /// `Arc<tokio::sync::Mutex<LspSupervisor>>` -- which
+    /// silently dropped work via `try_lock` whenever an async
+    /// `:e <path>` held the mutex across the LSP `initialize`
+    /// handshake -- is gone.
+    pub lsp: LspSupervisorHandle,
     /// Cloned handle to the supervisor's diagnostics layer.
     /// `DiagnosticsLayer` is Clone-via-Arc-internal so this is
     /// cheap; the renderer's per-frame `app.lsp_diagnostics
@@ -2173,13 +2187,18 @@ impl App {
         // the App's `lsp_diagnostics` / `lsp_logger` reads land
         // on the same Arc-shared state the supervisor's actors
         // push to.
+        // §5.10 event bus. Built before `build_lsp_subsystem`
+        // because the supervisor wires its per-actor edit fan-in
+        // (lattice_lsp::fan_in) at spawn time using this bus, and
+        // the post-spawn handle does not expose `set_event_bus`.
+        let event_bus = Arc::new(EventBus::new());
         let (
             lsp,
             lsp_diagnostics,
             lsp_logger,
             lsp_apply_edit_rx,
             lsp_configuration_rx,
-        ) = build_lsp_subsystem();
+        ) = build_lsp_subsystem(event_bus.clone());
         let mut registry = CommandRegistry::new();
         let builtins = populate(&mut registry);
         // Register the built-in ex-commands as peers of motions /
@@ -2207,24 +2226,10 @@ impl App {
                 topics: help_topics.clone(),
             },
         );
-        // §5.10 event bus. Stood up before the typed-options
-        // registry so the registry can publish `OptionChanged`
-        // events to it via the `EventPublisher` closure.
-        let event_bus = Arc::new(EventBus::new());
-        // Wire the LSP supervisor to the bus before any buffer
-        // opens. Each actor spawned past this point gets a
-        // per-actor fan-in (lattice_lsp::fan_in) that routes
-        // `Event::DocumentChanged` straight into the actor's
-        // mailbox -- keeping the UI thread out of the supervisor
-        // mutex on the edit hot path. `try_lock` is safe here
-        // because the Arc was just constructed and no async
-        // task has had a chance to take it yet; using `lock()`
-        // would require an `await` and we're in a sync App
-        // constructor that may itself be running inside a
-        // tokio runtime (test harness).
-        lsp.try_lock()
-            .expect("supervisor mutex uncontended at App startup")
-            .set_event_bus(event_bus.clone());
+        // The §5.10 event bus is built above (before
+        // build_lsp_subsystem so the supervisor task can wire
+        // its per-actor fan-in pre-spawn). Subsequent setup just
+        // attaches more subscribers to the same bus.
         // Subscribe the App's own cascade-handler channel to
         // `OptionChanged` events on the bus. The receiver lives
         // on `App.option_change_rx`; `App::drain_option_changes`
@@ -2612,11 +2617,11 @@ impl App {
         drop(snap);
 
         if let Some(path) = path_opt {
-            let result = {
-                let mut sup = self.lsp.lock().await;
-                sup.open_buffer(path.clone(), text).await
-            };
-            match result {
+            // Handle is wait-free for reads + mailbox-routed for
+            // writes. open_buffer awaits the supervisor task's
+            // ack but never holds a shared lock against the UI
+            // thread.
+            match self.lsp.open_buffer(path.clone(), text).await {
                 Ok(_handles) => {
                     let uri = lattice_lsp::actor::uri_from_path(&path);
                     self.buffer_uris.insert(buffer_id, uri);
@@ -2658,26 +2663,25 @@ impl App {
 
     /// Flush queued didChange events for a buffer immediately.
     /// Used by will-save hooks (4.3) so the server's view is
-    /// caught up before pre-save requests fire.
+    /// caught up before pre-save requests fire. Fire-and-forget
+    /// against the supervisor mailbox; the supervisor task
+    /// processes the flush asynchronously.
     pub fn lsp_flush(&self, buffer_id: BufferId) {
         let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
             return;
         };
-        if let Ok(mut sup) = self.lsp.try_lock() {
-            let _ = sup.flush(&uri);
-        }
+        self.lsp.flush(uri);
     }
 
     /// Detach a buffer from every attached LSP server. Called
     /// from the bdelete path. Sends `didClose` per server +
-    /// clears the URI's diagnostics.
+    /// clears the URI's diagnostics. Fire-and-forget against
+    /// the supervisor mailbox.
     pub fn lsp_close_buffer(&mut self, buffer_id: BufferId) {
         let Some(uri) = self.buffer_uris.remove(&buffer_id) else {
             return;
         };
-        if let Ok(mut sup) = self.lsp.try_lock() {
-            let _ = sup.close_buffer(&uri);
-        }
+        self.lsp.close_buffer(uri);
     }
 
     /// Queue an LSP attachment for a freshly-opened file. The
@@ -2695,10 +2699,10 @@ impl App {
     pub async fn drain_pending_lsp_opens(&mut self) {
         let pending: Vec<_> = std::mem::take(&mut self.pending_lsp_opens);
         for (buffer_id, path, text) in pending {
-            let result = {
-                let mut sup = self.lsp.lock().await;
-                sup.open_buffer(path.clone(), text).await
-            };
+            // Mailbox-routed: the supervisor task processes the
+            // open + handshake; the UI thread parks only on
+            // *this* await, never on a shared mutex.
+            let result = self.lsp.open_buffer(path.clone(), text).await;
             match result {
                 Ok(_handles) => {
                     let uri = lattice_lsp::actor::uri_from_path(&path);
@@ -2951,13 +2955,12 @@ impl App {
     ///
     /// Returns `None` when none matches.
     fn resolve_server_id(&self, name: &str) -> Option<String> {
-        let sup = self.lsp.try_lock().ok()?;
-        for ((_, sid), _) in sup.running_actors() {
+        for ((_, sid), _) in self.lsp.running_actors() {
             if sid == name {
                 return Some(sid);
             }
         }
-        for cfg in sup.configs() {
+        for cfg in self.lsp.configs() {
             if cfg.id == name {
                 return Some(cfg.id.clone());
             }
@@ -2977,10 +2980,8 @@ impl App {
     /// Distinct server ids of every running actor. Used in echo
     /// messages so the user sees what's available.
     fn running_server_ids(&self) -> Vec<String> {
-        let Ok(sup) = self.lsp.try_lock() else {
-            return Vec::new();
-        };
-        let mut ids: Vec<String> = sup
+        let mut ids: Vec<String> = self
+            .lsp
             .running_actors()
             .into_iter()
             .map(|((_, sid), _)| sid)
@@ -2993,19 +2994,9 @@ impl App {
     /// `:lsp-status` -- render every running server in a
     /// help-style buffer.
     pub fn do_lsp_status(&mut self) {
-        // try_lock is enough; the App is single-threaded and
-        // the supervisor isn't held across .await right now.
-        let buffer = match self.lsp.try_lock() {
-            Ok(sup) => crate::help::HelpBuffer::lsp_status(&sup),
-            Err(_) => crate::help::HelpBuffer::from_lines(
-                "lsp-status",
-                vec![
-                    "# :lsp-status".into(),
-                    String::new(),
-                    "(supervisor lock unavailable; an async open / shutdown is in flight)".into(),
-                ],
-            ),
-        };
+        // Reads are wait-free against the supervisor snapshot;
+        // no fallback path needed.
+        let buffer = crate::help::HelpBuffer::lsp_status(&self.lsp);
         self.open_help(buffer.with_markdown_syntax(self.lang_registry.clone()));
     }
 
@@ -3188,12 +3179,8 @@ impl App {
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
             return;
         };
-        let lsp = self.lsp.clone();
         let uri = uri.clone();
-        let handles = match lsp.try_lock() {
-            Ok(g) => g.servers_for(&uri),
-            Err(_) => return,
-        };
+        let handles = self.lsp.servers_for(&uri);
         let params = lsp_types::WillSaveTextDocumentParams {
             text_document: lsp_types::TextDocumentIdentifier { uri },
             reason: lsp_types::TextDocumentSaveReason::MANUAL,
@@ -3214,11 +3201,7 @@ impl App {
         else {
             return;
         };
-        let lsp = self.lsp.clone();
-        let handles = match lsp.try_lock() {
-            Ok(g) => g.servers_for(&uri),
-            Err(_) => return,
-        };
+        let handles = self.lsp.servers_for(&uri);
         let interested: Vec<lattice_lsp::ServerHandle> = handles
             .into_iter()
             .filter(|h| h.capabilities().wants_will_save_wait_until())
@@ -3274,12 +3257,8 @@ impl App {
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
             return;
         };
-        let lsp = self.lsp.clone();
         let uri = uri.clone();
-        let handles = match lsp.try_lock() {
-            Ok(g) => g.servers_for(&uri),
-            Err(_) => return,
-        };
+        let handles = self.lsp.servers_for(&uri);
         let snap = self.document.snapshot();
         let full_text = snap.buffer.as_string();
         for h in handles {
@@ -5328,26 +5307,17 @@ impl App {
     /// Snapshot the supervisor's running actor table into the
     /// shape the picker consumes. Walks the supervisor under its
     /// lock, builds one [`crate::picker::LspInstanceRow`] per
-    /// `(workspace, server_id)` actor, drops the lock, and returns
-    /// the vec. Returns an empty list (and echoes a warning) when
-    /// the lock isn't immediately available -- async open / close
-    /// in flight; the picker degrades to an empty list rather than
-    /// blocking input.
+    /// Build the row list from the supervisor snapshot. Wait-free:
+    /// reads against `ArcSwap<SupervisorSnapshot>`. The previous
+    /// `try_lock` fall-through (degrade to empty if supervisor was
+    /// busy) is gone -- the snapshot is always readable.
     fn snapshot_lsp_instances(&mut self) -> Vec<crate::picker::LspInstanceRow> {
-        let Ok(sup) = self.lsp.try_lock() else {
-            self.set_message(
-                EchoLevel::Warn,
-                "lsp-picker: supervisor busy (async open / shutdown in flight); try again"
-                    .to_string(),
-            );
-            return Vec::new();
-        };
-        let actors = sup.running_actors();
+        let actors = self.lsp.running_actors();
         actors
             .into_iter()
             .map(|((workspace, server_id), handle)| {
                 let key = (workspace.clone(), server_id.clone());
-                let buffer_count = sup.buffer_count_for(&key);
+                let buffer_count = self.lsp.buffer_count_for(&key);
                 let caps = handle.capabilities();
                 let cap_summary = crate::help::summarise_capabilities(&caps);
                 crate::picker::LspInstanceRow {
@@ -5909,7 +5879,7 @@ impl App {
         let stash_for_task = stash.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.lock().await.servers_for(&uri) };
+                { lsp.servers_for(&uri) };
             let chosen = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_code_action());
@@ -6114,10 +6084,8 @@ impl App {
     /// resolve / executeCommand path.
     fn first_code_action_handle(&self) -> Option<lattice_lsp::ServerHandle> {
         let uri = self.buffer_uris.get(&self.document_buffer_id)?;
-        let lsp = self.lsp.clone();
-        let g = lsp.try_lock().ok()?;
-        let handles = g.servers_for(uri);
-        handles
+        self.lsp
+            .servers_for(uri)
             .into_iter()
             .find(|h| h.capabilities().supports_code_action())
     }
@@ -6172,7 +6140,7 @@ impl App {
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.lock().await.servers_for(&uri) };
+                { lsp.servers_for(&uri) };
             // Pick the first server with renameProvider.
             let chosen = handles
                 .into_iter()
@@ -7591,19 +7559,16 @@ impl App {
         if let Some(cmd) = meta.command.clone() {
             // Pick any handle that supports executeCommand
             // and dispatch.
-            let lsp = self.lsp.clone();
             let uri = self
                 .buffer_uris
                 .get(&self.document_buffer_id)
                 .cloned();
             if let Some(uri) = uri {
-                let handle = match lsp.try_lock() {
-                    Ok(g) => g
-                        .servers_for(&uri)
-                        .into_iter()
-                        .find(|h| h.capabilities().supports_execute_command()),
-                    Err(_) => None,
-                };
+                let handle = self
+                    .lsp
+                    .servers_for(&uri)
+                    .into_iter()
+                    .find(|h| h.capabilities().supports_execute_command());
                 self.execute_lsp_command(handle, cmd);
             }
         }
@@ -7707,12 +7672,7 @@ impl App {
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
             return false;
         };
-        let lsp = self.lsp.clone();
-        let g = match lsp.try_lock() {
-            Ok(g) => g,
-            Err(_) => return false,
-        };
-        for h in g.servers_for(uri) {
+        for h in self.lsp.servers_for(uri) {
             if h.server_id() == &*meta.server_id {
                 return h.capabilities().completion_resolve_provider();
             }
@@ -7916,7 +7876,7 @@ impl App {
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.lock().await.servers_for(&uri) };
+                { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(InsertCompletionLspOutcome::NoServers);
                 return;
@@ -8108,12 +8068,10 @@ impl App {
         self.pending_completion_resolve_token = Some(token.clone());
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handle = {
-                let g = lsp.lock().await;
-                g.servers_for(&uri)
-                    .into_iter()
-                    .find(|h| h.server_id() == &*server_id)
-            };
+            let handle = lsp
+                .servers_for(&uri)
+                .into_iter()
+                .find(|h| h.server_id() == &*server_id);
             let Some(handle) = handle else {
                 return;
             };
@@ -8458,7 +8416,7 @@ impl App {
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.lock().await.servers_for(&uri) };
+                { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(CompletionOutcome::NoServers);
                 return;
@@ -8608,7 +8566,7 @@ impl App {
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.lock().await.servers_for(&uri) };
+                { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(SignatureHelpOutcome::NoServers);
                 return;
@@ -9707,7 +9665,7 @@ impl App {
             // response (the lock is App-side; we don't hold it
             // across awaits).
             let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.lock().await.servers_for(&uri) };
+                { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(HoverOutcome::NoServers);
                 return;
@@ -9916,7 +9874,7 @@ impl App {
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.lock().await.servers_for(&uri) };
+                { lsp.servers_for(&uri) };
             let mut all: Vec<lsp_types::Location> = Vec::new();
             for handle in handles {
                 if token.is_cancelled() {
@@ -10112,7 +10070,7 @@ impl App {
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.lock().await.servers_for(&uri) };
+                { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(ReferencesOutcome::NoServers);
                 return;
@@ -10245,7 +10203,7 @@ impl App {
         };
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.lock().await.servers_for(&uri) };
+                { lsp.servers_for(&uri) };
             // Pick the first server advertising the right
             // provider. (Priority sorting from the architecture
             // doc lands once `ServerConfig.priority` is wired
@@ -10421,7 +10379,7 @@ impl App {
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.lock().await.servers_for(&uri) };
+                { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(SymbolsOutcome::NoServers);
                 return;
@@ -10474,10 +10432,7 @@ impl App {
         self.pending_symbols_rx = Some(rx);
         self.pending_symbols_token = Some(token.clone());
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> = {
-                let sup = lsp.lock().await;
-                sup.all_running_handles()
-            };
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.all_running_handles();
             if handles.is_empty() {
                 let _ = tx.send(SymbolsOutcome::NoServers);
                 return;
@@ -11587,12 +11542,13 @@ impl App {
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
             return Vec::new();
         };
-        let lsp = self.lsp.clone();
-        let uri = uri.clone();
-        let handles = match lsp.try_lock() {
-            Ok(g) => g.servers_for(&uri),
-            Err(_) => return Vec::new(),
-        };
+        // Wait-free read against the supervisor snapshot. The
+        // earlier `try_lock` here was the canonical example of
+        // the audit's C2 finding -- silently returned `Vec::new()`
+        // whenever an async `:e` held the supervisor mutex,
+        // breaking on-type formatting for the keystrokes that
+        // landed during the handshake window.
+        let handles = self.lsp.servers_for(uri);
         let mut chars: Vec<char> = Vec::new();
         for h in handles {
             for c in h.capabilities().on_type_formatting_trigger_chars() {
@@ -11646,7 +11602,7 @@ impl App {
         self.pending_format_token = Some(token.clone());
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.lock().await.servers_for(&uri) };
+                { lsp.servers_for(&uri) };
             let chosen = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_on_type_formatting());
@@ -11680,14 +11636,11 @@ impl App {
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
             return Vec::new();
         };
-        // Snapshot under the supervisor lock; the Vec is small
-        // (<10 chars across all servers) so allocation is cheap.
-        let lsp = self.lsp.clone();
-        let uri = uri.clone();
-        let handles = match lsp.try_lock() {
-            Ok(g) => g.servers_for(&uri),
-            Err(_) => return Vec::new(),
-        };
+        // Wait-free read against the supervisor snapshot.
+        // Pair with on_type_formatting_trigger_chars: both were
+        // the C2 finding in the audit -- the only Insert-mode
+        // hot-path consumers of the supervisor.
+        let handles = self.lsp.servers_for(uri);
         let mut chars: Vec<char> = Vec::new();
         for h in handles {
             for c in h.capabilities().signature_help_trigger_chars() {
@@ -23817,12 +23770,12 @@ mod tests {
         // Builtin registry: rust, python, go, typescript, c-cpp,
         // lua. Six entries today.
         assert!(
-            app.lsp.try_lock().unwrap().configs().len() >= 6,
+            app.lsp.configs().len() >= 6,
             "expected at least 6 builtin server configs"
         );
         // Supervisor starts dormant.
-        assert_eq!(app.lsp.try_lock().unwrap().running_actor_count(), 0);
-        assert_eq!(app.lsp.try_lock().unwrap().attached_buffer_count(), 0);
+        assert_eq!(app.lsp.running_actor_count(), 0);
+        assert_eq!(app.lsp.attached_buffer_count(), 0);
         assert!(app.buffer_uris.is_empty());
     }
 
@@ -23860,7 +23813,7 @@ mod tests {
         // Document has no on-disk path, so initialize_lsp
         // shouldn't try to attach anything.
         app.initialize_lsp().await;
-        assert_eq!(app.lsp.try_lock().unwrap().attached_buffer_count(), 0);
+        assert_eq!(app.lsp.attached_buffer_count(), 0);
         assert!(app.buffer_uris.is_empty());
     }
 

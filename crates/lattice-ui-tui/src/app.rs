@@ -1356,6 +1356,15 @@ pub struct App {
     /// `populate_insert_completion_sync` (path source only;
     /// other sync sources skip).
     pub completion_in_path_context: bool,
+    /// Single-entry cache for path-completion's `read_dir` walk
+    /// (audit slice 5 / H5). The popup re-fires on every Insert
+    /// keystroke inside a string literal; without the cache the
+    /// directory walk runs from scratch every time, thrashing
+    /// any large or network-mounted dir. Keyed by directory
+    /// path + mtime so any external change invalidates on the
+    /// next call. Single entry because users typically navigate
+    /// one dir at a time; LRU is overkill for v1.
+    path_completion_cache: Option<PathCompletionCache>,
     /// Live snippet expansion. `Some` while a snippet is
     /// active and `<Tab>` / `<S-Tab>` navigate placeholders.
     /// Dropped on `$0` consumption / `<Esc>` / cursor moving
@@ -1521,6 +1530,26 @@ pub struct CompletionState {
 }
 
 const COMMAND_HISTORY_CAP: usize = 100;
+
+/// One cached `read_dir` walk for path completion. Hot path:
+/// each Insert keystroke inside a string literal re-fires
+/// `populate_path_completion`; with this cache, consecutive
+/// keystrokes for the same directory pay one `metadata()` call
+/// (mtime check) instead of a full directory walk.
+#[derive(Debug, Clone)]
+pub(crate) struct PathCompletionCache {
+    /// Directory the entries were read from. Cache hits require
+    /// equality (exact path).
+    pub(crate) dir: std::path::PathBuf,
+    /// Modified-time of `dir` at the moment of the read. Cache
+    /// hits require this to still match what the OS reports
+    /// (cheap stat call); mismatch falls through to a fresh
+    /// `read_dir`.
+    pub(crate) mtime: Option<std::time::SystemTime>,
+    /// `(name, is_dir)` per entry. Sorted by `name` so popup
+    /// emission is deterministic without re-sorting.
+    pub(crate) entries: Vec<(String, bool)>,
+}
 
 /// One contiguous fold range in a document buffer.
 ///
@@ -2461,6 +2490,7 @@ impl App {
             snippet_registry: lattice_snippet::SnippetRegistry::new(),
             insert_completion_snippet_meta: Vec::new(),
             completion_accept_freq: std::collections::HashMap::new(),
+            path_completion_cache: None,
             pending_config_structural_sections: std::collections::BTreeMap::new(),
             per_language_completion: lattice_completion::per_language_defaults(),
             completion_in_path_context: false,
@@ -3213,8 +3243,19 @@ impl App {
 
     /// Run `textDocument/willSaveWaitUntil` against every
     /// server advertising the request; collect their TextEdits
-    /// and apply them pre-save. Bounded by 500ms per server so
-    /// a buggy / slow server can't hang the save.
+    /// and apply them pre-save.
+    ///
+    /// Audit slice 5 / M4: the previous shape iterated servers
+    /// sequentially with a 500ms timeout per server, so total
+    /// UI-thread block was up to `500ms × N`. New shape runs
+    /// every server's request concurrently under one shared
+    /// 500ms budget -- worst-case UI block is bounded at 500ms
+    /// regardless of how many servers are attached. The
+    /// remaining sync `block_on` is queued for the eventual
+    /// two-phase save (kick off → return → drain on completion);
+    /// the bounded-parallel fix covers the audit's actual
+    /// concern (1.5s+ stalls for multi-server saves) without
+    /// the behavioural change of fully-async save.
     fn run_will_save_wait_until_blocking(&mut self) {
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned()
         else {
@@ -3232,29 +3273,56 @@ impl App {
             text_document: lsp_types::TextDocumentIdentifier { uri },
             reason: lsp_types::TextDocumentSaveReason::MANUAL,
         };
-        // Collect edits from every interested server. Edits
-        // are applied per-server in order; later edits ride on
-        // top of earlier ones (same as multiple formatters
-        // chained). The 500ms bound is per-server.
-        let mut all_edits: Vec<lsp_types::TextEdit> = Vec::new();
-        for handle in interested {
-            let token = lattice_protocol::CancellationToken::new();
-            let pending = handle.will_save_wait_until(params.clone(), token.clone());
-            // Block on the response with a deadline. Pending
-            // implements `Future` directly, so we can `.await`
-            // it. 500ms timeout keeps a buggy / slow server
-            // from hanging the save.
-            let edits = block_on(async move {
+        // One cancellation token per request; on overall
+        // timeout we cancel every in-flight one so slow servers
+        // stop wasting the LSP runtime's worker time.
+        let tokens: Vec<lattice_protocol::CancellationToken> = (0..interested.len())
+            .map(|_| lattice_protocol::CancellationToken::new())
+            .collect();
+        let pending: Vec<_> = interested
+            .iter()
+            .zip(tokens.iter())
+            .map(|(handle, token)| {
+                handle.will_save_wait_until(params.clone(), token.clone())
+            })
+            .collect();
+        let cancel_tokens = tokens.clone();
+        let all_edits: Vec<lsp_types::TextEdit> = block_on(async move {
+            // Spawn each request onto a `JoinSet` so they run
+            // concurrently on the LSP runtime. The shared
+            // 500ms deadline below caps the *total* UI-thread
+            // block.
+            let mut set: tokio::task::JoinSet<Vec<lsp_types::TextEdit>> =
+                tokio::task::JoinSet::new();
+            for fut in pending {
+                set.spawn(async move {
+                    fut.await.ok().flatten().unwrap_or_default()
+                });
+            }
+            let deadline = tokio::time::sleep(std::time::Duration::from_millis(500));
+            tokio::pin!(deadline);
+            let mut acc: Vec<lsp_types::TextEdit> = Vec::new();
+            loop {
                 tokio::select! {
-                    r = pending => r.ok().flatten().unwrap_or_default(),
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
-                        token.cancel();
-                        Vec::new()
+                    next = set.join_next() => match next {
+                        Some(Ok(edits)) => acc.extend(edits),
+                        Some(Err(_)) => {} // task panicked; skip
+                        None => break,     // every task done
+                    },
+                    _ = &mut deadline => {
+                        // Bound the total UI-thread block at
+                        // 500ms; any server still in flight
+                        // gets cancelled so its response (if it
+                        // eventually arrives) doesn't try to
+                        // apply edits to a post-save buffer.
+                        for t in &cancel_tokens { t.cancel(); }
+                        set.abort_all();
+                        break;
                     }
                 }
-            });
-            all_edits.extend(edits);
-        }
+            }
+            acc
+        });
         if !all_edits.is_empty() {
             // Apply pre-save edits as one undo unit. A failed
             // apply echoes but doesn't abort the save -- the
@@ -6753,40 +6821,82 @@ impl App {
             }
         };
 
-        let entries = match std::fs::read_dir(&base_dir) {
-            Ok(it) => it,
-            Err(_) => return, // directory unreadable / missing; popup stays empty
+        // Cache check: re-use the previous read_dir if the
+        // directory's mtime hasn't changed. The popup re-fires on
+        // every Insert keystroke; without this cache the
+        // consecutive keystrokes for the same dir each pay a
+        // full read_dir + per-entry file_type() walk. With it,
+        // each keystroke past the first pays one metadata()
+        // call. Audit slice 5 / H5.
+        let current_mtime = std::fs::metadata(&base_dir)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        let cache_hit = self
+            .path_completion_cache
+            .as_ref()
+            .filter(|c| c.dir == base_dir && c.mtime == current_mtime);
+        let entries: Vec<(String, bool)> = match cache_hit {
+            Some(c) => c.entries.clone(),
+            None => {
+                let read = match std::fs::read_dir(&base_dir) {
+                    Ok(it) => it,
+                    Err(_) => {
+                        // Directory unreadable / missing; popup
+                        // stays empty + the cache is invalidated
+                        // so a later mtime-bump triggers a fresh
+                        // read.
+                        self.path_completion_cache = None;
+                        return;
+                    }
+                };
+                let mut entries: Vec<(String, bool)> = read
+                    .flatten()
+                    .filter_map(|entry| {
+                        entry
+                            .file_name()
+                            .to_str()
+                            .map(|name| {
+                                let is_dir = entry
+                                    .file_type()
+                                    .map(|t| t.is_dir())
+                                    .unwrap_or(false);
+                                (name.to_string(), is_dir)
+                            })
+                    })
+                    .collect();
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                self.path_completion_cache = Some(PathCompletionCache {
+                    dir: base_dir.clone(),
+                    mtime: current_mtime,
+                    entries: entries.clone(),
+                });
+                entries
+            }
         };
         let path_id = lattice_completion::SourceId::new(
             lattice_completion::PATH_SOURCE_ID,
         );
         let mut emitted = 0;
-        for entry in entries.flatten() {
+        for (name, is_dir) in entries {
             if emitted >= MAX_ENTRIES {
                 break;
             }
-            let name_os = entry.file_name();
-            let Some(name) = name_os.to_str() else { continue };
             if name.starts_with('.') {
                 // Skip hidden entries by default. The user can
                 // type `.` and the popup will re-trigger to
                 // show them once `auto_trigger` lands.
                 continue;
             }
-            if IGNORE_NAMES.contains(&name) {
+            if IGNORE_NAMES.contains(&name.as_str()) {
                 continue;
             }
-            let is_dir = entry
-                .file_type()
-                .map(|t| t.is_dir())
-                .unwrap_or(false);
             let (text, kind) = if is_dir {
                 (
                     format!("{name}/"),
                     lattice_completion::CandidateKind::Directory,
                 )
             } else {
-                (name.to_string(), lattice_completion::CandidateKind::File)
+                (name, lattice_completion::CandidateKind::File)
             };
             let cand = lattice_completion::RawCandidate::plain(text, kind)
                 .with_source(path_id.clone());

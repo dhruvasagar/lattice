@@ -13,6 +13,22 @@ A modal, GPU-accelerated, plugin-first text editor written in Rust. Combines vim
 3. **Extensible vim modal editing.** Strict vim semantics. The grammar (operators, motions, text objects, registers, ranges, counts) IS the public command API. Adding new motions / text objects / operators is first-class -- including future tree-sitter-driven variants. One deliberate deviation from vim: the `:` command line and the functional API are unified into a single typed `CommandRegistry` with one dispatcher.
 4. **Asynchronicity.** Three-layer architecture (UI / Core / Plugins) communicating via typed message passing. Multi-threaded by construction. Each plugin instance owns its own `wasmtime::Store` and runs as a tokio task; many plugins execute in parallel across cores. Nothing blocks the UI -- enforced architecturally, not by discipline.
 
+## Decision-making heuristics
+
+When the four paramount goals conflict with each other or with an implementation constraint, fall back to these. They came out of the architectural debates that shaped Phase 4 and are meant to keep design judgement consistent across sessions and contributors.
+
+1. **Best long-term fit beats easy implementation.** Ease of coding is not a tiebreaker. If the simpler approach contradicts a paramount goal, the harder one wins. Call the trade-off out in prose, don't smuggle it.
+2. **Evaluate against the paramount goals, not against other editors.** Neovim, helix, emacs, zed solved different problems on different substrates; "X does Y" is data, not justification. When choosing between approaches, name the paramount goal each one protects (and the one it sacrifices).
+3. **Treat user-suggested options as input, not the menu.** When the user proposes A vs B, also surface C if it fits the goals better. The right answer may be neither. Say so explicitly with the trade-off.
+4. **Confirm the plan before non-trivial work.** For any change touching architecture, public API, or cross-crate boundaries: walk through the chosen approach, the trade-offs accepted, and the impact surface (which crates / docs / benches / tests get touched) before writing code. Slice large changes; land each slice green.
+5. **Non-trivial design changes ship four artefacts together.**
+   - architecture documentation (in `docs/`, prose-led, tone matches the existing files),
+   - benchmark coverage so perf impact is visible in `BENCHMARKS.md` and CI,
+   - test coverage that exercises the new scenarios *and* the failure modes, not just the happy path,
+   - graceful error handling -- log + skip on recoverable failures, never panic on the hot path, never swallow silently.
+
+A change that ships only code is incomplete; the doc, the bench, and the test are part of the deliverable.
+
 ## Key design decisions
 
 - **Vim modal state is a buffer-level state machine** (Normal / Insert / Visual / Op-pending / Command / Search), orthogonal to major / minor modes. Major mode = content-type identity (rust, markdown). The two axes do not collapse.

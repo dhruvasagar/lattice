@@ -894,14 +894,40 @@ type-hoisting decisions, and the sub-slice plan.
     all 13 Pending variants. `actions::populate` grew a
     `&Builtins` parameter so the operator-prefix helpers can
     capture the `OperatorId` in their closures.
-  - 8.i.4.d -- Final retirement. Pending. Drop the `Pending`
-    enum entirely, drop `Action::SetPending`, drop
-    `bind_legacy` / `legacy_action` / `KeymapHandleLegacyExt` /
-    `legacy_action_command_id` / `BoundCommand::from_legacy_action`,
-    drop the 4 drift reference bodies in
-    `keymap_replace`/`keymap_visual`/`keymap_insert`, drop
-    `compute_normal_action`'s defensive `match pending` body.
-    Bench rollup. Doc updates.
+  - 8.i.4.d -- Pending retirement + `<C-w>` sub-tree.
+    ✅ landed. `App::pending: Pending` field, `Pending` enum,
+    `Action::SetPending(_)` variant, `compute_normal_action`'s
+    `match pending {}` body, and the `pending: Pending`
+    parameter on `TranslateContext` /  `translate_normal` /
+    `compute_normal_action` / `dispatch_insert` are gone.
+    `App::apply`'s "non-SetPending clears pending" guard
+    retired. The 2 remaining `bind_legacy(... Action::*Pane*, ...)`
+    sites in `register_ctrl_w_sub_tree` migrated to typed
+    `CommandInvocation`s with 6 new App-side actions
+    (`split_pane_horizontal`, `split_pane_vertical`,
+    `close_pane`, `navigate_pane_{left,down,up,right}`,
+    `next_pane`, `prev_pane`); `PaneDirection` hoisted from
+    `lattice_ui_tui::pane` to `lattice_grammar::app_effect`
+    (mirroring the `ScrollPos` / `ViewportPos` hoist in
+    8.i.2.c). `run_invocation` gained a `CommandKind::Action`
+    short-circuit: action-kind invocations bypass
+    `run_document_invocation`'s count multiplication and
+    pending-count reset, otherwise the `pending_count = 0;`
+    inside it would fire before the dispatched
+    `AppEffect::AbsorbOperatorPrefix(_)` could latch op_count,
+    breaking `2dw`-style flows.
+  - 8.i.4.e -- Retire `bind_legacy` machinery. Pending.
+    `KeymapHandleLegacyExt`, `BoundCommand::legacy_action`,
+    `BoundCommand::from_legacy_action`,
+    `legacy_action_command_id` are still used by the
+    completion-popup and active-snippet minor-mode layer
+    builders (`keymap_insert::bind_action` shape), which fire
+    ~14 popup/snippet `Action::Foo` variants directly. Each of
+    those needs migration to a typed CommandInvocation +
+    AppEffect variant before the machinery can fully retire.
+    Drift reference bodies in
+    `keymap_replace`/`keymap_visual`/`keymap_insert` retire
+    too. Bench rollup + doc finalisation lands here.
   - At this point the `keymap.rs` drift test becomes obsolete
     (descriptor IS behaviour); replace it with a "every catalog
     entry resolves to a real `CommandInvocation`" test.

@@ -174,7 +174,7 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         // `KeymapLayer::MinorMode` layers managed by
         // `App::sync_keymap_overlays`. The drift test in
         // `keymap_insert::tests` is the regression net.
-        ModalState::Insert => dispatch_insert(ctx.keymap, &event, ctx.pending),
+        ModalState::Insert => dispatch_insert(ctx.keymap, &event, ctx.pending, ctx.partial_chord),
         ModalState::Normal => translate_normal(
             event,
             ctx.pending,
@@ -2327,14 +2327,16 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_x_in_insert_arms_after_ctrl_x_pending() {
+    fn ctrl_x_in_insert_absorbs_partial_chord() {
+        // Slice 8.i.4.b: `<C-x>` migrated to partial_chord.
         let (_, b) = fixture();
+        let action = translate(
+            ctx(ModalState::Insert, Pending::None, &b),
+            ctrl(KeyCode::Char('x')),
+        );
         assert!(matches!(
-            translate(
-                ctx(ModalState::Insert, Pending::None, &b),
-                ctrl(KeyCode::Char('x'))
-            ),
-            Action::SetPending(Pending::AfterCtrlX)
+            action,
+            Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::ctrl('x')
         ));
     }
 
@@ -2343,7 +2345,11 @@ mod tests {
         let (_, b) = fixture();
         let a = shared_actions();
         match translate(
-            ctx(ModalState::Insert, Pending::AfterCtrlX, &b),
+            ctx_partial(
+                ModalState::Insert,
+                &[crate::chord::KeyChord::ctrl('x')],
+                &b,
+            ),
             ctrl(KeyCode::Char('o')),
         ) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_trigger),
@@ -2571,7 +2577,11 @@ mod tests {
         let (_, b) = fixture();
         let a = shared_actions();
         match translate(
-            ctx(ModalState::Insert, Pending::AfterCtrlX, &b),
+            ctx_partial(
+                ModalState::Insert,
+                &[crate::chord::KeyChord::ctrl('x')],
+                &b,
+            ),
             ctrl(KeyCode::Char('s')),
         ) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.snippet_expand),

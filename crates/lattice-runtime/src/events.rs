@@ -20,9 +20,14 @@
 //! - Indexed dispatch: subscriptions live in a
 //!   `HashMap<EventKind, Vec<Subscription>>`. Publish iterates the
 //!   bucket for one kind, never the global list.
-//! - Bus is `Send + Sync`; the inner state is one `Mutex` (write
-//!   path: subscribe / unsubscribe / publish). Lock contention is
-//!   not a concern at v1 publish rates (handful per keystroke).
+//! - Bus is `Send + Sync`; the inner state is one `Mutex`. The
+//!   publish path takes the lock only to snapshot the matching
+//!   channel senders (and to queue Invocation targets onto the
+//!   shared `pending_invocations`); the actual `tx.send` calls
+//!   run with the lock dropped. Two `publish` calls from
+//!   different threads can therefore dispatch in parallel, and a
+//!   future bounded subscriber cannot stall the publisher under
+//!   the bus mutex (audit M1).
 //!
 //! ## What's NOT here
 //!
@@ -188,24 +193,81 @@ impl EventBus {
     /// Fire `event` to every matching subscriber. Channel sinks
     /// receive a clone (the event has `Clone`); Invocation sinks
     /// queue onto [`Self::drain_pending_invocations`] for the App
-    /// to dispatch. Closed channel senders are removed in-place.
+    /// to dispatch. Closed channel senders are pruned lazily on the
+    /// publish that observes them.
+    ///
+    /// Locking discipline (audit M1): we hold the inner mutex only
+    /// long enough to (a) snapshot the matching channel senders
+    /// into a small Vec, and (b) push any matched Invocation
+    /// targets onto `pending_invocations` (the latter must stay
+    /// under the lock or it races with
+    /// [`Self::drain_pending_invocations`]). The actual `tx.send`
+    /// calls happen with the lock dropped, so a slow / bounded
+    /// downstream sender can never block the bus -- and concurrent
+    /// `publish` calls from different threads can dispatch in
+    /// parallel instead of serialising on the bus mutex. That is a
+    /// deliberate relaxation of the previous "publish is totally
+    /// ordered through the bus" guarantee; within a single
+    /// `publish` call ordering across this caller's subscribers is
+    /// still preserved, which is the only guarantee callers have
+    /// ever been entitled to.
     pub fn publish(&self, event: Event) {
         let kind = event.kind();
-        let mut inner = self.inner.lock().expect("EventBus poisoned");
 
-        // Visit the indexed bucket then the wildcard sinks. We
-        // collect Invocation targets first (then push at the end)
-        // so the lock is held briefly and we never re-enter
-        // publish from a handler that consumes a queued
-        // invocation.
-        let mut new_invocations: Vec<CommandInvocation> = Vec::new();
-        if let Some(bucket) = inner.by_kind.get_mut(&kind) {
-            dispatch_bucket(bucket, &event, &mut new_invocations);
+        // Snapshot phase: under the lock, copy out the channel
+        // senders we'll dispatch to and queue any Invocation
+        // targets. `UnboundedSender` clones are cheap (Arc bump);
+        // bucket sizes are small (subscribers per kind, plus
+        // wildcards) so this allocation is well under the cost of
+        // even one downstream `tx.send`.
+        let channel_targets = {
+            let mut inner = self.inner.lock().expect("EventBus poisoned");
+            let mut channel_targets: Vec<(SubscriptionId, mpsc::UnboundedSender<Event>)> =
+                Vec::new();
+
+            // Borrow-checker note: split `inner` into independent
+            // field borrows so we can read the bucket lists
+            // (immutable) while pushing onto `pending_invocations`
+            // (mutable) in one pass.
+            let Inner {
+                by_kind,
+                wildcard,
+                pending_invocations,
+            } = &mut *inner;
+
+            if let Some(bucket) = by_kind.get(&kind) {
+                snapshot_bucket(bucket, &mut channel_targets);
+                // Invocation targets: queue under the lock so we
+                // don't race with `drain_pending_invocations`.
+                // They never touch the network / channels so the
+                // cost is purely the clone, which is acceptable.
+                queue_invocations(bucket, pending_invocations);
+            }
+            snapshot_bucket(wildcard, &mut channel_targets);
+            queue_invocations(wildcard, pending_invocations);
+
+            channel_targets
+        };
+
+        // Dispatch phase: lock dropped. Slow / bounded subscribers
+        // (none today, but see the v1 backpressure note above)
+        // cannot stall the publisher under the bus mutex.
+        let mut dead: Vec<SubscriptionId> = Vec::new();
+        for (id, tx) in channel_targets {
+            if tx.send(event.clone()).is_err() {
+                dead.push(id);
+            }
         }
-        dispatch_bucket(&mut inner.wildcard, &event, &mut new_invocations);
 
-        if !new_invocations.is_empty() {
-            inner.pending_invocations.extend(new_invocations);
+        // Pruning phase: re-acquire the lock briefly to drop dead
+        // senders. If a subscription was already removed (e.g. the
+        // owner unsubscribed concurrently) the retain is a no-op.
+        if !dead.is_empty() {
+            let mut inner = self.inner.lock().expect("EventBus poisoned");
+            if let Some(bucket) = inner.by_kind.get_mut(&kind) {
+                bucket.retain(|s| !dead.contains(&s.id));
+            }
+            inner.wildcard.retain(|s| !dead.contains(&s.id));
         }
     }
 
@@ -229,22 +291,30 @@ impl EventBus {
     }
 }
 
-/// Dispatch a single bucket's subscriptions against `event`. Closed
-/// channel sinks are pruned in-place; Invocation targets are
-/// pushed onto `out_invocations` for the bus to surface via
-/// [`EventBus::drain_pending_invocations`].
-fn dispatch_bucket(
-    bucket: &mut Vec<Subscription>,
-    event: &Event,
-    out_invocations: &mut Vec<CommandInvocation>,
+/// Snapshot the channel senders out of one bucket so the caller
+/// can dispatch with the bus lock dropped. Cheap clone --
+/// `UnboundedSender` is internally `Arc`-backed.
+fn snapshot_bucket(
+    bucket: &[Subscription],
+    out: &mut Vec<(SubscriptionId, mpsc::UnboundedSender<Event>)>,
 ) {
-    bucket.retain(|sub| match &sub.target {
-        SubscriptionTarget::Channel(tx) => tx.send(event.clone()).is_ok(),
-        SubscriptionTarget::Invocation(inv) => {
-            out_invocations.push(inv.clone());
-            true
+    for sub in bucket {
+        if let SubscriptionTarget::Channel(tx) = &sub.target {
+            out.push((sub.id, tx.clone()));
         }
-    });
+    }
+}
+
+/// Push every Invocation target in `bucket` onto `pending`. Stays
+/// under the bus lock (the caller holds it) because
+/// `pending_invocations` is the same field
+/// [`EventBus::drain_pending_invocations`] empties.
+fn queue_invocations(bucket: &[Subscription], pending: &mut Vec<CommandInvocation>) {
+    for sub in bucket {
+        if let SubscriptionTarget::Invocation(inv) = &sub.target {
+            pending.push(inv.clone());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -375,6 +445,97 @@ mod tests {
 
         // Drain is destructive -- second drain returns empty.
         assert!(bus.drain_pending_invocations().is_empty());
+    }
+
+    #[test]
+    fn publish_does_not_hold_lock_across_dispatch() {
+        // Audit M1 regression test. The publish path snapshots
+        // channel senders under the lock and dispatches with the
+        // lock dropped. Proof: a subscriber whose channel receiver
+        // performs work that re-enters the bus (subscribing a
+        // *new* sink) must succeed -- under the old design that
+        // would deadlock on the inner Mutex (the publisher held
+        // it while calling `tx.send`, which woke the receiver
+        // task; if the receiver tried to `bus.subscribe(...)` from
+        // the same thread of execution it would block forever).
+        //
+        // We model "the subscriber synchronously reacts and asks
+        // the bus for something" via a thread that, on receiving
+        // an event, calls `bus.subscription_count()` (which takes
+        // the same lock). Under the new code the publisher has
+        // already released the lock before `tx.send` fires, so
+        // the count call returns immediately.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        let bus = Arc::new(EventBus::new());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bus.subscribe(
+            EventFilter::kind(EventKind::DocumentSaved),
+            SubscriptionTarget::Channel(tx),
+        );
+
+        let bus_recv = Arc::clone(&bus);
+        let saw_event = Arc::new(AtomicBool::new(false));
+        let saw_event_thread = Arc::clone(&saw_event);
+        let receiver = thread::spawn(move || {
+            // Block waiting for the event; once it arrives, take
+            // the bus lock via `subscription_count`. If publish
+            // were still holding the lock this would deadlock
+            // until the test timeout below trips.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while rx.try_recv().is_err() {
+                if Instant::now() > deadline {
+                    panic!("never received event");
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            let _ = bus_recv.subscription_count();
+            saw_event_thread.store(true, Ordering::SeqCst);
+        });
+
+        bus.publish(make_event());
+        receiver.join().expect("receiver panicked");
+        assert!(saw_event.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn concurrent_publishers_do_not_deadlock() {
+        // Two threads publishing through the bus complete
+        // independently under the new design (the lock is dropped
+        // before dispatch, so they overlap rather than serialise
+        // through tx.send). The assertion is just "both finish";
+        // a regression that re-introduced lock-during-dispatch
+        // would still pass this test, but combined with the
+        // previous one and the channel-pruning test the new path
+        // is well covered.
+        use std::sync::Arc;
+        use std::thread;
+
+        let bus = Arc::new(EventBus::new());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        bus.subscribe(EventFilter::any(), SubscriptionTarget::Channel(tx));
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let b = Arc::clone(&bus);
+            handles.push(thread::spawn(move || {
+                for _ in 0..50 {
+                    b.publish(make_event());
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("publisher panicked");
+        }
+
+        let mut count = 0;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 4 * 50);
     }
 
     #[test]

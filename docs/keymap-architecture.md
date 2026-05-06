@@ -590,8 +590,33 @@ The big one. Likely sub-sliced:
   `zt` / `z<CR>` (top), `zb` / `z-` (bottom), `zf`, `zo`,
   `zc`, `za`, `zR`, `zM`, `zd`, `zj`, `zk`, `zi`.
 - 8.g.iii -- operator-pending → motion / text-object trie
-  expansion (`d{motion}`, `y{motion}`, `c{motion}`,
-  `d{i,a}{textobj}`, ...).
+  expansion. ✅ landed.
+  Each operator's resolution table is registered under its
+  primary chord prefix: `[d, X]` / `[c, X]` / `[y, X]` /
+  `[>, X]` / `[<, X]` for the single-chord operators, and
+  `[g, U, X]` / `[g, u, X]` / `[g, ~, X]` for the case
+  operators (extending the 8.g.ii `g_` paths). Each table
+  contains: motion targets (typed `Invoke(op,
+  Target::Motion(...))`), the doubled-operator linewise form
+  (`Invoke(op, Range::CurrentLine)` -- `dd`, `cc`, `yy`,
+  `>>`, `<<`, `gUU`, `guu`, `g~~`), `i_` / `a_` text-object
+  pendings (`SetPending(AfterTextObject)`) plus their depth-3
+  resolutions (`Invoke(op, Target::TextObject(...))` for
+  `diw`, `daW`, `dab`, etc. with all aliases), and `f` /
+  `F` / `t` / `T` find-char pendings
+  (`SetPending(AfterFindChar { operator: Some(op) })` -- the
+  third-key resolution stays in legacy `resolve_after_find_char`
+  until 8.g.v). The `Pending::AfterOperator` and
+  `Pending::AfterTextObject` arms in `input::translate_normal`
+  call `lookup_normal_with_prefix(handle, &prefix, event)`,
+  computing the prefix from the operator id via
+  `keymap_normal::operator_prefix`. The legacy
+  `resolve_after_operator` and `resolve_after_text_object`
+  functions are gone, and the operator-leading single keys
+  (`d` / `c` / `y` / `>` / `<`) moved out of
+  `translate_normal`'s match arm into the trie's depth-1
+  layer (terminal Bound nodes that arm
+  `Pending::AfterOperator`).
 - 8.g.iv -- count accumulator (§7.1) lives in input.rs;
   attaches to the resolved invocation.
 - 8.g.v -- mark / register / find-char wildcards (§7.3).

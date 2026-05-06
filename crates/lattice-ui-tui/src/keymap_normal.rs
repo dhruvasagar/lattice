@@ -78,7 +78,7 @@ use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::{ModalState, SearchDirection, Target, VisualKind};
 
-use crate::app::{Action, Pending, ScrollPos, ViewportPos};
+use crate::app::{Action, FindKind, Pending, ScrollPos, ViewportPos};
 use crate::chord::{KeyChord, KeyMods, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
@@ -422,8 +422,8 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins) {
     // `LookupResult::Partial`, which `lookup_normal`
     // translates into `SetPending(Pending::AfterG)`. The
     // second keystroke arrives with `pending = AfterG`; the
-    // App's `resolve_after_g` calls
-    // `lookup_normal_two_key(handle, KeyChord::char('g'), event)`
+    // App's `Pending::AfterG` arm in `input::translate_normal`
+    // calls `lookup_normal_with_prefix(handle, &[g_chord], event)`
     // to walk `[g, X]` against the same trie.
     let g = lit_char('g');
 
@@ -643,6 +643,347 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins) {
         Action::ToggleFoldEnable,
         source(),
     );
+
+    // ---- Slice 8.g.iii: operator-pending resolution.
+    //
+    // Each operator gets the same target / doubled / text-object /
+    // find-char paths registered under its primary chord(s). The
+    // five "single-chord" operators register under their own chord
+    // (`[d]`, `[c]`, `[y]`, `[>]`, `[<]`) plus a terminal
+    // `SetPending(AfterOperator(op))` at depth 1. The case
+    // operators (`upper` / `lower` / `toggle_case`) ride under the
+    // `g` prefix at depth 2 (`[g, U]`, `[g, u]`, `[g, ~]`); 8.g.ii
+    // already wired their depth-2 terminal `SetPending` bindings,
+    // so this slice just extends the path with depth-3 (motion /
+    // doubled / text-object pending / find-char pending) and
+    // depth-4 (text-object resolution) entries.
+    register_operator_pending(
+        handle,
+        &[lit_char('d')],
+        builtins.delete,
+        ChordPattern::Literal(KeyChord::char('d')),
+        builtins,
+    );
+    register_operator_pending(
+        handle,
+        &[lit_char('c')],
+        builtins.change,
+        ChordPattern::Literal(KeyChord::char('c')),
+        builtins,
+    );
+    register_operator_pending(
+        handle,
+        &[lit_char('y')],
+        builtins.yank,
+        ChordPattern::Literal(KeyChord::char('y')),
+        builtins,
+    );
+    register_operator_pending(
+        handle,
+        &[lit_char('>')],
+        builtins.indent_right,
+        ChordPattern::Literal(KeyChord::char('>')),
+        builtins,
+    );
+    register_operator_pending(
+        handle,
+        &[lit_char('<')],
+        builtins.indent_left,
+        ChordPattern::Literal(KeyChord::char('<')),
+        builtins,
+    );
+    // Case operators -- prefix is the two-key sequence registered
+    // at slice 8.g.ii. Their doubled forms (`gUU` / `guu` / `g~~`)
+    // operate on the current line.
+    register_operator_pending(
+        handle,
+        &[lit_char('g'), lit_char('U')],
+        builtins.upper,
+        ChordPattern::Literal(KeyChord::char('U')),
+        builtins,
+    );
+    register_operator_pending(
+        handle,
+        &[lit_char('g'), lit_char('u')],
+        builtins.lower,
+        ChordPattern::Literal(KeyChord::char('u')),
+        builtins,
+    );
+    register_operator_pending(
+        handle,
+        &[lit_char('g'), lit_char('~')],
+        builtins.toggle_case,
+        ChordPattern::Literal(KeyChord::char('~')),
+        builtins,
+    );
+
+    // ---- d/c/y/>/< as single-chord terminals that arm the
+    // operator-pending state. `[g, U]` / `[g, u]` / `[g, ~]` were
+    // already registered at slice 8.g.ii; their depth-2 binding
+    // sets the same `SetPending(AfterOperator(...))` action.
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('d')],
+        Action::SetPending(Pending::AfterOperator(builtins.delete)),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('c')],
+        Action::SetPending(Pending::AfterOperator(builtins.change)),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('y')],
+        Action::SetPending(Pending::AfterOperator(builtins.yank)),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('>')],
+        Action::SetPending(Pending::AfterOperator(builtins.indent_right)),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('<')],
+        Action::SetPending(Pending::AfterOperator(builtins.indent_left)),
+        source(),
+    );
+}
+
+/// Register the slice 8.g.iii operator-pending paths for one
+/// operator under `op_prefix`. Same shape across every operator:
+/// motion targets, the doubled-operator current-line shorthand,
+/// `i_` / `a_` text-object pendings + their resolutions, and
+/// the `f` / `F` / `t` / `T` find-char pendings (resolution stays
+/// in legacy `resolve_after_find_char` until 8.g.v).
+///
+/// `doubled_self` is the chord that triggers the linewise form
+/// (e.g. `'d'` for `dd`, `'U'` for `gUU`). It's the trailing key
+/// of the doubled form, not the prefix.
+fn register_operator_pending(
+    handle: &KeymapHandle,
+    op_prefix: &[ChordPattern],
+    op: lattice_grammar::registry::OperatorId,
+    doubled_self: ChordPattern,
+    builtins: &Builtins,
+) {
+    let layer = KeymapLayer::Builtin;
+    let mode = BindingMode::Normal;
+
+    // ---- Motion targets. Each operator's `[op_prefix..., motion_chord]`
+    // ---- resolves to `Invoke(op, Target::Motion(motion))`.
+    let motion_table: &[(ChordPattern, lattice_grammar::registry::MotionId)] = &[
+        (lit_char('h'), builtins.char_left),
+        (lit_special(SpecialKey::Left), builtins.char_left),
+        (lit_char('l'), builtins.char_right),
+        (lit_special(SpecialKey::Right), builtins.char_right),
+        (lit_char('j'), builtins.line_down),
+        (lit_special(SpecialKey::Down), builtins.line_down),
+        (lit_char('k'), builtins.line_up),
+        (lit_special(SpecialKey::Up), builtins.line_up),
+        (lit_char('0'), builtins.line_start),
+        (lit_special(SpecialKey::Home), builtins.line_start),
+        (lit_char('$'), builtins.line_end),
+        (lit_special(SpecialKey::End), builtins.line_end),
+        (lit_char('^'), builtins.first_non_blank),
+        (lit_char('w'), builtins.word_forward),
+        (lit_char('b'), builtins.word_backward),
+        (lit_char('e'), builtins.word_end),
+        (lit_char('W'), builtins.big_word_forward),
+        (lit_char('B'), builtins.big_word_backward),
+        (lit_char('E'), builtins.big_word_end),
+        (lit_char('}'), builtins.paragraph_forward),
+        (lit_char('{'), builtins.paragraph_backward),
+        (lit_char(')'), builtins.sentence_forward),
+        (lit_char('('), builtins.sentence_backward),
+    ];
+    for (chord, motion) in motion_table {
+        let mut path: Vec<ChordPattern> = op_prefix.to_vec();
+        path.push(chord.clone());
+        handle.bind(
+            layer,
+            mode,
+            &path,
+            CommandInvocation::of(op.0)
+                .with_target(Target::Motion(*motion, Args::None)),
+            source(),
+        );
+    }
+
+    // ---- Doubled-operator -> `Range::CurrentLine`. `dd`, `cc`,
+    // ---- `yy`, `>>`, `<<`, `gUU`, `guu`, `g~~`.
+    {
+        let mut path: Vec<ChordPattern> = op_prefix.to_vec();
+        path.push(doubled_self);
+        handle.bind(
+            layer,
+            mode,
+            &path,
+            CommandInvocation::of(op.0)
+                .with_range(lattice_grammar::Range::CurrentLine),
+            source(),
+        );
+    }
+
+    // ---- Text-object pendings + resolutions. `[op, i]` /
+    // ---- `[op, a]` arm `Pending::AfterTextObject`; `[op, i, X]`
+    // ---- / `[op, a, X]` resolve to typed `Invoke(op,
+    // ---- Target::TextObject(...))`.
+    for around in [false, true] {
+        let around_chord: ChordPattern = if around {
+            lit_char('a')
+        } else {
+            lit_char('i')
+        };
+        let mut pending_path: Vec<ChordPattern> = op_prefix.to_vec();
+        pending_path.push(around_chord.clone());
+        handle.bind_legacy(
+            layer,
+            mode,
+            &pending_path,
+            Action::SetPending(Pending::AfterTextObject {
+                operator: op,
+                around,
+            }),
+            source(),
+        );
+        register_text_object_resolutions(
+            handle,
+            &pending_path,
+            op,
+            around,
+            builtins,
+        );
+    }
+
+    // ---- Find-char chained: `[op, f]` / `[op, F]` / `[op, t]` /
+    // ---- `[op, T]` -> `SetPending(AfterFindChar { kind, operator
+    // ---- = Some(op) })`. The third-key resolution stays in
+    // ---- legacy `resolve_after_find_char` (slice 8.g.v).
+    for (chord, kind) in [
+        (lit_char('f'), FindKind::Forward),
+        (lit_char('F'), FindKind::Backward),
+        (lit_char('t'), FindKind::TillForward),
+        (lit_char('T'), FindKind::TillBackward),
+    ] {
+        let mut path: Vec<ChordPattern> = op_prefix.to_vec();
+        path.push(chord);
+        handle.bind_legacy(
+            layer,
+            mode,
+            &path,
+            Action::SetPending(Pending::AfterFindChar {
+                kind,
+                operator: Some(op),
+            }),
+            source(),
+        );
+    }
+}
+
+/// Register every text-object resolution path under
+/// `pending_prefix` (which already ends in `i` or `a`). For each
+/// text-object chord (with all its aliases), bind to the
+/// corresponding inner / around `TextObjectId`.
+fn register_text_object_resolutions(
+    handle: &KeymapHandle,
+    pending_prefix: &[ChordPattern],
+    op: lattice_grammar::registry::OperatorId,
+    around: bool,
+    builtins: &Builtins,
+) {
+    let layer = KeymapLayer::Builtin;
+    let mode = BindingMode::Normal;
+
+    let textobj_table: &[(&[ChordPattern], lattice_grammar::registry::TextObjectId, lattice_grammar::registry::TextObjectId)] = &[
+        (
+            &[lit_char('w')],
+            builtins.inner_word,
+            builtins.around_word,
+        ),
+        (
+            &[lit_char('W')],
+            builtins.inner_big_word,
+            builtins.around_big_word,
+        ),
+        (
+            &[lit_char('p')],
+            builtins.inner_paragraph,
+            builtins.around_paragraph,
+        ),
+        (
+            &[lit_char('s')],
+            builtins.inner_sentence,
+            builtins.around_sentence,
+        ),
+        (
+            &[lit_char('t')],
+            builtins.inner_tag,
+            builtins.around_tag,
+        ),
+        (
+            &[lit_char('"')],
+            builtins.inner_quote_double,
+            builtins.around_quote_double,
+        ),
+        (
+            &[lit_char('\'')],
+            builtins.inner_quote_single,
+            builtins.around_quote_single,
+        ),
+        (
+            &[lit_char('`')],
+            builtins.inner_quote_backtick,
+            builtins.around_quote_backtick,
+        ),
+        // Paren aliases: `(`, `)`, `b`.
+        (
+            &[lit_char('('), lit_char(')'), lit_char('b')],
+            builtins.inner_paren,
+            builtins.around_paren,
+        ),
+        // Bracket aliases: `[`, `]`.
+        (
+            &[lit_char('['), lit_char(']')],
+            builtins.inner_bracket,
+            builtins.around_bracket,
+        ),
+        // Brace aliases: `{`, `}`, `B`.
+        (
+            &[lit_char('{'), lit_char('}'), lit_char('B')],
+            builtins.inner_brace,
+            builtins.around_brace,
+        ),
+        // Angle aliases: `<`, `>`.
+        (
+            &[lit_char('<'), lit_char('>')],
+            builtins.inner_angle,
+            builtins.around_angle,
+        ),
+    ];
+    for (chord_aliases, inner_id, around_id) in textobj_table {
+        let tobj = if around { *around_id } else { *inner_id };
+        for chord in chord_aliases.iter() {
+            let mut path: Vec<ChordPattern> = pending_prefix.to_vec();
+            path.push(chord.clone());
+            handle.bind(
+                layer,
+                mode,
+                &path,
+                CommandInvocation::of(op.0)
+                    .with_target(Target::TextObject(tobj, Args::None)),
+                source(),
+            );
+        }
+    }
 }
 
 /// Look up a single-key event in the Normal-mode catalog.
@@ -683,31 +1024,75 @@ pub fn lookup_normal(handle: &KeymapHandle, event: &KeyEvent) -> Option<Action> 
     }
 }
 
-/// Resolve the second key of a `g_` / `z_` chord (and any
-/// future Normal-mode two-key prefix) via the registry. The
-/// caller supplies the prefix chord that armed the pending
-/// state; this helper builds `[prefix, normalised(event)]` and
-/// looks it up. `Bound` -> the bound action; everything else
+/// Resolve the next key of a multi-chord Normal-mode sequence
+/// via the registry. The caller supplies the prefix chord
+/// sequence already absorbed; this helper appends the
+/// normalised current chord and looks the resulting path up in
+/// the trie. `Bound` -> the bound action; everything else
 /// (`Partial` / `Unbound`) -> `Action::SetPending(Pending::None)`
-/// to drop the pending state, matching the legacy `_ =>
-/// SetPending(None)` catchall in `resolve_after_g` /
-/// `resolve_after_z`.
+/// to drop the pending state, matching every legacy
+/// `resolve_after_*`'s catchall.
 ///
-/// Slice 8.g.ii migrates `g_` / `z_` through this helper.
-pub fn lookup_normal_two_key(
+/// Used by:
+/// - `Pending::AfterG` / `Pending::AfterZ` (slice 8.g.ii) --
+///   prefix `[g]` / `[z]`.
+/// - `Pending::AfterOperator(op)` (slice 8.g.iii) -- prefix
+///   `[d]` / `[c]` / `[y]` / `[>]` / `[<]` for the single-chord
+///   operators, or `[g, U]` / `[g, u]` / `[g, ~]` for the case
+///   operators (mapped via `operator_prefix`).
+/// - `Pending::AfterTextObject { op, around }` (slice 8.g.iii) --
+///   prefix `[op_prefix..., 'i' or 'a']`.
+pub fn lookup_normal_with_prefix(
     handle: &KeymapHandle,
-    prefix: KeyChord,
+    prefix: &[KeyChord],
     event: &KeyEvent,
 ) -> Action {
     let Some(raw_chord) = KeyChord::from_event(event) else {
         return Action::SetPending(Pending::None);
     };
     let chord = normalize_for_normal_lookup(raw_chord);
-    match handle.lookup(BindingMode::Normal, &[prefix, chord]) {
+    let mut path: Vec<KeyChord> = prefix.to_vec();
+    path.push(chord);
+    match handle.lookup(BindingMode::Normal, &path) {
         LookupResult::Bound { command, .. } => action_from_bound(&command),
         LookupResult::Partial | LookupResult::Unbound => {
             Action::SetPending(Pending::None)
         }
+    }
+}
+
+/// Map an operator id to its primary chord prefix in the
+/// Normal-mode trie. Used by the `Pending::AfterOperator` and
+/// `Pending::AfterTextObject` resolvers to compute the lookup
+/// path.
+///
+/// Returns an empty `Vec` for unknown operators -- the caller
+/// surfaces that as `SetPending(None)`. Slice 8.g.iii covers
+/// every operator the existing keymap exposes; plugin-defined
+/// operators (slice 8.h) will register their own prefix at
+/// binding time.
+pub fn operator_prefix(
+    op: lattice_grammar::registry::OperatorId,
+    builtins: &Builtins,
+) -> Vec<KeyChord> {
+    if op == builtins.delete {
+        vec![KeyChord::char('d')]
+    } else if op == builtins.change {
+        vec![KeyChord::char('c')]
+    } else if op == builtins.yank {
+        vec![KeyChord::char('y')]
+    } else if op == builtins.indent_right {
+        vec![KeyChord::char('>')]
+    } else if op == builtins.indent_left {
+        vec![KeyChord::char('<')]
+    } else if op == builtins.upper {
+        vec![KeyChord::char('g'), KeyChord::char('U')]
+    } else if op == builtins.lower {
+        vec![KeyChord::char('g'), KeyChord::char('u')]
+    } else if op == builtins.toggle_case {
+        vec![KeyChord::char('g'), KeyChord::char('~')]
+    } else {
+        Vec::new()
     }
 }
 
@@ -911,14 +1296,239 @@ mod tests {
         }
     }
 
+    /// Slice 8.g.iii: `d` is now a terminal binding that arms
+    /// `Pending::AfterOperator(delete)`. The trie still has
+    /// children (`[d, w]`, `[d, d]`, etc.) for the second-key
+    /// resolution, but lookup of `[d]` alone returns `Bound`
+    /// because the depth-1 node carries a binding.
     #[test]
-    fn unmigrated_d_returns_none_for_legacy_fallthrough() {
-        // `d` is operator-leading -- not in 8.g.i's catalog;
-        // 8.g.iii migrates it. Lookup must return None so the
-        // caller falls through to the legacy match arm.
-        let (h, _) = populated_handle();
+    fn d_arms_after_operator_delete_pending() {
+        let (h, b) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('d'), KeyModifiers::NONE));
-        assert!(r.is_none());
+        match r {
+            Some(Action::SetPending(Pending::AfterOperator(op))) => {
+                assert_eq!(op, b.delete);
+            }
+            other => panic!(
+                "expected SetPending(AfterOperator(delete)), got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn dw_resolves_to_delete_with_word_forward_target() {
+        let (h, b) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('d')],
+            &ev(KeyCode::Char('w'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                assert!(matches!(
+                    inv.target,
+                    Some(Target::Motion(m, _)) if m == b.word_forward
+                ));
+            }
+            other => panic!("expected Invoke(delete, word_forward), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dd_resolves_to_delete_current_line() {
+        let (h, b) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('d')],
+            &ev(KeyCode::Char('d'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                assert!(matches!(
+                    inv.range,
+                    Some(lattice_grammar::Range::CurrentLine)
+                ));
+            }
+            other => panic!("expected Invoke(delete, CurrentLine), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn yy_resolves_to_yank_current_line() {
+        let (h, b) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('y')],
+            &ev(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.yank.0);
+                assert!(matches!(
+                    inv.range,
+                    Some(lattice_grammar::Range::CurrentLine)
+                ));
+            }
+            other => panic!("expected Invoke(yank, CurrentLine), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cc_resolves_to_change_current_line() {
+        let (h, b) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('c')],
+            &ev(KeyCode::Char('c'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.change.0);
+                assert!(matches!(
+                    inv.range,
+                    Some(lattice_grammar::Range::CurrentLine)
+                ));
+            }
+            other => panic!("expected Invoke(change, CurrentLine), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn di_arms_after_text_object_pending_inner() {
+        let (h, b) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('d')],
+            &ev(KeyCode::Char('i'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::SetPending(Pending::AfterTextObject {
+                operator,
+                around,
+            }) => {
+                assert_eq!(operator, b.delete);
+                assert!(!around);
+            }
+            other => panic!("expected SetPending(AfterTextObject), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diw_resolves_to_delete_inner_word() {
+        let (h, b) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('d'), KeyChord::char('i')],
+            &ev(KeyCode::Char('w'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                assert!(matches!(
+                    inv.target,
+                    Some(Target::TextObject(id, _)) if id == b.inner_word
+                ));
+            }
+            other => panic!("expected Invoke(delete, inner_word), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dab_resolves_to_delete_around_paren() {
+        // Alias check: `b` inside `da` resolves to around_paren.
+        let (h, b_) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('d'), KeyChord::char('a')],
+            &ev(KeyCode::Char('b'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b_.delete.0);
+                assert!(matches!(
+                    inv.target,
+                    Some(Target::TextObject(id, _)) if id == b_.around_paren
+                ));
+            }
+            other => panic!("expected Invoke(delete, around_paren), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn df_arms_after_find_char_with_operator() {
+        let (h, b) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('d')],
+            &ev(KeyCode::Char('f'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::SetPending(Pending::AfterFindChar {
+                kind: FindKind::Forward,
+                operator: Some(op),
+            }) => {
+                assert_eq!(op, b.delete);
+            }
+            other => panic!(
+                "expected SetPending(AfterFindChar Forward delete), got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn d_unrecognised_drops_pending() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('d')],
+            &ev(KeyCode::Char('Q'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::SetPending(Pending::None)));
+    }
+
+    /// Doubled-operator under the `g` prefix: `gUU` -> linewise
+    /// upper. The prefix walk is `[g, U, U]`.
+    #[test]
+    fn g_uu_resolves_to_upper_current_line() {
+        let (h, b) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('g'), KeyChord::char('U')],
+            &ev(KeyCode::Char('U'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.upper.0);
+                assert!(matches!(
+                    inv.range,
+                    Some(lattice_grammar::Range::CurrentLine)
+                ));
+            }
+            other => panic!("expected Invoke(upper, CurrentLine), got {other:?}"),
+        }
+    }
+
+    /// `gUw` -- upper applied to the word_forward motion target.
+    #[test]
+    fn g_uw_resolves_to_upper_with_word_forward() {
+        let (h, b) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('g'), KeyChord::char('U')],
+            &ev(KeyCode::Char('w'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.upper.0);
+                assert!(matches!(
+                    inv.target,
+                    Some(Target::Motion(m, _)) if m == b.word_forward
+                ));
+            }
+            other => panic!("expected Invoke(upper, word_forward), got {other:?}"),
+        }
     }
 
     /// Slice 8.g.ii: `g` is a partial trie node (children only,
@@ -942,9 +1552,9 @@ mod tests {
     #[test]
     fn gg_resolves_to_goto_first_line() {
         let (h, b) = populated_handle();
-        let r = lookup_normal_two_key(
+        let r = lookup_normal_with_prefix(
             &h,
-            KeyChord::char('g'),
+            &[KeyChord::char('g')],
             &ev(KeyCode::Char('g'), KeyModifiers::NONE),
         );
         match r {
@@ -956,9 +1566,9 @@ mod tests {
     #[test]
     fn gd_resolves_to_lsp_definition_request() {
         let (h, _) = populated_handle();
-        let r = lookup_normal_two_key(
+        let r = lookup_normal_with_prefix(
             &h,
-            KeyChord::char('g'),
+            &[KeyChord::char('g')],
             &ev(KeyCode::Char('d'), KeyModifiers::NONE),
         );
         assert!(matches!(r, Action::LspDefinitionRequest));
@@ -967,9 +1577,9 @@ mod tests {
     #[test]
     fn gu_arms_after_operator_pending_for_lower() {
         let (h, b) = populated_handle();
-        let r = lookup_normal_two_key(
+        let r = lookup_normal_with_prefix(
             &h,
-            KeyChord::char('g'),
+            &[KeyChord::char('g')],
             &ev(KeyCode::Char('u'), KeyModifiers::NONE),
         );
         match r {
@@ -983,9 +1593,9 @@ mod tests {
     #[test]
     fn g_capital_j_resolves_to_join_lines_without_space() {
         let (h, _) = populated_handle();
-        let r = lookup_normal_two_key(
+        let r = lookup_normal_with_prefix(
             &h,
-            KeyChord::char('g'),
+            &[KeyChord::char('g')],
             &ev(KeyCode::Char('J'), KeyModifiers::NONE),
         );
         assert!(matches!(r, Action::JoinLines { with_space: false }));
@@ -994,9 +1604,9 @@ mod tests {
     #[test]
     fn zz_centers_cursor() {
         let (h, _) = populated_handle();
-        let r = lookup_normal_two_key(
+        let r = lookup_normal_with_prefix(
             &h,
-            KeyChord::char('z'),
+            &[KeyChord::char('z')],
             &ev(KeyCode::Char('z'), KeyModifiers::NONE),
         );
         assert!(matches!(r, Action::ScrollCursorTo(ScrollPos::Center)));
@@ -1005,9 +1615,9 @@ mod tests {
     #[test]
     fn z_dot_aliases_zz() {
         let (h, _) = populated_handle();
-        let r = lookup_normal_two_key(
+        let r = lookup_normal_with_prefix(
             &h,
-            KeyChord::char('z'),
+            &[KeyChord::char('z')],
             &ev(KeyCode::Char('.'), KeyModifiers::NONE),
         );
         assert!(matches!(r, Action::ScrollCursorTo(ScrollPos::Center)));
@@ -1016,9 +1626,9 @@ mod tests {
     #[test]
     fn z_enter_aliases_zt() {
         let (h, _) = populated_handle();
-        let r = lookup_normal_two_key(
+        let r = lookup_normal_with_prefix(
             &h,
-            KeyChord::char('z'),
+            &[KeyChord::char('z')],
             &ev(KeyCode::Enter, KeyModifiers::NONE),
         );
         assert!(matches!(r, Action::ScrollCursorTo(ScrollPos::Top)));
@@ -1027,9 +1637,9 @@ mod tests {
     #[test]
     fn z_dash_aliases_zb() {
         let (h, _) = populated_handle();
-        let r = lookup_normal_two_key(
+        let r = lookup_normal_with_prefix(
             &h,
-            KeyChord::char('z'),
+            &[KeyChord::char('z')],
             &ev(KeyCode::Char('-'), KeyModifiers::NONE),
         );
         assert!(matches!(r, Action::ScrollCursorTo(ScrollPos::Bottom)));
@@ -1038,9 +1648,9 @@ mod tests {
     #[test]
     fn za_toggles_fold_at_cursor() {
         let (h, _) = populated_handle();
-        let r = lookup_normal_two_key(
+        let r = lookup_normal_with_prefix(
             &h,
-            KeyChord::char('z'),
+            &[KeyChord::char('z')],
             &ev(KeyCode::Char('a'), KeyModifiers::NONE),
         );
         assert!(matches!(r, Action::ToggleFoldAtCursor));
@@ -1049,9 +1659,9 @@ mod tests {
     #[test]
     fn z_unrecognized_drops_pending() {
         let (h, _) = populated_handle();
-        let r = lookup_normal_two_key(
+        let r = lookup_normal_with_prefix(
             &h,
-            KeyChord::char('z'),
+            &[KeyChord::char('z')],
             &ev(KeyCode::Char('X'), KeyModifiers::NONE),
         );
         assert!(matches!(r, Action::SetPending(Pending::None)));
@@ -1060,9 +1670,9 @@ mod tests {
     #[test]
     fn z_esc_drops_pending() {
         let (h, _) = populated_handle();
-        let r = lookup_normal_two_key(
+        let r = lookup_normal_with_prefix(
             &h,
-            KeyChord::char('z'),
+            &[KeyChord::char('z')],
             &ev(KeyCode::Esc, KeyModifiers::NONE),
         );
         assert!(matches!(r, Action::SetPending(Pending::None)));

@@ -320,23 +320,48 @@ fn translate_normal(
     match pending {
         Pending::AfterCtrlW => return resolve_after_ctrl_w(event),
         Pending::AfterG => {
-            return crate::keymap_normal::lookup_normal_two_key(
+            return crate::keymap_normal::lookup_normal_with_prefix(
                 keymap,
-                crate::chord::KeyChord::char('g'),
+                &[crate::chord::KeyChord::char('g')],
                 &event,
             );
         }
-        Pending::AfterOperator(op) => return resolve_after_operator(event, builtins, op),
+        Pending::AfterOperator(op) => {
+            // Slice 8.g.iii: trie-driven resolution.
+            let prefix =
+                crate::keymap_normal::operator_prefix(op, builtins);
+            if prefix.is_empty() {
+                // Unknown operator id (plugin-registered? slice 8.h).
+                return Action::SetPending(Pending::None);
+            }
+            return crate::keymap_normal::lookup_normal_with_prefix(
+                keymap, &prefix, &event,
+            );
+        }
         Pending::AfterFindChar { kind, operator } => {
             return resolve_after_find_char(event, builtins, kind, operator);
         }
         Pending::AfterTextObject { operator, around } => {
-            return resolve_after_text_object(event, builtins, operator, around);
+            // Slice 8.g.iii: prefix is the operator's path
+            // followed by `i` or `a`.
+            let mut prefix =
+                crate::keymap_normal::operator_prefix(operator, builtins);
+            if prefix.is_empty() {
+                return Action::SetPending(Pending::None);
+            }
+            prefix.push(if around {
+                crate::chord::KeyChord::char('a')
+            } else {
+                crate::chord::KeyChord::char('i')
+            });
+            return crate::keymap_normal::lookup_normal_with_prefix(
+                keymap, &prefix, &event,
+            );
         }
         Pending::AfterZ => {
-            return crate::keymap_normal::lookup_normal_two_key(
+            return crate::keymap_normal::lookup_normal_with_prefix(
                 keymap,
-                crate::chord::KeyChord::char('z'),
+                &[crate::chord::KeyChord::char('z')],
                 &event,
             );
         }
@@ -426,13 +451,6 @@ fn translate_normal(
         // register-name follow-up.
         KeyCode::Char('@') => Action::SetPending(Pending::AfterMacroPlay),
 
-        // Operator-leading keys (8.g.iii).
-        KeyCode::Char('d') => Action::SetPending(Pending::AfterOperator(builtins.delete)),
-        KeyCode::Char('c') => Action::SetPending(Pending::AfterOperator(builtins.change)),
-        KeyCode::Char('y') => Action::SetPending(Pending::AfterOperator(builtins.yank)),
-        KeyCode::Char('>') => Action::SetPending(Pending::AfterOperator(builtins.indent_right)),
-        KeyCode::Char('<') => Action::SetPending(Pending::AfterOperator(builtins.indent_left)),
-
         // Find-char on the current line (8.g.v).
         KeyCode::Char('f') => Action::SetPending(Pending::AfterFindChar {
             kind: FindKind::Forward,
@@ -516,118 +534,6 @@ fn resolve_after_ctrl_w(event: KeyEvent) -> Action {
 }
 
 
-fn resolve_after_operator(event: KeyEvent, builtins: &Builtins, op: OperatorId) -> Action {
-    if matches!(event.code, KeyCode::Esc) {
-        return Action::SetPending(Pending::None);
-    }
-    // For now, only recognize a small set of motions as targets. Doubled
-    // operator (e.g., `dd`) is a special case that maps to `Range::CurrentLine`.
-    let target = match event.code {
-        KeyCode::Char('w') => Target::Motion(builtins.word_forward, Args::None),
-        KeyCode::Char('b') => Target::Motion(builtins.word_backward, Args::None),
-        KeyCode::Char('e') => Target::Motion(builtins.word_end, Args::None),
-        KeyCode::Char('W') => Target::Motion(builtins.big_word_forward, Args::None),
-        KeyCode::Char('B') => Target::Motion(builtins.big_word_backward, Args::None),
-        KeyCode::Char('E') => Target::Motion(builtins.big_word_end, Args::None),
-        KeyCode::Char('}') => Target::Motion(builtins.paragraph_forward, Args::None),
-        KeyCode::Char('{') => Target::Motion(builtins.paragraph_backward, Args::None),
-        KeyCode::Char(')') => Target::Motion(builtins.sentence_forward, Args::None),
-        KeyCode::Char('(') => Target::Motion(builtins.sentence_backward, Args::None),
-        KeyCode::Char('h') | KeyCode::Left => Target::Motion(builtins.char_left, Args::None),
-        KeyCode::Char('l') | KeyCode::Right => Target::Motion(builtins.char_right, Args::None),
-        KeyCode::Char('j') | KeyCode::Down => Target::Motion(builtins.line_down, Args::None),
-        KeyCode::Char('k') | KeyCode::Up => Target::Motion(builtins.line_up, Args::None),
-        KeyCode::Char('0') | KeyCode::Home => Target::Motion(builtins.line_start, Args::None),
-        KeyCode::Char('$') | KeyCode::End => Target::Motion(builtins.line_end, Args::None),
-        KeyCode::Char('^') => Target::Motion(builtins.first_non_blank, Args::None),
-        KeyCode::Char('d') if op == builtins.delete => {
-            // `dd` -- delete current line. The dispatcher's CurrentLine range
-            // covers the line content; the trailing newline is a known
-            // limitation tracked in DESIGN.md §14 for proper linewise vim
-            // semantics.
-            return Action::Invoke(
-                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
-            );
-        }
-        KeyCode::Char('c') if op == builtins.change => {
-            // `cc` -- change current line: clear the line content and enter
-            // Insert (the `change` operator handles the mode transition).
-            return Action::Invoke(
-                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
-            );
-        }
-        KeyCode::Char('y') if op == builtins.yank => {
-            // `yy` -- yank current line into the unnamed register (linewise).
-            return Action::Invoke(
-                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
-            );
-        }
-        KeyCode::Char('>') if op == builtins.indent_right => {
-            return Action::Invoke(
-                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
-            );
-        }
-        KeyCode::Char('<') if op == builtins.indent_left => {
-            return Action::Invoke(
-                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
-            );
-        }
-        KeyCode::Char('U') if op == builtins.upper => {
-            return Action::Invoke(
-                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
-            );
-        }
-        KeyCode::Char('u') if op == builtins.lower => {
-            return Action::Invoke(
-                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
-            );
-        }
-        KeyCode::Char('~') if op == builtins.toggle_case => {
-            return Action::Invoke(
-                CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
-            );
-        }
-        KeyCode::Char('f') => {
-            return Action::SetPending(Pending::AfterFindChar {
-                kind: FindKind::Forward,
-                operator: Some(op),
-            });
-        }
-        KeyCode::Char('F') => {
-            return Action::SetPending(Pending::AfterFindChar {
-                kind: FindKind::Backward,
-                operator: Some(op),
-            });
-        }
-        KeyCode::Char('t') => {
-            return Action::SetPending(Pending::AfterFindChar {
-                kind: FindKind::TillForward,
-                operator: Some(op),
-            });
-        }
-        KeyCode::Char('T') => {
-            return Action::SetPending(Pending::AfterFindChar {
-                kind: FindKind::TillBackward,
-                operator: Some(op),
-            });
-        }
-        KeyCode::Char('i') => {
-            return Action::SetPending(Pending::AfterTextObject {
-                operator: op,
-                around: false,
-            });
-        }
-        KeyCode::Char('a') => {
-            return Action::SetPending(Pending::AfterTextObject {
-                operator: op,
-                around: true,
-            });
-        }
-        _ => return Action::SetPending(Pending::None),
-    };
-    Action::Invoke(CommandInvocation::of(op.0).with_target(target))
-}
-
 fn resolve_after_macro_start(event: KeyEvent) -> Action {
     if matches!(event.code, KeyCode::Esc) {
         return Action::SetPending(Pending::None);
@@ -692,107 +598,6 @@ fn resolve_after_jump_mark(event: KeyEvent, exact: bool) -> Action {
         }
         _ => Action::SetPending(Pending::None),
     }
-}
-
-fn resolve_after_text_object(
-    event: KeyEvent,
-    builtins: &Builtins,
-    operator: OperatorId,
-    around: bool,
-) -> Action {
-    if matches!(event.code, KeyCode::Esc) {
-        return Action::SetPending(Pending::None);
-    }
-    let tobj = match event.code {
-        KeyCode::Char('w') => {
-            if around {
-                builtins.around_word
-            } else {
-                builtins.inner_word
-            }
-        }
-        KeyCode::Char('W') => {
-            if around {
-                builtins.around_big_word
-            } else {
-                builtins.inner_big_word
-            }
-        }
-        KeyCode::Char('p') => {
-            if around {
-                builtins.around_paragraph
-            } else {
-                builtins.inner_paragraph
-            }
-        }
-        KeyCode::Char('s') => {
-            if around {
-                builtins.around_sentence
-            } else {
-                builtins.inner_sentence
-            }
-        }
-        KeyCode::Char('t') => {
-            if around {
-                builtins.around_tag
-            } else {
-                builtins.inner_tag
-            }
-        }
-        KeyCode::Char('"') => {
-            if around {
-                builtins.around_quote_double
-            } else {
-                builtins.inner_quote_double
-            }
-        }
-        KeyCode::Char('\'') => {
-            if around {
-                builtins.around_quote_single
-            } else {
-                builtins.inner_quote_single
-            }
-        }
-        KeyCode::Char('`') => {
-            if around {
-                builtins.around_quote_backtick
-            } else {
-                builtins.inner_quote_backtick
-            }
-        }
-        KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => {
-            if around {
-                builtins.around_paren
-            } else {
-                builtins.inner_paren
-            }
-        }
-        KeyCode::Char('[') | KeyCode::Char(']') => {
-            if around {
-                builtins.around_bracket
-            } else {
-                builtins.inner_bracket
-            }
-        }
-        KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => {
-            if around {
-                builtins.around_brace
-            } else {
-                builtins.inner_brace
-            }
-        }
-        KeyCode::Char('<') | KeyCode::Char('>') => {
-            if around {
-                builtins.around_angle
-            } else {
-                builtins.inner_angle
-            }
-        }
-        _ => return Action::SetPending(Pending::None),
-    };
-    Action::Invoke(
-        CommandInvocation::of(operator.0).with_target(Target::TextObject(tobj, Args::None)),
-    )
 }
 
 fn resolve_after_find_char(

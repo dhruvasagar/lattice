@@ -1,0 +1,828 @@
+//! Insert-mode binding registration + drift-test helpers.
+//!
+//! Audit slice 8.f. Third mode migrated off `input::translate`'s
+//! hand-rolled match table. Insert is bigger than Replace / Visual
+//! because two minor-mode overlays ride on top of base Insert
+//! (architecture doc §5.3):
+//!
+//! - **Completion popup** (`App.insert_completion = Some(...)`):
+//!   the popup claims a fixed set of CTRL-bearing chords plus
+//!   `<Tab>` / `<CR>` / `<Esc>` plus a bare-char wildcard
+//!   ("commit-then-insert"); other chords fall through to base
+//!   Insert.
+//! - **Active snippet** (`App.active_snippet = Some(...)`): the
+//!   snippet claims `<Tab>` / `<S-Tab>` / `<Esc>` for
+//!   placeholder navigation; other chords fall through to base
+//!   Insert. Popup wins when both overlays are active (legacy
+//!   `&& !ctx.insert_completion_open` gate).
+//!
+//! ## Layer model
+//!
+//! Each overlay is registered as a [`KeymapLayer::MinorMode`]
+//! layer pushed onto the registry when the overlay activates and
+//! popped when it deactivates. Push order is enforced by
+//! `App::sync_keymap_overlays`: snippet first, popup second, so
+//! popup's `LayerId` is higher and popup wins on overlapping
+//! chords (preserving the legacy "popup precedes snippet"
+//! gating).
+//!
+//! ## Base Insert bindings
+//!
+//! Registered directly into [`KeymapLayer::Builtin`] +
+//! `BindingMode::Insert` by [`register_insert_bindings`]:
+//!
+//! - `<Esc>` -> [`Action::EnterMode(Normal)`]
+//! - `<BS>` -> [`Action::DeleteCharBackward`]
+//! - `<CR>` -> [`Action::Insert("\n")`]
+//! - `<Tab>` -> [`Action::Insert("\t")`]
+//! - `<C-Space>` -> [`Action::CompletionTrigger`]
+//! - `[<C-x>, <C-o>]` -> [`Action::CompletionTrigger`] (omni-completion)
+//! - `[<C-x>, <C-s>]` -> [`Action::SnippetExpand`]
+//!
+//! `<C-x>` itself is a *partial* trie node (no terminal binding;
+//! children only). Lookup at `[<C-x>]` returns
+//! [`LookupResult::Partial`]; [`dispatch_insert`] translates that
+//! into [`Action::SetPending(Pending::AfterCtrlX)`]. The next
+//! keystroke arrives with `pending = AfterCtrlX` and the
+//! dispatcher reconstructs the two-chord sequence
+//! `[<C-x>, current_chord]` for the lookup.
+//!
+//! ## Literal-text fall-through
+//!
+//! Per the architecture doc §9 / slice 8.f bullet, "type any
+//! printable char that has no binding" stays a dispatcher default
+//! rather than a registered char wildcard. Lookup at an
+//! unmodified `Char(c)` returns [`LookupResult::Unbound`] in base
+//! Insert; the dispatcher's [`literal_text_fallback`] returns
+//! `Action::Insert(c.to_string())` (suppressing `CONTROL`-bearing
+//! chars to match legacy semantics). When the popup layer is
+//! pushed, its char-wildcard wins, so literal typing routes
+//! through `CompletionAcceptThenInsert(c)` instead -- the popup
+//! handler in App decides whether to accept the focused candidate
+//! or fall back to plain insertion.
+//!
+//! ## Modifier transparency (drift caveats)
+//!
+//! Legacy `translate_insert` matched on `event.code` alone for
+//! `<Esc>` / `<BS>` / `<CR>` / `<Tab>` (modifiers ignored), and
+//! short-circuited only `CONTROL` on the `Char(c)` arm. The trie
+//! is precise: `(Esc, NONE)` and `(Esc, CONTROL)` are distinct
+//! chords. To bridge, [`dispatch_insert`] runs a
+//! mode-specific normalisation pass before lookup:
+//!
+//! | chord shape                | normalisation                |
+//! |----------------------------|------------------------------|
+//! | `Special(_)` + ALT/SUPER   | strip ALT, SUPER             |
+//! | `Char(_)` without CTRL     | strip ALT, SUPER             |
+//! | `Char(_)` with CTRL        | strip ALT, SUPER             |
+//!
+//! SHIFT is preserved on specials so the snippet layer can
+//! distinguish `<S-Tab>` from `<Tab>`. SHIFT is preserved on
+//! CTRL+letter so `<C-S-c>` stays distinct from `<C-c>`. SHIFT
+//! is preserved on bare letters too (the chord normalisation in
+//! [`KeyChord::from_event`] already strips redundant SHIFT for
+//! bare ASCII letters where case carries the bit).
+//!
+//! Three documented drift cases vs. legacy (acceptable per the
+//! drift test's allow-list -- terminals don't emit these in
+//! practice):
+//!
+//! - `<S-Esc>` (SHIFT + Esc): legacy returned `EnterMode(Normal)`;
+//!   new returns `None` (chord `(Esc, SHIFT)` has no entry; SHIFT
+//!   is preserved on specials).
+//! - `<C-Esc>` (CONTROL + Esc): legacy returned
+//!   `EnterMode(Normal)`; new returns `None`.
+//! - `<S-Tab>` as `KeyCode::Tab + SHIFT` (rare; usually arrives
+//!   as `KeyCode::BackTab` instead): legacy returned `Insert("\t")`;
+//!   new returns `SnippetPrevPlaceholder` if the snippet layer
+//!   is pushed, else `None`. `KeyCode::BackTab` (the common path)
+//!   is unaffected -- `KeyChord::from_event` normalises BackTab
+//!   to `(Tab, SHIFT)`, identical handling.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use lattice_grammar::SourceLocation;
+
+use crate::app::{Action, Pending};
+use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
+use crate::keymap::BindingMode;
+use crate::keymap_registry::KeymapHandle;
+use crate::keymap_replace::KeymapHandleLegacyExt;
+use crate::keymap_trie::{
+    BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult,
+};
+
+/// Register every chord the legacy `input::translate_insert`
+/// recognised into the supplied handle's `Builtin` layer under
+/// `BindingMode::Insert`. Called at App startup.
+///
+/// `<C-x>` is registered implicitly: inserting
+/// `[<C-x>, <C-o>]` at depth 2 makes the depth-1 lookup of
+/// `[<C-x>]` return [`LookupResult::Partial`]. Same for
+/// `[<C-x>, <C-s>]`.
+pub fn register_insert_bindings(handle: &KeymapHandle) {
+    let layer = KeymapLayer::Builtin;
+    let mode = BindingMode::Insert;
+
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_special(SpecialKey::Esc)],
+        Action::EnterMode(lattice_grammar::ModalState::Normal),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_special(SpecialKey::Backspace)],
+        Action::DeleteCharBackward,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_special(SpecialKey::Enter)],
+        Action::Insert("\n".into()),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_special(SpecialKey::Tab)],
+        Action::Insert("\t".into()),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl(' '))],
+        Action::CompletionTrigger,
+        source(),
+    );
+    // <C-x><C-o> -- omni-completion (a.k.a. CompletionTrigger).
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('x')), lit(KeyChord::ctrl('o'))],
+        Action::CompletionTrigger,
+        source(),
+    );
+    // <C-x><C-s> -- direct snippet expansion.
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('x')), lit(KeyChord::ctrl('s'))],
+        Action::SnippetExpand,
+        source(),
+    );
+}
+
+/// Build the completion-popup minor-mode layer's binding set.
+/// Wrapped into the registry by `App::push_completion_popup_layer`
+/// when the popup opens; popped when the popup closes.
+///
+/// Returns one trie keyed under `BindingMode::Insert` -- the only
+/// mode the popup is active in. The registry's merge picks up
+/// every entry under that mode whenever the layer is pushed.
+pub fn completion_popup_layer_bindings() -> HashMap<BindingMode, KeymapTrie> {
+    let mut trie = KeymapTrie::new();
+    let layer = KeymapLayer::MinorMode(0); // tag overridden by registry on push
+
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit(KeyChord::ctrl('n'))],
+        Action::CompletionNext,
+    );
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit_special(SpecialKey::Down)],
+        Action::CompletionNext,
+    );
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit(KeyChord::ctrl('p'))],
+        Action::CompletionPrev,
+    );
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit_special(SpecialKey::Up)],
+        Action::CompletionPrev,
+    );
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit(KeyChord::ctrl('y'))],
+        Action::CompletionAccept,
+    );
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit_special(SpecialKey::Tab)],
+        Action::CompletionAccept,
+    );
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit_special(SpecialKey::Enter)],
+        Action::CompletionAccept,
+    );
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit(KeyChord::ctrl('e'))],
+        Action::CompletionCancel,
+    );
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit_special(SpecialKey::Esc)],
+        Action::CompletionCancelAndExitInsert,
+    );
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit(KeyChord::ctrl(' '))],
+        Action::CompletionTrigger,
+    );
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit(KeyChord::ctrl('d'))],
+        Action::CompletionToggleDocs,
+    );
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit(KeyChord::ctrl('f'))],
+        Action::CompletionDocsScrollDown,
+    );
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit(KeyChord::ctrl('b'))],
+        Action::CompletionDocsScrollUp,
+    );
+    // Char wildcard: any bare printable -> commit-or-insert. The
+    // captured char fills the placeholder in the action at lookup
+    // time; see `dispatch_insert`'s wildcard substitution.
+    bind_action(
+        &mut trie,
+        layer,
+        &[ChordPattern::CharLiteral],
+        Action::CompletionAcceptThenInsert('\0'),
+    );
+
+    let mut modes = HashMap::new();
+    modes.insert(BindingMode::Insert, trie);
+    modes
+}
+
+/// Build the active-snippet minor-mode layer's binding set.
+/// Pushed by `App::push_snippet_layer` when an `ActiveSnippet`
+/// activates; popped on snippet exit.
+pub fn active_snippet_layer_bindings() -> HashMap<BindingMode, KeymapTrie> {
+    let mut trie = KeymapTrie::new();
+    let layer = KeymapLayer::MinorMode(0); // tag overridden by registry
+
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit_special(SpecialKey::Tab)],
+        Action::SnippetNextPlaceholder,
+    );
+    // <S-Tab> -- chord (Tab, SHIFT). KeyChord::from_event
+    // canonicalises both `KeyCode::BackTab` and
+    // `KeyCode::Tab + SHIFT` to the same chord.
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit(KeyChord {
+            key: KeyKind::Special(SpecialKey::Tab),
+            mods: KeyMods::SHIFT,
+        })],
+        Action::SnippetPrevPlaceholder,
+    );
+    bind_action(
+        &mut trie,
+        layer,
+        &[lit_special(SpecialKey::Esc)],
+        Action::SnippetLeave,
+    );
+
+    let mut modes = HashMap::new();
+    modes.insert(BindingMode::Insert, trie);
+    modes
+}
+
+/// Dispatch a key event in Insert mode through the layered
+/// keymap registry. Replaces the legacy
+/// `input::translate_insert` plus the
+/// `translate_insert_completion_popup` and
+/// `translate_active_snippet` overlay branches at the top of
+/// `input::translate`.
+///
+/// 1. `pending == AfterCtrlX`: reconstruct
+///    `[<C-x>, normalised(event)]`, look up. Bound -> the bound
+///    action; anything else -> `SetPending(None)` to drop the
+///    pending state and let the user retry (matches legacy).
+/// 2. Otherwise: normalise the chord per the modifier table in
+///    this module's docstring; look up `[chord]`.
+///    - `Bound` -> the bound action. Wildcard captures fill the
+///      char placeholder in `CompletionAcceptThenInsert`.
+///    - `Partial` -> the only multi-key prefix in Insert today
+///      is `<C-x>`; emit `SetPending(AfterCtrlX)` for that
+///      specific chord. Any other partial path is defensive
+///      `Action::None` (no caller can produce one with the
+///      current catalog).
+///    - `Unbound` -> [`literal_text_fallback`] for printable
+///      chars without CONTROL; otherwise `Action::None`.
+pub fn dispatch_insert(
+    handle: &KeymapHandle,
+    event: &KeyEvent,
+    pending: Pending,
+) -> Action {
+    if matches!(pending, Pending::AfterCtrlX) {
+        let Some(chord) = KeyChord::from_event(event) else {
+            return Action::SetPending(Pending::None);
+        };
+        let chord = normalize_for_insert_lookup(chord);
+        let path = [KeyChord::ctrl('x'), chord];
+        return match handle.lookup(BindingMode::Insert, &path) {
+            LookupResult::Bound { command, captured } => {
+                action_from_bound(&command, &captured)
+            }
+            _ => Action::SetPending(Pending::None),
+        };
+    }
+
+    let Some(raw_chord) = KeyChord::from_event(event) else {
+        return literal_text_fallback(event);
+    };
+    let chord = normalize_for_insert_lookup(raw_chord);
+    match handle.lookup(BindingMode::Insert, &[chord]) {
+        LookupResult::Bound { command, captured } => {
+            action_from_bound(&command, &captured)
+        }
+        LookupResult::Partial => {
+            if chord == KeyChord::ctrl('x') {
+                Action::SetPending(Pending::AfterCtrlX)
+            } else {
+                Action::None
+            }
+        }
+        LookupResult::Unbound => literal_text_fallback(event),
+    }
+}
+
+/// Mode-specific modifier strip. See module docstring's table.
+fn normalize_for_insert_lookup(chord: KeyChord) -> KeyChord {
+    // Strip ALT and SUPER on every chord -- no Insert binding
+    // (base or overlay) uses them. Keep CTRL and SHIFT to
+    // distinguish `<C-y>` from `y` and `<S-Tab>` from `<Tab>`.
+    let mut mods = KeyMods::NONE;
+    if chord.mods.ctrl() {
+        mods = mods | KeyMods::CTRL;
+    }
+    if chord.mods.shift() {
+        mods = mods | KeyMods::SHIFT;
+    }
+    KeyChord {
+        key: chord.key,
+        mods,
+    }
+}
+
+/// Pull the legacy or `CommandInvocation` action out of a bound
+/// trie node, substituting the captured wildcard char into
+/// `CompletionAcceptThenInsert`'s placeholder.
+fn action_from_bound(bound: &Arc<BoundCommand>, captured: &[char]) -> Action {
+    match bound.legacy_action.as_ref() {
+        Some(Action::CompletionAcceptThenInsert(_)) => {
+            // Legacy popup filtered control chars: `if !c.is_control()`.
+            // Mirror that here so the trie's wildcard match doesn't
+            // surface synthetic `\x07`-style chars to the App.
+            match captured.first() {
+                Some(&c) if !c.is_control() => {
+                    Action::CompletionAcceptThenInsert(c)
+                }
+                _ => Action::None,
+            }
+        }
+        Some(action) => action.clone(),
+        None => Action::Invoke(bound.command.clone()),
+    }
+}
+
+/// Dispatcher fallback for unbound chords in base Insert. Mirrors
+/// the legacy `translate_insert`'s tail:
+/// - CONTROL-bearing -> `Action::None`.
+/// - `KeyCode::Char(c)` (any non-CONTROL modifier) -> `Insert(c.to_string())`.
+/// - Anything else -> `Action::None`.
+fn literal_text_fallback(event: &KeyEvent) -> Action {
+    if event.modifiers.contains(KeyModifiers::CONTROL) {
+        return Action::None;
+    }
+    match event.code {
+        KeyCode::Char(c) => Action::Insert(c.to_string()),
+        _ => Action::None,
+    }
+}
+
+fn lit(chord: KeyChord) -> ChordPattern {
+    ChordPattern::Literal(chord)
+}
+
+fn lit_special(s: SpecialKey) -> ChordPattern {
+    ChordPattern::Literal(KeyChord::special(s))
+}
+
+fn source() -> SourceLocation {
+    SourceLocation::builtin_file(file!(), line!())
+}
+
+/// Helper for the per-overlay trie builders -- stages a legacy
+/// `Action` into a trie at `path`. `KeymapLayer` is set on the
+/// `BoundCommand` for `:describe-key` provenance; the registry
+/// overrides the layer tag with the freshly-issued `MinorMode(id)`
+/// when the layer is pushed.
+fn bind_action(
+    trie: &mut KeymapTrie,
+    layer: KeymapLayer,
+    path: &[ChordPattern],
+    action: Action,
+) {
+    let bound = Arc::new(BoundCommand::from_legacy_action(
+        action,
+        source(),
+        layer,
+    ));
+    trie.insert(path, bound);
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use crate::keymap_registry::{KeymapHandle, PushLayerKind};
+    use crossterm::event::{KeyCode, KeyEventKind, KeyEventState};
+    use lattice_grammar::ModalState;
+
+    fn ev(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: mods,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    fn populated_handle() -> KeymapHandle {
+        let h = KeymapHandle::new();
+        register_insert_bindings(&h);
+        h
+    }
+
+    fn populated_handle_with_popup() -> KeymapHandle {
+        let h = populated_handle();
+        h.push_layer(
+            PushLayerKind::MinorMode,
+            "completion-popup",
+            completion_popup_layer_bindings(),
+        );
+        h
+    }
+
+    fn populated_handle_with_snippet() -> KeymapHandle {
+        let h = populated_handle();
+        h.push_layer(
+            PushLayerKind::MinorMode,
+            "active-snippet",
+            active_snippet_layer_bindings(),
+        );
+        h
+    }
+
+    fn populated_handle_with_both() -> KeymapHandle {
+        // Order matters: snippet first, then popup. Popup's
+        // higher LayerId means popup wins on overlapping chords
+        // (legacy "popup precedes snippet" gating).
+        let h = populated_handle();
+        h.push_layer(
+            PushLayerKind::MinorMode,
+            "active-snippet",
+            active_snippet_layer_bindings(),
+        );
+        h.push_layer(
+            PushLayerKind::MinorMode,
+            "completion-popup",
+            completion_popup_layer_bindings(),
+        );
+        h
+    }
+
+    // ---- Base Insert ----
+
+    #[test]
+    fn esc_in_base_insert_returns_to_normal() {
+        let h = populated_handle();
+        match dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), Pending::None) {
+            Action::EnterMode(ModalState::Normal) => {}
+            other => panic!("expected EnterMode(Normal), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backspace_in_base_insert_deletes_char_backward() {
+        let h = populated_handle();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Backspace, KeyModifiers::NONE),
+            Pending::None,
+        );
+        assert!(matches!(r, Action::DeleteCharBackward));
+    }
+
+    #[test]
+    fn enter_in_base_insert_inserts_newline() {
+        let h = populated_handle();
+        match dispatch_insert(
+            &h,
+            &ev(KeyCode::Enter, KeyModifiers::NONE),
+            Pending::None,
+        ) {
+            Action::Insert(s) => assert_eq!(s, "\n"),
+            other => panic!("expected Insert(\\n), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tab_in_base_insert_inserts_tab() {
+        let h = populated_handle();
+        match dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), Pending::None) {
+            Action::Insert(s) => assert_eq!(s, "\t"),
+            other => panic!("expected Insert(\\t), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn printable_char_in_base_insert_falls_through_to_insert() {
+        let h = populated_handle();
+        for c in ['a', 'A', '1', '$', ' '] {
+            match dispatch_insert(
+                &h,
+                &ev(KeyCode::Char(c), KeyModifiers::NONE),
+                Pending::None,
+            ) {
+                Action::Insert(s) => assert_eq!(s, c.to_string()),
+                other => panic!("char {c:?}: expected Insert, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn ctrl_letter_unbound_in_base_insert_yields_none() {
+        let h = populated_handle();
+        // <C-y> isn't bound at base; legacy returned None.
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            Pending::None,
+        );
+        assert!(matches!(r, Action::None));
+    }
+
+    #[test]
+    fn ctrl_space_in_base_insert_triggers_completion() {
+        let h = populated_handle();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char(' '), KeyModifiers::CONTROL),
+            Pending::None,
+        );
+        assert!(matches!(r, Action::CompletionTrigger));
+    }
+
+    #[test]
+    fn ctrl_x_in_base_insert_arms_after_ctrl_x_pending() {
+        let h = populated_handle();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            Pending::None,
+        );
+        assert!(
+            matches!(r, Action::SetPending(Pending::AfterCtrlX)),
+            "got {r:?}"
+        );
+    }
+
+    #[test]
+    fn ctrl_x_then_ctrl_o_resolves_to_completion_trigger() {
+        let h = populated_handle();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            Pending::AfterCtrlX,
+        );
+        assert!(matches!(r, Action::CompletionTrigger));
+    }
+
+    #[test]
+    fn ctrl_x_then_ctrl_s_resolves_to_snippet_expand() {
+        let h = populated_handle();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            Pending::AfterCtrlX,
+        );
+        assert!(matches!(r, Action::SnippetExpand));
+    }
+
+    #[test]
+    fn ctrl_x_then_unrecognized_drops_pending() {
+        let h = populated_handle();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('q'), KeyModifiers::CONTROL),
+            Pending::AfterCtrlX,
+        );
+        assert!(matches!(r, Action::SetPending(Pending::None)));
+    }
+
+    // ---- Completion popup overlay ----
+
+    #[test]
+    fn popup_ctrl_n_navigates_next() {
+        let h = populated_handle_with_popup();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            Pending::None,
+        );
+        assert!(matches!(r, Action::CompletionNext));
+    }
+
+    #[test]
+    fn popup_down_arrow_navigates_next() {
+        let h = populated_handle_with_popup();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Down, KeyModifiers::NONE),
+            Pending::None,
+        );
+        assert!(matches!(r, Action::CompletionNext));
+    }
+
+    #[test]
+    fn popup_tab_accepts() {
+        let h = populated_handle_with_popup();
+        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), Pending::None);
+        assert!(matches!(r, Action::CompletionAccept));
+    }
+
+    #[test]
+    fn popup_enter_accepts() {
+        let h = populated_handle_with_popup();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Enter, KeyModifiers::NONE),
+            Pending::None,
+        );
+        assert!(matches!(r, Action::CompletionAccept));
+    }
+
+    #[test]
+    fn popup_esc_cancels_and_exits_insert() {
+        let h = populated_handle_with_popup();
+        let r = dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), Pending::None);
+        assert!(matches!(r, Action::CompletionCancelAndExitInsert));
+    }
+
+    #[test]
+    fn popup_ctrl_e_cancels_only() {
+        let h = populated_handle_with_popup();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            Pending::None,
+        );
+        assert!(matches!(r, Action::CompletionCancel));
+    }
+
+    #[test]
+    fn popup_bare_char_routes_through_accept_then_insert() {
+        let h = populated_handle_with_popup();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('a'), KeyModifiers::NONE),
+            Pending::None,
+        );
+        match r {
+            Action::CompletionAcceptThenInsert('a') => {}
+            other => panic!("expected CompletionAcceptThenInsert('a'), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn popup_ctrl_x_falls_through_to_base_insert_pending() {
+        // The popup layer doesn't bind <C-x>; lookup falls
+        // through to base Insert which has it as a partial node.
+        let h = populated_handle_with_popup();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            Pending::None,
+        );
+        assert!(matches!(r, Action::SetPending(Pending::AfterCtrlX)));
+    }
+
+    // ---- Active snippet overlay ----
+
+    #[test]
+    fn snippet_tab_jumps_to_next_placeholder() {
+        let h = populated_handle_with_snippet();
+        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), Pending::None);
+        assert!(matches!(r, Action::SnippetNextPlaceholder));
+    }
+
+    #[test]
+    fn snippet_back_tab_jumps_to_prev_placeholder() {
+        let h = populated_handle_with_snippet();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::BackTab, KeyModifiers::NONE),
+            Pending::None,
+        );
+        assert!(matches!(r, Action::SnippetPrevPlaceholder));
+    }
+
+    #[test]
+    fn snippet_shift_tab_jumps_to_prev_placeholder() {
+        let h = populated_handle_with_snippet();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Tab, KeyModifiers::SHIFT),
+            Pending::None,
+        );
+        assert!(matches!(r, Action::SnippetPrevPlaceholder));
+    }
+
+    #[test]
+    fn snippet_esc_leaves_snippet() {
+        let h = populated_handle_with_snippet();
+        let r = dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), Pending::None);
+        assert!(matches!(r, Action::SnippetLeave));
+    }
+
+    #[test]
+    fn snippet_unrelated_key_falls_through_to_base_insert() {
+        let h = populated_handle_with_snippet();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('z'), KeyModifiers::NONE),
+            Pending::None,
+        );
+        match r {
+            Action::Insert(s) => assert_eq!(s, "z"),
+            other => panic!("expected Insert(z), got {other:?}"),
+        }
+    }
+
+    // ---- Combined overlays: popup wins ----
+
+    #[test]
+    fn popup_wins_over_snippet_for_tab() {
+        let h = populated_handle_with_both();
+        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), Pending::None);
+        // Popup binds <Tab> -> CompletionAccept; snippet binds
+        // <Tab> -> SnippetNextPlaceholder. Popup pushed last
+        // (higher LayerId) so popup wins.
+        assert!(matches!(r, Action::CompletionAccept));
+    }
+
+    #[test]
+    fn popup_wins_over_snippet_for_esc() {
+        let h = populated_handle_with_both();
+        let r = dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), Pending::None);
+        assert!(matches!(r, Action::CompletionCancelAndExitInsert));
+    }
+
+    #[test]
+    fn shift_tab_with_both_overlays_resolves_via_snippet_layer() {
+        // <S-Tab> is unique to the snippet layer; popup doesn't
+        // bind it. Falls through to snippet -> SnippetPrevPlaceholder.
+        let h = populated_handle_with_both();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::BackTab, KeyModifiers::NONE),
+            Pending::None,
+        );
+        assert!(matches!(r, Action::SnippetPrevPlaceholder));
+    }
+}

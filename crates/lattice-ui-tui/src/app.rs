@@ -1035,9 +1035,18 @@ pub struct App {
     /// from it on every keystroke. Wait-free reads via the
     /// internal `ArcSwap`; concurrent registration writes (mode
     /// push/pop, plugin registration, `:bind`) never stall the
-    /// input path. Slice 8.d wires Replace mode through this; the
-    /// other modes follow in 8.e -- 8.g.
+    /// input path. Slices 8.d / 8.e / 8.f wire Replace, Visual,
+    /// and Insert through this; Normal follows in 8.g.
     pub keymap: crate::keymap_registry::KeymapHandle,
+    /// `LayerId` of the active completion-popup minor-mode
+    /// layer when the popup is open; `None` otherwise. Pushed /
+    /// popped by [`Self::sync_keymap_overlays`] in lockstep with
+    /// `self.insert_completion`. Slice 8.f.
+    completion_popup_layer: Option<crate::keymap_registry::LayerId>,
+    /// `LayerId` of the active-snippet minor-mode layer when a
+    /// snippet is in flight; `None` otherwise. Same lockstep
+    /// pattern as [`Self::completion_popup_layer`].
+    snippet_layer: Option<crate::keymap_registry::LayerId>,
     /// In-progress text in the `:` minibuffer. Populated only while
     /// `modal == ModalState::Command`.
     pub command_line: String,
@@ -2442,16 +2451,17 @@ impl App {
             lang_registry,
             builtins,
             keymap: {
-                // Slices 8.d / 8.e: register the per-mode
+                // Slices 8.d / 8.e / 8.f: register the per-mode
                 // built-in catalogs into the Builtin layer at
-                // startup. Subsequent slices populate the
-                // remaining modes (Insert in 8.f, Normal in
-                // 8.g).
+                // startup. Normal follows in 8.g.
                 let h = crate::keymap_registry::KeymapHandle::new();
                 crate::keymap_replace::register_replace_bindings(&h);
                 crate::keymap_visual::register_visual_bindings(&h, &builtins);
+                crate::keymap_insert::register_insert_bindings(&h);
                 h
             },
+            completion_popup_layer: None,
+            snippet_layer: None,
             command_line: String::new(),
             last_message: None,
             pending_redraw: false,
@@ -3977,6 +3987,10 @@ impl App {
             self.help_buffer = None;
         }
         let _ = pre_active;
+        // Slice 8.f: re-stack Insert-mode minor-mode layers in
+        // lockstep with overlay state changes. Cheap when
+        // nothing changed.
+        self.sync_keymap_overlays();
     }
 
     /// Request a reparse if the document's text has changed
@@ -9651,6 +9665,56 @@ impl App {
                 self.sync_theme_from_config();
             }
             _ => {}
+        }
+    }
+
+    /// Re-stack the Insert-mode minor-mode overlays
+    /// (completion popup + active snippet) so the layered
+    /// keymap registry mirrors the App's overlay state. Called
+    /// from the apply loop after every `Action`; cheap when
+    /// nothing changed (single mutex acquisition + early
+    /// return).
+    ///
+    /// Push order is enforced here so popup always sits at the
+    /// top of the stack when both overlays are active: the
+    /// method pops everything, then pushes snippet (if active),
+    /// then popup (if active). Popup's `LayerId` is therefore
+    /// always higher than snippet's, and popup wins on
+    /// overlapping chords (preserving the legacy "popup
+    /// precedes snippet" gating in `input::translate`).
+    ///
+    /// Slice 8.f.
+    pub fn sync_keymap_overlays(&mut self) {
+        let want_popup = self.insert_completion.is_some();
+        let want_snippet = self.active_snippet.is_some();
+        let have_popup = self.completion_popup_layer.is_some();
+        let have_snippet = self.snippet_layer.is_some();
+        if want_popup == have_popup && want_snippet == have_snippet {
+            return;
+        }
+        // Re-stack: pop everything, then push in the canonical
+        // order (snippet first, popup second).
+        if let Some(id) = self.completion_popup_layer.take() {
+            self.keymap.pop_layer(id);
+        }
+        if let Some(id) = self.snippet_layer.take() {
+            self.keymap.pop_layer(id);
+        }
+        if want_snippet {
+            let id = self.keymap.push_layer(
+                crate::keymap_registry::PushLayerKind::MinorMode,
+                "active-snippet",
+                crate::keymap_insert::active_snippet_layer_bindings(),
+            );
+            self.snippet_layer = Some(id);
+        }
+        if want_popup {
+            let id = self.keymap.push_layer(
+                crate::keymap_registry::PushLayerKind::MinorMode,
+                "completion-popup",
+                crate::keymap_insert::completion_popup_layer_bindings(),
+            );
+            self.completion_popup_layer = Some(id);
         }
     }
 

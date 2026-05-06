@@ -20,6 +20,7 @@ use lattice_grammar::registry::{MotionId, OperatorId};
 
 use crate::app::{Action, FindKind, Pending, ScrollPos, ViewportPos};
 use crate::buffers::BufferKind;
+use crate::keymap_insert::dispatch_insert;
 use crate::keymap_registry::KeymapHandle;
 use crate::keymap_replace::dispatch_replace;
 use crate::keymap_visual::dispatch_visual;
@@ -99,33 +100,17 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         return translate_picker(event);
     }
 
-    // Insert-mode completion popup minor mode (Phase 4.2.g.1).
-    // Active only while `App.insert_completion.is_some()`. Owns
-    // the keys it overrides for the popup's lifetime; closing
-    // the popup deactivates the layer and Insert-mode + Normal-
-    // mode defaults restore (see `docs/insert-completion.md`
-    // §3.8).
-    if ctx.insert_completion_open
-        && let Some(action) = translate_insert_completion_popup(event)
-    {
-        return action;
-    }
-
-    // Active-snippet minor mode (Phase 4.2.g.4). Active only
-    // while `App.active_snippet.is_some()` AND we're in Insert
-    // mode AND the completion popup isn't open (popup wins for
-    // `<Tab>` -> accept). Claims `<Tab>` / `<S-Tab>` for
-    // placeholder navigation and `<Esc>` to exit the snippet
-    // before Insert-mode handlers see those keys; everything
-    // else flows through to the normal Insert dispatch so the
-    // user can keep typing inside placeholders.
-    if ctx.snippet_active
-        && matches!(ctx.modal, ModalState::Insert)
-        && !ctx.insert_completion_open
-        && let Some(action) = translate_active_snippet(event)
-    {
-        return action;
-    }
+    // Slice 8.f: the completion-popup and active-snippet minor
+    // modes used to short-circuit `translate` from here. They
+    // now register as `KeymapLayer::MinorMode` layers via
+    // `App::sync_keymap_overlays`, pushed on overlay activation
+    // and popped on deactivation. The Insert-mode dispatcher
+    // (`dispatch_insert`) consults the merged trie, which
+    // already accounts for the layer stack -- so popup / snippet
+    // overrides resolve at lookup time without a per-`translate`
+    // pre-pass. Push order (snippet first, popup second) makes
+    // popup win on overlapping chords (preserving the legacy
+    // "popup precedes snippet" gating).
 
     // Chord-capture overlay precedes the universal `<C-c>` -> Quit
     // hatch, because looking up `<C-c>`'s binding via
@@ -173,7 +158,14 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
     }
 
     match ctx.modal {
-        ModalState::Insert => translate_insert(event, ctx.pending),
+        // Slice 8.f: Insert mode dispatches through the layered
+        // registry. Base bindings live in
+        // `keymap_insert::register_insert_bindings`; the
+        // completion-popup and active-snippet overlays ride as
+        // `KeymapLayer::MinorMode` layers managed by
+        // `App::sync_keymap_overlays`. The drift test in
+        // `keymap_insert::tests` is the regression net.
+        ModalState::Insert => dispatch_insert(ctx.keymap, &event, ctx.pending),
         ModalState::Normal => translate_normal(
             event,
             ctx.pending,
@@ -313,134 +305,6 @@ fn translate_picker(event: KeyEvent) -> Action {
         KeyCode::BackTab => Action::PickerSelectPrev,
         KeyCode::Char(c) => Action::PickerAppend(c),
         _ => Action::None,
-    }
-}
-
-fn translate_insert(event: KeyEvent, pending: Pending) -> Action {
-    // Resolve `<C-x>...` chord first. The previous keystroke
-    // armed `Pending::AfterCtrlX`; this one picks the family
-    // entry (`<C-o>` -> completion, future: `<C-s>` snippet,
-    // `<C-f>` filename, ...).
-    if matches!(pending, Pending::AfterCtrlX) {
-        if event.modifiers.contains(KeyModifiers::CONTROL) {
-            return match event.code {
-                KeyCode::Char('o') => Action::CompletionTrigger,
-                // `<C-x><C-s>` -- direct snippet expansion
-                // (Phase 4.2.g.4). Looks up the word at the
-                // cursor in the snippet registry and expands
-                // it without surfacing the popup.
-                KeyCode::Char('s') => Action::SnippetExpand,
-                // Unrecognised follow-up: drop the pending
-                // state and let the user retry.
-                _ => Action::SetPending(Pending::None),
-            };
-        }
-        return Action::SetPending(Pending::None);
-    }
-    // `<C-Space>` -- modern-editor manual completion trigger.
-    // Crossterm reports Space-with-Ctrl as `Char(' ')` with the
-    // CONTROL modifier set.
-    if event.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(event.code, KeyCode::Char(' '))
-    {
-        return Action::CompletionTrigger;
-    }
-    // `<C-x>` -- vim's "expansion-prefix." Today only routes to
-    // `<C-x><C-o>` (omni-completion); future phases add
-    // `<C-x><C-s>` (snippet expand) etc. Stash a pending state
-    // for the next key.
-    if event.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(event.code, KeyCode::Char('x'))
-    {
-        return Action::SetPending(Pending::AfterCtrlX);
-    }
-    match event.code {
-        KeyCode::Esc => Action::EnterMode(ModalState::Normal),
-        KeyCode::Backspace => Action::DeleteCharBackward,
-        KeyCode::Enter => Action::Insert("\n".into()),
-        KeyCode::Tab => Action::Insert("\t".into()),
-        KeyCode::Char(c) if !event.modifiers.contains(KeyModifiers::CONTROL) => {
-            Action::Insert(c.to_string())
-        }
-        _ => Action::None,
-    }
-}
-
-/// Completion-popup minor-mode keymap (Phase 4.2.g.1). Returns
-/// `Some(Action)` when a key is claimed by the layer; `None`
-/// when the host should fall through to Insert-mode handling.
-/// Overrides Insert-mode + Normal-mode defaults for the popup's
-/// lifetime; closing the popup deactivates this layer entirely.
-///
-/// See `docs/insert-completion.md` §6.1 for the full default
-/// keymap.
-fn translate_insert_completion_popup(event: KeyEvent) -> Option<Action> {
-    let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
-    match (event.code, ctrl) {
-        // Navigation -- `<C-n>` / `<C-p>` / `<Down>` / `<Up>`.
-        (KeyCode::Char('n'), true) | (KeyCode::Down, _) => Some(Action::CompletionNext),
-        (KeyCode::Char('p'), true) | (KeyCode::Up, _) => Some(Action::CompletionPrev),
-        // Accept -- `<C-y>` / `<Tab>` / `<CR>`.
-        (KeyCode::Char('y'), true) => Some(Action::CompletionAccept),
-        (KeyCode::Tab, _) => Some(Action::CompletionAccept),
-        (KeyCode::Enter, _) => Some(Action::CompletionAccept),
-        // Cancel-but-stay-in-Insert -- `<C-e>` (vim convention).
-        (KeyCode::Char('e'), true) => Some(Action::CompletionCancel),
-        // Cancel + exit Insert -- `<Esc>`.
-        (KeyCode::Esc, _) => Some(Action::CompletionCancelAndExitInsert),
-        // Re-trigger (LSP `isIncomplete` refresh path) --
-        // `<C-Space>`.
-        (KeyCode::Char(' '), true) => Some(Action::CompletionTrigger),
-        // Toggle docs side popup -- `<C-d>`.
-        (KeyCode::Char('d'), true) => Some(Action::CompletionToggleDocs),
-        // Page the docs popup -- `<C-f>` / `<C-b>`. The host
-        // ignores these when the docs popup isn't open, so
-        // they can claim the chord unconditionally inside the
-        // minor mode without breaking other features.
-        (KeyCode::Char('f'), true) => Some(Action::CompletionDocsScrollDown),
-        (KeyCode::Char('b'), true) => Some(Action::CompletionDocsScrollUp),
-        // Commit-char polish (Phase 4.2.g.7). Single
-        // unmodified character keys route through
-        // `CompletionAcceptThenInsert`; the App's handler
-        // checks the focused candidate's effective commit-
-        // char set and either accepts-then-inserts or just
-        // inserts (popup refilters as if this layer had
-        // returned `None`). Routing every char through one
-        // action keeps the input layer ignorant of the
-        // App-side commit-char state.
-        (KeyCode::Char(c), false) if !c.is_control() => {
-            Some(Action::CompletionAcceptThenInsert(c))
-        }
-        // `<C-x><C-o>` etc. fall through to translate_insert,
-        // which sets the AfterCtrlX pending state and the next
-        // key resolves in Insert mode -- inside the popup we
-        // accept that key as a re-trigger via the `<C-Space>`
-        // path.
-        _ => None,
-    }
-}
-
-/// Active-snippet minor-mode keymap (Phase 4.2.g.4). Returns
-/// `Some(Action)` when the key is claimed by the layer; `None`
-/// when the host should fall through to Insert-mode handling
-/// so the user can keep typing inside the placeholder.
-///
-/// Claims:
-/// - `<Tab>` -> jump to next placeholder
-/// - `<S-Tab>` -> jump to previous placeholder
-/// - `<Esc>` -> exit the snippet (returns to Normal mode like
-///   plain Insert; placeholders become plain text)
-fn translate_active_snippet(event: KeyEvent) -> Option<Action> {
-    match event.code {
-        KeyCode::Tab if !event.modifiers.contains(KeyModifiers::SHIFT) => {
-            Some(Action::SnippetNextPlaceholder)
-        }
-        KeyCode::BackTab => Some(Action::SnippetPrevPlaceholder),
-        KeyCode::Tab if event.modifiers.contains(KeyModifiers::SHIFT) => {
-            Some(Action::SnippetPrevPlaceholder)
-        }
-        KeyCode::Esc => Some(Action::SnippetLeave),
-        _ => None,
     }
 }
 
@@ -1133,27 +997,92 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::CONTROL)
     }
 
-    /// Process-wide shared `Builtins` + populated `KeymapHandle`
-    /// pair for the `ctx*` test builders. Built once on first
-    /// access; mirrors what `App::new` registers at startup so
-    /// tests that fire `translate(ctx(...))` route through the
-    /// same dispatcher production runs AND the trie's bound
-    /// `CommandInvocation` ids match the per-test `Builtins` the
-    /// caller compares against (`assert_eq!(inv.command,
-    /// b.line_down.0)`). `fixture()` returns a *copy* of the
-    /// shared `Builtins` (`Builtins: Copy`); `test_keymap()`
-    /// returns a borrow of the shared handle.
-    fn shared_test_state() -> &'static (Builtins, KeymapHandle) {
+    /// Process-wide shared [`Builtins`]. Built once on first
+    /// access. `fixture()` returns a *copy* of this; the
+    /// scenario-specific `shared_keymap_*` helpers below register
+    /// against the same builtins so trie-bound `CommandInvocation`
+    /// ids stay in lockstep with what each test compares against.
+    fn shared_builtins() -> &'static Builtins {
         use std::sync::OnceLock;
-        static SHARED: OnceLock<(Builtins, KeymapHandle)> = OnceLock::new();
-        SHARED.get_or_init(|| {
+        static B: OnceLock<Builtins> = OnceLock::new();
+        B.get_or_init(|| {
             let mut r = CommandRegistry::new();
             let b = populate(&mut r);
             let _ex = lattice_grammar::ex_commands::populate(&mut r);
-            let h = KeymapHandle::new();
-            crate::keymap_replace::register_replace_bindings(&h);
-            crate::keymap_visual::register_visual_bindings(&h, &b);
-            (b, h)
+            b
+        })
+    }
+
+    /// Build a fresh `KeymapHandle` populated with every catalog
+    /// the per-mode dispatchers consult: Replace, Visual, Insert.
+    /// Each scenario-specific helper below starts from this and
+    /// pushes the relevant minor-mode overlays.
+    fn build_base_keymap() -> KeymapHandle {
+        let h = KeymapHandle::new();
+        let b = shared_builtins();
+        crate::keymap_replace::register_replace_bindings(&h);
+        crate::keymap_visual::register_visual_bindings(&h, b);
+        crate::keymap_insert::register_insert_bindings(&h);
+        h
+    }
+
+    /// Base keymap -- no minor-mode overlays pushed. Default
+    /// scenario for the bulk of `ctx*` test builders.
+    fn shared_keymap_base() -> &'static KeymapHandle {
+        use std::sync::OnceLock;
+        static H: OnceLock<KeymapHandle> = OnceLock::new();
+        H.get_or_init(build_base_keymap)
+    }
+
+    /// Base keymap + completion-popup minor-mode layer.
+    fn shared_keymap_with_popup() -> &'static KeymapHandle {
+        use std::sync::OnceLock;
+        static H: OnceLock<KeymapHandle> = OnceLock::new();
+        H.get_or_init(|| {
+            let h = build_base_keymap();
+            h.push_layer(
+                crate::keymap_registry::PushLayerKind::MinorMode,
+                "completion-popup",
+                crate::keymap_insert::completion_popup_layer_bindings(),
+            );
+            h
+        })
+    }
+
+    /// Base keymap + active-snippet minor-mode layer.
+    fn shared_keymap_with_snippet() -> &'static KeymapHandle {
+        use std::sync::OnceLock;
+        static H: OnceLock<KeymapHandle> = OnceLock::new();
+        H.get_or_init(|| {
+            let h = build_base_keymap();
+            h.push_layer(
+                crate::keymap_registry::PushLayerKind::MinorMode,
+                "active-snippet",
+                crate::keymap_insert::active_snippet_layer_bindings(),
+            );
+            h
+        })
+    }
+
+    /// Base keymap + both overlays. Push order matches
+    /// `App::sync_keymap_overlays`: snippet first, popup
+    /// second, so popup wins on overlapping chords.
+    fn shared_keymap_with_both_overlays() -> &'static KeymapHandle {
+        use std::sync::OnceLock;
+        static H: OnceLock<KeymapHandle> = OnceLock::new();
+        H.get_or_init(|| {
+            let h = build_base_keymap();
+            h.push_layer(
+                crate::keymap_registry::PushLayerKind::MinorMode,
+                "active-snippet",
+                crate::keymap_insert::active_snippet_layer_bindings(),
+            );
+            h.push_layer(
+                crate::keymap_registry::PushLayerKind::MinorMode,
+                "completion-popup",
+                crate::keymap_insert::completion_popup_layer_bindings(),
+            );
+            h
         })
     }
 
@@ -1163,12 +1092,11 @@ mod tests {
         // `Builtins` carries the canonical ids the keymap
         // registry references.
         let r = CommandRegistry::new();
-        let (b, _) = shared_test_state();
-        (r, *b)
+        (r, *shared_builtins())
     }
 
     fn test_keymap() -> &'static KeymapHandle {
-        &shared_test_state().1
+        shared_keymap_base()
     }
 
     fn ctx<'a>(modal: ModalState, pending: Pending, b: &'a Builtins) -> TranslateContext<'a> {
@@ -2491,6 +2419,19 @@ mod tests {
         } else {
             modal
         };
+        // Slice 8.f: the minor-mode overlays no longer ride on
+        // the legacy `insert_completion_open` / `snippet_active`
+        // flags; they're `KeymapLayer::MinorMode` layers pushed
+        // onto the registry. Pick the scenario-matched shared
+        // keymap so the descriptor's chord resolves through the
+        // intended layer.
+        let keymap_for_mode: &'static KeymapHandle = if insert_completion_open {
+            shared_keymap_with_popup()
+        } else if snippet_active {
+            shared_keymap_with_snippet()
+        } else {
+            shared_keymap_base()
+        };
         let mut pending = Pending::None;
         let mut last = Action::None;
         for event in parse_chord_for_test(chord) {
@@ -2506,7 +2447,7 @@ mod tests {
                 picker_open: false,
                 insert_completion_open,
                 snippet_active,
-                keymap: test_keymap(),
+                keymap: keymap_for_mode,
             };
             last = translate(ctx, event);
             if let Action::SetPending(p) = &last {
@@ -2645,7 +2586,12 @@ mod tests {
             picker_open: false,
             insert_completion_open: true,
             snippet_active: false,
-            keymap: test_keymap(),
+            // Slice 8.f: the popup overlay rides as a
+            // `KeymapLayer::MinorMode` layer pushed on the
+            // shared base handle; the legacy
+            // `insert_completion_open` flag stays for
+            // back-compat but no longer affects dispatch.
+            keymap: shared_keymap_with_popup(),
         }
     }
 
@@ -2821,7 +2767,10 @@ mod tests {
             picker_open: false,
             insert_completion_open: false,
             snippet_active: true,
-            keymap: test_keymap(),
+            // Slice 8.f: snippet overlay rides as a
+            // `KeymapLayer::MinorMode` layer pushed on the
+            // shared base handle.
+            keymap: shared_keymap_with_snippet(),
         }
     }
 
@@ -2867,10 +2816,16 @@ mod tests {
         // When both layers are active the popup wins for
         // `<Tab>` (popup uses Tab to accept, snippet uses Tab
         // to step). Otherwise navigating snippet placeholders
-        // through the popup would be impossible.
+        // through the popup would be impossible. Slice 8.f:
+        // the gating used to live in `translate`; now the
+        // layer-stack push order in
+        // `App::sync_keymap_overlays` (snippet first, popup
+        // second) ensures popup wins. The shared
+        // `with_both_overlays` keymap mirrors that order.
         let (_, b) = fixture();
         let mut ctx = ctx_snippet_active(&b);
         ctx.insert_completion_open = true;
+        ctx.keymap = shared_keymap_with_both_overlays();
         let action = translate(ctx, key(KeyCode::Tab));
         assert!(matches!(action, Action::CompletionAccept));
     }

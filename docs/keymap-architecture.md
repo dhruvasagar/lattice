@@ -510,14 +510,51 @@ graceful error handling.
   `CommandInvocation` ids match the `Builtins` each test
   references.
 
-### Slice 8.f -- Migrate Insert mode
+### Slice 8.f -- Migrate Insert mode ✅ landed
 
-- Insert-mode literal text fall-through stays in input.rs (no
-  registration covers "type any printable char that has no
-  binding"; that's a default case).
-- `<C-x>` expansion-prefix multi-key (§7.2 trie shape).
-- Completion-popup overlay → minor-mode layer push (§5.3).
-- Active-snippet overlay → minor-mode layer push.
+- Base Insert bindings registered by
+  `keymap_insert::register_insert_bindings`: `<Esc>`, `<BS>`,
+  `<CR>`, `<Tab>`, `<C-Space>`, plus the two-key paths
+  `[<C-x>, <C-o>]` and `[<C-x>, <C-s>]`. `<C-x>` itself is a
+  partial trie node; `dispatch_insert` translates the `Partial`
+  lookup into `SetPending(AfterCtrlX)` and resolves the
+  follow-up keystroke via `[<C-x>, normalised(event)]`. The
+  next slice (8.g) generalises this to every prefix in Normal
+  mode (`g_`, `z_`, `<C-w>`, mark/register/find-char wildcards).
+- Literal-text fall-through stays in `dispatch_insert` rather
+  than being registered as a char wildcard, per the original
+  bullet -- the dispatcher returns `Action::Insert(c.to_string())`
+  for any unbound non-CONTROL `Char(c)` lookup. When the popup
+  overlay layer is pushed, *its* char wildcard wins, so typing
+  routes through `CompletionAcceptThenInsert(c)` instead.
+- Completion-popup overlay -> `KeymapLayer::MinorMode` layer
+  pushed by `App::sync_keymap_overlays` whenever
+  `insert_completion.is_some()`; popped on close.
+- Active-snippet overlay -> `KeymapLayer::MinorMode` layer
+  pushed whenever `active_snippet.is_some()`. Push order
+  (snippet first, popup second) means popup's `LayerId` is
+  always higher; popup wins on overlapping chords (preserving
+  the legacy "popup precedes snippet" gating). The sync pops
+  everything and re-pushes in canonical order whenever overlay
+  state changes.
+- Modifier-stripping rules in `dispatch_insert` are
+  mode-specific (see the table in `keymap_insert.rs`'s module
+  docstring): ALT and SUPER are stripped; CTRL and SHIFT are
+  preserved so `<C-y>` stays distinct from `y` and `<S-Tab>`
+  stays distinct from `<Tab>`. Three documented synthetic-
+  modifier drift cases vs. legacy (`<S-Esc>`, `<C-Esc>`,
+  `KeyCode::Tab + SHIFT`) -- terminals don't emit these in
+  practice; the drift test allow-lists them.
+- `input::translate`'s early-out branches for
+  `translate_insert_completion_popup` and
+  `translate_active_snippet` are gone; the `ModalState::Insert`
+  arm now calls `dispatch_insert(ctx.keymap, &event,
+  ctx.pending)` and the merged trie handles overlay precedence.
+- The test fixture in `input::tests` now picks among shared
+  scenario-specific keymaps (`shared_keymap_base`,
+  `shared_keymap_with_popup`, `shared_keymap_with_snippet`,
+  `shared_keymap_with_both_overlays`) so each test's
+  dispatcher sees the right layer stack.
 
 ### Slice 8.g -- Migrate Normal mode
 

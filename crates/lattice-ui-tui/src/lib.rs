@@ -27,6 +27,7 @@ pub mod help;
 pub mod help_topics;
 pub mod input;
 pub mod keymap;
+pub mod keymap_insert;
 pub mod keymap_registry;
 pub mod keymap_replace;
 pub mod keymap_trie;

@@ -16,10 +16,25 @@ use crate::selection::SelectionSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
+    /// Fired when a document buffer opens. Subscribers (the
+    /// LSP attach driver, future plugin hooks, project-watcher,
+    /// completion warmer) react asynchronously; the publisher
+    /// (`App::new` for the initial document, `App::do_edit` for
+    /// subsequent `:e <path>` opens) returns immediately. The
+    /// event-driven design keeps the UI thread off the LSP
+    /// `initialize` round-trip -- aligned with paramount goal
+    /// #4 (asynchronicity).
+    ///
+    /// `path` is `None` for unsaved scratch buffers (no LSP
+    /// attach work to drive). `text` carries the buffer's
+    /// initial content so subscribers don't have to reach back
+    /// through a document handle on the publish path -- LSP
+    /// hands it straight to `didOpen`.
     DocumentOpened {
         id: DocumentId,
         path: Option<PathBuf>,
         version: u64,
+        text: String,
     },
     DocumentClosed {
         id: DocumentId,

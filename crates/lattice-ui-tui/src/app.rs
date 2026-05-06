@@ -30,7 +30,7 @@ use lattice_protocol::Event;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
-use lattice_lsp::{DiagnosticsLayer, LogLevel, LspLogger, LspSupervisor, LspSupervisorHandle};
+use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisor, LspSupervisorHandle};
 use lattice_runtime::{
     CancellationToken, DocumentHandle, EventBus, RuntimeError, SnapshotCache, block_on,
     spawn_document,
@@ -61,6 +61,7 @@ use crate::buffers::{BufferFlags, BufferId, BufferKind};
 /// spawns get their per-actor edit fan-in for free.
 fn build_lsp_subsystem(
     event_bus: std::sync::Arc<lattice_runtime::EventBus>,
+    runtime_handle: &tokio::runtime::Handle,
 ) -> (
     LspSupervisorHandle,
     DiagnosticsLayer,
@@ -91,8 +92,27 @@ fn build_lsp_subsystem(
     // Event bus is wired pre-spawn so every actor born in this
     // supervisor task gets its per-actor edit fan-in
     // automatically (lattice_lsp::fan_in).
-    sup.set_event_bus(event_bus);
-    let handle = sup.spawn();
+    sup.set_event_bus(event_bus.clone());
+    // Hand the explicit runtime handle to spawn the supervisor
+    // task. `App::new` runs from `runtime::run` *before* the
+    // editor's main loop has entered any tokio context, so
+    // `tokio::runtime::Handle::try_current()` would (silently)
+    // fail and the supervisor task would never start. The
+    // explicit handle removes that footgun.
+    let handle = sup.spawn(runtime_handle);
+    // Attach driver: subscribes to `Event::DocumentOpened` and
+    // funnels each path-bearing event into the supervisor's
+    // mailbox on the LSP runtime. The publisher (`App::new` /
+    // `App::do_edit`) returns immediately after publishing; the
+    // LSP `initialize` round-trip happens off the UI thread,
+    // honouring paramount goal #4 (asynchronicity). See
+    // `lattice_lsp::attach_driver` for the recv loop.
+    let _attach_sub = lattice_lsp::attach_driver::spawn(
+        event_bus,
+        runtime_handle,
+        handle.clone(),
+        logger.clone(),
+    );
     (handle, diagnostics, logger, apply_edit_rx, configuration_rx)
 }
 use crate::excommand;
@@ -1488,12 +1508,12 @@ pub struct App {
     pub lsp_config_tree: toml::Table,
     /// `BufferId` → `Uri` map. Maintained by buffer-open /
     /// buffer-close paths; the supervisor's API is keyed by
-    /// `Uri`, so this is the bridge.
+    /// `Uri`, so this is the bridge. Set eagerly when a
+    /// path-bearing buffer is opened (the URI is a
+    /// deterministic `uri_from_path`); attachment of an actual
+    /// LSP server happens asynchronously via the
+    /// `Event::DocumentOpened` attach driver.
     pub buffer_uris: std::collections::HashMap<BufferId, lattice_lsp::Uri>,
-    /// Pending file-open attachments. `:e <path>` queues here
-    /// because the supervisor's `open_buffer` is async; the
-    /// runtime drains the queue between input events.
-    pub pending_lsp_opens: Vec<(BufferId, std::path::PathBuf, String)>,
 }
 
 /// Reasons `compute_completion_state` can fail. Kept narrow so the
@@ -2250,13 +2270,23 @@ impl App {
         // (lattice_lsp::fan_in) at spawn time using this bus, and
         // the post-spawn handle does not expose `set_event_bus`.
         let event_bus = Arc::new(EventBus::new());
+        // Hand `build_lsp_subsystem` the canonical LSP runtime
+        // handle so the supervisor task is spawned on a real
+        // runtime even when `App::new` is called before
+        // `runtime::run` has entered any tokio context. The
+        // OnceLock lazily initialises the runtime on first call;
+        // every later caller (the per-feature
+        // `spawn_on_lsp_runtime` for hover / definition / etc.,
+        // the attach driver, every test that exercises the LSP
+        // write path) reuses the same instance.
+        let runtime_handle = crate::runtime::lsp_runtime().handle().clone();
         let (
             lsp,
             lsp_diagnostics,
             lsp_logger,
             lsp_apply_edit_rx,
             lsp_configuration_rx,
-        ) = build_lsp_subsystem(event_bus.clone());
+        ) = build_lsp_subsystem(event_bus.clone(), &runtime_handle);
         let mut registry = CommandRegistry::new();
         let builtins = populate(&mut registry);
         // Register the built-in ex-commands as peers of motions /
@@ -2544,7 +2574,6 @@ impl App {
             pending_configuration_rx: Some(lsp_configuration_rx),
             lsp_config_tree: toml::Table::new(),
             buffer_uris: std::collections::HashMap::new(),
-            pending_lsp_opens: Vec::new(),
         };
         // Sync derived theme styles from the freshly-registered
         // ui.* options so the renderer's first frame uses the
@@ -2556,7 +2585,57 @@ impl App {
         // `Event::OptionChanged` cascade in
         // `apply_option_cascade`.
         app.rebuild_option_cache();
+        // Initial-document attach. Path-bearing buffers register
+        // their URI eagerly (the URI is a deterministic
+        // `uri_from_path`; LSP attach is async and doesn't gate
+        // the mapping) and publish `Event::DocumentOpened` -- the
+        // attach driver wired in `build_lsp_subsystem` consumes
+        // it and submits to the supervisor on the LSP runtime,
+        // off the UI thread. Path-less scratch buffers publish
+        // nothing (no LSP work to drive) and the `buffer_uris`
+        // entry stays absent.
+        app.publish_document_opened_for_active();
         app
+    }
+
+    /// Single canonical hook for "this buffer was just opened":
+    /// register `BufferId → Uri` eagerly (path-bearing only),
+    /// then publish [`Event::DocumentOpened`] on the bus.
+    /// Both the initial-document path (`App::new`) and the
+    /// follow-up `:e <path>` path (`App::do_edit`) call this
+    /// helper -- by construction both have set
+    /// `self.document_buffer_id` and `self.document` to the
+    /// new buffer before invoking, so reading from those
+    /// fields is correct in either context.
+    ///
+    /// `version` carries the document's `text_version`
+    /// (bumps only on text-mutating commits; matches the
+    /// LSP `didOpen` `version` field's intent).
+    ///
+    /// Idempotent against the supervisor: re-publishing the
+    /// same URI is a no-op because `LspSupervisorHandle::open_buffer`
+    /// short-circuits already-attached URIs (see
+    /// `lattice_lsp::supervisor`'s `attachments.contains_key`
+    /// guard).
+    fn publish_document_opened_for_active(&mut self) {
+        let snap = self.document.snapshot();
+        let path_opt = snap.path().map(std::path::Path::to_path_buf);
+        let version = snap.text_version;
+        let text = snap.buffer.as_string();
+        let buffer_id = self.document_buffer_id;
+        drop(snap);
+
+        if let Some(ref path) = path_opt {
+            let uri = lattice_lsp::actor::uri_from_path(path);
+            self.buffer_uris.insert(buffer_id, uri);
+        }
+
+        self.event_bus.publish(Event::DocumentOpened {
+            id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
+            path: path_opt,
+            version,
+            text,
+        });
     }
 
     // ---- Typed-options accessors (DESIGN.md §5.12) ----
@@ -2680,65 +2759,21 @@ impl App {
         self.drain_option_changes();
     }
 
-    /// Async LSP boot. The runtime calls this once after
-    /// [`App::new`] but before entering the main loop. Walks
-    /// every currently-registered buffer (today: just the
-    /// initial document) and attaches matching servers via
-    /// the supervisor.
-    ///
-    /// Failures here do NOT block editor startup -- the editor
-    /// works fine without LSP. Spawn errors (server binary not
-    /// on PATH, etc.) are logged via the supervisor's logger
-    /// and surfaced through the `*lsp*` buffer when the user
-    /// opens it.
-    pub async fn initialize_lsp(&mut self) {
-        // Initial document: if the document was opened with a
-        // path on disk, attach matching servers. New unsaved
-        // buffers have no path and skip attachment until the
-        // first :write gives them one.
-        let snap = self.document.snapshot();
-        let path_opt = snap.path().map(std::path::Path::to_path_buf);
-        let text = snap.buffer.as_string();
-        let buffer_id = self.document_buffer_id;
-        drop(snap);
-
-        if let Some(path) = path_opt {
-            // Handle is wait-free for reads + mailbox-routed for
-            // writes. open_buffer awaits the supervisor task's
-            // ack but never holds a shared lock against the UI
-            // thread.
-            match self.lsp.open_buffer(path.clone(), text).await {
-                Ok(_handles) => {
-                    let uri = lattice_lsp::actor::uri_from_path(&path);
-                    self.buffer_uris.insert(buffer_id, uri);
-                }
-                Err(e) => {
-                    self.lsp_logger.log(
-                        None,
-                        LogLevel::Warn,
-                        lattice_lsp::LogSource::Client,
-                        format!("initialize_lsp: open_buffer failed: {e}"),
-                    );
-                }
-            }
-        }
-
-    }
-
     // ---- LSP integration helpers ----
     //
-    // The supervisor lives on the App; its open_buffer is async
-    // so we expose a sync-side hook (close_buffer / flush) for
-    // integration with do_buffer_delete and will-save hooks, and
-    // an async entry point ([`Self::initialize_lsp`]) for the
-    // boot path.
+    // Buffer-open attach is event-driven: `App::new` and
+    // `App::do_edit` publish `Event::DocumentOpened`; the LSP
+    // attach driver wired in `build_lsp_subsystem` consumes
+    // events on the LSP runtime and submits opens to the
+    // supervisor's mailbox. Nothing on the UI thread parks on
+    // the LSP `initialize` round-trip.
     //
-    // The hot edit path no longer touches this struct at all:
-    // `Event::DocumentChanged` flows through the editor event
-    // bus into a per-actor fan-in (lattice_lsp::fan_in) that
-    // sends straight to the actor's mailbox. The App publishes
-    // the event from `publish_document_changed`; nothing here
-    // takes the supervisor mutex on each keystroke.
+    // The hot edit path is similar: `Event::DocumentChanged`
+    // flows through the editor event bus into a per-actor
+    // fan-in (lattice_lsp::fan_in) that sends straight to the
+    // actor's mailbox. The App publishes the event from
+    // `publish_document_changed`; nothing here takes the
+    // supervisor mutex on each keystroke.
 
     /// Look up the current URI of a buffer. None for buffers
     /// that have no on-disk path yet (new unsaved scratch
@@ -2770,44 +2805,6 @@ impl App {
         self.lsp.close_buffer(uri);
     }
 
-    /// Queue an LSP attachment for a freshly-opened file. The
-    /// runtime's main loop drains the queue between input
-    /// events so `:e <path>` doesn't have to await the
-    /// supervisor lock + handshake on the input thread.
-    pub fn queue_lsp_open(&mut self, buffer_id: BufferId, path: std::path::PathBuf, text: String) {
-        self.pending_lsp_opens.push((buffer_id, path, text));
-    }
-
-    /// Drain the pending-LSP-open queue (async; called by the
-    /// runtime). For each entry, takes the supervisor lock,
-    /// awaits open_buffer, and on success records the
-    /// BufferId → Uri mapping.
-    pub async fn drain_pending_lsp_opens(&mut self) {
-        let pending: Vec<_> = std::mem::take(&mut self.pending_lsp_opens);
-        for (buffer_id, path, text) in pending {
-            // Mailbox-routed: the supervisor task processes the
-            // open + handshake; the UI thread parks only on
-            // *this* await, never on a shared mutex.
-            let result = self.lsp.open_buffer(path.clone(), text).await;
-            match result {
-                Ok(_handles) => {
-                    let uri = lattice_lsp::actor::uri_from_path(&path);
-                    self.buffer_uris.insert(buffer_id, uri);
-                }
-                Err(e) => {
-                    self.lsp_logger.log(
-                        None,
-                        LogLevel::Warn,
-                        lattice_lsp::LogSource::Client,
-                        format!(
-                            "drain_pending_lsp_opens: open_buffer({}) failed: {e}",
-                            path.display()
-                        ),
-                    );
-                }
-            }
-        }
-    }
 
     // ---- LSP diagnostic navigation (Phase 4.1.d.iv) ---------
 
@@ -5170,11 +5167,17 @@ impl App {
         // `activate_document` so opening a fresh file and
         // switching to an existing one go through the same path.
         self.activate_buffer_state();
-        // Queue an LSP attachment for the new file (Phase
-        // 4.1.i.2). The runtime drains the queue on its next
-        // tick; the buffer is fully usable before LSP attaches.
-        let new_text = self.document.snapshot().buffer.as_string();
-        self.queue_lsp_open(new_id, target.clone(), new_text);
+        // Event-driven LSP attach. By construction
+        // `self.document` and `self.document_buffer_id` now
+        // refer to the new buffer, so the same helper used by
+        // `App::new` (the initial-document path) handles `:e`
+        // identically: register the URI eagerly, publish
+        // `Event::DocumentOpened`, return. The attach driver
+        // wired in `build_lsp_subsystem` consumes the event
+        // and submits the open to the supervisor on the LSP
+        // runtime -- the UI thread NEVER parks on the LSP
+        // `initialize` round-trip.
+        self.publish_document_opened_for_active();
         self.set_message(EchoLevel::Info, format!("\"{}\" opened", target.display()));
     }
 
@@ -24193,16 +24196,21 @@ mod tests {
     }
 
     #[test]
-    fn buffer_uri_returns_none_before_initialize_lsp() {
+    fn pathless_document_does_not_register_buffer_uri() {
+        // Path-less scratch document -> `App::new` publishes no
+        // `Event::DocumentOpened` (well, *publishes one for
+        // observability, but with `path: None`*) and registers
+        // no `buffer_uris` entry. The attach driver ignores
+        // path-less events.
         let app = App::new(Document::from_text("fn main() {}"));
-        // No initialize_lsp call -> no buffer_uris entries.
         assert!(app.buffer_uri(app.document_buffer_id).is_none());
     }
 
     #[test]
     fn lsp_close_buffer_removes_uri_mapping_for_unattached_buffer() {
         let mut app = App::new(Document::from_text(""));
-        // Seed a fake mapping (as if initialize_lsp had attached it).
+        // Seed a fake mapping (as if the attach driver's open
+        // had landed for a path-bearing buffer).
         let fake_uri =
             <lattice_lsp::Uri as std::str::FromStr>::from_str("file:///tmp/x.rs").unwrap();
         app.buffer_uris.insert(app.document_buffer_id, fake_uri);
@@ -24217,16 +24225,6 @@ mod tests {
         let mut app = App::new(Document::from_text(""));
         // No mapping exists; close must not panic.
         app.lsp_close_buffer(app.document_buffer_id);
-        assert!(app.buffer_uris.is_empty());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn initialize_lsp_with_no_path_is_noop() {
-        let mut app = App::new(Document::from_text("fn main() {}"));
-        // Document has no on-disk path, so initialize_lsp
-        // shouldn't try to attach anything.
-        app.initialize_lsp().await;
-        assert_eq!(app.lsp.attached_buffer_count(), 0);
         assert!(app.buffer_uris.is_empty());
     }
 
@@ -24998,37 +24996,38 @@ mod tests {
         assert!(r.is_ok());
     }
 
+    /// Path-bearing initial documents publish
+    /// `Event::DocumentOpened` from `App::new` and register the
+    /// URI eagerly. The attach driver picks the event up off
+    /// the bus and submits to the supervisor on the LSP runtime
+    /// -- the UI thread never parks. We verify the eager URI
+    /// registration here (`buffer_uris` is observable on the
+    /// public App API); full driver -> supervisor behaviour
+    /// (the publish path itself) is covered in
+    /// `lattice_lsp::attach_driver::tests`.
     #[test]
-    fn queue_lsp_open_appends_pending_entry() {
-        let mut app = app_with("", 5);
-        let buffer_id = app.document_buffer_id;
-        app.queue_lsp_open(
-            buffer_id,
-            std::path::PathBuf::from("/tmp/new.rs"),
-            "fn main() {}".into(),
+    fn path_bearing_initial_document_registers_uri_eagerly() {
+        use std::str::FromStr;
+        // Build a Document with a fixed path. We can't use
+        // `Document::open` here without I/O; the builder
+        // surface (DocumentBuilder::with_path) lets us seed
+        // the path directly.
+        let path = std::path::PathBuf::from("/tmp/lattice-test/initial.rs");
+        let doc = lattice_core::DocumentBuilder::default()
+            .with_path(path.clone())
+            .with_text("fn main() {}")
+            .build();
+        let app = App::new(doc);
+        let expected =
+            <lattice_lsp::Uri as FromStr>::from_str(
+                lattice_lsp::actor::uri_from_path(&path).as_str(),
+            )
+            .unwrap();
+        assert_eq!(
+            app.buffer_uri(app.document_buffer_id),
+            Some(&expected),
+            "path-bearing initial document must register URI eagerly"
         );
-        assert_eq!(app.pending_lsp_opens.len(), 1);
-        let (id, path, text) = &app.pending_lsp_opens[0];
-        assert_eq!(*id, buffer_id);
-        assert_eq!(path.as_path(), std::path::Path::new("/tmp/new.rs"));
-        assert_eq!(text, "fn main() {}");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn drain_pending_lsp_opens_clears_queue() {
-        let mut app = App::new(Document::from_text(""));
-        // Queue an open for a path with no matching server
-        // config -- the supervisor returns Ok(empty) without
-        // spawning anything (no rust binaries on the test
-        // host). The drain still consumes the entry from the
-        // queue.
-        app.queue_lsp_open(
-            app.document_buffer_id,
-            std::path::PathBuf::from("/tmp/no-server-for-this.xyz"),
-            "x".into(),
-        );
-        app.drain_pending_lsp_opens().await;
-        assert_eq!(app.pending_lsp_opens.len(), 0);
     }
 
     // ---- Snippet host integration (Phase 4.2.g.4) ----

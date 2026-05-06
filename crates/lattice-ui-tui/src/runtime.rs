@@ -27,24 +27,27 @@ use crate::render::draw_frame;
 pub fn run(document: Document) -> Result<()> {
     let mut terminal = setup().context("setup terminal")?;
     let mut app = App::new(document);
-    // Load persistent config (TOML) before LSP boot so any
-    // overrides that affect LSP behaviour land before the
-    // supervisor reads them. Workspace root is the CWD walked
-    // up to the first `.git` / `.lattice/` marker (or the CWD
-    // itself if neither is found). Failures are surfaced via
-    // the App's echo, never abort startup.
+    // Load persistent config (TOML) before LSP attach work so
+    // any overrides that affect LSP behaviour land before the
+    // attach driver processes the initial document's
+    // `Event::DocumentOpened`. Workspace root is the CWD
+    // walked up to the first `.git` / `.lattice/` marker (or
+    // the CWD itself if neither is found). Failures are
+    // surfaced via the App's echo, never abort startup.
     let workspace_root = workspace_root_from_cwd();
     app.load_persistent_config(workspace_root.as_deref());
     // Drain `[completion.per-language.<lang>]` sections the
     // loader bucketed -- spec defaults seed the map at App
     // init; TOML overrides layer on top here.
     app.apply_per_language_toml_overrides();
-    // LSP boot. Spawns matching language servers for the
-    // initial document (if it has a path) + attaches them.
-    // Async because the LSP handshake awaits an `initialize`
-    // response. Failure is logged through the supervisor's
-    // logger -- never blocks editor startup.
-    initialize_lsp_blocking(&mut app);
+    // LSP attach is event-driven: `App::new` already
+    // published `Event::DocumentOpened` for the initial
+    // document (if path-bearing). The attach driver wired in
+    // `build_lsp_subsystem` runs on the LSP runtime and
+    // submits the open to the supervisor *off* the UI thread.
+    // The first frame can draw immediately without waiting on
+    // the LSP `initialize` round-trip -- paramount goal #4
+    // (asynchronicity).
     let result = main_loop(&mut terminal, app);
     teardown(&mut terminal).context("teardown terminal")?;
     result
@@ -71,32 +74,15 @@ fn workspace_root_from_cwd() -> Option<std::path::PathBuf> {
     }
 }
 
-/// Drive [`App::initialize_lsp`] from the synchronous `run`
-/// entry point. We're not yet inside a tokio runtime here; the
-/// editor's main loop is a sync `crossterm::event::poll` loop
-/// that uses [`lattice_runtime::block_on`] for its async
-/// boundaries. For LSP boot we need a full tokio context (the
-/// supervisor spawns actor tasks), so we stand up a multi-thread
-/// runtime, drive the boot future to completion, and let the
-/// runtime live as a background reactor for the actor tasks.
-fn initialize_lsp_blocking(app: &mut App) {
-    let rt = lsp_runtime();
-    rt.block_on(app.initialize_lsp());
-}
-
-/// Drive [`App::drain_pending_lsp_opens`] from the synchronous
-/// main loop. Reuses the same boot runtime so spawned actor
-/// tasks share one reactor. Cheap when the queue is empty;
-/// invoked once per main-loop iteration.
-fn drain_pending_lsp_opens_blocking(app: &mut App) {
-    let rt = lsp_runtime();
-    rt.block_on(app.drain_pending_lsp_opens());
-}
-
 /// Shared tokio multi-thread runtime that hosts every LSP
-/// task (actor + read/write loops + diagnostic pumps + the
-/// debounced flush task). Survives for the editor's lifetime.
-fn lsp_runtime() -> &'static tokio::runtime::Runtime {
+/// task (supervisor actor + per-server actors + read/write
+/// loops + diagnostic pumps + the debounced flush task).
+/// Survives for the editor's lifetime. `pub(crate)` so
+/// `App::new` can hand the runtime's handle to
+/// `LspSupervisor::spawn` -- the supervisor's command-mailbox
+/// semantics require an explicit runtime affinity, and the
+/// LSP runtime *is* the canonical owner.
+pub(crate) fn lsp_runtime() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -186,13 +172,12 @@ fn popup_height_for(candidate_count: usize) -> usize {
 fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> Result<()> {
     let mut last_modal: Option<ModalState> = None;
     while !app.should_quit {
-        // Drain pending LSP opens (Phase 4.1.i.2). `:e <path>`
-        // queues; we attach asynchronously on the boot runtime
-        // so the input thread doesn't await the actor handshake.
-        // Cheap when the queue is empty (the common case).
-        if !app.pending_lsp_opens.is_empty() {
-            drain_pending_lsp_opens_blocking(&mut app);
-        }
+        // No queue-and-drain step for LSP opens any more --
+        // `Event::DocumentOpened` flows directly from the
+        // publisher (`App::new` / `App::do_edit`) into the
+        // attach driver task on the LSP runtime. The UI thread
+        // never parks on the LSP `initialize` round-trip.
+        //
         // Drain queued `Event::OptionChanged` cascades (DESIGN.md
         // §5.10 + §5.12). Backstop for option writes that happened
         // outside a keystroke -- e.g. plugin tasks, future

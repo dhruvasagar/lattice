@@ -173,11 +173,11 @@ fn parse_chord_sequence_two_letters(c: &mut Criterion) {
 fn populate_trie() -> KeymapTrie {
     let mut t = KeymapTrie::new();
     let bound = || -> Arc<BoundCommand> {
-        Arc::new(BoundCommand {
-            command: CommandInvocation::of(CommandId::new(0)),
-            source: SourceLocation::synthetic("bench"),
-            layer: KeymapLayer::Builtin,
-        })
+        Arc::new(BoundCommand::from_invocation(
+            CommandInvocation::of(CommandId::new(0)),
+            SourceLocation::synthetic("bench"),
+            KeymapLayer::Builtin,
+        ))
     };
     let lit = |c: char| ChordPattern::Literal(KeyChord::char(c));
     // single-chord
@@ -294,11 +294,11 @@ fn keymap_trie_lookup_wildcard(c: &mut Criterion) {
 fn keymap_trie_merge_overlay(c: &mut Criterion) {
     let base = populate_trie();
     let mut over = KeymapTrie::new();
-    let bound = Arc::new(BoundCommand {
-        command: CommandInvocation::of(CommandId::new(0)),
-        source: SourceLocation::synthetic("bench-overlay"),
-        layer: KeymapLayer::User,
-    });
+    let bound = Arc::new(BoundCommand::from_invocation(
+        CommandInvocation::of(CommandId::new(0)),
+        SourceLocation::synthetic("bench-overlay"),
+        KeymapLayer::User,
+    ));
     let lit = |c: char| ChordPattern::Literal(KeyChord::char(c));
     over.insert(&[lit('d'), lit('d')], Arc::clone(&bound));
     over.insert(&[lit('y'), lit('y')], Arc::clone(&bound));

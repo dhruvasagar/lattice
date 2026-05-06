@@ -645,8 +645,9 @@ impl LspSupervisor {
     }
 
     /// Consume the configured supervisor and start the supervisor
-    /// task. Returns the [`LspSupervisorHandle`] App-side code uses
-    /// for the rest of the editor's lifetime.
+    /// task on `runtime_handle`. Returns the
+    /// [`LspSupervisorHandle`] App-side code uses for the rest of
+    /// the editor's lifetime.
     ///
     /// After this call, all mutating operations route through the
     /// returned handle's mailbox; reads come from the wait-free
@@ -660,34 +661,29 @@ impl LspSupervisor {
     /// expose them. This matches the editor's actual lifecycle:
     /// the App configures the supervisor at startup before any
     /// buffer opens.
-    pub fn spawn(self) -> LspSupervisorHandle {
+    ///
+    /// `runtime_handle` is mandatory: the supervisor's command-
+    /// mailbox semantics only make sense against a live tokio
+    /// task, and a missing runtime is a programming error.
+    /// Production callers (`App::new` →
+    /// `build_lsp_subsystem`) pass the editor's shared LSP
+    /// runtime handle (`runtime::lsp_runtime()`); tests that
+    /// exercise the write path build an ad-hoc runtime via
+    /// `tokio::runtime::Builder` and pass its handle. Earlier
+    /// revisions used `tokio::runtime::Handle::try_current()`
+    /// with a silent fallback that dropped `cmd_rx`; that path
+    /// surfaced as `LspError::ActorGone` on every write whenever
+    /// the caller didn't happen to be inside a tokio context,
+    /// which proved to be a real footgun (e.g. `App::new` runs
+    /// before `runtime::run` has entered any context).
+    pub fn spawn(self, runtime_handle: &tokio::runtime::Handle) -> LspSupervisorHandle {
         let initial_snapshot = Arc::new(self.build_snapshot());
         let snapshot_cell = Arc::new(ArcSwap::from(initial_snapshot));
         let diagnostics = self.diagnostics.clone();
         let logger = self.logger.clone();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SupervisorCmd>();
         let snapshot_for_task = snapshot_cell.clone();
-        // Spawn the supervisor task on the ambient tokio runtime
-        // when one is available. Sync unit tests build `App::new`
-        // without a runtime; in that case we keep the handle but
-        // do not spawn a task -- reads against the snapshot work,
-        // and write attempts return `LspError::ActorGone` from
-        // the dropped receiver. Production always has a runtime
-        // (the App lives inside `runtime::main_loop` which sets
-        // one up at startup).
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                handle.spawn(supervisor_main(self, cmd_rx, snapshot_for_task));
-            }
-            Err(_) => {
-                // No runtime; explicitly drop cmd_rx so any
-                // accidental write from a sync test path surfaces
-                // as ActorGone immediately rather than queuing
-                // forever.
-                drop(cmd_rx);
-                drop(self);
-            }
-        }
+        runtime_handle.spawn(supervisor_main(self, cmd_rx, snapshot_for_task));
         LspSupervisorHandle {
             snapshot: snapshot_cell,
             cmd_tx,

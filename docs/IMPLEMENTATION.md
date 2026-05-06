@@ -1030,6 +1030,39 @@ sends, paramount-goal violations). Findings closed in slices
   (`view.fold_start_at_any` / `fold_start_at` /
   `line_inside_closed_fold`) read from the snapshot's frozen
   Arc. Closed M2.
+- **Slice 9** — event-driven LSP attach. The LSP open path
+  used to park the UI thread on the `initialize` round-trip
+  (initial document via `runtime::initialize_lsp_blocking`,
+  subsequent `:e <path>` via the
+  `pending_lsp_opens`-queue + `block_on(drain)` pattern in
+  the main loop). Two block_on sites both violated paramount
+  goal #4 (asynchronicity). The audit also surfaced a
+  silent-failure bug -- `LspSupervisor::spawn` used
+  `tokio::runtime::Handle::try_current()` and dropped
+  `cmd_rx` if no ambient runtime existed; in production
+  `App::new` runs before any tokio context, so the
+  supervisor task never spawned and every write returned
+  `LspError::ActorGone`. Both fixed in this slice:
+  - `LspSupervisor::spawn` now takes an explicit
+    `&tokio::runtime::Handle`; callers pass
+    `runtime::lsp_runtime().handle()`. No more
+    `try_current()` footgun.
+  - Buffer-open is event-driven: `App::new` and
+    `App::do_edit` set `BufferId → Uri` eagerly and publish
+    [`Event::DocumentOpened { id, path, version, text }`](../crates/lattice-protocol/src/event.rs)
+    on the bus. The new `lattice_lsp::attach_driver` module
+    subscribes on the LSP runtime, runs a serial
+    `recv → supervisor.open_buffer.await` loop, and logs
+    failures. UI thread never parks. Single path for
+    initial + subsequent opens.
+  - Removed: `App::pending_lsp_opens`, `App::queue_lsp_open`,
+    `App::drain_pending_lsp_opens`, `App::initialize_lsp`,
+    `runtime::initialize_lsp_blocking`,
+    `runtime::drain_pending_lsp_opens_blocking`, and the
+    main-loop drain step. Net diff is removal-heavy.
+  - Closes the no-rust-analyzer-attach regression that
+    surfaced as `"server actor is no longer running"` on
+    every editor launch.
 
 Deferred with rationale:
 

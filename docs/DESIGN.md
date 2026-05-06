@@ -636,7 +636,9 @@ The supervisor keys actors by `(workspace_root, server_id)`. Implications:
 - **Two `.rs` files in different Cargo workspaces get two actors.** Different indexed views; no cross-workspace navigation in v1.
 - **Two distinct languages in the same workspace get two actors.** Different `server_id`s.
 
-Spawn is lazy: the first `didOpen` for a `(workspace, server_id)` triggers `actor::spawn`. The handshake (`initialize` → `initialized`) completes before `open_buffer` returns, so the editor sees a fully-attached handle. Spawn failures (binary not on `PATH`, handshake error, server response malformed) are logged via the supervisor's logger and the relevant attachment is skipped without sinking the buffer-open.
+Spawn is lazy: the first `didOpen` for a `(workspace, server_id)` triggers `actor::spawn`. The handshake (`initialize` → `initialized`) completes before `open_buffer`'s reply lands, so once the supervisor's mailbox dispatches the next request the actor is fully attached. Spawn failures (binary not on `PATH`, handshake error, server response malformed) are logged via the supervisor's logger and the relevant attachment is skipped without sinking the buffer-open.
+
+**Attach is event-driven (paramount goal #4: asynchronicity).** Both the initial document and every subsequent `:e <path>` follow exactly one path: the publisher (`App::new` for the initial document, `App::do_edit` for follow-up opens) sets `BufferId → Uri` eagerly (the URI is a deterministic `uri_from_path`), publishes [`Event::DocumentOpened { id, path, version, text }`](§5.10.1), and **returns immediately**. The LSP attach driver (`lattice_lsp::attach_driver::spawn`, wired in `App::build_lsp_subsystem`) runs on the LSP runtime, owns one mpsc subscriber for `EventKind::DocumentOpened`, and serially submits each path-bearing event to the supervisor's mailbox via `LspSupervisorHandle::open_buffer`. The UI thread never parks on the LSP `initialize` round-trip — the editor's first frame draws as soon as `App::new` returns; rust-analyzer / pyright / gopls / etc. attach in the background and diagnostics flow whenever the server finishes initialising.
 
 A `BufferId ↔ Uri` map lives on the App; `lattice-lsp` is below the UI layer in the crate graph and can't see `BufferId`. The App threads URIs into the supervisor's API.
 
@@ -1695,7 +1697,7 @@ pub enum SubscriptionTarget {
 
 Every meaningful editor state transition publishes a typed event. The catalog grows over time; the v1 baseline includes:
 
-- **Document lifecycle:** `DocumentOpened`, `BeforeSave`, `AfterSave`, `BeforeClose`, `DocumentClosed`, `BufferChanged`, `LanguageDetected`.
+- **Document lifecycle:** `DocumentOpened` (live; carries `{ id, path, version, text }`; published by `App::new` for the initial buffer and `App::do_edit` for subsequent opens; the LSP attach driver in `lattice_lsp::attach_driver` is the canonical subscriber, and §5.4.3 describes the event-driven LSP attach in full), `BeforeSave`, `AfterSave`, `BeforeClose`, `DocumentClosed`, `BufferChanged`, `LanguageDetected`.
 - **Modal state:** `ModalModeChanged { from, to }`, `OperatorPendingEntered`, `OperatorPendingResolved`.
 - **Mode lifecycle:** `MajorModeActivated`, `MajorModeDeactivated`, `MinorModeActivated`, `MinorModeDeactivated`.
 - **Selection / cursor:** `SelectionsChanged`, `CursorMoved`, `JumpPushed { source }`.

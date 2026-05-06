@@ -3586,7 +3586,9 @@ mod tests {
     #[test]
     fn modeline_lsp_segment_empty_when_no_uri_mapping() {
         let app = App::new(Document::from_text(""));
-        // No initialize_lsp -> buffer_uris empty -> indicator hidden.
+        // Path-less Document -> publish_document_opened_for_active
+        // emits an event with `path: None`, attach driver ignores
+        // it, buffer_uris stays empty -> indicator hidden.
         assert_eq!(active_lsp_segment(&app), "");
     }
 

@@ -290,6 +290,20 @@ pub enum AppEffect {
     /// cursor's current line sits at the named position.
     /// Promoted from `Action::ScrollCursorTo(_)` in slice 8.i.2.c.
     ScrollCursorTo(ScrollPos),
+    /// Vim's `J` (with-space) / `gJ` (no-space). Joins the
+    /// current line with the next, replacing the joining
+    /// newline with a single space (`with_space: true`) or
+    /// nothing (`false`). Promoted from `Action::JoinLines` in
+    /// slice 8.i.2.d. Bool payload rides in the AppEffect:
+    /// distinct `CommandId` per binding (`J` -> with-space=true,
+    /// `gJ` -> with-space=false).
+    JoinLines { with_space: bool },
+    /// Vim's `;` (forward) / `,` (reverse). Repeat the most
+    /// recent `f` / `F` / `t` / `T` find on the current line
+    /// in the originally-typed direction (`reverse: false`) or
+    /// the opposite direction (`reverse: true`). Promoted from
+    /// `Action::FindRepeat` in slice 8.i.2.d.
+    FindRepeat { reverse: bool },
 }
 
 #[cfg(test)]

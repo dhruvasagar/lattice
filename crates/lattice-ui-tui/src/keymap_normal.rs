@@ -295,25 +295,25 @@ pub fn register_normal_bindings(
     );
 
     // Misc single-chord.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('J')],
-        Action::JoinLines { with_space: true },
+        CommandInvocation::of(actions.join_lines_with_space),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char(';')],
-        Action::FindRepeat { reverse: false },
+        CommandInvocation::of(actions.find_repeat_forward),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char(',')],
-        Action::FindRepeat { reverse: true },
+        CommandInvocation::of(actions.find_repeat_reverse),
         source(),
     );
     handle.bind(
@@ -476,11 +476,11 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.reselect_last_visual),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[g.clone(), lit_char('J')],
-        Action::JoinLines { with_space: false },
+        CommandInvocation::of(actions.join_lines_bare),
         source(),
     );
     handle.bind(
@@ -2175,13 +2175,16 @@ mod tests {
 
     #[test]
     fn g_capital_j_resolves_to_join_lines_without_space() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('g')],
             &ev(KeyCode::Char('J'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::JoinLines { with_space: false }));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.join_lines_bare),
+            other => panic!("expected Invoke(join_lines_bare), got {other:?}"),
+        }
     }
 
     #[test]

@@ -11777,6 +11777,10 @@ impl App {
             AppEffect::SearchWordUnderCursor(dir) => self.apply(Action::SearchWordUnderCursor(dir)),
             AppEffect::JumpViewport(pos) => self.apply(Action::JumpViewport(pos)),
             AppEffect::ScrollCursorTo(pos) => self.apply(Action::ScrollCursorTo(pos)),
+            AppEffect::JoinLines { with_space } => {
+                self.apply(Action::JoinLines { with_space })
+            }
+            AppEffect::FindRepeat { reverse } => self.apply(Action::FindRepeat { reverse }),
         }
     }
 

@@ -98,6 +98,10 @@ pub struct ActionIds {
     pub scroll_cursor_to_top: CommandId,
     pub scroll_cursor_to_center: CommandId,
     pub scroll_cursor_to_bottom: CommandId,
+    pub join_lines_with_space: CommandId,
+    pub join_lines_bare: CommandId,
+    pub find_repeat_forward: CommandId,
+    pub find_repeat_reverse: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -478,6 +482,30 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
             "Vim's `zb`: scroll viewport so the cursor's line sits at the bottom.",
             AppEffect::ScrollCursorTo(ScrollPos::Bottom),
         ),
+        join_lines_with_space: register_simple(
+            registry,
+            "action:join-lines-with-space",
+            "Vim's `J`: join the current line with the next using a single space.",
+            AppEffect::JoinLines { with_space: true },
+        ),
+        join_lines_bare: register_simple(
+            registry,
+            "action:join-lines-bare",
+            "Vim's `gJ`: join the current line with the next without inserting a space.",
+            AppEffect::JoinLines { with_space: false },
+        ),
+        find_repeat_forward: register_simple(
+            registry,
+            "action:find-repeat-forward",
+            "Vim's `;`: repeat the most recent f/F/t/T find in the same direction.",
+            AppEffect::FindRepeat { reverse: false },
+        ),
+        find_repeat_reverse: register_simple(
+            registry,
+            "action:find-repeat-reverse",
+            "Vim's `,`: repeat the most recent f/F/t/T find in the reverse direction.",
+            AppEffect::FindRepeat { reverse: true },
+        ),
     }
 }
 
@@ -582,6 +610,10 @@ mod tests {
             (ids.scroll_cursor_to_top, "action:scroll-cursor-to-top"),
             (ids.scroll_cursor_to_center, "action:scroll-cursor-to-center"),
             (ids.scroll_cursor_to_bottom, "action:scroll-cursor-to-bottom"),
+            (ids.join_lines_with_space, "action:join-lines-with-space"),
+            (ids.join_lines_bare, "action:join-lines-bare"),
+            (ids.find_repeat_forward, "action:find-repeat-forward"),
+            (ids.find_repeat_reverse, "action:find-repeat-reverse"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

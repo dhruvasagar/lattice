@@ -1381,48 +1381,52 @@ mod tests {
     #[test]
     fn capital_j_emits_join_with_space() {
         let (_, b) = fixture();
+        let a = shared_actions();
         match translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('J')),
         ) {
-            Action::JoinLines { with_space } => assert!(with_space),
-            other => panic!("expected JoinLines(with_space=true), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.join_lines_with_space),
+            other => panic!("expected Invoke(join_lines_with_space), got {other:?}"),
         }
     }
 
     #[test]
     fn gj_after_g_emits_join_without_space() {
         let (_, b) = fixture();
+        let a = shared_actions();
         match translate(
             ctx(ModalState::Normal, Pending::AfterG, &b),
             key(KeyCode::Char('J')),
         ) {
-            Action::JoinLines { with_space } => assert!(!with_space),
-            other => panic!("expected JoinLines(with_space=false), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.join_lines_bare),
+            other => panic!("expected Invoke(join_lines_bare), got {other:?}"),
         }
     }
 
     #[test]
     fn semicolon_emits_find_repeat_no_reverse() {
         let (_, b) = fixture();
+        let a = shared_actions();
         match translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char(';')),
         ) {
-            Action::FindRepeat { reverse } => assert!(!reverse),
-            other => panic!("expected FindRepeat, got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.find_repeat_forward),
+            other => panic!("expected Invoke(find_repeat_forward), got {other:?}"),
         }
     }
 
     #[test]
     fn comma_emits_find_repeat_reverse() {
         let (_, b) = fixture();
+        let a = shared_actions();
         match translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char(',')),
         ) {
-            Action::FindRepeat { reverse } => assert!(reverse),
-            other => panic!("expected FindRepeat, got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.find_repeat_reverse),
+            other => panic!("expected Invoke(find_repeat_reverse), got {other:?}"),
         }
     }
 

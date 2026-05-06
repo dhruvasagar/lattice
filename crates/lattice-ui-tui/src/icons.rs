@@ -1,7 +1,7 @@
 //! Icon and color resolver shared by FileTree and OilBuffer renderers.
 
 use std::path::Path;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 
 use crate::theme::Theme;
 
@@ -30,7 +30,7 @@ pub fn icon_for_entry(path: &Path, is_dir: bool, nerd_fonts: bool, theme: &Theme
     (glyph, style)
 }
 
-fn nerd_glyph_and_color(name: &str, ext: &str) -> (&'static str, Color) {
+fn nerd_glyph_and_color(_name: &str, ext: &str) -> (&'static str, Color) {
     match ext {
         "rs"                            => ("󱘗 ", Color::from_u32(0xFF8C00)), // orange
         "toml"                          => (" ", Color::Yellow),

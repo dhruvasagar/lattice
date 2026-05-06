@@ -853,12 +853,41 @@ type-hoisting decisions, and the sub-slice plan.
   shared by the App and the `select-register` spec. The Replace
   drift comparator's `Invoke` arm now compares `args` so
   captured-char substitution regressions trip the test.
-- **8.i.4 -- Retire Pending; finalise.** Pending. The 17
-  remaining `bind_legacy` sites all use
-  `Action::SetPending(Pending::*)`; they go away when `Pending`
-  dissolves into trie-driven partial-chord state per the memo
-  §6. After that, the `bind_legacy` bridge / `legacy_action`
-  field / drift reference bodies retire entirely.
+- **8.i.4 -- Retire Pending; finalise.** In progress.
+  - 8.i.4.a -- Scaffold + 9 simple-prefix migration. ✅ landed.
+    Adds `App::partial_chord: Vec<KeyChord>` and
+    `Action::AbsorbPartialChord(KeyChord)`; `lookup_normal`
+    emits the latter on every trie `Partial`. The 7 prefix-only
+    `bind_legacy([m / ' / ` / " / q / @ / <C-w>], SetPending(After*))`
+    sites are gone (the trie's natural `Partial` handles them);
+    `g` and `z` likewise stop synthesising `SetPending` from
+    `lookup_normal`'s `Partial` arm. `App::apply` clears
+    `partial_chord` on every non-`AbsorbPartialChord(_)` action,
+    mirroring the existing `pending` reset on every
+    non-`SetPending(_)` action. `compute_normal_action` gains a
+    top-level partial_chord short-circuit that wins over the
+    `match pending` body. The 9 migrated `match pending` arms
+    are unreachable post-migration but kept as a defensive
+    no-op until 8.i.4.c retires the Pending enum.
+  - 8.i.4.b -- Retire parameterised Pending. Pending. 8
+    remaining `bind_legacy` sites carry parameterised
+    `SetPending(Pending::*)`: `AfterOperator(OperatorId)` (8
+    operator-prefix sites), `AfterTextObject{op, around}` (1
+    site, registered via `register_operator_pending`'s text-
+    object resolution), `AfterFindChar{kind, operator}` (1
+    site). Plus `AfterCtrlX` in Insert mode. These need a
+    different migration shape because their payloads encode
+    semantic info the trie's plain `Partial` doesn't carry --
+    the `op_count` latching on `AfterOperator` is the
+    load-bearing example.
+  - 8.i.4.c -- Final retirement. Pending. Drop the `Pending`
+    enum entirely, drop `Action::SetPending`, drop
+    `bind_legacy` / `legacy_action` / `KeymapHandleLegacyExt` /
+    `legacy_action_command_id` / `BoundCommand::from_legacy_action`,
+    drop the 4 drift reference bodies in
+    `keymap_replace`/`keymap_visual`/`keymap_insert`, drop
+    `compute_normal_action`'s `match pending` body. Bench
+    rollup. Doc updates.
   - At this point the `keymap.rs` drift test becomes obsolete
     (descriptor IS behaviour); replace it with a "every catalog
     entry resolves to a real `CommandInvocation`" test.

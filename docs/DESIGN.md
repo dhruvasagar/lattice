@@ -457,6 +457,8 @@ Walks layered keymaps in priority order:
 
 Each keymap entry is `(chord_sequence) -> CommandInvocation`.
 
+Authoritative architecture reference: [`docs/keymap-architecture.md`](keymap-architecture.md). Covers the trie data structure, layer merging, performance commitments, plugin / user-config registration paths, and the migration plan from today's hand-rolled `input.rs` dispatcher.
+
 #### 5.2.4 Extensibility -- first-class
 
 Plugins extend the grammar by registering new commands. The same registration API serves operators, motions, text objects, and ex-commands; all become first-class citizens of the dispatcher:

@@ -20,10 +20,18 @@
 //! Slice 8.b will add trie-lookup benches once the
 //! `KeymapTrie` type lands.
 
+use std::sync::Arc;
+
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
+use lattice_grammar::CommandInvocation;
+use lattice_grammar::SourceLocation;
+use lattice_protocol::ids::CommandId;
 use lattice_ui_tui::chord::{KeyChord, parse_chord_sequence};
+use lattice_ui_tui::keymap_trie::{
+    BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult,
+};
 
 fn ev(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
     KeyEvent {
@@ -146,6 +154,161 @@ fn parse_chord_sequence_two_letters(c: &mut Criterion) {
     });
 }
 
+// ---------------------------------------------------------------
+// KeymapTrie benches (audit slice 8.b)
+//
+// The trie sits behind the `Arc<ArcSwap<KeymapTrie>>` cell the
+// registry handle (slice 8.c) exposes. These benches measure
+// just the trie path -- ArcSwap load + lookup walk.
+// ---------------------------------------------------------------
+
+/// Build a representative trie containing the chord shapes we
+/// care about: single-chord motions, two-chord prefix motions
+/// (`gd`, `gg`), three-chord operator+motion (`d` `i` `w`),
+/// and a wildcard for find-char (`f X`). Sized to ~16
+/// bindings, which is roughly half a real mode's worth and
+/// fits the lookup-path measurement we want.
+fn populate_trie() -> KeymapTrie {
+    let mut t = KeymapTrie::new();
+    let bound = || -> Arc<BoundCommand> {
+        Arc::new(BoundCommand {
+            command: CommandInvocation::of(CommandId::new(0)),
+            source: SourceLocation::synthetic("bench"),
+            layer: KeymapLayer::Builtin,
+        })
+    };
+    let lit = |c: char| ChordPattern::Literal(KeyChord::char(c));
+    // single-chord
+    for c in ['j', 'k', 'h', 'l', 'w', 'b', 'e'] {
+        t.insert(&[lit(c)], bound());
+    }
+    // two-chord
+    t.insert(&[lit('g'), lit('d')], bound());
+    t.insert(&[lit('g'), lit('g')], bound());
+    t.insert(&[lit('d'), lit('d')], bound());
+    t.insert(&[lit('y'), lit('y')], bound());
+    // three-chord (operator + i/a + text-object)
+    t.insert(&[lit('d'), lit('i'), lit('w')], bound());
+    t.insert(&[lit('c'), lit('i'), lit('w')], bound());
+    // wildcard (find-char)
+    t.insert(&[lit('f'), ChordPattern::CharLiteral], bound());
+    t.insert(&[lit('F'), ChordPattern::CharLiteral], bound());
+    t
+}
+
+/// Lookup a single-chord binding (`j`). The hot path: the
+/// keystroke loop walks one descent and returns Bound.
+fn keymap_trie_lookup_single(c: &mut Criterion) {
+    let trie = populate_trie();
+    let path = vec![KeyChord::char('j')];
+    c.bench_function("keymap_trie_lookup_single", |b| {
+        b.iter(|| {
+            let r = trie.lookup(black_box(&path));
+            black_box(r);
+        });
+    });
+}
+
+/// Lookup a two-chord binding (`gd`). Two descents.
+fn keymap_trie_lookup_two_chord(c: &mut Criterion) {
+    let trie = populate_trie();
+    let path = vec![KeyChord::char('g'), KeyChord::char('d')];
+    c.bench_function("keymap_trie_lookup_two_chord", |b| {
+        b.iter(|| {
+            let r = trie.lookup(black_box(&path));
+            black_box(r);
+        });
+    });
+}
+
+/// Lookup a three-chord binding (`diw`). Three descents.
+fn keymap_trie_lookup_three_chord(c: &mut Criterion) {
+    let trie = populate_trie();
+    let path = vec![
+        KeyChord::char('d'),
+        KeyChord::char('i'),
+        KeyChord::char('w'),
+    ];
+    c.bench_function("keymap_trie_lookup_three_chord", |b| {
+        b.iter(|| {
+            let r = trie.lookup(black_box(&path));
+            black_box(r);
+        });
+    });
+}
+
+/// Lookup that ends at a Partial (`g` -- wait for second).
+/// Walks one descent; the input ends at an internal node.
+fn keymap_trie_lookup_partial(c: &mut Criterion) {
+    let trie = populate_trie();
+    let path = vec![KeyChord::char('g')];
+    c.bench_function("keymap_trie_lookup_partial", |b| {
+        b.iter(|| {
+            let r = trie.lookup(black_box(&path));
+            black_box(r);
+        });
+    });
+}
+
+/// Lookup that ends at Unbound (`q` -- not in this trie).
+/// Worst-case dispatch shape: HashMap miss at root, return.
+fn keymap_trie_lookup_unbound(c: &mut Criterion) {
+    let trie = populate_trie();
+    let path = vec![KeyChord::char('q')];
+    c.bench_function("keymap_trie_lookup_unbound", |b| {
+        b.iter(|| {
+            let r = trie.lookup(black_box(&path));
+            black_box(r);
+        });
+    });
+}
+
+/// Lookup that crosses a wildcard (`f x` -> bound, captured
+/// `['x']`). Branches to the `char_wildcard` slot after the
+/// exact-match miss + allocates the small `Vec<char>` of
+/// captures.
+fn keymap_trie_lookup_wildcard(c: &mut Criterion) {
+    let trie = populate_trie();
+    let path = vec![KeyChord::char('f'), KeyChord::char('x')];
+    c.bench_function("keymap_trie_lookup_wildcard", |b| {
+        b.iter(|| {
+            let r = trie.lookup(black_box(&path));
+            // black_box the result variant so the optimizer
+            // doesn't elide the captured-vec construction.
+            match r {
+                LookupResult::Bound { captured, .. } => {
+                    black_box(captured);
+                }
+                _ => unreachable!("populated trie has wildcard f"),
+            }
+        });
+    });
+}
+
+/// `merge_over` cost for a base trie + a small overlay.
+/// Models the registry's layer-stack collapse on minor-mode
+/// push -- happens off the keystroke path, but should stay
+/// sub-millisecond.
+fn keymap_trie_merge_overlay(c: &mut Criterion) {
+    let base = populate_trie();
+    let mut over = KeymapTrie::new();
+    let bound = Arc::new(BoundCommand {
+        command: CommandInvocation::of(CommandId::new(0)),
+        source: SourceLocation::synthetic("bench-overlay"),
+        layer: KeymapLayer::User,
+    });
+    let lit = |c: char| ChordPattern::Literal(KeyChord::char(c));
+    over.insert(&[lit('d'), lit('d')], Arc::clone(&bound));
+    over.insert(&[lit('y'), lit('y')], Arc::clone(&bound));
+    c.bench_function("keymap_trie_merge_overlay", |b| {
+        b.iter(|| {
+            let mut merged = base.clone();
+            merged.merge_over(black_box(&over));
+            black_box(merged);
+        });
+    });
+}
+
 criterion_group!(
     benches,
     keychord_from_event_plain_letter,
@@ -157,5 +320,12 @@ criterion_group!(
     keychord_parse_modifier_special,
     parse_chord_sequence_multi_key,
     parse_chord_sequence_two_letters,
+    keymap_trie_lookup_single,
+    keymap_trie_lookup_two_chord,
+    keymap_trie_lookup_three_chord,
+    keymap_trie_lookup_partial,
+    keymap_trie_lookup_unbound,
+    keymap_trie_lookup_wildcard,
+    keymap_trie_merge_overlay,
 );
 criterion_main!(benches);

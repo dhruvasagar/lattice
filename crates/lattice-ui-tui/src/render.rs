@@ -33,6 +33,39 @@ use crate::app::{App, EchoLevel};
 /// §5.6.8). All active-pane render paths read through this single
 /// snapshot -- inactive panes (different documents) still go
 /// through `entry.handle.snapshot()` since the cache is per-cell.
+///
+/// ## Per-frame stability contract (audit M2 deferred-with-rationale)
+///
+/// The render path also reads non-`snap` App fields directly:
+/// `app.folds`, `app.visible_highlights`, `app.show_line_numbers()`,
+/// `app.lsp_diagnostics`. The audit flagged this as a violation of
+/// "one snapshot per frame, used for everything" with the concrete
+/// fear that a future async path mutating `folds` mid-frame would
+/// produce a torn render.
+///
+/// The contract holds in the current architecture by *Rust's
+/// ownership rules*, not by discipline: render takes `&App`, so no
+/// `&mut App` mutator can run concurrently with this function.
+/// `app.lsp_diagnostics` is wait-free behind `ArcSwap` (audit
+/// slice 2). `app.show_line_numbers()` reads from the typed-options
+/// `ArcSwap` -- wait-free per call.
+///
+/// The torn-state failure mode the audit fears materializes only
+/// when the renderer can run on a different thread than the App's
+/// main loop -- i.e. when the GPUI multi-threaded renderer ships
+/// post-1.0. At that point this fn must be reworked to take a
+/// `FrameView` snapshotting `folds` + `visible_highlights` at
+/// entry, and the call chain (compose_visible_lines + helpers,
+/// draw_inactive_document, ...) must thread it through. Until
+/// then, introducing `FrameView` is "abstraction beyond what the
+/// task requires" (CLAUDE.md conventions); the safer fix is this
+/// docstring + the architectural rule below.
+///
+/// **Architectural rule:** *no code on any thread other than the
+/// App's main loop may take `&mut App`*. The TUI runtime's
+/// single-threaded design enforces this today. Future plugin
+/// integrations / GPUI ports must add the `FrameView` snapshot
+/// step before introducing concurrent mutators.
 pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // Vertico-style layout (DESIGN.md §5.11.3, §5.9.7): when the
     // cmdline completion popup OR the picker is open, an extra row

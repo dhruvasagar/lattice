@@ -971,9 +971,81 @@ diagram.
 
 Update this section when picking up the in-flight item.
 
----
+**4.x audit pass (post-LSP-edit refactor).** Once the per-actor
+DocSync + bus-driven fan-in landed, ran a thorough design-
+philosophy audit looking for the same class-of-bug elsewhere
+(UI-thread / async contention, state-bearing best-effort
+sends, paramount-goal violations). Findings closed in slices
+1–6:
 
-## Up next (priority order)
+- **Slice 1** — retired `Arc<tokio::sync::Mutex<LspSupervisor>>`.
+  Reads (`servers_for`, `running_actors`, ...) go wait-free
+  through `ArcSwap<SupervisorSnapshot>`; writes route via
+  the supervisor task's mailbox. Closed C2 (Insert-mode
+  trigger probes), H1 (modeline `try_lock`), H2 (14
+  supervisor `try_lock` sites silently dropping work), M5
+  (App holding the supervisor mutex across `.await` in
+  `drain_pending_lsp_opens`).
+- **M1** (parallel agent worktree) — `EventBus::publish`
+  snapshots subscriber list under a brief lock, then
+  dispatches lock-free. No `Channel(bounded)` subscriber
+  can stall the publisher under the inner lock.
+- **Slice 2** — `DiagnosticsLayer` swaps inner `Mutex` for
+  `Arc<ArcSwap<DiagnosticsSnapshot>>`. Render-frame
+  `line_severity` calls (~3000/s on the render thread) drop
+  from microseconds + per-call allocation to **25 ns**
+  wait-free. Closed C3.
+- **Slice 3** — `SyntaxActor`. `Syntax` wraps a
+  `SyntaxSnapshot`; `SyntaxHandle` runs reparses on
+  `tokio::task::spawn_blocking` with bursts coalesced.
+  Renderer / folds / completion read the latest snapshot
+  via `ArcSwap` -- tree-sitter parses no longer happen on
+  the UI thread (paramount goal #1). Closed C1.
+- **Slice 5** — `path_completion_cache` keyed by
+  `(dir, mtime)` so consecutive Insert keystrokes inside
+  string literals don't re-walk the directory; bounded-
+  parallel `willSaveWaitUntil` (one shared 500ms budget
+  across N servers via `tokio::task::JoinSet`) caps the
+  total UI-thread save block at 500ms regardless of N.
+  Closed H5, M4. H4's other FS sites
+  (`open_lsp_locations_picker` reads, `:reload-snippets`,
+  `:e` `metadata`) stay sync as user-command-triggered
+  one-shots; documented as acceptable v1 cost.
+- **Slice 6** — document-actor mailbox switches from
+  bounded `mpsc::channel(64)` to `unbounded_channel`.
+  `RuntimeError::Busy` retired entirely (App-side callers
+  were silently discarding it under bursts). Closed H3.
+
+Deferred with rationale:
+
+- **M2 (FrameView per-frame snapshot discipline)** — the audit
+  feared "future async path mutates `folds` mid-frame" but
+  the race requires `&mut App` access concurrent with render,
+  which Rust's ownership rules prevent in the current
+  single-threaded TUI architecture (the renderer takes
+  `&App`). The fix lands when the GPUI multi-threaded
+  renderer ships post-1.0; introducing `FrameView` now
+  would be an "abstraction beyond what the task requires"
+  (CLAUDE.md conventions). The contract is documented in
+  `crates/lattice-ui-tui/src/render.rs::draw_frame`'s
+  doc comment + the architectural rule "no code on any
+  thread other than the App's main loop may take `&mut App`."
+- **M3 (input.rs trie-driven dispatch)** — `input.rs` is
+  4365 lines of hand-rolled `KeyCode` matching; plugins
+  can't bind chords (paramount goal #3 violation in spirit,
+  though the drift test catches descriptor-vs-binding
+  divergence). The audit graded it Medium and noted "this
+  was already noted; keep on the books"; `keymap.rs:13`
+  schedules it post-1.0. Folding it into the audit pass
+  would inflate scope past the bounded "fix one
+  class-of-bug per slice" framing. Stays as its own
+  multi-session refactor with proper scoping (likely a 4.5
+  or post-1.0 phase).
+
+`docs/BENCHMARKS.md` got the new perf rows
+(`lsp_diagnostics_line_severity_wait_free` at 25ns, the
+existing edit-path benches). Tests stayed green at every
+slice boundary.
 
 1. **Phase 4: LSP** — diagnostics, completion, hover, go-to-definition,
    references. The cancellation-token plumbing is in place

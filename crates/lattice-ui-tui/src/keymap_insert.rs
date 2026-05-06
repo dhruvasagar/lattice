@@ -103,8 +103,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use lattice_grammar::CommandInvocation;
 use lattice_grammar::SourceLocation;
 
+use crate::actions::ActionIds;
 use crate::app::{Action, Pending};
 use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
 use crate::keymap::BindingMode;
@@ -122,7 +124,7 @@ use crate::keymap_trie::{
 /// `[<C-x>, <C-o>]` at depth 2 makes the depth-1 lookup of
 /// `[<C-x>]` return [`LookupResult::Partial`]. Same for
 /// `[<C-x>, <C-s>]`.
-pub fn register_insert_bindings(handle: &KeymapHandle) {
+pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Insert;
 
@@ -133,11 +135,11 @@ pub fn register_insert_bindings(handle: &KeymapHandle) {
         Action::EnterMode(lattice_grammar::ModalState::Normal),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_special(SpecialKey::Backspace)],
-        Action::DeleteCharBackward,
+        CommandInvocation::of(actions.delete_char_backward),
         source(),
     );
     handle.bind_legacy(
@@ -154,27 +156,27 @@ pub fn register_insert_bindings(handle: &KeymapHandle) {
         Action::Insert("\t".into()),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl(' '))],
-        Action::CompletionTrigger,
+        CommandInvocation::of(actions.completion_trigger),
         source(),
     );
     // <C-x><C-o> -- omni-completion (a.k.a. CompletionTrigger).
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('x')), lit(KeyChord::ctrl('o'))],
-        Action::CompletionTrigger,
+        CommandInvocation::of(actions.completion_trigger),
         source(),
     );
     // <C-x><C-s> -- direct snippet expansion.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('x')), lit(KeyChord::ctrl('s'))],
-        Action::SnippetExpand,
+        CommandInvocation::of(actions.snippet_expand),
         source(),
     );
 }
@@ -482,9 +484,23 @@ mod tests {
         }
     }
 
+    /// Process-wide shared `ActionIds`. Built once on first
+    /// access. The IDs are stable for the duration of a test
+    /// run so cross-test handle-and-id comparisons hold.
+    fn shared_actions() -> &'static ActionIds {
+        use std::sync::OnceLock;
+        static A: OnceLock<ActionIds> = OnceLock::new();
+        A.get_or_init(|| {
+            let mut r = lattice_grammar::CommandRegistry::new();
+            let _ = lattice_grammar::builtins::populate(&mut r);
+            let _ = lattice_grammar::ex_commands::populate(&mut r);
+            crate::actions::populate(&mut r)
+        })
+    }
+
     fn populated_handle() -> KeymapHandle {
         let h = KeymapHandle::new();
-        register_insert_bindings(&h);
+        register_insert_bindings(&h, shared_actions());
         h
     }
 
@@ -540,12 +556,16 @@ mod tests {
     #[test]
     fn backspace_in_base_insert_deletes_char_backward() {
         let h = populated_handle();
+        let a = shared_actions();
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Backspace, KeyModifiers::NONE),
             Pending::None,
         );
-        assert!(matches!(r, Action::DeleteCharBackward));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.delete_char_backward),
+            other => panic!("expected Invoke(delete_char_backward), got {other:?}"),
+        }
     }
 
     #[test]
@@ -600,12 +620,16 @@ mod tests {
     #[test]
     fn ctrl_space_in_base_insert_triggers_completion() {
         let h = populated_handle();
+        let a = shared_actions();
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char(' '), KeyModifiers::CONTROL),
             Pending::None,
         );
-        assert!(matches!(r, Action::CompletionTrigger));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_trigger),
+            other => panic!("expected Invoke(completion_trigger), got {other:?}"),
+        }
     }
 
     #[test]
@@ -625,23 +649,31 @@ mod tests {
     #[test]
     fn ctrl_x_then_ctrl_o_resolves_to_completion_trigger() {
         let h = populated_handle();
+        let a = shared_actions();
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char('o'), KeyModifiers::CONTROL),
             Pending::AfterCtrlX,
         );
-        assert!(matches!(r, Action::CompletionTrigger));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_trigger),
+            other => panic!("expected Invoke(completion_trigger), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_x_then_ctrl_s_resolves_to_snippet_expand() {
         let h = populated_handle();
+        let a = shared_actions();
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char('s'), KeyModifiers::CONTROL),
             Pending::AfterCtrlX,
         );
-        assert!(matches!(r, Action::SnippetExpand));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.snippet_expand),
+            other => panic!("expected Invoke(snippet_expand), got {other:?}"),
+        }
     }
 
     #[test]

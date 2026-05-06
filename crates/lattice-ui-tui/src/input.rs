@@ -575,7 +575,7 @@ mod tests {
         let a = shared_actions();
         crate::keymap_replace::register_replace_bindings(&h);
         crate::keymap_visual::register_visual_bindings(&h, b);
-        crate::keymap_insert::register_insert_bindings(&h);
+        crate::keymap_insert::register_insert_bindings(&h, a);
         crate::keymap_normal::register_normal_bindings(&h, b, a);
         h
     }
@@ -891,13 +891,14 @@ mod tests {
     #[test]
     fn a_enters_append_mode() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('a'))
-            ),
-            Action::EnterAppend
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('a')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_append),
+            other => panic!("expected Invoke(enter_append), got {other:?}"),
+        }
     }
 
     #[test]
@@ -1046,13 +1047,14 @@ mod tests {
     #[test]
     fn backspace_in_insert_deletes_char_backward() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Insert, Pending::None, &b),
-                key(KeyCode::Backspace)
-            ),
-            Action::DeleteCharBackward
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Insert, Pending::None, &b),
+            key(KeyCode::Backspace),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.delete_char_backward),
+            other => panic!("expected Invoke(delete_char_backward), got {other:?}"),
+        }
     }
 
     // ---- Undo / Redo ----
@@ -1534,13 +1536,14 @@ mod tests {
     #[test]
     fn zf_after_z_emits_create_fold_from_visual() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterZ, &b),
-                key(KeyCode::Char('f'))
-            ),
-            Action::CreateFoldFromVisual
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterZ, &b),
+            key(KeyCode::Char('f')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.create_fold_from_visual),
+            other => panic!("expected Invoke(create_fold_from_visual), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2207,13 +2210,14 @@ mod tests {
     #[test]
     fn ctrl_space_in_insert_triggers_completion() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Insert, Pending::None, &b),
-                ctrl(KeyCode::Char(' '))
-            ),
-            Action::CompletionTrigger
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Insert, Pending::None, &b),
+            ctrl(KeyCode::Char(' ')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_trigger),
+            other => panic!("expected Invoke(completion_trigger), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2231,13 +2235,14 @@ mod tests {
     #[test]
     fn ctrl_x_ctrl_o_resolves_to_completion_trigger() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Insert, Pending::AfterCtrlX, &b),
-                ctrl(KeyCode::Char('o'))
-            ),
-            Action::CompletionTrigger
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Insert, Pending::AfterCtrlX, &b),
+            ctrl(KeyCode::Char('o')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_trigger),
+            other => panic!("expected Invoke(completion_trigger), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2457,13 +2462,14 @@ mod tests {
     #[test]
     fn ctrl_x_ctrl_s_resolves_to_snippet_expand() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Insert, Pending::AfterCtrlX, &b),
-                ctrl(KeyCode::Char('s'))
-            ),
-            Action::SnippetExpand
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Insert, Pending::AfterCtrlX, &b),
+            ctrl(KeyCode::Char('s')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.snippet_expand),
+            other => panic!("expected Invoke(snippet_expand), got {other:?}"),
+        }
     }
 
     // ---- Position history ----

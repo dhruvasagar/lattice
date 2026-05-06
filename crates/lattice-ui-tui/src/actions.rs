@@ -70,6 +70,11 @@ pub struct ActionIds {
     pub lsp_type_definition_request: CommandId,
     pub lsp_implementation_request: CommandId,
     pub lsp_references_request: CommandId,
+    pub enter_append: CommandId,
+    pub create_fold_from_visual: CommandId,
+    pub delete_char_backward: CommandId,
+    pub completion_trigger: CommandId,
+    pub snippet_expand: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -312,6 +317,36 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
             "`gr`: send `textDocument/references` to attached LSP servers.",
             AppEffect::LspReferencesRequest,
         ),
+        enter_append: register_simple(
+            registry,
+            "action:enter-append",
+            "Vim's `a`: move right one byte and enter Insert.",
+            AppEffect::EnterAppend,
+        ),
+        create_fold_from_visual: register_simple(
+            registry,
+            "action:create-fold-from-visual",
+            "Vim's `zf`: create a fold from the most recent Visual selection.",
+            AppEffect::CreateFoldFromVisual,
+        ),
+        delete_char_backward: register_simple(
+            registry,
+            "action:delete-char-backward",
+            "Insert mode's `<BS>`: delete the byte before the cursor.",
+            AppEffect::DeleteCharBackward,
+        ),
+        completion_trigger: register_simple(
+            registry,
+            "action:completion-trigger",
+            "Insert mode's `<C-Space>` / `<C-x><C-o>`: trigger the completion popup.",
+            AppEffect::CompletionTrigger,
+        ),
+        snippet_expand: register_simple(
+            registry,
+            "action:snippet-expand",
+            "Insert mode's `<C-x><C-s>`: direct snippet expansion.",
+            AppEffect::SnippetExpand,
+        ),
     }
 }
 
@@ -393,6 +428,11 @@ mod tests {
             (ids.lsp_type_definition_request, "action:lsp-type-definition"),
             (ids.lsp_implementation_request, "action:lsp-implementation"),
             (ids.lsp_references_request, "action:lsp-references"),
+            (ids.enter_append, "action:enter-append"),
+            (ids.create_fold_from_visual, "action:create-fold-from-visual"),
+            (ids.delete_char_backward, "action:delete-char-backward"),
+            (ids.completion_trigger, "action:completion-trigger"),
+            (ids.snippet_expand, "action:snippet-expand"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

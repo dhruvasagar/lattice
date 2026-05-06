@@ -2507,7 +2507,7 @@ impl App {
                 let h = crate::keymap_registry::KeymapHandle::new();
                 crate::keymap_replace::register_replace_bindings(&h);
                 crate::keymap_visual::register_visual_bindings(&h, &builtins);
-                crate::keymap_insert::register_insert_bindings(&h);
+                crate::keymap_insert::register_insert_bindings(&h, &action_ids);
                 crate::keymap_normal::register_normal_bindings(&h, &builtins, &action_ids);
                 h
             },
@@ -11766,6 +11766,11 @@ impl App {
             AppEffect::LspTypeDefinitionRequest => self.apply(Action::LspTypeDefinitionRequest),
             AppEffect::LspImplementationRequest => self.apply(Action::LspImplementationRequest),
             AppEffect::LspReferencesRequest => self.apply(Action::LspReferencesRequest),
+            AppEffect::EnterAppend => self.apply(Action::EnterAppend),
+            AppEffect::CreateFoldFromVisual => self.apply(Action::CreateFoldFromVisual),
+            AppEffect::DeleteCharBackward => self.apply(Action::DeleteCharBackward),
+            AppEffect::CompletionTrigger => self.apply(Action::CompletionTrigger),
+            AppEffect::SnippetExpand => self.apply(Action::SnippetExpand),
         }
     }
 

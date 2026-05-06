@@ -244,11 +244,11 @@ pub fn register_normal_bindings(
         Action::EnterMode(ModalState::Insert),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('a')],
-        Action::EnterAppend,
+        CommandInvocation::of(actions.enter_append),
         source(),
     );
     handle.bind(
@@ -587,11 +587,11 @@ pub fn register_normal_bindings(
     );
 
     // Folds.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('f')],
-        Action::CreateFoldFromVisual,
+        CommandInvocation::of(actions.create_fold_from_visual),
         source(),
     );
     handle.bind(

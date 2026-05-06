@@ -193,6 +193,30 @@ pub enum AppEffect {
     /// to the symbol at the cursor. Promoted from
     /// `Action::LspReferencesRequest` in slice 8.i.1.f.
     LspReferencesRequest,
+    /// Vim's `a`. Move cursor one byte right (clamped) and enter
+    /// Insert. Promoted from `Action::EnterAppend` in slice
+    /// 8.i.1.g.
+    EnterAppend,
+    /// Vim's `zf`. Create a fold from the most recent Visual
+    /// selection. Promoted from `Action::CreateFoldFromVisual`
+    /// in slice 8.i.1.g.
+    CreateFoldFromVisual,
+    /// Insert mode's `<BS>`. Delete the byte before the cursor.
+    /// Promoted from `Action::DeleteCharBackward` in slice
+    /// 8.i.1.g.
+    DeleteCharBackward,
+    /// Insert mode's `<C-Space>` and `<C-x><C-o>`. Trigger the
+    /// completion popup (omni-completion alias). Promoted from
+    /// `Action::CompletionTrigger` in slice 8.i.1.g. The
+    /// completion-popup minor-mode layer's `<C-Space>` binding
+    /// keeps its legacy `bind_action` registration until that
+    /// helper picks up `CommandInvocation` (separate scope).
+    CompletionTrigger,
+    /// Insert mode's `<C-x><C-s>`. Direct snippet expansion at
+    /// the cursor (matches the longest snippet prefix without
+    /// surfacing the completion popup). Promoted from
+    /// `Action::SnippetExpand` in slice 8.i.1.g.
+    SnippetExpand,
 }
 
 #[cfg(test)]

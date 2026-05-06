@@ -2340,7 +2340,7 @@ impl App {
         // `ActionIds` to build typed `CommandInvocation`s for
         // chord bindings as the legacy `bind_legacy` bridge
         // retires.
-        let action_ids = crate::actions::populate(&mut registry);
+        let action_ids = crate::actions::populate(&mut registry, &builtins);
         // §5.11.3 completion pipeline: register the built-in
         // generators / matchers / rankers / annotators and wire
         // sensible defaults (prefix matcher, score ranker, kind +
@@ -11842,6 +11842,35 @@ impl App {
             AppEffect::StartMacroRecord(c) => self.apply(Action::StartMacroRecord(c)),
             AppEffect::PlayMacro(c) => self.apply(Action::PlayMacro(c)),
             AppEffect::PlayLastMacro => self.apply(Action::PlayLastMacro),
+            AppEffect::AbsorbOperatorPrefix(op) => {
+                // Slice 8.i.4.c: arm operator-pending via the
+                // partial_chord mechanism. Two atomic effects:
+                //
+                // 1. Latch `pending_count` -> `op_count` so the
+                //    next motion's count multiplies (vim's `2dw`
+                //    -> count=2; `2d3w` -> count=2*3=6, the
+                //    multiplication happens at the motion side
+                //    in `keymap_normal::attach_count`).
+                // 2. Push the operator's chord prefix into
+                //    `App::partial_chord`. The next keystroke
+                //    routes through `compute_normal_action`'s
+                //    partial_chord short-circuit, hitting
+                //    `lookup_normal_with_prefix` with this stack
+                //    as prefix and resolving `[op, motion]` /
+                //    `[op, i/a, text-object]` / `[op, f/F/t/T,
+                //    char]` to the bound `Invoke`.
+                //
+                // App::apply already cleared partial_chord at
+                // the top of this dispatch (since `Action::Invoke`
+                // is not `AbsorbPartialChord(_)`). Populate it
+                // here.
+                if self.pending_count > 0 {
+                    self.op_count = self.pending_count;
+                    self.pending_count = 0;
+                }
+                let prefix = crate::keymap_normal::operator_prefix(op, &self.builtins);
+                self.partial_chord.extend(prefix);
+            }
         }
     }
 

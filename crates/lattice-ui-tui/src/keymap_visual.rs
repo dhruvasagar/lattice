@@ -259,7 +259,7 @@ mod tests {
     fn fixture() -> (CommandRegistry, Builtins, ActionIds) {
         let mut r = CommandRegistry::new();
         let b = populate(&mut r);
-        let a = crate::actions::populate(&mut r);
+        let a = crate::actions::populate(&mut r, &b);
         (r, b, a)
     }
 

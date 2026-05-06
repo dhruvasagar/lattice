@@ -509,9 +509,9 @@ mod tests {
         static A: OnceLock<ActionIds> = OnceLock::new();
         A.get_or_init(|| {
             let mut r = lattice_grammar::CommandRegistry::new();
-            let _ = lattice_grammar::builtins::populate(&mut r);
+            let b = lattice_grammar::builtins::populate(&mut r);
             let _ = lattice_grammar::ex_commands::populate(&mut r);
-            crate::actions::populate(&mut r)
+            crate::actions::populate(&mut r, &b)
         })
     }
 

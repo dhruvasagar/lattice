@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::modal::{ModalState, SearchDirection, VisualKind};
 use crate::register::Register;
+use crate::registry::OperatorId;
 
 /// Vim's `H` / `M` / `L` target positions: where in the visible
 /// viewport the cursor lands. App-side concept hosted here so
@@ -361,6 +362,27 @@ pub enum AppEffect {
     /// closure picks one or the other based on the captured
     /// char.
     PlayLastMacro,
+    /// Slice 8.i.4.c: arm an operator-pending state via the
+    /// `partial_chord` mechanism. The App handler does two
+    /// things atomically:
+    ///
+    /// 1. Latch `pending_count` into `op_count` (vim's
+    ///    `<count>op<motion>` count multiplication; without
+    ///    this `2dd` would get a count of 1).
+    /// 2. Push the operator's chord prefix into
+    ///    `App::partial_chord` so the next keystroke routes
+    ///    through `lookup_normal_with_prefix` and resolves
+    ///    `[op, motion]` / `[op, i/a, text-object]` /
+    ///    `[op, f/F/t/T, char]` to the bound `Invoke`.
+    ///
+    /// Replaces the `Action::SetPending(Pending::AfterOperator(_))`
+    /// flow that did the same two things split across the
+    /// keymap (which fired `SetPending`) and `App::apply`
+    /// (which latched `op_count` inside the SetPending arm).
+    /// The 8 operator prefixes -- `d`, `c`, `y`, `>`, `<`,
+    /// `gU`, `gu`, `g~` -- bind to typed actions whose
+    /// `ApplySpec` returns this variant.
+    AbsorbOperatorPrefix(OperatorId),
 }
 
 #[cfg(test)]

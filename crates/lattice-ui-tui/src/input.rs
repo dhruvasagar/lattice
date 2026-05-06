@@ -375,80 +375,23 @@ fn compute_normal_action(
             &event,
         );
     }
-    // Resolve any pending state first.
+    // Slice 8.i.4.c: every Pending variant (AfterOperator,
+    // AfterTextObject, AfterFindChar) migrated to
+    // `App::partial_chord`. The keymap no longer fires
+    // `SetPending(After*)` for any of them, so these arms are
+    // unreachable in practice -- they exist only because
+    // `Pending` is still in `App::apply`'s vocabulary until
+    // 8.i.4.d retires the enum entirely. Treat every variant
+    // as a defensive no-op.
+    let _ = builtins;
     match pending {
-        Pending::AfterOperator(op) => {
-            // Slice 8.g.iii: trie-driven resolution.
-            let prefix =
-                crate::keymap_normal::operator_prefix(op, builtins);
-            if prefix.is_empty() {
-                // Unknown operator id (plugin-registered? slice 8.h).
-                return Action::SetPending(Pending::None);
-            }
-            return crate::keymap_normal::lookup_normal_with_prefix(
-                keymap, &prefix, &event,
-            );
-        }
-        Pending::AfterFindChar { kind, operator } => {
-            // Slice 8.g.v: prefix is `[op_prefix..., kind_chord]`
-            // (or just `[kind_chord]` when no operator); the
-            // trie's `CharLiteral` wildcard captures the target
-            // char, and `substitute_normal_capture` folds it
-            // into the resolved `Args::Char(captured)`.
-            let mut prefix: Vec<crate::chord::KeyChord> =
-                if let Some(op) = operator {
-                    crate::keymap_normal::operator_prefix(op, builtins)
-                } else {
-                    Vec::new()
-                };
-            if operator.is_some() && prefix.is_empty() {
-                return Action::SetPending(Pending::None);
-            }
-            prefix.push(crate::chord::KeyChord::char(match kind {
-                FindKind::Forward => 'f',
-                FindKind::Backward => 'F',
-                FindKind::TillForward => 't',
-                FindKind::TillBackward => 'T',
-            }));
-            return crate::keymap_normal::lookup_normal_with_prefix(
-                keymap, &prefix, &event,
-            );
-        }
-        Pending::AfterTextObject { operator, around } => {
-            // Slice 8.g.iii: prefix is the operator's path
-            // followed by `i` or `a`.
-            let mut prefix =
-                crate::keymap_normal::operator_prefix(operator, builtins);
-            if prefix.is_empty() {
-                return Action::SetPending(Pending::None);
-            }
-            prefix.push(if around {
-                crate::chord::KeyChord::char('a')
-            } else {
-                crate::chord::KeyChord::char('i')
-            });
-            return crate::keymap_normal::lookup_normal_with_prefix(
-                keymap, &prefix, &event,
-            );
-        }
-        // Insert-mode-only pending (Phase 4.2.g.1). If we
-        // somehow end up in Normal mode with this pending
-        // state, drop it -- the chord doesn't have a Normal-
-        // mode meaning.
-        Pending::AfterCtrlX => return Action::SetPending(Pending::None),
-        // Slice 8.i.4.a: prefix-only pending variants (AfterG,
-        // AfterZ, AfterCtrlW, AfterSetMark, AfterJumpMarkLine,
-        // AfterJumpMarkExact, AfterRegister, AfterMacroStart,
-        // AfterMacroPlay) migrated to `App::partial_chord` via
-        // `Action::AbsorbPartialChord`. Their match arms are
-        // unreachable now -- the keymap no longer fires
-        // `SetPending(After*)` for them, and `App::apply` won't
-        // route a stale value here either (it's set to None at
-        // construction and would only become non-None via a
-        // SetPending firing). Treat as no-op for safety.
         Pending::AfterG
         | Pending::AfterZ
         | Pending::AfterCtrlW
+        | Pending::AfterCtrlX
+        | Pending::AfterOperator(_)
+        | Pending::AfterFindChar { .. }
+        | Pending::AfterTextObject { .. }
         | Pending::AfterSetMark
         | Pending::AfterJumpMarkLine
         | Pending::AfterJumpMarkExact
@@ -531,7 +474,7 @@ mod tests {
             let mut r = CommandRegistry::new();
             let b = populate(&mut r);
             let _ex = lattice_grammar::ex_commands::populate(&mut r);
-            let a = crate::actions::populate(&mut r);
+            let a = crate::actions::populate(&mut r, &b);
             (b, a)
         })
     }
@@ -755,6 +698,36 @@ mod tests {
         }
     }
 
+    /// Slice 8.i.4.c: helper for tests that simulate "after
+    /// operator was pressed": pass the operator's chord prefix
+    /// as `partial` and the latched op_count as `op_count`.
+    /// Replaces `ctx_with_op_count(_, Pending::AfterOperator(_),
+    /// _, _, _)` for the migrated AfterOperator flow.
+    fn ctx_partial_with_op_count<'a>(
+        modal: ModalState,
+        partial: &'a [crate::chord::KeyChord],
+        b: &'a Builtins,
+        pending_count: u32,
+        op_count: u32,
+    ) -> TranslateContext<'a> {
+        TranslateContext {
+            modal,
+            pending: Pending::None,
+            builtins: b,
+            pending_count,
+            op_count,
+            recording_macro: false,
+            active_buffer: BufferKind::Document,
+            completion_open: false,
+            chord_capture: false,
+            picker_open: false,
+            insert_completion_open: false,
+            snippet_active: false,
+            keymap: test_keymap(),
+            partial_chord: partial,
+        }
+    }
+
     fn ctx_chord_capture<'a>(b: &'a Builtins) -> TranslateContext<'a> {
         TranslateContext {
             modal: ModalState::Command,
@@ -951,15 +924,24 @@ mod tests {
     // ---- Operator-pending state ----
 
     #[test]
-    fn d_sets_pending_operator() {
+    fn d_invokes_absorb_operator_delete() {
+        // Slice 8.i.4.c: pressing `d` returns
+        // `Action::Invoke(absorb_operator_delete)` instead of
+        // `Action::SetPending(Pending::AfterOperator(delete))`.
+        // The bound `ActionSpec` returns
+        // `Effect::AppAction(AppEffect::AbsorbOperatorPrefix(delete))`,
+        // which `App::apply_app_effect` translates into
+        // `partial_chord = [d]` + `op_count` latching.
         let (_, b) = fixture();
+        let a = shared_actions();
+        let _ = b;
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('d')),
         );
         match action {
-            Action::SetPending(Pending::AfterOperator(op)) => assert_eq!(op, b.delete),
-            _ => panic!("expected SetPending(AfterOperator(delete))"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_delete),
+            _ => panic!("expected Invoke(absorb_operator_delete)"),
         }
     }
 
@@ -967,7 +949,7 @@ mod tests {
     fn dw_resolves_to_delete_with_word_forward_target() {
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('d')], &b),
             key(KeyCode::Char('w')),
         );
         match action {
@@ -986,7 +968,7 @@ mod tests {
     fn dd_resolves_to_delete_current_line() {
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('d')], &b),
             key(KeyCode::Char('d')),
         );
         match action {
@@ -1003,7 +985,7 @@ mod tests {
         let (_, b) = fixture();
         assert!(matches!(
             translate(
-                ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+                ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('d')], &b),
                 key(KeyCode::Esc)
             ),
             Action::SetPending(Pending::None)
@@ -1457,7 +1439,7 @@ mod tests {
     fn d_capital_w_resolves_to_delete_big_word_forward() {
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('d')], &b),
             key(KeyCode::Char('W')),
         );
         match action {
@@ -3229,32 +3211,31 @@ mod tests {
     // ---- Indent and case operators ----
 
     #[test]
-    fn gt_sets_pending_indent_right() {
+    fn gt_invokes_absorb_operator_indent_right() {
+        // Slice 8.i.4.c: `>` -> Invoke(absorb_operator_indent_right).
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('>')),
         );
         match action {
-            Action::SetPending(Pending::AfterOperator(op)) => {
-                assert_eq!(op, b.indent_right);
-            }
-            other => panic!("expected SetPending(AfterOperator(indent_right)), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_indent_right),
+            other => panic!("expected Invoke(absorb_operator_indent_right), got {other:?}"),
         }
     }
 
     #[test]
-    fn lt_sets_pending_indent_left() {
+    fn lt_invokes_absorb_operator_indent_left() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('<')),
         );
         match action {
-            Action::SetPending(Pending::AfterOperator(op)) => {
-                assert_eq!(op, b.indent_left);
-            }
-            other => panic!("expected SetPending(AfterOperator(indent_left)), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_indent_left),
+            other => panic!("expected Invoke(absorb_operator_indent_left), got {other:?}"),
         }
     }
 
@@ -3262,9 +3243,9 @@ mod tests {
     fn double_gt_resolves_to_indent_right_current_line() {
         let (_, b) = fixture();
         let action = translate(
-            ctx(
+            ctx_partial(
                 ModalState::Normal,
-                Pending::AfterOperator(b.indent_right),
+                &[crate::chord::KeyChord::char('>')],
                 &b,
             ),
             key(KeyCode::Char('>')),
@@ -3279,41 +3260,44 @@ mod tests {
     }
 
     #[test]
-    fn gu_after_g_sets_pending_lower() {
+    fn gu_after_g_invokes_absorb_operator_lower() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
             key(KeyCode::Char('u')),
         );
         match action {
-            Action::SetPending(Pending::AfterOperator(op)) => assert_eq!(op, b.lower),
-            other => panic!("expected SetPending(AfterOperator(lower)), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_lower),
+            other => panic!("expected Invoke(absorb_operator_lower), got {other:?}"),
         }
     }
 
     #[test]
-    fn capital_g_then_capital_u_sets_pending_upper() {
+    fn capital_g_then_capital_u_invokes_absorb_operator_upper() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
             key(KeyCode::Char('U')),
         );
         match action {
-            Action::SetPending(Pending::AfterOperator(op)) => assert_eq!(op, b.upper),
-            other => panic!("expected SetPending(AfterOperator(upper)), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_upper),
+            other => panic!("expected Invoke(absorb_operator_upper), got {other:?}"),
         }
     }
 
     #[test]
-    fn g_tilde_after_g_sets_pending_toggle_case() {
+    fn g_tilde_after_g_invokes_absorb_operator_toggle_case() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
             key(KeyCode::Char('~')),
         );
         match action {
-            Action::SetPending(Pending::AfterOperator(op)) => assert_eq!(op, b.toggle_case),
-            other => panic!("expected SetPending(AfterOperator(toggle_case)), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_toggle_case),
+            other => panic!("expected Invoke(absorb_operator_toggle_case), got {other:?}"),
         }
     }
 
@@ -3322,7 +3306,7 @@ mod tests {
         let (_, b) = fixture();
         // After `gu`, pending = AfterOperator(lower). Pressing `u` doubles.
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.lower), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g'), crate::chord::KeyChord::char('u')], &b),
             key(KeyCode::Char('u')),
         );
         match action {
@@ -3339,7 +3323,7 @@ mod tests {
         let (_, b) = fixture();
         // After `gU`, pending = AfterOperator(upper). Pressing `w` is the motion.
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.upper), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g'), crate::chord::KeyChord::char('U')], &b),
             key(KeyCode::Char('w')),
         );
         match action {
@@ -3357,46 +3341,47 @@ mod tests {
     // ---- Text object chord routing ----
 
     #[test]
-    fn i_in_operator_pending_sets_text_object_pending_inner() {
+    fn i_in_operator_pending_absorbs_partial_chord() {
+        // Slice 8.i.4.c: pressing `i` after `d` returns
+        // `AbsorbPartialChord(i)`. The trie returns `Partial`
+        // for `[d, i]` because `[d, i, w]` etc. are bound; the
+        // next key resolves the full text-object path.
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('d')], &b),
             key(KeyCode::Char('i')),
         );
-        match action {
-            Action::SetPending(Pending::AfterTextObject { operator, around }) => {
-                assert_eq!(operator, b.delete);
-                assert!(!around);
-            }
-            other => panic!("expected SetPending(AfterTextObject inner), got {other:?}"),
-        }
+        assert!(matches!(
+            action,
+            Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('i')
+        ));
     }
 
     #[test]
-    fn a_in_operator_pending_sets_text_object_pending_around() {
+    fn a_in_operator_pending_absorbs_partial_chord() {
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('d')], &b),
             key(KeyCode::Char('a')),
         );
-        match action {
-            Action::SetPending(Pending::AfterTextObject { operator, around }) => {
-                assert_eq!(operator, b.delete);
-                assert!(around);
-            }
-            other => panic!("expected SetPending(AfterTextObject around), got {other:?}"),
-        }
+        assert!(matches!(
+            action,
+            Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('a')
+        ));
     }
 
     #[test]
     fn diw_resolves_to_delete_inner_word() {
         let (_, b) = fixture();
-        let pending = Pending::AfterTextObject {
-            operator: b.delete,
-            around: false,
-        };
         let action = translate(
-            ctx(ModalState::Normal, pending, &b),
+            ctx_partial(
+                ModalState::Normal,
+                &[
+                    crate::chord::KeyChord::char('d'),
+                    crate::chord::KeyChord::char('i'),
+                ],
+                &b,
+            ),
             key(KeyCode::Char('w')),
         );
         match action {
@@ -3414,12 +3399,15 @@ mod tests {
     #[test]
     fn da_quote_resolves_to_delete_around_double_quote() {
         let (_, b) = fixture();
-        let pending = Pending::AfterTextObject {
-            operator: b.delete,
-            around: true,
-        };
         let action = translate(
-            ctx(ModalState::Normal, pending, &b),
+            ctx_partial(
+                ModalState::Normal,
+                &[
+                    crate::chord::KeyChord::char('d'),
+                    crate::chord::KeyChord::char('a'),
+                ],
+                &b,
+            ),
             key(KeyCode::Char('"')),
         );
         match action {
@@ -3434,12 +3422,15 @@ mod tests {
     #[test]
     fn ci_paren_resolves_to_change_inner_paren() {
         let (_, b) = fixture();
-        let pending = Pending::AfterTextObject {
-            operator: b.change,
-            around: false,
-        };
         let action = translate(
-            ctx(ModalState::Normal, pending, &b),
+            ctx_partial(
+                ModalState::Normal,
+                &[
+                    crate::chord::KeyChord::char('c'),
+                    crate::chord::KeyChord::char('i'),
+                ],
+                &b,
+            ),
             key(KeyCode::Char('(')),
         );
         match action {
@@ -3458,12 +3449,15 @@ mod tests {
     #[allow(non_snake_case)]
     fn diW_resolves_to_delete_inner_big_word() {
         let (_, b) = fixture();
-        let pending = Pending::AfterTextObject {
-            operator: b.delete,
-            around: false,
-        };
         let action = translate(
-            ctx(ModalState::Normal, pending, &b),
+            ctx_partial(
+                ModalState::Normal,
+                &[
+                    crate::chord::KeyChord::char('d'),
+                    crate::chord::KeyChord::char('i'),
+                ],
+                &b,
+            ),
             key(KeyCode::Char('W')),
         );
         match action {
@@ -3482,12 +3476,15 @@ mod tests {
     #[allow(non_snake_case)]
     fn daW_resolves_to_delete_around_big_word() {
         let (_, b) = fixture();
-        let pending = Pending::AfterTextObject {
-            operator: b.delete,
-            around: true,
-        };
         let action = translate(
-            ctx(ModalState::Normal, pending, &b),
+            ctx_partial(
+                ModalState::Normal,
+                &[
+                    crate::chord::KeyChord::char('d'),
+                    crate::chord::KeyChord::char('a'),
+                ],
+                &b,
+            ),
             key(KeyCode::Char('W')),
         );
         match action {
@@ -3502,12 +3499,15 @@ mod tests {
     #[test]
     fn ci_angle_resolves_to_change_inner_angle() {
         let (_, b) = fixture();
-        let pending = Pending::AfterTextObject {
-            operator: b.change,
-            around: false,
-        };
         let action = translate(
-            ctx(ModalState::Normal, pending, &b),
+            ctx_partial(
+                ModalState::Normal,
+                &[
+                    crate::chord::KeyChord::char('c'),
+                    crate::chord::KeyChord::char('i'),
+                ],
+                &b,
+            ),
             key(KeyCode::Char('<')),
         );
         match action {
@@ -3523,12 +3523,15 @@ mod tests {
     fn da_angle_via_closer_resolves_to_delete_around_angle() {
         // Both `<` and `>` should resolve to the angle text object.
         let (_, b) = fixture();
-        let pending = Pending::AfterTextObject {
-            operator: b.delete,
-            around: true,
-        };
         let action = translate(
-            ctx(ModalState::Normal, pending, &b),
+            ctx_partial(
+                ModalState::Normal,
+                &[
+                    crate::chord::KeyChord::char('d'),
+                    crate::chord::KeyChord::char('a'),
+                ],
+                &b,
+            ),
             key(KeyCode::Char('>')),
         );
         match action {
@@ -3541,14 +3544,26 @@ mod tests {
     }
 
     #[test]
-    fn esc_after_text_object_pending_clears() {
+    fn esc_after_text_object_partial_chord_clears() {
+        // Slice 8.i.4.c: with `partial_chord = [d, i]`, pressing
+        // <Esc> dispatches to an unbound `[d, i, Esc]` path.
+        // Returns `SetPending(None)` from
+        // `lookup_normal_with_prefix`, which `App::apply` turns
+        // into a `partial_chord.clear()` (the
+        // non-`AbsorbPartialChord(_)` clear-rule).
         let (_, b) = fixture();
-        let pending = Pending::AfterTextObject {
-            operator: b.delete,
-            around: false,
-        };
         assert!(matches!(
-            translate(ctx(ModalState::Normal, pending, &b), key(KeyCode::Esc)),
+            translate(
+                ctx_partial(
+                    ModalState::Normal,
+                    &[
+                        crate::chord::KeyChord::char('d'),
+                        crate::chord::KeyChord::char('i'),
+                    ],
+                    &b,
+                ),
+                key(KeyCode::Esc),
+            ),
             Action::SetPending(Pending::None)
         ));
     }
@@ -3798,17 +3813,21 @@ mod tests {
         }
     }
 
-    /// Slice 8.g.iv end-to-end: `2d3w` walks operator-pending
-    /// resolution. `op_count=2 * motion_count=3 = 6` should be
-    /// attached at translate time, with `Range::None` and the
-    /// correct `Target::Motion(word_forward)`.
+    /// Slice 8.g.iv / 8.i.4.c end-to-end: `2d3w` walks
+    /// operator-pending resolution. `op_count=2 * motion_count=3
+    /// = 6` should be attached at translate time, with
+    /// `Range::None` and the correct `Target::Motion(word_forward)`.
+    /// Slice 8.i.4.c migrated the operator-pending state from
+    /// `Pending::AfterOperator(_)` to `App::partial_chord`; this
+    /// test now passes the operator's chord prefix via
+    /// `ctx_partial_with_op_count`.
     #[test]
     fn op_count_times_motion_count_attaches_at_translate() {
         let (_, b) = fixture();
         let action = translate(
-            ctx_with_op_count(
+            ctx_partial_with_op_count(
                 ModalState::Normal,
-                Pending::AfterOperator(b.delete),
+                &[crate::chord::KeyChord::char('d')],
                 &b,
                 3,
                 2,
@@ -3833,75 +3852,73 @@ mod tests {
     // ---- Find-char / till-char (f, F, t, T) ----
 
     #[test]
-    fn f_sets_pending_find_forward() {
+    fn f_absorbs_partial_chord() {
+        // Slice 8.i.4.c: `f` is a Partial trie node (because
+        // `[f, *]` is bound as a CharLiteral wildcard).
+        // Pressing `f` returns `AbsorbPartialChord(f)` instead
+        // of `SetPending(AfterFindChar { kind: Forward, ... })`.
         let (_, b) = fixture();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('f')),
         );
-        match action {
-            Action::SetPending(Pending::AfterFindChar { kind, operator }) => {
-                assert_eq!(kind, FindKind::Forward);
-                assert!(operator.is_none());
-            }
-            other => panic!("expected SetPending(AfterFindChar Forward), got {other:?}"),
-        }
+        assert!(matches!(
+            action,
+            Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('f')
+        ));
     }
 
     #[test]
-    fn capital_f_sets_pending_find_backward() {
+    fn capital_f_absorbs_partial_chord() {
         let (_, b) = fixture();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('F')),
         );
-        match action {
-            Action::SetPending(Pending::AfterFindChar { kind, .. }) => {
-                assert_eq!(kind, FindKind::Backward);
-            }
-            other => panic!("expected SetPending(AfterFindChar Backward), got {other:?}"),
-        }
+        assert!(matches!(
+            action,
+            Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('F')
+        ));
     }
 
     #[test]
-    fn t_sets_pending_till_forward() {
+    fn t_absorbs_partial_chord() {
         let (_, b) = fixture();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('t')),
         );
-        match action {
-            Action::SetPending(Pending::AfterFindChar { kind, .. }) => {
-                assert_eq!(kind, FindKind::TillForward);
-            }
-            other => panic!("expected SetPending(AfterFindChar TillForward), got {other:?}"),
-        }
+        assert!(matches!(
+            action,
+            Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('t')
+        ));
     }
 
     #[test]
-    fn capital_t_sets_pending_till_backward() {
+    fn capital_t_absorbs_partial_chord() {
         let (_, b) = fixture();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('T')),
         );
-        match action {
-            Action::SetPending(Pending::AfterFindChar { kind, .. }) => {
-                assert_eq!(kind, FindKind::TillBackward);
-            }
-            other => panic!("expected SetPending(AfterFindChar TillBackward), got {other:?}"),
-        }
+        assert!(matches!(
+            action,
+            Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('T')
+        ));
     }
 
     #[test]
     fn f_then_char_resolves_to_motion_with_args_char() {
+        // Slice 8.i.4.c: with `partial_chord = [f]`, pressing
+        // `z` resolves `[f, z]` -> Invoke(find_char_forward,
+        // args=Char('z')).
         let (_, b) = fixture();
-        let pending = Pending::AfterFindChar {
-            kind: FindKind::Forward,
-            operator: None,
-        };
         let action = translate(
-            ctx(ModalState::Normal, pending, &b),
+            ctx_partial(
+                ModalState::Normal,
+                &[crate::chord::KeyChord::char('f')],
+                &b,
+            ),
             key(KeyCode::Char('z')),
         );
         match action {
@@ -3915,28 +3932,46 @@ mod tests {
 
     #[test]
     fn df_then_char_composes_delete_with_find_target() {
+        // Slice 8.i.4.c: end-to-end `dfx` walks
+        // partial_chord absorption rather than
+        // SetPending(AfterOperator) -> SetPending(AfterFindChar)
+        // chains.
         let (_, b) = fixture();
-        // First press: `d` in Normal -> AfterOperator(delete).
+        // First press: `d` -> Invoke(absorb_operator_delete);
+        // App's apply_app_effect pushes [d] to partial_chord
+        // and latches op_count.
         let after_d = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('d')),
         );
-        let op = match after_d {
-            Action::SetPending(Pending::AfterOperator(op)) => op,
-            other => panic!("expected SetPending(AfterOperator), got {other:?}"),
+        let _ = match after_d {
+            Action::Invoke(_) => {}
+            other => panic!("expected Invoke(absorb_operator_delete), got {other:?}"),
         };
-        // Second press: `f` in operator-pending -> AfterFindChar with stashed op.
+        // Second press: `f` in partial_chord = [d] -> AbsorbPartialChord(f).
         let after_df = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(op), &b),
+            ctx_partial(
+                ModalState::Normal,
+                &[crate::chord::KeyChord::char('d')],
+                &b,
+            ),
             key(KeyCode::Char('f')),
         );
-        let pending = match after_df {
-            Action::SetPending(p) => p,
-            other => panic!("expected SetPending, got {other:?}"),
-        };
-        // Third press: `x` -> Invoke delete with find_char_forward target.
+        assert!(matches!(
+            after_df,
+            Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('f')
+        ));
+        // Third press: `x` in partial_chord = [d, f] -> Invoke
+        // delete with find_char_forward target.
         let after_dfx = translate(
-            ctx(ModalState::Normal, pending, &b),
+            ctx_partial(
+                ModalState::Normal,
+                &[
+                    crate::chord::KeyChord::char('d'),
+                    crate::chord::KeyChord::char('f'),
+                ],
+                &b,
+            ),
             key(KeyCode::Char('x')),
         );
         match after_dfx {
@@ -4001,7 +4036,7 @@ mod tests {
     fn db_resolves_to_delete_word_backward() {
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('d')], &b),
             key(KeyCode::Char('b')),
         );
         match action {
@@ -4020,7 +4055,7 @@ mod tests {
     fn de_resolves_to_delete_word_end() {
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('d')], &b),
             key(KeyCode::Char('e')),
         );
         match action {
@@ -4035,15 +4070,16 @@ mod tests {
     // ---- change operator: c, cw, cc ----
 
     #[test]
-    fn c_sets_pending_operator_change() {
+    fn c_invokes_absorb_operator_change() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('c')),
         );
         match action {
-            Action::SetPending(Pending::AfterOperator(op)) => assert_eq!(op, b.change),
-            other => panic!("expected SetPending(AfterOperator(change)), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_change),
+            other => panic!("expected Invoke(absorb_operator_change), got {other:?}"),
         }
     }
 
@@ -4051,7 +4087,7 @@ mod tests {
     fn cw_resolves_to_change_with_word_forward_target() {
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.change), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('c')], &b),
             key(KeyCode::Char('w')),
         );
         match action {
@@ -4070,7 +4106,7 @@ mod tests {
     fn cc_resolves_to_change_with_current_line_range() {
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.change), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('c')], &b),
             key(KeyCode::Char('c')),
         );
         match action {
@@ -4085,15 +4121,16 @@ mod tests {
     // ---- yank operator + paste ----
 
     #[test]
-    fn y_sets_pending_operator_yank() {
+    fn y_invokes_absorb_operator_yank() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('y')),
         );
         match action {
-            Action::SetPending(Pending::AfterOperator(op)) => assert_eq!(op, b.yank),
-            other => panic!("expected SetPending(AfterOperator(yank)), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_yank),
+            other => panic!("expected Invoke(absorb_operator_yank), got {other:?}"),
         }
     }
 
@@ -4101,7 +4138,7 @@ mod tests {
     fn yw_resolves_to_yank_word_forward() {
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.yank), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('y')], &b),
             key(KeyCode::Char('w')),
         );
         match action {
@@ -4120,7 +4157,7 @@ mod tests {
     fn yy_resolves_to_yank_current_line() {
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.yank), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('y')], &b),
             key(KeyCode::Char('y')),
         );
         match action {
@@ -4181,7 +4218,7 @@ mod tests {
         // Regression check: the `cc` arm should only fire for op == change.
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('d')], &b),
             key(KeyCode::Char('c')),
         );
         // Delete operator + 'c' key: no specific motion, fallback clears pending.
@@ -4192,7 +4229,7 @@ mod tests {
     fn d_caret_resolves_to_delete_first_non_blank() {
         let (_, b) = fixture();
         let action = translate(
-            ctx(ModalState::Normal, Pending::AfterOperator(b.delete), &b),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('d')], &b),
             key(KeyCode::Char('^')),
         );
         match action {

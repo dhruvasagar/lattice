@@ -26,8 +26,10 @@ use lattice_grammar::SearchDirection;
 use lattice_grammar::ViewportPos;
 use lattice_grammar::VisualKind;
 use lattice_grammar::args::Args;
+use lattice_grammar::builtins::Builtins;
 use lattice_grammar::effect::Effect;
 use lattice_grammar::registry::ActionSpec;
+use lattice_grammar::registry::OperatorId;
 use lattice_protocol::ids::CommandId;
 
 /// Strongly-typed handles to every App-side action registered
@@ -114,13 +116,29 @@ pub struct ActionIds {
     pub select_register: CommandId,
     pub start_macro_record: CommandId,
     pub play_macro: CommandId,
+    /// Slice 8.i.4.c: operator-prefix arms (`d`, `c`, `y`, `>`,
+    /// `<`, `gU`, `gu`, `g~`). Each chord binds a typed
+    /// `CommandInvocation` whose `ActionSpec` returns
+    /// `AppEffect::AbsorbOperatorPrefix(op_id)`. The App
+    /// handler latches `pending_count` -> `op_count` and
+    /// pushes the operator's chord prefix into
+    /// `App::partial_chord`. Replaces the legacy
+    /// `Action::SetPending(Pending::AfterOperator(_))` flow.
+    pub absorb_operator_delete: CommandId,
+    pub absorb_operator_change: CommandId,
+    pub absorb_operator_yank: CommandId,
+    pub absorb_operator_indent_right: CommandId,
+    pub absorb_operator_indent_left: CommandId,
+    pub absorb_operator_upper: CommandId,
+    pub absorb_operator_lower: CommandId,
+    pub absorb_operator_toggle_case: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
 /// the resulting [`ActionIds`]. Called once at App startup,
 /// after `lattice_grammar::builtins::populate` and
 /// `lattice_grammar::ex_commands::populate`.
-pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
+pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionIds {
     ActionIds {
         match_bracket: register_simple(
             registry,
@@ -606,7 +624,77 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
                 }
             }),
         ),
+        absorb_operator_delete: register_operator_prefix(
+            registry,
+            "action:absorb-operator-delete",
+            "Vim's `d`: arm operator-pending for delete.",
+            builtins.delete,
+        ),
+        absorb_operator_change: register_operator_prefix(
+            registry,
+            "action:absorb-operator-change",
+            "Vim's `c`: arm operator-pending for change.",
+            builtins.change,
+        ),
+        absorb_operator_yank: register_operator_prefix(
+            registry,
+            "action:absorb-operator-yank",
+            "Vim's `y`: arm operator-pending for yank.",
+            builtins.yank,
+        ),
+        absorb_operator_indent_right: register_operator_prefix(
+            registry,
+            "action:absorb-operator-indent-right",
+            "Vim's `>`: arm operator-pending for indent-right.",
+            builtins.indent_right,
+        ),
+        absorb_operator_indent_left: register_operator_prefix(
+            registry,
+            "action:absorb-operator-indent-left",
+            "Vim's `<`: arm operator-pending for indent-left.",
+            builtins.indent_left,
+        ),
+        absorb_operator_upper: register_operator_prefix(
+            registry,
+            "action:absorb-operator-upper",
+            "Vim's `gU`: arm operator-pending for uppercase.",
+            builtins.upper,
+        ),
+        absorb_operator_lower: register_operator_prefix(
+            registry,
+            "action:absorb-operator-lower",
+            "Vim's `gu`: arm operator-pending for lowercase.",
+            builtins.lower,
+        ),
+        absorb_operator_toggle_case: register_operator_prefix(
+            registry,
+            "action:absorb-operator-toggle-case",
+            "Vim's `g~`: arm operator-pending for toggle-case.",
+            builtins.toggle_case,
+        ),
     }
+}
+
+/// Helper for the 8 operator-prefix actions (slice 8.i.4.c).
+/// Captures the `OperatorId` in the closure so each registration
+/// returns a constant `Effect::AppAction(AppEffect::AbsorbOperatorPrefix(op))`
+/// for its specific operator.
+fn register_operator_prefix(
+    registry: &mut CommandRegistry,
+    name: &str,
+    doc: &str,
+    op: OperatorId,
+) -> CommandId {
+    registry.register_action(
+        name,
+        doc,
+        ActionSpec {
+            apply: Box::new(move |_| {
+                Ok(Effect::AppAction(AppEffect::AbsorbOperatorPrefix(op)))
+            }),
+            args_schema: vec![],
+        },
+    )
 }
 
 /// Helper for captured-char wildcard actions (`m<X>`, `'<X>`,
@@ -687,7 +775,8 @@ mod tests {
     #[test]
     fn populate_registers_every_field_into_registry() {
         let mut registry = CommandRegistry::new();
-        let ids = populate(&mut registry);
+        let builtins = lattice_grammar::builtins::populate(&mut registry);
+        let ids = populate(&mut registry, &builtins);
         // Every field should round-trip back to a registered
         // `CommandKind::Action` entry that names the dashed form.
         for (id, expected_name) in [
@@ -766,6 +855,14 @@ mod tests {
             (ids.select_register, "action:select-register"),
             (ids.start_macro_record, "action:start-macro-record"),
             (ids.play_macro, "action:play-macro"),
+            (ids.absorb_operator_delete, "action:absorb-operator-delete"),
+            (ids.absorb_operator_change, "action:absorb-operator-change"),
+            (ids.absorb_operator_yank, "action:absorb-operator-yank"),
+            (ids.absorb_operator_indent_right, "action:absorb-operator-indent-right"),
+            (ids.absorb_operator_indent_left, "action:absorb-operator-indent-left"),
+            (ids.absorb_operator_upper, "action:absorb-operator-upper"),
+            (ids.absorb_operator_lower, "action:absorb-operator-lower"),
+            (ids.absorb_operator_toggle_case, "action:absorb-operator-toggle-case"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")
@@ -777,7 +874,8 @@ mod tests {
     #[test]
     fn dispatch_returns_app_action_effect() {
         let mut registry = CommandRegistry::new();
-        let ids = populate(&mut registry);
+        let builtins = lattice_grammar::builtins::populate(&mut registry);
+        let ids = populate(&mut registry, &builtins);
         let mut doc = lattice_core::Document::empty();
         let inv = CommandInvocation::of(ids.match_bracket);
         let eff = execute(
@@ -802,7 +900,8 @@ mod tests {
     #[test]
     fn captured_char_specs_validate() {
         let mut registry = CommandRegistry::new();
-        let ids = populate(&mut registry);
+        let builtins = lattice_grammar::builtins::populate(&mut registry);
+        let ids = populate(&mut registry, &builtins);
         let mut doc = lattice_core::Document::empty();
         let cancel = CancellationToken::never();
         let pos = lattice_protocol::position::Position::ZERO;

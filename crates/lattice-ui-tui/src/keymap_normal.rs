@@ -448,25 +448,25 @@ pub fn register_normal_bindings(
         CommandInvocation::of(builtins.goto_first_line.0),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[g.clone(), lit_char('U')],
-        Action::SetPending(Pending::AfterOperator(builtins.upper)),
+        CommandInvocation::of(actions.absorb_operator_upper),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[g.clone(), lit_char('u')],
-        Action::SetPending(Pending::AfterOperator(builtins.lower)),
+        CommandInvocation::of(actions.absorb_operator_lower),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[g.clone(), lit_char('~')],
-        Action::SetPending(Pending::AfterOperator(builtins.toggle_case)),
+        CommandInvocation::of(actions.absorb_operator_toggle_case),
         source(),
     );
     handle.bind(
@@ -814,39 +814,39 @@ pub fn register_normal_bindings(
     // operator-pending state. `[g, U]` / `[g, u]` / `[g, ~]` were
     // already registered at slice 8.g.ii; their depth-2 binding
     // sets the same `SetPending(AfterOperator(...))` action.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('d')],
-        Action::SetPending(Pending::AfterOperator(builtins.delete)),
+        CommandInvocation::of(actions.absorb_operator_delete),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('c')],
-        Action::SetPending(Pending::AfterOperator(builtins.change)),
+        CommandInvocation::of(actions.absorb_operator_change),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('y')],
-        Action::SetPending(Pending::AfterOperator(builtins.yank)),
+        CommandInvocation::of(actions.absorb_operator_yank),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('>')],
-        Action::SetPending(Pending::AfterOperator(builtins.indent_right)),
+        CommandInvocation::of(actions.absorb_operator_indent_right),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('<')],
-        Action::SetPending(Pending::AfterOperator(builtins.indent_left)),
+        CommandInvocation::of(actions.absorb_operator_indent_left),
         source(),
     );
 
@@ -1151,10 +1151,14 @@ fn register_operator_pending(
         );
     }
 
-    // ---- Text-object pendings + resolutions. `[op, i]` /
-    // ---- `[op, a]` arm `Pending::AfterTextObject`; `[op, i, X]`
-    // ---- / `[op, a, X]` resolve to typed `Invoke(op,
-    // ---- Target::TextObject(...))`.
+    // ---- Text-object resolutions. Slice 8.i.4.c: the depth-2
+    // ---- `[op, i]` / `[op, a]` standalone arms are gone -- the
+    // ---- trie's natural `Partial` result for those paths
+    // ---- (because `[op, i, X]` / `[op, a, X]` are bound) drives
+    // ---- `App::partial_chord` via `AbsorbPartialChord`. The
+    // ---- depth-3 resolutions stay; they fire when partial_chord
+    // ---- has accumulated `[op, i / a]` and the user types the
+    // ---- text-object char.
     for around in [false, true] {
         let around_chord: ChordPattern = if around {
             lit_char('a')
@@ -1163,16 +1167,6 @@ fn register_operator_pending(
         };
         let mut pending_path: Vec<ChordPattern> = op_prefix.to_vec();
         pending_path.push(around_chord.clone());
-        handle.bind_legacy(
-            layer,
-            mode,
-            &pending_path,
-            Action::SetPending(Pending::AfterTextObject {
-                operator: op,
-                around,
-            }),
-            source(),
-        );
         register_text_object_resolutions(
             handle,
             &pending_path,
@@ -1230,27 +1224,17 @@ fn register_find_char_paths(
         ),
     ];
 
-    for (chord, kind, motion_id) in table {
-        // Depth-1 (or depth-2 under operator): arm
-        // `Pending::AfterFindChar`.
-        let mut path: Vec<ChordPattern> = prefix.to_vec();
-        path.push(chord.clone());
-        handle.bind_legacy(
-            layer,
-            mode,
-            &path,
-            Action::SetPending(Pending::AfterFindChar {
-                kind: *kind,
-                operator,
-            }),
-            source(),
-        );
-
-        // Depth-2 (or depth-3): CharLiteral wildcard. The
-        // bound action carries `Args::None` (or
-        // `Target::Motion(_, Args::None)` for the operator
-        // form); the substituter folds the captured char in.
-        let mut wild_path = path.clone();
+    for (chord, _kind, motion_id) in table {
+        // Slice 8.i.4.c: the depth-1 (or depth-2 under operator)
+        // standalone `[..., f / F / t / T]` arms are gone -- the
+        // trie's natural `Partial` result for those paths drives
+        // `App::partial_chord` via `AbsorbPartialChord`. Only
+        // the depth-2 (or depth-3) `CharLiteral` wildcard
+        // resolution stays; it fires when partial_chord has
+        // accumulated `[..., f / F / t / T]` and the user types
+        // the target char.
+        let mut wild_path: Vec<ChordPattern> = prefix.to_vec();
+        wild_path.push(chord.clone());
         wild_path.push(ChordPattern::CharLiteral);
         let invocation = match operator {
             None => CommandInvocation::of(motion_id.0),
@@ -1439,9 +1423,18 @@ pub fn lookup_normal_with_prefix(
         LookupResult::Bound { command, captured } => {
             action_from_bound_with_capture(&command, &captured)
         }
-        LookupResult::Partial | LookupResult::Unbound => {
-            Action::SetPending(Pending::None)
+        LookupResult::Partial => {
+            // Slice 8.i.4.c: nested partial chord. Same shape
+            // as `lookup_normal`'s `Partial` arm -- absorb the
+            // current chord into `App::partial_chord` so the
+            // next keystroke routes through this helper again
+            // with the extended prefix. Required for chains
+            // like `di` (d already in partial_chord, `i` is
+            // partial because `[d, i, w]` etc. are bound) and
+            // `df` (find-char prefix).
+            Action::AbsorbPartialChord(chord)
         }
+        LookupResult::Unbound => Action::SetPending(Pending::None),
     }
 }
 
@@ -1707,7 +1700,7 @@ mod tests {
     fn fixture() -> (CommandRegistry, Builtins, ActionIds) {
         let mut r = CommandRegistry::new();
         let b = lattice_grammar::builtins::populate(&mut r);
-        let a = crate::actions::populate(&mut r);
+        let a = crate::actions::populate(&mut r, &b);
         (r, b, a)
     }
 
@@ -1859,15 +1852,20 @@ mod tests {
     /// resolution, but lookup of `[d]` alone returns `Bound`
     /// because the depth-1 node carries a binding.
     #[test]
-    fn d_arms_after_operator_delete_pending() {
-        let (h, b, _) = populated_handle();
+    fn d_invokes_absorb_operator_delete() {
+        // Slice 8.i.4.c: pressing `d` invokes the typed
+        // `absorb_operator_delete` action, which emits
+        // `AppEffect::AbsorbOperatorPrefix(delete)`. App's
+        // handler latches op_count and pushes [d] to
+        // partial_chord.
+        let (h, _, a) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('d'), KeyModifiers::NONE));
         match r {
-            Some(Action::SetPending(Pending::AfterOperator(op))) => {
-                assert_eq!(op, b.delete);
+            Some(Action::Invoke(inv)) => {
+                assert_eq!(inv.command, a.absorb_operator_delete);
             }
             other => panic!(
-                "expected SetPending(AfterOperator(delete)), got {other:?}"
+                "expected Invoke(absorb_operator_delete), got {other:?}"
             ),
         }
     }
@@ -1953,23 +1951,21 @@ mod tests {
     }
 
     #[test]
-    fn di_arms_after_text_object_pending_inner() {
-        let (h, b, _) = populated_handle();
+    fn di_absorbs_partial_chord() {
+        // Slice 8.i.4.c: with prefix [d], pressing `i` absorbs
+        // into partial_chord. The trie returns Partial because
+        // `[d, i, w]` etc. are bound; lookup_normal_with_prefix
+        // emits `AbsorbPartialChord(i)`.
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d')],
             &ev(KeyCode::Char('i'), KeyModifiers::NONE),
         );
-        match r {
-            Action::SetPending(Pending::AfterTextObject {
-                operator,
-                around,
-            }) => {
-                assert_eq!(operator, b.delete);
-                assert!(!around);
-            }
-            other => panic!("expected SetPending(AfterTextObject), got {other:?}"),
-        }
+        assert!(matches!(
+            r,
+            Action::AbsorbPartialChord(c) if c == KeyChord::char('i')
+        ));
     }
 
     #[test]
@@ -2014,24 +2010,20 @@ mod tests {
     }
 
     #[test]
-    fn df_arms_after_find_char_with_operator() {
-        let (h, b, _) = populated_handle();
+    fn df_absorbs_partial_chord() {
+        // Slice 8.i.4.c: with prefix [d], pressing `f` absorbs
+        // into partial_chord. The trie returns Partial because
+        // `[d, f, *]` is bound (find-char wildcard).
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d')],
             &ev(KeyCode::Char('f'), KeyModifiers::NONE),
         );
-        match r {
-            Action::SetPending(Pending::AfterFindChar {
-                kind: FindKind::Forward,
-                operator: Some(op),
-            }) => {
-                assert_eq!(op, b.delete);
-            }
-            other => panic!(
-                "expected SetPending(AfterFindChar Forward delete), got {other:?}"
-            ),
-        }
+        assert!(matches!(
+            r,
+            Action::AbsorbPartialChord(c) if c == KeyChord::char('f')
+        ));
     }
 
     #[test]
@@ -2143,18 +2135,18 @@ mod tests {
     }
 
     #[test]
-    fn gu_arms_after_operator_pending_for_lower() {
-        let (h, b, _) = populated_handle();
+    fn gu_invokes_absorb_operator_lower() {
+        // Slice 8.i.4.c: `gu` (with prefix [g]) resolves to
+        // Invoke(absorb_operator_lower).
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('g')],
             &ev(KeyCode::Char('u'), KeyModifiers::NONE),
         );
         match r {
-            Action::SetPending(Pending::AfterOperator(op)) => {
-                assert_eq!(op, b.lower);
-            }
-            other => panic!("expected SetPending(AfterOperator(lower)), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_lower),
+            other => panic!("expected Invoke(absorb_operator_lower), got {other:?}"),
         }
     }
 

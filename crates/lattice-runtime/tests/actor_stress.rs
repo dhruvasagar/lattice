@@ -2,13 +2,15 @@
 //!
 //! These tests cover the actor pattern's contract under load:
 //!
-//! 1. **Mailbox saturation** -- when a burst of edits exceeds
-//!    `DEFAULT_MAILBOX_CAPACITY`, the handle's `try_send` returns
-//!    `RuntimeError::Busy` *and* the actor still drains the mailbox
-//!    correctly (no lost edits, no deadlocks).
+//! 1. **Burst durability** -- a fast burst of edits all land in
+//!    order; no edit is dropped, no deadlock. Audit slice 6 / H3
+//!    swapped the bounded `mpsc::channel(64)` for an unbounded
+//!    channel, so the previous "saturation surfaces Busy"
+//!    contract is gone -- the new contract is "every edit
+//!    durably lands."
 //! 2. **Concurrent senders** -- many handles cloning the same actor
 //!    fire edits in parallel; the actor serialises them, and every
-//!    edit either lands or surfaces as Busy.
+//!    edit lands.
 //! 3. **Snapshot publish ordering** -- a caller that observes a
 //!    reply sees the corresponding snapshot via `snapshot()`. The
 //!    publish-before-reply ordering (DESIGN.md §5.6.8) holds under
@@ -35,49 +37,31 @@ fn empty_registry() -> Arc<CommandRegistry> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mailbox_saturation_surfaces_busy_then_drains() {
-    // Fire many edits without awaiting; some should hit Busy
-    // since the mailbox capacity is bounded. We then drain the
-    // pending edits and verify the buffer's final state matches
-    // the count of accepted edits.
+async fn mailbox_burst_lands_every_edit() {
+    // Audit slice 6 / H3: with the unbounded mailbox, a burst of
+    // edits MUST all land -- no Busy, no drops. The pre-fix
+    // bounded-channel contract was "Busy under burst, accepted
+    // count + busy count == burst"; the new contract is just
+    // "every edit lands."
     let handle = spawn_document(Document::from_text(""), empty_registry());
-
-    // Hold the actor briefly so the mailbox fills before the
-    // first edit drains. We do this by issuing a long batch of
-    // single-character inserts without awaiting -- on a 4-thread
-    // runtime the actor processes each in a few nanoseconds, but
-    // the burst still hits the mailbox above its drain rate.
     let burst = 4096usize;
     let mut pendings = Vec::with_capacity(burst);
-    let mut busy_count = 0usize;
     for _ in 0..burst {
-        // Always insert at byte 0 -- every snapshot-load grows
-        // the buffer, but the insert position stays valid for
-        // every actor state. We don't depend on edit ordering
-        // here, only on the count of accepted vs. busy.
         let edit = Edit::insert(Position::ZERO, "x");
-        let pending = handle.apply_edit(edit);
-        pendings.push(pending);
+        pendings.push(handle.apply_edit(edit));
     }
-    // Resolve every pending. Successful edits append; Busy edits
-    // were rejected before the actor saw them.
     for p in pendings {
         match p.await {
             Ok(_) => {}
-            Err(RuntimeError::Busy) => busy_count += 1,
-            Err(other) => panic!("unexpected err: {other:?}"),
+            Err(other) => panic!("unexpected err under burst: {other:?}"),
         }
     }
-
-    // Final invariant: text length == burst - busy_count.
     let snap = handle.snapshot();
-    assert_eq!(snap.text().len(), burst - busy_count);
-    // We expect at least *some* Busy at burst=4096 against a 64-
-    // capacity mailbox, but on very fast machines it's possible
-    // (theoretically) for the actor to drain entirely between
-    // try_sends. Don't assert nonzero -- assert the contract:
-    // accepted + busy == burst, and the buffer reflects accepted.
-    assert_eq!(burst - busy_count + busy_count, burst);
+    assert_eq!(
+        snap.text().len(),
+        burst,
+        "every edit in the burst must land"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -115,11 +99,16 @@ async fn concurrent_handles_serialise_through_actor() {
     let final_len = final_text.len();
     let acc = accepted.load(Ordering::Relaxed);
     // Length matches accepted-edit count (each was a 1-byte
-    // insert). Some edits may have been rejected with Busy under
-    // contention; that's allowed by §5.2.1 backpressure.
+    // insert). With the unbounded mailbox (audit slice 6 / H3),
+    // every send lands, so `acc == n_tasks * edits_per_task`.
     assert_eq!(
         final_len, acc,
         "len={final_len} accepted={acc} -- actor lost or duplicated edits"
+    );
+    assert_eq!(
+        acc,
+        n_tasks * edits_per_task,
+        "every concurrent edit must land under the unbounded mailbox"
     );
 }
 
@@ -131,15 +120,11 @@ async fn snapshot_observed_after_reply_reflects_that_edit() {
     let handle = spawn_document(Document::from_text(""), empty_registry());
     for i in 0..256 {
         let edit = Edit::insert(Position::ZERO, "z");
-        // Apply with retry on Busy -- backpressure is not a test
-        // concern here; we want every edit to land so we can read
-        // back the snapshot deterministically.
-        loop {
-            match handle.apply_edit(edit.clone()).await {
-                Ok(_) => break,
-                Err(RuntimeError::Busy) => tokio::task::yield_now().await,
-                Err(other) => panic!("unexpected err: {other:?}"),
-            }
+        // With the unbounded mailbox the apply always lands;
+        // `Busy` is impossible (audit slice 6 / H3).
+        match handle.apply_edit(edit.clone()).await {
+            Ok(_) => {}
+            Err(other) => panic!("unexpected err: {other:?}"),
         }
         let snap = handle.snapshot();
         assert_eq!(
@@ -158,11 +143,10 @@ async fn dispatch_with_pre_flipped_token_under_load_short_circuits() {
     // is the cancellation poll.
     let handle = spawn_document(Document::from_text("seed"), empty_registry());
 
-    // Keep the mailbox warm but not saturated. The mailbox cap is
-    // 64 (actor::DEFAULT_MAILBOX_CAPACITY) so 16 in-flight edits
-    // leaves headroom for the dispatch to enqueue and reach the
-    // actor's check on the cancellation token. We're testing the
-    // actor's cancellation path, not the handle's Busy backpressure.
+    // Keep the mailbox warm. With the unbounded mailbox (audit
+    // slice 6 / H3) there's no saturation case; we just want a
+    // few queued edits ahead of the dispatch so we exercise the
+    // actor's cancellation poll under load.
     let mut pendings = Vec::new();
     for _ in 0..16 {
         let edit = Edit::insert(Position::ZERO, "_");
@@ -220,30 +204,23 @@ async fn dropping_last_handle_with_queued_messages_drains_cleanly() {
 }
 
 #[test]
-fn block_on_dispatch_returns_busy_when_mailbox_full() {
+fn block_on_burst_lands_every_edit() {
     // Synchronous (block_on) variant: the input loop's normal
-    // path. We saturate the mailbox with non-awaited edits, then
-    // try a block_on; the immediate Busy reply should surface.
+    // path. With the unbounded mailbox (audit slice 6 / H3),
+    // every queued edit lands -- no Busy. We fire a 256-edit
+    // burst and assert all of them committed.
     let handle = spawn_document(Document::from_text(""), empty_registry());
-
-    // Fill the mailbox without giving the actor a chance to drain
-    // -- on a single-thread runtime block_on parks the executor
-    // until the future resolves, but try_send doesn't park.
     let mut pendings = Vec::new();
     for _ in 0..256 {
         pendings.push(handle.apply_edit(Edit::insert(Position::ZERO, "x")));
     }
-    // At least one of these should have hit Busy. We don't assert
-    // count -- timing-dependent -- but we DO assert that draining
-    // every pending eventually completes (accepted or Busy).
-    let mut accepted = 0;
-    let mut busy = 0;
+    let mut accepted = 0usize;
     for p in pendings {
         match block_on(p) {
             Ok(_) => accepted += 1,
-            Err(RuntimeError::Busy) => busy += 1,
             Err(other) => panic!("unexpected err: {other:?}"),
         }
     }
-    assert_eq!(accepted + busy, 256);
+    assert_eq!(accepted, 256);
+    assert_eq!(handle.snapshot().text().len(), 256);
 }

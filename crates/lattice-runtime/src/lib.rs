@@ -6,10 +6,13 @@
 //!
 //! 1. **Document actor** ([`actor`]): one tokio task per open document.
 //!    The task owns the writable [`lattice_core::Document`]; mutations
-//!    arrive via a bounded mpsc mailbox. No callsite holds a lock on
+//!    arrive via an unbounded mpsc mailbox. No callsite holds a lock on
 //!    document state -- exclusive access is statically guaranteed by
-//!    the actor pattern. Backpressure surfaces as
-//!    [`RuntimeError::Busy`] when the mailbox is full.
+//!    the actor pattern. Audit slice 6 / H3 dropped the previous
+//!    bounded-mailbox + `RuntimeError::Busy` design after observing
+//!    that App-side callers silently discarded the Busy variant
+//!    under bursts; the unbounded channel makes "edit lands or
+//!    actor is gone" the only outcome a caller can observe.
 //!
 //! 2. **Document snapshots** ([`snapshot`]): after every committed
 //!    mutation the actor builds an immutable [`DocumentSnapshot`] and

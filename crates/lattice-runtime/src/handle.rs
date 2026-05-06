@@ -16,15 +16,17 @@
 //! `text_version`, `selections`) are wait-free and return immediately
 //! from the published snapshot. They never round-trip the actor.
 //!
-//! ## When the mailbox is full
+//! ## Mailbox semantics
 //!
-//! Mutating methods fire `try_send`; on `TrySendError::Full` they
-//! return a `Pending` whose receiver yields [`RuntimeError::Busy`]
-//! immediately. The caller decides whether to retry. The TUI's
-//! input loop never enqueues faster than it processes (one
-//! `apply` per keystroke; the actor processes faster than human
-//! typing) -- backpressure is the contract for plugin / scripted
-//! callers, not the v1 TUI.
+//! The mailbox is `tokio::sync::mpsc::unbounded_channel` (audit
+//! slice 6 / H3). Mutating methods send synchronously; the only
+//! failure mode is [`RuntimeError::ActorGone`], surfaced when
+//! the actor task has terminated. The previous bounded-channel +
+//! `RuntimeError::Busy` design dropped edits silently when the
+//! App's `apply_edit_blocking` discarded the Busy variant under
+//! bursts; the unbounded channel makes this class of bug
+//! structurally impossible. Queue depth bounds itself by edit
+//! rate × actor stall (typing is human-paced; a few KB at most).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -37,7 +39,7 @@ use lattice_protocol::position::Position;
 use lattice_protocol::selection::SelectionSet;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::actor::{ActorMsg, AppliedEdit, DEFAULT_MAILBOX_CAPACITY, DocumentActor};
+use crate::actor::{ActorMsg, AppliedEdit, DocumentActor};
 use crate::pending::{InvocationId, Pending, RuntimeError};
 use crate::runtime::shared_runtime;
 use crate::snapshot::{DocumentSnapshot, PublishedSnapshot};
@@ -48,7 +50,10 @@ use crate::snapshot::{DocumentSnapshot, PublishedSnapshot};
 /// document's writable state.
 #[derive(Clone)]
 pub struct DocumentHandle {
-    sender: mpsc::Sender<ActorMsg>,
+    /// See the module-level "Mailbox semantics" doc for the
+    /// rationale behind the unbounded channel (audit slice 6 /
+    /// H3).
+    sender: mpsc::UnboundedSender<ActorMsg>,
     snapshot_cell: Arc<PublishedSnapshot>,
 }
 
@@ -65,7 +70,7 @@ pub struct DocumentHandle {
 /// handle is dropped; on the last drop the mailbox closes, the
 /// actor's `recv` loop exits, and the task returns.
 pub fn spawn_document(document: Document, registry: Arc<CommandRegistry>) -> DocumentHandle {
-    let (tx, rx) = mpsc::channel(DEFAULT_MAILBOX_CAPACITY);
+    let (tx, rx) = mpsc::unbounded_channel();
     let snapshot_cell = Arc::new(PublishedSnapshot::new(DocumentSnapshot::from_document(
         &document,
     )));
@@ -233,19 +238,14 @@ impl DocumentHandle {
         let id = InvocationId::next();
         let (tx, rx) = oneshot::channel();
         let msg = build(tx);
-        if let Err(err) = self.sender.try_send(msg) {
-            // Reconstruct a fresh oneshot we can immediately fill;
-            // the original `tx` was consumed into `msg` and dropped
-            // when `try_send` returned the message back.
-            let (busy_tx, busy_rx) = oneshot::channel();
-            let runtime_err = match err {
-                mpsc::error::TrySendError::Full(_) => RuntimeError::Busy,
-                mpsc::error::TrySendError::Closed(_) => RuntimeError::ActorGone,
-            };
-            // Best-effort send; if the receiver has been dropped
-            // (the caller didn't await), nothing to do.
-            let _ = busy_tx.send(Err(runtime_err));
-            return Pending::new(id, busy_rx);
+        if self.sender.send(msg).is_err() {
+            // Receiver closed -> actor gone. The original `tx`
+            // was consumed into `msg` and dropped on send failure;
+            // mint a fresh oneshot so the caller's pending
+            // resolves immediately with the right error.
+            let (gone_tx, gone_rx) = oneshot::channel();
+            let _ = gone_tx.send(Err(RuntimeError::ActorGone));
+            return Pending::new(id, gone_rx);
         }
         Pending::new(id, rx)
     }

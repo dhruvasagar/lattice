@@ -14,13 +14,13 @@
 //!    actor responds. The TUI uses
 //!    [`crate::runtime::block_on`] which forwards to this.
 //!
-//! Errors are kept narrow: [`RuntimeError::Busy`] when the actor's
-//! bounded mailbox is full at send time, [`RuntimeError::ActorGone`]
-//! when the actor task has shut down before it could respond, and
+//! Errors are kept narrow: [`RuntimeError::ActorGone`] when the
+//! actor task has shut down before it could respond, and
 //! [`RuntimeError::Core`] for any inner [`lattice_core::CoreError`]
-//! (range out of bounds, etc.). Distinguishing them lets the UI
-//! show a "buffer is busy" indicator (Busy) vs. a hard error (the
-//! others).
+//! (range out of bounds, etc.). The previous `Busy` variant was
+//! removed in audit slice 6 / H3 -- the document actor's mailbox
+//! is now unbounded, so backpressure surfaces as queue depth
+//! rather than per-call drops.
 
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -108,14 +108,6 @@ impl<T> fmt::Debug for Pending<T> {
 /// UI can branch on the failure shape rather than a generic message.
 #[derive(Debug, Error)]
 pub enum RuntimeError {
-    /// The actor's bounded mailbox was full at send time -- the
-    /// caller is producing requests faster than the actor commits
-    /// them. Per DESIGN.md §5.2.1: callers are expected to handle
-    /// this rather than block. The TUI surfaces a "buffer is busy"
-    /// indicator; scripts may retry with backoff.
-    #[error("document actor mailbox is full")]
-    Busy,
-
     /// The actor task has terminated (panic, drop, or graceful
     /// shutdown) before it could respond. Treated as a permanent
     /// failure -- the caller should re-spawn the document.

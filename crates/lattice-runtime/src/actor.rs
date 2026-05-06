@@ -10,10 +10,13 @@
 //!    actor builds a [`DocumentSnapshot`] from the post-commit
 //!    state and writes it to the [`PublishedSnapshot`] cell with
 //!    `store_release` semantics.
-//! 3. **Bounded backpressure** -- the mailbox's capacity is fixed
-//!    at construction time; the handle's `try_send` returns
-//!    [`RuntimeError::Busy`] when full. Per DESIGN.md §5.2.1
-//!    callers handle Busy rather than block.
+//! 3. **Unbounded mailbox** -- audit slice 6 / H3. The mailbox
+//!    was originally bounded with a `try_send` -> `Busy` path
+//!    for callers; in practice, App-side `apply_edit_blocking`
+//!    discarded `Busy` silently and bursts could desync the
+//!    buffer from what the user typed. Unbounded eliminates the
+//!    silent-drop class entirely; queue depth bounds itself by
+//!    edit rate × actor-stall-duration (typing is human-paced).
 //! 4. **Graceful shutdown** -- when every [`crate::DocumentHandle`]
 //!    is dropped the mailbox closes; the actor's `recv` loop exits
 //!    naturally.
@@ -46,12 +49,6 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::pending::RuntimeError;
 use crate::snapshot::{DocumentSnapshot, PublishedSnapshot};
-
-/// Mailbox capacity. v1 default: 64 in-flight messages per
-/// document. Below this threshold the dispatcher returns Busy and
-/// the caller decides what to do (TUI: drop with indicator;
-/// scripts: retry with backoff).
-pub(crate) const DEFAULT_MAILBOX_CAPACITY: usize = 64;
 
 /// One unit of work the actor executes. Each variant carries its
 /// own `oneshot::Sender` so the response can flow back to the
@@ -131,7 +128,7 @@ pub struct DocumentActor {
     /// `Arc` only so it can run [`lattice_grammar::execute`]
     /// against the registry from within its own task.
     registry: Arc<CommandRegistry>,
-    inbox: mpsc::Receiver<ActorMsg>,
+    inbox: mpsc::UnboundedReceiver<ActorMsg>,
     snapshot_cell: Arc<PublishedSnapshot>,
 }
 
@@ -139,7 +136,7 @@ impl DocumentActor {
     pub(crate) fn new(
         document: Document,
         registry: Arc<CommandRegistry>,
-        inbox: mpsc::Receiver<ActorMsg>,
+        inbox: mpsc::UnboundedReceiver<ActorMsg>,
         snapshot_cell: Arc<PublishedSnapshot>,
     ) -> Self {
         Self {

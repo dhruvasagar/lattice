@@ -74,11 +74,11 @@ pub fn register_replace_bindings(handle: &KeymapHandle, actions: &ActionIds) {
     let mode = BindingMode::Replace;
 
     // <Esc> -> exit Replace mode.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[ChordPattern::Literal(KeyChord::special(SpecialKey::Esc))],
-        Action::EnterMode(ModalState::Normal),
+        CommandInvocation::of(actions.enter_mode_normal),
         replace_source(esc_line()),
     );
 
@@ -258,7 +258,7 @@ mod tests {
             return Action::None;
         }
         match event.code {
-            KeyCode::Esc => Action::EnterMode(ModalState::Normal),
+            KeyCode::Esc => Action::Invoke(CommandInvocation::of(actions.enter_mode_normal)),
             KeyCode::Backspace => Action::Invoke(CommandInvocation::of(actions.replace_undo_last)),
             KeyCode::Enter => Action::Insert("\n".into()),
             KeyCode::Char(c) => Action::OverwriteChar(c),
@@ -286,8 +286,12 @@ mod tests {
     #[test]
     fn esc_exits_to_normal() {
         let h = populated_handle();
+        let a = shared_actions();
         let r = dispatch_replace(&h, &ev(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(matches!(r, Action::EnterMode(ModalState::Normal)));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_mode_normal),
+            other => panic!("expected Invoke(enter_mode_normal), got {other:?}"),
+        }
     }
 
     #[test]

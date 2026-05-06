@@ -237,11 +237,11 @@ pub fn register_normal_bindings(
     );
 
     // Mode entry.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('i')],
-        Action::EnterMode(ModalState::Insert),
+        CommandInvocation::of(actions.enter_mode_insert),
         source(),
     );
     handle.bind(
@@ -272,25 +272,25 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.enter_command_line),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('v')],
-        Action::EnterVisual(VisualKind::Charwise),
+        CommandInvocation::of(actions.enter_visual_charwise),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('V')],
-        Action::EnterVisual(VisualKind::Linewise),
+        CommandInvocation::of(actions.enter_visual_linewise),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('R')],
-        Action::EnterMode(ModalState::Replace),
+        CommandInvocation::of(actions.enter_mode_replace),
         source(),
     );
 
@@ -987,18 +987,18 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.redraw_screen),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('v'))],
-        Action::EnterVisual(lattice_grammar::VisualKind::Blockwise),
+        CommandInvocation::of(actions.enter_visual_blockwise),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('q'))],
-        Action::EnterVisual(lattice_grammar::VisualKind::Blockwise),
+        CommandInvocation::of(actions.enter_visual_blockwise),
         source(),
     );
 
@@ -1822,12 +1822,12 @@ mod tests {
 
     #[test]
     fn mode_entry_v_enters_charwise_visual() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('v'), KeyModifiers::NONE));
-        assert!(matches!(
-            r,
-            Some(Action::EnterVisual(VisualKind::Charwise))
-        ));
+        match r {
+            Some(Action::Invoke(inv)) => assert_eq!(inv.command, a.enter_visual_charwise),
+            other => panic!("expected Invoke(enter_visual_charwise), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2649,15 +2649,15 @@ mod tests {
 
     #[test]
     fn ctrl_v_enters_blockwise_visual() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal(
             &h,
             &ev(KeyCode::Char('v'), KeyModifiers::CONTROL),
         );
-        assert!(matches!(
-            r,
-            Some(Action::EnterVisual(lattice_grammar::VisualKind::Blockwise))
-        ));
+        match r {
+            Some(Action::Invoke(inv)) => assert_eq!(inv.command, a.enter_visual_blockwise),
+            other => panic!("expected Invoke(enter_visual_blockwise), got {other:?}"),
+        }
     }
 
     #[test]

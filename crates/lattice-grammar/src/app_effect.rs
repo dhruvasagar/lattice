@@ -33,6 +33,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::modal::{ModalState, SearchDirection, VisualKind};
+
 /// App-side typed effect produced by a `CommandKind::Action`
 /// dispatch (DESIGN.md §5.2.1, see also `docs/8i-approach.md`).
 ///
@@ -224,6 +226,22 @@ pub enum AppEffect {
     /// Replace mode's `<BS>`. Undo the last overwritten char.
     /// Promoted from `Action::ReplaceUndoLast` in slice 8.i.1.h.
     ReplaceUndoLast,
+    /// Vim's `i` / `R` / `<Esc>` (from Insert / Replace) -- enter
+    /// the named modal state. Promoted from
+    /// `Action::EnterMode(_)` in slice 8.i.2.a. Each chord in the
+    /// keymap binds a *distinct* `CommandId` whose `ActionSpec`
+    /// returns the right `AppEffect::EnterMode(state)` constant
+    /// -- the `ModalState` rides in the AppEffect rather than in
+    /// `CommandInvocation::args` so the App's `apply_app_effect`
+    /// matches a single `EnterMode(state)` arm instead of N
+    /// param-flat variants.
+    EnterMode(ModalState),
+    /// Vim's `v` / `V` / `<C-v>` -- enter Visual with the named
+    /// kind anchored at the current cursor. Promoted from
+    /// `Action::EnterVisual(_)` in slice 8.i.2.a. Same encoding
+    /// as [`Self::EnterMode`]: distinct `CommandId` per kind,
+    /// payload rides in the AppEffect.
+    EnterVisual(VisualKind),
 }
 
 #[cfg(test)]

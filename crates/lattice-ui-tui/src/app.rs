@@ -11773,6 +11773,8 @@ impl App {
             AppEffect::SnippetExpand => self.apply(Action::SnippetExpand),
             AppEffect::ExitVisual => self.apply(Action::ExitVisual),
             AppEffect::ReplaceUndoLast => self.apply(Action::ReplaceUndoLast),
+            AppEffect::EnterMode(state) => self.apply(Action::EnterMode(state)),
+            AppEffect::EnterVisual(kind) => self.apply(Action::EnterVisual(kind)),
         }
     }
 

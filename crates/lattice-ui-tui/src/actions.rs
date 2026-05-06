@@ -19,6 +19,8 @@
 
 use lattice_grammar::AppEffect;
 use lattice_grammar::CommandRegistry;
+use lattice_grammar::ModalState;
+use lattice_grammar::VisualKind;
 use lattice_grammar::registry::ActionSpec;
 use lattice_protocol::ids::CommandId;
 
@@ -77,6 +79,12 @@ pub struct ActionIds {
     pub snippet_expand: CommandId,
     pub exit_visual: CommandId,
     pub replace_undo_last: CommandId,
+    pub enter_mode_insert: CommandId,
+    pub enter_mode_normal: CommandId,
+    pub enter_mode_replace: CommandId,
+    pub enter_visual_charwise: CommandId,
+    pub enter_visual_linewise: CommandId,
+    pub enter_visual_blockwise: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -361,6 +369,42 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
             "Replace mode's `<BS>`: undo the last overwritten char.",
             AppEffect::ReplaceUndoLast,
         ),
+        enter_mode_insert: register_simple(
+            registry,
+            "action:enter-mode-insert",
+            "Vim's `i`: enter Insert mode at the cursor.",
+            AppEffect::EnterMode(ModalState::Insert),
+        ),
+        enter_mode_normal: register_simple(
+            registry,
+            "action:enter-mode-normal",
+            "Vim's `<Esc>` (from Insert / Replace): return to Normal mode.",
+            AppEffect::EnterMode(ModalState::Normal),
+        ),
+        enter_mode_replace: register_simple(
+            registry,
+            "action:enter-mode-replace",
+            "Vim's `R`: enter Replace mode.",
+            AppEffect::EnterMode(ModalState::Replace),
+        ),
+        enter_visual_charwise: register_simple(
+            registry,
+            "action:enter-visual-charwise",
+            "Vim's `v`: enter charwise Visual at the current cursor.",
+            AppEffect::EnterVisual(VisualKind::Charwise),
+        ),
+        enter_visual_linewise: register_simple(
+            registry,
+            "action:enter-visual-linewise",
+            "Vim's `V`: enter linewise Visual at the current cursor.",
+            AppEffect::EnterVisual(VisualKind::Linewise),
+        ),
+        enter_visual_blockwise: register_simple(
+            registry,
+            "action:enter-visual-blockwise",
+            "Vim's `<C-v>` / `<C-q>`: enter blockwise Visual at the current cursor.",
+            AppEffect::EnterVisual(VisualKind::Blockwise),
+        ),
     }
 }
 
@@ -449,6 +493,12 @@ mod tests {
             (ids.snippet_expand, "action:snippet-expand"),
             (ids.exit_visual, "action:exit-visual"),
             (ids.replace_undo_last, "action:replace-undo-last"),
+            (ids.enter_mode_insert, "action:enter-mode-insert"),
+            (ids.enter_mode_normal, "action:enter-mode-normal"),
+            (ids.enter_mode_replace, "action:enter-mode-replace"),
+            (ids.enter_visual_charwise, "action:enter-visual-charwise"),
+            (ids.enter_visual_linewise, "action:enter-visual-linewise"),
+            (ids.enter_visual_blockwise, "action:enter-visual-blockwise"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

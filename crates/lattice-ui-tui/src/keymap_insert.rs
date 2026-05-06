@@ -128,11 +128,11 @@ pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Insert;
 
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_special(SpecialKey::Esc)],
-        Action::EnterMode(lattice_grammar::ModalState::Normal),
+        CommandInvocation::of(actions.enter_mode_normal),
         source(),
     );
     handle.bind(
@@ -547,9 +547,10 @@ mod tests {
     #[test]
     fn esc_in_base_insert_returns_to_normal() {
         let h = populated_handle();
+        let a = shared_actions();
         match dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), Pending::None) {
-            Action::EnterMode(ModalState::Normal) => {}
-            other => panic!("expected EnterMode(Normal), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_mode_normal),
+            other => panic!("expected Invoke(enter_mode_normal), got {other:?}"),
         }
     }
 

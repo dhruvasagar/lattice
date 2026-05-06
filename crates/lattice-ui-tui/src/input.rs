@@ -879,13 +879,14 @@ mod tests {
     #[test]
     fn i_enters_insert_mode() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('i'))
-            ),
-            Action::EnterMode(ModalState::Insert)
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('i')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_mode_insert),
+            other => panic!("expected Invoke(enter_mode_insert), got {other:?}"),
+        }
     }
 
     #[test]
@@ -1011,13 +1012,14 @@ mod tests {
     #[test]
     fn esc_in_insert_returns_to_normal() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Insert, Pending::None, &b),
-                key(KeyCode::Esc)
-            ),
-            Action::EnterMode(ModalState::Normal)
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Insert, Pending::None, &b),
+            key(KeyCode::Esc),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_mode_normal),
+            other => panic!("expected Invoke(enter_mode_normal), got {other:?}"),
+        }
     }
 
     #[test]
@@ -1629,12 +1631,13 @@ mod tests {
     #[test]
     fn ctrl_v_enters_blockwise_visual() {
         let (_, b) = fixture();
+        let a = shared_actions();
         match translate(
             ctx(ModalState::Normal, Pending::None, &b),
             ctrl(KeyCode::Char('v')),
         ) {
-            Action::EnterVisual(VisualKind::Blockwise) => {}
-            other => panic!("expected EnterVisual(Blockwise), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_visual_blockwise),
+            other => panic!("expected Invoke(enter_visual_blockwise), got {other:?}"),
         }
     }
 
@@ -1645,12 +1648,13 @@ mod tests {
         // Vim binds Ctrl+Q as the alternate enter-block-visual key for
         // exactly this reason.
         let (_, b) = fixture();
+        let a = shared_actions();
         match translate(
             ctx(ModalState::Normal, Pending::None, &b),
             ctrl(KeyCode::Char('q')),
         ) {
-            Action::EnterVisual(VisualKind::Blockwise) => {}
-            other => panic!("expected EnterVisual(Blockwise), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_visual_blockwise),
+            other => panic!("expected Invoke(enter_visual_blockwise), got {other:?}"),
         }
     }
 
@@ -2796,13 +2800,14 @@ mod tests {
     #[test]
     fn capital_r_enters_replace_mode() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('R'))
-            ),
-            Action::EnterMode(ModalState::Replace)
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('R')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_mode_replace),
+            other => panic!("expected Invoke(enter_mode_replace), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2820,13 +2825,14 @@ mod tests {
     #[test]
     fn esc_in_replace_returns_to_normal() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Replace, Pending::None, &b),
-                key(KeyCode::Esc)
-            ),
-            Action::EnterMode(ModalState::Normal)
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Replace, Pending::None, &b),
+            key(KeyCode::Esc),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_mode_normal),
+            other => panic!("expected Invoke(enter_mode_normal), got {other:?}"),
+        }
     }
 
     #[test]
@@ -3354,21 +3360,29 @@ mod tests {
     #[test]
     fn v_in_normal_enters_charwise_visual() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('v')),
         );
-        assert!(matches!(action, Action::EnterVisual(VisualKind::Charwise)));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_visual_charwise),
+            other => panic!("expected Invoke(enter_visual_charwise), got {other:?}"),
+        }
     }
 
     #[test]
     fn capital_v_in_normal_enters_linewise_visual() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('V')),
         );
-        assert!(matches!(action, Action::EnterVisual(VisualKind::Linewise)));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_visual_linewise),
+            other => panic!("expected Invoke(enter_visual_linewise), got {other:?}"),
+        }
     }
 
     #[test]

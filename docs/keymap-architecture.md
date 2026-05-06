@@ -37,13 +37,13 @@ The architecture commitments this implies:
 
 Keymap resolution walks layers in priority order:
 
-| Priority | Layer | Source |
-|---|---|---|
-| 1 | Built-in vim default keymap | host registers at startup; lives in code as `keymap_entry!` macros |
-| 2 | Major-mode keymap | host registers when a major mode activates (rust, markdown, ...) |
-| 3 | Active minor-mode keymaps | pushed/popped as minor modes activate (active-snippet, completion-popup, picker, chord-capture, ...) |
-| 4 | User config overrides | `init.rs` calls `keymap.bind(...)` at boot |
-| 5 | Per-buffer ad-hoc bindings | `:nmap <buffer>` or plugin per-buffer override |
+| Priority | Layer                       | Source                                                                                               |
+|----------|-----------------------------|------------------------------------------------------------------------------------------------------|
+| 1        | Built-in vim default keymap | host registers at startup; lives in code as `keymap_entry!` macros                                   |
+| 2        | Major-mode keymap           | host registers when a major mode activates (rust, markdown, ...)                                     |
+| 3        | Active minor-mode keymaps   | pushed/popped as minor modes activate (active-snippet, completion-popup, picker, chord-capture, ...) |
+| 4        | User config overrides       | `init.rs` calls `keymap.bind(...)` at boot                                                           |
+| 5        | Per-buffer ad-hoc bindings  | `:nmap <buffer>` or plugin per-buffer override                                                       |
 
 Higher priority **overrides**, not shadows: a user-config
 binding for `dd` replaces the built-in `dd`; if the user later
@@ -456,15 +456,29 @@ graceful error handling.
 - Tests: layer push/pop is observable in lookup; same chord
   rebound at higher layer wins; unbind exposes lower layer.
 
-### Slice 8.d -- Migrate Replace mode (proof of pattern)
+### Slice 8.d -- Migrate Replace mode (proof of pattern) ✅ landed
 
-- ~12 bindings (`<Esc>`, `<BS>`, `<CR>`, char overrides).
-- `translate_replace` becomes a thin layer over
-  `KeymapHandle::lookup(BindingMode::Replace)`.
-- Drift test extended: every Replace key event produces the
-  same `Action` (or its `CommandInvocation` equivalent) before
-  vs after the trie path takes over.
-- Sets the migration template subsequent slices follow.
+- Four binding shapes (`<Esc>`, `<BS>`, `<CR>`, char wildcard)
+  registered in `keymap_replace::register_replace_bindings`
+  into `KeymapLayer::Builtin` + `BindingMode::Replace`.
+- `App::new` constructs a `KeymapHandle`, registers the
+  Replace catalog, and the runtime threads `&app.keymap`
+  through `TranslateContext`. `input::translate` calls
+  `dispatch_replace(ctx.keymap, &event)` for
+  `ModalState::Replace` -- the legacy `translate_replace`
+  match table is gone.
+- Drift test in `keymap_replace::tests` keeps the dispatcher
+  honest against a frozen reference of the legacy body across
+  the cross-product of {key code} × {modifier set}. Pinned
+  end-to-end through `translate` by additional tests in
+  `input::tests::*_in_replace*` and the
+  `replace_dispatch_reads_from_handle_not_baked_in` /
+  `alt_x_in_replace_overwrites_with_x` cases.
+- Sets the migration template subsequent slices follow:
+  per-mode `register_<mode>_bindings` + `dispatch_<mode>`,
+  drift test against a private reference body, and the
+  per-mode arm of `input::translate` switches to the
+  registry-driven path.
 
 ### Slice 8.e -- Migrate Visual mode
 

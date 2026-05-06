@@ -20,6 +20,8 @@ use lattice_grammar::registry::{MotionId, OperatorId};
 
 use crate::app::{Action, FindKind, Pending, ScrollPos, ViewportPos};
 use crate::buffers::BufferKind;
+use crate::keymap_registry::KeymapHandle;
+use crate::keymap_replace::dispatch_replace;
 use crate::pane::PaneDirection;
 
 pub struct TranslateContext<'a> {
@@ -76,6 +78,14 @@ pub struct TranslateContext<'a> {
     /// "insert literal tab" so placeholder navigation is
     /// stable; closing the snippet deactivates the layer.
     pub snippet_active: bool,
+    /// Layered keymap registry (DESIGN.md §5.2.3, audit
+    /// slice 8.c -- 8.d). `translate` consults this instead
+    /// of the per-mode hand-rolled `match` tables one slice
+    /// at a time as the migration progresses; Replace mode
+    /// is the first migrated dispatcher. Borrowed for the
+    /// duration of the translate call -- a single
+    /// `ArcSwap::load` happens inside the dispatcher.
+    pub keymap: &'a KeymapHandle,
 }
 
 pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
@@ -173,22 +183,15 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         ModalState::Command => translate_command(event, ctx.completion_open, ctx.chord_capture),
         ModalState::Search(_) => translate_search(event),
         ModalState::Visual(kind) => translate_visual(event, kind, ctx.builtins),
-        ModalState::Replace => translate_replace(event),
+        // Slice 8.d: Replace mode dispatches through the
+        // layered registry. `translate_replace`'s legacy match
+        // table moved to `keymap_replace::register_replace_bindings`
+        // + the `dispatch_replace` adapter; the drift test in
+        // `keymap_replace::tests` keeps both honest until 8.i
+        // retires the legacy reference.
+        ModalState::Replace => dispatch_replace(ctx.keymap, &event),
         // OperatorPending routes to no-op (it's a transient resolution
         // state inside translate_normal, not a top-level reachable state).
-        _ => Action::None,
-    }
-}
-
-fn translate_replace(event: KeyEvent) -> Action {
-    if event.modifiers.contains(KeyModifiers::CONTROL) {
-        return Action::None;
-    }
-    match event.code {
-        KeyCode::Esc => Action::EnterMode(ModalState::Normal),
-        KeyCode::Backspace => Action::ReplaceUndoLast,
-        KeyCode::Enter => Action::Insert("\n".into()),
-        KeyCode::Char(c) => Action::OverwriteChar(c),
         _ => Action::None,
     }
 }
@@ -1199,6 +1202,22 @@ mod tests {
         (r, b)
     }
 
+    /// Lazily-populated, process-wide `KeymapHandle` for the
+    /// `ctx*` test builders. Mirrors what `App::new` registers
+    /// at startup (Replace-mode catalog today; subsequent
+    /// migration slices will extend this) so tests that fire
+    /// `translate(ctx(ModalState::Replace, ...), ...)` route
+    /// through the same dispatcher production runs.
+    fn test_keymap() -> &'static KeymapHandle {
+        use std::sync::OnceLock;
+        static H: OnceLock<KeymapHandle> = OnceLock::new();
+        H.get_or_init(|| {
+            let h = KeymapHandle::new();
+            crate::keymap_replace::register_replace_bindings(&h);
+            h
+        })
+    }
+
     fn ctx<'a>(modal: ModalState, pending: Pending, b: &'a Builtins) -> TranslateContext<'a> {
         TranslateContext {
             modal,
@@ -1212,6 +1231,7 @@ mod tests {
             picker_open: false,
             insert_completion_open: false,
             snippet_active: false,
+            keymap: test_keymap(),
         }
     }
 
@@ -1233,6 +1253,7 @@ mod tests {
             picker_open: false,
             insert_completion_open: false,
             snippet_active: false,
+            keymap: test_keymap(),
         }
     }
 
@@ -1253,6 +1274,7 @@ mod tests {
             picker_open: false,
             insert_completion_open: false,
             snippet_active: false,
+            keymap: test_keymap(),
         }
     }
 
@@ -1269,6 +1291,7 @@ mod tests {
             picker_open: false,
             insert_completion_open: false,
             snippet_active: false,
+            keymap: test_keymap(),
         }
     }
 
@@ -2189,6 +2212,7 @@ mod tests {
             picker_open: false,
             insert_completion_open: false,
             snippet_active: false,
+            keymap: test_keymap(),
         }
     }
 
@@ -2529,6 +2553,7 @@ mod tests {
                 picker_open: false,
                 insert_completion_open,
                 snippet_active,
+                keymap: test_keymap(),
             };
             last = translate(ctx, event);
             if let Action::SetPending(p) = &last {
@@ -2667,6 +2692,7 @@ mod tests {
             picker_open: false,
             insert_completion_open: true,
             snippet_active: false,
+            keymap: test_keymap(),
         }
     }
 
@@ -2842,6 +2868,7 @@ mod tests {
             picker_open: false,
             insert_completion_open: false,
             snippet_active: true,
+            keymap: test_keymap(),
         }
     }
 
@@ -3289,6 +3316,42 @@ mod tests {
         ) {
             Action::Insert(s) => assert_eq!(s, "\n"),
             other => panic!("expected Insert, got {other:?}"),
+        }
+    }
+
+    /// Slice 8.d wiring: an empty `KeymapHandle` (no Replace
+    /// catalog registered) routes every Replace key event to
+    /// `Action::None`. The `ctx_*` builders use `test_keymap()`
+    /// (populated); this test pins that the dispatcher genuinely
+    /// reads from the handle by overriding it with an empty one.
+    #[test]
+    fn replace_dispatch_reads_from_handle_not_baked_in() {
+        let (_, b) = fixture();
+        let empty = KeymapHandle::new();
+        let mut c = ctx(ModalState::Replace, Pending::None, &b);
+        c.keymap = &empty;
+        match translate(c, key(KeyCode::Char('z'))) {
+            Action::None => {}
+            other => panic!(
+                "empty handle must yield None for Replace dispatch, got {other:?}"
+            ),
+        }
+    }
+
+    /// Slice 8.d also tightens the Replace mode's "modifier
+    /// transparency" semantic at trie level: `<C-x>` is the only
+    /// hard guard; `<M-x>` falls through to OverwriteChar('x') just
+    /// like the legacy `translate_replace` did. Pinned end-to-end
+    /// through the `translate` boundary so a future refactor can't
+    /// regress it without tripping this test.
+    #[test]
+    fn alt_x_in_replace_overwrites_with_x() {
+        let (_, b) = fixture();
+        let mut event = key(KeyCode::Char('x'));
+        event.modifiers = KeyModifiers::ALT;
+        match translate(ctx(ModalState::Replace, Pending::None, &b), event) {
+            Action::OverwriteChar('x') => {}
+            other => panic!("expected OverwriteChar('x'), got {other:?}"),
         }
     }
 

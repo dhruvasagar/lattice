@@ -1030,6 +1030,14 @@ pub struct App {
     /// language tag) sourced from this same registry.
     pub lang_registry: Arc<LangRegistry>,
     pub builtins: Builtins,
+    /// Layered keymap registry (DESIGN.md §5.2.3, audit slice 8.c).
+    /// Populated at construction time; the input dispatcher reads
+    /// from it on every keystroke. Wait-free reads via the
+    /// internal `ArcSwap`; concurrent registration writes (mode
+    /// push/pop, plugin registration, `:bind`) never stall the
+    /// input path. Slice 8.d wires Replace mode through this; the
+    /// other modes follow in 8.e -- 8.g.
+    pub keymap: crate::keymap_registry::KeymapHandle,
     /// In-progress text in the `:` minibuffer. Populated only while
     /// `modal == ModalState::Command`.
     pub command_line: String,
@@ -2433,6 +2441,14 @@ impl App {
             pending_code_action_handle: None,
             lang_registry,
             builtins,
+            keymap: {
+                // Slice 8.d: register the Replace-mode catalog
+                // into the Builtin layer at startup. Subsequent
+                // slices populate the other modes.
+                let h = crate::keymap_registry::KeymapHandle::new();
+                crate::keymap_replace::register_replace_bindings(&h);
+                h
+            },
             command_line: String::new(),
             last_message: None,
             pending_redraw: false,

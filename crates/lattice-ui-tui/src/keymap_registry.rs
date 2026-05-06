@@ -226,11 +226,23 @@ impl KeymapHandle {
         command: CommandInvocation,
         source: SourceLocation,
     ) {
-        let bound = Arc::new(BoundCommand {
-            command,
-            source,
-            layer,
-        });
+        let bound = Arc::new(BoundCommand::from_invocation(command, source, layer));
+        self.bind_bound(layer, mode, path, bound);
+    }
+
+    /// Lower-level binder: register a pre-built
+    /// `Arc<BoundCommand>` directly. Used by the per-mode
+    /// migration helpers (`keymap_replace::register_replace_bindings`
+    /// + sibling slices) to register `BoundCommand`s carrying
+    /// `legacy_action`. Production code should prefer [`Self::bind`]
+    /// once the legacy bridge retires (slice 8.i).
+    pub fn bind_bound(
+        &self,
+        layer: KeymapLayer,
+        mode: BindingMode,
+        path: &[ChordPattern],
+        bound: Arc<BoundCommand>,
+    ) {
         let label = default_label(layer);
         let merged = {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
@@ -341,6 +353,19 @@ impl KeymapHandle {
             .map(|t| t.binding_count())
             .sum()
     }
+
+    /// Human-readable label for the layer carrying `id`, if any.
+    /// Drives `:describe-key`'s provenance row ("user, init.rs:42";
+    /// "minor-mode:completion-popup"). Telemetry path; not on the
+    /// hot path.
+    pub fn layer_label(&self, id: LayerId) -> Option<String> {
+        let inner = self.registry.inner.lock().expect("registry mutex");
+        inner
+            .layers
+            .iter()
+            .find(|l| l.id == id)
+            .map(|l| l.label.clone())
+    }
 }
 
 impl Default for KeymapHandle {
@@ -370,7 +395,7 @@ fn default_label(layer: KeymapLayer) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use lattice_protocol::ids::CommandId;
 
@@ -541,11 +566,11 @@ mod tests {
         // <Tab> binding.
         let mut minor_modes = HashMap::new();
         let mut t = KeymapTrie::new();
-        let bound = Arc::new(BoundCommand {
-            command: invocation(99),
-            source: src("snippet.tab"),
-            layer: KeymapLayer::MinorMode(0), // tag overridden by registry
-        });
+        let bound = Arc::new(BoundCommand::from_invocation(
+            invocation(99),
+            src("snippet.tab"),
+            KeymapLayer::MinorMode(0), // tag overridden by registry
+        ));
         t.insert(
             &[ChordPattern::Literal(KeyChord::special(
                 crate::chord::SpecialKey::Tab,
@@ -639,5 +664,23 @@ mod tests {
         let h = KeymapHandle::new();
         let r = h.lookup(BindingMode::Normal, &[pressed('j')]);
         assert!(matches!(r, LookupResult::Unbound), "got {r:?}");
+    }
+
+    #[test]
+    fn layer_label_round_trips_for_runtime_pushed_layers() {
+        let h = KeymapHandle::new();
+        let mut bindings = HashMap::new();
+        let mut t = KeymapTrie::new();
+        let bound = Arc::new(BoundCommand::from_invocation(
+            invocation(1),
+            src("snippet"),
+            KeymapLayer::MinorMode(0),
+        ));
+        t.insert(&[lit('q')], bound);
+        bindings.insert(BindingMode::Normal, t);
+        let id = h.push_layer(PushLayerKind::MinorMode, "snippet", bindings);
+        assert_eq!(h.layer_label(id).as_deref(), Some("snippet"));
+        // Unknown id -> None.
+        assert!(h.layer_label(LayerId(9999)).is_none());
     }
 }

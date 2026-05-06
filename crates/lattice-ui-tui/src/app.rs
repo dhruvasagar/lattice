@@ -732,6 +732,10 @@ pub enum Action {
     /// `:describe-key CHORD`, `file:PATH:LINE` opens the file at
     /// the line. Cursor not on a link is a no-op.
     FollowLink,
+    /// `-` in any normal-mode context — context-sensitive:
+    /// • Document / FileTree → open oil for parent dir of current file / hovered entry
+    /// • Oil buffer → `oil.navigate_up()`
+    OilNavigateUp,
 
     // ---- Search (`/`, `?`, `n`, `N`) ----
     /// Pressed `/` (Forward) or `?` (Backward) -- enter Search modal with
@@ -3806,6 +3810,7 @@ impl App {
                 BufferKind::FileTree => self.do_file_tree_follow(),
                 BufferKind::Document => {}
             },
+            Action::OilNavigateUp => self.do_oil_navigate_up(),
 
             Action::SplitPaneHorizontal => self.do_split_pane(SplitOrientation::Horizontal),
             Action::SplitPaneVertical => self.do_split_pane(SplitOrientation::Vertical),
@@ -10842,6 +10847,44 @@ impl App {
 
     fn run_oil_invocation(&mut self, inv: CommandInvocation) {
         self.run_document_invocation(inv);
+    }
+
+    fn do_oil_navigate_up(&mut self) {
+        match self.active_buffer {
+            BufferKind::Oil => {
+                let id = self.active_pane_buffer_id();
+                if let Some(oil) = self.buffers.oil_mut(id) {
+                    if let Err(e) = oil.navigate_up() {
+                        self.set_message(EchoLevel::Error, format!("oil navigate up: {e}"));
+                        return;
+                    }
+                    self.cursor = Position::ZERO;
+                    self.scroll = 0;
+                }
+            }
+            BufferKind::FileTree => {
+                let id = self.active_pane_buffer_id();
+                let dir = self
+                    .buffers
+                    .file_tree(id)
+                    .and_then(|t| t.entry_at_cursor())
+                    .map(|e| {
+                        if matches!(e.kind, crate::file_tree::FileTreeEntryKind::Directory { .. }) {
+                            e.path.clone()
+                        } else {
+                            e.path.parent().unwrap_or(&e.path).to_path_buf()
+                        }
+                    });
+                self.do_open_oil(dir);
+            }
+            _ => {
+                let dir = self
+                    .document
+                    .path()
+                    .and_then(|p| p.parent().map(Into::into));
+                self.do_open_oil(dir);
+            }
+        }
     }
 
     fn do_oil_follow(&mut self) {

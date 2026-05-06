@@ -145,6 +145,18 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
             KeyCode::Esc => return Action::HelpDismiss,
             KeyCode::Char('q') if !ctx.recording_macro => return Action::HelpDismiss,
             KeyCode::Enter => return Action::FollowLink,
+            KeyCode::Char('-') => return Action::OilNavigateUp,
+            _ => {}
+        }
+    }
+
+    if matches!(ctx.active_buffer, BufferKind::Oil)
+        && matches!(ctx.modal, ModalState::Normal)
+        && matches!(ctx.pending, Pending::None)
+    {
+        match event.code {
+            KeyCode::Enter => return Action::FollowLink,
+            KeyCode::Char('-') => return Action::OilNavigateUp,
             _ => {}
         }
     }
@@ -726,6 +738,9 @@ fn translate_normal(
         // Paging
         KeyCode::PageDown => invoke_with_count(builtins.line_down, 10),
         KeyCode::PageUp => invoke_with_count(builtins.line_up, 10),
+
+        // Oil: open parent directory listing
+        KeyCode::Char('-') => Action::OilNavigateUp,
 
         _ => Action::None,
     }

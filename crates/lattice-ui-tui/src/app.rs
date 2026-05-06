@@ -3798,12 +3798,12 @@ impl App {
             Action::HelpDismiss => match self.active_buffer {
                 BufferKind::Help => self.dismiss_help(),
                 BufferKind::FileTree => self.dismiss_file_tree(),
-                BufferKind::Document => {}
+                BufferKind::Document | BufferKind::Oil => {}
             },
             Action::FollowLink => match self.active_buffer {
                 BufferKind::Help => self.do_help_follow_link(),
                 BufferKind::FileTree => self.do_file_tree_follow(),
-                BufferKind::Document => {}
+                BufferKind::Document | BufferKind::Oil => {}
             },
 
             Action::SplitPaneHorizontal => self.do_split_pane(SplitOrientation::Horizontal),
@@ -5299,6 +5299,13 @@ impl App {
                     lines.push(format!(
                         "  {active_marker}{listed_marker} #{:<3} help     {}",
                         id.0, h.title,
+                    ));
+                }
+                BufferData::Oil(o) => {
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} oil      {}",
+                        id.0,
+                        o.dir.display()
                     ));
                 }
             }
@@ -8948,6 +8955,7 @@ impl App {
             BufferKind::Document => self.activate_document(id),
             BufferKind::FileTree => self.activate_file_tree(id),
             BufferKind::Help => self.activate_help_in_pane(id),
+            BufferKind::Oil => self.activate_oil(id),
         }
     }
 
@@ -8983,6 +8991,24 @@ impl App {
         pane.buffer_id = id;
         pane.cursor = stash_cursor;
         pane.scroll = stash_scroll;
+    }
+
+    /// Switch the active pane to the oil buffer with `id`.
+    pub fn activate_oil(&mut self, id: BufferId) {
+        if self.buffers.oil(id).is_none() {
+            return;
+        }
+        let oil_cursor = self.buffers.oil(id).map(|o| o.cursor).unwrap_or(Position::ZERO);
+        let oil_scroll = self.buffers.oil(id).map(|o| o.scroll).unwrap_or(0);
+        self.active_buffer = BufferKind::Oil;
+        let pane = self.pane_tree.active_mut();
+        pane.buffer = BufferKind::Oil;
+        pane.buffer_id = id;
+        pane.cursor = oil_cursor;
+        pane.scroll = oil_scroll as u32;
+        self.cursor = oil_cursor;
+        self.scroll = oil_scroll as u32;
+        self.pending = Pending::None;
     }
 
     /// `:set [option | option=value | nooption | option?]`.
@@ -11902,6 +11928,12 @@ impl App {
                     t.scroll = scroll as usize;
                 }
             }
+            BufferKind::Oil => {
+                if let Some(o) = self.buffers.oil_mut(pane_id) {
+                    o.cursor = cursor;
+                    o.scroll = scroll as usize;
+                }
+            }
             BufferKind::Document => {}
         }
         let active = self.pane_tree.active_mut();
@@ -12660,7 +12692,9 @@ impl App {
                 .as_ref()
                 .map(|h| h.id)
                 .unwrap_or(self.document_buffer_id),
-            BufferKind::Document | BufferKind::FileTree => self.pane_tree.active().buffer_id,
+            BufferKind::Document | BufferKind::FileTree | BufferKind::Oil => {
+                self.pane_tree.active().buffer_id
+            }
         }
     }
 
@@ -12765,6 +12799,7 @@ impl App {
                     self.buffers.help(e.buffer_id).is_some()
                         || popup_help_id == Some(e.buffer_id)
                 }
+                BufferKind::Oil => self.buffers.contains(e.buffer_id),
             }
         };
         let combined = |e: &PositionEntry| pred(e) && reachable(e);
@@ -12821,6 +12856,15 @@ impl App {
                     self.active_buffer = BufferKind::FileTree;
                     self.cursor = entry.position;
                     self.pane_tree.active_mut().buffer = BufferKind::FileTree;
+                    self.pane_tree.active_mut().buffer_id = entry.buffer_id;
+                    self.clamp_cursor_to_active_buffer();
+                }
+            }
+            BufferKind::Oil => {
+                if self.buffers.oil(entry.buffer_id).is_some() {
+                    self.active_buffer = BufferKind::Oil;
+                    self.cursor = entry.position;
+                    self.pane_tree.active_mut().buffer = BufferKind::Oil;
                     self.pane_tree.active_mut().buffer_id = entry.buffer_id;
                     self.clamp_cursor_to_active_buffer();
                 }
@@ -13601,6 +13645,11 @@ impl App {
                 .file_tree(self.active_pane_buffer_id())
                 .map(|t| t.cursor)
                 .unwrap_or(self.cursor),
+            BufferKind::Oil => self
+                .buffers
+                .oil(self.active_pane_buffer_id())
+                .map(|o| o.cursor)
+                .unwrap_or(self.cursor),
         }
     }
 
@@ -13654,6 +13703,11 @@ impl App {
                 .map(|t| t.content.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
             BufferKind::Document => self.document.snapshot().buffer.clone(),
+            BufferKind::Oil => self
+                .buffers
+                .oil(self.active_pane_buffer_id())
+                .map(|o| o.content.clone())
+                .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
         }
     }
 
@@ -14141,6 +14195,10 @@ pub(crate) fn raw_buffer_candidates(
             BufferData::Help(h) => (
                 format!("#{:<3} {}", id.0, h.title),
                 format!("help{active_marker}"),
+            ),
+            BufferData::Oil(o) => (
+                format!("#{:<3} {}", id.0, o.dir.display()),
+                format!("oil{active_marker}"),
             ),
         };
         // `text` is the user-facing buffer id; matcher matches

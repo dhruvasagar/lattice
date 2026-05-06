@@ -40,15 +40,19 @@ pub enum BufferKind {
     /// on a directory toggles expansion, on a file opens it as a
     /// new Document buffer.
     FileTree,
+    /// Flat editable directory listing (oil.nvim-style).
+    /// Writable — operators and motions run against the oil rope;
+    /// `:w` diffs the rope against its snapshot and executes
+    /// renames/deletes/creates on disk.
+    Oil,
 }
 
 impl BufferKind {
     /// Whether mutating operators (delete, change, paste, insert)
-    /// are accepted on this kind. Only [`BufferKind::Document`] is
-    /// writable; help and panel kinds are read-only (yank still
-    /// works -- it's not a mutation).
+    /// are accepted on this kind. Only [`BufferKind::Document`] and
+    /// [`BufferKind::Oil`] are writable.
     pub fn is_read_only(self) -> bool {
-        !matches!(self, BufferKind::Document)
+        matches!(self, BufferKind::Help | BufferKind::FileTree)
     }
 
     /// Short label for echo-area diagnostics.
@@ -57,6 +61,7 @@ impl BufferKind {
             BufferKind::Document => "document",
             BufferKind::Help => "help",
             BufferKind::FileTree => "file-tree",
+            BufferKind::Oil => "oil",
         }
     }
 }
@@ -135,5 +140,15 @@ mod tests {
     #[test]
     fn default_kind_is_document() {
         assert_eq!(BufferKind::default(), BufferKind::Document);
+    }
+
+    #[test]
+    fn oil_is_writable() {
+        assert!(!BufferKind::Oil.is_read_only());
+    }
+
+    #[test]
+    fn oil_label() {
+        assert_eq!(BufferKind::Oil.label(), "oil");
     }
 }

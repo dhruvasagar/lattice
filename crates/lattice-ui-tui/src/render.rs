@@ -1113,6 +1113,9 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
             crate::buffers::BufferKind::FileTree => {
                 draw_file_tree_pane(frame, content_rect, app, &pane, is_active);
             }
+            crate::buffers::BufferKind::Oil => {
+                // draw_oil_pane wired in Task 8
+            }
         }
         if let Some(sr) = status_rect {
             draw_pane_status_line(frame, sr, app, &pane, is_active);
@@ -1191,6 +1194,14 @@ fn draw_pane_status_line(
             .file_tree(pane.buffer_id)
             .map(|t| format!("[tree] {}", t.root.display()))
             .unwrap_or_else(|| "[tree]".to_string()),
+        crate::buffers::BufferKind::Oil => app
+            .buffers
+            .oil(pane.buffer_id)
+            .map(|o| {
+                let dirty = if o.is_dirty() { " [+]" } else { "" };
+                format!("[oil] {}{dirty}", o.dir.display())
+            })
+            .unwrap_or_else(|| "[oil]".to_string()),
     };
     let pos = format!("{}:{}", pane.cursor.line + 1, pane.cursor.byte);
     let style = if is_active {

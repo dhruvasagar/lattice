@@ -43,6 +43,15 @@ pub struct ActionIds {
     pub walk_mark_history_back: CommandId,
     pub walk_mark_history_forward: CommandId,
     pub tag_stack_pop: CommandId,
+    pub open_fold_at_cursor: CommandId,
+    pub close_fold_at_cursor: CommandId,
+    pub toggle_fold_at_cursor: CommandId,
+    pub open_all_folds: CommandId,
+    pub close_all_folds: CommandId,
+    pub delete_fold_at_cursor: CommandId,
+    pub goto_next_fold: CommandId,
+    pub goto_prev_fold: CommandId,
+    pub toggle_fold_enable: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -123,6 +132,60 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
             "Vim's `<C-t>`: pop the tag stack and jump back to the prior origin.",
             AppEffect::TagStackPop,
         ),
+        open_fold_at_cursor: register_simple(
+            registry,
+            "action:open-fold-at-cursor",
+            "Vim's `zo`: open the fold containing the cursor.",
+            AppEffect::OpenFoldAtCursor,
+        ),
+        close_fold_at_cursor: register_simple(
+            registry,
+            "action:close-fold-at-cursor",
+            "Vim's `zc`: close the fold containing the cursor.",
+            AppEffect::CloseFoldAtCursor,
+        ),
+        toggle_fold_at_cursor: register_simple(
+            registry,
+            "action:toggle-fold-at-cursor",
+            "Vim's `za`: toggle the fold containing the cursor.",
+            AppEffect::ToggleFoldAtCursor,
+        ),
+        open_all_folds: register_simple(
+            registry,
+            "action:open-all-folds",
+            "Vim's `zR`: open every fold in the buffer.",
+            AppEffect::OpenAllFolds,
+        ),
+        close_all_folds: register_simple(
+            registry,
+            "action:close-all-folds",
+            "Vim's `zM`: close every fold in the buffer.",
+            AppEffect::CloseAllFolds,
+        ),
+        delete_fold_at_cursor: register_simple(
+            registry,
+            "action:delete-fold-at-cursor",
+            "Vim's `zd`: delete the fold containing the cursor.",
+            AppEffect::DeleteFoldAtCursor,
+        ),
+        goto_next_fold: register_simple(
+            registry,
+            "action:goto-next-fold",
+            "Vim's `zj`: move cursor to the start of the next fold.",
+            AppEffect::GotoNextFold,
+        ),
+        goto_prev_fold: register_simple(
+            registry,
+            "action:goto-prev-fold",
+            "Vim's `zk`: move cursor to the end of the previous fold.",
+            AppEffect::GotoPrevFold,
+        ),
+        toggle_fold_enable: register_simple(
+            registry,
+            "action:toggle-fold-enable",
+            "Vim's `zi`: toggle the `foldenable` option.",
+            AppEffect::ToggleFoldEnable,
+        ),
     }
 }
 
@@ -177,6 +240,15 @@ mod tests {
             (ids.walk_mark_history_back, "action:walk-mark-history-back"),
             (ids.walk_mark_history_forward, "action:walk-mark-history-forward"),
             (ids.tag_stack_pop, "action:tag-stack-pop"),
+            (ids.open_fold_at_cursor, "action:open-fold-at-cursor"),
+            (ids.close_fold_at_cursor, "action:close-fold-at-cursor"),
+            (ids.toggle_fold_at_cursor, "action:toggle-fold-at-cursor"),
+            (ids.open_all_folds, "action:open-all-folds"),
+            (ids.close_all_folds, "action:close-all-folds"),
+            (ids.delete_fold_at_cursor, "action:delete-fold-at-cursor"),
+            (ids.goto_next_fold, "action:goto-next-fold"),
+            (ids.goto_prev_fold, "action:goto-prev-fold"),
+            (ids.toggle_fold_enable, "action:toggle-fold-enable"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

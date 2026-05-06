@@ -97,6 +97,36 @@ pub enum AppEffect {
     /// back to where the previous `gd` / `<C-]>` originated.
     /// Promoted from `Action::TagStackPop` in slice 8.i.1.b.
     TagStackPop,
+    /// Vim's `zo`. Open the fold containing the cursor.
+    /// Promoted from `Action::OpenFoldAtCursor` in slice 8.i.1.c.
+    OpenFoldAtCursor,
+    /// Vim's `zc`. Close the fold containing the cursor.
+    /// Promoted from `Action::CloseFoldAtCursor` in slice 8.i.1.c.
+    CloseFoldAtCursor,
+    /// Vim's `za`. Toggle the fold containing the cursor.
+    /// Promoted from `Action::ToggleFoldAtCursor` in slice 8.i.1.c.
+    ToggleFoldAtCursor,
+    /// Vim's `zR`. Open every fold in the buffer.
+    /// Promoted from `Action::OpenAllFolds` in slice 8.i.1.c.
+    OpenAllFolds,
+    /// Vim's `zM`. Close every fold in the buffer.
+    /// Promoted from `Action::CloseAllFolds` in slice 8.i.1.c.
+    CloseAllFolds,
+    /// Vim's `zd`. Delete the fold containing the cursor (drop
+    /// it from the manual fold table; structure-driven folds
+    /// reappear on the next reparse). Promoted from
+    /// `Action::DeleteFoldAtCursor` in slice 8.i.1.c.
+    DeleteFoldAtCursor,
+    /// Vim's `zj`. Move cursor to the start of the next fold.
+    /// Promoted from `Action::GotoNextFold` in slice 8.i.1.c.
+    GotoNextFold,
+    /// Vim's `zk`. Move cursor to the end of the previous fold.
+    /// Promoted from `Action::GotoPrevFold` in slice 8.i.1.c.
+    GotoPrevFold,
+    /// Vim's `zi`. Toggle the `foldenable` option (when off,
+    /// every line renders flat regardless of any closed flag).
+    /// Promoted from `Action::ToggleFoldEnable` in slice 8.i.1.c.
+    ToggleFoldEnable,
 }
 
 #[cfg(test)]

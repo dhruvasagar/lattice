@@ -1543,73 +1543,79 @@ mod tests {
     #[test]
     fn zo_after_z_emits_open_fold() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterZ, &b),
-                key(KeyCode::Char('o'))
-            ),
-            Action::OpenFoldAtCursor
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterZ, &b),
+            key(KeyCode::Char('o')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.open_fold_at_cursor),
+            other => panic!("expected Invoke(open_fold_at_cursor), got {other:?}"),
+        }
     }
 
     #[test]
     fn zc_after_z_emits_close_fold() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterZ, &b),
-                key(KeyCode::Char('c'))
-            ),
-            Action::CloseFoldAtCursor
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterZ, &b),
+            key(KeyCode::Char('c')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.close_fold_at_cursor),
+            other => panic!("expected Invoke(close_fold_at_cursor), got {other:?}"),
+        }
     }
 
     #[test]
     fn za_after_z_emits_toggle_fold() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterZ, &b),
-                key(KeyCode::Char('a'))
-            ),
-            Action::ToggleFoldAtCursor
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterZ, &b),
+            key(KeyCode::Char('a')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.toggle_fold_at_cursor),
+            other => panic!("expected Invoke(toggle_fold_at_cursor), got {other:?}"),
+        }
     }
 
     #[test]
     fn capital_z_r_after_z_opens_all() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterZ, &b),
-                key(KeyCode::Char('R'))
-            ),
-            Action::OpenAllFolds
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterZ, &b),
+            key(KeyCode::Char('R')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.open_all_folds),
+            other => panic!("expected Invoke(open_all_folds), got {other:?}"),
+        }
     }
 
     #[test]
     fn capital_z_m_after_z_closes_all() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterZ, &b),
-                key(KeyCode::Char('M'))
-            ),
-            Action::CloseAllFolds
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterZ, &b),
+            key(KeyCode::Char('M')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.close_all_folds),
+            other => panic!("expected Invoke(close_all_folds), got {other:?}"),
+        }
     }
 
     #[test]
     fn zd_after_z_deletes_fold() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterZ, &b),
-                key(KeyCode::Char('d'))
-            ),
-            Action::DeleteFoldAtCursor
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterZ, &b),
+            key(KeyCode::Char('d')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.delete_fold_at_cursor),
+            other => panic!("expected Invoke(delete_fold_at_cursor), got {other:?}"),
+        }
     }
 
     // ---- Blockwise visual ----

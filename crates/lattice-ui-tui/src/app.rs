@@ -11739,6 +11739,15 @@ impl App {
             AppEffect::WalkMarkHistoryBack => self.apply(Action::WalkMarkHistoryBack),
             AppEffect::WalkMarkHistoryForward => self.apply(Action::WalkMarkHistoryForward),
             AppEffect::TagStackPop => self.apply(Action::TagStackPop),
+            AppEffect::OpenFoldAtCursor => self.apply(Action::OpenFoldAtCursor),
+            AppEffect::CloseFoldAtCursor => self.apply(Action::CloseFoldAtCursor),
+            AppEffect::ToggleFoldAtCursor => self.apply(Action::ToggleFoldAtCursor),
+            AppEffect::OpenAllFolds => self.apply(Action::OpenAllFolds),
+            AppEffect::CloseAllFolds => self.apply(Action::CloseAllFolds),
+            AppEffect::DeleteFoldAtCursor => self.apply(Action::DeleteFoldAtCursor),
+            AppEffect::GotoNextFold => self.apply(Action::GotoNextFold),
+            AppEffect::GotoPrevFold => self.apply(Action::GotoPrevFold),
+            AppEffect::ToggleFoldEnable => self.apply(Action::ToggleFoldEnable),
         }
     }
 

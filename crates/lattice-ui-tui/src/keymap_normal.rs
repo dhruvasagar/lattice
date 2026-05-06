@@ -594,67 +594,67 @@ pub fn register_normal_bindings(
         Action::CreateFoldFromVisual,
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('o')],
-        Action::OpenFoldAtCursor,
+        CommandInvocation::of(actions.open_fold_at_cursor),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('c')],
-        Action::CloseFoldAtCursor,
+        CommandInvocation::of(actions.close_fold_at_cursor),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('a')],
-        Action::ToggleFoldAtCursor,
+        CommandInvocation::of(actions.toggle_fold_at_cursor),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('R')],
-        Action::OpenAllFolds,
+        CommandInvocation::of(actions.open_all_folds),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('M')],
-        Action::CloseAllFolds,
+        CommandInvocation::of(actions.close_all_folds),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('d')],
-        Action::DeleteFoldAtCursor,
+        CommandInvocation::of(actions.delete_fold_at_cursor),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('j')],
-        Action::GotoNextFold,
+        CommandInvocation::of(actions.goto_next_fold),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('k')],
-        Action::GotoPrevFold,
+        CommandInvocation::of(actions.goto_prev_fold),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z, lit_char('i')],
-        Action::ToggleFoldEnable,
+        CommandInvocation::of(actions.toggle_fold_enable),
         source(),
     );
 
@@ -2221,13 +2221,16 @@ mod tests {
 
     #[test]
     fn za_toggles_fold_at_cursor() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
             &ev(KeyCode::Char('a'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::ToggleFoldAtCursor));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.toggle_fold_at_cursor),
+            other => panic!("expected Invoke(toggle_fold_at_cursor), got {other:?}"),
+        }
     }
 
     #[test]

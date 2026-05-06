@@ -1039,9 +1039,17 @@ pub struct App {
     pub pending_redraw: bool,
     /// Per-document tree-sitter state. `None` when the document's language
     /// is `Plain` (no grammar bundled).
-    pub syntax: Option<Syntax>,
-    /// `text_version` last fed to `syntax.parse(...)`. Used to skip reparse
-    /// when no text mutation has happened since the previous frame.
+    ///
+    /// Audit slice 3: this is now an async handle. Reparses run
+    /// on a worker task (`tokio::task::spawn_blocking`) so the
+    /// UI thread never parses; reads against the latest snapshot
+    /// are wait-free via `ArcSwap`. The `Syntax` struct itself
+    /// stays accessible for one-shot users (help-buffer
+    /// markdown highlighting).
+    pub syntax: Option<lattice_syntax::SyntaxHandle>,
+    /// `text_version` last sent to the syntax handle's reparse
+    /// channel. Used to skip republishing identical state when
+    /// no text mutation has happened since the previous frame.
     last_parsed_text_version: u64,
     /// Per-line `StyledSpan`s for the currently visible viewport, indexed
     /// from `[scroll, scroll + viewport_height)`. Recomputed each frame by
@@ -2296,13 +2304,24 @@ impl App {
         // highlighted with fenced-block language injection).
         let lang_registry = LangRegistry::standard().expect("standard lang registry");
         let lang = Lang::detect_from_path(document.path());
-        let mut syntax = Syntax::for_language_with_registry(lang, lang_registry.clone())
-            .ok()
-            .flatten();
-        if let Some(s) = syntax.as_mut() {
-            s.parse(&document.text());
-        }
-        let last_parsed_text_version = document.text_version();
+        // Build the underlying `Syntax` synchronously + seed it
+        // with one parse of the initial text so the renderer's
+        // first frame has highlights without waiting for the
+        // worker. After that the handle takes over: subsequent
+        // `request_reparse` calls run the parse on a worker
+        // thread; the renderer reads the latest snapshot via
+        // `ArcSwap`. (Audit slice 3.)
+        let initial_text = document.text();
+        let initial_text_version = document.text_version();
+        let syntax: Option<lattice_syntax::SyntaxHandle> =
+            match lattice_syntax::Syntax::for_language_with_registry(lang, lang_registry.clone()) {
+                Ok(Some(mut s)) => {
+                    s.parse_at(&initial_text, initial_text_version);
+                    Some(lattice_syntax::SyntaxHandle::seeded(s))
+                }
+                _ => None,
+            };
+        let last_parsed_text_version = initial_text_version;
         // Hand the document to the actor (DESIGN.md §5.7). After
         // this call the only way to read or mutate it is through
         // the returned `DocumentHandle` -- the App holds no other
@@ -3867,21 +3886,28 @@ impl App {
         let _ = pre_active;
     }
 
-    /// Reparse syntax if the document's text has changed since the last
-    /// parse. Idempotent and cheap when nothing changed.
+    /// Request a reparse if the document's text has changed
+    /// since the last request. Idempotent and cheap when nothing
+    /// changed; the actual parse runs on the syntax handle's
+    /// worker task off the UI thread (audit slice 3 / paramount
+    /// goal #1: "UI thread does no … parsing").
     fn maybe_reparse_syntax(&mut self) {
         let tv = self.document.text_version();
         if tv == self.last_parsed_text_version {
             return;
         }
-        if let Some(syntax) = self.syntax.as_mut() {
-            syntax.parse(&self.document.text());
+        if let Some(syntax) = self.syntax.as_ref() {
+            syntax.request_reparse(tv, self.document.text());
         }
         self.last_parsed_text_version = tv;
         // Recompute computed folds in lockstep with the syntax
-        // reparse so `foldmethod=indent` stays in sync with the
-        // document. Manual foldmethod skips the recompute (the
-        // user's `zf` ranges are authoritative).
+        // reparse request so `foldmethod=indent` stays in sync.
+        // Manual foldmethod skips the recompute (the user's `zf`
+        // ranges are authoritative). Folds read the latest
+        // available snapshot; if the worker is mid-parse the
+        // computed folds reflect the prior text version --
+        // self-corrects on the next refresh once the new
+        // snapshot publishes.
         self.recompute_folds();
     }
 
@@ -3948,12 +3974,14 @@ impl App {
     /// Run the tree-sitter folds.scm provider against the live
     /// `Syntax`, falling back to markdown / indent when the syntax
     /// provider returns `None` (no `folds.scm` for this language,
-    /// or no parse tree yet).
+    /// or no parse tree yet). Reads the latest snapshot from the
+    /// async syntax handle (wait-free).
     fn recompute_syntax_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
-        if let Some(syntax) = self.syntax.as_ref()
-            && let Some(folds) = crate::folds::compute_syntax_folds(syntax)
-        {
-            return folds;
+        if let Some(syntax) = self.syntax.as_ref() {
+            let snap = syntax.snapshot();
+            if let Some(folds) = crate::folds::compute_syntax_folds(&snap) {
+                return folds;
+            }
         }
         // Cascade: markdown for `.md`, indent otherwise. Used when
         // the buffer's language doesn't ship a folds.scm yet (e.g.
@@ -3991,8 +4019,14 @@ impl App {
         let end = self
             .visible_buffer_line_extent(start, self.viewport_height)
             .saturating_add(1);
-        self.visible_highlights = match self.syntax.as_mut() {
-            Some(syntax) => syntax.highlight_lines(start, end).unwrap_or_default(),
+        // Wait-free read of the latest published parse snapshot.
+        // If the worker is mid-parse, the highlights reflect the
+        // prior text version -- self-corrects on the next frame.
+        self.visible_highlights = match self.syntax.as_ref() {
+            Some(syntax) => syntax
+                .snapshot()
+                .highlight_lines(start, end)
+                .unwrap_or_default(),
             None => Vec::new(),
         };
     }
@@ -4088,13 +4122,16 @@ impl App {
             if entry.syntax.is_none() {
                 continue;
             }
-            if let Some(syntax) = entry.syntax.as_mut() {
+            if let Some(syntax) = entry.syntax.as_ref() {
                 if tv != entry.last_parsed_text_version {
-                    syntax.parse(&snap.buffer.as_string());
+                    syntax.request_reparse(tv, snap.buffer.as_string());
                     entry.last_parsed_text_version = tv;
                 }
                 let end = scroll.saturating_add(height);
-                let spans = syntax.highlight_lines(scroll, end).unwrap_or_default();
+                let spans = syntax
+                    .snapshot()
+                    .highlight_lines(scroll, end)
+                    .unwrap_or_default();
                 self.pane_highlights.insert(idx, spans);
             }
         }
@@ -4904,14 +4941,17 @@ impl App {
                     }
                 };
                 let lang = Lang::detect_from_path(new_doc.path());
-                let mut syntax =
-                    Syntax::for_language_with_registry(lang, self.lang_registry.clone())
-                        .ok()
-                        .flatten();
-                if let Some(s) = syntax.as_mut() {
-                    s.parse(&new_doc.text());
-                }
-                self.last_parsed_text_version = new_doc.text_version();
+                let initial_text = new_doc.text();
+                let initial_text_version = new_doc.text_version();
+                let syntax: Option<lattice_syntax::SyntaxHandle> =
+                    match Syntax::for_language_with_registry(lang, self.lang_registry.clone()) {
+                        Ok(Some(mut s)) => {
+                            s.parse_at(&initial_text, initial_text_version);
+                            Some(lattice_syntax::SyntaxHandle::seeded(s))
+                        }
+                        _ => None,
+                    };
+                self.last_parsed_text_version = initial_text_version;
                 self.syntax = syntax;
                 self.replace_document_blocking(new_doc);
                 self.cursor = Position::ZERO;
@@ -4951,12 +4991,16 @@ impl App {
             }
         };
         let lang = Lang::detect_from_path(new_doc.path());
-        let mut syntax = Syntax::for_language_with_registry(lang, self.lang_registry.clone())
-            .ok()
-            .flatten();
-        if let Some(s) = syntax.as_mut() {
-            s.parse(&new_doc.text());
-        }
+        let initial_text = new_doc.text();
+        let initial_text_version = new_doc.text_version();
+        let syntax: Option<lattice_syntax::SyntaxHandle> =
+            match Syntax::for_language_with_registry(lang, self.lang_registry.clone()) {
+                Ok(Some(mut s)) => {
+                    s.parse_at(&initial_text, initial_text_version);
+                    Some(lattice_syntax::SyntaxHandle::seeded(s))
+                }
+                _ => None,
+            };
         let new_handle = spawn_document(new_doc, self.registry.clone());
         let new_id = BufferId::next();
         self.buffers.insert(BufferEntry {
@@ -6375,7 +6419,7 @@ impl App {
                 Ok(abs) => self
                     .syntax
                     .as_ref()
-                    .map(|s| s.cursor_in_string_scope(abs))
+                    .map(|s| s.snapshot().cursor_in_string_scope(abs))
                     .unwrap_or(false),
                 Err(_) => false,
             };
@@ -6571,7 +6615,7 @@ impl App {
             // in the popup is a 4.2.g.7 polish item that needs
             // the renderer to merge same-text rows by source
             // label.
-            for sym in syntax.collect_symbols() {
+            for sym in syntax.snapshot().collect_symbols() {
                 if sym == state.query {
                     continue;
                 }
@@ -16183,10 +16227,7 @@ mod tests {
             5, // viewport = 5 rows
         );
         // Wire up a real syntax instance so highlight_lines runs.
-        a.syntax = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust).unwrap();
-        if let Some(s) = a.syntax.as_mut() {
-            s.parse(&a.document.text());
-        }
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         // Close the first fn (lines 0..=5, 6 buffer lines collapsed
         // onto one row). With a 5-row viewport that means `fn b`
         // (line 6) and its body (lines 7, 8) all sit in the visible
@@ -16221,11 +16262,7 @@ mod tests {
         // is 5 lines (not 3 -- the inner then-block size).
         let src = "fn outer() -> u32 {\n    let len = if has_trailing_newline {\n        bytes - 1\n    } else {\n        bytes\n    };\n    len\n}\n";
         let mut a = app_with(src, 20);
-        a.syntax = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
-            .unwrap();
-        if let Some(s) = a.syntax.as_mut() {
-            s.parse(&a.document.text());
-        }
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.set_foldmethod_for_test(FoldMethod::Syntax);
         a.recompute_folds();
         // Dump for diagnosis -- show the fold ranges at the live
@@ -16265,11 +16302,7 @@ mod tests {
         // summary shows "5 lines folded".
         let src = "let len = if cond {\n    bytes - 1\n} else {\n    bytes\n}\n";
         let mut a = app_with(src, 10);
-        a.syntax = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
-            .unwrap();
-        if let Some(s) = a.syntax.as_mut() {
-            s.parse(&a.document.text());
-        }
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.set_foldmethod_for_test(FoldMethod::Syntax);
         a.recompute_folds();
         // Cursor on line 0 (the `let` line). zc must pick the
@@ -20415,10 +20448,7 @@ mod tests {
         // nothing to give).
         let mut a = app_with("fn main() {}\n", 10);
         a.terminal_width = Some(80);
-        a.syntax = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust).unwrap();
-        if let Some(s) = a.syntax.as_mut() {
-            s.parse(&a.document.text());
-        }
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         assert!(a.syntax.is_some(), "fixture syntax wired");
         // Open a help buffer in pane (mimics `:lsp-log rust`).
         let _help_id = a.open_help_in_pane(HelpBuffer::from_lines(
@@ -20461,10 +20491,7 @@ mod tests {
         let mut a = app_with("fn main() {}\n", 10);
         a.terminal_width = Some(80);
         // Wire up a Rust syntax instance so there's something to lose.
-        a.syntax = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust).unwrap();
-        if let Some(s) = a.syntax.as_mut() {
-            s.parse(&a.document.text());
-        }
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         // Open the tree, then dismiss.
         a.command_line = format!("Tree {}", dir.display());
         a.modal = ModalState::Command;
@@ -20959,11 +20986,7 @@ mod tests {
         );
         // Wire up Rust syntax + parse the document so the fold
         // provider has a tree to query.
-        a.syntax = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
-            .unwrap();
-        if let Some(s) = a.syntax.as_mut() {
-            s.parse(&a.document.text());
-        }
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.command_line = "set foldmethod=syntax".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
@@ -25034,7 +25057,23 @@ mod tests {
         .expect("rust syntax")
         .expect("rust registered");
         syntax.parse(source);
-        a.syntax = Some(syntax);
+        a.syntax = Some(lattice_syntax::SyntaxHandle::seeded(syntax));
+    }
+
+    /// Test helper: attach a freshly-parsed `Syntax` for `lang`
+    /// to `a`, wrapped in a [`SyntaxHandle`]. Mirrors the audit
+    /// slice 3 production seam (one synchronous parse at attach
+    /// time, then the worker takes over). Sync test paths call
+    /// this instead of building the handle by hand.
+    fn attach_test_syntax(a: &mut App, lang: lattice_syntax::Lang) {
+        let snap = a.document.snapshot();
+        let text = snap.buffer.as_string();
+        let tv = snap.version;
+        let mut s = lattice_syntax::Syntax::for_language(lang)
+            .unwrap()
+            .expect("syntax registered for lang");
+        s.parse_at(&text, tv);
+        a.syntax = Some(lattice_syntax::SyntaxHandle::seeded(s));
     }
 
     #[test]

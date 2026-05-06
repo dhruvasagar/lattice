@@ -41,32 +41,63 @@ pub enum SyntaxError {
     UnregisteredLang(String),
 }
 
-pub struct Syntax {
+/// Read-only view of one parse result.
+///
+/// Holds everything downstream consumers (renderer / folds /
+/// completion / picker) need to compute highlights, walk the
+/// tree, or query symbols -- and nothing they don't. Cheap to
+/// clone (every non-trivial field is `Arc`-shareable: `Tree` is
+/// internally Arc'd by tree-sitter; `source` is `Arc<[u8]>`;
+/// `registry` is `Arc<LangRegistry>`).
+///
+/// Lives behind an `ArcSwap<SyntaxSnapshot>` inside
+/// [`crate::SyntaxHandle`] so the render thread reads the
+/// latest parse at hardware-floor speed while a worker task
+/// runs the next reparse off the UI thread (paramount goal #1).
+#[derive(Clone)]
+pub struct SyntaxSnapshot {
     lang: Lang,
     registry: Arc<LangRegistry>,
-    /// Owned tree-sitter parser. `parse()` reuses it across edits and
-    /// passes `tree.as_ref()` so tree-sitter's incremental reparser
-    /// kicks in. The parser instance itself is cheap to keep around;
-    /// the heavy state lives in the [`Tree`].
-    parser: Parser,
-    /// Latest parse result. `None` until the first `parse()` call (or
-    /// when the parser couldn't produce a tree, which tree-sitter
-    /// signals by returning `None` -- happens on cancellation, not
-    /// in our synchronous path today). Future tree-sitter consumers
-    /// (folds, indents, locals, textobjects) read from here so every
-    /// feature shares a single parse per edit.
+    /// Last-parsed source bytes. `Arc<[u8]>` so cloning a
+    /// snapshot doesn't copy the buffer.
+    source: Arc<[u8]>,
+    /// Latest parse result. `None` until the first parse has
+    /// run. `Tree` is internally Arc'd by tree-sitter, so
+    /// cloning is cheap.
     tree: Option<Tree>,
-    /// Last-parsed source bytes. Owned so callers can call `highlight_lines`
-    /// independently of holding the source.
-    source: Vec<u8>,
+    /// Document `text_version` this snapshot reflects. The
+    /// async path uses this to skip republishing identical
+    /// state.
+    text_version: u64,
+}
+
+impl std::fmt::Debug for SyntaxSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyntaxSnapshot")
+            .field("lang", &self.lang)
+            .field("source_bytes", &self.source.len())
+            .field("tree_present", &self.tree.is_some())
+            .field("text_version", &self.text_version)
+            .finish_non_exhaustive()
+    }
+}
+
+pub struct Syntax {
+    /// Owned tree-sitter parser. `parse()` reuses it across edits
+    /// and passes the previous tree so tree-sitter's incremental
+    /// reparser kicks in. The parser instance itself is cheap to
+    /// keep around; the heavy state lives in the [`Tree`].
+    parser: Parser,
+    /// Read-only state -- exposed via [`Self::snapshot`] for
+    /// callers that want to share it cheaply (this is what
+    /// [`crate::SyntaxHandle`] publishes via `ArcSwap`).
+    inner: SyntaxSnapshot,
 }
 
 impl std::fmt::Debug for Syntax {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Syntax")
-            .field("lang", &self.lang)
-            .field("source_bytes", &self.source.len())
-            .field("tree_present", &self.tree.is_some())
+            .field("inner", &self.inner)
             .finish_non_exhaustive()
     }
 }
@@ -105,39 +136,153 @@ impl Syntax {
             .set_language(&ts_lang)
             .map_err(|e| SyntaxError::Language(e.to_string()))?;
         Ok(Some(Self {
-            lang,
-            registry,
             parser,
-            tree: None,
-            source: Vec::new(),
+            inner: SyntaxSnapshot {
+                lang,
+                registry,
+                source: Arc::from(Vec::<u8>::new()),
+                tree: None,
+                text_version: 0,
+            },
         }))
     }
 
+    /// Borrow the read-only snapshot of the latest parse state.
+    /// Callers that want to share the snapshot cheaply (across
+    /// threads, into `ArcSwap`) clone it; readers that just need
+    /// one method call use the pass-through helpers below.
+    pub fn snapshot(&self) -> &SyntaxSnapshot {
+        &self.inner
+    }
+
+    /// Owned clone of the snapshot. Cheap (Arc-shareable
+    /// fields).
+    pub fn snapshot_owned(&self) -> SyntaxSnapshot {
+        self.inner.clone()
+    }
+}
+
+impl Syntax {
+    /// Convenience getter for `self.snapshot().lang()`. Kept on
+    /// `Syntax` so `&Syntax` callers (help-buffer markdown
+    /// highlighting, tests) don't have to thread `.snapshot()`
+    /// through.
+    pub fn lang(&self) -> Lang {
+        self.inner.lang()
+    }
+
+    /// Convenience getter for `self.snapshot().tree()`.
+    pub fn tree(&self) -> Option<&Tree> {
+        self.inner.tree()
+    }
+
+    /// Convenience getter for `self.snapshot().source()`.
+    pub fn source(&self) -> &[u8] {
+        self.inner.source()
+    }
+
+    /// Convenience getter for `self.snapshot().registry()`.
+    pub fn registry(&self) -> &LangRegistry {
+        self.inner.registry()
+    }
+
+    /// Convenience pass-through to
+    /// [`SyntaxSnapshot::cursor_in_string_scope`].
+    pub fn cursor_in_string_scope(&self, cursor_byte: usize) -> bool {
+        self.inner.cursor_in_string_scope(cursor_byte)
+    }
+
+    /// Convenience pass-through to
+    /// [`SyntaxSnapshot::collect_symbols`].
+    pub fn collect_symbols(&self) -> Vec<String> {
+        self.inner.collect_symbols()
+    }
+
+    /// Convenience pass-through to
+    /// [`SyntaxSnapshot::highlight_lines`]. Note: takes `&self`
+    /// (the read API never needed `&mut`).
+    pub fn highlight_lines(
+        &self,
+        start_line: u32,
+        end_line: u32,
+    ) -> Result<Vec<Vec<StyledSpan>>, SyntaxError> {
+        self.inner.highlight_lines(start_line, end_line)
+    }
+
+    /// Convenience pass-through to
+    /// [`SyntaxSnapshot::highlight_lines_native`].
+    pub fn highlight_lines_native(
+        &self,
+        start_line: u32,
+        end_line: u32,
+    ) -> Result<Vec<Vec<StyledSpan>>, SyntaxError> {
+        self.inner.highlight_lines_native(start_line, end_line)
+    }
+
+    /// Replace the cached source and drive a tree-sitter (re)parse.
+    /// This is the only mutating call on `Syntax`; everything else
+    /// is read-only against the snapshot. Production callers should
+    /// route parse requests through [`crate::SyntaxHandle`] so the
+    /// parse runs off the UI thread (paramount goal #1).
+    pub fn parse(&mut self, source: &str) {
+        self.parse_at(source, self.inner.text_version.wrapping_add(1));
+    }
+
+    /// `parse` variant that also stamps a caller-supplied
+    /// `text_version` onto the resulting snapshot. The async
+    /// handle uses this so consumers can deduplicate stale
+    /// snapshots.
+    pub fn parse_at(&mut self, source: &str, text_version: u64) {
+        let bytes = source.as_bytes();
+        // Step 1 stays a full reparse (we pass `None` rather
+        // than the old tree). Tree-sitter's incremental reparse
+        // requires the previous tree to have been `Tree::edit`-
+        // updated with byte-accurate deltas first; we don't
+        // thread `Edit` deltas yet, so passing `Some(old)`
+        // produces a stale-shape tree. Full reparse stays
+        // correct; the seam doesn't change when incremental
+        // lands.
+        //
+        // `Parser::parse` returning `None` means cancellation,
+        // which we don't trigger on this synchronous path. Keep
+        // the old tree in that unlikely case rather than
+        // dropping it -- the next parse() round will retry.
+        let new_tree = self.parser.parse(bytes, None).or_else(|| self.inner.tree.take());
+        self.inner.source = Arc::from(bytes.to_vec());
+        self.inner.tree = new_tree;
+        self.inner.text_version = text_version;
+    }
+}
+
+impl SyntaxSnapshot {
+    /// The document language this snapshot was built for.
     pub fn lang(&self) -> Lang {
         self.lang
     }
 
-    /// Returns the most recent parse result, if `parse()` has run and
-    /// tree-sitter produced a tree. Future query consumers (folds,
-    /// indents, locals, textobjects) read from here so every feature
-    /// shares a single parse per edit.
+    /// Latest parse result. `None` until the first parse has run.
     pub fn tree(&self) -> Option<&Tree> {
         self.tree.as_ref()
     }
 
-    /// Borrow the cached source bytes. The renderer / fold provider /
-    /// future query consumers read directly from these without
-    /// re-encoding the document.
+    /// Cached source bytes that produced [`Self::tree`].
     pub fn source(&self) -> &[u8] {
         &self.source
     }
 
-    /// Borrow the shared language registry. Useful for query-driven
-    /// consumers (`compute_syntax_folds`, future textobjects /
-    /// indents) that need to look up the per-language compiled
-    /// queries.
+    /// Shared language registry. Query-driven consumers
+    /// (`compute_syntax_folds`, future textobjects / indents)
+    /// look up per-language compiled queries here.
     pub fn registry(&self) -> &LangRegistry {
         &self.registry
+    }
+
+    /// Document `text_version` this snapshot was built from.
+    /// Used by the async handle to skip republishing identical
+    /// state and by consumers that want to compare freshness
+    /// against a `DocumentSnapshot::text_version`.
+    pub fn text_version(&self) -> u64 {
+        self.text_version
     }
 
     /// True when the byte position `cursor_byte` falls inside a
@@ -212,7 +357,7 @@ impl Syntax {
             return Vec::new();
         };
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(query, tree.root_node(), self.source.as_slice());
+        let mut matches = cursor.matches(query, tree.root_node(), &self.source[..]);
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut out: Vec<String> = Vec::new();
         while let Some(m) = matches.next() {
@@ -237,29 +382,6 @@ impl Syntax {
         out
     }
 
-    /// Replace the cached source and drive a tree-sitter (re)parse.
-    ///
-    /// Step 1 stays a full reparse: we don't yet thread concrete
-    /// `Edit` deltas into `Tree::edit`, and tree-sitter can't safely
-    /// reuse the previous tree on its own -- callers must drive
-    /// `Tree::edit` with byte-accurate deltas before a reparse can
-    /// be incremental. The seam stays the same when that lands; the
-    /// keystroke→glyph budget (§8, CLAUDE.md paramount #1) is still
-    /// met because tree-sitter parses are sub-millisecond on the
-    /// buffer sizes we care about, and the hot path runs on the
-    /// async syntax actor (§5.7) rather than the UI thread.
-    pub fn parse(&mut self, source: &str) {
-        self.source.clear();
-        self.source.extend_from_slice(source.as_bytes());
-        // `Parser::parse` returning `None` means cancellation, which
-        // we don't trigger on this synchronous path. Keep the old
-        // tree in that unlikely case rather than dropping it -- the
-        // next parse() round will retry.
-        if let Some(new_tree) = self.parser.parse(source.as_bytes(), None) {
-            self.tree = Some(new_tree);
-        }
-    }
-
     /// Compute styled spans for each line in `[start_line, end_line)`.
     /// `start_line` and `end_line` are 0-based and clamped to the source's
     /// line count.
@@ -273,7 +395,7 @@ impl Syntax {
     /// legacy `tree_sitter_highlight::Highlighter`-based path was
     /// removed when its dependency was dropped from the workspace.
     pub fn highlight_lines(
-        &mut self,
+        &self,
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<Vec<StyledSpan>>, SyntaxError> {
@@ -296,7 +418,7 @@ impl Syntax {
     /// (one level deep per call site -- markdown_inline has no
     /// further injections we honour today).
     pub fn highlight_lines_native(
-        &mut self,
+        &self,
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<Vec<StyledSpan>>, SyntaxError> {
@@ -502,7 +624,7 @@ impl Syntax {
         // and no visible span is emitted, which suppresses the
         // generic `@variable` capture too.
         let mut captures: Vec<(usize, usize, Style, usize)> = Vec::new();
-        let mut matches = cursor.matches(query, tree.root_node(), self.source.as_slice());
+        let mut matches = cursor.matches(query, tree.root_node(), &self.source[..]);
         while let Some(m) = matches.next() {
             for cap in m.captures {
                 let style = styles
@@ -556,7 +678,7 @@ impl Syntax {
         // into paragraph content.
         if let Some(inj_query) = self.registry.injections_query(self.lang.name()) {
             let injections =
-                collect_injections(inj_query, tree, self.source.as_slice(), window_start, window_end);
+                collect_injections(inj_query, tree, &self.source[..], window_start, window_end);
             for inj in injections {
                 if let Some(inner_styles) = self.highlight_injection(&inj) {
                     let s_local = inj.range.start.saturating_sub(window_start).min(win_len);

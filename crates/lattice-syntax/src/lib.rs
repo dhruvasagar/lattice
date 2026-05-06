@@ -30,12 +30,14 @@
 //! v1 stand-in for the themable name-to-color tables described in §5.6
 //! style mappings.
 
+pub mod handle;
 pub mod lang;
 pub mod registry;
 pub mod style;
 pub mod syntax;
 
+pub use crate::handle::SyntaxHandle;
 pub use crate::lang::Lang;
 pub use crate::registry::LangRegistry;
 pub use crate::style::{Style, StyledSpan};
-pub use crate::syntax::{Syntax, SyntaxError};
+pub use crate::syntax::{Syntax, SyntaxError, SyntaxSnapshot};

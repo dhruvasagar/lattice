@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 
 use lattice_runtime::DocumentHandle;
-use lattice_syntax::Syntax;
+use lattice_syntax::SyntaxHandle;
 
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
 use crate::file_tree::FileTreeBuffer;
@@ -49,7 +49,7 @@ use crate::help::HelpBuffer;
 pub struct DocumentEntry {
     pub id: BufferId,
     pub handle: DocumentHandle,
-    pub syntax: Option<Syntax>,
+    pub syntax: Option<SyntaxHandle>,
     pub last_parsed_text_version: u64,
     /// Per-buffer fold list. Empty means "not yet computed for
     /// this buffer." The activation hook recomputes against

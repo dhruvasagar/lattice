@@ -34,7 +34,7 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use lattice_core::Buffer;
-use lattice_syntax::Syntax;
+use lattice_syntax::SyntaxSnapshot;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::QueryCursor;
 
@@ -314,7 +314,7 @@ fn atx_heading_depth(line: &str) -> Option<u32> {
 /// single-line file). The empty Vec lets the caller know "syntax
 /// authoritative, just nothing to fold" so it doesn't fall through
 /// to indent.
-pub fn compute_syntax_folds(syntax: &Syntax) -> Option<Vec<Fold>> {
+pub fn compute_syntax_folds(syntax: &SyntaxSnapshot) -> Option<Vec<Fold>> {
     let tree = syntax.tree()?;
     let source = syntax.source();
     let registry = syntax.registry();
@@ -644,16 +644,16 @@ mod tests {
 
     // --- Syntax (tree-sitter) provider --------------------------
 
-    fn rust_syntax_with(text: &str) -> Syntax {
-        let mut s = Syntax::for_language(lattice_syntax::Lang::Rust)
+    fn rust_syntax_with(text: &str) -> lattice_syntax::Syntax {
+        let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
             .unwrap()
             .unwrap();
         s.parse(text);
         s
     }
 
-    fn markdown_syntax_with(text: &str) -> Syntax {
-        let mut s = Syntax::for_language(lattice_syntax::Lang::Markdown)
+    fn markdown_syntax_with(text: &str) -> lattice_syntax::Syntax {
+        let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Markdown)
             .unwrap()
             .unwrap();
         s.parse(text);
@@ -673,7 +673,7 @@ impl Buffer {
 }
 "#;
         let syntax = rust_syntax_with(src);
-        let folds = compute_syntax_folds(&syntax).expect("rust folds.scm");
+        let folds = compute_syntax_folds(syntax.snapshot()).expect("rust folds.scm");
         // struct_item: lines 0..=2
         assert!(
             folds.iter().any(|f| f.start_line == 0 && f.end_line >= 2),
@@ -695,7 +695,7 @@ impl Buffer {
     fn rust_syntax_folds_skips_single_line_items() {
         let src = "use std::sync::Arc;\nfn main() {}\n";
         let syntax = rust_syntax_with(src);
-        let folds = compute_syntax_folds(&syntax).expect("rust folds");
+        let folds = compute_syntax_folds(syntax.snapshot()).expect("rust folds");
         // Both items live on a single line; nothing to fold.
         assert!(
             folds.iter().all(|f| f.end_line > f.start_line),
@@ -713,7 +713,7 @@ impl Buffer {
         // without a trailing `;` -- the original report omitted it.
         let src = "fn outer() {\n    let len = if cond {\n        a\n    } else {\n        b\n    };\n}\n";
         let syntax = rust_syntax_with(src);
-        let folds = compute_syntax_folds(&syntax).expect("rust folds");
+        let folds = compute_syntax_folds(syntax.snapshot()).expect("rust folds");
         // then-block fold: starts on line 1 (the `{` after `if cond`).
         assert!(
             folds.iter().any(|f| f.start_line == 1 && f.end_line == 3),
@@ -740,7 +740,7 @@ impl Buffer {
         // outer if/else as one unit.
         let src = "fn outer() -> u32 {\n    let len = if cond {\n        bytes - 1\n    } else {\n        bytes\n    }\n}\n";
         let syntax = rust_syntax_with(src);
-        let folds = compute_syntax_folds(&syntax).expect("rust folds");
+        let folds = compute_syntax_folds(syntax.snapshot()).expect("rust folds");
         // if_expression fold (the user's "fold the if part" target)
         // starts on line 1 and runs through line 5 (the closing `}`
         // of the else branch).
@@ -763,7 +763,7 @@ impl Buffer {
         // folded".
         let src = "let len = if has_trailing_newline {\n    bytes - 1\n} else {\n    bytes\n}\n";
         let syntax = rust_syntax_with(src);
-        let folds = compute_syntax_folds(&syntax).expect("rust folds");
+        let folds = compute_syntax_folds(syntax.snapshot()).expect("rust folds");
         let widest_at_zero = folds
             .iter()
             .filter(|f| f.start_line == 0)
@@ -781,7 +781,7 @@ impl Buffer {
         // `block_comment` capture in folds.scm.
         let src = "/*\n * doc\n */\nfn main() {}\n";
         let syntax = rust_syntax_with(src);
-        let folds = compute_syntax_folds(&syntax).expect("rust folds");
+        let folds = compute_syntax_folds(syntax.snapshot()).expect("rust folds");
         assert!(
             folds.iter().any(|f| f.start_line == 0 && f.end_line == 2),
             "expected block_comment fold: {folds:?}"
@@ -795,8 +795,8 @@ impl Buffer {
         // state can't mistakenly transfer between them.
         let a = rust_syntax_with("struct X {\n    f: u8,\n}\n");
         let b = rust_syntax_with("fn x() {\n    return;\n}\n");
-        let fa = compute_syntax_folds(&a).unwrap();
-        let fb = compute_syntax_folds(&b).unwrap();
+        let fa = compute_syntax_folds(a.snapshot()).unwrap();
+        let fb = compute_syntax_folds(b.snapshot()).unwrap();
         let id_a = fa.iter().find_map(|f| f.identity).expect("a id");
         let id_b = fb.iter().find_map(|f| f.identity).expect("b id");
         assert_ne!(
@@ -809,7 +809,7 @@ impl Buffer {
     fn markdown_syntax_folds_section() {
         let src = "# H1\nbody one\nbody two\n# H2\nafter\n";
         let syntax = markdown_syntax_with(src);
-        let folds = compute_syntax_folds(&syntax).expect("markdown folds");
+        let folds = compute_syntax_folds(syntax.snapshot()).expect("markdown folds");
         // Each section becomes a fold; the H1 section spans lines
         // 0..=2 (heading + 2 body lines, before the H2 sibling).
         assert!(
@@ -827,7 +827,7 @@ impl Buffer {
         // reports no folds.scm for the inline grammar here as a
         // proxy: it has a parser+tree but no folds query.
         let src = "*emphasis* and `code`";
-        let mut s = Syntax::for_language(lattice_syntax::Lang::Markdown)
+        let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Markdown)
             .unwrap()
             .unwrap();
         s.parse(src);

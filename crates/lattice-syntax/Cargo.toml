@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+arc-swap = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
 tree-sitter = { workspace = true }
 streaming-iterator = { workspace = true }
 tree-sitter-rust = { workspace = true }

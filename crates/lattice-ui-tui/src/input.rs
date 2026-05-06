@@ -17,7 +17,7 @@ use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::register::Register;
 use lattice_grammar::registry::{MotionId, OperatorId};
 
-use crate::app::{Action, FindKind, Pending, ScrollPos};
+use crate::app::{Action, FindKind, Pending};
 use crate::buffers::BufferKind;
 use crate::keymap_insert::dispatch_insert;
 use crate::keymap_registry::KeymapHandle;
@@ -319,7 +319,13 @@ fn translate_normal(
     // Resolve any pending state first.
     match pending {
         Pending::AfterCtrlW => return resolve_after_ctrl_w(event),
-        Pending::AfterG => return resolve_after_g(event, builtins),
+        Pending::AfterG => {
+            return crate::keymap_normal::lookup_normal_two_key(
+                keymap,
+                crate::chord::KeyChord::char('g'),
+                &event,
+            );
+        }
         Pending::AfterOperator(op) => return resolve_after_operator(event, builtins, op),
         Pending::AfterFindChar { kind, operator } => {
             return resolve_after_find_char(event, builtins, kind, operator);
@@ -327,7 +333,13 @@ fn translate_normal(
         Pending::AfterTextObject { operator, around } => {
             return resolve_after_text_object(event, builtins, operator, around);
         }
-        Pending::AfterZ => return resolve_after_z(event),
+        Pending::AfterZ => {
+            return crate::keymap_normal::lookup_normal_two_key(
+                keymap,
+                crate::chord::KeyChord::char('z'),
+                &event,
+            );
+        }
         Pending::AfterSetMark => return resolve_after_set_mark(event),
         Pending::AfterJumpMarkLine => return resolve_after_jump_mark(event, false),
         Pending::AfterJumpMarkExact => return resolve_after_jump_mark(event, true),
@@ -413,10 +425,6 @@ fn translate_normal(
         // Macro play. `@@` is "repeat last"; everything else needs a
         // register-name follow-up.
         KeyCode::Char('@') => Action::SetPending(Pending::AfterMacroPlay),
-
-        // Pending key sequences (8.g.ii, 8.g.v).
-        KeyCode::Char('g') => Action::SetPending(Pending::AfterG),
-        KeyCode::Char('z') => Action::SetPending(Pending::AfterZ),
 
         // Operator-leading keys (8.g.iii).
         KeyCode::Char('d') => Action::SetPending(Pending::AfterOperator(builtins.delete)),
@@ -507,47 +515,6 @@ fn resolve_after_ctrl_w(event: KeyEvent) -> Action {
     }
 }
 
-fn resolve_after_g(event: KeyEvent, builtins: &Builtins) -> Action {
-    match event.code {
-        // `gg`: jump to first line.
-        KeyCode::Char('g') => invoke(builtins.goto_first_line),
-        // Case operators: `gU`/`gu`/`g~` enter operator-pending state with
-        // the corresponding operator latched; the next key supplies the
-        // motion or text-object target. `gUU`/`guu`/`g~~` operate on the
-        // current line.
-        KeyCode::Char('U') => Action::SetPending(Pending::AfterOperator(builtins.upper)),
-        KeyCode::Char('u') => Action::SetPending(Pending::AfterOperator(builtins.lower)),
-        KeyCode::Char('~') => Action::SetPending(Pending::AfterOperator(builtins.toggle_case)),
-        // `gv`: reselect the last Visual selection.
-        KeyCode::Char('v') => Action::ReselectLastVisual,
-        // `gJ`: join lines without inserting a space.
-        KeyCode::Char('J') => Action::JoinLines { with_space: false },
-        // `g;` / `g,`: walk named-mark history.
-        KeyCode::Char(';') => Action::WalkMarkHistoryBack,
-        KeyCode::Char(',') => Action::WalkMarkHistoryForward,
-        // `gd` (Phase 4.2.c): textDocument/definition. Walks every
-        // attached LSP server's response, concats + dedups by
-        // (uri, range). Single result jumps in-place; multiple
-        // results open a `*lsp:definitions*` picker.
-        KeyCode::Char('d') => Action::LspDefinitionRequest,
-        // `gD`: textDocument/declaration (forward declaration /
-        // header pointer in C-family, `extern` in Rust).
-        KeyCode::Char('D') => Action::LspDeclarationRequest,
-        // `gy`: textDocument/typeDefinition (the type of the
-        // expression under the cursor).
-        KeyCode::Char('y') => Action::LspTypeDefinitionRequest,
-        // `gI` (capital): textDocument/implementation. Lowercase
-        // `gi` belongs to vim's "go to last insert position" --
-        // not yet wired.
-        KeyCode::Char('I') => Action::LspImplementationRequest,
-        // `gr`: textDocument/references. Opens a buffer-backed
-        // list view of every call site. Vim's default `gr`
-        // (virtual replace one char) isn't currently bound, so
-        // no conflict.
-        KeyCode::Char('r') => Action::LspReferencesRequest,
-        _ => Action::SetPending(Pending::None),
-    }
-}
 
 fn resolve_after_operator(event: KeyEvent, builtins: &Builtins, op: OperatorId) -> Action {
     if matches!(event.code, KeyCode::Esc) {
@@ -699,29 +666,6 @@ fn resolve_after_register(event: KeyEvent) -> Action {
         _ => return Action::SetPending(Pending::None),
     };
     Action::SelectRegister(reg)
-}
-
-fn resolve_after_z(event: KeyEvent) -> Action {
-    if matches!(event.code, KeyCode::Esc) {
-        return Action::SetPending(Pending::None);
-    }
-    match event.code {
-        KeyCode::Char('z') | KeyCode::Char('.') => Action::ScrollCursorTo(ScrollPos::Center),
-        KeyCode::Char('t') | KeyCode::Enter => Action::ScrollCursorTo(ScrollPos::Top),
-        KeyCode::Char('b') | KeyCode::Char('-') => Action::ScrollCursorTo(ScrollPos::Bottom),
-        // Folds.
-        KeyCode::Char('f') => Action::CreateFoldFromVisual,
-        KeyCode::Char('o') => Action::OpenFoldAtCursor,
-        KeyCode::Char('c') => Action::CloseFoldAtCursor,
-        KeyCode::Char('a') => Action::ToggleFoldAtCursor,
-        KeyCode::Char('R') => Action::OpenAllFolds,
-        KeyCode::Char('M') => Action::CloseAllFolds,
-        KeyCode::Char('d') => Action::DeleteFoldAtCursor,
-        KeyCode::Char('j') => Action::GotoNextFold,
-        KeyCode::Char('k') => Action::GotoPrevFold,
-        KeyCode::Char('i') => Action::ToggleFoldEnable,
-        _ => Action::SetPending(Pending::None),
-    }
 }
 
 fn resolve_after_set_mark(event: KeyEvent) -> Action {
@@ -878,10 +822,6 @@ fn resolve_after_find_char(
     }
 }
 
-fn invoke(motion: MotionId) -> Action {
-    Action::Invoke(CommandInvocation::of(motion.0))
-}
-
 fn invoke_with_count(motion: MotionId, count: u32) -> Action {
     Action::Invoke(
         CommandInvocation::of(motion.0).with_count(lattice_grammar::command::Count(count)),
@@ -892,7 +832,7 @@ fn invoke_with_count(motion: MotionId, count: u32) -> Action {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-    use crate::app::ViewportPos;
+    use crate::app::{ScrollPos, ViewportPos};
     use lattice_grammar::CommandRegistry;
     use lattice_grammar::SearchDirection;
     use lattice_grammar::builtins::populate;

@@ -574,9 +574,21 @@ The big one. Likely sub-sliced:
   -- the architecture-doc bullet groups them with 8.g.i for
   conceptual completeness, but they ride the operator-pending
   trie expansion in 8.g.iii.
-- 8.g.ii -- `g_` and `z_` family (`gg`, `gd`, `gD`, `gI`, `gy`,
-  `gr`, `g~`, `gu`, `gU`, `zt`, `zb`, `zz`, `zo`, `zc`, `zR`,
-  `zM`, `zd`, ...).
+- 8.g.ii -- `g_` and `z_` family. ✅ landed.
+  Two-key chord paths registered as `[g, X]` and `[z, X]` in
+  the Normal-mode trie. `[g]` and `[z]` themselves stay
+  partial nodes (no terminal binding); `lookup_normal`
+  translates `LookupResult::Partial` on those chords into
+  `SetPending(AfterG)` / `SetPending(AfterZ)`. The second
+  key resolves through `keymap_normal::lookup_normal_two_key`,
+  which the existing `Pending::AfterG` / `Pending::AfterZ`
+  arms in `input::translate_normal` now call. The legacy
+  `resolve_after_g` / `resolve_after_z` helpers are gone.
+  Bindings covered: `gg` (typed Invoke), `gU` / `gu` / `g~`
+  (case-operator pending), `gv`, `gJ`, `g;` / `g,`, `gd` /
+  `gD` / `gy` / `gI` / `gr` (LSP), `zz` / `z.` (center),
+  `zt` / `z<CR>` (top), `zb` / `z-` (bottom), `zf`, `zo`,
+  `zc`, `za`, `zR`, `zM`, `zd`, `zj`, `zk`, `zi`.
 - 8.g.iii -- operator-pending → motion / text-object trie
   expansion (`d{motion}`, `y{motion}`, `c{motion}`,
   `d{i,a}{textobj}`, ...).

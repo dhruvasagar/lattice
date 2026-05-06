@@ -78,7 +78,7 @@ use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::{ModalState, SearchDirection, Target, VisualKind};
 
-use crate::app::{Action, ViewportPos};
+use crate::app::{Action, Pending, ScrollPos, ViewportPos};
 use crate::chord::{KeyChord, KeyMods, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
@@ -414,9 +414,238 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins) {
             .with_count(lattice_grammar::command::Count(10)),
         source(),
     );
+
+    // ---- Slice 8.g.ii: `g_` family.
+    //
+    // `[g]` itself stays a partial trie node -- no terminal
+    // binding here -- so lookup of `[g]` returns
+    // `LookupResult::Partial`, which `lookup_normal`
+    // translates into `SetPending(Pending::AfterG)`. The
+    // second keystroke arrives with `pending = AfterG`; the
+    // App's `resolve_after_g` calls
+    // `lookup_normal_two_key(handle, KeyChord::char('g'), event)`
+    // to walk `[g, X]` against the same trie.
+    let g = lit_char('g');
+
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_char('g')],
+        CommandInvocation::of(builtins.goto_first_line.0),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[g.clone(), lit_char('U')],
+        Action::SetPending(Pending::AfterOperator(builtins.upper)),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[g.clone(), lit_char('u')],
+        Action::SetPending(Pending::AfterOperator(builtins.lower)),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[g.clone(), lit_char('~')],
+        Action::SetPending(Pending::AfterOperator(builtins.toggle_case)),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[g.clone(), lit_char('v')],
+        Action::ReselectLastVisual,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[g.clone(), lit_char('J')],
+        Action::JoinLines { with_space: false },
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[g.clone(), lit_char(';')],
+        Action::WalkMarkHistoryBack,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[g.clone(), lit_char(',')],
+        Action::WalkMarkHistoryForward,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[g.clone(), lit_char('d')],
+        Action::LspDefinitionRequest,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[g.clone(), lit_char('D')],
+        Action::LspDeclarationRequest,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[g.clone(), lit_char('y')],
+        Action::LspTypeDefinitionRequest,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[g.clone(), lit_char('I')],
+        Action::LspImplementationRequest,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[g.clone(), lit_char('r')],
+        Action::LspReferencesRequest,
+        source(),
+    );
+
+    // ---- Slice 8.g.ii: `z_` family.
+    //
+    // Same pattern: `[z]` is a partial trie node;
+    // `lookup_normal` converts it to
+    // `SetPending(Pending::AfterZ)`.
+    let z = lit_char('z');
+
+    // Center-cursor scrolls. `zz` and `z.` both center.
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('z')],
+        Action::ScrollCursorTo(ScrollPos::Center),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('.')],
+        Action::ScrollCursorTo(ScrollPos::Center),
+        source(),
+    );
+    // Top-of-viewport scrolls. `zt` and `z<CR>` both align top.
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('t')],
+        Action::ScrollCursorTo(ScrollPos::Top),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_special(SpecialKey::Enter)],
+        Action::ScrollCursorTo(ScrollPos::Top),
+        source(),
+    );
+    // Bottom-of-viewport scrolls. `zb` and `z-` both align bottom.
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('b')],
+        Action::ScrollCursorTo(ScrollPos::Bottom),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('-')],
+        Action::ScrollCursorTo(ScrollPos::Bottom),
+        source(),
+    );
+
+    // Folds.
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('f')],
+        Action::CreateFoldFromVisual,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('o')],
+        Action::OpenFoldAtCursor,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('c')],
+        Action::CloseFoldAtCursor,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('a')],
+        Action::ToggleFoldAtCursor,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('R')],
+        Action::OpenAllFolds,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('M')],
+        Action::CloseAllFolds,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('d')],
+        Action::DeleteFoldAtCursor,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('j')],
+        Action::GotoNextFold,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z.clone(), lit_char('k')],
+        Action::GotoPrevFold,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[z, lit_char('i')],
+        Action::ToggleFoldEnable,
+        source(),
+    );
 }
 
-/// Look up a key event in the slice-8.g.i Normal-mode catalog.
+/// Look up a single-key event in the Normal-mode catalog.
 /// Returns `Some(action)` when the chord is bound; `None` to
 /// signal the caller (`input::translate_normal`) to fall back to
 /// its legacy match arm for the not-yet-migrated bindings.
@@ -425,9 +654,15 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins) {
 /// numeric prefix accumulator, and the recording-macro `q`
 /// special-case in `translate_normal` -- this helper is the
 /// last stop before the legacy match. CTRL-bearing chords are
-/// passed through untouched (the trie has no CTRL bindings in
-/// 8.g.i, so they always return `None` here and the caller
-/// resumes its legacy path).
+/// passed through untouched (the trie has no CTRL bindings
+/// yet -- they migrate in 8.g.vi).
+///
+/// Slice 8.g.ii: `g` and `z` are partial trie nodes (children
+/// only, no terminal binding). `LookupResult::Partial` on those
+/// chords surfaces here as `Some(Action::SetPending(AfterG /
+/// AfterZ))` so the dispatcher arms the second-key resolver.
+/// Other partial paths still return `None` (no caller produces
+/// them today; future sub-slices can extend this match arm).
 pub fn lookup_normal(handle: &KeymapHandle, event: &KeyEvent) -> Option<Action> {
     let Some(raw_chord) = KeyChord::from_event(event) else {
         return None;
@@ -435,7 +670,44 @@ pub fn lookup_normal(handle: &KeymapHandle, event: &KeyEvent) -> Option<Action> 
     let chord = normalize_for_normal_lookup(raw_chord);
     match handle.lookup(BindingMode::Normal, &[chord]) {
         LookupResult::Bound { command, .. } => Some(action_from_bound(&command)),
-        LookupResult::Partial | LookupResult::Unbound => None,
+        LookupResult::Partial => {
+            if chord == KeyChord::char('g') {
+                Some(Action::SetPending(Pending::AfterG))
+            } else if chord == KeyChord::char('z') {
+                Some(Action::SetPending(Pending::AfterZ))
+            } else {
+                None
+            }
+        }
+        LookupResult::Unbound => None,
+    }
+}
+
+/// Resolve the second key of a `g_` / `z_` chord (and any
+/// future Normal-mode two-key prefix) via the registry. The
+/// caller supplies the prefix chord that armed the pending
+/// state; this helper builds `[prefix, normalised(event)]` and
+/// looks it up. `Bound` -> the bound action; everything else
+/// (`Partial` / `Unbound`) -> `Action::SetPending(Pending::None)`
+/// to drop the pending state, matching the legacy `_ =>
+/// SetPending(None)` catchall in `resolve_after_g` /
+/// `resolve_after_z`.
+///
+/// Slice 8.g.ii migrates `g_` / `z_` through this helper.
+pub fn lookup_normal_two_key(
+    handle: &KeymapHandle,
+    prefix: KeyChord,
+    event: &KeyEvent,
+) -> Action {
+    let Some(raw_chord) = KeyChord::from_event(event) else {
+        return Action::SetPending(Pending::None);
+    };
+    let chord = normalize_for_normal_lookup(raw_chord);
+    match handle.lookup(BindingMode::Normal, &[prefix, chord]) {
+        LookupResult::Bound { command, .. } => action_from_bound(&command),
+        LookupResult::Partial | LookupResult::Unbound => {
+            Action::SetPending(Pending::None)
+        }
     }
 }
 
@@ -649,12 +921,151 @@ mod tests {
         assert!(r.is_none());
     }
 
+    /// Slice 8.g.ii: `g` is a partial trie node (children only,
+    /// no terminal binding). `lookup_normal` converts the
+    /// `LookupResult::Partial` into `SetPending(AfterG)` so the
+    /// dispatcher arms the second-key resolver.
     #[test]
-    fn unmigrated_g_returns_none_for_legacy_fallthrough() {
-        // `g` is a pending-prefix; 8.g.ii migrates it.
+    fn g_arms_after_g_pending() {
         let (h, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('g'), KeyModifiers::NONE));
-        assert!(r.is_none());
+        assert!(matches!(r, Some(Action::SetPending(Pending::AfterG))));
+    }
+
+    #[test]
+    fn z_arms_after_z_pending() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal(&h, &ev(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert!(matches!(r, Some(Action::SetPending(Pending::AfterZ))));
+    }
+
+    #[test]
+    fn gg_resolves_to_goto_first_line() {
+        let (h, b) = populated_handle();
+        let r = lookup_normal_two_key(
+            &h,
+            KeyChord::char('g'),
+            &ev(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, b.goto_first_line.0),
+            other => panic!("expected Invoke(goto_first_line), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gd_resolves_to_lsp_definition_request() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_two_key(
+            &h,
+            KeyChord::char('g'),
+            &ev(KeyCode::Char('d'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::LspDefinitionRequest));
+    }
+
+    #[test]
+    fn gu_arms_after_operator_pending_for_lower() {
+        let (h, b) = populated_handle();
+        let r = lookup_normal_two_key(
+            &h,
+            KeyChord::char('g'),
+            &ev(KeyCode::Char('u'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::SetPending(Pending::AfterOperator(op)) => {
+                assert_eq!(op, b.lower);
+            }
+            other => panic!("expected SetPending(AfterOperator(lower)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g_capital_j_resolves_to_join_lines_without_space() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_two_key(
+            &h,
+            KeyChord::char('g'),
+            &ev(KeyCode::Char('J'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::JoinLines { with_space: false }));
+    }
+
+    #[test]
+    fn zz_centers_cursor() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_two_key(
+            &h,
+            KeyChord::char('z'),
+            &ev(KeyCode::Char('z'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::ScrollCursorTo(ScrollPos::Center)));
+    }
+
+    #[test]
+    fn z_dot_aliases_zz() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_two_key(
+            &h,
+            KeyChord::char('z'),
+            &ev(KeyCode::Char('.'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::ScrollCursorTo(ScrollPos::Center)));
+    }
+
+    #[test]
+    fn z_enter_aliases_zt() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_two_key(
+            &h,
+            KeyChord::char('z'),
+            &ev(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::ScrollCursorTo(ScrollPos::Top)));
+    }
+
+    #[test]
+    fn z_dash_aliases_zb() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_two_key(
+            &h,
+            KeyChord::char('z'),
+            &ev(KeyCode::Char('-'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::ScrollCursorTo(ScrollPos::Bottom)));
+    }
+
+    #[test]
+    fn za_toggles_fold_at_cursor() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_two_key(
+            &h,
+            KeyChord::char('z'),
+            &ev(KeyCode::Char('a'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::ToggleFoldAtCursor));
+    }
+
+    #[test]
+    fn z_unrecognized_drops_pending() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_two_key(
+            &h,
+            KeyChord::char('z'),
+            &ev(KeyCode::Char('X'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::SetPending(Pending::None)));
+    }
+
+    #[test]
+    fn z_esc_drops_pending() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_two_key(
+            &h,
+            KeyChord::char('z'),
+            &ev(KeyCode::Esc, KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::SetPending(Pending::None)));
     }
 
     #[test]

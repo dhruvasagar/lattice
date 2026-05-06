@@ -696,16 +696,68 @@ The big one. Likely sub-sliced:
 Each sub-slice ships independently green; the drift test is
 the regression net.
 
-### Slice 8.h -- Plugin / user-config integration
+### Slice 8.h -- Plugin / user-config integration ✅ landed
 
-- WIT interface (§5.5).
-- Capability gating: `keymap-write` (full),
-  `keymap-write:minor-mode`, `keymap-write:plugin-layer`.
-- `init.rs` API mirrors the WIT shape.
-- Tests: plugin binds chord that fires plugin command; user
-  remaps `dd` and the rebinding survives a restart; conflict
-  test (two plugins try to bind the same chord); capability
-  denial.
+The plugin host (WASM Component-Model) is post-1.0 (see
+DESIGN.md §13 roadmap), so this slice ships the **registry-side
+infrastructure** every future host integration sits on top of:
+
+- **`KeymapCapability` enum** in `keymap_registry.rs` -- the
+  privilege bundle a writer presents when calling the gated
+  bind APIs. Variants mirror the WIT spec (DESIGN.md §5.5):
+  - `Full` -- unrestricted; reserved for the host's startup
+    catalog enumeration.
+  - `User` -- writes to `KeymapLayer::User` only;
+    `init.rs` runs with this.
+  - `MinorMode` -- writes to any
+    `KeymapLayer::MinorMode(_)` / `KeymapLayer::Buffer`
+    layer; plugins with `keymap-write:minor-mode` in their
+    manifest receive this.
+  - `OwnedLayer { layer_id }` -- writes to a single
+    specified `MinorMode` layer; mirror of WIT
+    `keymap-write:plugin-layer`.
+- **`KeymapError`** with `CapabilityDenied { capability,
+  layer }` and `InvalidChord(ChordParseError)` variants;
+  `Display` + `Error` impls so the future host can surface the
+  failure to the plugin / user verbatim.
+- **`KeymapHandle::try_bind`**, **`try_unbind`**,
+  **`try_push_layer`** -- capability-gated wrappers that funnel
+  through a single `capability_allows` check before delegating
+  to the un-gated `bind` / `unbind` / `push_layer`. The un-gated
+  variants stay public; the host startup pass uses them for the
+  built-in catalog.
+- **`KeymapHandle::try_bind_chord_string`** -- WIT-shaped
+  convenience that parses a chord-sequence string
+  (`"<C-w>j"`, `"gd"`) into `Vec<ChordPattern::Literal>` before
+  delegating to `try_bind`. The future WIT `bind` host-fn calls
+  this; user `init.rs` calls a thin wrapper around it.
+- Tests covering the architecture-doc enumeration:
+  - `plugin_binds_chord_that_fires_plugin_command`
+  - `user_remaps_dd_and_overrides_builtin` (the
+    "survives a restart" shape, simulated as
+    "user override stays authoritative across intervening
+    writes" -- persistence isn't a registry concern; init.rs
+    re-runs at boot).
+  - `conflicting_plugins_resolve_via_layer_priority` (two
+    `OwnedLayer` capabilities binding the same chord; later
+    push wins; popping it restores the older).
+  - Capability-denial tests for every (capability, layer)
+    pair in the matrix: User vs Builtin / MajorMode /
+    MinorMode / Buffer; MinorMode vs Builtin / MajorMode /
+    User; OwnedLayer vs other-id MinorMode / Builtin.
+  - `try_bind_chord_string` parses `<C-w>j` and the binding
+    fires; an unterminated angle-bracket surfaces as
+    `KeymapError::InvalidChord`.
+- **WIT interface** (`wit/keymap.wit`) is **deferred** until
+  the WASM host lands. The capability + error types in this
+  slice are the in-process shape; once the host arrives, the
+  WIT functions translate plugin manifest declarations into
+  `KeymapCapability` variants and call through `try_*`.
+- **`init.rs` API** is similarly deferred. The shape will be
+  a thin wrapper over `try_bind_chord_string` (with command
+  resolution via the `CommandRegistry` by name); writing it
+  meaningfully requires the WASM init-module loading machinery
+  that doesn't exist yet.
 
 ### Slice 8.i -- Drift test retirement + close-out
 

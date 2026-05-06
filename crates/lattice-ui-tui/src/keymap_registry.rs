@@ -43,11 +43,98 @@ use std::sync::{Arc, Mutex};
 use arc_swap::ArcSwap;
 use lattice_grammar::{CommandInvocation, SourceLocation};
 
-use crate::chord::KeyChord;
+use crate::chord::{ChordParseError, KeyChord, parse_chord_sequence};
 use crate::keymap::BindingMode;
 use crate::keymap_trie::{
     BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult,
 };
+
+/// Privilege bundle a writer presents when calling
+/// capability-gated bind APIs (slice 8.h). Mirrors the WIT
+/// `keymap-write` capability variants in DESIGN.md §5.5: the
+/// host hands one of these to every caller of the registry --
+/// built-in startup, the user's compiled `init.rs`, each loaded
+/// plugin -- and the registry enforces the layer scope before
+/// committing any write.
+///
+/// Today the enforcement runs purely in-process (no WASM host
+/// has landed yet). When the plugin host is built, the WIT
+/// `bind` / `unbind` / `push-layer` / `pop-layer` host functions
+/// translate the caller's manifest-declared capability into one
+/// of these variants and call through `try_*`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeymapCapability {
+    /// Unrestricted: write to any layer. Reserved for the host's
+    /// startup pass that registers the built-in catalog.
+    Full,
+    /// Write only to [`KeymapLayer::User`]. The compiled
+    /// `init.rs` runs with this capability at boot. Mirror of
+    /// the WIT "user" capability; denies writes to `Builtin`,
+    /// `MajorMode`, `MinorMode(_)`, and `Buffer`.
+    User,
+    /// Write to any [`KeymapLayer::MinorMode`] or
+    /// [`KeymapLayer::Buffer`] layer. Plugins receive this when
+    /// their manifest declares `keymap-write:minor-mode` --
+    /// permits transient overlays (custom modes, popup
+    /// overrides) but denies writes to `Builtin` / `MajorMode` /
+    /// `User`.
+    MinorMode,
+    /// Write only to a single specified `KeymapLayer::MinorMode`
+    /// id. Mirror of the WIT `keymap-write:plugin-layer`
+    /// variant: each plugin gets one dedicated layer at load
+    /// time, and this capability scopes writes to that one
+    /// layer (a stricter `MinorMode`).
+    OwnedLayer { layer_id: LayerId },
+}
+
+/// Errors returned by the capability-gated bind APIs.
+/// Slice 8.h.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeymapError {
+    /// The supplied capability doesn't authorise writes to the
+    /// requested layer. Surfaced to the host so it can echo
+    /// `:bind` / `:unmap` errors and so plugin manifests that
+    /// claim the wrong scope fail loudly at first registration.
+    CapabilityDenied {
+        capability: KeymapCapability,
+        layer: KeymapLayer,
+    },
+    /// The supplied chord string couldn't be parsed.
+    InvalidChord(ChordParseError),
+}
+
+impl std::fmt::Display for KeymapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeymapError::CapabilityDenied { capability, layer } => write!(
+                f,
+                "keymap capability {capability:?} cannot write to {layer:?}",
+            ),
+            KeymapError::InvalidChord(e) => write!(f, "invalid chord: {e:?}"),
+        }
+    }
+}
+
+impl std::error::Error for KeymapError {}
+
+/// Returns `true` when `capability` authorises writes to
+/// `layer`. The check is the only place layer scope is
+/// enforced -- every capability-gated API funnels through here.
+fn capability_allows(capability: KeymapCapability, layer: KeymapLayer) -> bool {
+    match (capability, layer) {
+        (KeymapCapability::Full, _) => true,
+        (KeymapCapability::User, KeymapLayer::User) => true,
+        (
+            KeymapCapability::MinorMode,
+            KeymapLayer::MinorMode(_) | KeymapLayer::Buffer,
+        ) => true,
+        (
+            KeymapCapability::OwnedLayer { layer_id },
+            KeymapLayer::MinorMode(id),
+        ) => layer_id.raw() == id,
+        _ => false,
+    }
+}
 
 /// Stable id for a runtime-pushed layer (minor-mode overlays,
 /// per-buffer bindings). Issued by [`KeymapHandle::push_layer`];
@@ -366,6 +453,107 @@ impl KeymapHandle {
             .find(|l| l.id == id)
             .map(|l| l.label.clone())
     }
+
+    // ---- Slice 8.h: capability-gated WIT-shaped API.
+
+    /// Capability-gated [`Self::bind`]. The host hands every
+    /// caller a [`KeymapCapability`] derived from its manifest;
+    /// this entry point checks the capability before committing
+    /// the write so plugins / `init.rs` can't escape their
+    /// declared scope.
+    pub fn try_bind(
+        &self,
+        capability: KeymapCapability,
+        layer: KeymapLayer,
+        mode: BindingMode,
+        path: &[ChordPattern],
+        command: CommandInvocation,
+        source: SourceLocation,
+    ) -> Result<(), KeymapError> {
+        if !capability_allows(capability, layer) {
+            return Err(KeymapError::CapabilityDenied { capability, layer });
+        }
+        self.bind(layer, mode, path, command, source);
+        Ok(())
+    }
+
+    /// Capability-gated convenience that parses `chord_str`
+    /// (`"<leader>w"`, `"gd"`, `"<C-w>j"`) into a
+    /// `Vec<ChordPattern::Literal>` before delegating to
+    /// [`Self::try_bind`]. The host's WIT `bind` host-fn calls
+    /// this; user `init.rs` calls a thin wrapper around it.
+    ///
+    /// `chord_str` must round-trip through
+    /// [`crate::chord::parse_chord_sequence`]; wildcards
+    /// (`<CharLiteral>`) aren't expressible from chord strings
+    /// today and require [`Self::try_bind`] with a hand-built
+    /// `&[ChordPattern]`.
+    pub fn try_bind_chord_string(
+        &self,
+        capability: KeymapCapability,
+        layer: KeymapLayer,
+        mode: BindingMode,
+        chord_str: &str,
+        command: CommandInvocation,
+        source: SourceLocation,
+    ) -> Result<(), KeymapError> {
+        let chords =
+            parse_chord_sequence(chord_str).map_err(KeymapError::InvalidChord)?;
+        let path: Vec<ChordPattern> =
+            chords.into_iter().map(ChordPattern::Literal).collect();
+        self.try_bind(capability, layer, mode, &path, command, source)
+    }
+
+    /// Capability-gated [`Self::unbind`]. Returns the dropped
+    /// binding (or `None` when the path wasn't bound) so the
+    /// host can echo "unbound `dd` (was: delete-line)".
+    pub fn try_unbind(
+        &self,
+        capability: KeymapCapability,
+        layer: KeymapLayer,
+        mode: BindingMode,
+        path: &[ChordPattern],
+    ) -> Result<Option<Arc<BoundCommand>>, KeymapError> {
+        if !capability_allows(capability, layer) {
+            return Err(KeymapError::CapabilityDenied { capability, layer });
+        }
+        Ok(self.unbind(layer, mode, path))
+    }
+
+    /// Capability-gated [`Self::push_layer`]. Always permitted
+    /// for `Full`, `MinorMode`, and `OwnedLayer` capabilities
+    /// (push creates a new `MinorMode` layer regardless of the
+    /// capability's specific scope). The `User` capability
+    /// can't push runtime layers -- user config writes live in
+    /// the static `User` layer registered at boot.
+    pub fn try_push_layer(
+        &self,
+        capability: KeymapCapability,
+        kind: PushLayerKind,
+        label: impl Into<String>,
+        bindings: HashMap<BindingMode, KeymapTrie>,
+    ) -> Result<LayerId, KeymapError> {
+        // `User` capability cannot push minor-mode layers --
+        // it's the only one denied here. Every other capability
+        // either has full reach (`Full`) or is scoped to
+        // minor-mode-style layers anyway.
+        if matches!(capability, KeymapCapability::User) {
+            // Synthesise a `KeymapLayer` tag for the error so
+            // the message is consistent with `try_bind`'s
+            // denials. The actual layer hasn't been minted; the
+            // `MinorMode(0)` placeholder is just the layer
+            // *kind* the caller tried to write to.
+            let placeholder = match kind {
+                PushLayerKind::MinorMode => KeymapLayer::MinorMode(0),
+                PushLayerKind::Buffer => KeymapLayer::Buffer,
+            };
+            return Err(KeymapError::CapabilityDenied {
+                capability,
+                layer: placeholder,
+            });
+        }
+        Ok(self.push_layer(kind, label, bindings))
+    }
 }
 
 impl Default for KeymapHandle {
@@ -682,5 +870,423 @@ mod tests {
         assert_eq!(h.layer_label(id).as_deref(), Some("snippet"));
         // Unknown id -> None.
         assert!(h.layer_label(LayerId(9999)).is_none());
+    }
+
+    // ---- Slice 8.h: capability gating ----
+
+    /// `Full` -- the host's startup capability -- writes to
+    /// every layer. The built-in catalog enumeration relies on
+    /// this.
+    #[test]
+    fn full_capability_writes_to_every_layer() {
+        let h = KeymapHandle::new();
+        for layer in [
+            KeymapLayer::Builtin,
+            KeymapLayer::MajorMode,
+            KeymapLayer::MinorMode(7),
+            KeymapLayer::User,
+            KeymapLayer::Buffer,
+        ] {
+            let r = h.try_bind(
+                KeymapCapability::Full,
+                layer,
+                BindingMode::Normal,
+                &[lit('j')],
+                invocation(1),
+                src("startup"),
+            );
+            assert!(r.is_ok(), "Full denied {layer:?}");
+            // Clean up so the next iteration doesn't conflict.
+            let _ = h.unbind(layer, BindingMode::Normal, &[lit('j')]);
+        }
+    }
+
+    /// `User` capability writes only to `KeymapLayer::User`.
+    /// Mirrors the WIT spec: the compiled `init.rs` runs with
+    /// this capability and can rebind `dd` etc., but can't
+    /// touch the built-in catalog.
+    #[test]
+    fn user_capability_accepts_user_layer() {
+        let h = KeymapHandle::new();
+        let r = h.try_bind(
+            KeymapCapability::User,
+            KeymapLayer::User,
+            BindingMode::Normal,
+            &[lit('d'), lit('d')],
+            invocation(42),
+            src("init.rs:1"),
+        );
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn user_capability_denies_builtin_layer() {
+        let h = KeymapHandle::new();
+        let r = h.try_bind(
+            KeymapCapability::User,
+            KeymapLayer::Builtin,
+            BindingMode::Normal,
+            &[lit('j')],
+            invocation(1),
+            src("init.rs"),
+        );
+        match r {
+            Err(KeymapError::CapabilityDenied {
+                capability: KeymapCapability::User,
+                layer: KeymapLayer::Builtin,
+            }) => {}
+            other => panic!("expected CapabilityDenied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_capability_denies_minor_mode_and_buffer_layers() {
+        let h = KeymapHandle::new();
+        for layer in [KeymapLayer::MinorMode(0), KeymapLayer::Buffer] {
+            let r = h.try_bind(
+                KeymapCapability::User,
+                layer,
+                BindingMode::Normal,
+                &[lit('j')],
+                invocation(1),
+                src("init.rs"),
+            );
+            assert!(matches!(r, Err(KeymapError::CapabilityDenied { .. })),
+                "User must deny {layer:?}");
+        }
+    }
+
+    #[test]
+    fn minor_mode_capability_accepts_minor_mode_and_buffer() {
+        let h = KeymapHandle::new();
+        for layer in [KeymapLayer::MinorMode(3), KeymapLayer::Buffer] {
+            let r = h.try_bind(
+                KeymapCapability::MinorMode,
+                layer,
+                BindingMode::Normal,
+                &[lit('j')],
+                invocation(1),
+                src("plugin"),
+            );
+            assert!(r.is_ok(), "MinorMode denied {layer:?}");
+            let _ = h.unbind(layer, BindingMode::Normal, &[lit('j')]);
+        }
+    }
+
+    #[test]
+    fn minor_mode_capability_denies_builtin_and_user() {
+        let h = KeymapHandle::new();
+        for layer in [
+            KeymapLayer::Builtin,
+            KeymapLayer::MajorMode,
+            KeymapLayer::User,
+        ] {
+            let r = h.try_bind(
+                KeymapCapability::MinorMode,
+                layer,
+                BindingMode::Normal,
+                &[lit('j')],
+                invocation(1),
+                src("plugin"),
+            );
+            assert!(matches!(r, Err(KeymapError::CapabilityDenied { .. })),
+                "MinorMode must deny {layer:?}");
+        }
+    }
+
+    #[test]
+    fn owned_layer_capability_accepts_only_its_own_id() {
+        let h = KeymapHandle::new();
+        // Push two minor-mode layers; only the first's id is
+        // authorised by the OwnedLayer capability we mint.
+        let id_a = h.push_layer(
+            PushLayerKind::MinorMode,
+            "plugin-a",
+            HashMap::new(),
+        );
+        let id_b = h.push_layer(
+            PushLayerKind::MinorMode,
+            "plugin-b",
+            HashMap::new(),
+        );
+        let cap = KeymapCapability::OwnedLayer { layer_id: id_a };
+
+        // Plugin-a writes to its own MinorMode(id_a) -- ok.
+        let r = h.try_bind(
+            cap,
+            KeymapLayer::MinorMode(id_a.raw()),
+            BindingMode::Normal,
+            &[lit('j')],
+            invocation(1),
+            src("plugin-a"),
+        );
+        assert!(r.is_ok());
+
+        // Plugin-a tries to write to plugin-b's layer -- denied.
+        let r = h.try_bind(
+            cap,
+            KeymapLayer::MinorMode(id_b.raw()),
+            BindingMode::Normal,
+            &[lit('k')],
+            invocation(2),
+            src("plugin-a"),
+        );
+        assert!(matches!(r, Err(KeymapError::CapabilityDenied { .. })));
+
+        // Plugin-a tries to write to Builtin -- denied.
+        let r = h.try_bind(
+            cap,
+            KeymapLayer::Builtin,
+            BindingMode::Normal,
+            &[lit('k')],
+            invocation(2),
+            src("plugin-a"),
+        );
+        assert!(matches!(r, Err(KeymapError::CapabilityDenied { .. })));
+    }
+
+    #[test]
+    fn user_capability_cannot_push_layer() {
+        let h = KeymapHandle::new();
+        let r = h.try_push_layer(
+            KeymapCapability::User,
+            PushLayerKind::MinorMode,
+            "should-fail",
+            HashMap::new(),
+        );
+        assert!(matches!(r, Err(KeymapError::CapabilityDenied { .. })));
+    }
+
+    #[test]
+    fn minor_mode_capability_can_push_layer() {
+        let h = KeymapHandle::new();
+        let r = h.try_push_layer(
+            KeymapCapability::MinorMode,
+            PushLayerKind::MinorMode,
+            "plugin-overlay",
+            HashMap::new(),
+        );
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn try_bind_chord_string_parses_and_binds() {
+        let h = KeymapHandle::new();
+        let r = h.try_bind_chord_string(
+            KeymapCapability::User,
+            KeymapLayer::User,
+            BindingMode::Normal,
+            "<C-w>j",
+            invocation(7),
+            src("init.rs"),
+        );
+        assert!(r.is_ok());
+
+        // The path must round-trip through the trie -- press
+        // <C-w> then j and the user-layer binding fires.
+        let lookup = h.lookup(
+            BindingMode::Normal,
+            &[KeyChord::ctrl('w'), KeyChord::char('j')],
+        );
+        match lookup {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(command.command.command, CommandId::new(7));
+                assert_eq!(command.layer, KeymapLayer::User);
+            }
+            other => panic!("expected Bound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_bind_chord_string_rejects_invalid_chord() {
+        let h = KeymapHandle::new();
+        // `<lt>` is parseable; `<` alone is not (unterminated angle).
+        let r = h.try_bind_chord_string(
+            KeymapCapability::User,
+            KeymapLayer::User,
+            BindingMode::Normal,
+            "<not-closed",
+            invocation(1),
+            src("init.rs"),
+        );
+        assert!(matches!(r, Err(KeymapError::InvalidChord(_))));
+    }
+
+    /// Architecture-doc test: "user remaps `dd` and the
+    /// rebinding survives a restart". Persistence isn't a
+    /// registry concern (init.rs reruns at boot), so we
+    /// simulate the surviving-restart shape: the user's
+    /// `[d, d]` binding at `KeymapLayer::User` overrides the
+    /// built-in's same-path binding, and the override stays
+    /// authoritative across an arbitrary number of intervening
+    /// reads / merges.
+    #[test]
+    fn user_remaps_dd_and_overrides_builtin() {
+        let h = KeymapHandle::new();
+        // Built-in catalog -- `[d, d]` -> command 100.
+        h.try_bind(
+            KeymapCapability::Full,
+            KeymapLayer::Builtin,
+            BindingMode::Normal,
+            &[lit('d'), lit('d')],
+            invocation(100),
+            src("builtin.dd"),
+        )
+        .unwrap();
+        // User `init.rs` -- rebind `[d, d]` -> command 200.
+        h.try_bind(
+            KeymapCapability::User,
+            KeymapLayer::User,
+            BindingMode::Normal,
+            &[lit('d'), lit('d')],
+            invocation(200),
+            src("init.rs:42"),
+        )
+        .unwrap();
+
+        let r = h.lookup(BindingMode::Normal, &[pressed('d'), pressed('d')]);
+        match r {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(
+                    command.command.command,
+                    CommandId::new(200),
+                    "user override must win",
+                );
+                assert_eq!(command.layer, KeymapLayer::User);
+            }
+            other => panic!("expected Bound (user.dd), got {other:?}"),
+        }
+
+        // Drive a few synthetic reads to assure the override
+        // survives the merged-trie rebuild even when other
+        // unrelated writes happen.
+        for c in ['j', 'k', 'l'] {
+            h.try_bind(
+                KeymapCapability::Full,
+                KeymapLayer::Builtin,
+                BindingMode::Normal,
+                &[lit(c)],
+                invocation(c as u64),
+                src("builtin"),
+            )
+            .unwrap();
+        }
+        let r = h.lookup(BindingMode::Normal, &[pressed('d'), pressed('d')]);
+        match r {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(command.command.command, CommandId::new(200));
+            }
+            other => panic!("expected Bound (user.dd) after extra binds, got {other:?}"),
+        }
+    }
+
+    /// Architecture-doc test: "two plugins try to bind the
+    /// same chord". Each plugin pushes its own MinorMode layer;
+    /// the registry merges in priority order (LayerId
+    /// ascending). The plugin pushed last wins, but the older
+    /// plugin's binding stays in its layer so a future pop_layer
+    /// of the winner restores it.
+    #[test]
+    fn conflicting_plugins_resolve_via_layer_priority() {
+        let h = KeymapHandle::new();
+
+        // Plugin A pushes its layer + binds `<leader>x`.
+        let id_a = h.push_layer(
+            PushLayerKind::MinorMode,
+            "plugin-a",
+            HashMap::new(),
+        );
+        h.try_bind(
+            KeymapCapability::OwnedLayer { layer_id: id_a },
+            KeymapLayer::MinorMode(id_a.raw()),
+            BindingMode::Normal,
+            &[lit('x')],
+            invocation(1),
+            src("plugin-a"),
+        )
+        .unwrap();
+
+        // Plugin B pushes after A -- higher LayerId, wins.
+        let id_b = h.push_layer(
+            PushLayerKind::MinorMode,
+            "plugin-b",
+            HashMap::new(),
+        );
+        h.try_bind(
+            KeymapCapability::OwnedLayer { layer_id: id_b },
+            KeymapLayer::MinorMode(id_b.raw()),
+            BindingMode::Normal,
+            &[lit('x')],
+            invocation(2),
+            src("plugin-b"),
+        )
+        .unwrap();
+
+        // Plugin B's binding wins.
+        let r = h.lookup(BindingMode::Normal, &[pressed('x')]);
+        match r {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(command.command.command, CommandId::new(2));
+            }
+            other => panic!("expected Bound (plugin-b.x), got {other:?}"),
+        }
+
+        // Pop plugin B; plugin A's binding resurfaces.
+        h.pop_layer(id_b);
+        let r = h.lookup(BindingMode::Normal, &[pressed('x')]);
+        match r {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(
+                    command.command.command,
+                    CommandId::new(1),
+                    "plugin-a's binding should reappear after b pops",
+                );
+            }
+            other => panic!("expected Bound (plugin-a.x), got {other:?}"),
+        }
+    }
+
+    /// Architecture-doc test: "plugin binds chord that fires
+    /// plugin command". Without the WASM host, we simulate the
+    /// host-side bind path: a plugin with a dedicated
+    /// `OwnedLayer` capability binds a chord to a typed
+    /// `CommandInvocation` carrying the plugin's command id.
+    /// Lookup of the chord returns the plugin command.
+    #[test]
+    fn plugin_binds_chord_that_fires_plugin_command() {
+        let h = KeymapHandle::new();
+        let id = h.push_layer(
+            PushLayerKind::MinorMode,
+            "plugin-foo",
+            HashMap::new(),
+        );
+        let cap = KeymapCapability::OwnedLayer { layer_id: id };
+        let plugin_cmd = invocation(0xFEED);
+
+        // Bind `<C-x>fo` (multi-chord prefix, since `<leader>`
+        // isn't yet parseable by `parse_chord_sequence`).
+        h.try_bind_chord_string(
+            cap,
+            KeymapLayer::MinorMode(id.raw()),
+            BindingMode::Normal,
+            "<C-x>fo",
+            plugin_cmd.clone(),
+            src("plugin-foo:wit"),
+        )
+        .unwrap();
+
+        let path = vec![
+            KeyChord::ctrl('x'),
+            KeyChord::char('f'),
+            KeyChord::char('o'),
+        ];
+        let r = h.lookup(BindingMode::Normal, &path);
+        match r {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(command.command.command, plugin_cmd.command);
+                assert_eq!(command.layer, KeymapLayer::MinorMode(id.raw()));
+            }
+            other => panic!("expected Bound (plugin command), got {other:?}"),
+        }
     }
 }

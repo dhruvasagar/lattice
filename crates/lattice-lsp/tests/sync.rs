@@ -29,6 +29,7 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 
 use lattice_lsp::DocSync;
+use lattice_lsp::error::LspResult;
 
 use common::{MockServer, default_server_capabilities};
 
@@ -43,6 +44,68 @@ async fn mock_with_server_caps(caps: ServerCapabilities) -> MockServer {
     MockServer::start_with_capabilities(caps).await
 }
 
+// ---------- Bridge helpers (Phase 4.x DocSync refactor) ----------
+//
+// DocSync is now pure state -- it returns LSP params instead of
+// sending. These helpers wrap the new API + push the returned
+// params through the mock server's handle so the test bodies stay
+// readable. Each test owns its own DocSync; capabilities come off
+// the mock server's handshake.
+
+fn t_open(sync: &mut DocSync, server: &MockServer, uri: Uri, lang: &str, text: &str) {
+    let params = sync.open(uri, lang, text);
+    server
+        .handle
+        .notify("textDocument/didOpen", params)
+        .expect("notify didOpen");
+}
+
+fn t_record(
+    sync: &mut DocSync,
+    server: &MockServer,
+    uri: &Uri,
+    edit: &lattice_protocol::edit::Edit,
+) -> LspResult<()> {
+    let caps = server.handle.capabilities();
+    sync.record_edit(&caps, uri, edit)
+}
+
+fn t_flush(sync: &mut DocSync, server: &MockServer, uri: &Uri) {
+    let caps = server.handle.capabilities();
+    if let Some(params) = sync.take_flush_payload(&caps, uri) {
+        server
+            .handle
+            .notify("textDocument/didChange", params)
+            .expect("notify didChange");
+    }
+}
+
+fn t_flush_all(sync: &mut DocSync, server: &MockServer) {
+    let caps = server.handle.capabilities();
+    for (_uri, params) in sync.take_flush_all_payloads(&caps) {
+        server
+            .handle
+            .notify("textDocument/didChange", params)
+            .expect("notify didChange (flush_all)");
+    }
+}
+
+fn t_close(sync: &mut DocSync, server: &MockServer, uri: &Uri) {
+    let caps = server.handle.capabilities();
+    if let Some(payloads) = sync.close(&caps, uri) {
+        if let Some(final_changes) = payloads.final_changes {
+            server
+                .handle
+                .notify("textDocument/didChange", final_changes)
+                .expect("notify final didChange");
+        }
+        server
+            .handle
+            .notify("textDocument/didClose", payloads.close)
+            .expect("notify didClose");
+    }
+}
+
 #[tokio::test]
 async fn open_emits_did_open_with_initial_text_and_version_one() {
     let server = mock_with_server_caps(caps_with_sync(
@@ -50,9 +113,9 @@ async fn open_emits_did_open_with_initial_text_and_version_one() {
         PositionEncodingKind::UTF8,
     ))
     .await;
-    let mut sync = DocSync::new(server.handle.clone());
+    let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///tmp/x.rs").unwrap();
-    sync.open(uri.clone(), "rust", "fn main() {}").unwrap();
+    t_open(&mut sync, &server, uri.clone(), "rust", "fn main() {}");
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let notes = server.mock.notifications().await;
@@ -74,19 +137,19 @@ async fn record_then_flush_emits_one_did_change_with_queued_events() {
         PositionEncodingKind::UTF8,
     ))
     .await;
-    let mut sync = DocSync::new(server.handle.clone());
+    let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///tmp/y.rs").unwrap();
-    sync.open(uri.clone(), "rust", "abc\n").unwrap();
+    t_open(&mut sync, &server, uri.clone(), "rust", "abc\n");
 
     // Insert "x" at start.
-    sync.record_edit(&uri, &Edit::insert(Position::new(0, 0), "x"))
+    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 0), "x"))
         .unwrap();
     // Append "y" at end of line 0 ("xabc" now).
-    sync.record_edit(&uri, &Edit::insert(Position::new(0, 4), "y"))
+    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 4), "y"))
         .unwrap();
 
     assert!(sync.has_pending(&uri));
-    assert!(sync.flush(&uri).is_ok());
+    t_flush(&mut sync, &server, &uri);
     assert!(!sync.has_pending(&uri));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -110,13 +173,13 @@ async fn full_sync_mode_sends_entire_text_no_range() {
         PositionEncodingKind::UTF8,
     ))
     .await;
-    let mut sync = DocSync::new(server.handle.clone());
+    let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///tmp/full.rs").unwrap();
-    sync.open(uri.clone(), "rust", "fn a() {}\n").unwrap();
+    t_open(&mut sync, &server, uri.clone(), "rust", "fn a() {}\n");
 
-    sync.record_edit(&uri, &Edit::insert(Position::new(0, 5), "_b"))
+    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 5), "_b"))
         .unwrap();
-    sync.flush(&uri).unwrap();
+    t_flush(&mut sync, &server, &uri);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let notes = server.mock.notifications().await;
@@ -143,11 +206,12 @@ async fn close_flushes_pending_then_sends_did_close() {
         PositionEncodingKind::UTF8,
     ))
     .await;
-    let mut sync = DocSync::new(server.handle.clone());
+    let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///tmp/c.rs").unwrap();
-    sync.open(uri.clone(), "rust", "fn x() {}\n").unwrap();
-    sync.record_edit(&uri, &Edit::insert(Position::new(0, 0), "// ")).unwrap();
-    sync.close(&uri).unwrap();
+    t_open(&mut sync, &server, uri.clone(), "rust", "fn x() {}\n");
+    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 0), "// "))
+        .unwrap();
+    t_close(&mut sync, &server, &uri);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let notes = server.mock.notifications().await;
@@ -187,11 +251,11 @@ async fn record_after_close_is_error() {
         PositionEncodingKind::UTF8,
     ))
     .await;
-    let mut sync = DocSync::new(server.handle.clone());
+    let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///tmp/r.rs").unwrap();
-    sync.open(uri.clone(), "rust", "x").unwrap();
-    sync.close(&uri).unwrap();
-    let r = sync.record_edit(&uri, &Edit::insert(Position::new(0, 0), "a"));
+    t_open(&mut sync, &server, uri.clone(), "rust", "x");
+    t_close(&mut sync, &server, &uri);
+    let r = t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 0), "a"));
     assert!(r.is_err());
 }
 
@@ -202,13 +266,14 @@ async fn utf16_negotiated_encodes_columns_in_code_units() {
         PositionEncodingKind::UTF16,
     ))
     .await;
-    let mut sync = DocSync::new(server.handle.clone());
+    let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///tmp/utf16.rs").unwrap();
     // 😀 = 4 utf-8 bytes, 2 utf-16 units.
-    sync.open(uri.clone(), "rust", "x😀y").unwrap();
+    t_open(&mut sync, &server, uri.clone(), "rust", "x😀y");
     // Insert "z" between '😀' and 'y' (lattice byte offset 5).
-    sync.record_edit(&uri, &Edit::insert(Position::new(0, 5), "z")).unwrap();
-    sync.flush(&uri).unwrap();
+    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 5), "z"))
+        .unwrap();
+    t_flush(&mut sync, &server, &uri);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let notes = server.mock.notifications().await;
@@ -231,11 +296,12 @@ async fn utf8_negotiated_keeps_byte_offsets_unchanged() {
         PositionEncodingKind::UTF8,
     ))
     .await;
-    let mut sync = DocSync::new(server.handle.clone());
+    let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///tmp/u8.rs").unwrap();
-    sync.open(uri.clone(), "rust", "x😀y").unwrap();
-    sync.record_edit(&uri, &Edit::insert(Position::new(0, 5), "z")).unwrap();
-    sync.flush(&uri).unwrap();
+    t_open(&mut sync, &server, uri.clone(), "rust", "x😀y");
+    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 5), "z"))
+        .unwrap();
+    t_flush(&mut sync, &server, &uri);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let notes = server.mock.notifications().await;
@@ -257,13 +323,15 @@ async fn version_increments_per_edit() {
         PositionEncodingKind::UTF8,
     ))
     .await;
-    let mut sync = DocSync::new(server.handle.clone());
+    let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///tmp/v.rs").unwrap();
-    sync.open(uri.clone(), "rust", "").unwrap();
+    t_open(&mut sync, &server, uri.clone(), "rust", "");
     assert_eq!(sync.version(&uri), Some(1));
-    sync.record_edit(&uri, &Edit::insert(Position::new(0, 0), "a")).unwrap();
+    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 0), "a"))
+        .unwrap();
     assert_eq!(sync.version(&uri), Some(2));
-    sync.record_edit(&uri, &Edit::insert(Position::new(0, 1), "b")).unwrap();
+    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 1), "b"))
+        .unwrap();
     assert_eq!(sync.version(&uri), Some(3));
 }
 
@@ -274,11 +342,13 @@ async fn replace_edit_round_trips_with_correct_range_and_text() {
         PositionEncodingKind::UTF8,
     ))
     .await;
-    let mut sync = DocSync::new(server.handle.clone());
+    let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///tmp/repl.rs").unwrap();
-    sync.open(uri.clone(), "rust", "alpha beta\n").unwrap();
+    t_open(&mut sync, &server, uri.clone(), "rust", "alpha beta\n");
     // Replace "beta" (bytes 6..10 on line 0) with "gamma".
-    sync.record_edit(
+    t_record(
+        &mut sync,
+        &server,
         &uri,
         &Edit::replace(
             Range::new(Position::new(0, 6), Position::new(0, 10)),
@@ -286,7 +356,7 @@ async fn replace_edit_round_trips_with_correct_range_and_text() {
         ),
     )
     .unwrap();
-    sync.flush(&uri).unwrap();
+    t_flush(&mut sync, &server, &uri);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let notes = server.mock.notifications().await;
@@ -310,14 +380,16 @@ async fn flush_all_emits_per_open_doc() {
         PositionEncodingKind::UTF8,
     ))
     .await;
-    let mut sync = DocSync::new(server.handle.clone());
+    let mut sync = DocSync::new();
     let a = Uri::from_str("file:///tmp/a.rs").unwrap();
     let b = Uri::from_str("file:///tmp/b.rs").unwrap();
-    sync.open(a.clone(), "rust", "// a").unwrap();
-    sync.open(b.clone(), "rust", "// b").unwrap();
-    sync.record_edit(&a, &Edit::insert(Position::new(0, 4), "1")).unwrap();
-    sync.record_edit(&b, &Edit::insert(Position::new(0, 4), "2")).unwrap();
-    sync.flush_all().unwrap();
+    t_open(&mut sync, &server, a.clone(), "rust", "// a");
+    t_open(&mut sync, &server, b.clone(), "rust", "// b");
+    t_record(&mut sync, &server, &a, &Edit::insert(Position::new(0, 4), "1"))
+        .unwrap();
+    t_record(&mut sync, &server, &b, &Edit::insert(Position::new(0, 4), "2"))
+        .unwrap();
+    t_flush_all(&mut sync, &server);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let notes = server.mock.notifications().await;
@@ -335,14 +407,14 @@ async fn no_flush_when_nothing_queued() {
         PositionEncodingKind::UTF8,
     ))
     .await;
-    let mut sync = DocSync::new(server.handle.clone());
+    let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///tmp/q.rs").unwrap();
-    sync.open(uri.clone(), "rust", "x").unwrap();
+    t_open(&mut sync, &server, uri.clone(), "rust", "x");
     // Wait for the didOpen notification to land at the mock so
     // the baseline count is stable.
     tokio::time::sleep(Duration::from_millis(50)).await;
     let baseline = server.mock.notifications().await.len();
-    sync.flush(&uri).unwrap();
+    t_flush(&mut sync, &server, &uri);
     tokio::time::sleep(Duration::from_millis(50)).await;
     let after = server.mock.notifications().await.len();
     assert_eq!(after, baseline, "flush of empty queue is a no-op");
@@ -355,8 +427,8 @@ async fn record_edit_on_unopened_uri_is_error() {
         PositionEncodingKind::UTF8,
     ))
     .await;
-    let mut sync = DocSync::new(server.handle.clone());
+    let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///never-opened.rs").unwrap();
-    let r = sync.record_edit(&uri, &Edit::insert(Position::new(0, 0), "x"));
+    let r = t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 0), "x"));
     assert!(r.is_err());
 }

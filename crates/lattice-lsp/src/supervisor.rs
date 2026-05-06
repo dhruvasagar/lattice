@@ -339,15 +339,16 @@ impl LspSupervisor {
             // Ensure DocSync exists for this actor.
             self.syncs
                 .entry(key.clone())
-                .or_insert_with(|| DocSync::new(handle.clone()));
+                .or_insert_with(DocSync::new);
 
-            // Send didOpen.
+            // Build didOpen params + send via the actor.
             if let Some(sync) = self.syncs.get_mut(&key) {
-                sync.open(
+                let params = sync.open(
                     uri.clone(),
                     config.language_id.clone(),
                     text.clone(),
-                )?;
+                );
+                handle.notify("textDocument/didOpen", params)?;
             }
 
             handles.push(handle);
@@ -404,10 +405,11 @@ impl LspSupervisor {
         // Ensure DocSync exists for this actor.
         self.syncs
             .entry(key.clone())
-            .or_insert_with(|| DocSync::new(handle.clone()));
-        // Send didOpen.
+            .or_insert_with(DocSync::new);
+        // Build didOpen params + send via the actor.
         if let Some(sync) = self.syncs.get_mut(&key) {
-            sync.open(uri.clone(), language_id, text)?;
+            let params = sync.open(uri.clone(), language_id, text);
+            handle.notify("textDocument/didOpen", params)?;
         }
         // Record attachment.
         self.attachments.entry(uri).or_default().push(key);
@@ -423,8 +425,22 @@ impl LspSupervisor {
             None => return Ok(()),
         };
         for key in &keys {
-            if let Some(sync) = self.syncs.get_mut(key) {
-                let _ = sync.close(uri);
+            // The DocSync's close payload pairs an optional
+            // final flush with the didClose itself; the actor
+            // (here: the supervisor borrowing the actor's
+            // handle) sends them in order so the server's
+            // last view of the doc matches the editor's.
+            let Some(handle) = self.actors.get(key) else {
+                continue;
+            };
+            let caps = handle.capabilities();
+            if let Some(sync) = self.syncs.get_mut(key)
+                && let Some(payloads) = sync.close(&caps, uri)
+            {
+                if let Some(final_changes) = payloads.final_changes {
+                    let _ = handle.notify("textDocument/didChange", final_changes);
+                }
+                let _ = handle.notify("textDocument/didClose", payloads.close);
             }
         }
         self.diagnostics.clear_uri(uri);
@@ -447,8 +463,12 @@ impl LspSupervisor {
             None => return Ok(()),
         };
         for key in &keys {
+            let Some(handle) = self.actors.get(key) else {
+                continue;
+            };
+            let caps = handle.capabilities();
             if let Some(sync) = self.syncs.get_mut(key)
-                && let Err(e) = sync.record_edit(uri, edit)
+                && let Err(e) = sync.record_edit(&caps, uri, edit)
             {
                 self.logger.log(
                     Some(&Arc::from(key.1.as_str())),
@@ -470,8 +490,13 @@ impl LspSupervisor {
             None => return Ok(()),
         };
         for key in &keys {
+            let Some(handle) = self.actors.get(key) else {
+                continue;
+            };
+            let caps = handle.capabilities();
             if let Some(sync) = self.syncs.get_mut(key)
-                && let Err(e) = sync.flush(uri)
+                && let Some(params) = sync.take_flush_payload(&caps, uri)
+                && let Err(e) = handle.notify("textDocument/didChange", params)
             {
                 self.logger.log(
                     Some(&Arc::from(key.1.as_str())),
@@ -484,12 +509,25 @@ impl LspSupervisor {
         Ok(())
     }
 
-    /// Flush every open URI's queued changes. Used during
-    /// editor shutdown so the server sees a coherent final
-    /// state before `didClose`.
+    /// Flush every open URI's queued changes across every
+    /// attached server. Used during editor shutdown so the
+    /// server sees a coherent final state before `didClose`.
     pub fn flush_all(&mut self) -> LspResult<()> {
-        for sync in self.syncs.values_mut() {
-            let _ = sync.flush_all();
+        for (key, sync) in &mut self.syncs {
+            let Some(handle) = self.actors.get(key) else {
+                continue;
+            };
+            let caps = handle.capabilities();
+            for (uri, params) in sync.take_flush_all_payloads(&caps) {
+                if let Err(e) = handle.notify("textDocument/didChange", params) {
+                    self.logger.log(
+                        Some(&Arc::from(key.1.as_str())),
+                        LogLevel::Warn,
+                        LogSource::Client,
+                        format!("flush_all on {}: {}", uri.as_str(), e),
+                    );
+                }
+            }
         }
         Ok(())
     }

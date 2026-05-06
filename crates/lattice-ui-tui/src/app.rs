@@ -12200,7 +12200,7 @@ impl App {
             );
             return;
         }
-        let tree = match FileTreeBuffer::open(&root) {
+        let tree = match FileTreeBuffer::open(&root, self.theme.nerd_fonts) {
             Ok(t) => t,
             Err(e) => {
                 self.set_message(

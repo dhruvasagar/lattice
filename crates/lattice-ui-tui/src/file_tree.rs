@@ -53,13 +53,17 @@ pub struct FileTreeBuffer {
     pub content: Buffer,
     pub cursor: Position,
     pub scroll: usize,
+    pub nerd_fonts: bool,
 }
 
 impl FileTreeBuffer {
     /// Build a fresh file-tree rooted at `root`. Reads the root
     /// directory eagerly (one level deep); subdirectories are
     /// lazy-loaded on expansion.
-    pub fn open(root: impl Into<PathBuf>) -> std::io::Result<Self> {
+    ///
+    /// `nerd_fonts` controls whether nerd-font icon glyphs are
+    /// embedded inline in the rendered rope lines.
+    pub fn open(root: impl Into<PathBuf>, nerd_fonts: bool) -> std::io::Result<Self> {
         let root = root.into();
         let mut entries = Vec::new();
         // The root itself appears as the first row so the user has
@@ -82,7 +86,7 @@ impl FileTreeBuffer {
                 },
             });
         }
-        let content = render_to_buffer(&entries);
+        let content = render_to_buffer(&entries, nerd_fonts);
         Ok(Self {
             id: BufferId::next(),
             root,
@@ -90,6 +94,7 @@ impl FileTreeBuffer {
             content,
             cursor: Position::ZERO,
             scroll: 0,
+            nerd_fonts,
         })
     }
 
@@ -109,7 +114,7 @@ impl FileTreeBuffer {
             } else {
                 self.expand(index)?;
             }
-            self.content = render_to_buffer(&self.entries);
+            self.content = render_to_buffer(&self.entries, self.nerd_fonts);
         }
         Ok(())
     }
@@ -223,12 +228,17 @@ fn read_dir_sorted(root: &Path) -> std::io::Result<Vec<(PathBuf, bool)>> {
 }
 
 /// Serialise the entry list to a [`Buffer`]. Each row is
-/// `<indent><marker><name>` where `<marker>` is `▾ ` for an
+/// `<indent><marker><icon><name>` where `<marker>` is `▾ ` for an
 /// expanded dir, `▸ ` for a collapsed dir, and `  ` for a file.
-/// Indent is two spaces per `depth`. Re-rendered every time the
-/// tree structure changes; cheap on real-sized trees (~hundreds of
-/// rows).
-fn render_to_buffer(entries: &[FileTreeEntry]) -> Buffer {
+/// Indent is two spaces per `depth`. When `nerd_fonts` is true the
+/// icon glyph from [`crate::icons::icon_for_entry`] is inserted
+/// between the marker and the name; when false the icon is `""`.
+/// Re-rendered every time the tree structure changes; cheap on
+/// real-sized trees (~hundreds of rows).
+fn render_to_buffer(entries: &[FileTreeEntry], nerd_fonts: bool) -> Buffer {
+    use crate::icons::icon_for_entry;
+    use crate::theme::Theme;
+    let theme = Theme::default();
     let mut text = String::new();
     for (i, entry) in entries.iter().enumerate() {
         let indent = "  ".repeat(entry.depth as usize);
@@ -237,6 +247,8 @@ fn render_to_buffer(entries: &[FileTreeEntry]) -> Buffer {
             FileTreeEntryKind::Directory { expanded: false } => "▸ ",
             FileTreeEntryKind::File => "  ",
         };
+        let is_dir = matches!(entry.kind, FileTreeEntryKind::Directory { .. });
+        let (icon, _style) = icon_for_entry(&entry.path, is_dir, nerd_fonts, &theme);
         let name = if entry.depth == 0 {
             entry.path.display().to_string()
         } else {
@@ -248,6 +260,7 @@ fn render_to_buffer(entries: &[FileTreeEntry]) -> Buffer {
         };
         text.push_str(&indent);
         text.push_str(marker);
+        text.push_str(icon);
         text.push_str(&name);
         if i + 1 < entries.len() {
             text.push('\n');
@@ -291,7 +304,7 @@ mod tests {
         let dir = temp_dir();
         std::fs::write(dir.join("a.txt"), "x").unwrap();
         std::fs::create_dir(dir.join("sub")).unwrap();
-        let tree = FileTreeBuffer::open(&dir).unwrap();
+        let tree = FileTreeBuffer::open(&dir, false).unwrap();
         // Root + 2 children = 3 entries.
         assert_eq!(tree.entries.len(), 3);
         // Directory sorts before file.
@@ -308,7 +321,7 @@ mod tests {
         let dir = temp_dir();
         std::fs::create_dir(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub").join("inner.txt"), "x").unwrap();
-        let mut tree = FileTreeBuffer::open(&dir).unwrap();
+        let mut tree = FileTreeBuffer::open(&dir, false).unwrap();
         // Find the index of the "sub" directory entry. It's at
         // index 1 (root, then sub).
         tree.toggle_at(1).unwrap();
@@ -324,10 +337,11 @@ mod tests {
     fn render_uses_indentation_and_marker() {
         let dir = temp_dir();
         std::fs::write(dir.join("a.txt"), "x").unwrap();
-        let tree = FileTreeBuffer::open(&dir).unwrap();
+        let tree = FileTreeBuffer::open(&dir, false).unwrap();
         let body = tree.content.as_string();
         assert!(body.contains("a.txt"));
-        // File row is the second; depth 1 = 2 spaces of indent.
+        // File row is the second; depth 1 = 2 spaces of indent + 2
+        // spaces for the file marker (nerd_fonts=false means icon="").
         assert!(body.lines().nth(1).unwrap().starts_with("    "));
     }
 
@@ -335,7 +349,7 @@ mod tests {
     fn move_cursor_clamps_to_last_line() {
         let dir = temp_dir();
         std::fs::write(dir.join("a.txt"), "x").unwrap();
-        let mut tree = FileTreeBuffer::open(&dir).unwrap();
+        let mut tree = FileTreeBuffer::open(&dir, false).unwrap();
         tree.move_cursor(0, 1000, 10);
         // 2 entries -> 2 rendered lines, cursor pinned at last.
         assert_eq!(tree.cursor.line, 1);
@@ -346,10 +360,30 @@ mod tests {
     fn entry_at_cursor_returns_currently_targeted() {
         let dir = temp_dir();
         std::fs::write(dir.join("a.txt"), "x").unwrap();
-        let mut tree = FileTreeBuffer::open(&dir).unwrap();
+        let mut tree = FileTreeBuffer::open(&dir, false).unwrap();
         tree.cursor = Position::new(1, 0);
         let e = tree.entry_at_cursor().unwrap();
         assert!(matches!(e.kind, FileTreeEntryKind::File));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn render_embeds_nerd_icon_in_rope() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("main.rs"), "x").unwrap();
+        let tree = FileTreeBuffer::open(&dir, true).unwrap();
+        let body = tree.content.as_string();
+        assert!(body.contains("󱘗 "), "expected rust glyph in rope, got: {body}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn render_no_icon_when_nerd_fonts_disabled() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("main.rs"), "x").unwrap();
+        let tree = FileTreeBuffer::open(&dir, false).unwrap();
+        let body = tree.content.as_string();
+        assert!(!body.contains("󱘗 "), "unexpected glyph when nerd_fonts=false");
         std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -341,6 +341,7 @@ mod tests {
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
+                nerd_fonts: false,
             }),
         });
         r.insert(BufferEntry {
@@ -353,6 +354,7 @@ mod tests {
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
+                nerd_fonts: false,
             }),
         });
         r.insert(BufferEntry {
@@ -365,6 +367,7 @@ mod tests {
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
+                nerd_fonts: false,
             }),
         });
         let sorted = r.sorted_ids();
@@ -389,6 +392,7 @@ mod tests {
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
+                nerd_fonts: false,
             }),
         });
         r.insert(BufferEntry {
@@ -404,6 +408,7 @@ mod tests {
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
+                nerd_fonts: false,
             }),
         });
         let listed = r.listed_ids_sorted();
@@ -427,6 +432,7 @@ mod tests {
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
+                nerd_fonts: false,
             }),
         });
         assert_eq!(r.file_tree_with_root(&path), Some(id));

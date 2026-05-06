@@ -1361,21 +1361,29 @@ fn draw_file_tree_pane(
         (pane.cursor.line as usize, pane.scroll as usize)
     };
     let viewport = area.height as usize;
-    let lines: Vec<Line> = tree
-        .content
-        .as_string()
+    let nerd_fonts = app.theme.nerd_fonts;
+    let theme = &app.theme;
+    let raw_text = tree.content.as_string();
+    let lines: Vec<Line> = raw_text
         .split('\n')
+        .enumerate()
+        .zip(tree.entries.iter())
         .skip(scroll)
         .take(viewport)
-        .enumerate()
-        .map(|(i, l)| {
+        .map(|((i, raw_line), entry)| {
             let line_idx = scroll + i;
-            let style = if is_active && line_idx == cursor_line {
-                TuiStyle::default().add_modifier(Modifier::REVERSED)
+            let is_cursor = is_active && line_idx == cursor_line;
+            let is_dir =
+                matches!(entry.kind, crate::file_tree::FileTreeEntryKind::Directory { .. });
+            let (_glyph, entry_style) =
+                crate::icons::icon_for_entry(&entry.path, is_dir, nerd_fonts, theme);
+            let cursor_mod = if is_cursor {
+                Modifier::REVERSED
             } else {
-                TuiStyle::default()
+                Modifier::empty()
             };
-            Line::from(Span::styled(l.to_string(), style))
+            let span_style = entry_style.add_modifier(cursor_mod);
+            Line::from(Span::styled(raw_line.to_string(), span_style))
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);

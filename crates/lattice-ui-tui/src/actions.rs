@@ -59,6 +59,12 @@ pub struct ActionIds {
     pub page_up: CommandId,
     pub scroll_line_up: CommandId,
     pub scroll_line_down: CommandId,
+    pub redraw_screen: CommandId,
+    pub enter_command_line: CommandId,
+    pub oil_navigate_up: CommandId,
+    pub reselect_last_visual: CommandId,
+    pub paste_after: CommandId,
+    pub paste_before: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -235,6 +241,42 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
             "Vim's `<C-e>`: scroll viewport down one line.",
             AppEffect::ScrollLineDown,
         ),
+        redraw_screen: register_simple(
+            registry,
+            "action:redraw-screen",
+            "Vim's `<C-l>`: force a full screen redraw.",
+            AppEffect::RedrawScreen,
+        ),
+        enter_command_line: register_simple(
+            registry,
+            "action:enter-command-line",
+            "Vim's `:`: enter the command-line minibuffer.",
+            AppEffect::EnterCommandLine,
+        ),
+        oil_navigate_up: register_simple(
+            registry,
+            "action:oil-navigate-up",
+            "Lattice's `-`: open / step up in the oil-style directory view.",
+            AppEffect::OilNavigateUp,
+        ),
+        reselect_last_visual: register_simple(
+            registry,
+            "action:reselect-last-visual",
+            "Vim's `gv`: reselect the last Visual selection.",
+            AppEffect::ReselectLastVisual,
+        ),
+        paste_after: register_simple(
+            registry,
+            "action:paste-after",
+            "Vim's `p`: paste the unnamed register's contents after the cursor.",
+            AppEffect::PasteAfter,
+        ),
+        paste_before: register_simple(
+            registry,
+            "action:paste-before",
+            "Vim's `P`: paste the unnamed register's contents before the cursor.",
+            AppEffect::PasteBefore,
+        ),
     }
 }
 
@@ -305,6 +347,12 @@ mod tests {
             (ids.page_up, "action:page-up"),
             (ids.scroll_line_up, "action:scroll-line-up"),
             (ids.scroll_line_down, "action:scroll-line-down"),
+            (ids.redraw_screen, "action:redraw-screen"),
+            (ids.enter_command_line, "action:enter-command-line"),
+            (ids.oil_navigate_up, "action:oil-navigate-up"),
+            (ids.reselect_last_visual, "action:reselect-last-visual"),
+            (ids.paste_after, "action:paste-after"),
+            (ids.paste_before, "action:paste-before"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

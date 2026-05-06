@@ -11755,6 +11755,12 @@ impl App {
             AppEffect::PageUp => self.apply(Action::PageUp),
             AppEffect::ScrollLineUp => self.apply(Action::ScrollLineUp),
             AppEffect::ScrollLineDown => self.apply(Action::ScrollLineDown),
+            AppEffect::RedrawScreen => self.apply(Action::RedrawScreen),
+            AppEffect::EnterCommandLine => self.apply(Action::EnterCommandLine),
+            AppEffect::OilNavigateUp => self.apply(Action::OilNavigateUp),
+            AppEffect::ReselectLastVisual => self.apply(Action::ReselectLastVisual),
+            AppEffect::PasteAfter => self.apply(Action::PasteAfter),
+            AppEffect::PasteBefore => self.apply(Action::PasteBefore),
         }
     }
 

@@ -150,6 +150,28 @@ pub enum AppEffect {
     /// Vim's `<C-e>`. Scroll viewport down one line. Promoted
     /// from `Action::ScrollLineDown` in slice 8.i.1.d.
     ScrollLineDown,
+    /// Vim's `<C-l>`. Force a full screen redraw. Promoted from
+    /// `Action::RedrawScreen` in slice 8.i.1.e.
+    RedrawScreen,
+    /// Vim's `:`. Enter the command-line minibuffer. Promoted
+    /// from `Action::EnterCommandLine` in slice 8.i.1.e.
+    EnterCommandLine,
+    /// Lattice's `-`. Open / step up in the oil-style directory
+    /// view (DESIGN.md §5.9.4). Promoted from
+    /// `Action::OilNavigateUp` in slice 8.i.1.e.
+    OilNavigateUp,
+    /// Vim's `gv`. Reselect the last Visual selection (same
+    /// kind, anchor, head). Promoted from
+    /// `Action::ReselectLastVisual` in slice 8.i.1.e.
+    ReselectLastVisual,
+    /// Vim's `p`. Paste the unnamed register's contents after
+    /// the cursor. Promoted from `Action::PasteAfter` in slice
+    /// 8.i.1.e.
+    PasteAfter,
+    /// Vim's `P`. Paste the unnamed register's contents before
+    /// the cursor. Promoted from `Action::PasteBefore` in slice
+    /// 8.i.1.e.
+    PasteBefore,
 }
 
 #[cfg(test)]

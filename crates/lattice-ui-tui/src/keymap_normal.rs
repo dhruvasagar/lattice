@@ -221,18 +221,18 @@ pub fn register_normal_bindings(
     );
 
     // Paste.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('p')],
-        Action::PasteAfter,
+        CommandInvocation::of(actions.paste_after),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('P')],
-        Action::PasteBefore,
+        CommandInvocation::of(actions.paste_before),
         source(),
     );
 
@@ -265,11 +265,11 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.open_line_above),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char(':')],
-        Action::EnterCommandLine,
+        CommandInvocation::of(actions.enter_command_line),
         source(),
     );
     handle.bind_legacy(
@@ -393,11 +393,11 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.repeat_last_change),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('-')],
-        Action::OilNavigateUp,
+        CommandInvocation::of(actions.oil_navigate_up),
         source(),
     );
 
@@ -469,11 +469,11 @@ pub fn register_normal_bindings(
         Action::SetPending(Pending::AfterOperator(builtins.toggle_case)),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[g.clone(), lit_char('v')],
-        Action::ReselectLastVisual,
+        CommandInvocation::of(actions.reselect_last_visual),
         source(),
     );
     handle.bind_legacy(
@@ -980,11 +980,11 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.tag_stack_pop),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('l'))],
-        Action::RedrawScreen,
+        CommandInvocation::of(actions.redraw_screen),
         source(),
     );
     handle.bind_legacy(
@@ -1832,9 +1832,12 @@ mod tests {
 
     #[test]
     fn paste_p_lower_pastes_after() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('p'), KeyModifiers::NONE));
-        assert!(matches!(r, Some(Action::PasteAfter)));
+        match r {
+            Some(Action::Invoke(inv)) => assert_eq!(inv.command, a.paste_after),
+            other => panic!("expected Invoke(paste_after), got {other:?}"),
+        }
     }
 
     #[test]

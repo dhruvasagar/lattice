@@ -1088,13 +1088,14 @@ mod tests {
     #[test]
     fn colon_in_normal_enters_command_line() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char(':'))
-            ),
-            Action::EnterCommandLine
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char(':')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_command_line),
+            other => panic!("expected Invoke(enter_command_line), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2491,13 +2492,14 @@ mod tests {
     #[test]
     fn ctrl_l_emits_redraw_screen() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                ctrl(KeyCode::Char('l'))
-            ),
-            Action::RedrawScreen
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            ctrl(KeyCode::Char('l')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.redraw_screen),
+            other => panic!("expected Invoke(redraw_screen), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2982,11 +2984,15 @@ mod tests {
     #[test]
     fn gv_after_g_emits_reselect_visual() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::AfterG, &b),
             key(KeyCode::Char('v')),
         );
-        assert!(matches!(action, Action::ReselectLastVisual));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.reselect_last_visual),
+            other => panic!("expected Invoke(reselect_last_visual), got {other:?}"),
+        }
     }
 
     // ---- Indent and case operators ----
@@ -3898,21 +3904,29 @@ mod tests {
     #[test]
     fn p_lowercase_is_paste_after() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('p')),
         );
-        assert!(matches!(action, Action::PasteAfter));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.paste_after),
+            other => panic!("expected Invoke(paste_after), got {other:?}"),
+        }
     }
 
     #[test]
     fn p_uppercase_is_paste_before() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('P')),
         );
-        assert!(matches!(action, Action::PasteBefore));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.paste_before),
+            other => panic!("expected Invoke(paste_before), got {other:?}"),
+        }
     }
 
     #[test]

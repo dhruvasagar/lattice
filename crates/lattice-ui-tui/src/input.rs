@@ -9,13 +9,10 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use lattice_grammar::ModalState;
-use lattice_grammar::Target;
 use lattice_grammar::VisualKind;
-use lattice_grammar::args::Args;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
-use lattice_grammar::register::Register;
-use lattice_grammar::registry::{MotionId, OperatorId};
+use lattice_grammar::registry::MotionId;
 
 use crate::app::{Action, FindKind, Pending};
 use crate::buffers::BufferKind;
@@ -376,7 +373,29 @@ fn compute_normal_action(
             );
         }
         Pending::AfterFindChar { kind, operator } => {
-            return resolve_after_find_char(event, builtins, kind, operator);
+            // Slice 8.g.v: prefix is `[op_prefix..., kind_chord]`
+            // (or just `[kind_chord]` when no operator); the
+            // trie's `CharLiteral` wildcard captures the target
+            // char, and `substitute_normal_capture` folds it
+            // into the resolved `Args::Char(captured)`.
+            let mut prefix: Vec<crate::chord::KeyChord> =
+                if let Some(op) = operator {
+                    crate::keymap_normal::operator_prefix(op, builtins)
+                } else {
+                    Vec::new()
+                };
+            if operator.is_some() && prefix.is_empty() {
+                return Action::SetPending(Pending::None);
+            }
+            prefix.push(crate::chord::KeyChord::char(match kind {
+                FindKind::Forward => 'f',
+                FindKind::Backward => 'F',
+                FindKind::TillForward => 't',
+                FindKind::TillBackward => 'T',
+            }));
+            return crate::keymap_normal::lookup_normal_with_prefix(
+                keymap, &prefix, &event,
+            );
         }
         Pending::AfterTextObject { operator, around } => {
             // Slice 8.g.iii: prefix is the operator's path
@@ -402,12 +421,56 @@ fn compute_normal_action(
                 &event,
             );
         }
-        Pending::AfterSetMark => return resolve_after_set_mark(event),
-        Pending::AfterJumpMarkLine => return resolve_after_jump_mark(event, false),
-        Pending::AfterJumpMarkExact => return resolve_after_jump_mark(event, true),
-        Pending::AfterRegister => return resolve_after_register(event),
-        Pending::AfterMacroStart => return resolve_after_macro_start(event),
-        Pending::AfterMacroPlay => return resolve_after_macro_play(event),
+        // Slice 8.g.v: mark / register / macro pendings all
+        // resolve through the same trie wildcard mechanism --
+        // the depth-1 prefix chord (`m` / `'` / `` ` `` / `"` /
+        // `q` / `@`) was bound at startup to a `CharLiteral`
+        // child whose terminal action is a placeholder
+        // (`SetMark('\0')`, `SelectRegister(Register::Unnamed)`,
+        // ...); the `CharLiteral` captures the user's char and
+        // `substitute_normal_capture` rewrites the placeholder.
+        Pending::AfterSetMark => {
+            return crate::keymap_normal::lookup_normal_with_prefix(
+                keymap,
+                &[crate::chord::KeyChord::char('m')],
+                &event,
+            );
+        }
+        Pending::AfterJumpMarkLine => {
+            return crate::keymap_normal::lookup_normal_with_prefix(
+                keymap,
+                &[crate::chord::KeyChord::char('\'')],
+                &event,
+            );
+        }
+        Pending::AfterJumpMarkExact => {
+            return crate::keymap_normal::lookup_normal_with_prefix(
+                keymap,
+                &[crate::chord::KeyChord::char('`')],
+                &event,
+            );
+        }
+        Pending::AfterRegister => {
+            return crate::keymap_normal::lookup_normal_with_prefix(
+                keymap,
+                &[crate::chord::KeyChord::char('"')],
+                &event,
+            );
+        }
+        Pending::AfterMacroStart => {
+            return crate::keymap_normal::lookup_normal_with_prefix(
+                keymap,
+                &[crate::chord::KeyChord::char('q')],
+                &event,
+            );
+        }
+        Pending::AfterMacroPlay => {
+            return crate::keymap_normal::lookup_normal_with_prefix(
+                keymap,
+                &[crate::chord::KeyChord::char('@')],
+                &event,
+            );
+        }
         // Insert-mode-only pending (Phase 4.2.g.1). If we
         // somehow end up in Normal mode with this pending
         // state, drop it -- the chord doesn't have a Normal-
@@ -468,55 +531,24 @@ fn compute_normal_action(
         return Action::PushDigit(digit as u8);
     }
 
-    // Slice 8.g.i: simple single-key bindings live in the layered
-    // registry under `BindingMode::Normal`. `lookup_normal`
-    // returns `Some(action)` for the migrated subset; legacy
-    // bindings (operator-leading, pending-prefix, find-char,
-    // marks, register, macro control, `<C-w>`) fall through to
-    // the match arm below. Subsequent sub-slices migrate the
-    // remainder.
-    if let Some(action) = crate::keymap_normal::lookup_normal(keymap, &event) {
-        return action;
+    // `q` while a macro is recording stops the recording. The
+    // trie's `[q]` binding arms `Pending::AfterMacroStart`, but
+    // that's the wrong action when the user is mid-recording --
+    // the App-side `recording_macro` state determines which
+    // path to take, and the trie is stateless. Short-circuit
+    // here so `lookup_normal` doesn't see the `q`.
+    if recording_macro && matches!(event.code, KeyCode::Char('q')) {
+        return Action::StopMacroRecord;
     }
 
-    match event.code {
-        // Macro record control. `q` while recording stops; otherwise it
-        // pends for a register-name char.
-        KeyCode::Char('q') if recording_macro => Action::StopMacroRecord,
-        KeyCode::Char('q') => Action::SetPending(Pending::AfterMacroStart),
-        // Macro play. `@@` is "repeat last"; everything else needs a
-        // register-name follow-up.
-        KeyCode::Char('@') => Action::SetPending(Pending::AfterMacroPlay),
-
-        // Find-char on the current line (8.g.v).
-        KeyCode::Char('f') => Action::SetPending(Pending::AfterFindChar {
-            kind: FindKind::Forward,
-            operator: None,
-        }),
-        KeyCode::Char('F') => Action::SetPending(Pending::AfterFindChar {
-            kind: FindKind::Backward,
-            operator: None,
-        }),
-        KeyCode::Char('t') => Action::SetPending(Pending::AfterFindChar {
-            kind: FindKind::TillForward,
-            operator: None,
-        }),
-        KeyCode::Char('T') => Action::SetPending(Pending::AfterFindChar {
-            kind: FindKind::TillBackward,
-            operator: None,
-        }),
-
-        // Register prefix: `"<reg>` selects the register for the next
-        // operator or paste (8.g.v).
-        KeyCode::Char('"') => Action::SetPending(Pending::AfterRegister),
-
-        // Marks (8.g.v).
-        KeyCode::Char('m') => Action::SetPending(Pending::AfterSetMark),
-        KeyCode::Char('\'') => Action::SetPending(Pending::AfterJumpMarkLine),
-        KeyCode::Char('`') => Action::SetPending(Pending::AfterJumpMarkExact),
-
-        _ => Action::None,
-    }
+    // Slice 8.g.i / 8.g.v: every Normal-mode chord that doesn't
+    // depend on App-side state (count accumulator, recording
+    // flag, `<C-w>` prefix) lives in the layered registry under
+    // `BindingMode::Normal`. `lookup_normal` returns
+    // `Some(action)` for any matched chord; on `None` we fall
+    // through to `Action::None`. The `<C-w>` sub-tree migrates
+    // in 8.g.vi.
+    crate::keymap_normal::lookup_normal(keymap, &event).unwrap_or(Action::None)
 }
 
 /// Resolve the second key of a `<C-w>...` window-management chord
@@ -571,99 +603,6 @@ fn resolve_after_ctrl_w(event: KeyEvent) -> Action {
 }
 
 
-fn resolve_after_macro_start(event: KeyEvent) -> Action {
-    if matches!(event.code, KeyCode::Esc) {
-        return Action::SetPending(Pending::None);
-    }
-    match event.code {
-        KeyCode::Char(c) if c.is_ascii_alphanumeric() => Action::StartMacroRecord(c),
-        _ => Action::SetPending(Pending::None),
-    }
-}
-
-fn resolve_after_macro_play(event: KeyEvent) -> Action {
-    if matches!(event.code, KeyCode::Esc) {
-        return Action::SetPending(Pending::None);
-    }
-    match event.code {
-        KeyCode::Char('@') => Action::PlayLastMacro,
-        KeyCode::Char(c) if c.is_ascii_alphanumeric() => Action::PlayMacro(c),
-        _ => Action::SetPending(Pending::None),
-    }
-}
-
-fn resolve_after_register(event: KeyEvent) -> Action {
-    if matches!(event.code, KeyCode::Esc) {
-        return Action::SetPending(Pending::None);
-    }
-    let c = match event.code {
-        KeyCode::Char(c) => c,
-        _ => return Action::SetPending(Pending::None),
-    };
-    let reg = match c {
-        'a'..='z' | 'A'..='Z' => Register::Named(c),
-        '0'..='9' => Register::Numbered((c as u8) - b'0'),
-        '"' => Register::Unnamed,
-        '_' => Register::BlackHole,
-        '+' | '*' => Register::System,
-        _ => return Action::SetPending(Pending::None),
-    };
-    Action::SelectRegister(reg)
-}
-
-fn resolve_after_set_mark(event: KeyEvent) -> Action {
-    if matches!(event.code, KeyCode::Esc) {
-        return Action::SetPending(Pending::None);
-    }
-    match event.code {
-        KeyCode::Char(c) if c.is_ascii_alphanumeric() => Action::SetMark(c),
-        _ => Action::SetPending(Pending::None),
-    }
-}
-
-fn resolve_after_jump_mark(event: KeyEvent, exact: bool) -> Action {
-    if matches!(event.code, KeyCode::Esc) {
-        return Action::SetPending(Pending::None);
-    }
-    match event.code {
-        KeyCode::Char(c) if c.is_ascii_alphanumeric() => {
-            if exact {
-                Action::JumpToMarkExact(c)
-            } else {
-                Action::JumpToMarkLine(c)
-            }
-        }
-        _ => Action::SetPending(Pending::None),
-    }
-}
-
-fn resolve_after_find_char(
-    event: KeyEvent,
-    builtins: &Builtins,
-    kind: FindKind,
-    operator: Option<OperatorId>,
-) -> Action {
-    if matches!(event.code, KeyCode::Esc) {
-        return Action::SetPending(Pending::None);
-    }
-    let needle = match event.code {
-        KeyCode::Char(c) => c,
-        _ => return Action::SetPending(Pending::None),
-    };
-    let motion_id = match kind {
-        FindKind::Forward => builtins.find_char_forward,
-        FindKind::Backward => builtins.find_char_backward,
-        FindKind::TillForward => builtins.till_char_forward,
-        FindKind::TillBackward => builtins.till_char_backward,
-    };
-    match operator {
-        None => Action::Invoke(CommandInvocation::of(motion_id.0).with_args(Args::Char(needle))),
-        Some(op) => Action::Invoke(
-            CommandInvocation::of(op.0).with_target(Target::Motion(motion_id, Args::Char(needle))),
-        ),
-    }
-}
-
 fn invoke_with_count(motion: MotionId, count: u32) -> Action {
     Action::Invoke(
         CommandInvocation::of(motion.0).with_count(lattice_grammar::command::Count(count)),
@@ -677,7 +616,9 @@ mod tests {
     use crate::app::{ScrollPos, ViewportPos};
     use lattice_grammar::CommandRegistry;
     use lattice_grammar::SearchDirection;
+    use lattice_grammar::Target;
     use lattice_grammar::builtins::populate;
+    use lattice_grammar::register::Register;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

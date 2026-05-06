@@ -637,6 +637,33 @@ The big one. Likely sub-sliced:
   duplication once those callers route through a shared
   attach helper.
 - 8.g.v -- mark / register / find-char wildcards (§7.3).
+  ✅ landed.
+  Each prefix chord (`m` / `'` / `` ` `` / `"` / `q` / `@` /
+  `f` / `F` / `t` / `T`) registers a depth-1 terminal binding
+  that arms the matching `Pending::After*` state, plus a
+  depth-2 child via [`ChordPattern::CharLiteral`] (the
+  trie's wildcard primitive). The wildcard binding carries
+  a placeholder action (`SetMark('\0')`,
+  `SelectRegister(Register::Unnamed)`, `Invoke(find_char_*,
+  Args::None)`, ...); `keymap_normal::substitute_normal_capture`
+  rewrites the placeholder with the captured char before the
+  action leaves translate. Operator-prefixed find-char
+  (`d{f|F|t|T}<X>`) extends the same mechanism: depth-3
+  wildcards under each operator prefix resolve to
+  `Invoke(op, Target::Motion(find_char_*, Args::Char(captured)))`.
+  All `Pending::AfterSetMark` / `AfterJumpMark*` /
+  `AfterRegister` / `AfterMacroStart` / `AfterMacroPlay` /
+  `AfterFindChar` arms in `input::translate_normal` now call
+  `lookup_normal_with_prefix` against the appropriate prefix;
+  the legacy `resolve_after_*` helpers are gone. The legacy
+  match arm in `compute_normal_action` is gone too -- only
+  `q` while macro recording stays as a special-case
+  short-circuit (state-dependent on App's `recording_macro`).
+  One documented drift from legacy: the trie's
+  `CharLiteral` only matches bare-printable chords, so e.g.
+  `f<C-x>` drops the pending state instead of using `'x'` as
+  the find target. Terminals don't typically emit such chord
+  combinations.
 - 8.g.vi -- `<C-w>` window-management sub-tree.
 
 Each sub-slice ships independently green; the drift test is

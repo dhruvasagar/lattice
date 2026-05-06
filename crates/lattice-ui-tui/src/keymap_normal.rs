@@ -79,6 +79,7 @@ use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::{ModalState, SearchDirection, Target, VisualKind};
 
 use crate::app::{Action, FindKind, Pending, ScrollPos, ViewportPos};
+use lattice_grammar::register::Register;
 use crate::chord::{KeyChord, KeyMods, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
@@ -717,6 +718,122 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins) {
         builtins,
     );
 
+    // ---- Slice 8.g.v: mark / register / find-char / macro
+    // ---- wildcards. Each prefix chord is a partial trie node
+    // ---- whose terminal sub-binding is a `CharLiteral`
+    // ---- (matches any bare-printable char). The depth-1
+    // ---- binding here arms the legacy `Pending::After*` state
+    // ---- so the App's existing two-keystroke flow stays
+    // ---- intact; the depth-2 wildcard binding carries a
+    // ---- placeholder action that the dispatcher's
+    // ---- `substitute_normal_capture` rewrites with the
+    // ---- captured char.
+
+    // `m<X>` -- set mark X.
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('m')],
+        Action::SetPending(Pending::AfterSetMark),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('m'), ChordPattern::CharLiteral],
+        Action::SetMark('\0'),
+        source(),
+    );
+
+    // `'<X>` -- jump to mark X (line).
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('\'')],
+        Action::SetPending(Pending::AfterJumpMarkLine),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('\''), ChordPattern::CharLiteral],
+        Action::JumpToMarkLine('\0'),
+        source(),
+    );
+
+    // `` `<X> `` -- jump to mark X (exact).
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('`')],
+        Action::SetPending(Pending::AfterJumpMarkExact),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('`'), ChordPattern::CharLiteral],
+        Action::JumpToMarkExact('\0'),
+        source(),
+    );
+
+    // `"<X>` -- select register X for the next operator / paste.
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('"')],
+        Action::SetPending(Pending::AfterRegister),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('"'), ChordPattern::CharLiteral],
+        Action::SelectRegister(Register::Unnamed),
+        source(),
+    );
+
+    // `q<X>` -- start macro recording into register X.
+    // `q` while recording stops; that case is handled before
+    // the trie lookup in `compute_normal_action` because it
+    // depends on the App-side `recording_macro` state.
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('q')],
+        Action::SetPending(Pending::AfterMacroStart),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('q'), ChordPattern::CharLiteral],
+        Action::StartMacroRecord('\0'),
+        source(),
+    );
+
+    // `@<X>` -- play macro from register X (`@@` repeats last).
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('@')],
+        Action::SetPending(Pending::AfterMacroPlay),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit_char('@'), ChordPattern::CharLiteral],
+        Action::PlayMacro('\0'),
+        source(),
+    );
+
+    // `f<X>` / `F<X>` / `t<X>` / `T<X>` -- find-char on the
+    // current line (no operator). `[f]` etc. arm the pending
+    // state; `[f, CharLiteral]` resolves to a typed
+    // `Invoke(find_char_*, Args::Char(captured))`.
+    register_find_char_paths(handle, &[], None, builtins);
+
     // ---- d/c/y/>/< as single-chord terminals that arm the
     // operator-pending state. `[g, U]` / `[g, u]` / `[g, ~]` were
     // already registered at slice 8.g.ii; their depth-2 binding
@@ -864,28 +981,82 @@ fn register_operator_pending(
         );
     }
 
-    // ---- Find-char chained: `[op, f]` / `[op, F]` / `[op, t]` /
-    // ---- `[op, T]` -> `SetPending(AfterFindChar { kind, operator
-    // ---- = Some(op) })`. The third-key resolution stays in
-    // ---- legacy `resolve_after_find_char` (slice 8.g.v).
-    for (chord, kind) in [
-        (lit_char('f'), FindKind::Forward),
-        (lit_char('F'), FindKind::Backward),
-        (lit_char('t'), FindKind::TillForward),
-        (lit_char('T'), FindKind::TillBackward),
-    ] {
-        let mut path: Vec<ChordPattern> = op_prefix.to_vec();
-        path.push(chord);
+    // ---- Slice 8.g.v: find-char chained -- the depth-2
+    // ---- `[op, f/F/t/T]` arms the pending state, and the
+    // ---- depth-3 `[op, f/F/t/T, CharLiteral]` wildcard
+    // ---- resolves to a typed `Invoke(op,
+    // ---- Target::Motion(find_char_*, Args::Char(captured)))`.
+    register_find_char_paths(handle, op_prefix, Some(op), builtins);
+}
+
+/// Register the four find-char chord paths under `prefix`. When
+/// `operator` is `None`, registers the standalone `f` / `F` /
+/// `t` / `T` (Normal-mode cursor motion). When `Some(op)`, the
+/// paths sit under the operator's prefix (e.g. `[d, f, X]`) and
+/// the resolved invocation is `Invoke(op,
+/// Target::Motion(find_char_*, Args::Char(captured)))`.
+///
+/// The depth-1 entry (just `[prefix..., f]`) arms
+/// `Pending::AfterFindChar` so the App's existing
+/// two-keystroke flow can stay; the depth-2 entry is the
+/// `CharLiteral` wildcard that captures the char and triggers
+/// the substituter in `substitute_normal_capture`.
+fn register_find_char_paths(
+    handle: &KeymapHandle,
+    prefix: &[ChordPattern],
+    operator: Option<lattice_grammar::registry::OperatorId>,
+    builtins: &Builtins,
+) {
+    let layer = KeymapLayer::Builtin;
+    let mode = BindingMode::Normal;
+
+    let table: &[(ChordPattern, FindKind, lattice_grammar::registry::MotionId)] = &[
+        (lit_char('f'), FindKind::Forward, builtins.find_char_forward),
+        (
+            lit_char('F'),
+            FindKind::Backward,
+            builtins.find_char_backward,
+        ),
+        (
+            lit_char('t'),
+            FindKind::TillForward,
+            builtins.till_char_forward,
+        ),
+        (
+            lit_char('T'),
+            FindKind::TillBackward,
+            builtins.till_char_backward,
+        ),
+    ];
+
+    for (chord, kind, motion_id) in table {
+        // Depth-1 (or depth-2 under operator): arm
+        // `Pending::AfterFindChar`.
+        let mut path: Vec<ChordPattern> = prefix.to_vec();
+        path.push(chord.clone());
         handle.bind_legacy(
             layer,
             mode,
             &path,
             Action::SetPending(Pending::AfterFindChar {
-                kind,
-                operator: Some(op),
+                kind: *kind,
+                operator,
             }),
             source(),
         );
+
+        // Depth-2 (or depth-3): CharLiteral wildcard. The
+        // bound action carries `Args::None` (or
+        // `Target::Motion(_, Args::None)` for the operator
+        // form); the substituter folds the captured char in.
+        let mut wild_path = path.clone();
+        wild_path.push(ChordPattern::CharLiteral);
+        let invocation = match operator {
+            None => CommandInvocation::of(motion_id.0),
+            Some(op) => CommandInvocation::of(op.0)
+                .with_target(Target::Motion(*motion_id, Args::None)),
+        };
+        handle.bind(layer, mode, &wild_path, invocation, source());
     }
 }
 
@@ -1010,7 +1181,9 @@ pub fn lookup_normal(handle: &KeymapHandle, event: &KeyEvent) -> Option<Action> 
     };
     let chord = normalize_for_normal_lookup(raw_chord);
     match handle.lookup(BindingMode::Normal, &[chord]) {
-        LookupResult::Bound { command, .. } => Some(action_from_bound(&command)),
+        LookupResult::Bound { command, captured } => {
+            Some(action_from_bound_with_capture(&command, &captured))
+        }
         LookupResult::Partial => {
             if chord == KeyChord::char('g') {
                 Some(Action::SetPending(Pending::AfterG))
@@ -1054,7 +1227,9 @@ pub fn lookup_normal_with_prefix(
     let mut path: Vec<KeyChord> = prefix.to_vec();
     path.push(chord);
     match handle.lookup(BindingMode::Normal, &path) {
-        LookupResult::Bound { command, .. } => action_from_bound(&command),
+        LookupResult::Bound { command, captured } => {
+            action_from_bound_with_capture(&command, &captured)
+        }
         LookupResult::Partial | LookupResult::Unbound => {
             Action::SetPending(Pending::None)
         }
@@ -1156,10 +1331,122 @@ fn normalize_for_normal_lookup(chord: KeyChord) -> KeyChord {
     }
 }
 
-fn action_from_bound(bound: &Arc<BoundCommand>) -> Action {
-    match bound.legacy_action.as_ref() {
-        Some(action) => action.clone(),
+/// Pull the action out of a bound trie node, folding any
+/// `CharLiteral` captures into the result. Slice 8.g.v: lookups
+/// through wildcard children (`'a`, `"a`, `fX`, `mX`, `qX`,
+/// `@X`, plus the operator-prefixed `dfX` etc.) capture the
+/// matched char; this helper applies it to the placeholder
+/// stashed in the bound action.
+fn action_from_bound_with_capture(
+    bound: &Arc<BoundCommand>,
+    captured: &[char],
+) -> Action {
+    let action = match bound.legacy_action.as_ref() {
+        Some(a) => a.clone(),
         None => Action::Invoke(bound.command.clone()),
+    };
+    if captured.is_empty() {
+        return action;
+    }
+    substitute_normal_capture(action, captured[0])
+}
+
+/// Substitute the captured wildcard char into a Normal-mode
+/// action. Returns `Action::SetPending(Pending::None)` when the
+/// captured char is invalid for the action shape (e.g. a
+/// non-alphanumeric mark name) -- mirrors the legacy
+/// `_ => SetPending(None)` catchall in `resolve_after_set_mark`,
+/// `resolve_after_register`, `resolve_after_macro_*`, etc.
+fn substitute_normal_capture(action: Action, c: char) -> Action {
+    match action {
+        Action::SetMark(_) => {
+            if c.is_ascii_alphanumeric() {
+                Action::SetMark(c)
+            } else {
+                Action::SetPending(Pending::None)
+            }
+        }
+        Action::JumpToMarkLine(_) => {
+            if c.is_ascii_alphanumeric() {
+                Action::JumpToMarkLine(c)
+            } else {
+                Action::SetPending(Pending::None)
+            }
+        }
+        Action::JumpToMarkExact(_) => {
+            if c.is_ascii_alphanumeric() {
+                Action::JumpToMarkExact(c)
+            } else {
+                Action::SetPending(Pending::None)
+            }
+        }
+        Action::SelectRegister(_) => match register_for_char(c) {
+            Some(reg) => Action::SelectRegister(reg),
+            None => Action::SetPending(Pending::None),
+        },
+        Action::StartMacroRecord(_) => {
+            if c.is_ascii_alphanumeric() {
+                Action::StartMacroRecord(c)
+            } else {
+                Action::SetPending(Pending::None)
+            }
+        }
+        Action::PlayMacro(_) => {
+            // `@@` -> repeat last; otherwise alphanumeric register.
+            if c == '@' {
+                Action::PlayLastMacro
+            } else if c.is_ascii_alphanumeric() {
+                Action::PlayMacro(c)
+            } else {
+                Action::SetPending(Pending::None)
+            }
+        }
+        Action::Invoke(inv) => {
+            // Find-char and operator-targeted find-char land here.
+            // The bound invocation has `Args::None` (or
+            // `Target::Motion(_, Args::None)` for the operator
+            // form); fold the captured char in as `Args::Char(c)`.
+            Action::Invoke(substitute_invocation_char_arg(inv, c))
+        }
+        // No substitution: pass through. (Some wildcard paths
+        // bind actions that don't need the captured char.)
+        other => other,
+    }
+}
+
+fn substitute_invocation_char_arg(
+    mut inv: lattice_grammar::CommandInvocation,
+    c: char,
+) -> lattice_grammar::CommandInvocation {
+    use lattice_grammar::args::Args;
+    // Operator-targeted form: `df<X>` registers as
+    // `Invoke(op, Target::Motion(find_char_*, Args::None))`.
+    // Substitute the target's args.
+    if let Some(Target::Motion(motion_id, Args::None)) = inv.target {
+        inv = inv.with_target(Target::Motion(motion_id, Args::Char(c)));
+        return inv;
+    }
+    // Standalone form: `f<X>` registers as
+    // `Invoke(find_char_*, Args::None)`. Substitute the
+    // invocation's args.
+    if matches!(inv.args, Args::None) {
+        inv = inv.with_args(Args::Char(c));
+    }
+    inv
+}
+
+/// Map a user-typed char to a [`Register`] variant, mirroring
+/// the legacy `resolve_after_register`. Returns `None` for
+/// unrecognised chars so `substitute_normal_capture` can drop
+/// the pending state.
+fn register_for_char(c: char) -> Option<Register> {
+    match c {
+        'a'..='z' | 'A'..='Z' => Some(Register::Named(c)),
+        '0'..='9' => Some(Register::Numbered((c as u8) - b'0')),
+        '"' => Some(Register::Unnamed),
+        '_' => Some(Register::BlackHole),
+        '+' | '*' => Some(Register::System),
+        _ => None,
     }
 }
 
@@ -1718,12 +2005,211 @@ mod tests {
         assert!(matches!(r, Action::SetPending(Pending::None)));
     }
 
+    /// Slice 8.g.v: `q` outside macro recording arms
+    /// `Pending::AfterMacroStart`. The recording-state-dependent
+    /// branch (`StopMacroRecord` when already recording) lives
+    /// in `compute_normal_action` as a short-circuit before the
+    /// trie lookup -- the registry doesn't see App state.
     #[test]
-    fn unmigrated_q_returns_none_for_legacy_fallthrough() {
-        // `q` is macro-recording control (state-dependent).
+    fn q_arms_after_macro_start_pending() {
         let (h, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('q'), KeyModifiers::NONE));
-        assert!(r.is_none());
+        assert!(matches!(
+            r,
+            Some(Action::SetPending(Pending::AfterMacroStart))
+        ));
+    }
+
+    // ---- Slice 8.g.v: wildcard chord paths ----
+
+    #[test]
+    fn ma_resolves_to_set_mark_a() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('m')],
+            &ev(KeyCode::Char('a'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::SetMark('a')));
+    }
+
+    #[test]
+    fn m_invalid_drops_pending() {
+        // Non-alphanumeric mark name -> drop pending.
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('m')],
+            &ev(KeyCode::Char('!'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::SetPending(Pending::None)));
+    }
+
+    #[test]
+    fn apostrophe_a_resolves_to_jump_mark_line_a() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('\'')],
+            &ev(KeyCode::Char('a'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::JumpToMarkLine('a')));
+    }
+
+    #[test]
+    fn backtick_a_resolves_to_jump_mark_exact_a() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('`')],
+            &ev(KeyCode::Char('a'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::JumpToMarkExact('a')));
+    }
+
+    #[test]
+    fn quote_a_selects_named_register_a() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('"')],
+            &ev(KeyCode::Char('a'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::SelectRegister(Register::Named(c)) => assert_eq!(c, 'a'),
+            other => panic!("expected SelectRegister(Named('a')), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn quote_plus_selects_system_register() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('"')],
+            &ev(KeyCode::Char('+'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::SelectRegister(Register::System)));
+    }
+
+    #[test]
+    fn quote_zero_selects_numbered_register_zero() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('"')],
+            &ev(KeyCode::Char('0'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::SelectRegister(Register::Numbered(n)) => assert_eq!(n, 0),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn quote_invalid_drops_pending() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('"')],
+            &ev(KeyCode::Char('!'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::SetPending(Pending::None)));
+    }
+
+    #[test]
+    fn qa_starts_macro_record_a() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('q')],
+            &ev(KeyCode::Char('a'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::StartMacroRecord('a')));
+    }
+
+    #[test]
+    fn at_at_plays_last_macro() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('@')],
+            &ev(KeyCode::Char('@'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::PlayLastMacro));
+    }
+
+    #[test]
+    fn at_a_plays_macro_a() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('@')],
+            &ev(KeyCode::Char('a'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::PlayMacro('a')));
+    }
+
+    #[test]
+    fn f_x_resolves_to_find_char_forward_with_args() {
+        let (h, b) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('f')],
+            &ev(KeyCode::Char('X'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.find_char_forward.0);
+                assert!(matches!(
+                    inv.args,
+                    lattice_grammar::args::Args::Char('X')
+                ));
+            }
+            other => panic!("expected Invoke(find_char_forward, Char('X')), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dfx_resolves_to_delete_with_find_char_target() {
+        // `df<X>` -- delete forward up to and including 'X'.
+        let (h, b) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('d'), KeyChord::char('f')],
+            &ev(KeyCode::Char('X'), KeyModifiers::NONE),
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                match inv.target {
+                    Some(Target::Motion(m, args)) => {
+                        assert_eq!(m, b.find_char_forward);
+                        assert!(matches!(args, lattice_grammar::args::Args::Char('X')));
+                    }
+                    other => panic!("expected Motion(find_char_forward, Char('X')), got {other:?}"),
+                }
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    /// Wildcard rejects modifier-bearing chords (per
+    /// `keymap_trie`'s wildcard rule). `f<C-x>` is unbound and
+    /// the dispatcher drops the pending state -- a documented
+    /// drift from legacy `resolve_after_find_char`, which
+    /// accepted any `KeyCode::Char(c)` regardless of modifiers.
+    /// Terminals don't typically emit `f<C-x>` and the
+    /// alternative chord representation is the trie's invariant.
+    #[test]
+    fn f_ctrl_x_falls_through_to_drop_pending() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::char('f')],
+            &ev(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(r, Action::SetPending(Pending::None)));
     }
 
     /// `<S-h>`'s SHIFT is stripped by `KeyChord::from_event`

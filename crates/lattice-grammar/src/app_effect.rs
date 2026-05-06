@@ -242,6 +242,15 @@ pub enum AppEffect {
     /// as [`Self::EnterMode`]: distinct `CommandId` per kind,
     /// payload rides in the AppEffect.
     EnterVisual(VisualKind),
+    /// Vim's `/` / `?` -- enter the Search minibuffer in the
+    /// named direction. Promoted from `Action::EnterSearch(_)`
+    /// in slice 8.i.2.b. Same encoding as [`Self::EnterMode`]:
+    /// distinct `CommandId` per direction.
+    EnterSearch(SearchDirection),
+    /// Vim's `*` / `#` -- search for the word under the cursor
+    /// in the named direction. Promoted from
+    /// `Action::SearchWordUnderCursor(_)` in slice 8.i.2.b.
+    SearchWordUnderCursor(SearchDirection),
 }
 
 #[cfg(test)]

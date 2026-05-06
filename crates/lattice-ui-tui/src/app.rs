@@ -11775,6 +11775,8 @@ impl App {
             AppEffect::ReplaceUndoLast => self.apply(Action::ReplaceUndoLast),
             AppEffect::EnterMode(state) => self.apply(Action::EnterMode(state)),
             AppEffect::EnterVisual(kind) => self.apply(Action::EnterVisual(kind)),
+            AppEffect::EnterSearch(dir) => self.apply(Action::EnterSearch(dir)),
+            AppEffect::SearchWordUnderCursor(dir) => self.apply(Action::SearchWordUnderCursor(dir)),
         }
     }
 

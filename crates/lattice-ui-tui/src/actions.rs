@@ -20,6 +20,7 @@
 use lattice_grammar::AppEffect;
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::ModalState;
+use lattice_grammar::SearchDirection;
 use lattice_grammar::VisualKind;
 use lattice_grammar::registry::ActionSpec;
 use lattice_protocol::ids::CommandId;
@@ -85,6 +86,10 @@ pub struct ActionIds {
     pub enter_visual_charwise: CommandId,
     pub enter_visual_linewise: CommandId,
     pub enter_visual_blockwise: CommandId,
+    pub enter_search_forward: CommandId,
+    pub enter_search_backward: CommandId,
+    pub search_word_under_cursor_forward: CommandId,
+    pub search_word_under_cursor_backward: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -405,6 +410,30 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
             "Vim's `<C-v>` / `<C-q>`: enter blockwise Visual at the current cursor.",
             AppEffect::EnterVisual(VisualKind::Blockwise),
         ),
+        enter_search_forward: register_simple(
+            registry,
+            "action:enter-search-forward",
+            "Vim's `/`: enter the Search minibuffer searching forward.",
+            AppEffect::EnterSearch(SearchDirection::Forward),
+        ),
+        enter_search_backward: register_simple(
+            registry,
+            "action:enter-search-backward",
+            "Vim's `?`: enter the Search minibuffer searching backward.",
+            AppEffect::EnterSearch(SearchDirection::Backward),
+        ),
+        search_word_under_cursor_forward: register_simple(
+            registry,
+            "action:search-word-under-cursor-forward",
+            "Vim's `*`: search forward for the word under the cursor.",
+            AppEffect::SearchWordUnderCursor(SearchDirection::Forward),
+        ),
+        search_word_under_cursor_backward: register_simple(
+            registry,
+            "action:search-word-under-cursor-backward",
+            "Vim's `#`: search backward for the word under the cursor.",
+            AppEffect::SearchWordUnderCursor(SearchDirection::Backward),
+        ),
     }
 }
 
@@ -499,6 +528,10 @@ mod tests {
             (ids.enter_visual_charwise, "action:enter-visual-charwise"),
             (ids.enter_visual_linewise, "action:enter-visual-linewise"),
             (ids.enter_visual_blockwise, "action:enter-visual-blockwise"),
+            (ids.enter_search_forward, "action:enter-search-forward"),
+            (ids.enter_search_backward, "action:enter-search-backward"),
+            (ids.search_word_under_cursor_forward, "action:search-word-under-cursor-forward"),
+            (ids.search_word_under_cursor_backward, "action:search-word-under-cursor-backward"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

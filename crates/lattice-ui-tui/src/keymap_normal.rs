@@ -330,18 +330,18 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.lsp_hover_request),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('/')],
-        Action::EnterSearch(SearchDirection::Forward),
+        CommandInvocation::of(actions.enter_search_forward),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('?')],
-        Action::EnterSearch(SearchDirection::Backward),
+        CommandInvocation::of(actions.enter_search_backward),
         source(),
     );
     handle.bind(
@@ -358,18 +358,18 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.search_previous),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('*')],
-        Action::SearchWordUnderCursor(SearchDirection::Forward),
+        CommandInvocation::of(actions.search_word_under_cursor_forward),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('#')],
-        Action::SearchWordUnderCursor(SearchDirection::Backward),
+        CommandInvocation::of(actions.search_word_under_cursor_backward),
         source(),
     );
     handle.bind(
@@ -1842,12 +1842,12 @@ mod tests {
 
     #[test]
     fn search_slash_enters_forward_search() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('/'), KeyModifiers::NONE));
-        assert!(matches!(
-            r,
-            Some(Action::EnterSearch(SearchDirection::Forward))
-        ));
+        match r {
+            Some(Action::Invoke(inv)) => assert_eq!(inv.command, a.enter_search_forward),
+            other => panic!("expected Invoke(enter_search_forward), got {other:?}"),
+        }
     }
 
     #[test]

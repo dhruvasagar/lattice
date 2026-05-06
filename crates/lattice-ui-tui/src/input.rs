@@ -1193,24 +1193,26 @@ mod tests {
     #[test]
     fn slash_in_normal_enters_forward_search() {
         let (_, b) = fixture();
+        let a = shared_actions();
         match translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('/')),
         ) {
-            Action::EnterSearch(SearchDirection::Forward) => {}
-            other => panic!("expected EnterSearch(Forward), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_search_forward),
+            other => panic!("expected Invoke(enter_search_forward), got {other:?}"),
         }
     }
 
     #[test]
     fn question_in_normal_enters_backward_search() {
         let (_, b) = fixture();
+        let a = shared_actions();
         match translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('?')),
         ) {
-            Action::EnterSearch(SearchDirection::Backward) => {}
-            other => panic!("expected EnterSearch(Backward), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_search_backward),
+            other => panic!("expected Invoke(enter_search_backward), got {other:?}"),
         }
     }
 
@@ -2625,25 +2627,31 @@ mod tests {
     #[test]
     fn star_emits_search_word_forward() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('*'))
-            ),
-            Action::SearchWordUnderCursor(SearchDirection::Forward)
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('*')),
+        ) {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.search_word_under_cursor_forward)
+            }
+            other => panic!("expected Invoke(search_word_under_cursor_forward), got {other:?}"),
+        }
     }
 
     #[test]
     fn hash_emits_search_word_backward() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('#'))
-            ),
-            Action::SearchWordUnderCursor(SearchDirection::Backward)
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('#')),
+        ) {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.search_word_under_cursor_backward)
+            }
+            other => panic!("expected Invoke(search_word_under_cursor_backward), got {other:?}"),
+        }
     }
 
     #[test]

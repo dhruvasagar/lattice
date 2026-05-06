@@ -33,6 +33,14 @@ pub struct TranslateContext<'a> {
     /// disambiguate the `0` key (line_start when no count in progress;
     /// digit-zero appended to count otherwise).
     pub pending_count: u32,
+    /// Operator-side count latched at `Pending::AfterOperator`
+    /// activation (App moves `pending_count` -> `op_count` then
+    /// resets `pending_count` so the in-progress digits track
+    /// the *motion* side of `<op-count><op><motion-count><motion>`).
+    /// Slice 8.g.iv reads this in `keymap_normal::attach_count`
+    /// to multiply with the motion count when an
+    /// `Action::Invoke` resolves.
+    pub op_count: u32,
     /// True when a macro is currently being recorded. Translate uses
     /// this so `q` while recording stops, while `q` otherwise starts a
     /// new recording.
@@ -170,6 +178,7 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
             ctx.pending,
             ctx.builtins,
             ctx.pending_count,
+            ctx.op_count,
             ctx.recording_macro,
             ctx.keymap,
         ),
@@ -309,6 +318,34 @@ fn translate_picker(event: KeyEvent) -> Action {
 }
 
 fn translate_normal(
+    event: KeyEvent,
+    pending: Pending,
+    builtins: &Builtins,
+    pending_count: u32,
+    op_count: u32,
+    recording_macro: bool,
+    keymap: &KeymapHandle,
+) -> Action {
+    // Slice 8.g.iv: every Normal-mode action flows through
+    // `attach_count` so motion / operator counts are baked into
+    // the resolved `CommandInvocation` before the action leaves
+    // translate. App's dispatcher reads `inv.count` directly
+    // (no separate `pending_count * op_count` math at the
+    // dispatch site any more) -- only fold-aware count
+    // *expansion* stays App-side because it depends on the
+    // active fold model.
+    let action = compute_normal_action(
+        event,
+        pending,
+        builtins,
+        pending_count,
+        recording_macro,
+        keymap,
+    );
+    crate::keymap_normal::attach_count(action, pending_count, op_count)
+}
+
+fn compute_normal_action(
     event: KeyEvent,
     pending: Pending,
     builtins: &Builtins,
@@ -759,6 +796,7 @@ mod tests {
             pending,
             builtins: b,
             pending_count: 0,
+            op_count: 0,
             recording_macro: false,
             active_buffer: BufferKind::Document,
             completion_open: false,
@@ -781,6 +819,31 @@ mod tests {
             pending,
             builtins: b,
             pending_count,
+            op_count: 0,
+            recording_macro: false,
+            active_buffer: BufferKind::Document,
+            completion_open: false,
+            chord_capture: false,
+            picker_open: false,
+            insert_completion_open: false,
+            snippet_active: false,
+            keymap: test_keymap(),
+        }
+    }
+
+    fn ctx_with_op_count<'a>(
+        modal: ModalState,
+        pending: Pending,
+        b: &'a Builtins,
+        pending_count: u32,
+        op_count: u32,
+    ) -> TranslateContext<'a> {
+        TranslateContext {
+            modal,
+            pending,
+            builtins: b,
+            pending_count,
+            op_count,
             recording_macro: false,
             active_buffer: BufferKind::Document,
             completion_open: false,
@@ -802,6 +865,7 @@ mod tests {
             pending,
             builtins: b,
             pending_count: 0,
+            op_count: 0,
             recording_macro: true,
             active_buffer: BufferKind::Document,
             completion_open: false,
@@ -819,6 +883,7 @@ mod tests {
             pending: Pending::None,
             builtins: b,
             pending_count: 0,
+            op_count: 0,
             recording_macro: false,
             active_buffer: BufferKind::Document,
             completion_open: false,
@@ -1740,6 +1805,7 @@ mod tests {
             pending,
             builtins: b,
             pending_count: 0,
+            op_count: 0,
             recording_macro: false,
             active_buffer: BufferKind::Help,
             completion_open: false,
@@ -2094,6 +2160,7 @@ mod tests {
                 pending,
                 builtins,
                 pending_count: 0,
+                op_count: 0,
                 recording_macro: false,
                 active_buffer,
                 completion_open: false,
@@ -2233,6 +2300,7 @@ mod tests {
             pending: Pending::None,
             builtins: b,
             pending_count: 0,
+            op_count: 0,
             recording_macro: false,
             active_buffer: BufferKind::Document,
             completion_open: false,
@@ -2414,6 +2482,7 @@ mod tests {
             pending: Pending::None,
             builtins: b,
             pending_count: 0,
+            op_count: 0,
             recording_macro: false,
             active_buffer: BufferKind::Document,
             completion_open: false,
@@ -3573,8 +3642,48 @@ mod tests {
             ctx_with_count(ModalState::Normal, Pending::None, &b, 3),
             key(KeyCode::Char('w')),
         );
-        // Translate doesn't attach the count -- App applies it on Invoke.
-        assert_eq!(invocation_command(&action), Some(b.word_forward.0));
+        // Slice 8.g.iv: translate attaches the in-progress count
+        // (`pending_count`) to the resolved invocation before
+        // returning. App's dispatcher reads `inv.count` directly.
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.word_forward.0);
+                assert_eq!(inv.count, Some(lattice_grammar::command::Count(3)));
+            }
+            other => panic!("expected Invoke(word_forward, count=3), got {other:?}"),
+        }
+    }
+
+    /// Slice 8.g.iv end-to-end: `2d3w` walks operator-pending
+    /// resolution. `op_count=2 * motion_count=3 = 6` should be
+    /// attached at translate time, with `Range::None` and the
+    /// correct `Target::Motion(word_forward)`.
+    #[test]
+    fn op_count_times_motion_count_attaches_at_translate() {
+        let (_, b) = fixture();
+        let action = translate(
+            ctx_with_op_count(
+                ModalState::Normal,
+                Pending::AfterOperator(b.delete),
+                &b,
+                3,
+                2,
+            ),
+            key(KeyCode::Char('w')),
+        );
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, b.delete.0);
+                assert!(matches!(
+                    inv.target,
+                    Some(Target::Motion(m, _)) if m == b.word_forward
+                ));
+                assert_eq!(inv.count, Some(lattice_grammar::command::Count(6)));
+            }
+            other => panic!(
+                "expected Invoke(delete, word_forward, count=6), got {other:?}"
+            ),
+        }
     }
 
     // ---- Find-char / till-char (f, F, t, T) ----

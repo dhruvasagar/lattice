@@ -1061,6 +1061,46 @@ pub fn lookup_normal_with_prefix(
     }
 }
 
+/// Slice 8.g.iv: attach the input-side count accumulator to a
+/// resolved `Action::Invoke`. Pure function; non-`Invoke`
+/// actions pass through unchanged.
+///
+/// Vim semantics: `<op-count><op><motion-count><motion>` yields
+/// a final count of `op_count * motion_count`. Either alone
+/// replaces the default count of `1`. The motion side falls
+/// back to `inv.count` (any default the binding registered with
+/// at boot, e.g. `<PageDown>`'s `Count(10)`) when the user
+/// hasn't typed a digit prefix.
+///
+/// Architecture doc §7.1: "Once a non-digit chord arrives,
+/// lookup runs with the accumulated count attached to the
+/// resulting `CommandInvocation`'s count field. Dispatch
+/// unchanged; `execute(invocation_with_count)` works today."
+/// Before this slice the multiplication lived in App's
+/// dispatcher (`run_document_invocation` /
+/// `run_read_only_motion`); now it rides with the action out
+/// of `translate_normal`. App still resets `pending_count` /
+/// `op_count` at end-of-dispatch.
+pub fn attach_count(action: Action, pending_count: u32, op_count: u32) -> Action {
+    let Action::Invoke(mut inv) = action else {
+        return action;
+    };
+    let motion_count = if pending_count > 0 {
+        pending_count
+    } else {
+        inv.count.map(|c| c.0).unwrap_or(1)
+    };
+    let final_count = if op_count > 0 {
+        op_count.saturating_mul(motion_count)
+    } else {
+        motion_count
+    };
+    if final_count > 1 {
+        inv = inv.with_count(lattice_grammar::command::Count(final_count));
+    }
+    Action::Invoke(inv)
+}
+
 /// Map an operator id to its primary chord prefix in the
 /// Normal-mode trie. Used by the `Pending::AfterOperator` and
 /// `Pending::AfterTextObject` resolvers to compute the lookup
@@ -1711,6 +1751,126 @@ mod tests {
         match r {
             Some(Action::Invoke(inv)) => assert_eq!(inv.command, b.char_left.0),
             other => panic!("expected Invoke(char_left), got {other:?}"),
+        }
+    }
+
+    // ---- Slice 8.g.iv: attach_count.
+
+    fn invoke_no_count() -> Action {
+        Action::Invoke(CommandInvocation::of(
+            lattice_protocol::ids::CommandId::new(42),
+        ))
+    }
+
+    fn invoke_with_default_count(n: u32) -> Action {
+        Action::Invoke(
+            CommandInvocation::of(lattice_protocol::ids::CommandId::new(42))
+                .with_count(lattice_grammar::command::Count(n)),
+        )
+    }
+
+    #[test]
+    fn attach_count_pending_count_only() {
+        let r = attach_count(invoke_no_count(), 5, 0);
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.count, Some(lattice_grammar::command::Count(5)));
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_count_op_times_motion() {
+        let r = attach_count(invoke_no_count(), 3, 2);
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.count, Some(lattice_grammar::command::Count(6)));
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_count_op_only_uses_default_motion_count_one() {
+        // pending_count == 0 and inv has no default => motion_count = 1.
+        // op_count = 4 => final = 4.
+        let r = attach_count(invoke_no_count(), 0, 4);
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.count, Some(lattice_grammar::command::Count(4)));
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_count_default_count_baked_in_used_when_pending_zero() {
+        // PageDown shape: the binding registered with Count(10).
+        // pending_count == 0 => motion_count falls back to
+        // inv.count = 10. op_count == 0 => final = 10.
+        let r = attach_count(invoke_with_default_count(10), 0, 0);
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.count, Some(lattice_grammar::command::Count(10)));
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_count_pending_overrides_default_count() {
+        // `5<PageDown>`: pending_count=5 wins over the binding's
+        // baked-in Count(10).
+        let r = attach_count(invoke_with_default_count(10), 5, 0);
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.count, Some(lattice_grammar::command::Count(5)));
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_count_no_attachment_when_final_is_one() {
+        // `j` with no count: motion_count=1, op_count=0, final=1.
+        // Don't write `Count(1)` -- keep the invocation's count
+        // field `None` (legacy semantics).
+        let r = attach_count(invoke_no_count(), 0, 0);
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.count, None),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_count_passes_through_non_invoke_actions() {
+        let r = attach_count(Action::ExitVisual, 5, 0);
+        assert!(matches!(r, Action::ExitVisual));
+        let r = attach_count(Action::None, 0, 0);
+        assert!(matches!(r, Action::None));
+        let r = attach_count(Action::SetPending(Pending::AfterG), 5, 0);
+        assert!(matches!(r, Action::SetPending(Pending::AfterG)));
+    }
+
+    #[test]
+    fn attach_count_idempotent_when_re_applied() {
+        // App's existing count math runs *after* translate's
+        // attach_count for the legacy interactive flow. Pin
+        // idempotence: re-applying with the same pending /
+        // op_count yields the same Count.
+        let once = attach_count(invoke_no_count(), 3, 2);
+        let once_clone = match &once {
+            Action::Invoke(inv) => Action::Invoke(inv.clone()),
+            _ => panic!(),
+        };
+        let twice = attach_count(once_clone, 3, 2);
+        match (once, twice) {
+            (Action::Invoke(a), Action::Invoke(b)) => {
+                assert_eq!(a.count, b.count);
+                assert_eq!(a.count, Some(lattice_grammar::command::Count(6)));
+            }
+            other => panic!("got {other:?}"),
         }
     }
 }

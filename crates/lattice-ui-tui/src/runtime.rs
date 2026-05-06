@@ -335,6 +335,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         pending: app.pending,
                         builtins: &app.builtins,
                         pending_count: app.pending_count,
+                        op_count: app.op_count,
                         recording_macro: app.macro_recording.is_some(),
                         active_buffer: app.active_buffer,
                         completion_open: app.completion_state.is_some(),

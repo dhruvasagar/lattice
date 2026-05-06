@@ -617,8 +617,25 @@ The big one. Likely sub-sliced:
   `translate_normal`'s match arm into the trie's depth-1
   layer (terminal Bound nodes that arm
   `Pending::AfterOperator`).
-- 8.g.iv -- count accumulator (§7.1) lives in input.rs;
-  attaches to the resolved invocation.
+- 8.g.iv -- count accumulator (§7.1). ✅ landed.
+  The digit accumulator stays App-side (`pending_count`,
+  `op_count` -- updated by the `PushDigit` handler and the
+  `SetPending(AfterOperator)` transition). The
+  multiplication moves to `keymap_normal::attach_count`,
+  applied at the tail of `input::translate_normal` so every
+  `Action::Invoke` leaving translate carries the resolved
+  count (`op_count * motion_count`, with `motion_count`
+  falling back to `inv.count.unwrap_or(1)` -- the
+  binding's registered default, e.g. `<PageDown>`'s
+  `Count(10)` -- when the user hasn't typed a digit). App's
+  existing count-multiplication math in
+  `run_document_invocation` / `run_read_only_motion` stays
+  for now -- it's idempotent against translate's attach
+  (same inputs, same result) and serves the few internal
+  callers that build invocations without going through
+  translate (`do_repeat_find`, etc.). 8.i can collapse the
+  duplication once those callers route through a shared
+  attach helper.
 - 8.g.v -- mark / register / find-char wildcards (§7.3).
 - 8.g.vi -- `<C-w>` window-management sub-tree.
 

@@ -394,47 +394,54 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("dprev", "ex:diag-prev"),
     ("cprev", "ex:diag-prev"),
     ("cp", "ex:diag-prev"),
-    // LSP introspection (Phase 4.1.g).
+    // LSP commands. Naming convention:
+    //
+    // 1. Dashed canonical only. Every LSP-coupled command has
+    //    exactly one user-facing form -- the explicit `lsp-*`
+    //    dashed name that tracks the canonical `ex:lsp-*` id.
+    //    Generic names (`format`, `rename`, `complete`,
+    //    `signature-help`, `code-actions`, `format-range`) are
+    //    NOT registered as LSP aliases. They imply genericness
+    //    -- a non-LSP `:format` could come from rustfmt-direct,
+    //    a project formatter, treesitter, etc. -- and silently
+    //    no-op when no LSP server (or no server with the
+    //    relevant capability) is attached. The explicit
+    //    `lsp-` prefix makes the dependency visible at the
+    //    cmdline and reserves the generic names for future
+    //    non-LSP implementations.
+    //
+    // 2. No collapsed forms (`lspformat`, `lspcodeaction`,
+    //    `signaturehelp`, ...). They duplicate the dashed
+    //    canonical with no visual benefit.
+    //
+    // 3. No vim-style 1-2 letter shortcuts for LSP commands.
+    //    Vim shorts (`cn`, `cp`, `bn`, `bp`, etc.) come from
+    //    decades of vim tradition tied to specific commands
+    //    (`:cnext` etc.). LSP didn't exist when those were
+    //    canonised, so any 1-2 letter LSP shortcut would be
+    //    novel -- and `fmt` / `rn` / `ca` are too generic to
+    //    earn that scarcity. If the user-config alias
+    //    mechanism eventually lands (slice 8.h's WIT-shaped
+    //    plugin / init.rs API), users / plugins can add their
+    //    own personal shortcuts.
     ("lsp-log", "ex:lsp-log"),
-    ("lsplog", "ex:lsp-log"),
     ("lsp-trace", "ex:lsp-trace"),
-    ("lsptrace", "ex:lsp-trace"),
     ("lsp-trace-log", "ex:lsp-trace-log"),
-    ("lsptracelog", "ex:lsp-trace-log"),
     ("lsp-status", "ex:lsp-status"),
-    ("lspstatus", "ex:lsp-status"),
     ("lsp-server-log", "ex:lsp-server-log"),
-    ("lspserverlog", "ex:lsp-server-log"),
     ("lsp-restart", "ex:lsp-restart"),
-    ("lsprestart", "ex:lsp-restart"),
     ("lsp-log-level", "ex:lsp-log-level"),
-    ("lsploglevel", "ex:lsp-log-level"),
     ("lsp-log-clear", "ex:lsp-log-clear"),
-    ("lsplogclear", "ex:lsp-log-clear"),
     // Navigation pickers (Phase 4.2.e / 4.2.f).
     ("lsp-symbols", "ex:lsp-symbols"),
-    ("lspsymbols", "ex:lsp-symbols"),
     ("lsp-workspace-symbol", "ex:lsp-workspace-symbol"),
-    ("lspworkspacesymbol", "ex:lsp-workspace-symbol"),
     // Phase 4.3 edits.
-    ("format", "ex:lsp-format"),
-    ("fmt", "ex:lsp-format"),
-    ("lspformat", "ex:lsp-format"),
-    ("format-range", "ex:lsp-format-range"),
-    ("fmtrange", "ex:lsp-format-range"),
-    ("signature-help", "ex:lsp-signature-help"),
-    ("signaturehelp", "ex:lsp-signature-help"),
-    ("sighelp", "ex:lsp-signature-help"),
-    ("lspsighelp", "ex:lsp-signature-help"),
-    ("complete", "ex:lsp-complete"),
-    ("lspcomplete", "ex:lsp-complete"),
-    ("rename", "ex:lsp-rename"),
-    ("rn", "ex:lsp-rename"),
-    ("lsprename", "ex:lsp-rename"),
-    ("code-actions", "ex:lsp-code-action"),
-    ("codeactions", "ex:lsp-code-action"),
-    ("ca", "ex:lsp-code-action"),
-    ("lspcodeaction", "ex:lsp-code-action"),
+    ("lsp-format", "ex:lsp-format"),
+    ("lsp-format-range", "ex:lsp-format-range"),
+    ("lsp-signature-help", "ex:lsp-signature-help"),
+    ("lsp-complete", "ex:lsp-complete"),
+    ("lsp-rename", "ex:lsp-rename"),
+    ("lsp-code-action", "ex:lsp-code-action"),
 ];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests

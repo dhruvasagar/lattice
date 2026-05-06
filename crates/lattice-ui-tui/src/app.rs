@@ -51,18 +51,35 @@ fn build_lsp_subsystem() -> (
     std::sync::Arc<tokio::sync::Mutex<LspSupervisor>>,
     DiagnosticsLayer,
     LspLogger,
+    tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundApplyEdit>,
+    tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundConfigurationRequest>,
 ) {
     let logger = LspLogger::with_defaults();
     let mut sup = LspSupervisor::new(logger.clone());
     // Builtin registry: rust-analyzer, pyright, gopls,
     // typescript-language-server, clangd, lua-language-server.
-    // Users override via lsp.toml when §5.12 lands.
     sup.set_configs(lattice_lsp::builtin_servers());
     let diagnostics = sup.diagnostics().clone();
+    // Apply-edit bus (Phase 4.3): App owns the receiver, every
+    // actor spawned via the supervisor gets a clone of the
+    // sender. Server-initiated `workspace/applyEdit` requests
+    // ferry through this channel; the App's drain applies them
+    // and replies via the embedded oneshot.
+    let (apply_edit_bus, apply_edit_rx) = lattice_lsp::ApplyEditBus::new();
+    sup.set_apply_edit_bus(apply_edit_bus);
+    // Configuration bus (Phase 4.1 follow-up): same shape as
+    // apply-edit. Server-initiated `workspace/configuration`
+    // requests ferry through this channel; the App's drain
+    // walks the cached TOML tree at `lsp.<section>` for each
+    // requested item.
+    let (configuration_bus, configuration_rx) = lattice_lsp::ConfigurationBus::new();
+    sup.set_configuration_bus(configuration_bus);
     (
         std::sync::Arc::new(tokio::sync::Mutex::new(sup)),
         diagnostics,
         logger,
+        apply_edit_rx,
+        configuration_rx,
     )
 }
 use crate::excommand;
@@ -1390,6 +1407,37 @@ pub struct App {
     /// Cloned handle to the supervisor's logger. Same lock-
     /// free read pattern as `lsp_diagnostics`.
     pub lsp_logger: LspLogger,
+    /// Server-initiated `workspace/applyEdit` request stream
+    /// (Phase 4.3). Drained per-frame by
+    /// [`Self::drain_inbound_apply_edits`]: each request lands
+    /// as an [`lattice_lsp::InboundApplyEdit`] carrying a
+    /// `WorkspaceEdit` + a oneshot the App fills with the
+    /// outcome. The receiver is taken once at App init; `None`
+    /// after the runtime hands it off to the drain (we
+    /// take-and-restore around `try_recv` so the drain's loop
+    /// can run without holding `&mut self` on the receiver
+    /// itself; matches `drain_option_changes` etc.).
+    pub pending_apply_edit_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundApplyEdit>>,
+    /// Server-initiated `workspace/configuration` request stream
+    /// (Phase 4.1 follow-up). Drained per-frame by
+    /// [`Self::drain_inbound_configuration_requests`]; each
+    /// request walks the cached TOML tree at `lsp.<section>`
+    /// for every requested item and replies with the
+    /// per-section `serde_json::Value`s via the embedded
+    /// oneshot. Same take-and-restore pattern as the other
+    /// drain channels.
+    pub pending_configuration_rx: Option<
+        tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundConfigurationRequest>,
+    >,
+    /// Merged TOML tree of every loaded config file (user +
+    /// project, project deep-merged on top). Populated by
+    /// [`Self::load_persistent_config`] from the loader's new
+    /// `LoadOutcome.raw_tree` field. The
+    /// `workspace/configuration` drain walks this by
+    /// `lsp.<section>` to surface server-namespaced settings
+    /// the typed registry doesn't pre-register.
+    pub lsp_config_tree: toml::Table,
     /// `BufferId` → `Uri` map. Maintained by buffer-open /
     /// buffer-close paths; the supervisor's API is keyed by
     /// `Uri`, so this is the bridge.
@@ -1398,13 +1446,6 @@ pub struct App {
     /// because the supervisor's `open_buffer` is async; the
     /// runtime drains the queue between input events.
     pub pending_lsp_opens: Vec<(BufferId, std::path::PathBuf, String)>,
-    /// Channel that record-edit fires into to wake the debounced
-    /// flush task. Spawned by `initialize_lsp`. `None` until
-    /// the runtime calls initialize_lsp; tests that don't
-    /// invoke initialize_lsp leave it None and record_edit
-    /// just skips the wake (the supervisor's queue still
-    /// accumulates so a manual flush() works).
-    pub lsp_flush_signal: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 /// Reasons `compute_completion_state` can fail. Kept narrow so the
@@ -2136,7 +2177,13 @@ impl App {
         // the App's `lsp_diagnostics` / `lsp_logger` reads land
         // on the same Arc-shared state the supervisor's actors
         // push to.
-        let (lsp, lsp_diagnostics, lsp_logger) = build_lsp_subsystem();
+        let (
+            lsp,
+            lsp_diagnostics,
+            lsp_logger,
+            lsp_apply_edit_rx,
+            lsp_configuration_rx,
+        ) = build_lsp_subsystem();
         let mut registry = CommandRegistry::new();
         let builtins = populate(&mut registry);
         // Register the built-in ex-commands as peers of motions /
@@ -2168,6 +2215,20 @@ impl App {
         // registry so the registry can publish `OptionChanged`
         // events to it via the `EventPublisher` closure.
         let event_bus = Arc::new(EventBus::new());
+        // Wire the LSP supervisor to the bus before any buffer
+        // opens. Each actor spawned past this point gets a
+        // per-actor fan-in (lattice_lsp::fan_in) that routes
+        // `Event::DocumentChanged` straight into the actor's
+        // mailbox -- keeping the UI thread out of the supervisor
+        // mutex on the edit hot path. `try_lock` is safe here
+        // because the Arc was just constructed and no async
+        // task has had a chance to take it yet; using `lock()`
+        // would require an `await` and we're in a sync App
+        // constructor that may itself be running inside a
+        // tokio runtime (test harness).
+        lsp.try_lock()
+            .expect("supervisor mutex uncontended at App startup")
+            .set_event_bus(event_bus.clone());
         // Subscribe the App's own cascade-handler channel to
         // `OptionChanged` events on the bus. The receiver lives
         // on `App.option_change_rx`; `App::drain_option_changes`
@@ -2392,9 +2453,11 @@ impl App {
             lsp,
             lsp_diagnostics,
             lsp_logger,
+            pending_apply_edit_rx: Some(lsp_apply_edit_rx),
+            pending_configuration_rx: Some(lsp_configuration_rx),
+            lsp_config_tree: toml::Table::new(),
             buffer_uris: std::collections::HashMap::new(),
             pending_lsp_opens: Vec::new(),
-            lsp_flush_signal: None,
         };
         // Sync derived theme styles from the freshly-registered
         // ui.* options so the renderer's first frame uses the
@@ -2573,48 +2636,22 @@ impl App {
             }
         }
 
-        // Spawn the debounced flush task. Wakes 50ms after the
-        // most recent record_edit signal, locks the supervisor,
-        // calls flush_all() (cheap when nothing's pending,
-        // correct when something is). One task per App; lives
-        // for the editor's lifetime.
-        let (flush_tx, mut flush_rx) =
-            tokio::sync::mpsc::unbounded_channel::<()>();
-        self.lsp_flush_signal = Some(flush_tx);
-        let supervisor_clone = std::sync::Arc::clone(&self.lsp);
-        tokio::spawn(async move {
-            use tokio::time::{Duration, Instant, timeout_at};
-            const DEBOUNCE: Duration = Duration::from_millis(50);
-            loop {
-                // Wait for first edit signal.
-                if flush_rx.recv().await.is_none() {
-                    return;
-                }
-                // Coalesce additional signals during the
-                // debounce window.
-                let deadline = Instant::now() + DEBOUNCE;
-                loop {
-                    match timeout_at(deadline, flush_rx.recv()).await {
-                        Ok(Some(())) => continue,
-                        Ok(None) => return,
-                        Err(_) => break, // timeout -> flush
-                    }
-                }
-                let mut sup = supervisor_clone.lock().await;
-                let _ = sup.flush_all();
-            }
-        });
     }
 
     // ---- LSP integration helpers ----
     //
-    // The supervisor lives on the App; its open_buffer is
-    // async so we expose a sync-side hook (record_edit /
-    // close_buffer / flush) for tight integration with
-    // apply_edit_blocking and do_buffer_delete, and an async
-    // entry point ([`Self::initialize_lsp`]) for the boot
-    // path. Open-on-edit (`:e <path>`) hooks land in 4.1.i.2
-    // alongside the sync->async bridge for the input pipeline.
+    // The supervisor lives on the App; its open_buffer is async
+    // so we expose a sync-side hook (close_buffer / flush) for
+    // integration with do_buffer_delete and will-save hooks, and
+    // an async entry point ([`Self::initialize_lsp`]) for the
+    // boot path.
+    //
+    // The hot edit path no longer touches this struct at all:
+    // `Event::DocumentChanged` flows through the editor event
+    // bus into a per-actor fan-in (lattice_lsp::fan_in) that
+    // sends straight to the actor's mailbox. The App publishes
+    // the event from `publish_document_changed`; nothing here
+    // takes the supervisor mutex on each keystroke.
 
     /// Look up the current URI of a buffer. None for buffers
     /// that have no on-disk path yet (new unsaved scratch
@@ -2623,34 +2660,9 @@ impl App {
         self.buffer_uris.get(&id)
     }
 
-    /// Notify the LSP supervisor of an edit on a buffer. Sync;
-    /// `try_lock` because the supervisor mutex is uncontended
-    /// during normal operation (only async open / shutdown
-    /// paths take it for non-trivial windows). When contended
-    /// (rare: only during `:e <path>` async open), the edit is
-    /// dropped on the LSP side -- the editor's buffer still
-    /// commits; the LSP layer catches up on the next edit.
-    /// `&self` so it can be called from `apply_edit_blocking`
-    /// without rippling `&mut self` through 44 edit call sites.
-    pub fn lsp_record_edit(&self, buffer_id: BufferId, edit: &Edit) {
-        let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
-            return;
-        };
-        if let Ok(mut sup) = self.lsp.try_lock() {
-            let _ = sup.record_edit(&uri, edit);
-        }
-        // Wake the debounce task so a `didChange` flush fires
-        // ~50ms after this edit (modulo further edits in that
-        // window).
-        if let Some(tx) = self.lsp_flush_signal.as_ref() {
-            let _ = tx.send(());
-        }
-    }
-
     /// Flush queued didChange events for a buffer immediately.
-    /// Used by the App's debounce timer and by will-save hooks
-    /// (4.3). `&self` for the same reason as
-    /// [`Self::lsp_record_edit`].
+    /// Used by will-save hooks (4.3) so the server's view is
+    /// caught up before pre-save requests fire.
     pub fn lsp_flush(&self, buffer_id: BufferId) {
         let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
             return;
@@ -3098,10 +3110,9 @@ impl App {
     /// records the edit with the LSP supervisor (Phase
     /// 4.1.i.2) so attached servers see `didChange`.
     pub fn apply_edit_blocking(&self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
-        let result = block_on(self.document.apply_edit(edit.clone()));
-        if result.is_ok() {
-            self.publish_document_changed();
-            self.lsp_record_edit(self.document_buffer_id, &edit);
+        let result = block_on(self.document.apply_edit(edit));
+        if let Ok(applied) = result.as_ref() {
+            self.publish_document_changed(std::slice::from_ref(applied));
         }
         result
     }
@@ -3114,29 +3125,25 @@ impl App {
         &self,
         edits: Vec<Edit>,
     ) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        let edits_for_lsp = edits.clone();
         let result = block_on(self.document.apply_edit_batch(edits));
-        if result.is_ok() {
-            self.publish_document_changed();
-            for edit in &edits_for_lsp {
-                self.lsp_record_edit(self.document_buffer_id, edit);
-            }
+        if let Ok(applied) = result.as_ref() {
+            self.publish_document_changed(applied);
         }
         result
     }
 
     pub fn undo_blocking(&self) -> Result<Vec<AppliedEdit>, RuntimeError> {
         let result = block_on(self.document.undo());
-        if result.is_ok() {
-            self.publish_document_changed();
+        if let Ok(applied) = result.as_ref() {
+            self.publish_document_changed(applied);
         }
         result
     }
 
     pub fn redo_blocking(&self) -> Result<Vec<AppliedEdit>, RuntimeError> {
         let result = block_on(self.document.redo());
-        if result.is_ok() {
-            self.publish_document_changed();
+        if let Ok(applied) = result.as_ref() {
+            self.publish_document_changed(applied);
         }
         result
     }
@@ -3321,20 +3328,29 @@ impl App {
     }
 
     /// Build + publish [`Event::DocumentChanged`] from the current
-    /// snapshot. Called from every path that mutates the buffer
-    /// (apply_edit / batch / undo / redo). The post-mutation
-    /// snapshot drives the event payload.
-    fn publish_document_changed(&self) {
+    /// snapshot and the edits that were just applied. Called from
+    /// every path that mutates the buffer (apply_edit / batch /
+    /// undo / redo). The applied edits ride on the event so
+    /// downstream subscribers (notably the per-server LSP fan-in)
+    /// can sync without re-walking the buffer or holding the
+    /// supervisor lock.
+    fn publish_document_changed(&self, applied: &[AppliedEdit]) {
         let snap = self.document.snapshot();
-        // v1 doesn't carry the per-edit AppliedEdits in the event
-        // payload (the protocol's `Event::DocumentChanged.edits`
-        // field is reserved for the future actor-side publish path
-        // where the actor knows what was applied). For now the
-        // event signals "something changed; reload via snapshot".
+        let path = snap.path().map(|p| p.to_path_buf());
+        let edits: Vec<lattice_protocol::event::AppliedEdit> = applied
+            .iter()
+            .map(|a| lattice_protocol::event::AppliedEdit {
+                original_range: a.original_range,
+                inserted_range: a.inserted_range,
+                replaced_text: a.replaced_text.clone(),
+                inserted_text: a.inserted_text.clone(),
+            })
+            .collect();
         self.event_bus.publish(Event::DocumentChanged {
             id: snap.id,
+            path,
             version: snap.version,
-            edits: Vec::new(),
+            edits,
         });
     }
 
@@ -8778,6 +8794,200 @@ impl App {
     /// missing the title. When buffers ARE open the rebuild walks
     /// the logger ring (≤ 10k records) and replaces the rope --
     /// well within frame budget for the editor's scale.
+    /// Drain server-initiated `workspace/configuration` requests
+    /// (Phase 4.1 follow-up). For each request, walk the cached
+    /// `lsp_config_tree` at `lsp.<section>` for every requested
+    /// item and reply with a `Vec<serde_json::Value>` (one
+    /// entry per item, in input order; missing sections come
+    /// back as `Value::Null`). Pre-this-commit the actor
+    /// stub-replied with `[null, ...]` directly; now the App's
+    /// drain surfaces real values from the user's TOML.
+    ///
+    /// Lookup convention: server-supplied `section` paths are
+    /// the namespaced keys the server expects in ITS config
+    /// tree (e.g. `"rust-analyzer.cargo.features"`). The
+    /// editor's TOML places these under an `[lsp.<server>]`
+    /// umbrella so multiple servers' keys don't collide with
+    /// each other or with editor-namespace keys
+    /// (`tabstop` etc.). The drain prepends `lsp.` to the
+    /// requested section before walking the tree.
+    pub fn drain_inbound_configuration_requests(&mut self) {
+        let Some(mut rx) = self.pending_configuration_rx.take() else {
+            return;
+        };
+        let mut requests: Vec<lattice_lsp::InboundConfigurationRequest> = Vec::new();
+        while let Ok(req) = rx.try_recv() {
+            requests.push(req);
+        }
+        self.pending_configuration_rx = Some(rx);
+        for req in requests {
+            let values: Vec<serde_json::Value> = req
+                .sections
+                .iter()
+                .map(|section| self.lookup_lsp_config_section(section))
+                .collect();
+            let _ = req.response.send(values);
+        }
+    }
+
+    /// Look up a server-supplied `section` path in the cached
+    /// TOML tree at `lsp.<section>`. Returns `Value::Null` when
+    /// the path is missing or the TOML value can't be converted
+    /// to JSON. Empty section (server asked for "all") returns
+    /// the whole `lsp` sub-tree.
+    fn lookup_lsp_config_section(&self, section: &str) -> serde_json::Value {
+        let path = if section.is_empty() {
+            "lsp".to_string()
+        } else {
+            format!("lsp.{section}")
+        };
+        let toml_value =
+            match lattice_config::lookup_dotted_path(&self.lsp_config_tree, &path) {
+                Some(v) => v,
+                None => return serde_json::Value::Null,
+            };
+        // toml::Value -> serde_json::Value via the round-trip
+        // serialiser. Both crates speak serde, so this is the
+        // direct path -- no manual variant matching.
+        serde_json::to_value(toml_value).unwrap_or(serde_json::Value::Null)
+    }
+
+    /// Drain server-initiated `workspace/applyEdit` requests
+    /// (Phase 4.3). Each request lands as an
+    /// [`lattice_lsp::InboundApplyEdit`] carrying a typed
+    /// `WorkspaceEdit` + a oneshot for the response. We
+    /// flatten the edit into per-file `Vec<TextEdit>` batches
+    /// (same `flatten_workspace_edit` path the `:rename`
+    /// drain uses), apply each, and reply via the oneshot.
+    ///
+    /// Apply semantics mirror `apply_rename_workspace_edit`:
+    /// edits to the active buffer land directly via
+    /// `apply_lsp_text_edits` (one undo unit per file);
+    /// cross-file edits open the target via `do_edit` and
+    /// apply there. Failures on individual files echo a
+    /// warning but don't roll back successfully-applied
+    /// files -- spec lets the client report partial success
+    /// via `applied: true` + a `failure_reason` describing
+    /// the failed slice. v1 doesn't track which slice failed
+    /// (that's `failed_change`, queued for the
+    /// atomic-rollback follow-up).
+    ///
+    /// Called once per main-loop iteration. Cheap when the
+    /// channel is empty; the `try_recv` returns immediately.
+    pub fn drain_inbound_apply_edits(&mut self) {
+        let Some(mut rx) = self.pending_apply_edit_rx.take() else {
+            return;
+        };
+        let mut requests: Vec<lattice_lsp::InboundApplyEdit> = Vec::new();
+        while let Ok(req) = rx.try_recv() {
+            requests.push(req);
+        }
+        self.pending_apply_edit_rx = Some(rx);
+        for req in requests {
+            let outcome = self.apply_inbound_workspace_edit(&req.server_id, req.label.as_deref(), req.edit);
+            let _ = req.response.send(outcome);
+        }
+    }
+
+    /// Apply one server-initiated WorkspaceEdit to the
+    /// editor's buffers. Returns the [`lattice_lsp::ApplyEditOutcome`]
+    /// the actor's response task ferries back to the server.
+    fn apply_inbound_workspace_edit(
+        &mut self,
+        server_id: &std::sync::Arc<str>,
+        label: Option<&str>,
+        edit: lsp_types::WorkspaceEdit,
+    ) -> lattice_lsp::ApplyEditOutcome {
+        let per_file = flatten_workspace_edit(edit);
+        if per_file.is_empty() {
+            // Spec: when the edit is empty there's nothing to
+            // do; reply applied=true with a clarifying note so
+            // the server-side log shows the no-op.
+            return lattice_lsp::ApplyEditOutcome {
+                applied: true,
+                failure_reason: Some("empty workspace edit".into()),
+            };
+        }
+        let mut applied_files = 0usize;
+        let mut failed_files: Vec<String> = Vec::new();
+        let mut total_edits = 0usize;
+        for (uri, edits) in per_file {
+            let target_path = match lattice_lsp::actor::uri_to_path(&uri) {
+                Some(p) => p,
+                None => {
+                    failed_files.push(format!("{uri:?} (malformed URI)"));
+                    continue;
+                }
+            };
+            let edit_count = edits.len();
+            if self
+                .document
+                .path()
+                .map(|p| p == target_path)
+                .unwrap_or(false)
+            {
+                if let Err(e) = self.apply_lsp_text_edits(edits) {
+                    failed_files.push(format!("{}: {e}", target_path.display()));
+                    continue;
+                }
+                applied_files += 1;
+                total_edits += edit_count;
+            } else {
+                // Cross-file edits: open via `:e` then apply.
+                // Same pattern as `apply_rename_workspace_edit`.
+                self.do_edit(Some(target_path.clone()), false);
+                if matches!(
+                    self.last_message.as_ref().map(|m| m.level),
+                    Some(EchoLevel::Error)
+                ) {
+                    failed_files
+                        .push(format!("{}: open failed", target_path.display()));
+                    continue;
+                }
+                if let Err(e) = self.apply_lsp_text_edits(edits) {
+                    failed_files.push(format!("{}: {e}", target_path.display()));
+                    continue;
+                }
+                applied_files += 1;
+                total_edits += edit_count;
+            }
+        }
+        // Echo a status line for the user.
+        let label_text = label.map(|l| format!(" `{l}`")).unwrap_or_default();
+        let summary = if failed_files.is_empty() {
+            format!(
+                "{server_id}: applyEdit{label_text} -> {total_edits} edit{} across {applied_files} file{}",
+                if total_edits == 1 { "" } else { "s" },
+                if applied_files == 1 { "" } else { "s" },
+            )
+        } else {
+            format!(
+                "{server_id}: applyEdit{label_text} partial -- {applied_files} ok, {} failed: {}",
+                failed_files.len(),
+                failed_files.join("; "),
+            )
+        };
+        let echo_level = if failed_files.is_empty() {
+            EchoLevel::Info
+        } else {
+            EchoLevel::Warn
+        };
+        self.set_message(echo_level, summary.clone());
+        lattice_lsp::ApplyEditOutcome {
+            applied: applied_files > 0,
+            failure_reason: if failed_files.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{} file{} failed: {}",
+                    failed_files.len(),
+                    if failed_files.len() == 1 { "" } else { "s" },
+                    failed_files.join("; "),
+                ))
+            },
+        }
+    }
+
     pub fn drain_lsp_log_events(&mut self) {
         let Some(mut rx) = self.lsp_log_event_rx.take() else {
             return;
@@ -9051,9 +9261,11 @@ impl App {
         // The structural prefixes the App / future plugin host
         // own. The per-language layer drains
         // `completion.per-language.*`; the plugin host (Phase 7)
-        // will drain `plugin.*`. Both buckets accumulate here
-        // without further interpretation in this slice.
-        let prefixes = ["completion.per-language", "plugin"];
+        // will drain `plugin.*`; `lsp` is bucketed so the
+        // loader doesn't fire unknown-option warnings for
+        // server-namespaced keys (the cached raw_tree carries
+        // the values; `workspace/configuration` walks it).
+        let prefixes = ["completion.per-language", "plugin", "lsp"];
         let outcome = lattice_config::load_default_paths(
             &self.config,
             workspace_root,
@@ -9071,6 +9283,13 @@ impl App {
         for (k, v) in outcome.structural {
             self.pending_config_structural_sections.insert(k, v);
         }
+        // Cache the merged TOML tree so
+        // `workspace/configuration` can walk server-namespaced
+        // keys (Phase 4.1 follow-up). Project files override
+        // user files at deep-merge time so an `[lsp.X.Y]`
+        // sibling key in the user config survives a project
+        // override of `[lsp.X.Z]`.
+        self.lsp_config_tree = outcome.raw_tree;
         // Surface a single echo summarising loader diagnostics.
         // The renderer's modeline only shows the latest echo,
         // so multi-warn configs collapse into "<count> issues
@@ -10305,10 +10524,37 @@ impl App {
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
                 };
-                if let Ok(Some(syms)) = handle.workspace_symbol(params, token.clone()).await {
-                    for sym in syms {
-                        if let Some(row) = symbol_information_to_row(&sym) {
-                            all.push(row);
+                let Ok(Some(resp)) = handle.workspace_symbol(params, token.clone()).await
+                else {
+                    continue;
+                };
+                match resp {
+                    // Legacy `Vec<SymbolInformation>` shape -- every
+                    // symbol carries its location range inline.
+                    lsp_types::WorkspaceSymbolResponse::Flat(syms) => {
+                        for sym in syms {
+                            if let Some(row) = symbol_information_to_row(&sym) {
+                                all.push(row);
+                            }
+                        }
+                    }
+                    // Modern `Vec<WorkspaceSymbol>` shape (LSP 3.17+).
+                    // The `location` is `OneOf<Location, WorkspaceLocation>`:
+                    // - `Left(Location)`: range is inline; emit row.
+                    // - `Right(WorkspaceLocation)` (URI only): fire
+                    //   `workspaceSymbol/resolve` against the same
+                    //   server, then emit row from the resolved
+                    //   shape. Eager resolve keeps the picker rows
+                    //   uniform; the cost is one extra round-trip
+                    //   per unresolved symbol per fan-out, bounded
+                    //   by the workspace's symbol count.
+                    lsp_types::WorkspaceSymbolResponse::Nested(syms) => {
+                        for sym in syms {
+                            if let Some(row) =
+                                workspace_symbol_to_row(&handle, sym, &token).await
+                            {
+                                all.push(row);
+                            }
                         }
                     }
                 }
@@ -14488,6 +14734,68 @@ pub(crate) fn flatten_document_symbol_response(
 /// Map a flat `SymbolInformation` (legacy outline + workspace
 /// symbol shape) into our row type. Returns `None` when the
 /// location's URI doesn't resolve to a path.
+/// Convert a modern (LSP 3.17+) `WorkspaceSymbol` into a
+/// `SymbolRow` (Phase 4.2 follow-up). When the symbol's
+/// `location` came back as the `WorkspaceLocation` (URI-only)
+/// variant, fires `workspaceSymbol/resolve` against the
+/// originating server to upgrade to a real `Location` with
+/// `range`. Returns `None` when:
+/// - The URI doesn't map to a path.
+/// - Resolve fails (server doesn't actually advertise it,
+///   or returns a still-unresolved shape).
+/// - Cancellation fires while we're awaiting resolve.
+pub(crate) async fn workspace_symbol_to_row(
+    handle: &lattice_lsp::ServerHandle,
+    sym: lsp_types::WorkspaceSymbol,
+    token: &lattice_protocol::CancellationToken,
+) -> Option<SymbolRow> {
+    use lsp_types::OneOf;
+    let (path, line, col) = match &sym.location {
+        OneOf::Left(loc) => (
+            lattice_lsp::actor::uri_to_path(&loc.uri)?,
+            loc.range.start.line,
+            loc.range.start.character,
+        ),
+        OneOf::Right(wsl) => {
+            let path = lattice_lsp::actor::uri_to_path(&wsl.uri)?;
+            // Server's resolveProvider absent -> no point firing.
+            // Fall back to (0, 0); the user can still navigate
+            // to the file.
+            if !handle.capabilities().workspace_symbol_resolve_provider() {
+                (path, 0, 0)
+            } else {
+                match handle.workspace_symbol_resolve(sym.clone(), token.clone()).await {
+                    Ok(resolved) => match resolved.location {
+                        OneOf::Left(loc) => (
+                            lattice_lsp::actor::uri_to_path(&loc.uri)
+                                .unwrap_or(path),
+                            loc.range.start.line,
+                            loc.range.start.character,
+                        ),
+                        // Server replied without populating range
+                        // -- spec violation, but defensive: fall
+                        // back to (0, 0) instead of dropping.
+                        OneOf::Right(_) => (path, 0, 0),
+                    },
+                    // Resolve failed -- log via the symbol's
+                    // path-only fallback. Caller still gets a
+                    // navigable row.
+                    Err(_) => (path, 0, 0),
+                }
+            }
+        }
+    };
+    Some(SymbolRow {
+        name: sym.name,
+        kind_glyph: symbol_kind_glyph(sym.kind),
+        container: sym.container_name,
+        depth: 0,
+        path,
+        line,
+        col,
+    })
+}
+
 pub(crate) fn symbol_information_to_row(
     sym: &lsp_types::SymbolInformation,
 ) -> Option<SymbolRow> {
@@ -23739,16 +24047,6 @@ mod tests {
         assert!(app.buffer_uris.is_empty());
     }
 
-    #[test]
-    fn lsp_record_edit_is_noop_when_no_uri_mapping() {
-        let app = App::new(Document::from_text("hi"));
-        // No URI mapping -> record_edit short-circuits, no panic.
-        app.lsp_record_edit(
-            app.document_buffer_id,
-            &Edit::insert(Position::new(0, 0), "x"),
-        );
-    }
-
     #[tokio::test(flavor = "multi_thread")]
     async fn initialize_lsp_with_no_path_is_noop() {
         let mut app = App::new(Document::from_text("fn main() {}"));
@@ -25160,6 +25458,198 @@ mod tests {
         let mut a = App::new(doc);
         a.set_viewport_height(viewport);
         a
+    }
+
+    /// Inject an `InboundApplyEdit` into the App's drain
+    /// receiver. Replaces whatever was there; tests start with
+    /// an empty receiver so this is fine.
+    fn inject_inbound_apply_edit(
+        a: &mut App,
+        inbound: lattice_lsp::InboundApplyEdit,
+    ) {
+        let (bus, new_rx) = lattice_lsp::ApplyEditBus::new();
+        bus.dispatch(inbound).expect("dispatch");
+        a.pending_apply_edit_rx = Some(new_rx);
+    }
+
+    #[test]
+    fn drain_inbound_apply_edits_applies_active_buffer_edit() {
+        // Synthesise an inbound `workspace/applyEdit` against
+        // the active buffer. Drain should apply the edit and
+        // signal `applied: true` on the oneshot.
+        let dir = std::env::temp_dir().join(format!(
+            "lattice-applyedit-test-{}",
+            std::process::id(),
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("buffer.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let mut a = app_with_path("fn main() {}\n", 5, path.clone());
+        let uri: lsp_types::Uri = format!("file://{}", path.display()).parse().unwrap();
+        // Edit replaces `main` (line 0, char 3..7) with `xyz`.
+        let edit = lsp_types::TextEdit {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: 0, character: 3 },
+                end: lsp_types::Position { line: 0, character: 7 },
+            },
+            new_text: "xyz".into(),
+        };
+        let mut changes = std::collections::HashMap::new();
+        changes.insert(uri, vec![edit]);
+        let workspace_edit = lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        };
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        inject_inbound_apply_edit(
+            &mut a,
+            lattice_lsp::InboundApplyEdit {
+                server_id: std::sync::Arc::from("test-server"),
+                label: Some("rename main".into()),
+                edit: workspace_edit,
+                response: resp_tx,
+            },
+        );
+        a.drain_inbound_apply_edits();
+        // Drain ran synchronously; the oneshot is already
+        // populated -- `try_recv` returns Ok.
+        let outcome = resp_rx
+            .try_recv()
+            .expect("drain replied via oneshot");
+        assert!(
+            outcome.applied,
+            "edit applied: {:?}",
+            outcome.failure_reason,
+        );
+        let after = a.document.snapshot().buffer.as_string();
+        assert_eq!(after, "fn xyz() {}\n");
+    }
+
+    #[test]
+    fn drain_inbound_apply_edits_empty_workspace_edit_replies_applied_true() {
+        // An empty WorkspaceEdit (no changes, no
+        // document_changes) is a server no-op. Spec: reply
+        // applied=true so the server doesn't think we
+        // failed -- just nothing to do.
+        let mut a = app_with("", 5);
+        let workspace_edit = lsp_types::WorkspaceEdit::default();
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        inject_inbound_apply_edit(
+            &mut a,
+            lattice_lsp::InboundApplyEdit {
+                server_id: std::sync::Arc::from("test-server"),
+                label: None,
+                edit: workspace_edit,
+                response: resp_tx,
+            },
+        );
+        a.drain_inbound_apply_edits();
+        let outcome = resp_rx.try_recv().expect("drain replied");
+        assert!(outcome.applied);
+        assert_eq!(
+            outcome.failure_reason.as_deref(),
+            Some("empty workspace edit"),
+        );
+    }
+
+    #[test]
+    fn drain_inbound_configuration_walks_cached_tree_at_lsp_prefix() {
+        // Stash an `[lsp.rust-analyzer.cargo]` block in the
+        // App's cached tree (mimics what
+        // `load_persistent_config` does after parsing user
+        // TOML). Drain receives a request for
+        // `"rust-analyzer.cargo.features"` and the
+        // `"rust-analyzer.checkOnSave"` -- both surface from
+        // the tree.
+        let mut a = app_with("", 5);
+        let toml_text = "[lsp.rust-analyzer.cargo]\n\
+                         features = [\"foo\", \"bar\"]\n\
+                         [lsp.rust-analyzer]\n\
+                         checkOnSave = true\n";
+        a.lsp_config_tree = toml_text.parse().expect("toml parse");
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        let req = lattice_lsp::InboundConfigurationRequest {
+            server_id: std::sync::Arc::from("rust-analyzer"),
+            sections: vec![
+                "rust-analyzer.cargo.features".into(),
+                "rust-analyzer.checkOnSave".into(),
+            ],
+            response: resp_tx,
+        };
+        let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
+        bus.dispatch(req).expect("dispatch");
+        a.pending_configuration_rx = Some(new_rx);
+        a.drain_inbound_configuration_requests();
+        let values = resp_rx.try_recv().expect("drain replied");
+        assert_eq!(values.len(), 2);
+        // First: features array.
+        let arr = values[0].as_array().expect("array");
+        assert_eq!(arr[0].as_str(), Some("foo"));
+        assert_eq!(arr[1].as_str(), Some("bar"));
+        // Second: bool.
+        assert_eq!(values[1].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn drain_inbound_configuration_returns_null_for_missing_section() {
+        let mut a = app_with("", 5);
+        // No tree populated -> every lookup is null.
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        let req = lattice_lsp::InboundConfigurationRequest {
+            server_id: std::sync::Arc::from("rust-analyzer"),
+            sections: vec!["rust-analyzer.cargo.features".into()],
+            response: resp_tx,
+        };
+        let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
+        bus.dispatch(req).expect("dispatch");
+        a.pending_configuration_rx = Some(new_rx);
+        a.drain_inbound_configuration_requests();
+        let values = resp_rx.try_recv().expect("drain replied");
+        assert_eq!(values.len(), 1);
+        assert!(values[0].is_null());
+    }
+
+    #[test]
+    fn drain_inbound_configuration_empty_section_returns_whole_lsp_subtree() {
+        // A server requesting `section: null` (or empty) wants
+        // the whole `lsp` sub-tree -- our convention serves
+        // this from the namespaced top.
+        let mut a = app_with("", 5);
+        let toml_text = "[lsp.rust-analyzer]\nchecker = \"clippy\"\n";
+        a.lsp_config_tree = toml_text.parse().unwrap();
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        let req = lattice_lsp::InboundConfigurationRequest {
+            server_id: std::sync::Arc::from("rust-analyzer"),
+            sections: vec![String::new()],
+            response: resp_tx,
+        };
+        let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
+        bus.dispatch(req).expect("dispatch");
+        a.pending_configuration_rx = Some(new_rx);
+        a.drain_inbound_configuration_requests();
+        let values = resp_rx.try_recv().expect("drain replied");
+        // Whole `lsp` sub-tree comes back as a JSON object.
+        let obj = values[0].as_object().expect("object");
+        assert!(obj.contains_key("rust-analyzer"));
+    }
+
+    #[test]
+    fn drain_inbound_configuration_no_op_when_channel_empty() {
+        let mut a = app_with("", 5);
+        a.drain_inbound_configuration_requests();
+        assert!(a.pending_configuration_rx.is_some());
+    }
+
+    #[test]
+    fn drain_inbound_apply_edits_no_op_when_channel_empty() {
+        // Idle drain: no requests, no outgoing oneshots, no
+        // panic. Cheap path that runs every frame.
+        let mut a = app_with("", 5);
+        a.drain_inbound_apply_edits();
+        // Receiver is restored after the drain (the take + put-back).
+        assert!(a.pending_apply_edit_rx.is_some());
     }
 
     fn fresh_path_workspace(name: &str) -> std::path::PathBuf {

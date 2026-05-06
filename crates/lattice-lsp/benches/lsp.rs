@@ -21,14 +21,23 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use lsp_types::PositionEncodingKind;
 use serde_json::json;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use lattice_lsp::capabilities::{Capabilities, client_capabilities};
 use lattice_lsp::framing::parse_header_block;
 use lattice_lsp::jsonrpc::{Message, Notification, Request, RequestId};
 use lattice_lsp::position::{
     byte_to_lsp_character, utf8_byte_to_utf16_column, utf16_column_to_utf8_byte,
 };
+use lattice_lsp::sync::DocSync;
 use lattice_lsp::{LogLevel, LogSource, LspLogger};
+use lattice_protocol::edit::{Edit, EditKind};
+use lattice_protocol::event::{AppliedEdit as ProtocolAppliedEdit, Event};
+use lattice_protocol::ids::DocumentId;
+use lattice_protocol::position::{Position, Range};
+use lattice_runtime::{EventBus, EventFilter, SubscriptionTarget};
+use lattice_protocol::EventKind;
 
 /// Header parse: ASCII-only, ≤200 byte block. Should be deep
 /// in nanoseconds.
@@ -227,6 +236,141 @@ fn logging_log_trace_on(c: &mut Criterion) {
     });
 }
 
+// ---------------------------------------------------------------
+// Edit-path benches (added with the per-actor fan-in refactor).
+//
+// These three benches monitor the cost the new architecture
+// (DESIGN.md §5.2.5 + docs/lsp-architecture.md §11) puts on the
+// keystroke path:
+//
+//   (a) `lsp_edit_publish_*`       -- UI-thread overhead per edit
+//   (b) `lsp_edit_propagation_*`   -- end-to-end publish -> actor
+//   (c) `lsp_didchange_flush_*`    -- queued change -> wire payload
+//
+// (a) is the only one that runs on the UI thread; (b) measures
+// the latency budget the user sees from "key down" to "server
+// has it" before any debounce; (c) measures the per-flush cost
+// the actor pays asynchronously.
+// ---------------------------------------------------------------
+
+fn make_document_changed_event(n_edits: usize) -> Event {
+    let edits: Vec<ProtocolAppliedEdit> = (0..n_edits)
+        .map(|i| ProtocolAppliedEdit {
+            original_range: Range::empty(Position::new(0, i as u32)),
+            inserted_range: Range::new(
+                Position::new(0, i as u32),
+                Position::new(0, i as u32 + 1),
+            ),
+            replaced_text: String::new(),
+            inserted_text: "x".to_string(),
+        })
+        .collect();
+    Event::DocumentChanged {
+        id: DocumentId::new(1),
+        path: Some(PathBuf::from("/workspace/lib.rs")),
+        version: 17,
+        edits,
+    }
+}
+
+/// (a) UI-thread overhead per edit. Measures `EventBus::publish`
+/// of one `Event::DocumentChanged` carrying a single applied
+/// edit, against a bus with three `DocumentChanged` subscribers
+/// (typical: rust-analyzer + clippy bridge + a future plugin).
+/// This is the *only* part of the LSP edit path that runs on
+/// the keystroke thread; the §8 budget says it must stay tens
+/// of microseconds even when many actors are attached.
+fn lsp_edit_publish_three_subs(c: &mut Criterion) {
+    let bus = EventBus::new();
+    // Drain receivers in background-equivalent storage; we just
+    // need real `mpsc::UnboundedSender`s on the bus.
+    let _keepalive: Vec<_> = (0..3)
+        .map(|_| {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            bus.subscribe(
+                EventFilter::kinds(vec![EventKind::DocumentChanged]),
+                SubscriptionTarget::Channel(tx),
+            );
+            rx
+        })
+        .collect();
+    let event = make_document_changed_event(1);
+    c.bench_function("lsp_edit_publish_three_subs", |b| {
+        b.iter(|| {
+            bus.publish(black_box(event.clone()));
+        });
+    });
+}
+
+/// (b) End-to-end edit-propagation latency. Publishes one
+/// `DocumentChanged` event and awaits its arrival on a single
+/// subscriber's mpsc -- mirrors the bus -> fan-in hop. Excludes
+/// the actor's own `record_edit` (benched in (c)) so this
+/// number is the bus + mpsc cost in isolation.
+fn lsp_edit_propagation_publish_to_recv(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let bus = EventBus::new();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    bus.subscribe(
+        EventFilter::kinds(vec![EventKind::DocumentChanged]),
+        SubscriptionTarget::Channel(tx),
+    );
+    let event = make_document_changed_event(1);
+    c.bench_function("lsp_edit_propagation_publish_to_recv", |b| {
+        b.iter(|| {
+            bus.publish(black_box(event.clone()));
+            runtime.block_on(async {
+                rx.recv().await.unwrap();
+            });
+        });
+    });
+}
+
+/// (c) `didChange` flush throughput. Models the actor's
+/// debounce-arm work: queue 16 edits via DocSync, then
+/// `take_flush_payload` and serialise -- the back half of one
+/// keystroke burst. UTF-8 negotiated (the common case for
+/// rust-analyzer); per-actor, single-writer.
+fn lsp_didchange_flush_16_edits(c: &mut Criterion) {
+    let mut server_caps = lsp_types::ServerCapabilities::default();
+    server_caps.position_encoding = Some(PositionEncodingKind::UTF8);
+    server_caps.text_document_sync = Some(
+        lsp_types::TextDocumentSyncCapability::Kind(
+            lsp_types::TextDocumentSyncKind::INCREMENTAL,
+        ),
+    );
+    let caps = Capabilities::from_initialize(client_capabilities(), server_caps);
+    let uri = lsp_types::Uri::from_str("file:///workspace/lib.rs").unwrap();
+    c.bench_function("lsp_didchange_flush_16_edits", |b| {
+        b.iter(|| {
+            let mut sync = DocSync::new();
+            // Seed with a representative line of source text;
+            // long enough that line splices are non-trivial.
+            let text = "fn handler(req: &Request<Output, Error>) -> Result<()>\n"
+                .repeat(8);
+            let _open = sync.open(uri.clone(), "rust", text);
+            for i in 0..16 {
+                let edit = Edit {
+                    range: Range::empty(Position::new(0, i)),
+                    kind: EditKind::Replace { text: "x".into() },
+                };
+                sync.record_edit(&caps, &uri, &edit).unwrap();
+            }
+            let payload = sync.take_flush_payload(&caps, &uri).unwrap();
+            let n = Notification::new(
+                "textDocument/didChange",
+                Some(serde_json::to_value(payload).unwrap()),
+            );
+            let bytes = Message::Notification(n).to_json().unwrap();
+            black_box(bytes);
+        });
+    });
+}
+
+use std::str::FromStr;
+
 criterion_group!(
     benches,
     framing_parse_header,
@@ -240,5 +384,8 @@ criterion_group!(
     logging_log_info,
     logging_log_trace_off,
     logging_log_trace_on,
+    lsp_edit_publish_three_subs,
+    lsp_edit_propagation_publish_to_recv,
+    lsp_didchange_flush_16_edits,
 );
 criterion_main!(benches);

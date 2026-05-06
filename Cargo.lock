@@ -861,6 +861,7 @@ dependencies = [
  "lattice-syntax",
  "lsp-types",
  "ratatui",
+ "serde_json",
  "streaming-iterator",
  "thiserror 2.0.18",
  "tokio",

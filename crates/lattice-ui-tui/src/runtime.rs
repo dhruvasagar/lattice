@@ -253,6 +253,18 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // buffer is open (the refresh path short-circuits on
         // missing-by-title).
         app.drain_lsp_log_events();
+        // Drain server-initiated `workspace/applyEdit` requests
+        // (Phase 4.3). Each is applied via the existing
+        // workspace-edit flatten + per-file batch path, then
+        // the LSP response (`applied`/`failure_reason`) ferries
+        // back to the originating server through the embedded
+        // oneshot.
+        app.drain_inbound_apply_edits();
+        // Drain server-initiated `workspace/configuration`
+        // requests (Phase 4.1 follow-up). Walk each requested
+        // section in the cached TOML tree at `lsp.<section>`
+        // and reply with the per-section value.
+        app.drain_inbound_configuration_requests();
         // Update viewport height. The buffer-area band is the
         // terminal minus the mode line + cmdline/echo row (and the
         // candidate-list row band, when a picker / completion popup

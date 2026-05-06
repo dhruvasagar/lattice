@@ -868,16 +868,106 @@ Remaining 4.2:
   **4.2.g.7 complete; 4.2.g done.**
 - `completionItem/resolve` (lazy doc / additional edits) --
   shipped as part of 4.2.g.3 + 4.2.g.7.
-- `workspaceSymbol/resolve` (lazy location).
+- `workspaceSymbol/resolve` (lazy location) ✅. Client
+  capability now advertises
+  `workspace.symbol.resolveSupport.properties = ["location.range"]`;
+  `Capabilities::workspace_symbol_resolve_provider` reads
+  the server's matching flag from
+  `workspaceSymbolProvider.resolveProvider`. New
+  `ServerHandle::workspace_symbol_resolve(symbol, token)`
+  client method routes the LSP `workspaceSymbol/resolve`
+  request. The `workspace_symbol` response type upgrades
+  from `Option<Vec<SymbolInformation>>` (legacy-only) to
+  `Option<lsp_types::WorkspaceSymbolResponse>` -- the
+  spec's `Flat | Nested` union covering both LSP 3.16 and
+  3.17+ shapes. App's `do_lsp_workspace_symbol_request`
+  handles both: `Flat(Vec<SymbolInformation>)` flows
+  through `symbol_information_to_row` (range inline);
+  `Nested(Vec<WorkspaceSymbol>)` flows through the new
+  `workspace_symbol_to_row(handle, sym, token)` async
+  helper which fires `workspaceSymbol/resolve` against
+  the originating server when the location came back as
+  `WorkspaceLocation` (URI only) and uses the resolved
+  range. Eager-resolve at fan-out keeps picker rows
+  uniform (every row is `(path, line, col)` resolved);
+  the picker's accept path stays unchanged. Servers that
+  don't advertise `resolveProvider` fall back to
+  `(path, 0, 0)` so the user can still navigate to the
+  file. Tests: legacy `Flat` shape round-trips; modern
+  `Nested` shape with `WorkspaceLocation` decodes
+  correctly; `workspaceSymbol/resolve` round-trip
+  upgrades the location.
 
 Remaining 4.3:
 - workspace/applyEdit (server-initiated -- inbound channel
   on the actor that calls back into the App's
-  `apply_workspace_edit` path; codeAction Commands
-  frequently route side-effects through this. Many
-  in-the-wild flows already work via the Command +
-  executeCommand fire-and-forget path; the inbound
-  applyEdit channel is the polish piece).
+  `apply_workspace_edit` path) ✅. New
+  `lattice-lsp::apply_edit` module exposes
+  `ApplyEditBus` (mpsc Sender side cloned into every actor
+  at spawn) + `InboundApplyEdit` (server_id + label + edit
+  + oneshot for the response) + `ApplyEditOutcome` (the
+  reply the App writes back). Actor's request branch routes
+  `workspace/applyEdit` through a spawned task that
+  dispatches via the bus, awaits the App's oneshot, and
+  ferries the LSP `ApplyWorkspaceEditResponse` back to the
+  wire; other server-initiated requests still resolve
+  inline. Supervisor exposes
+  `set_apply_edit_bus` for the App; `LspSupervisor::new`
+  now starts with `apply_edit_bus = None` so existing
+  tests / mocks that don't care about applyEdit see the
+  pre-4.3 METHOD_NOT_FOUND fallback. App's
+  `build_lsp_subsystem` creates the bus + receiver pair
+  and stashes the receiver in
+  `App.pending_apply_edit_rx`; `runtime::main_loop`
+  invokes `App::drain_inbound_apply_edits` once per
+  iteration alongside the other LSP drains. The drain
+  flattens each WorkspaceEdit via the existing
+  `flatten_workspace_edit` (same path `:rename` uses),
+  applies per-file (active buffer direct, cross-file via
+  `:e` then apply), echoes a status summary at Info
+  (success) / Warn (partial), and replies via the
+  embedded oneshot with `applied: bool` +
+  `failure_reason`. Empty edits reply
+  `applied: true` with the "empty workspace edit" reason
+  so server logs see the no-op. v1 doesn't track
+  `failed_change` (atomic-rollback queued for the
+  follow-up `apply_workspace_edit_atomic`). Tests:
+  lattice-lsp dispatch round-trip + drop-side error +
+  oneshot round-trip; App drain applies edits to active
+  buffer, replies applied=true on empty edit, and is a
+  no-op when the channel is empty.
+
+**4.x edit-path refactor: per-actor DocSync + bus-driven
+fan-in.** Diagnostics testing surfaced that edits were being
+silently dropped when the App's `try_lock`-on-supervisor
+edit path raced the App-spawned debounce task. Architectural
+fix (chosen against design goals, not ease of impl): move
+`DocSync` into the per-server actor (single-writer mirror;
+no shared mutex), enrich `Event::DocumentChanged` with
+`path: Option<PathBuf>` + `inserted_text` per `AppliedEdit`,
+spawn a per-actor `lattice_lsp::fan_in` task that subscribes
+to the bus and forwards each applied edit as
+`ActorCmd::RecordEdit` straight into the actor's mailbox.
+The UI thread now does one `EventBus::publish` per applied
+edit (1.9 µs at three subscribers) and never takes the
+supervisor mutex; the actor coalesces on a 50 ms debounce
+inside its `select!` loop. `App::lsp_record_edit` and the
+App-side debounce task are gone; supervisor `record_edit /
+flush / flush_all` survive as thin proxies for tests + the
+will-save flush. `LspSupervisor` gained
+`set_event_bus(Arc<EventBus>)` (called once at App startup
+before any buffer opens) and tracks a per-actor
+`SubscriptionId` so shutdown can unsubscribe. New benches
+in `crates/lattice-lsp/benches/lsp.rs`:
+`lsp_edit_publish_three_subs`, `lsp_edit_propagation_publish_to_recv`,
+`lsp_didchange_flush_16_edits`. New tests in
+`tests/fan_in.rs` cover end-to-end didChange after publish,
+OpenDoc → RecordEdit FIFO, scratch-buffer (no path) skip,
+unknown-URI warn-and-skip, 50-edit burst coalesce into one
+didChange, shutdown unsubscribes the bus. Architecture
+detail in `docs/lsp-architecture.md` §5 + new §11
+("Edit-path architecture") with the bus → fan-in → actor
+diagram.
 
 Update this section when picking up the in-flight item.
 

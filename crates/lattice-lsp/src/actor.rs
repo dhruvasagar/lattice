@@ -277,6 +277,61 @@ impl ServerHandle {
             .map_err(|_| LspError::ActorGone)
     }
 
+    /// Open a document in the actor's own DocSync mirror and emit
+    /// `textDocument/didOpen`. Single-writer through the actor:
+    /// the supervisor mutex is no longer in this path, so the UI
+    /// thread cannot stall behind a flush. FIFO ordering with
+    /// subsequent `record_edit` calls is preserved by the cmd
+    /// channel.
+    pub fn open_doc(
+        &self,
+        uri: lsp_types::Uri,
+        language_id: impl Into<String>,
+        text: impl Into<String>,
+    ) -> LspResult<()> {
+        let cmd = ActorCmd::OpenDoc {
+            uri,
+            language_id: language_id.into(),
+            text: text.into(),
+        };
+        self.inner.cmd_tx.send(cmd).map_err(|_| LspError::ActorGone)
+    }
+
+    /// Record an edit against the actor's mirror. Coalesced with
+    /// other edits and flushed after the actor's debounce window.
+    /// Drop-free: the cmd channel is unbounded, so the publisher
+    /// (typically the per-server fan-in task) cannot lose work.
+    pub fn record_edit(
+        &self,
+        uri: lsp_types::Uri,
+        edit: lattice_protocol::edit::Edit,
+    ) -> LspResult<()> {
+        let cmd = ActorCmd::RecordEdit { uri, edit };
+        self.inner.cmd_tx.send(cmd).map_err(|_| LspError::ActorGone)
+    }
+
+    /// Force a flush of the pending change queue for one URI.
+    /// Useful before a synchronous request that depends on the
+    /// server having seen the latest text (hover/definition right
+    /// after typing).
+    pub fn flush(&self, uri: lsp_types::Uri) -> LspResult<()> {
+        let cmd = ActorCmd::Flush { uri };
+        self.inner.cmd_tx.send(cmd).map_err(|_| LspError::ActorGone)
+    }
+
+    /// Force a flush of every URI tracked by this actor.
+    pub fn flush_all(&self) -> LspResult<()> {
+        let cmd = ActorCmd::FlushAll;
+        self.inner.cmd_tx.send(cmd).map_err(|_| LspError::ActorGone)
+    }
+
+    /// Close a document: emit any final `textDocument/didChange`
+    /// then `textDocument/didClose`, all from inside the actor.
+    pub fn close_doc(&self, uri: lsp_types::Uri) -> LspResult<()> {
+        let cmd = ActorCmd::CloseDoc { uri };
+        self.inner.cmd_tx.send(cmd).map_err(|_| LspError::ActorGone)
+    }
+
     /// Run the LSP shutdown sequence: `shutdown` request → `exit`
     /// notification → wait for child exit. After this resolves
     /// the actor task is gone; subsequent requests yield
@@ -309,6 +364,38 @@ enum ActorCmd {
     Shutdown {
         reply: oneshot::Sender<LspResult<()>>,
     },
+    /// Bring a buffer under the actor's DocSync management. The
+    /// actor builds the `didOpen` payload via `DocSync::open` +
+    /// ships it. v1 is fire-and-forget -- if the channel push
+    /// fails the caller already lost the connection. Phase 4.x
+    /// per-actor edit-path refactor.
+    OpenDoc {
+        uri: lsp_types::Uri,
+        language_id: String,
+        text: String,
+    },
+    /// Apply one committed edit to the actor's DocSync mirror
+    /// + queue the `didChange` event. The per-actor debounce
+    /// timer drives the eventual flush; rapid edits coalesce.
+    /// Phase 4.x.
+    RecordEdit {
+        uri: lsp_types::Uri,
+        edit: lattice_protocol::edit::Edit,
+    },
+    /// Eagerly drain queued change events for `uri` and ship a
+    /// `didChange`. Used by will-save hooks etc. that need a
+    /// coherent server-side view RIGHT NOW. Phase 4.x.
+    Flush {
+        uri: lsp_types::Uri,
+    },
+    /// Same as `Flush` but for every URI the actor tracks.
+    /// Used at editor shutdown. Phase 4.x.
+    FlushAll,
+    /// Drop a buffer's mirror; ship the optional final
+    /// `didChange` followed by `didClose`. Phase 4.x.
+    CloseDoc {
+        uri: lsp_types::Uri,
+    },
 }
 
 /// Spawn a language server from a [`ServerConfig`].
@@ -323,6 +410,8 @@ pub async fn spawn(
     config: ServerConfig,
     workspace_root: std::path::PathBuf,
     logger: LspLogger,
+    apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
+    configuration_bus: Option<crate::configuration::ConfigurationBus>,
 ) -> LspResult<ServerHandle> {
     let transport = ChildTransport::spawn(&config.binary, &config.args, Some(&workspace_root))
         .await
@@ -336,6 +425,8 @@ pub async fn spawn(
         stderr,
         Some(child),
         logger,
+        apply_edit_bus,
+        configuration_bus,
     )
     .await
 }
@@ -356,6 +447,8 @@ pub async fn spawn_with_io<R, W>(
     stderr: Option<ChildStderr>,
     child: Option<Child>,
     logger: LspLogger,
+    apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
+    configuration_bus: Option<crate::configuration::ConfigurationBus>,
 ) -> LspResult<ServerHandle>
 where
     R: AsyncBufRead + Unpin + Send + 'static,
@@ -400,6 +493,8 @@ where
         init_options,
         diagnostics.clone(),
         logger.clone(),
+        apply_edit_bus,
+        configuration_bus,
     ));
 
     let capabilities = handshake_rx
@@ -522,6 +617,7 @@ pub fn uri_from_path(p: &std::path::Path) -> Uri {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn actor_main<R, W>(
     reader: LspReader<R>,
     writer: LspWriter<W>,
@@ -535,6 +631,8 @@ async fn actor_main<R, W>(
     init_options: Option<Value>,
     diagnostics: DiagnosticsBus,
     logger: LspLogger,
+    apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
+    configuration_bus: Option<crate::configuration::ConfigurationBus>,
 ) where
     R: AsyncBufRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -654,8 +752,41 @@ async fn actor_main<R, W>(
     let mut pending: HashMap<RequestId, oneshot::Sender<LspResult<Value>>> = HashMap::new();
     let mut shutting_down: Option<oneshot::Sender<LspResult<()>>> = None;
 
+    // Per-actor DocSync state (Phase 4.x edit-path refactor).
+    // Owned by the actor so the select! loop is the single
+    // writer to the mirror -- the incremental-sync invariant
+    // is structurally guaranteed, no shared lock to misuse.
+    let mut docsync = crate::sync::DocSync::new();
+    // Per-actor debounce for `textDocument/didChange`. After
+    // every RecordEdit we set `flush_deadline` to ~50ms in the
+    // future; the select! arm guarded by `flush_pending` polls
+    // the sleep, fires when the deadline hits, then clears the
+    // flag. Rapid edits coalesce because each new RecordEdit
+    // resets the deadline.
+    const FLUSH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(50);
+    let mut flush_pending = false;
+    let flush_sleep = tokio::time::sleep(std::time::Duration::from_secs(60 * 60));
+    tokio::pin!(flush_sleep);
+
     'main: loop {
         select! {
+            // Debounced flush. Only polled when `flush_pending`
+            // is true (a RecordEdit set it); fires once after
+            // FLUSH_DEBOUNCE of idleness past the last edit.
+            _ = &mut flush_sleep, if flush_pending => {
+                flush_pending = false;
+                for (uri, params) in docsync.take_flush_all_payloads(&caps) {
+                    let n = Notification::new(
+                        "textDocument/didChange",
+                        Some(serde_json::to_value(params).unwrap_or(Value::Null)),
+                    );
+                    if out_tx.send(Message::Notification(n)).is_err() {
+                        // write_loop dead -- bail.
+                        break 'main;
+                    }
+                    let _ = uri;
+                }
+            }
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(ActorCmd::Request { method, params, reply }) => {
@@ -684,6 +815,89 @@ async fn actor_main<R, W>(
                         let key = RequestId::Number(id);
                         if let Some(reply) = pending.remove(&key) {
                             let _ = reply.send(Err(LspError::Cancelled));
+                        }
+                    }
+                    Some(ActorCmd::OpenDoc { uri, language_id, text }) => {
+                        let params = docsync.open(uri, language_id, text);
+                        let n = Notification::new(
+                            "textDocument/didOpen",
+                            Some(serde_json::to_value(params).unwrap_or(Value::Null)),
+                        );
+                        if out_tx.send(Message::Notification(n)).is_err() {
+                            break 'main;
+                        }
+                    }
+                    Some(ActorCmd::RecordEdit { uri, edit }) => {
+                        // Single-writer to the mirror -- no locks,
+                        // no drops. Invariant: every committed edit
+                        // either applies cleanly here or logs a
+                        // warning (mirror corruption is impossible
+                        // because the actor owns the only mutator).
+                        if let Err(e) = docsync.record_edit(&caps, &uri, &edit) {
+                            logger.log(
+                                Some(&server_id_arc),
+                                LogLevel::Warn,
+                                LogSource::Client,
+                                format!(
+                                    "actor.record_edit on {}: {e}",
+                                    uri.as_str(),
+                                ),
+                            );
+                        }
+                        // Reset the debounce: rapid edits coalesce
+                        // into one didChange after the idle window.
+                        flush_sleep.as_mut().reset(
+                            tokio::time::Instant::now() + FLUSH_DEBOUNCE,
+                        );
+                        flush_pending = true;
+                    }
+                    Some(ActorCmd::Flush { uri }) => {
+                        if let Some(params) =
+                            docsync.take_flush_payload(&caps, &uri)
+                        {
+                            let n = Notification::new(
+                                "textDocument/didChange",
+                                Some(serde_json::to_value(params).unwrap_or(Value::Null)),
+                            );
+                            if out_tx.send(Message::Notification(n)).is_err() {
+                                break 'main;
+                            }
+                        }
+                    }
+                    Some(ActorCmd::FlushAll) => {
+                        for (_uri, params) in
+                            docsync.take_flush_all_payloads(&caps)
+                        {
+                            let n = Notification::new(
+                                "textDocument/didChange",
+                                Some(serde_json::to_value(params).unwrap_or(Value::Null)),
+                            );
+                            if out_tx.send(Message::Notification(n)).is_err() {
+                                break 'main;
+                            }
+                        }
+                        flush_pending = false;
+                    }
+                    Some(ActorCmd::CloseDoc { uri }) => {
+                        if let Some(payloads) = docsync.close(&caps, &uri) {
+                            if let Some(final_changes) = payloads.final_changes {
+                                let n = Notification::new(
+                                    "textDocument/didChange",
+                                    Some(serde_json::to_value(final_changes)
+                                        .unwrap_or(Value::Null)),
+                                );
+                                if out_tx.send(Message::Notification(n)).is_err() {
+                                    break 'main;
+                                }
+                            }
+                            let n = Notification::new(
+                                "textDocument/didClose",
+                                Some(serde_json::to_value(payloads.close)
+                                    .unwrap_or(Value::Null)),
+                            );
+                            if out_tx.send(Message::Notification(n)).is_err() {
+                                break 'main;
+                            }
                         }
                     }
                     Some(ActorCmd::Shutdown { reply }) => {
@@ -752,13 +966,64 @@ async fn actor_main<R, W>(
                         handle_server_notification(&server_id_arc, &n, &diagnostics, &logger);
                     }
                     Some(Message::Request(req)) => {
-                        // Server-initiated request. Reply with a
-                        // structured no-op for now; per-method
-                        // handlers (workspace/configuration,
-                        // workspace/applyEdit, ...) land in 4.1.d
-                        // and 4.3.
-                        let resp = handle_server_request(&server_id_arc, &req, &logger);
-                        let _ = out_tx.send(Message::Response(resp));
+                        // `workspace/applyEdit` (Phase 4.3) is
+                        // async: the App must apply the edit on
+                        // the UI thread, so we forward the
+                        // request through the apply-edit bus and
+                        // a spawned task awaits the response
+                        // before writing it back to the wire.
+                        // All other server-initiated requests
+                        // resolve synchronously inline.
+                        if req.method == "workspace/applyEdit"
+                            && let Some(bus) = apply_edit_bus.as_ref()
+                        {
+                            let bus = bus.clone();
+                            let server_id_clone = Arc::clone(&server_id_arc);
+                            let logger_clone = logger.clone();
+                            let out_tx_clone = out_tx.clone();
+                            let req_id = req.id.clone();
+                            let params = req.params.clone();
+                            tokio::spawn(async move {
+                                let resp = handle_apply_edit_request(
+                                    server_id_clone,
+                                    req_id,
+                                    params,
+                                    &bus,
+                                    &logger_clone,
+                                )
+                                .await;
+                                let _ = out_tx_clone.send(Message::Response(resp));
+                            });
+                        } else if req.method == "workspace/configuration"
+                            && let Some(bus) = configuration_bus.as_ref()
+                        {
+                            // Phase 4.1 follow-up: real values
+                            // (not just `null` per item) require
+                            // the App to walk its cached TOML
+                            // tree. Same async pattern as
+                            // applyEdit -- dispatch via the bus,
+                            // await response, ferry back.
+                            let bus = bus.clone();
+                            let server_id_clone = Arc::clone(&server_id_arc);
+                            let logger_clone = logger.clone();
+                            let out_tx_clone = out_tx.clone();
+                            let req_id = req.id.clone();
+                            let params = req.params.clone();
+                            tokio::spawn(async move {
+                                let resp = handle_configuration_request(
+                                    server_id_clone,
+                                    req_id,
+                                    params,
+                                    &bus,
+                                    &logger_clone,
+                                )
+                                .await;
+                                let _ = out_tx_clone.send(Message::Response(resp));
+                            });
+                        } else {
+                            let resp = handle_server_request(&server_id_arc, &req, &logger);
+                            let _ = out_tx.send(Message::Response(resp));
+                        }
                     }
                     None => {
                         // read_loop ended -- server exited or pipe
@@ -896,6 +1161,160 @@ fn compact_params(params: &Option<Value>) -> String {
         Some(v) => serde_json::to_string(v).unwrap_or_else(|_| "<unprintable>".into()),
         None => String::new(),
     }
+}
+
+/// Handle a `workspace/applyEdit` request asynchronously
+/// (Phase 4.3). Parses the LSP params, dispatches them through
+/// the apply-edit bus to the App's drain, awaits the App's
+/// outcome via the embedded oneshot, and converts that into the
+/// LSP `Response` body. Spec response shape:
+/// `ApplyWorkspaceEditResponse { applied, failure_reason,
+/// failed_change }`. We don't track `failed_change` today (the
+/// per-file apply path is non-atomic), so it stays `None`.
+///
+/// Failure modes that surface as `applied: false`:
+/// - The request params don't deserialize into
+///   `ApplyWorkspaceEditParams`.
+/// - The receiver dropped before the App could process the
+///   edit (App is shutting down).
+/// - The App reports `applied: false` with its own
+///   `failure_reason`.
+async fn handle_apply_edit_request(
+    server_id: Arc<str>,
+    req_id: RequestId,
+    params: Option<Value>,
+    bus: &crate::apply_edit::ApplyEditBus,
+    logger: &LspLogger,
+) -> Response {
+    let parsed: lsp_types::ApplyWorkspaceEditParams = match params {
+        Some(v) => match serde_json::from_value(v) {
+            Ok(p) => p,
+            Err(e) => {
+                logger.log(
+                    Some(&server_id),
+                    LogLevel::Warn,
+                    LogSource::Client,
+                    format!("workspace/applyEdit: malformed params: {e}"),
+                );
+                return apply_edit_response(req_id, false, Some(format!("malformed params: {e}")));
+            }
+        },
+        None => {
+            return apply_edit_response(
+                req_id,
+                false,
+                Some("workspace/applyEdit: missing params".into()),
+            );
+        }
+    };
+    let (response_tx, response_rx) = oneshot::channel();
+    let inbound = crate::apply_edit::InboundApplyEdit {
+        server_id: Arc::clone(&server_id),
+        label: parsed.label,
+        edit: parsed.edit,
+        response: response_tx,
+    };
+    if bus.dispatch(inbound).is_err() {
+        return apply_edit_response(
+            req_id,
+            false,
+            Some("client cannot apply edits (no receiver)".into()),
+        );
+    }
+    match response_rx.await {
+        Ok(outcome) => apply_edit_response(req_id, outcome.applied, outcome.failure_reason),
+        Err(_) => apply_edit_response(
+            req_id,
+            false,
+            Some("client did not respond before drop".into()),
+        ),
+    }
+}
+
+/// Build an `ApplyWorkspaceEditResponse`-shaped LSP `Response`.
+/// The `failed_change` field stays `None` -- atomic-rollback +
+/// per-change failure indexing land alongside future
+/// `apply_workspace_edit_atomic` work.
+fn apply_edit_response(
+    req_id: RequestId,
+    applied: bool,
+    failure_reason: Option<String>,
+) -> Response {
+    let body = lsp_types::ApplyWorkspaceEditResponse {
+        applied,
+        failure_reason,
+        failed_change: None,
+    };
+    match serde_json::to_value(body) {
+        Ok(v) => Response::ok(req_id, v),
+        Err(e) => Response::err(
+            req_id,
+            crate::jsonrpc::ResponseError {
+                code: crate::jsonrpc::error_codes::INTERNAL_ERROR,
+                message: format!("encode response: {e}"),
+                data: None,
+            },
+        ),
+    }
+}
+
+/// Handle a `workspace/configuration` request asynchronously
+/// (Phase 4.1 follow-up). Parses the LSP `ConfigurationParams`,
+/// dispatches each item's `section` through the configuration
+/// bus to the App's drain, and converts the App's
+/// `Vec<serde_json::Value>` reply into the spec-shaped
+/// `Vec<Value>` response (one entry per requested item, in
+/// input order; missing sections come back as `Value::Null`).
+///
+/// Failure modes that fall back to `[null, ...]` so the server
+/// doesn't hang:
+/// - Malformed params (logged as Warn).
+/// - Receiver dropped before the App could respond.
+async fn handle_configuration_request(
+    server_id: Arc<str>,
+    req_id: RequestId,
+    params: Option<Value>,
+    bus: &crate::configuration::ConfigurationBus,
+    logger: &LspLogger,
+) -> Response {
+    let parsed: lsp_types::ConfigurationParams = match params {
+        Some(v) => match serde_json::from_value(v) {
+            Ok(p) => p,
+            Err(e) => {
+                logger.log(
+                    Some(&server_id),
+                    LogLevel::Warn,
+                    LogSource::Client,
+                    format!("workspace/configuration: malformed params: {e}"),
+                );
+                // Empty array reply -- the server's caller will
+                // see "no items" rather than a hang.
+                return Response::ok(req_id, Value::Array(Vec::new()));
+            }
+        },
+        None => return Response::ok(req_id, Value::Array(Vec::new())),
+    };
+    let sections: Vec<String> = parsed
+        .items
+        .iter()
+        .map(|i| i.section.clone().unwrap_or_default())
+        .collect();
+    let count = sections.len();
+    let (response_tx, response_rx) = oneshot::channel();
+    let inbound = crate::configuration::InboundConfigurationRequest {
+        server_id: Arc::clone(&server_id),
+        sections,
+        response: response_tx,
+    };
+    if bus.dispatch(inbound).is_err() {
+        let arr: Vec<Value> = (0..count).map(|_| Value::Null).collect();
+        return Response::ok(req_id, Value::Array(arr));
+    }
+    let values = match response_rx.await {
+        Ok(v) => v,
+        Err(_) => (0..count).map(|_| Value::Null).collect(),
+    };
+    Response::ok(req_id, Value::Array(values))
 }
 
 /// Handle a server-initiated request. Default behaviour is "we

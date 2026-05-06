@@ -1,29 +1,46 @@
 //! Document synchronisation: `didOpen` / `didChange` (incremental
-//! or full) / `didClose`. One [`DocSync`] is held per `ServerHandle`;
+//! or full) / `didClose`. One [`DocSync`] is owned per actor;
 //! it shadows every buffer the server cares about with a string
 //! mirror so we can translate `Position { line, byte }` to the
 //! negotiated LSP encoding without re-querying the editor's rope.
 //!
+//! ## Pure state, separated I/O
+//!
+//! `DocSync` holds no `ServerHandle` and performs no I/O. Every
+//! mutating method either updates the mirror in place (no return
+//! value) or returns the LSP params the caller should ship over
+//! the wire. The owning actor sends the params via its writer
+//! task. This keeps the type:
+//!
+//! - **Standalone-testable.** Tests construct a `DocSync`, call
+//!   `record_edit` / `take_flush_payload` etc., and assert on
+//!   the returned params. No mock server needed.
+//! - **Lock-free at the call site.** The actor mutates its own
+//!   `DocSync` without contending with the supervisor or the UI
+//!   thread.
+//! - **Encoding-explicit.** `record_edit` and the flush helpers
+//!   take `&Capabilities` so the converter knows whether to walk
+//!   utf-16 columns. Pre-this-refactor it pulled this off a
+//!   `ServerHandle` borrow; explicit parameter is cleaner.
+//!
 //! ## Lifecycle
 //!
 //! ```text
-//!  editor                      DocSync                    server
-//!  ------                      -------                    ------
-//!  open file        ----->    open(uri, lang, text)
-//!                              didOpen via notify   --->
-//!  apply_edit Ok    ----->    record_edit(uri, edit)
+//!  editor                      DocSync                    actor (sends)
+//!  ------                      -------                    -------------
+//!  open file        ----->    open(uri, lang, text)  -->  didOpen
+//!  apply_edit Ok    ----->    record_edit(caps, uri, edit)
 //!                              [mirror updated, change queued]
 //!  ...50ms idle...
-//!  flush(uri)       ----->    didChange via notify  --->
-//!  bdelete          ----->    close(uri)
-//!                              didClose via notify   --->
+//!  flush(uri)       ----->    take_flush_payload(caps, uri) -> didChange
+//!  bdelete          ----->    close(uri)             -->  didClose
 //! ```
 //!
-//! `record_edit` does not eagerly send `didChange`. The editor
-//! batches edits between flushes; one keystroke commits one edit
-//! but generates one queued change event, sized down to the
-//! affected range. The flush cadence is the caller's choice;
-//! integration with the App's mainloop sets ~50ms idle as the
+//! `record_edit` does not eagerly produce a flush payload. The
+//! editor batches edits between flushes; one keystroke commits
+//! one edit but generates one queued change event, sized down
+//! to the affected range. The flush cadence is the actor's
+//! choice; the per-actor select! loop sets ~50ms idle as the
 //! default (matching common LSP client conventions).
 //!
 //! ## Sync mode honour
@@ -35,13 +52,6 @@
 //!   Incremental; Full is the LSP 3.0 fallback.
 //! - `None`: didChange is a no-op. Some servers prefer pull-based
 //!   diagnostics and don't want continuous text sync.
-//!
-//! ## Position encoding
-//!
-//! `record_edit` reads the negotiated encoding off the
-//! `Capabilities` snapshot embedded in the `ServerHandle`. utf-8
-//! is a fast path (no conversion); utf-16 walks the affected
-//! line text. See `crate::position` for the converters.
 //!
 //! ## Mirror cost
 //!
@@ -65,9 +75,20 @@ use lsp_types::Range as LspRange;
 use lattice_protocol::edit::{Edit, EditKind};
 use lattice_protocol::position::{Position, Range};
 
-use crate::actor::ServerHandle;
+use crate::capabilities::Capabilities;
 use crate::error::{LspError, LspResult};
 use crate::position::byte_to_lsp_character;
+
+/// What [`DocSync::close`] returns: an optional final `didChange`
+/// (any pending edits the actor should flush before announcing
+/// close) plus the `didClose` itself. The actor sends them in
+/// order so the server's last view of the doc matches the
+/// editor's.
+#[derive(Debug)]
+pub struct ClosePayloads {
+    pub final_changes: Option<DidChangeTextDocumentParams>,
+    pub close: DidCloseTextDocumentParams,
+}
 
 /// Per-document mirror state, keyed by URI inside [`DocSync`].
 ///
@@ -93,34 +114,45 @@ struct DocState {
     pending: Vec<TextDocumentContentChangeEvent>,
 }
 
-/// Document-sync facade for one [`ServerHandle`].
+/// Per-actor document-sync state. Pure state + pure methods --
+/// no I/O, no `ServerHandle` dependency. The owning actor sends
+/// the LSP params returned by `open` / `take_flush_payload` /
+/// `close` over the wire via its writer task.
 ///
-/// All methods are synchronous from the caller's perspective;
-/// the underlying `notify` calls go through the actor's mailbox
-/// and resolve when the actor accepts them.
+/// Mutating methods either update the mirror in place or return
+/// the LSP params the caller must ship. `record_edit` and the
+/// flush helpers take `&Capabilities` so the position-encoding
+/// converter knows whether to walk utf-16 columns; pre-this-
+/// refactor it pulled the encoding off a `ServerHandle` borrow.
 pub struct DocSync {
-    server: ServerHandle,
     docs: HashMap<Uri, DocState>,
 }
 
+impl Default for DocSync {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DocSync {
-    /// Construct a `DocSync` bound to a server.
-    pub fn new(server: ServerHandle) -> Self {
+    /// Empty state. Use [`Self::open`] to bring a buffer under
+    /// management.
+    pub fn new() -> Self {
         Self {
-            server,
             docs: HashMap::new(),
         }
     }
 
-    /// Open a buffer with `language_id` and initial `text`. Emits
-    /// `textDocument/didOpen` immediately. Returns
-    /// [`LspError::ActorGone`] if the server actor has shut down.
+    /// Bring a buffer under management with `language_id` and
+    /// initial `text`. Returns the `didOpen` params the caller
+    /// ships over the wire. Pure: state mutation + payload
+    /// construction, no I/O.
     pub fn open(
         &mut self,
         uri: Uri,
         language_id: impl Into<String>,
         text: impl Into<String>,
-    ) -> LspResult<()> {
+    ) -> DidOpenTextDocumentParams {
         let language_id = language_id.into();
         let text = text.into();
         let version: i32 = 1;
@@ -132,8 +164,6 @@ impl DocSync {
                 text: text.clone(),
             },
         };
-        self.server.notify("textDocument/didOpen", params)?;
-
         self.docs.insert(
             uri,
             DocState {
@@ -143,15 +173,22 @@ impl DocSync {
                 pending: Vec::new(),
             },
         );
-        Ok(())
+        params
     }
 
     /// Record one committed edit. Updates the mirror, builds the
     /// LSP change event for queued send, and bumps the version.
-    /// Does NOT send `didChange` -- the caller flushes when ready
-    /// (debounced or eager).
-    pub fn record_edit(&mut self, uri: &Uri, edit: &Edit) -> LspResult<()> {
-        let encoding = self.server.capabilities().position_encoding.clone();
+    /// Does NOT produce a flush payload -- the caller drains via
+    /// [`Self::take_flush_payload`] when ready (debounced or
+    /// eager). Returns `Err` only when the URI isn't open or the
+    /// edit's range falls outside the mirror.
+    pub fn record_edit(
+        &mut self,
+        capabilities: &Capabilities,
+        uri: &Uri,
+        edit: &Edit,
+    ) -> LspResult<()> {
+        let encoding = capabilities.position_encoding.clone();
         let state = self
             .docs
             .get_mut(uri)
@@ -192,26 +229,28 @@ impl DocSync {
         Ok(())
     }
 
-    /// Send queued change events as one `didChange`. No-op when
-    /// the queue is empty. Honours the negotiated sync mode:
+    /// Drain queued change events into a `didChange` payload.
+    /// Returns `None` when the queue is empty (no-op flush) or
+    /// the URI isn't open. Honours the negotiated sync mode:
     ///
-    /// - `Incremental`: send queued events verbatim.
-    /// - `Full`: send the entire mirror text as one change with
-    ///   no range (LSP convention for full sync).
-    /// - `None`: skip the wire entirely; just clear the queue.
-    pub fn flush(&mut self, uri: &Uri) -> LspResult<()> {
-        let kind = self
-            .server
-            .capabilities()
+    /// - `Incremental`: payload contains the queued events
+    ///   verbatim.
+    /// - `Full`: payload is one synthetic change carrying the
+    ///   entire post-edit mirror text (LSP convention for full
+    ///   sync).
+    /// - `None`: pending is cleared; returns `None` (caller
+    ///   skips the wire).
+    pub fn take_flush_payload(
+        &mut self,
+        capabilities: &Capabilities,
+        uri: &Uri,
+    ) -> Option<DidChangeTextDocumentParams> {
+        let kind = capabilities
             .text_document_sync_kind()
             .unwrap_or(TextDocumentSyncKind::FULL);
-        let state = self
-            .docs
-            .get_mut(uri)
-            .ok_or_else(|| LspError::HandshakeFailed(format!("doc not open: {}", uri.as_str())))?;
-
+        let state = self.docs.get_mut(uri)?;
         if state.pending.is_empty() {
-            return Ok(());
+            return None;
         }
 
         let changes: Vec<TextDocumentContentChangeEvent> = match kind {
@@ -224,52 +263,62 @@ impl DocSync {
                     text: state.text.clone(),
                 }]
             }
-            // None or unknown: clear pending, send nothing.
+            // None or unknown: clear pending, return nothing.
             _ => {
                 state.pending.clear();
-                return Ok(());
+                return None;
             }
         };
 
-        let params = DidChangeTextDocumentParams {
+        Some(DidChangeTextDocumentParams {
             text_document: VersionedTextDocumentIdentifier {
                 uri: uri.clone(),
                 version: state.version,
             },
             content_changes: changes,
-        };
-        self.server.notify("textDocument/didChange", params)?;
-        Ok(())
+        })
     }
 
-    /// Flush every open doc's pending changes. Used during
-    /// editor shutdown so the server sees a coherent final
+    /// Drain every open doc's pending changes into per-URI
+    /// `didChange` payloads. Used by the actor's debounce timer
+    /// + by editor shutdown so the server sees a coherent final
     /// state before `didClose`.
-    pub fn flush_all(&mut self) -> LspResult<()> {
+    pub fn take_flush_all_payloads(
+        &mut self,
+        capabilities: &Capabilities,
+    ) -> Vec<(Uri, DidChangeTextDocumentParams)> {
         let uris: Vec<Uri> = self.docs.keys().cloned().collect();
+        let mut out = Vec::new();
         for uri in uris {
-            self.flush(&uri)?;
+            if let Some(params) = self.take_flush_payload(capabilities, &uri) {
+                out.push((uri, params));
+            }
         }
-        Ok(())
+        out
     }
 
-    /// Send `didClose` and drop the mirror. Pending changes are
-    /// flushed first.
-    pub fn close(&mut self, uri: &Uri) -> LspResult<()> {
-        // Flush any pending changes so the server's last view of
-        // the doc matches what we observed before `didClose`.
-        // Errors are swallowed -- the close itself must still
-        // happen even if the flush fails (server might be in a
-        // weird state but we want it to know we closed).
-        let _ = self.flush(uri);
-
+    /// Drop the mirror for `uri` and return the `didClose`
+    /// payload (paired with any final flush payload the actor
+    /// should send first). Returns `None` when the URI wasn't
+    /// open. The actor sends the optional `final_changes`
+    /// followed by the `close` notification so the server's
+    /// last view of the doc matches the editor's.
+    pub fn close(
+        &mut self,
+        capabilities: &Capabilities,
+        uri: &Uri,
+    ) -> Option<ClosePayloads> {
+        let final_changes = self.take_flush_payload(capabilities, uri);
         if self.docs.remove(uri).is_some() {
-            let params = DidCloseTextDocumentParams {
-                text_document: TextDocumentIdentifier { uri: uri.clone() },
-            };
-            self.server.notify("textDocument/didClose", params)?;
+            Some(ClosePayloads {
+                final_changes,
+                close: DidCloseTextDocumentParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                },
+            })
+        } else {
+            None
         }
-        Ok(())
     }
 
     /// True iff the URI is currently open under this DocSync.

@@ -95,8 +95,6 @@ use crate::config::{ServerConfig, resolve_workspace_root};
 use crate::diagnostics_layer::{DiagnosticsLayer, pump_diagnostics};
 use crate::error::LspResult;
 use crate::logging::{LogLevel, LogSource, LspLogger};
-use crate::sync::DocSync;
-
 use lattice_protocol::edit::Edit;
 
 /// Stable key for an actor: workspace root + server id.
@@ -113,11 +111,13 @@ pub struct LspSupervisor {
     /// `ServerHandle` is itself `Arc`-wrapped internally so
     /// cloning is cheap; no need to wrap it again.
     actors: HashMap<ActorKey, ServerHandle>,
-    /// Per-actor DocSync state (one per ServerHandle).
-    syncs: HashMap<ActorKey, DocSync>,
     /// Per-URI attachments: which actors are tracking this URI.
-    /// Stored as ActorKey so the supervisor can look up the
-    /// correct DocSync without a back-reference walk.
+    /// Stored as ActorKey so feature dispatch can resolve
+    /// `uri -> [ServerHandle, ...]` in O(handles).
+    ///
+    /// DocSync no longer lives here -- each actor owns its own
+    /// mirror. The supervisor stays out of the edit path entirely
+    /// so the UI thread cannot stall behind a flush.
     attachments: HashMap<Uri, Vec<ActorKey>>,
     /// Shared logger. Every actor gets a clone; subsystem
     /// events (supervisor decisions, attach / detach) emit
@@ -126,6 +126,35 @@ pub struct LspSupervisor {
     /// Shared diagnostics layer. Every actor's
     /// `DiagnosticsBus` is pumped into this.
     diagnostics: DiagnosticsLayer,
+    /// Server-initiated `workspace/applyEdit` bus (Phase 4.3).
+    /// `Some` once the App has called
+    /// [`Self::set_apply_edit_bus`] at startup; cloned into
+    /// every actor at spawn so they all forward inbound
+    /// applyEdit requests through the same channel. `None`
+    /// disables the feature -- the actor falls back to a
+    /// METHOD_NOT_FOUND response (matches the pre-4.3
+    /// behaviour).
+    apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
+    /// Server-initiated `workspace/configuration` bus (Phase
+    /// 4.1 follow-up). `Some` once the App has called
+    /// [`Self::set_configuration_bus`] at startup; cloned into
+    /// every actor at spawn. `None` falls back to
+    /// `Vec<null>`-per-item replies (the pre-this-commit
+    /// stub).
+    configuration_bus: Option<crate::configuration::ConfigurationBus>,
+    /// Editor-wide event bus. `Some` after the App calls
+    /// [`Self::set_event_bus`] (early in startup, before any
+    /// buffer opens). When set, every spawned actor gets a
+    /// per-actor [`crate::fan_in`] task subscribed to
+    /// `DocumentChanged` events; that task forwards each
+    /// applied edit straight into the actor's `cmd_tx` --
+    /// keeping the UI thread out of the LSP edit path
+    /// entirely.
+    event_bus: Option<Arc<lattice_runtime::EventBus>>,
+    /// Per-actor fan-in subscription ids. Stored alongside the
+    /// actor so shutdown can call `unsubscribe` and stop the
+    /// bus from holding a dead sender.
+    fan_in_subs: HashMap<ActorKey, lattice_runtime::SubscriptionId>,
 }
 
 impl LspSupervisor {
@@ -137,11 +166,66 @@ impl LspSupervisor {
         Self {
             configs: Vec::new(),
             actors: HashMap::new(),
-            syncs: HashMap::new(),
             attachments: HashMap::new(),
             logger,
             diagnostics,
+            apply_edit_bus: None,
+            configuration_bus: None,
+            event_bus: None,
+            fan_in_subs: HashMap::new(),
         }
+    }
+
+    /// Install the editor event bus. Must be called once at
+    /// startup before any buffer opens; after the call every
+    /// actor spawned by the supervisor gets a per-actor fan-in
+    /// task (see [`crate::fan_in`]) that turns
+    /// `Event::DocumentChanged` into [`crate::actor::ServerHandle::record_edit`]
+    /// without ever taking the supervisor's mutex.
+    ///
+    /// Calling twice replaces the bus reference; existing actors
+    /// keep their original fan-in subscriptions (we don't
+    /// re-spawn them on bus swap because that would race with
+    /// in-flight events).
+    pub fn set_event_bus(&mut self, bus: Arc<lattice_runtime::EventBus>) {
+        self.event_bus = Some(bus.clone());
+        // Spawn fan-ins for any actors that pre-date the bus
+        // (in practice none -- the App calls this before opening
+        // files -- but the path is here for symmetry with
+        // attach_handle).
+        let pending: Vec<(ActorKey, ServerHandle)> = self
+            .actors
+            .iter()
+            .filter(|(k, _)| !self.fan_in_subs.contains_key(*k))
+            .map(|(k, h)| (k.clone(), h.clone()))
+            .collect();
+        for (key, handle) in pending {
+            let id = crate::fan_in::spawn(handle, bus.clone());
+            self.fan_in_subs.insert(key, id);
+        }
+    }
+
+    /// Install the apply-edit bus (Phase 4.3). The App calls
+    /// this once at startup with the sender side of the channel
+    /// it created; every actor spawned after this point gets a
+    /// clone and forwards inbound `workspace/applyEdit`
+    /// requests through it. Calling twice replaces the bus;
+    /// any actors already spawned keep their original clone
+    /// (we don't track them for retro-fitting in v1).
+    pub fn set_apply_edit_bus(&mut self, bus: crate::apply_edit::ApplyEditBus) {
+        self.apply_edit_bus = Some(bus);
+    }
+
+    /// Install the configuration bus (Phase 4.1 follow-up).
+    /// Same shape as [`Self::set_apply_edit_bus`]: cloned into
+    /// every actor spawned after the call so server-initiated
+    /// `workspace/configuration` requests reach the App's
+    /// drain. `None` falls back to per-item `null` replies.
+    pub fn set_configuration_bus(
+        &mut self,
+        bus: crate::configuration::ConfigurationBus,
+    ) {
+        self.configuration_bus = Some(bus);
     }
 
     /// Borrow the shared logger (so callers can register their
@@ -261,6 +345,8 @@ impl LspSupervisor {
                         (*config).clone(),
                         workspace.clone(),
                         self.logger.clone(),
+                        self.apply_edit_bus.clone(),
+                        self.configuration_bus.clone(),
                     )
                     .await
                     {
@@ -289,23 +375,25 @@ impl LspSupervisor {
                     let layer = self.diagnostics.clone();
                     tokio::spawn(pump_diagnostics(layer, rx));
                     self.actors.insert(key.clone(), h.clone());
+                    // Spawn the per-actor edit fan-in if the
+                    // editor's event bus is wired up. Stored
+                    // SubscriptionId is unsubscribed on shutdown
+                    // so the bus doesn't keep dead senders.
+                    if let Some(bus) = self.event_bus.clone() {
+                        let sub = crate::fan_in::spawn(h.clone(), bus);
+                        self.fan_in_subs.insert(key.clone(), sub);
+                    }
                     h
                 }
             };
 
-            // Ensure DocSync exists for this actor.
-            self.syncs
-                .entry(key.clone())
-                .or_insert_with(|| DocSync::new(handle.clone()));
-
-            // Send didOpen.
-            if let Some(sync) = self.syncs.get_mut(&key) {
-                sync.open(
-                    uri.clone(),
-                    config.language_id.clone(),
-                    text.clone(),
-                )?;
-            }
+            // Drive the DocSync inside the actor: single writer
+            // means no contention with the edit / flush path.
+            handle.open_doc(
+                uri.clone(),
+                config.language_id.clone(),
+                text.clone(),
+            )?;
 
             handles.push(handle);
             keys.push(key);
@@ -357,15 +445,14 @@ impl LspSupervisor {
             let rx = handle.subscribe_diagnostics();
             let layer = self.diagnostics.clone();
             tokio::spawn(pump_diagnostics(layer, rx));
+            // Spawn the per-actor edit fan-in if the bus is wired.
+            if let Some(bus) = self.event_bus.clone() {
+                let sub = crate::fan_in::spawn(handle.clone(), bus);
+                self.fan_in_subs.insert(key.clone(), sub);
+            }
         }
-        // Ensure DocSync exists for this actor.
-        self.syncs
-            .entry(key.clone())
-            .or_insert_with(|| DocSync::new(handle.clone()));
-        // Send didOpen.
-        if let Some(sync) = self.syncs.get_mut(&key) {
-            sync.open(uri.clone(), language_id, text)?;
-        }
+        // Open inside the actor; single-writer DocSync.
+        handle.open_doc(uri.clone(), language_id, text)?;
         // Record attachment.
         self.attachments.entry(uri).or_default().push(key);
         Ok(())
@@ -380,9 +467,13 @@ impl LspSupervisor {
             None => return Ok(()),
         };
         for key in &keys {
-            if let Some(sync) = self.syncs.get_mut(key) {
-                let _ = sync.close(uri);
-            }
+            // The actor owns the DocSync, so it pairs the final
+            // flush + didClose internally and sends them in
+            // order.
+            let Some(handle) = self.actors.get(key) else {
+                continue;
+            };
+            let _ = handle.close_doc(uri.clone());
         }
         self.diagnostics.clear_uri(uri);
         self.logger.log(
@@ -394,19 +485,24 @@ impl LspSupervisor {
         Ok(())
     }
 
-    /// Record an edit on `uri`. Updates every attached server's
-    /// DocSync mirror and queues a change event. The App calls
-    /// this on every committed edit; debounced flush comes
-    /// later.
+    /// Forward an edit to every attached actor's mailbox.
+    ///
+    /// **Not on the editor's hot path.** Production edits flow
+    /// through the editor event bus to a per-actor fan-in (see
+    /// [`crate::fan_in`]), which means the UI thread never
+    /// takes the supervisor mutex on a keystroke. This method
+    /// remains for tests + admin tooling that drive the
+    /// supervisor directly without standing up an event bus.
     pub fn record_edit(&mut self, uri: &Uri, edit: &Edit) -> LspResult<()> {
         let keys = match self.attachments.get(uri) {
             Some(k) => k.clone(),
             None => return Ok(()),
         };
         for key in &keys {
-            if let Some(sync) = self.syncs.get_mut(key)
-                && let Err(e) = sync.record_edit(uri, edit)
-            {
+            let Some(handle) = self.actors.get(key) else {
+                continue;
+            };
+            if let Err(e) = handle.record_edit(uri.clone(), edit.clone()) {
                 self.logger.log(
                     Some(&Arc::from(key.1.as_str())),
                     LogLevel::Warn,
@@ -418,18 +514,21 @@ impl LspSupervisor {
         Ok(())
     }
 
-    /// Flush queued changes for `uri` across every attached
-    /// server. The App's debounce timer drives this (~50ms
-    /// idle).
+    /// Force-flush queued changes for `uri` across every
+    /// attached server, bypassing the per-actor debounce. Used
+    /// before synchronous requests that require the server to
+    /// have seen the latest text -- notably `willSaveWaitUntil`
+    /// and `:lsp-flush`.
     pub fn flush(&mut self, uri: &Uri) -> LspResult<()> {
         let keys = match self.attachments.get(uri) {
             Some(k) => k.clone(),
             None => return Ok(()),
         };
         for key in &keys {
-            if let Some(sync) = self.syncs.get_mut(key)
-                && let Err(e) = sync.flush(uri)
-            {
+            let Some(handle) = self.actors.get(key) else {
+                continue;
+            };
+            if let Err(e) = handle.flush(uri.clone()) {
                 self.logger.log(
                     Some(&Arc::from(key.1.as_str())),
                     LogLevel::Warn,
@@ -441,12 +540,21 @@ impl LspSupervisor {
         Ok(())
     }
 
-    /// Flush every open URI's queued changes. Used during
-    /// editor shutdown so the server sees a coherent final
-    /// state before `didClose`.
+    /// Force-flush every open URI's queued changes across every
+    /// attached server. Used at editor shutdown so each server
+    /// sees a coherent final state before `didClose`. Per-edit
+    /// flushing is debounced inside each actor; this is the
+    /// only "drain everything now" affordance.
     pub fn flush_all(&mut self) -> LspResult<()> {
-        for sync in self.syncs.values_mut() {
-            let _ = sync.flush_all();
+        for (key, handle) in &self.actors {
+            if let Err(e) = handle.flush_all() {
+                self.logger.log(
+                    Some(&Arc::from(key.1.as_str())),
+                    LogLevel::Warn,
+                    LogSource::Client,
+                    format!("flush_all: {}", e),
+                );
+            }
         }
         Ok(())
     }
@@ -481,10 +589,20 @@ impl LspSupervisor {
         for uri in uris {
             let _ = self.close_buffer(&uri);
         }
+        // Drop the per-actor fan-in subscriptions before
+        // dropping the actors -- otherwise the bus would briefly
+        // hold a sender pointing at an actor that is on its way
+        // out.
+        if let Some(bus) = self.event_bus.as_ref() {
+            for (_key, sub) in self.fan_in_subs.drain() {
+                bus.unsubscribe(sub);
+            }
+        } else {
+            self.fan_in_subs.clear();
+        }
         // Then shut down each actor gracefully.
         let actors: Vec<ServerHandle> = self.actors.values().cloned().collect();
         self.actors.clear();
-        self.syncs.clear();
         for handle in actors {
             let _ = handle.shutdown().await;
         }

@@ -38,6 +38,11 @@ pub enum Event {
     },
     DocumentChanged {
         id: DocumentId,
+        /// The buffer's filesystem path, if it has one. Carried so
+        /// subscribers can resolve URIs without holding their own
+        /// DocumentId -> path map. `None` for scratch / unsaved
+        /// buffers.
+        path: Option<PathBuf>,
         version: u64,
         edits: Vec<AppliedEdit>,
     },
@@ -139,9 +144,16 @@ pub enum EventKind {
 
 /// An edit as actually applied to the buffer (the original `Edit` plus the
 /// resulting range, useful for clients that want to know what changed).
+///
+/// `inserted_text` carries the text that was placed into `inserted_range`.
+/// Together with `original_range` this is exactly what an LSP
+/// `textDocument/didChange` payload needs, which lets the
+/// `lattice-lsp` fan-in synthesise a `lattice_protocol::edit::Edit`
+/// from this event without re-reading the buffer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppliedEdit {
     pub original_range: Range,
     pub inserted_range: Range,
     pub replaced_text: String,
+    pub inserted_text: String,
 }

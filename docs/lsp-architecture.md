@@ -111,6 +111,7 @@ path).
 
 ```rust
 enum ActorCmd {
+    // Request / response.
     Request {
         method: String,
         params: Option<Value>,
@@ -118,6 +119,14 @@ enum ActorCmd {
     },
     Notify { method: String, params: Option<Value> },
     Cancel { id: i64 },
+
+    // Document sync (actor owns the mirror -- see §11).
+    OpenDoc { uri: Uri, language_id: String, text: String },
+    RecordEdit { uri: Uri, edit: Edit },
+    Flush { uri: Uri },
+    FlushAll,
+    CloseDoc { uri: Uri },
+
     Shutdown { reply: oneshot::Sender<LspResult<()>> },
 }
 ```
@@ -176,13 +185,24 @@ the `Child` ensures the server process exits) and returns
 
 ## 5. Document synchronisation (`DocSync`)
 
-`DocSync::open(uri, language_id, text)` →
+`DocSync` is **pure state**. It computes the LSP-shaped
+payloads (`DidOpenTextDocumentParams`,
+`DidChangeTextDocumentParams`, `DidCloseTextDocumentParams`)
+and returns them; it does no I/O, holds no `ServerHandle`, and
+takes no locks. The actor that owns the `DocSync` does all the
+sending. This separation is what lets the actor's main loop
+(§11) be a single-task select! over `cmd_rx + flush_sleep`
+without re-entering anything else.
 
-- Send `didOpen` with `version=1`.
+`DocSync::open(uri, language_id, text) -> DidOpenTextDocumentParams` →
+
+- Build a `didOpen` payload with `version=1`.
 - Store a `String` mirror of the text + the language id and
   current version.
+- The actor ships the returned params on `out_tx` as a
+  `textDocument/didOpen` notification.
 
-`DocSync::record_edit(uri, edit)` →
+`DocSync::record_edit(&caps, uri, edit) -> Result<()>` →
 
 - Look up line text from the BEFORE-state mirror at
   `edit.range.start.line` and `edit.range.end.line`.
@@ -195,21 +215,44 @@ the `Child` ensures the server process exits) and returns
 - Bump `version`.
 - Push to the per-doc `pending` queue.
 
-`DocSync::flush(uri)` →
+`DocSync::take_flush_payload(&caps, uri) -> Option<DidChangeTextDocumentParams>` →
 
 - Read the negotiated `TextDocumentSyncKind`:
-  - `Incremental` → send queued events as one `didChange`.
-  - `Full` → drop queued events; send the entire mirror as
-    one change with no range.
-  - `None` → clear the queue; emit nothing.
+  - `Incremental` → drain queued events into one `didChange`
+    payload.
+  - `Full` → drop queued events; payload carries the entire
+    mirror with no range.
+  - `None` → clear the queue; return `None`.
 - Bump the wire-side version (matches mirror version).
+- The actor sends the returned params if `Some`.
 
-`DocSync::close(uri)` flushes pending then sends `didClose`
-and removes the mirror.
+`DocSync::take_flush_all_payloads(&caps) -> Vec<(Uri, DidChangeTextDocumentParams)>`
+is the multi-URI form; the actor iterates and sends each.
+
+`DocSync::close(&caps, uri) -> Option<ClosePayloads>` returns a
+struct pairing an optional final `didChange` with the
+`didClose`; the actor sends them in order then drops the
+mirror.
 
 The mirror is a `String` (not a `Rope`) because the LSP layer
 only ever splices one contiguous region per edit; per-line
 indexing is rare and bounded by line count.
+
+### Single-writer invariant
+
+The actor task is the **only** writer to its `DocSync`
+mirror. Edits arrive as `ActorCmd::RecordEdit` on the
+unbounded mailbox -- FIFO with `OpenDoc`, `Flush`, and any
+other cmd. There is no shared mutex. Two consequences:
+
+- The mirror cannot diverge from the wire stream; every
+  applied edit is also queued for `didChange`, and the queue
+  drains in order on flush.
+- The UI thread can publish edits at full keystroke rate
+  (one `Event::DocumentChanged` per applied edit) without
+  ever waiting on the actor or the supervisor.
+
+See §11 for the publish path that feeds RecordEdit.
 
 ### Position encoding
 
@@ -656,29 +699,160 @@ add a bench for the hot path it introduces.
 
 ---
 
-## 10. Editor integration (preview)
+## 10. Editor integration
 
-The `App` will hold a `LspSupervisor` that maintains:
+The `App` holds an `Arc<Mutex<LspSupervisor>>` that maintains:
 
 ```text
 LspSupervisor
-├── HashMap<(WorkspaceRoot, ServerId), Arc<ServerHandle>>
-├── HashMap<BufferId, Vec<Arc<ServerHandle>>>   -- which servers care about this buffer
-├── HashMap<BufferId, DocSync>                  -- per-buffer sync state
-├── DiagnosticsLayer                            -- per-URI latest diagnostics
-└── Vec<Arc<ServerConfig>>                      -- the registry (builtin + user overrides)
+├── Vec<Arc<ServerConfig>>                          -- registry (builtin + user overrides)
+├── HashMap<(WorkspaceRoot, ServerId), ServerHandle> -- live actors
+├── HashMap<Uri, Vec<(WorkspaceRoot, ServerId)>>     -- which actors care about each URI
+├── HashMap<(WorkspaceRoot, ServerId), SubscriptionId> -- per-actor fan-in subs (§11)
+├── DiagnosticsLayer                                -- per-URI latest diagnostics
+├── Option<Arc<EventBus>>                           -- editor event bus
+├── Option<ApplyEditBus>                            -- server-initiated workspace/applyEdit
+└── Option<ConfigurationBus>                        -- server-initiated workspace/configuration
 ```
 
-Buffer open: walk to the matching `ServerConfig`s, ensure each
-`(workspace, server_id)` actor exists (spawn if not), call
-`DocSync::open` for each. Buffer edit: actor commits → App
-calls `DocSync::record_edit` for each attached server →
-flush on idle (50ms). Buffer close: `DocSync::close` for
-each. Server crash: supervisor restarts; re-`didOpen`s every
-attached buffer.
+The supervisor no longer stores per-actor `DocSync`. Each
+actor owns its own mirror; the supervisor only knows
+*attachment* (which actor cares about which URI) and the
+fan-in subscriptions it has to unsubscribe at shutdown.
 
-This integration ships in 4.1 follow-ups (4.1.d.ii–iv) and
-4.2 (when navigation features need it for definition jumps).
+**Buffer open.** Walk the matching `ServerConfig`s. For each
+`(workspace, server_id)` actor: spawn if absent, then call
+`ServerHandle::open_doc(uri, language_id, text)` -- the actor
+populates its own `DocSync` and emits `didOpen`. New actors
+also get a per-actor fan-in subscription (§11).
+
+**Buffer edit.** The dispatcher commits → the App publishes
+`Event::DocumentChanged` on the bus carrying every applied
+edit (range + inserted text). Each actor's fan-in task picks
+up the event and forwards one `ActorCmd::RecordEdit` per
+edit straight into the actor's mailbox. The actor coalesces
+on a 50 ms debounce and emits a single `didChange`. The UI
+thread takes no LSP-related lock.
+
+**Buffer close.** `ServerHandle::close_doc(uri)` -- the actor
+flushes any queued changes and emits `didClose` from inside
+its loop.
+
+**Server crash.** Today the supervisor logs and removes the
+actor; auto-restart + `didOpen` replay lands in 4.4.
+
+---
+
+## 11. Edit-path architecture
+
+The hot edit path is the architecture's tightest constraint:
+the UI thread must commit a keystroke in <8 ms p99 (DESIGN.md
+§8). LSP synchronisation cannot show up on that critical
+path. The pipeline below keeps it off entirely.
+
+```
+              UI thread                |          tokio runtime
+                                       |
+keystroke                              |
+   │                                   |
+   ▼                                   |
+apply_edit_blocking(edit)              |
+   │  block_on(document.apply_edit)    |
+   ▼                                   |
+publish_document_changed(applied[])    |
+   │  EventBus::publish — single mutex |
+   │  on the bus's per-kind bucket     |
+   ▼                                   |
+event_bus  ────────────────────────────┼─►  per-actor fan-in task (lattice_lsp::fan_in)
+                                       |        │  on Event::DocumentChanged:
+                                       |        │     for each applied edit:
+                                       |        │       ServerHandle::record_edit(uri, edit)
+                                       |        │         (mpsc send on actor cmd_tx)
+                                       |        ▼
+                                       |    actor task (single writer)
+                                       |        │  ActorCmd::RecordEdit:
+                                       |        │    DocSync::record_edit (own the mirror)
+                                       |        │    flush_pending = true
+                                       |        │    flush_sleep.reset(now + 50ms)
+                                       |        ▼
+                                       |    debounce arm fires:
+                                       |        DocSync::take_flush_all_payloads
+                                       |        out_tx.send(didChange)  -> write_loop -> server
+```
+
+### Why this shape
+
+The pre-refactor path took the supervisor mutex on every
+keystroke (`App::lsp_record_edit`). When contended (during
+a 50 ms App-spawned flush task that held the lock while
+writing `didChange` to every server), edits were silently
+dropped via `try_lock`. The mirror diverged from the wire
+stream; diagnostics, hover, completion, and definition all
+became incorrect with no audible failure.
+
+The new path:
+
+- **No shared lock on the hot path.** Publishing on the bus
+  takes a brief mutex on the bus's per-kind bucket
+  (microseconds). The fan-in receives on its own channel.
+  `ServerHandle::record_edit` is an unbounded mpsc send.
+  Nothing the UI thread does waits on the actor.
+- **Single writer per actor.** Only the actor task mutates
+  its `DocSync`. There is no contention to drop edits to.
+- **FIFO with `OpenDoc`.** Both flow through the same
+  `cmd_tx`, so a buffer's open precedes its first edit on
+  every actor that cares about it.
+- **Per-actor debounce.** Each actor coalesces on a 50 ms
+  idle window via a pinned `tokio::time::sleep` inside its
+  `select!`. No App-side timer; no supervisor-wide lock.
+
+### Subscription lifecycle
+
+Per-actor subscriptions are stored in
+`LspSupervisor::fan_in_subs` keyed by the same `ActorKey`
+the actor uses. Three lifecycle moments:
+
+- **Actor spawn.** `LspSupervisor::open_buffer` and
+  `attach_handle` spawn a fan-in via
+  `lattice_lsp::fan_in::spawn(handle, bus)` whenever a new
+  actor lands in `actors`. The returned `SubscriptionId`
+  goes into `fan_in_subs`.
+- **Actor crash / drop.** The fan-in detects
+  `LspError::ActorGone` from a `record_edit` send and
+  exits, dropping its sender. The bus prunes the dead
+  subscription lazily on the next publish that hits its
+  bucket.
+- **Editor shutdown.** `LspSupervisor::shutdown` drains
+  `fan_in_subs` and calls `EventBus::unsubscribe` for each
+  before dropping the actors. This stops the bus from
+  briefly holding a sender pointing at an actor on its way
+  out.
+
+### What about scratch / unsaved buffers
+
+`Event::DocumentChanged.path` is `None` for buffers without
+an on-disk path. The fan-in skips these (no URI to map). LSP
+features only apply to file-backed buffers, so this is the
+correct behaviour -- the actor never tracks a URI it didn't
+open.
+
+### Cost model
+
+Per applied edit (one publish):
+
+- One `EventBus::publish` -- O(N) over `N = #subscribers on
+  the DocumentChanged bucket`. Each subscriber is a single
+  `mpsc::send`. Typical N is `1 + #LSP actors`, which in
+  practice is 1-3.
+- One mpsc receive + URI build + one `record_edit` send per
+  attached actor.
+- Inside each actor: one `DocSync::record_edit` call (string
+  splice + content-change push).
+- Debounce timer reset (cheap pinned sleep reset).
+
+The `didChange` write itself is amortised over the debounce
+window. Bench numbers: see [`BENCHMARKS.md`](BENCHMARKS.md)
+under the `lsp_edit_publish_*` rows.
 
 ---
 

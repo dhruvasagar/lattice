@@ -8,3 +8,10 @@ Cargo.lock.bak
 # Override global asdf/mise ignores -- the toolchain pin is part
 # of the repo so contributors get a reproducible build.
 !.tool-versions
+
+# Per-user Claude Code overrides (destructive git ops, scratch
+# Read paths, one-off Bash allows). Shared repo-wide permissions
+# live in .claude/settings.json -- collaborators inherit those
+# automatically; anything sensitive or personal stays in
+# settings.local.json on each machine.
+.claude/settings.local.json

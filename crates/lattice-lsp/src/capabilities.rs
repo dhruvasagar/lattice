@@ -112,6 +112,24 @@ fn workspace_capabilities() -> WorkspaceClientCapabilities {
         // from us at runtime. Useful even before §5.12 lands --
         // we can return the empty object and most servers cope.
         configuration: Some(true),
+        // workspace/symbol with lazy-resolve support (Phase
+        // 4.2 follow-up). When the server returns a
+        // `WorkspaceSymbol` whose `location` is the
+        // `WorkspaceLocation` variant (URI only, no range), the
+        // client fires `workspaceSymbol/resolve` to fill in the
+        // range on accept. We list `location.range` as the
+        // resolvable property -- matches what rust-analyzer /
+        // gopls populate today.
+        symbol: Some(lsp_types::WorkspaceSymbolClientCapabilities {
+            dynamic_registration: Some(false),
+            symbol_kind: None,
+            tag_support: None,
+            resolve_support: Some(
+                lsp_types::WorkspaceSymbolResolveSupportCapability {
+                    properties: vec!["location.range".into()],
+                },
+            ),
+        }),
         // Single-root workspace for v1; multi-root WorkspaceFolder
         // arrives later. Advertising true here means we send
         // `workspaceFolders` in initialize and emit the
@@ -250,6 +268,22 @@ impl Capabilities {
     /// `:workspace-symbols` picker (Phase 4.2.f).
     pub fn supports_workspace_symbol(&self) -> bool {
         self.server.workspace_symbol_provider.is_some()
+    }
+
+    /// Whether the server advertises `resolveProvider` on its
+    /// workspaceSymbolProvider options. When true, the server
+    /// MAY return `WorkspaceSymbol` entries whose `location` is
+    /// the `WorkspaceLocation` (URI only) variant; the client
+    /// fires `workspaceSymbol/resolve` on accept to fill in the
+    /// `range` before jumping. Phase 4.2 follow-up.
+    pub fn workspace_symbol_resolve_provider(&self) -> bool {
+        match &self.server.workspace_symbol_provider {
+            Some(lsp_types::OneOf::Right(opts)) => opts.resolve_provider.unwrap_or(false),
+            // The `OneOf::Left(bool)` form doesn't carry options
+            // -- the boolean only signals presence; resolve is
+            // implicitly false there.
+            _ => false,
+        }
     }
 
     /// Server's `completionProvider` presence -- gates 4.2.g's

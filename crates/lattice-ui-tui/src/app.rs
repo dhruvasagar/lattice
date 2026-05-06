@@ -1442,13 +1442,6 @@ pub struct App {
     /// because the supervisor's `open_buffer` is async; the
     /// runtime drains the queue between input events.
     pub pending_lsp_opens: Vec<(BufferId, std::path::PathBuf, String)>,
-    /// Channel that record-edit fires into to wake the debounced
-    /// flush task. Spawned by `initialize_lsp`. `None` until
-    /// the runtime calls initialize_lsp; tests that don't
-    /// invoke initialize_lsp leave it None and record_edit
-    /// just skips the wake (the supervisor's queue still
-    /// accumulates so a manual flush() works).
-    pub lsp_flush_signal: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 /// Reasons `compute_completion_state` can fail. Kept narrow so the
@@ -2218,6 +2211,20 @@ impl App {
         // registry so the registry can publish `OptionChanged`
         // events to it via the `EventPublisher` closure.
         let event_bus = Arc::new(EventBus::new());
+        // Wire the LSP supervisor to the bus before any buffer
+        // opens. Each actor spawned past this point gets a
+        // per-actor fan-in (lattice_lsp::fan_in) that routes
+        // `Event::DocumentChanged` straight into the actor's
+        // mailbox -- keeping the UI thread out of the supervisor
+        // mutex on the edit hot path. `try_lock` is safe here
+        // because the Arc was just constructed and no async
+        // task has had a chance to take it yet; using `lock()`
+        // would require an `await` and we're in a sync App
+        // constructor that may itself be running inside a
+        // tokio runtime (test harness).
+        lsp.try_lock()
+            .expect("supervisor mutex uncontended at App startup")
+            .set_event_bus(event_bus.clone());
         // Subscribe the App's own cascade-handler channel to
         // `OptionChanged` events on the bus. The receiver lives
         // on `App.option_change_rx`; `App::drain_option_changes`
@@ -2447,7 +2454,6 @@ impl App {
             lsp_config_tree: toml::Table::new(),
             buffer_uris: std::collections::HashMap::new(),
             pending_lsp_opens: Vec::new(),
-            lsp_flush_signal: None,
         };
         // Sync derived theme styles from the freshly-registered
         // ui.* options so the renderer's first frame uses the
@@ -2626,48 +2632,22 @@ impl App {
             }
         }
 
-        // Spawn the debounced flush task. Wakes 50ms after the
-        // most recent record_edit signal, locks the supervisor,
-        // calls flush_all() (cheap when nothing's pending,
-        // correct when something is). One task per App; lives
-        // for the editor's lifetime.
-        let (flush_tx, mut flush_rx) =
-            tokio::sync::mpsc::unbounded_channel::<()>();
-        self.lsp_flush_signal = Some(flush_tx);
-        let supervisor_clone = std::sync::Arc::clone(&self.lsp);
-        tokio::spawn(async move {
-            use tokio::time::{Duration, Instant, timeout_at};
-            const DEBOUNCE: Duration = Duration::from_millis(50);
-            loop {
-                // Wait for first edit signal.
-                if flush_rx.recv().await.is_none() {
-                    return;
-                }
-                // Coalesce additional signals during the
-                // debounce window.
-                let deadline = Instant::now() + DEBOUNCE;
-                loop {
-                    match timeout_at(deadline, flush_rx.recv()).await {
-                        Ok(Some(())) => continue,
-                        Ok(None) => return,
-                        Err(_) => break, // timeout -> flush
-                    }
-                }
-                let mut sup = supervisor_clone.lock().await;
-                let _ = sup.flush_all();
-            }
-        });
     }
 
     // ---- LSP integration helpers ----
     //
-    // The supervisor lives on the App; its open_buffer is
-    // async so we expose a sync-side hook (record_edit /
-    // close_buffer / flush) for tight integration with
-    // apply_edit_blocking and do_buffer_delete, and an async
-    // entry point ([`Self::initialize_lsp`]) for the boot
-    // path. Open-on-edit (`:e <path>`) hooks land in 4.1.i.2
-    // alongside the sync->async bridge for the input pipeline.
+    // The supervisor lives on the App; its open_buffer is async
+    // so we expose a sync-side hook (close_buffer / flush) for
+    // integration with do_buffer_delete and will-save hooks, and
+    // an async entry point ([`Self::initialize_lsp`]) for the
+    // boot path.
+    //
+    // The hot edit path no longer touches this struct at all:
+    // `Event::DocumentChanged` flows through the editor event
+    // bus into a per-actor fan-in (lattice_lsp::fan_in) that
+    // sends straight to the actor's mailbox. The App publishes
+    // the event from `publish_document_changed`; nothing here
+    // takes the supervisor mutex on each keystroke.
 
     /// Look up the current URI of a buffer. None for buffers
     /// that have no on-disk path yet (new unsaved scratch
@@ -2676,34 +2656,9 @@ impl App {
         self.buffer_uris.get(&id)
     }
 
-    /// Notify the LSP supervisor of an edit on a buffer. Sync;
-    /// `try_lock` because the supervisor mutex is uncontended
-    /// during normal operation (only async open / shutdown
-    /// paths take it for non-trivial windows). When contended
-    /// (rare: only during `:e <path>` async open), the edit is
-    /// dropped on the LSP side -- the editor's buffer still
-    /// commits; the LSP layer catches up on the next edit.
-    /// `&self` so it can be called from `apply_edit_blocking`
-    /// without rippling `&mut self` through 44 edit call sites.
-    pub fn lsp_record_edit(&self, buffer_id: BufferId, edit: &Edit) {
-        let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
-            return;
-        };
-        if let Ok(mut sup) = self.lsp.try_lock() {
-            let _ = sup.record_edit(&uri, edit);
-        }
-        // Wake the debounce task so a `didChange` flush fires
-        // ~50ms after this edit (modulo further edits in that
-        // window).
-        if let Some(tx) = self.lsp_flush_signal.as_ref() {
-            let _ = tx.send(());
-        }
-    }
-
     /// Flush queued didChange events for a buffer immediately.
-    /// Used by the App's debounce timer and by will-save hooks
-    /// (4.3). `&self` for the same reason as
-    /// [`Self::lsp_record_edit`].
+    /// Used by will-save hooks (4.3) so the server's view is
+    /// caught up before pre-save requests fire.
     pub fn lsp_flush(&self, buffer_id: BufferId) {
         let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
             return;
@@ -3151,10 +3106,9 @@ impl App {
     /// records the edit with the LSP supervisor (Phase
     /// 4.1.i.2) so attached servers see `didChange`.
     pub fn apply_edit_blocking(&self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
-        let result = block_on(self.document.apply_edit(edit.clone()));
-        if result.is_ok() {
-            self.publish_document_changed();
-            self.lsp_record_edit(self.document_buffer_id, &edit);
+        let result = block_on(self.document.apply_edit(edit));
+        if let Ok(applied) = result.as_ref() {
+            self.publish_document_changed(std::slice::from_ref(applied));
         }
         result
     }
@@ -3167,29 +3121,25 @@ impl App {
         &self,
         edits: Vec<Edit>,
     ) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        let edits_for_lsp = edits.clone();
         let result = block_on(self.document.apply_edit_batch(edits));
-        if result.is_ok() {
-            self.publish_document_changed();
-            for edit in &edits_for_lsp {
-                self.lsp_record_edit(self.document_buffer_id, edit);
-            }
+        if let Ok(applied) = result.as_ref() {
+            self.publish_document_changed(applied);
         }
         result
     }
 
     pub fn undo_blocking(&self) -> Result<Vec<AppliedEdit>, RuntimeError> {
         let result = block_on(self.document.undo());
-        if result.is_ok() {
-            self.publish_document_changed();
+        if let Ok(applied) = result.as_ref() {
+            self.publish_document_changed(applied);
         }
         result
     }
 
     pub fn redo_blocking(&self) -> Result<Vec<AppliedEdit>, RuntimeError> {
         let result = block_on(self.document.redo());
-        if result.is_ok() {
-            self.publish_document_changed();
+        if let Ok(applied) = result.as_ref() {
+            self.publish_document_changed(applied);
         }
         result
     }
@@ -3374,20 +3324,29 @@ impl App {
     }
 
     /// Build + publish [`Event::DocumentChanged`] from the current
-    /// snapshot. Called from every path that mutates the buffer
-    /// (apply_edit / batch / undo / redo). The post-mutation
-    /// snapshot drives the event payload.
-    fn publish_document_changed(&self) {
+    /// snapshot and the edits that were just applied. Called from
+    /// every path that mutates the buffer (apply_edit / batch /
+    /// undo / redo). The applied edits ride on the event so
+    /// downstream subscribers (notably the per-server LSP fan-in)
+    /// can sync without re-walking the buffer or holding the
+    /// supervisor lock.
+    fn publish_document_changed(&self, applied: &[AppliedEdit]) {
         let snap = self.document.snapshot();
-        // v1 doesn't carry the per-edit AppliedEdits in the event
-        // payload (the protocol's `Event::DocumentChanged.edits`
-        // field is reserved for the future actor-side publish path
-        // where the actor knows what was applied). For now the
-        // event signals "something changed; reload via snapshot".
+        let path = snap.path().map(|p| p.to_path_buf());
+        let edits: Vec<lattice_protocol::event::AppliedEdit> = applied
+            .iter()
+            .map(|a| lattice_protocol::event::AppliedEdit {
+                original_range: a.original_range,
+                inserted_range: a.inserted_range,
+                replaced_text: a.replaced_text.clone(),
+                inserted_text: a.inserted_text.clone(),
+            })
+            .collect();
         self.event_bus.publish(Event::DocumentChanged {
             id: snap.id,
+            path,
             version: snap.version,
-            edits: Vec::new(),
+            edits,
         });
     }
 
@@ -23893,16 +23852,6 @@ mod tests {
         // No mapping exists; close must not panic.
         app.lsp_close_buffer(app.document_buffer_id);
         assert!(app.buffer_uris.is_empty());
-    }
-
-    #[test]
-    fn lsp_record_edit_is_noop_when_no_uri_mapping() {
-        let app = App::new(Document::from_text("hi"));
-        // No URI mapping -> record_edit short-circuits, no panic.
-        app.lsp_record_edit(
-            app.document_buffer_id,
-            &Edit::insert(Position::new(0, 0), "x"),
-        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

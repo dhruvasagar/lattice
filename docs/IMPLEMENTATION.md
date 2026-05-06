@@ -937,6 +937,38 @@ Remaining 4.3:
   buffer, replies applied=true on empty edit, and is a
   no-op when the channel is empty.
 
+**4.x edit-path refactor: per-actor DocSync + bus-driven
+fan-in.** Diagnostics testing surfaced that edits were being
+silently dropped when the App's `try_lock`-on-supervisor
+edit path raced the App-spawned debounce task. Architectural
+fix (chosen against design goals, not ease of impl): move
+`DocSync` into the per-server actor (single-writer mirror;
+no shared mutex), enrich `Event::DocumentChanged` with
+`path: Option<PathBuf>` + `inserted_text` per `AppliedEdit`,
+spawn a per-actor `lattice_lsp::fan_in` task that subscribes
+to the bus and forwards each applied edit as
+`ActorCmd::RecordEdit` straight into the actor's mailbox.
+The UI thread now does one `EventBus::publish` per applied
+edit (1.9 µs at three subscribers) and never takes the
+supervisor mutex; the actor coalesces on a 50 ms debounce
+inside its `select!` loop. `App::lsp_record_edit` and the
+App-side debounce task are gone; supervisor `record_edit /
+flush / flush_all` survive as thin proxies for tests + the
+will-save flush. `LspSupervisor` gained
+`set_event_bus(Arc<EventBus>)` (called once at App startup
+before any buffer opens) and tracks a per-actor
+`SubscriptionId` so shutdown can unsubscribe. New benches
+in `crates/lattice-lsp/benches/lsp.rs`:
+`lsp_edit_publish_three_subs`, `lsp_edit_propagation_publish_to_recv`,
+`lsp_didchange_flush_16_edits`. New tests in
+`tests/fan_in.rs` cover end-to-end didChange after publish,
+OpenDoc → RecordEdit FIFO, scratch-buffer (no path) skip,
+unknown-URI warn-and-skip, 50-edit burst coalesce into one
+didChange, shutdown unsubscribes the bus. Architecture
+detail in `docs/lsp-architecture.md` §5 + new §11
+("Edit-path architecture") with the bus → fan-in → actor
+diagram.
+
 Update this section when picking up the in-flight item.
 
 ---

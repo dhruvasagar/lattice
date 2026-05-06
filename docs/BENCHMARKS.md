@@ -392,12 +392,40 @@ itself never appears next to editor work in a flame graph.
 | `lsp::logging::log_info`              | **91ns**   | ~80ns / <500ns | Per-record cost: lock + push + format + tracing fan-out. Background-class.                         |
 | `lsp::logging::log_trace_off`         | **9ns**    | ~5ns / <50ns   | Trace toggle off short-circuit -- a HashSet lookup + return. Hot path when trace stays disabled.  |
 | `lsp::logging::log_trace_on`          | **99ns**   | ~80ns / <500ns | Trace toggle on -- includes the ring push. Negligible at editor pace; perceptible at indexer bursts. |
+| `lsp_edit_publish_three_subs`         | **1.9µs**  | ~1.5µs / <50µs | UI-thread cost per applied edit: `EventBus::publish` of one `Event::DocumentChanged` with one `AppliedEdit`, three `DocumentChanged` subscribers attached. The *only* LSP work the keystroke thread does after the per-actor fan-in refactor (docs/lsp-architecture.md §11). |
+| `lsp_edit_propagation_publish_to_recv`| **227ns**  | ~200ns / <5µs  | Bus → mpsc receive hop: time from `EventBus::publish` to the per-actor fan-in's `mpsc::recv().await` returning. Excludes the actor's own `record_edit`. |
+| `lsp_didchange_flush_16_edits`        | **8.4µs**  | ~6µs / <50µs   | Actor-side debounce-arm cost: 16 `DocSync::record_edit` calls + `take_flush_payload` + serialise to `textDocument/didChange` JSON. Runs off the UI thread (post-debounce). |
 
 The full LSP feature matrix (per-method status) lives in
 [`lsp-features.md`](lsp-features.md); the architecture in
 [`lsp-architecture.md`](lsp-architecture.md). Per-feature
 benches (request round-trip latency end-to-end through a real
 server) land alongside their features in 4.2 / 4.3 / 4.4.
+
+### Why these targets
+
+The per-actor fan-in refactor moved DocSync into the actor and
+removed the supervisor mutex from the keystroke path. The
+three rows above split the resulting cost into the three
+moments that matter:
+
+- **UI thread** (`lsp_edit_publish_three_subs`): publishing
+  one event must stay deep in microseconds even with several
+  attached actors. The §8.2 keystroke-to-glyph budget is 8 ms;
+  budgeting <50 µs for "tell the LSP layer" leaves >99% of
+  the budget for the rest of the path. **1.9 µs ≪ 50 µs.**
+- **Propagation** (`lsp_edit_propagation_publish_to_recv`):
+  bus → fan-in receive hop. Sub-microsecond means the actor
+  sees the event in the same tick the publish completes;
+  diagnostics, hover, completion never lag a keystroke
+  behind. **227 ns ≪ 5 µs.**
+- **Async flush** (`lsp_didchange_flush_16_edits`): cost
+  paid by the actor task on its debounce arm. Off the UI
+  thread; bound by JSON encode + a string splice per edit.
+  **8.4 µs for 16 edits = ~525 ns/edit.**
+
+Regressions in any of these rows would mean the refactor's
+core promise (UI thread untouched by LSP work) is leaking.
 
 ---
 

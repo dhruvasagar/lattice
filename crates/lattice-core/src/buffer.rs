@@ -25,11 +25,17 @@ pub struct Buffer {
 
 /// What an `apply_edit` produced. The caller uses this to log change events
 /// and to construct an inverse `Edit` for the undo stack.
+///
+/// `inserted_text` is the text that was placed into `inserted_range`. We
+/// keep it on the struct so subscribers (notably the LSP fan-in, which
+/// needs `range + text` per change) don't have to re-read the buffer
+/// after every applied edit.
 #[derive(Debug, Clone)]
 pub struct AppliedEdit {
     pub original_range: Range,
     pub inserted_range: Range,
     pub replaced_text: String,
+    pub inserted_text: String,
 }
 
 impl Buffer {
@@ -155,10 +161,14 @@ impl Buffer {
         };
         let inserted_end = self.byte_to_position(inserted_end_byte)?;
 
+        let inserted_text = match &edit.kind {
+            EditKind::Replace { text } => text.clone(),
+        };
         Ok(AppliedEdit {
             original_range: edit.range,
             inserted_range: Range::new(edit.range.start, inserted_end),
             replaced_text,
+            inserted_text,
         })
     }
 

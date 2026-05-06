@@ -54,6 +54,7 @@ pub mod configuration;
 pub mod diagnostics;
 pub mod diagnostics_layer;
 pub mod error;
+pub mod fan_in;
 pub mod features;
 pub mod framing;
 pub mod jsonrpc;

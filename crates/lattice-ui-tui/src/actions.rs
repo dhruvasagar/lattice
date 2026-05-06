@@ -20,7 +20,9 @@
 use lattice_grammar::AppEffect;
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::ModalState;
+use lattice_grammar::ScrollPos;
 use lattice_grammar::SearchDirection;
+use lattice_grammar::ViewportPos;
 use lattice_grammar::VisualKind;
 use lattice_grammar::registry::ActionSpec;
 use lattice_protocol::ids::CommandId;
@@ -90,6 +92,12 @@ pub struct ActionIds {
     pub enter_search_backward: CommandId,
     pub search_word_under_cursor_forward: CommandId,
     pub search_word_under_cursor_backward: CommandId,
+    pub jump_viewport_top: CommandId,
+    pub jump_viewport_middle: CommandId,
+    pub jump_viewport_bottom: CommandId,
+    pub scroll_cursor_to_top: CommandId,
+    pub scroll_cursor_to_center: CommandId,
+    pub scroll_cursor_to_bottom: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -434,6 +442,42 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
             "Vim's `#`: search backward for the word under the cursor.",
             AppEffect::SearchWordUnderCursor(SearchDirection::Backward),
         ),
+        jump_viewport_top: register_simple(
+            registry,
+            "action:jump-viewport-top",
+            "Vim's `H`: jump cursor to the top visible line.",
+            AppEffect::JumpViewport(ViewportPos::Top),
+        ),
+        jump_viewport_middle: register_simple(
+            registry,
+            "action:jump-viewport-middle",
+            "Vim's `M`: jump cursor to the middle visible line.",
+            AppEffect::JumpViewport(ViewportPos::Middle),
+        ),
+        jump_viewport_bottom: register_simple(
+            registry,
+            "action:jump-viewport-bottom",
+            "Vim's `L`: jump cursor to the bottom visible line.",
+            AppEffect::JumpViewport(ViewportPos::Bottom),
+        ),
+        scroll_cursor_to_top: register_simple(
+            registry,
+            "action:scroll-cursor-to-top",
+            "Vim's `zt`: scroll viewport so the cursor's line sits at the top.",
+            AppEffect::ScrollCursorTo(ScrollPos::Top),
+        ),
+        scroll_cursor_to_center: register_simple(
+            registry,
+            "action:scroll-cursor-to-center",
+            "Vim's `zz`: scroll viewport so the cursor's line sits at the centre.",
+            AppEffect::ScrollCursorTo(ScrollPos::Center),
+        ),
+        scroll_cursor_to_bottom: register_simple(
+            registry,
+            "action:scroll-cursor-to-bottom",
+            "Vim's `zb`: scroll viewport so the cursor's line sits at the bottom.",
+            AppEffect::ScrollCursorTo(ScrollPos::Bottom),
+        ),
     }
 }
 
@@ -532,6 +576,12 @@ mod tests {
             (ids.enter_search_backward, "action:enter-search-backward"),
             (ids.search_word_under_cursor_forward, "action:search-word-under-cursor-forward"),
             (ids.search_word_under_cursor_backward, "action:search-word-under-cursor-backward"),
+            (ids.jump_viewport_top, "action:jump-viewport-top"),
+            (ids.jump_viewport_middle, "action:jump-viewport-middle"),
+            (ids.jump_viewport_bottom, "action:jump-viewport-bottom"),
+            (ids.scroll_cursor_to_top, "action:scroll-cursor-to-top"),
+            (ids.scroll_cursor_to_center, "action:scroll-cursor-to-center"),
+            (ids.scroll_cursor_to_bottom, "action:scroll-cursor-to-bottom"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

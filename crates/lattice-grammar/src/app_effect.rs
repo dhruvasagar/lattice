@@ -35,6 +35,37 @@ use serde::{Deserialize, Serialize};
 
 use crate::modal::{ModalState, SearchDirection, VisualKind};
 
+/// Vim's `H` / `M` / `L` target positions: where in the visible
+/// viewport the cursor lands. App-side concept hosted here so
+/// `AppEffect::JumpViewport(ViewportPos)` can carry the typed
+/// payload without `lattice-ui-tui` having to dance through a
+/// dependency cycle. Slice 8.i.2.c hoist; the App's previous
+/// `crate::app::ViewportPos` becomes a `pub use` re-export of
+/// this type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ViewportPos {
+    /// `H` -- first visible line of the viewport.
+    Top,
+    /// `M` -- middle visible line of the viewport.
+    Middle,
+    /// `L` -- last visible line of the viewport.
+    Bottom,
+}
+
+/// Vim's `zz` / `zt` / `zb` target positions: where in the
+/// viewport the cursor's current line should sit after the
+/// scroll. App-side concept hosted alongside [`ViewportPos`] for
+/// the same dependency reason. Slice 8.i.2.c hoist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScrollPos {
+    /// `zt` -- cursor's line lands at the top of the viewport.
+    Top,
+    /// `zz` -- cursor's line lands at the vertical centre.
+    Center,
+    /// `zb` -- cursor's line lands at the bottom of the viewport.
+    Bottom,
+}
+
 /// App-side typed effect produced by a `CommandKind::Action`
 /// dispatch (DESIGN.md §5.2.1, see also `docs/8i-approach.md`).
 ///
@@ -251,6 +282,14 @@ pub enum AppEffect {
     /// in the named direction. Promoted from
     /// `Action::SearchWordUnderCursor(_)` in slice 8.i.2.b.
     SearchWordUnderCursor(SearchDirection),
+    /// Vim's `H` / `M` / `L` -- jump cursor to the named
+    /// position within the visible viewport. Promoted from
+    /// `Action::JumpViewport(_)` in slice 8.i.2.c.
+    JumpViewport(ViewportPos),
+    /// Vim's `zz` / `zt` / `zb` -- scroll the viewport so the
+    /// cursor's current line sits at the named position.
+    /// Promoted from `Action::ScrollCursorTo(_)` in slice 8.i.2.c.
+    ScrollCursorTo(ScrollPos),
 }
 
 #[cfg(test)]

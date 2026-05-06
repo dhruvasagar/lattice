@@ -198,25 +198,25 @@ pub fn register_normal_bindings(
     // ---- today; bridge stays until 8.i).
 
     // Viewport jumps.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('H')],
-        Action::JumpViewport(ViewportPos::Top),
+        CommandInvocation::of(actions.jump_viewport_top),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('M')],
-        Action::JumpViewport(ViewportPos::Middle),
+        CommandInvocation::of(actions.jump_viewport_middle),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('L')],
-        Action::JumpViewport(ViewportPos::Bottom),
+        CommandInvocation::of(actions.jump_viewport_bottom),
         source(),
     );
 
@@ -541,48 +541,48 @@ pub fn register_normal_bindings(
     let z = lit_char('z');
 
     // Center-cursor scrolls. `zz` and `z.` both center.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('z')],
-        Action::ScrollCursorTo(ScrollPos::Center),
+        CommandInvocation::of(actions.scroll_cursor_to_center),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('.')],
-        Action::ScrollCursorTo(ScrollPos::Center),
+        CommandInvocation::of(actions.scroll_cursor_to_center),
         source(),
     );
     // Top-of-viewport scrolls. `zt` and `z<CR>` both align top.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('t')],
-        Action::ScrollCursorTo(ScrollPos::Top),
+        CommandInvocation::of(actions.scroll_cursor_to_top),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_special(SpecialKey::Enter)],
-        Action::ScrollCursorTo(ScrollPos::Top),
+        CommandInvocation::of(actions.scroll_cursor_to_top),
         source(),
     );
     // Bottom-of-viewport scrolls. `zb` and `z-` both align bottom.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('b')],
-        Action::ScrollCursorTo(ScrollPos::Bottom),
+        CommandInvocation::of(actions.scroll_cursor_to_bottom),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[z.clone(), lit_char('-')],
-        Action::ScrollCursorTo(ScrollPos::Bottom),
+        CommandInvocation::of(actions.scroll_cursor_to_bottom),
         source(),
     );
 
@@ -1815,9 +1815,12 @@ mod tests {
 
     #[test]
     fn viewport_h_jumps_to_top() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('H'), KeyModifiers::NONE));
-        assert!(matches!(r, Some(Action::JumpViewport(ViewportPos::Top))));
+        match r {
+            Some(Action::Invoke(inv)) => assert_eq!(inv.command, a.jump_viewport_top),
+            other => panic!("expected Invoke(jump_viewport_top), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2183,46 +2186,58 @@ mod tests {
 
     #[test]
     fn zz_centers_cursor() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
             &ev(KeyCode::Char('z'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::ScrollCursorTo(ScrollPos::Center)));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.scroll_cursor_to_center),
+            other => panic!("expected Invoke(scroll_cursor_to_center), got {other:?}"),
+        }
     }
 
     #[test]
     fn z_dot_aliases_zz() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
             &ev(KeyCode::Char('.'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::ScrollCursorTo(ScrollPos::Center)));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.scroll_cursor_to_center),
+            other => panic!("expected Invoke(scroll_cursor_to_center), got {other:?}"),
+        }
     }
 
     #[test]
     fn z_enter_aliases_zt() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
             &ev(KeyCode::Enter, KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::ScrollCursorTo(ScrollPos::Top)));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.scroll_cursor_to_top),
+            other => panic!("expected Invoke(scroll_cursor_to_top), got {other:?}"),
+        }
     }
 
     #[test]
     fn z_dash_aliases_zb() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
             &ev(KeyCode::Char('-'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::ScrollCursorTo(ScrollPos::Bottom)));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.scroll_cursor_to_bottom),
+            other => panic!("expected Invoke(scroll_cursor_to_bottom), got {other:?}"),
+        }
     }
 
     #[test]

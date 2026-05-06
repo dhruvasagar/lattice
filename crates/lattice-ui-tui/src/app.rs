@@ -167,19 +167,17 @@ pub enum Pending {
     AfterJumpMarkExact,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ViewportPos {
-    Top,
-    Middle,
-    Bottom,
-}
+/// Vim's `H` / `M` / `L` cursor target within the visible
+/// viewport. Slice 8.i.2.c hoisted the type into
+/// `lattice_grammar::app_effect` so `AppEffect::JumpViewport`
+/// can carry it; this is a re-export so existing
+/// `crate::app::ViewportPos` callers stay compiling.
+pub use lattice_grammar::ViewportPos;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScrollPos {
-    Top,
-    Center,
-    Bottom,
-}
+/// Vim's `zz` / `zt` / `zb` post-scroll cursor target. Re-export
+/// of the `lattice_grammar` definition (see `ViewportPos` above
+/// for rationale).
+pub use lattice_grammar::ScrollPos;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FindKind {
@@ -11777,6 +11775,8 @@ impl App {
             AppEffect::EnterVisual(kind) => self.apply(Action::EnterVisual(kind)),
             AppEffect::EnterSearch(dir) => self.apply(Action::EnterSearch(dir)),
             AppEffect::SearchWordUnderCursor(dir) => self.apply(Action::SearchWordUnderCursor(dir)),
+            AppEffect::JumpViewport(pos) => self.apply(Action::JumpViewport(pos)),
+            AppEffect::ScrollCursorTo(pos) => self.apply(Action::ScrollCursorTo(pos)),
         }
     }
 

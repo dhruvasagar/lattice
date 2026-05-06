@@ -2672,31 +2672,43 @@ mod tests {
     #[test]
     fn capital_h_emits_jump_viewport_top() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('H')),
         );
-        assert!(matches!(action, Action::JumpViewport(ViewportPos::Top)));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.jump_viewport_top),
+            other => panic!("expected Invoke(jump_viewport_top), got {other:?}"),
+        }
     }
 
     #[test]
     fn capital_m_emits_jump_viewport_middle() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('M')),
         );
-        assert!(matches!(action, Action::JumpViewport(ViewportPos::Middle)));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.jump_viewport_middle),
+            other => panic!("expected Invoke(jump_viewport_middle), got {other:?}"),
+        }
     }
 
     #[test]
     fn capital_l_emits_jump_viewport_bottom() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::None, &b),
             key(KeyCode::Char('L')),
         );
-        assert!(matches!(action, Action::JumpViewport(ViewportPos::Bottom)));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.jump_viewport_bottom),
+            other => panic!("expected Invoke(jump_viewport_bottom), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2712,31 +2724,43 @@ mod tests {
     #[test]
     fn zz_emits_scroll_cursor_center() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::AfterZ, &b),
             key(KeyCode::Char('z')),
         );
-        assert!(matches!(action, Action::ScrollCursorTo(ScrollPos::Center)));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.scroll_cursor_to_center),
+            other => panic!("expected Invoke(scroll_cursor_to_center), got {other:?}"),
+        }
     }
 
     #[test]
     fn zt_emits_scroll_cursor_top() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::AfterZ, &b),
             key(KeyCode::Char('t')),
         );
-        assert!(matches!(action, Action::ScrollCursorTo(ScrollPos::Top)));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.scroll_cursor_to_top),
+            other => panic!("expected Invoke(scroll_cursor_to_top), got {other:?}"),
+        }
     }
 
     #[test]
     fn zb_emits_scroll_cursor_bottom() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::AfterZ, &b),
             key(KeyCode::Char('b')),
         );
-        assert!(matches!(action, Action::ScrollCursorTo(ScrollPos::Bottom)));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.scroll_cursor_to_bottom),
+            other => panic!("expected Invoke(scroll_cursor_to_bottom), got {other:?}"),
+        }
     }
 
     #[test]

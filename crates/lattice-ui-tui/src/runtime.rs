@@ -317,7 +317,6 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                 Event::Key(k) => {
                     let ctx = TranslateContext {
                         modal: app.modal,
-                        pending: app.pending,
                         builtins: &app.builtins,
                         pending_count: app.pending_count,
                         op_count: app.op_count,

@@ -120,52 +120,14 @@ use crate::file_tree::{FileTreeBuffer, FileTreeEntryKind};
 use crate::help::{HelpBuffer, HelpDisplayMode, command_link, key_link};
 use crate::pane::{PaneDirection, PaneState, PaneTree, SplitOrientation};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Pending {
-    None,
-    /// First `<C-w>` of a window-management chord (split / close /
-    /// navigate). Resolves on the next key.
-    AfterCtrlW,
-    /// First `<C-x>` of vim's expansion-prefix family
-    /// (Phase 4.2.g.1). Resolves on the next key:
-    /// `<C-x><C-o>` -> manual completion trigger;
-    /// future: `<C-x><C-s>` snippet expand,
-    /// `<C-x><C-f>` filename completion, etc.
-    AfterCtrlX,
-    /// First `g` of a `gg`-style two-key sequence.
-    AfterG,
-    /// Operator key pressed; awaiting motion or text-object.
-    AfterOperator(OperatorId),
-    /// `f` / `F` / `t` / `T` pressed; awaiting the target character.
-    /// If the user pressed an operator first (like `df`), the operator is
-    /// stashed here so we can compose `df<char>` into a single Invoke.
-    AfterFindChar {
-        kind: FindKind,
-        operator: Option<OperatorId>,
-    },
-    /// `i` or `a` pressed in operator-pending state; awaiting the
-    /// text-object selector char (`w`, `"`, `(`, `[`, `{`, etc.).
-    AfterTextObject {
-        operator: OperatorId,
-        around: bool,
-    },
-    /// `z` pressed; the next char selects the scroll command (`zz`, `zt`, `zb`).
-    AfterZ,
-    /// `"` pressed; the next char selects the register for the upcoming
-    /// operator or paste.
-    AfterRegister,
-    /// `q` pressed (when not already recording); next char is the macro
-    /// register name.
-    AfterMacroStart,
-    /// `@` pressed; next char is the macro register name to play.
-    AfterMacroPlay,
-    /// `m` pressed; the next char is the mark to set.
-    AfterSetMark,
-    /// `'` pressed; the next char is the mark to jump to (linewise).
-    AfterJumpMarkLine,
-    /// `` ` `` pressed; the next char is the mark to jump to (exact).
-    AfterJumpMarkExact,
-}
+// Slice 8.i.4.d: the `Pending` enum and `Action::SetPending`
+// variant retired here. All multi-key Normal-mode chord state
+// flows through `App::partial_chord` driven by
+// `Action::AbsorbPartialChord` (slices 8.i.4.a/b) plus
+// `AppEffect::AbsorbOperatorPrefix(_)` for operator prefixes
+// (slice 8.i.4.c). `App::apply`'s pending field, the
+// `Action::SetPending(_)` arm, and the "non-SetPending clears
+// pending" guard are gone.
 
 /// Vim's `H` / `M` / `L` cursor target within the visible
 /// viewport. Slice 8.i.2.c hoisted the type into
@@ -422,8 +384,6 @@ pub enum Action {
     OpenLineBelow,
     /// Vim's `O`: open a new line above the current line and enter Insert.
     OpenLineAbove,
-    /// Set the pending-key state (e.g., we just saw `g`).
-    SetPending(Pending),
     Undo,
     Redo,
     /// Append a digit (0-9) to the in-progress count prefix.
@@ -917,23 +877,18 @@ pub struct App {
     /// records it.
     pub terminal_width: Option<u16>,
     pub modal: ModalState,
-    pub pending: Pending,
-    /// Slice 8.i.4.a partial-chord cursor (replaces the simple
-    /// prefix-only `Pending::After*` variants -- `AfterG`,
-    /// `AfterZ`, `AfterCtrlW`, `AfterSetMark`,
-    /// `AfterJumpMarkLine`, `AfterJumpMarkExact`, `AfterRegister`,
-    /// `AfterMacroStart`, `AfterMacroPlay`). When the trie
-    /// returns `LookupResult::Partial`, `dispatch_normal` emits
+    /// In-flight partial-chord stack from the trie (slice 8.i.4).
+    /// When the trie returns `LookupResult::Partial`,
+    /// `dispatch_normal` / `dispatch_insert` emit
     /// `Action::AbsorbPartialChord(c)` and `App::apply` appends
-    /// `c` here. The next keystroke calls
-    /// `lookup_normal_with_prefix(handle, &partial_chord, event)`,
-    /// hitting the trie's resolved binding for the full path.
-    /// Cleared on every non-`AbsorbPartialChord` action, mirroring
-    /// the existing `pending` reset on every non-`SetPending`
-    /// action. Parameterised pendings
-    /// (`AfterOperator(_)`, `AfterTextObject{_}`,
-    /// `AfterFindChar{_}`, `AfterCtrlX`) stay on `pending` for
-    /// now; 8.i.4.b retires those.
+    /// `c` here. The next keystroke runs through the trie with
+    /// this stack as prefix and resolves the full multi-key
+    /// chord. Cleared on every non-`AbsorbPartialChord` action.
+    /// Operator-prefix pushes (8 prefixes: `d`, `c`, `y`, `>`,
+    /// `<`, `gU`, `gu`, `g~`) come from
+    /// `AppEffect::AbsorbOperatorPrefix(_)` via
+    /// `apply_app_effect`, which also latches `pending_count`
+    /// into `op_count` atomically with the prefix push.
     pub partial_chord: Vec<crate::chord::KeyChord>,
     /// Grammar registry shared with the document actor by `Arc`. The
     /// actor calls `lattice_grammar::execute` with this registry from
@@ -2289,7 +2244,6 @@ impl std::fmt::Debug for App {
             .field("should_quit", &self.should_quit)
             .field("viewport_height", &self.viewport_height)
             .field("modal", &self.modal)
-            .field("pending", &self.pending)
             .field("command_line", &self.command_line)
             .field("last_message", &self.last_message)
             .field("dirty", &self.document.dirty())
@@ -2498,7 +2452,6 @@ impl App {
             viewport_height: 1,
             terminal_width: None,
             modal: ModalState::Normal,
-            pending: Pending::None,
             partial_chord: Vec::new(),
             registry,
             event_bus: event_bus.clone(),
@@ -3567,21 +3520,13 @@ impl App {
         {
             rec.actions.push(action.clone());
         }
-        // Pending lifecycle: any action that *resolves* (i.e. isn't
-        // itself SetPending) consumes the pending state. Without this,
-        // a chord like `zz` (ScrollCursorTo) would leave pending=AfterZ
-        // so the next key `j` would route through resolve_after_z and
-        // emit GotoNextFold instead of line_down.
-        if !matches!(action, Action::SetPending(_)) {
-            self.pending = Pending::None;
-        }
-        // Slice 8.i.4.a partial-chord lifecycle: same shape as the
-        // `pending` reset above. Any action that *isn't*
-        // `AbsorbPartialChord(_)` resolves (or aborts) the in-flight
-        // multi-key sequence, so the chord stack must clear. Without
-        // this an unbound second key (e.g. `g!` after `g`) would
-        // leak `[g]` into the next keystroke's prefix lookup and
-        // mis-route it as `gd` / `gv` / etc.
+        // Slice 8.i.4 partial-chord lifecycle: any action that
+        // *isn't* `AbsorbPartialChord(_)` resolves (or aborts)
+        // the in-flight multi-key sequence, so the chord stack
+        // must clear. Without this an unbound second key (e.g.
+        // `g!` after `g`) would leak `[g]` into the next
+        // keystroke's prefix lookup and mis-route it as `gd` /
+        // `gv` / etc.
         if !matches!(action, Action::AbsorbPartialChord(_)) {
             self.partial_chord.clear();
         }
@@ -3623,18 +3568,6 @@ impl App {
             Action::EnterBlockVisualAppend => self.do_enter_block_visual_insert(true),
             Action::OpenLineBelow => self.do_open_line_below(),
             Action::OpenLineAbove => self.do_open_line_above(),
-            Action::SetPending(p) => {
-                // When entering operator-pending state, latch the in-progress
-                // count as `op_count` so the next motion's count multiplies
-                // with it (vim's `2d3w` -> d6w). Other pending transitions
-                // keep `pending_count` so a partially-typed `gg` count
-                // survives the chord.
-                if matches!(p, Pending::AfterOperator(_)) && self.pending_count > 0 {
-                    self.op_count = self.pending_count;
-                    self.pending_count = 0;
-                }
-                self.pending = p;
-            }
             Action::Undo => {
                 let _ = self.undo_blocking();
                 self.clamp_cursor_to_buffer();
@@ -3647,7 +3580,6 @@ impl App {
             Action::EnterCommandLine => {
                 self.command_line.clear();
                 self.modal = ModalState::Command;
-                self.pending = Pending::None;
                 self.last_message = None;
                 // Q16: opening the cmdline dismisses any open help.
                 // The user can only focus on one thing.
@@ -3706,7 +3638,6 @@ impl App {
                     }
                     let line = std::mem::take(&mut self.command_line);
                     self.modal = ModalState::Normal;
-                    self.pending = Pending::None;
                     self.command_history_cursor = None;
                     self.command_history_pending = None;
                     self.auto_submit_after_chord = false;
@@ -3729,7 +3660,6 @@ impl App {
                     self.command_history_cursor = None;
                     self.command_history_pending = None;
                     self.modal = ModalState::Normal;
-                    self.pending = Pending::None;
                     self.auto_submit_after_chord = false;
                     self.substitute_preview = None;
                 }
@@ -3826,7 +3756,6 @@ impl App {
             Action::CompletionCancelAndExitInsert => {
                 self.do_completion_cancel();
                 self.modal = ModalState::Normal;
-                self.pending = Pending::None;
             }
             Action::CompletionToggleDocs => self.do_completion_toggle_docs(),
             Action::CompletionDocsScrollDown => self.do_completion_docs_scroll_down(),
@@ -3840,7 +3769,6 @@ impl App {
             Action::SnippetLeave => {
                 self.active_snippet = None;
                 self.modal = ModalState::Normal;
-                self.pending = Pending::None;
             }
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
             Action::LspWorkspaceSymbolRequest(q) => {
@@ -4010,7 +3938,6 @@ impl App {
                     origin: self.cursor,
                 });
                 self.modal = ModalState::Search(direction);
-                self.pending = Pending::None;
                 self.last_message = None;
                 self.current_match = None;
             }
@@ -4394,7 +4321,6 @@ impl App {
             return;
         };
         self.modal = ModalState::Normal;
-        self.pending = Pending::None;
         if line.pattern.is_empty() {
             // Empty submit: re-run last_search if any (vim behavior).
             if self.last_search.is_some() {
@@ -4478,7 +4404,6 @@ impl App {
         self.current_match = None;
         self.all_matches.clear();
         self.modal = ModalState::Normal;
-        self.pending = Pending::None;
     }
 
     /// Repeat last search. `reverse=false` keeps the original direction
@@ -9442,7 +9367,6 @@ impl App {
         pane.scroll = oil_scroll as u32;
         self.cursor = oil_cursor;
         self.scroll = oil_scroll as u32;
-        self.pending = Pending::None;
     }
 
     /// `:set [option | option=value | nooption | option?]`.
@@ -9902,7 +9826,6 @@ impl App {
         self.cursor = stash_cursor;
         self.scroll = stash_scroll;
         self.active_buffer = BufferKind::Help;
-        self.pending = Pending::None;
     }
 
     /// `K` (Phase 4.2.b). Send `textDocument/hover` to every LSP
@@ -11332,9 +11255,46 @@ impl App {
     // quit's force-bit comes from the trailing `!` (DESIGN.md §5.2.1).
 
     fn run_invocation(&mut self, inv: CommandInvocation) {
-        // Pending state is consumed by the input layer that built `inv`; any
-        // dispatch resets it.
-        self.pending = Pending::None;
+        // Slice 8.i.4.d: free-form `CommandKind::Action`
+        // invocations (the App-side actions registered in
+        // `crate::actions`) bypass the document path entirely.
+        // They have no count semantics -- pending_count /
+        // op_count must NOT be consumed by these dispatches
+        // (otherwise `2d` would lose the `2` because
+        // `run_document_invocation` resets both counts before
+        // the dispatch returns the
+        // `Effect::AppAction(AbsorbOperatorPrefix(_))` that
+        // wants to latch them). Run `execute()` directly and
+        // apply the resulting effect.
+        if let Some(spec) = self.registry.lookup(inv.command)
+            && matches!(spec.kind, lattice_grammar::CommandKind::Action)
+        {
+            let cancel = lattice_grammar::CancellationToken::never();
+            let pos = self.cursor;
+            // `CommandKind::Action` evaluators don't touch the
+            // document (DESIGN.md §5.2.1 -- Action specs return
+            // an `Effect::AppAction(_)` payload without reading
+            // or mutating the buffer). The dispatcher's signature
+            // still wants a `&mut Document`, so we feed it a
+            // throwaway empty one.
+            let mut scratch = lattice_core::Document::empty();
+            match lattice_grammar::execute(
+                &self.registry,
+                &mut scratch,
+                pos,
+                inv,
+                &cancel,
+            ) {
+                Ok(effect) => self.apply_effect(effect),
+                Err(e) => {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("action dispatch failed: {e:?}"),
+                    );
+                }
+            }
+            return;
+        }
         // Help is read-only; route motions through the help buffer
         // path and reject operator-class invocations cleanly. Other
         // CommandKind variants (text-objects, ex-commands) shouldn't
@@ -11871,6 +11831,12 @@ impl App {
                 let prefix = crate::keymap_normal::operator_prefix(op, &self.builtins);
                 self.partial_chord.extend(prefix);
             }
+            AppEffect::SplitPaneHorizontal => self.apply(Action::SplitPaneHorizontal),
+            AppEffect::SplitPaneVertical => self.apply(Action::SplitPaneVertical),
+            AppEffect::ClosePane => self.apply(Action::ClosePane),
+            AppEffect::NavigatePane(dir) => self.apply(Action::NavigatePane(dir)),
+            AppEffect::NextPane => self.apply(Action::NextPane),
+            AppEffect::PrevPane => self.apply(Action::PrevPane),
         }
     }
 
@@ -12747,7 +12713,6 @@ impl App {
         self.cursor = stash_cursor;
         self.scroll = stash_scroll;
         self.active_buffer = BufferKind::Help;
-        self.pending = Pending::None;
     }
 
     /// Adopt a help buffer into the unified [`BufferRegistry`] and
@@ -12871,7 +12836,6 @@ impl App {
         pane.buffer_id = id;
         pane.cursor = stash_cursor;
         pane.scroll = stash_scroll;
-        self.pending = Pending::None;
     }
 
     /// Close the help overlay and route input back to the document.
@@ -12902,7 +12866,6 @@ impl App {
         // Help mode reuses Pending::AfterG for the gg chord; clear
         // it on dismiss so a stranded `g` doesn't leak into Normal
         // mode.
-        self.pending = Pending::None;
     }
 
     /// `:Tree [path]` (DESIGN.md §5.9 buffer-as-content). Opens a
@@ -12957,7 +12920,6 @@ impl App {
         pane.buffer_id = new_id;
         pane.cursor = Position::ZERO;
         pane.scroll = 0;
-        self.pending = Pending::None;
         self.set_message(EchoLevel::Info, format!("oil: {}", dir.display()));
     }
 
@@ -13022,7 +12984,6 @@ impl App {
         pane.buffer_id = new_id;
         pane.cursor = Position::ZERO;
         pane.scroll = 0;
-        self.pending = Pending::None;
         self.set_message(EchoLevel::Info, format!("tree: {}", root.display()));
     }
 
@@ -13053,7 +13014,6 @@ impl App {
                 pane.buffer_id = new_id;
             }
         }
-        self.pending = Pending::None;
     }
 
     /// `<CR>` while the active pane shows a file-tree buffer: if
@@ -13176,7 +13136,6 @@ impl App {
             self.pending_block_insert = None;
         }
         self.modal = state;
-        self.pending = Pending::None;
         if matches!(state, ModalState::Normal) {
             // Vim's behavior: leaving Insert mode pulls the cursor back one
             // byte if it's not already at the start of the line, so the
@@ -13257,7 +13216,6 @@ impl App {
             self.cursor.byte += 1;
         }
         self.modal = ModalState::Insert;
-        self.pending = Pending::None;
     }
 
     /// Vim's blockwise-visual `I` (`append=false`) and `A`
@@ -13308,12 +13266,10 @@ impl App {
             self.cursor = Position::new(self.cursor.line + 1, 0);
         }
         self.modal = ModalState::Insert;
-        self.pending = Pending::None;
     }
 
     fn do_enter_visual(&mut self, kind: VisualKind) {
         self.modal = ModalState::Visual(kind);
-        self.pending = Pending::None;
         self.visual_anchor = Some(self.cursor);
         // Seed document.selections so Range::Selection picks up the
         // anchor=head=cursor selection immediately.
@@ -13339,7 +13295,6 @@ impl App {
             });
         }
         self.modal = ModalState::Normal;
-        self.pending = Pending::None;
         self.visual_anchor = None;
         // Collapse selection to a cursor at the current head.
         self.set_selections_blocking(SelectionSet::single(Selection::cursor(self.cursor)));
@@ -14248,7 +14203,6 @@ impl App {
         // Restore the selection: cursor lands at `head`, anchor at `anchor`,
         // visual mode is the saved kind.
         self.modal = ModalState::Visual(last.kind);
-        self.pending = Pending::None;
         self.visual_anchor = Some(last.anchor);
         self.cursor = last.head;
         let sel = Selection {
@@ -14379,7 +14333,6 @@ impl App {
             self.cursor = bol;
         }
         self.modal = ModalState::Insert;
-        self.pending = Pending::None;
     }
 
     /// Cursor of the currently active buffer. Reads `App::cursor`
@@ -15724,7 +15677,7 @@ mod tests {
         assert_eq!(a.scroll, 0);
         assert!(!a.should_quit);
         assert_eq!(a.modal, ModalState::Normal);
-        assert_eq!(a.pending, Pending::None);
+        assert!(a.partial_chord.is_empty());
     }
 
     #[test]
@@ -15798,13 +15751,15 @@ mod tests {
     }
 
     #[test]
-    fn invocation_resets_pending() {
+    fn invocation_resets_partial_chord() {
+        // Slice 8.i.4: AbsorbPartialChord pushes onto
+        // partial_chord; any other action clears it.
         let mut a = app_with("abc", 10);
-        a.apply(Action::SetPending(Pending::AfterG));
-        assert_eq!(a.pending, Pending::AfterG);
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('g')));
+        assert_eq!(a.partial_chord.len(), 1);
         let id = a.builtins.char_right;
         a.apply(invoke_motion(id));
-        assert_eq!(a.pending, Pending::None);
+        assert!(a.partial_chord.is_empty());
     }
 
     // ---- Insert mode ----
@@ -17627,59 +17582,65 @@ mod tests {
 
     // ---- Position history (Ctrl-O / Ctrl-I) ----
 
-    // ---- Pending-state lifecycle (regression) ----
+    // ---- partial_chord lifecycle (regression) ----
+    //
+    // Slice 8.i.4 retired the legacy `Pending` enum; the regression
+    // these tests pin is now expressed against `partial_chord`:
+    // any non-`AbsorbPartialChord(_)` action must clear the
+    // chord stack so a leftover prefix doesn't mis-route the
+    // next keystroke.
 
     #[test]
-    fn zz_clears_pending_so_next_key_is_a_motion() {
+    fn zz_clears_partial_chord_so_next_key_is_a_motion() {
         // Regression: previously `zz` left pending=AfterZ, so `j` after
         // `zz` was interpreted as `zj` (GotoNextFold) and emitted "no
-        // more folds".
+        // more folds". Now expressed against partial_chord.
         let mut a = app_with("a\nb\nc\nd\ne", 10);
-        a.apply(Action::SetPending(Pending::AfterZ));
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('z')));
         a.apply(Action::ScrollCursorTo(ScrollPos::Center));
-        assert_eq!(a.pending, Pending::None);
+        assert!(a.partial_chord.is_empty());
     }
 
     #[test]
-    fn set_mark_clears_pending() {
+    fn set_mark_clears_partial_chord() {
         let mut a = app_with("hello", 10);
-        a.apply(Action::SetPending(Pending::AfterSetMark));
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('m')));
         a.apply(Action::SetMark('a'));
-        assert_eq!(a.pending, Pending::None);
+        assert!(a.partial_chord.is_empty());
     }
 
     #[test]
-    fn select_register_clears_pending() {
+    fn select_register_clears_partial_chord() {
         let mut a = app_with("hello", 10);
-        a.apply(Action::SetPending(Pending::AfterRegister));
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('"')));
         a.apply(Action::SelectRegister(Register::Named('a')));
-        assert_eq!(a.pending, Pending::None);
+        assert!(a.partial_chord.is_empty());
     }
 
     #[test]
-    fn jump_to_mark_clears_pending() {
+    fn jump_to_mark_clears_partial_chord() {
         let mut a = app_with("hello\nworld", 10);
         a.apply(Action::SetMark('a'));
-        a.apply(Action::SetPending(Pending::AfterJumpMarkExact));
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('`')));
         a.apply(Action::JumpToMarkExact('a'));
-        assert_eq!(a.pending, Pending::None);
+        assert!(a.partial_chord.is_empty());
     }
 
     #[test]
-    fn play_macro_clears_pending() {
+    fn play_macro_clears_partial_chord() {
         let mut a = app_with("hello", 10);
-        a.apply(Action::SetPending(Pending::AfterMacroPlay));
-        // No macro recorded; this errors but should still clear pending.
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('@')));
+        // No macro recorded; this errors but should still clear partial_chord.
         a.apply(Action::PlayMacro('z'));
-        assert_eq!(a.pending, Pending::None);
+        assert!(a.partial_chord.is_empty());
     }
 
     #[test]
-    fn fold_action_clears_pending() {
+    fn fold_action_clears_partial_chord() {
         let mut a = app_with("a\nb\nc", 10);
-        a.apply(Action::SetPending(Pending::AfterZ));
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('z')));
         a.apply(Action::OpenFoldAtCursor);
-        assert_eq!(a.pending, Pending::None);
+        assert!(a.partial_chord.is_empty());
     }
 
     #[test]
@@ -18783,9 +18744,9 @@ mod tests {
         // `2dw` -> delete 2 words from cursor.
         let mut a = app_with("one two three four five", 10);
         a.apply(Action::PushDigit(2));
-        // SetPending latches the count as op_count.
-        a.apply(Action::SetPending(Pending::AfterOperator(
-            a.builtins.delete,
+        // Slice 8.i.4.c: AbsorbOperatorPrefix latches the count as op_count.
+        a.apply(Action::Invoke(CommandInvocation::of(
+            a.action_ids.absorb_operator_delete,
         )));
         assert_eq!(a.op_count, 2);
         assert_eq!(a.pending_count, 0);
@@ -18803,8 +18764,8 @@ mod tests {
         // `2d3w`: op_count = 2, motion count = 3, final count = 6.
         let mut a = app_with("a b c d e f g h i j", 10);
         a.apply(Action::PushDigit(2));
-        a.apply(Action::SetPending(Pending::AfterOperator(
-            a.builtins.delete,
+        a.apply(Action::Invoke(CommandInvocation::of(
+            a.action_ids.absorb_operator_delete,
         )));
         assert_eq!(a.op_count, 2);
         a.apply(Action::PushDigit(3));
@@ -18824,8 +18785,8 @@ mod tests {
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
         a.apply(Action::PushDigit(2));
-        a.apply(Action::SetPending(Pending::AfterOperator(
-            a.builtins.delete,
+        a.apply(Action::Invoke(CommandInvocation::of(
+            a.action_ids.absorb_operator_delete,
         )));
         assert_eq!(a.op_count, 2);
         let inv = CommandInvocation::of(a.builtins.delete.0)
@@ -18852,8 +18813,8 @@ mod tests {
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
         a.apply(Action::PushDigit(2));
-        a.apply(Action::SetPending(Pending::AfterOperator(
-            a.builtins.indent_right,
+        a.apply(Action::Invoke(CommandInvocation::of(
+            a.action_ids.absorb_operator_indent_right,
         )));
         let inv = CommandInvocation::of(a.builtins.indent_right.0)
             .with_range(lattice_grammar::Range::CurrentLine);
@@ -18869,8 +18830,8 @@ mod tests {
         let mut a = app_with("    one\n    two\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
         a.apply(Action::PushDigit(2));
-        a.apply(Action::SetPending(Pending::AfterOperator(
-            a.builtins.indent_left,
+        a.apply(Action::Invoke(CommandInvocation::of(
+            a.action_ids.absorb_operator_indent_left,
         )));
         let inv = CommandInvocation::of(a.builtins.indent_left.0)
             .with_range(lattice_grammar::Range::CurrentLine);

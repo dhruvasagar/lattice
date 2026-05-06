@@ -37,6 +37,20 @@ use crate::modal::{ModalState, SearchDirection, VisualKind};
 use crate::register::Register;
 use crate::registry::OperatorId;
 
+/// Vim's `<C-w>` pane-navigation direction. App-side concept
+/// hosted here so `AppEffect::NavigatePane(PaneDirection)` can
+/// carry the typed payload without `lattice-ui-tui` having to
+/// dance through a dependency cycle. Slice 8.i.4.d hoist; the
+/// App's previous `crate::pane::PaneDirection` becomes a
+/// `pub use` re-export of this type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaneDirection {
+    Left,
+    Down,
+    Up,
+    Right,
+}
+
 /// Vim's `H` / `M` / `L` target positions: where in the visible
 /// viewport the cursor lands. App-side concept hosted here so
 /// `AppEffect::JumpViewport(ViewportPos)` can carry the typed
@@ -383,6 +397,26 @@ pub enum AppEffect {
     /// `gU`, `gu`, `g~` -- bind to typed actions whose
     /// `ApplySpec` returns this variant.
     AbsorbOperatorPrefix(OperatorId),
+    /// Vim's `<C-w>s`: split the active pane horizontally.
+    /// Promoted from `Action::SplitPaneHorizontal` in slice 8.i.4.d.
+    SplitPaneHorizontal,
+    /// Vim's `<C-w>v`: split the active pane vertically.
+    /// Promoted from `Action::SplitPaneVertical` in slice 8.i.4.d.
+    SplitPaneVertical,
+    /// Vim's `<C-w>c` / `<C-w>q`: close the active pane.
+    /// Promoted from `Action::ClosePane` in slice 8.i.4.d.
+    ClosePane,
+    /// Vim's `<C-w>h/j/k/l` (and arrow / `<BS>` aliases): move
+    /// focus to the pane in the named direction. Promoted from
+    /// `Action::NavigatePane(_)` in slice 8.i.4.d.
+    NavigatePane(PaneDirection),
+    /// Vim's `<C-w>w` / `<C-w><Tab>`: cycle focus to the next
+    /// pane. Promoted from `Action::NextPane` in slice 8.i.4.d.
+    NextPane,
+    /// Vim's `<C-w>W` / `<C-w><S-Tab>`: cycle focus to the
+    /// previous pane. Promoted from `Action::PrevPane` in
+    /// slice 8.i.4.d.
+    PrevPane,
 }
 
 #[cfg(test)]

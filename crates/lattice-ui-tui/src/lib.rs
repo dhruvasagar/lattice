@@ -43,7 +43,7 @@ pub mod oil;
 pub mod theme;
 pub mod tui_options;
 
-pub use app::{Action, App, EchoLevel, EchoMessage, Pending};
+pub use app::{Action, App, EchoLevel, EchoMessage};
 pub use buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
 pub use buffers::{BufferFlags, BufferId, BufferKind};
 pub use excommand::ExCommandError;

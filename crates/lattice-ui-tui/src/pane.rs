@@ -178,14 +178,12 @@ pub enum SplitOrientation {
 }
 
 /// `<C-w>h/j/k/l` cardinal navigation. Geometry-aware: walks the
-/// tree to find the spatial neighbour of the active pane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PaneDirection {
-    Left,
-    Down,
-    Up,
-    Right,
-}
+/// tree to find the spatial neighbour of the active pane. Slice
+/// 8.i.4.d hoisted the type into `lattice_grammar::app_effect`
+/// so `AppEffect::NavigatePane(PaneDirection)` can carry it; this
+/// is a re-export so existing `crate::pane::PaneDirection`
+/// callers stay compiling.
+pub use lattice_grammar::PaneDirection;
 
 /// The pane tree owned by [`App`] (DESIGN.md §5.9). v1 supports
 /// arbitrary recursive splits; the sole constraint is that the

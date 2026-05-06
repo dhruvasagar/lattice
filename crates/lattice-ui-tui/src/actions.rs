@@ -20,6 +20,7 @@
 use lattice_grammar::AppEffect;
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::ModalState;
+use lattice_grammar::PaneDirection;
 use lattice_grammar::Register;
 use lattice_grammar::ScrollPos;
 use lattice_grammar::SearchDirection;
@@ -132,6 +133,15 @@ pub struct ActionIds {
     pub absorb_operator_upper: CommandId,
     pub absorb_operator_lower: CommandId,
     pub absorb_operator_toggle_case: CommandId,
+    pub split_pane_horizontal: CommandId,
+    pub split_pane_vertical: CommandId,
+    pub close_pane: CommandId,
+    pub navigate_pane_left: CommandId,
+    pub navigate_pane_down: CommandId,
+    pub navigate_pane_up: CommandId,
+    pub navigate_pane_right: CommandId,
+    pub next_pane: CommandId,
+    pub prev_pane: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -672,6 +682,60 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Vim's `g~`: arm operator-pending for toggle-case.",
             builtins.toggle_case,
         ),
+        split_pane_horizontal: register_simple(
+            registry,
+            "action:split-pane-horizontal",
+            "Vim's `<C-w>s`: split the active pane horizontally.",
+            AppEffect::SplitPaneHorizontal,
+        ),
+        split_pane_vertical: register_simple(
+            registry,
+            "action:split-pane-vertical",
+            "Vim's `<C-w>v`: split the active pane vertically.",
+            AppEffect::SplitPaneVertical,
+        ),
+        close_pane: register_simple(
+            registry,
+            "action:close-pane",
+            "Vim's `<C-w>c`: close the active pane.",
+            AppEffect::ClosePane,
+        ),
+        navigate_pane_left: register_simple(
+            registry,
+            "action:navigate-pane-left",
+            "Vim's `<C-w>h`: move focus to the pane on the left.",
+            AppEffect::NavigatePane(PaneDirection::Left),
+        ),
+        navigate_pane_down: register_simple(
+            registry,
+            "action:navigate-pane-down",
+            "Vim's `<C-w>j`: move focus to the pane below.",
+            AppEffect::NavigatePane(PaneDirection::Down),
+        ),
+        navigate_pane_up: register_simple(
+            registry,
+            "action:navigate-pane-up",
+            "Vim's `<C-w>k`: move focus to the pane above.",
+            AppEffect::NavigatePane(PaneDirection::Up),
+        ),
+        navigate_pane_right: register_simple(
+            registry,
+            "action:navigate-pane-right",
+            "Vim's `<C-w>l`: move focus to the pane on the right.",
+            AppEffect::NavigatePane(PaneDirection::Right),
+        ),
+        next_pane: register_simple(
+            registry,
+            "action:next-pane",
+            "Vim's `<C-w>w`: cycle focus to the next pane.",
+            AppEffect::NextPane,
+        ),
+        prev_pane: register_simple(
+            registry,
+            "action:prev-pane",
+            "Vim's `<C-w>W`: cycle focus to the previous pane.",
+            AppEffect::PrevPane,
+        ),
     }
 }
 
@@ -863,6 +927,15 @@ mod tests {
             (ids.absorb_operator_upper, "action:absorb-operator-upper"),
             (ids.absorb_operator_lower, "action:absorb-operator-lower"),
             (ids.absorb_operator_toggle_case, "action:absorb-operator-toggle-case"),
+            (ids.split_pane_horizontal, "action:split-pane-horizontal"),
+            (ids.split_pane_vertical, "action:split-pane-vertical"),
+            (ids.close_pane, "action:close-pane"),
+            (ids.navigate_pane_left, "action:navigate-pane-left"),
+            (ids.navigate_pane_down, "action:navigate-pane-down"),
+            (ids.navigate_pane_up, "action:navigate-pane-up"),
+            (ids.navigate_pane_right, "action:navigate-pane-right"),
+            (ids.next_pane, "action:next-pane"),
+            (ids.prev_pane, "action:prev-pane"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

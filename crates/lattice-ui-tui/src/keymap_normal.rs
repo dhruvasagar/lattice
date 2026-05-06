@@ -76,10 +76,11 @@ use lattice_grammar::SourceLocation;
 use lattice_grammar::args::Args;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
+use lattice_protocol::ids::CommandId;
 use lattice_grammar::{ModalState, SearchDirection, Target, VisualKind};
 
 use crate::actions::ActionIds;
-use crate::app::{Action, FindKind, Pending, ScrollPos, ViewportPos};
+use crate::app::{Action, FindKind, ScrollPos, ViewportPos};
 use crate::pane::PaneDirection;
 use lattice_grammar::register::Register;
 use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
@@ -972,7 +973,7 @@ pub fn register_normal_bindings(
     // `AbsorbPartialChord` (same shape as `g` / `z` / `m` / `'`
     // / etc. above). Children of `[<C-w>, *]` register their
     // resolutions below.
-    register_ctrl_w_sub_tree(handle);
+    register_ctrl_w_sub_tree(handle, actions);
 }
 
 /// Register every `[<C-w>, X]` path covered by the legacy
@@ -981,7 +982,7 @@ pub fn register_normal_bindings(
 /// (`<C-w>l`) variants navigate identically. Many terminals
 /// also collapse `<C-h>` to Backspace and `<C-i>` to Tab; we
 /// honour those mappings via the bare-key paths.
-fn register_ctrl_w_sub_tree(handle: &KeymapHandle) {
+fn register_ctrl_w_sub_tree(handle: &KeymapHandle, actions: &ActionIds) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
     let cw = lit(KeyChord::ctrl('w'));
@@ -989,36 +990,42 @@ fn register_ctrl_w_sub_tree(handle: &KeymapHandle) {
     // Bare-key second chord (NextPane / PrevPane / split / close /
     // navigate). Includes the Tab / BackTab / arrow / Backspace
     // aliases the legacy supported.
-    let bare_table: &[(&[ChordPattern], Action)] = &[
+    // Slice 8.i.4.d: pane chords routed through typed
+    // `CommandKind::Action` invocations. Each chord binds the
+    // resolved action's `CommandId` directly; App's
+    // `apply_app_effect` maps `AppEffect::*Pane*` to the
+    // legacy `Action::*Pane*` arms (the latter retire when
+    // those arms are inlined in a future cleanup slice).
+    let bare_table: &[(&[ChordPattern], CommandId)] = &[
         (
             &[lit_char('s'), lit_char('S')],
-            Action::SplitPaneHorizontal,
+            actions.split_pane_horizontal,
         ),
-        (&[lit_char('v')], Action::SplitPaneVertical),
-        (&[lit_char('c'), lit_char('q')], Action::ClosePane),
+        (&[lit_char('v')], actions.split_pane_vertical),
+        (&[lit_char('c'), lit_char('q')], actions.close_pane),
         (
             &[
                 lit_char('h'),
                 lit_special(SpecialKey::Left),
                 lit_special(SpecialKey::Backspace),
             ],
-            Action::NavigatePane(PaneDirection::Left),
+            actions.navigate_pane_left,
         ),
         (
             &[lit_char('j'), lit_special(SpecialKey::Down)],
-            Action::NavigatePane(PaneDirection::Down),
+            actions.navigate_pane_down,
         ),
         (
             &[lit_char('k'), lit_special(SpecialKey::Up)],
-            Action::NavigatePane(PaneDirection::Up),
+            actions.navigate_pane_up,
         ),
         (
             &[lit_char('l'), lit_special(SpecialKey::Right)],
-            Action::NavigatePane(PaneDirection::Right),
+            actions.navigate_pane_right,
         ),
         (
             &[lit_char('w'), lit_special(SpecialKey::Tab)],
-            Action::NextPane,
+            actions.next_pane,
         ),
         (
             &[
@@ -1028,16 +1035,16 @@ fn register_ctrl_w_sub_tree(handle: &KeymapHandle) {
                     mods: KeyMods::SHIFT,
                 }),
             ],
-            Action::PrevPane,
+            actions.prev_pane,
         ),
     ];
-    for (chords, action) in bare_table {
+    for (chords, action_id) in bare_table {
         for chord in chords.iter() {
-            handle.bind_legacy(
+            handle.bind(
                 layer,
                 mode,
                 &[cw.clone(), chord.clone()],
-                action.clone(),
+                CommandInvocation::of(*action_id),
                 source(),
             );
         }
@@ -1050,23 +1057,23 @@ fn register_ctrl_w_sub_tree(handle: &KeymapHandle) {
     // pending arm runs (so the `<C-c>` registration is
     // unreachable in practice -- kept for parity with the
     // legacy table).
-    let ctrl_table: &[(char, Action)] = &[
-        ('w', Action::NextPane),
-        ('h', Action::NavigatePane(PaneDirection::Left)),
-        ('j', Action::NavigatePane(PaneDirection::Down)),
-        ('k', Action::NavigatePane(PaneDirection::Up)),
-        ('l', Action::NavigatePane(PaneDirection::Right)),
-        ('s', Action::SplitPaneHorizontal),
-        ('v', Action::SplitPaneVertical),
-        ('c', Action::ClosePane),
-        ('q', Action::ClosePane),
+    let ctrl_table: &[(char, CommandId)] = &[
+        ('w', actions.next_pane),
+        ('h', actions.navigate_pane_left),
+        ('j', actions.navigate_pane_down),
+        ('k', actions.navigate_pane_up),
+        ('l', actions.navigate_pane_right),
+        ('s', actions.split_pane_horizontal),
+        ('v', actions.split_pane_vertical),
+        ('c', actions.close_pane),
+        ('q', actions.close_pane),
     ];
-    for (c, action) in ctrl_table {
-        handle.bind_legacy(
+    for (c, action_id) in ctrl_table {
+        handle.bind(
             layer,
             mode,
             &[cw.clone(), lit(KeyChord::ctrl(*c))],
-            action.clone(),
+            CommandInvocation::of(*action_id),
             source(),
         );
     }
@@ -1395,7 +1402,7 @@ pub fn lookup_normal(handle: &KeymapHandle, event: &KeyEvent) -> Option<Action> 
 /// sequence already absorbed; this helper appends the
 /// normalised current chord and looks the resulting path up in
 /// the trie. `Bound` -> the bound action; everything else
-/// (`Partial` / `Unbound`) -> `Action::SetPending(Pending::None)`
+/// (`Partial` / `Unbound`) -> `Action::None`
 /// to drop the pending state, matching every legacy
 /// `resolve_after_*`'s catchall.
 ///
@@ -1414,7 +1421,7 @@ pub fn lookup_normal_with_prefix(
     event: &KeyEvent,
 ) -> Action {
     let Some(raw_chord) = KeyChord::from_event(event) else {
-        return Action::SetPending(Pending::None);
+        return Action::None;
     };
     let chord = normalize_for_normal_lookup(raw_chord);
     let mut path: Vec<KeyChord> = prefix.to_vec();
@@ -1434,7 +1441,7 @@ pub fn lookup_normal_with_prefix(
             // `df` (find-char prefix).
             Action::AbsorbPartialChord(chord)
         }
-        LookupResult::Unbound => Action::SetPending(Pending::None),
+        LookupResult::Unbound => Action::None,
     }
 }
 
@@ -1565,7 +1572,7 @@ fn action_from_bound_with_capture(
 }
 
 /// Substitute the captured wildcard char into a Normal-mode
-/// action. Returns `Action::SetPending(Pending::None)` when the
+/// action. Returns `Action::None` when the
 /// captured char is invalid for the action shape (e.g. a
 /// non-alphanumeric mark name) -- mirrors the legacy
 /// `_ => SetPending(None)` catchall in `resolve_after_set_mark`,
@@ -1576,32 +1583,32 @@ fn substitute_normal_capture(action: Action, c: char) -> Action {
             if c.is_ascii_alphanumeric() {
                 Action::SetMark(c)
             } else {
-                Action::SetPending(Pending::None)
+                Action::None
             }
         }
         Action::JumpToMarkLine(_) => {
             if c.is_ascii_alphanumeric() {
                 Action::JumpToMarkLine(c)
             } else {
-                Action::SetPending(Pending::None)
+                Action::None
             }
         }
         Action::JumpToMarkExact(_) => {
             if c.is_ascii_alphanumeric() {
                 Action::JumpToMarkExact(c)
             } else {
-                Action::SetPending(Pending::None)
+                Action::None
             }
         }
         Action::SelectRegister(_) => match register_for_char(c) {
             Some(reg) => Action::SelectRegister(reg),
-            None => Action::SetPending(Pending::None),
+            None => Action::None,
         },
         Action::StartMacroRecord(_) => {
             if c.is_ascii_alphanumeric() {
                 Action::StartMacroRecord(c)
             } else {
-                Action::SetPending(Pending::None)
+                Action::None
             }
         }
         Action::PlayMacro(_) => {
@@ -1611,7 +1618,7 @@ fn substitute_normal_capture(action: Action, c: char) -> Action {
             } else if c.is_ascii_alphanumeric() {
                 Action::PlayMacro(c)
             } else {
-                Action::SetPending(Pending::None)
+                Action::None
             }
         }
         Action::Invoke(inv) => {
@@ -1956,7 +1963,7 @@ mod tests {
         // into partial_chord. The trie returns Partial because
         // `[d, i, w]` etc. are bound; lookup_normal_with_prefix
         // emits `AbsorbPartialChord(i)`.
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d')],
@@ -2014,7 +2021,7 @@ mod tests {
         // Slice 8.i.4.c: with prefix [d], pressing `f` absorbs
         // into partial_chord. The trie returns Partial because
         // `[d, f, *]` is bound (find-char wildcard).
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d')],
@@ -2028,13 +2035,13 @@ mod tests {
 
     #[test]
     fn d_unrecognised_drops_pending() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d')],
             &ev(KeyCode::Char('Q'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::SetPending(Pending::None)));
+        assert!(matches!(r, Action::None));
     }
 
     /// Doubled-operator under the `g` prefix: `gUU` -> linewise
@@ -2087,7 +2094,7 @@ mod tests {
     #[test]
     fn g_absorbs_partial_chord() {
         // Slice 8.i.4.a: trie's `Partial` -> `AbsorbPartialChord(g)`.
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('g'), KeyModifiers::NONE));
         assert!(matches!(
             r,
@@ -2098,7 +2105,7 @@ mod tests {
     #[test]
     fn z_absorbs_partial_chord() {
         // Slice 8.i.4.a: trie's `Partial` -> `AbsorbPartialChord(z)`.
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('z'), KeyModifiers::NONE));
         assert!(matches!(
             r,
@@ -2236,24 +2243,24 @@ mod tests {
 
     #[test]
     fn z_unrecognized_drops_pending() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
             &ev(KeyCode::Char('X'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::SetPending(Pending::None)));
+        assert!(matches!(r, Action::None));
     }
 
     #[test]
     fn z_esc_drops_pending() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
             &ev(KeyCode::Esc, KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::SetPending(Pending::None)));
+        assert!(matches!(r, Action::None));
     }
 
     /// Slice 8.g.v: `q` outside macro recording arms
@@ -2264,7 +2271,7 @@ mod tests {
     #[test]
     fn q_absorbs_partial_chord() {
         // Slice 8.i.4.a: trie's `Partial` -> `AbsorbPartialChord(q)`.
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(matches!(
             r,
@@ -2529,13 +2536,13 @@ mod tests {
     /// alternative chord representation is the trie's invariant.
     #[test]
     fn f_ctrl_x_falls_through_to_drop_pending() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('f')],
             &ev(KeyCode::Char('x'), KeyModifiers::CONTROL),
         );
-        assert!(matches!(r, Action::SetPending(Pending::None)));
+        assert!(matches!(r, Action::None));
     }
 
     /// `<S-h>`'s SHIFT is stripped by `KeyChord::from_event`
@@ -2661,8 +2668,14 @@ mod tests {
         assert!(matches!(r, Action::ExitVisual));
         let r = attach_count(Action::None, 0, 0);
         assert!(matches!(r, Action::None));
-        let r = attach_count(Action::SetPending(Pending::AfterG), 5, 0);
-        assert!(matches!(r, Action::SetPending(Pending::AfterG)));
+        // Slice 8.i.4.d: AbsorbPartialChord is the new "non-Invoke
+        // pass-through" attach_count case (was SetPending(_)).
+        let r = attach_count(
+            Action::AbsorbPartialChord(KeyChord::char('g')),
+            5,
+            0,
+        );
+        assert!(matches!(r, Action::AbsorbPartialChord(_)));
     }
 
     #[test]
@@ -2733,7 +2746,7 @@ mod tests {
     #[test]
     fn ctrl_w_absorbs_partial_chord() {
         // Slice 8.i.4.a: trie's `Partial` -> `AbsorbPartialChord(<C-w>)`.
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal(
             &h,
             &ev(KeyCode::Char('w'), KeyModifiers::CONTROL),
@@ -2746,73 +2759,76 @@ mod tests {
 
     #[test]
     fn ctrl_w_then_l_navigates_pane_right() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
             &ev(KeyCode::Char('l'), KeyModifiers::NONE),
         );
-        assert!(matches!(
-            r,
-            Action::NavigatePane(crate::pane::PaneDirection::Right)
-        ));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.navigate_pane_right),
+            other => panic!("expected Invoke(navigate_pane_right), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_w_then_ctrl_l_also_navigates_pane_right() {
         // Vim accepts ctrl-modified second keys after `<C-w>`
         // (sticky-prefix muscle memory).
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
             &ev(KeyCode::Char('l'), KeyModifiers::CONTROL),
         );
-        assert!(matches!(
-            r,
-            Action::NavigatePane(crate::pane::PaneDirection::Right)
-        ));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.navigate_pane_right),
+            other => panic!("expected Invoke(navigate_pane_right), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_w_then_arrow_left_navigates_pane_left() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
             &ev(KeyCode::Left, KeyModifiers::NONE),
         );
-        assert!(matches!(
-            r,
-            Action::NavigatePane(crate::pane::PaneDirection::Left)
-        ));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.navigate_pane_left),
+            other => panic!("expected Invoke(navigate_pane_left), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_w_then_backspace_navigates_pane_left() {
         // Many terminals collapse `<C-h>` to Backspace; the
         // bare-Backspace path covers that.
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
             &ev(KeyCode::Backspace, KeyModifiers::NONE),
         );
-        assert!(matches!(
-            r,
-            Action::NavigatePane(crate::pane::PaneDirection::Left)
-        ));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.navigate_pane_left),
+            other => panic!("expected Invoke(navigate_pane_left), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_w_then_tab_cycles_to_next_pane() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
             &ev(KeyCode::Tab, KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::NextPane));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.next_pane),
+            other => panic!("expected Invoke(next_pane), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2820,57 +2836,69 @@ mod tests {
         // BackTab normalises to chord `(Tab, SHIFT)` via
         // `KeyChord::from_event`; the trie has the explicit
         // `<S-Tab>` registration under `[<C-w>]`.
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
             &ev(KeyCode::BackTab, KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::PrevPane));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.prev_pane),
+            other => panic!("expected Invoke(prev_pane), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_w_then_v_splits_vertical() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
             &ev(KeyCode::Char('v'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::SplitPaneVertical));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.split_pane_vertical),
+            other => panic!("expected Invoke(split_pane_vertical), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_w_then_capital_s_splits_horizontal() {
         // `<C-w>S` is a legacy alias for `<C-w>s`.
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
             &ev(KeyCode::Char('S'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::SplitPaneHorizontal));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.split_pane_horizontal),
+            other => panic!("expected Invoke(split_pane_horizontal), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_w_then_q_closes_pane() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
             &ev(KeyCode::Char('q'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::ClosePane));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.close_pane),
+            other => panic!("expected Invoke(close_pane), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_w_then_esc_drops_pending() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
             &ev(KeyCode::Esc, KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::SetPending(Pending::None)));
+        assert!(matches!(r, Action::None));
     }
 }

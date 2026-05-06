@@ -107,7 +107,7 @@ use lattice_grammar::CommandInvocation;
 use lattice_grammar::SourceLocation;
 
 use crate::actions::ActionIds;
-use crate::app::{Action, Pending};
+use crate::app::Action;
 use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
@@ -347,13 +347,12 @@ pub fn active_snippet_layer_bindings() -> HashMap<BindingMode, KeymapTrie> {
 pub fn dispatch_insert(
     handle: &KeymapHandle,
     event: &KeyEvent,
-    pending: Pending,
     partial_chord: &[KeyChord],
 ) -> Action {
-    // Slice 8.i.4.b: partial-chord dispatch wins when a previous
+    // Slice 8.i.4: partial-chord dispatch wins when a previous
     // keystroke absorbed a prefix into `App::partial_chord`.
-    // This replaces the legacy `Pending::AfterCtrlX` short-circuit
-    // for the `<C-x>` family (`<C-x><C-o>` / `<C-x><C-s>`).
+    // This drives the `<C-x>` family (`<C-x><C-o>` /
+    // `<C-x><C-s>`) and any future Insert-mode multi-key chord.
     if !partial_chord.is_empty() {
         let Some(chord) = KeyChord::from_event(event) else {
             return Action::None;
@@ -367,15 +366,6 @@ pub fn dispatch_insert(
             }
             _ => Action::None,
         };
-    }
-    // Defensive: the legacy `AfterCtrlX` arm is unreachable
-    // post-8.i.4.b (the keymap no longer fires
-    // `SetPending(AfterCtrlX)` -- the trie returns `Partial` and
-    // `lookup_normal`-style synthesis now emits
-    // `AbsorbPartialChord` from below). Keep the arm as a no-op
-    // until 8.i.4.c retires the Pending enum entirely.
-    if matches!(pending, Pending::AfterCtrlX) {
-        return Action::SetPending(Pending::None);
     }
 
     let Some(raw_chord) = KeyChord::from_event(event) else {
@@ -565,7 +555,7 @@ mod tests {
     fn esc_in_base_insert_returns_to_normal() {
         let h = populated_handle();
         let a = shared_actions();
-        match dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), Pending::None, &[]) {
+        match dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), &[]) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_mode_normal),
             other => panic!("expected Invoke(enter_mode_normal), got {other:?}"),
         }
@@ -578,7 +568,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Backspace, KeyModifiers::NONE),
-            Pending::None,
             &[],
         );
         match r {
@@ -594,7 +583,6 @@ mod tests {
         match dispatch_insert(
             &h,
             &ev(KeyCode::Enter, KeyModifiers::NONE),
-            Pending::None,
             &[],
         ) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.insert_newline),
@@ -606,7 +594,7 @@ mod tests {
     fn tab_in_base_insert_inserts_tab() {
         let h = populated_handle();
         let a = shared_actions();
-        match dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), Pending::None, &[]) {
+        match dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), &[]) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.insert_tab),
             other => panic!("expected Invoke(insert_tab), got {other:?}"),
         }
@@ -619,7 +607,6 @@ mod tests {
             match dispatch_insert(
                 &h,
                 &ev(KeyCode::Char(c), KeyModifiers::NONE),
-                Pending::None,
                 &[],
             ) {
                 Action::Insert(s) => assert_eq!(s, c.to_string()),
@@ -635,7 +622,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char('y'), KeyModifiers::CONTROL),
-            Pending::None,
             &[],
         );
         assert!(matches!(r, Action::None));
@@ -648,7 +634,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char(' '), KeyModifiers::CONTROL),
-            Pending::None,
             &[],
         );
         match r {
@@ -670,7 +655,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char('x'), KeyModifiers::CONTROL),
-            Pending::None,
             &[],
         );
         match r {
@@ -688,7 +672,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char('o'), KeyModifiers::CONTROL),
-            Pending::None,
             &[KeyChord::ctrl('x')],
         );
         match r {
@@ -704,7 +687,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char('s'), KeyModifiers::CONTROL),
-            Pending::None,
             &[KeyChord::ctrl('x')],
         );
         match r {
@@ -724,7 +706,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char('q'), KeyModifiers::CONTROL),
-            Pending::None,
             &[KeyChord::ctrl('x')],
         );
         assert!(matches!(r, Action::None));
@@ -738,7 +719,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            Pending::None,
             &[],
         );
         assert!(matches!(r, Action::CompletionNext));
@@ -750,7 +730,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Down, KeyModifiers::NONE),
-            Pending::None,
             &[],
         );
         assert!(matches!(r, Action::CompletionNext));
@@ -759,7 +738,7 @@ mod tests {
     #[test]
     fn popup_tab_accepts() {
         let h = populated_handle_with_popup();
-        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), Pending::None, &[]);
+        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), &[]);
         assert!(matches!(r, Action::CompletionAccept));
     }
 
@@ -769,7 +748,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Enter, KeyModifiers::NONE),
-            Pending::None,
             &[],
         );
         assert!(matches!(r, Action::CompletionAccept));
@@ -778,7 +756,7 @@ mod tests {
     #[test]
     fn popup_esc_cancels_and_exits_insert() {
         let h = populated_handle_with_popup();
-        let r = dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), Pending::None, &[]);
+        let r = dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), &[]);
         assert!(matches!(r, Action::CompletionCancelAndExitInsert));
     }
 
@@ -788,7 +766,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char('e'), KeyModifiers::CONTROL),
-            Pending::None,
             &[],
         );
         assert!(matches!(r, Action::CompletionCancel));
@@ -800,7 +777,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char('a'), KeyModifiers::NONE),
-            Pending::None,
             &[],
         );
         match r {
@@ -818,7 +794,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char('x'), KeyModifiers::CONTROL),
-            Pending::None,
             &[],
         );
         match r {
@@ -832,7 +807,7 @@ mod tests {
     #[test]
     fn snippet_tab_jumps_to_next_placeholder() {
         let h = populated_handle_with_snippet();
-        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), Pending::None, &[]);
+        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), &[]);
         assert!(matches!(r, Action::SnippetNextPlaceholder));
     }
 
@@ -842,7 +817,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::BackTab, KeyModifiers::NONE),
-            Pending::None,
             &[],
         );
         assert!(matches!(r, Action::SnippetPrevPlaceholder));
@@ -854,7 +828,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Tab, KeyModifiers::SHIFT),
-            Pending::None,
             &[],
         );
         assert!(matches!(r, Action::SnippetPrevPlaceholder));
@@ -863,7 +836,7 @@ mod tests {
     #[test]
     fn snippet_esc_leaves_snippet() {
         let h = populated_handle_with_snippet();
-        let r = dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), Pending::None, &[]);
+        let r = dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), &[]);
         assert!(matches!(r, Action::SnippetLeave));
     }
 
@@ -873,7 +846,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char('z'), KeyModifiers::NONE),
-            Pending::None,
             &[],
         );
         match r {
@@ -887,7 +859,7 @@ mod tests {
     #[test]
     fn popup_wins_over_snippet_for_tab() {
         let h = populated_handle_with_both();
-        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), Pending::None, &[]);
+        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), &[]);
         // Popup binds <Tab> -> CompletionAccept; snippet binds
         // <Tab> -> SnippetNextPlaceholder. Popup pushed last
         // (higher LayerId) so popup wins.
@@ -897,7 +869,7 @@ mod tests {
     #[test]
     fn popup_wins_over_snippet_for_esc() {
         let h = populated_handle_with_both();
-        let r = dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), Pending::None, &[]);
+        let r = dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), &[]);
         assert!(matches!(r, Action::CompletionCancelAndExitInsert));
     }
 
@@ -909,7 +881,6 @@ mod tests {
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::BackTab, KeyModifiers::NONE),
-            Pending::None,
             &[],
         );
         assert!(matches!(r, Action::SnippetPrevPlaceholder));

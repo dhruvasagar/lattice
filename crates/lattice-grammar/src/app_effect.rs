@@ -217,6 +217,13 @@ pub enum AppEffect {
     /// surfacing the completion popup). Promoted from
     /// `Action::SnippetExpand` in slice 8.i.1.g.
     SnippetExpand,
+    /// Visual mode's `<Esc>` / `v` / `V`. Exit Visual to Normal,
+    /// collapsing the selection. Promoted from `Action::ExitVisual`
+    /// in slice 8.i.1.h.
+    ExitVisual,
+    /// Replace mode's `<BS>`. Undo the last overwritten char.
+    /// Promoted from `Action::ReplaceUndoLast` in slice 8.i.1.h.
+    ReplaceUndoLast,
 }
 
 #[cfg(test)]

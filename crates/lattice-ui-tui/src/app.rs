@@ -2505,8 +2505,8 @@ impl App {
                 // (8.g.i) covers the simple single-key
                 // bindings.
                 let h = crate::keymap_registry::KeymapHandle::new();
-                crate::keymap_replace::register_replace_bindings(&h);
-                crate::keymap_visual::register_visual_bindings(&h, &builtins);
+                crate::keymap_replace::register_replace_bindings(&h, &action_ids);
+                crate::keymap_visual::register_visual_bindings(&h, &builtins, &action_ids);
                 crate::keymap_insert::register_insert_bindings(&h, &action_ids);
                 crate::keymap_normal::register_normal_bindings(&h, &builtins, &action_ids);
                 h
@@ -11771,6 +11771,8 @@ impl App {
             AppEffect::DeleteCharBackward => self.apply(Action::DeleteCharBackward),
             AppEffect::CompletionTrigger => self.apply(Action::CompletionTrigger),
             AppEffect::SnippetExpand => self.apply(Action::SnippetExpand),
+            AppEffect::ExitVisual => self.apply(Action::ExitVisual),
+            AppEffect::ReplaceUndoLast => self.apply(Action::ReplaceUndoLast),
         }
     }
 

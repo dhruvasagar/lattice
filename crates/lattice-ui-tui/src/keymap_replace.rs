@@ -50,8 +50,9 @@
 use std::sync::Arc;
 
 use crossterm::event::{KeyEvent, KeyModifiers};
-use lattice_grammar::{ModalState, SourceLocation};
+use lattice_grammar::{CommandInvocation, ModalState, SourceLocation};
 
+use crate::actions::ActionIds;
 use crate::app::Action;
 use crate::chord::{KeyChord, SpecialKey};
 use crate::keymap::BindingMode;
@@ -68,7 +69,7 @@ use crate::keymap_trie::{
 /// Sources are captured at this file + line so
 /// `:describe-key` shows e.g.
 /// `<Esc> -> EnterMode(Normal)  (builtin, keymap_replace.rs:71)`.
-pub fn register_replace_bindings(handle: &KeymapHandle) {
+pub fn register_replace_bindings(handle: &KeymapHandle, actions: &ActionIds) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Replace;
 
@@ -82,11 +83,11 @@ pub fn register_replace_bindings(handle: &KeymapHandle) {
     );
 
     // <BS> -> undo the last overwritten char.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[ChordPattern::Literal(KeyChord::special(SpecialKey::Backspace))],
-        Action::ReplaceUndoLast,
+        CommandInvocation::of(actions.replace_undo_last),
         replace_source(bs_line()),
     );
 
@@ -207,7 +208,13 @@ pub fn dispatch_replace(handle: &KeymapHandle, event: &KeyEvent) -> Action {
             // Bridge: pull the legacy `Action` out of
             // `BoundCommand`. For wildcard bindings, the
             // captured char overrides the `'\0'` placeholder
-            // baked at registration time.
+            // baked at registration time. For migrated bindings
+            // (slice 8.i; `legacy_action.is_none()`) surface an
+            // `Action::Invoke(...)` carrying the bound
+            // `CommandInvocation` -- the App's `run_invocation`
+            // routes it through the dispatcher's
+            // `CommandKind::Action` branch, which produces the
+            // matching `Effect::AppAction(...)`.
             match command.legacy_action.as_ref() {
                 Some(Action::OverwriteChar(_)) => {
                     if let Some(&c) = captured.first() {
@@ -217,7 +224,7 @@ pub fn dispatch_replace(handle: &KeymapHandle, event: &KeyEvent) -> Action {
                     }
                 }
                 Some(action) => action.clone(),
-                None => Action::None,
+                None => Action::Invoke(command.command.clone()),
             }
         }
         LookupResult::Partial | LookupResult::Unbound => Action::None,
@@ -243,23 +250,36 @@ mod tests {
     /// `input.rs::translate_replace` runs. Kept private to the
     /// drift test; once `translate_replace` switches to call
     /// `dispatch_replace`, this stays as the per-binding
-    /// regression net for slice 8.d.
-    fn legacy_translate_replace(event: KeyEvent) -> Action {
+    /// regression net for slice 8.d. Updated as variants migrate
+    /// from the legacy `Action` bridge to typed
+    /// `CommandInvocation` (slice 8.i).
+    fn legacy_translate_replace(event: KeyEvent, actions: &ActionIds) -> Action {
         if event.modifiers.contains(KeyModifiers::CONTROL) {
             return Action::None;
         }
         match event.code {
             KeyCode::Esc => Action::EnterMode(ModalState::Normal),
-            KeyCode::Backspace => Action::ReplaceUndoLast,
+            KeyCode::Backspace => Action::Invoke(CommandInvocation::of(actions.replace_undo_last)),
             KeyCode::Enter => Action::Insert("\n".into()),
             KeyCode::Char(c) => Action::OverwriteChar(c),
             _ => Action::None,
         }
     }
 
+    fn shared_actions() -> &'static ActionIds {
+        use std::sync::OnceLock;
+        static A: OnceLock<ActionIds> = OnceLock::new();
+        A.get_or_init(|| {
+            let mut r = lattice_grammar::CommandRegistry::new();
+            let _ = lattice_grammar::builtins::populate(&mut r);
+            let _ = lattice_grammar::ex_commands::populate(&mut r);
+            crate::actions::populate(&mut r)
+        })
+    }
+
     fn populated_handle() -> KeymapHandle {
         let h = KeymapHandle::new();
-        register_replace_bindings(&h);
+        register_replace_bindings(&h, shared_actions());
         h
     }
 
@@ -273,9 +293,12 @@ mod tests {
     #[test]
     fn backspace_undoes_last() {
         let h = populated_handle();
-        let r =
-            dispatch_replace(&h, &ev(KeyCode::Backspace, KeyModifiers::NONE));
-        assert!(matches!(r, Action::ReplaceUndoLast));
+        let a = shared_actions();
+        let r = dispatch_replace(&h, &ev(KeyCode::Backspace, KeyModifiers::NONE));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.replace_undo_last),
+            other => panic!("expected Invoke(replace_undo_last), got {other:?}"),
+        }
     }
 
     #[test]
@@ -363,7 +386,7 @@ mod tests {
         for &code in &codes {
             for &mods in &mod_sets {
                 let event = ev(code, mods);
-                let legacy = legacy_translate_replace(event);
+                let legacy = legacy_translate_replace(event, shared_actions());
                 let new = dispatch_replace(&h, &event);
                 assert!(
                     actions_equivalent(&legacy, &new),
@@ -374,7 +397,7 @@ mod tests {
         for &c in &chars {
             for &mods in &mod_sets {
                 let event = ev(KeyCode::Char(c), mods);
-                let legacy = legacy_translate_replace(event);
+                let legacy = legacy_translate_replace(event, shared_actions());
                 let new = dispatch_replace(&h, &event);
                 assert!(
                     actions_equivalent(&legacy, &new),
@@ -395,6 +418,11 @@ mod tests {
             (ReplaceUndoLast, ReplaceUndoLast) => true,
             (Insert(s1), Insert(s2)) => s1 == s2,
             (OverwriteChar(c1), OverwriteChar(c2)) => c1 == c2,
+            // Slice 8.i: migrated bindings emit `Invoke(...)` from
+            // both sides (legacy reference body + dispatch_replace).
+            (Invoke(a), Invoke(b)) => {
+                a.command == b.command && a.range == b.range && a.count == b.count
+            }
             _ => false,
         }
     }

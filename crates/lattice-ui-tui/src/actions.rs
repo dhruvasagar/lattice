@@ -75,6 +75,8 @@ pub struct ActionIds {
     pub delete_char_backward: CommandId,
     pub completion_trigger: CommandId,
     pub snippet_expand: CommandId,
+    pub exit_visual: CommandId,
+    pub replace_undo_last: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -347,6 +349,18 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
             "Insert mode's `<C-x><C-s>`: direct snippet expansion.",
             AppEffect::SnippetExpand,
         ),
+        exit_visual: register_simple(
+            registry,
+            "action:exit-visual",
+            "Visual mode's `<Esc>` / `v` / `V`: exit Visual to Normal.",
+            AppEffect::ExitVisual,
+        ),
+        replace_undo_last: register_simple(
+            registry,
+            "action:replace-undo-last",
+            "Replace mode's `<BS>`: undo the last overwritten char.",
+            AppEffect::ReplaceUndoLast,
+        ),
     }
 }
 
@@ -433,6 +447,8 @@ mod tests {
             (ids.delete_char_backward, "action:delete-char-backward"),
             (ids.completion_trigger, "action:completion-trigger"),
             (ids.snippet_expand, "action:snippet-expand"),
+            (ids.exit_visual, "action:exit-visual"),
+            (ids.replace_undo_last, "action:replace-undo-last"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

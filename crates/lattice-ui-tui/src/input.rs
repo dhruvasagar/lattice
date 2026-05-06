@@ -573,8 +573,8 @@ mod tests {
         let h = KeymapHandle::new();
         let b = shared_builtins();
         let a = shared_actions();
-        crate::keymap_replace::register_replace_bindings(&h);
-        crate::keymap_visual::register_visual_bindings(&h, b);
+        crate::keymap_replace::register_replace_bindings(&h, a);
+        crate::keymap_visual::register_visual_bindings(&h, b, a);
         crate::keymap_insert::register_insert_bindings(&h, a);
         crate::keymap_normal::register_normal_bindings(&h, b, a);
         h
@@ -2832,13 +2832,14 @@ mod tests {
     #[test]
     fn backspace_in_replace_emits_replace_undo_last() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Replace, Pending::None, &b),
-                key(KeyCode::Backspace)
-            ),
-            Action::ReplaceUndoLast
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Replace, Pending::None, &b),
+            key(KeyCode::Backspace),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.replace_undo_last),
+            other => panic!("expected Invoke(replace_undo_last), got {other:?}"),
+        }
     }
 
     #[test]
@@ -3373,21 +3374,29 @@ mod tests {
     #[test]
     fn esc_in_visual_exits_to_normal() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Visual(VisualKind::Charwise), Pending::None, &b),
             key(KeyCode::Esc),
         );
-        assert!(matches!(action, Action::ExitVisual));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.exit_visual),
+            other => panic!("expected Invoke(exit_visual), got {other:?}"),
+        }
     }
 
     #[test]
     fn v_in_visual_toggles_off() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Visual(VisualKind::Charwise), Pending::None, &b),
             key(KeyCode::Char('v')),
         );
-        assert!(matches!(action, Action::ExitVisual));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.exit_visual),
+            other => panic!("expected Invoke(exit_visual), got {other:?}"),
+        }
     }
 
     #[test]

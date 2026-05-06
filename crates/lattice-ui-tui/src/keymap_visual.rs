@@ -57,6 +57,7 @@ use lattice_grammar::VisualKind;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 
+use crate::actions::ActionIds;
 use crate::app::Action;
 use crate::chord::{KeyChord, SpecialKey};
 use crate::keymap::BindingMode;
@@ -75,31 +76,35 @@ use crate::keymap_trie::{
 /// Sources are tagged at this file + line so `:describe-key`
 /// shows e.g.
 /// `h -> motion:char-left  (builtin, keymap_visual.rs:NN)`.
-pub fn register_visual_bindings(handle: &KeymapHandle, builtins: &Builtins) {
+pub fn register_visual_bindings(
+    handle: &KeymapHandle,
+    builtins: &Builtins,
+    actions: &ActionIds,
+) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Visual;
 
-    // Exits: <Esc>, v, V. Three legacy actions; no
-    // `CommandInvocation` peer today (slice 8.i's bridge).
-    handle.bind_legacy(
+    // Exits: <Esc>, v, V. Promoted to typed `ExitVisual` action
+    // in slice 8.i.1.h.
+    handle.bind(
         layer,
         mode,
         &[ChordPattern::Literal(KeyChord::special(SpecialKey::Esc))],
-        Action::ExitVisual,
+        CommandInvocation::of(actions.exit_visual),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[ChordPattern::Literal(KeyChord::char('v'))],
-        Action::ExitVisual,
+        CommandInvocation::of(actions.exit_visual),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[ChordPattern::Literal(KeyChord::char('V'))],
-        Action::ExitVisual,
+        CommandInvocation::of(actions.exit_visual),
         source(),
     );
 
@@ -251,15 +256,16 @@ mod tests {
         }
     }
 
-    fn fixture() -> (CommandRegistry, Builtins) {
+    fn fixture() -> (CommandRegistry, Builtins, ActionIds) {
         let mut r = CommandRegistry::new();
         let b = populate(&mut r);
-        (r, b)
+        let a = crate::actions::populate(&mut r);
+        (r, b, a)
     }
 
-    fn populated_handle(b: &Builtins) -> KeymapHandle {
+    fn populated_handle(b: &Builtins, a: &ActionIds) -> KeymapHandle {
         let h = KeymapHandle::new();
-        register_visual_bindings(&h, b);
+        register_visual_bindings(&h, b, a);
         h
     }
 
@@ -267,11 +273,14 @@ mod tests {
     /// `input::translate_visual` runs. Kept private to the drift
     /// test; once `translate_visual` switches to call
     /// `dispatch_visual`, this stays as the per-binding regression
-    /// net for slice 8.e.
+    /// net for slice 8.e. Updated as variants migrate from the
+    /// legacy `Action` bridge to typed `CommandInvocation` (slice
+    /// 8.i) so the comparator's `Invoke` arm picks up equality.
     fn legacy_translate_visual(
         event: KeyEvent,
         kind: VisualKind,
         builtins: &Builtins,
+        actions: &ActionIds,
     ) -> Action {
         if event.modifiers.contains(KeyModifiers::CONTROL) {
             return Action::None;
@@ -284,9 +293,9 @@ mod tests {
             }
         }
         match event.code {
-            KeyCode::Esc => Action::ExitVisual,
-            KeyCode::Char('v') => Action::ExitVisual,
-            KeyCode::Char('V') => Action::ExitVisual,
+            KeyCode::Esc => invoke(actions.exit_visual),
+            KeyCode::Char('v') => invoke(actions.exit_visual),
+            KeyCode::Char('V') => invoke(actions.exit_visual),
             KeyCode::Char('h') | KeyCode::Left => invoke(builtins.char_left.0),
             KeyCode::Char('j') | KeyCode::Down => invoke(builtins.line_down.0),
             KeyCode::Char('k') | KeyCode::Up => invoke(builtins.line_up.0),
@@ -335,46 +344,55 @@ mod tests {
 
     #[test]
     fn esc_exits_visual_in_all_kinds() {
-        let (_, b) = fixture();
-        let h = populated_handle(&b);
+        let (_, b, a) = fixture();
+        let h = populated_handle(&b, &a);
         for kind in [
             VisualKind::Charwise,
             VisualKind::Linewise,
             VisualKind::Blockwise,
         ] {
             let r = dispatch_visual(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), kind);
-            assert!(matches!(r, Action::ExitVisual), "kind={kind:?}: {r:?}");
+            match r {
+                Action::Invoke(inv) => assert_eq!(inv.command, a.exit_visual),
+                other => panic!("kind={kind:?}: expected Invoke(exit_visual), got {other:?}"),
+            }
         }
     }
 
     #[test]
     fn lowercase_v_toggles_out_of_visual() {
-        let (_, b) = fixture();
-        let h = populated_handle(&b);
+        let (_, b, a) = fixture();
+        let h = populated_handle(&b, &a);
         let r = dispatch_visual(
             &h,
             &ev(KeyCode::Char('v'), KeyModifiers::NONE),
             VisualKind::Charwise,
         );
-        assert!(matches!(r, Action::ExitVisual));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.exit_visual),
+            other => panic!("expected Invoke(exit_visual), got {other:?}"),
+        }
     }
 
     #[test]
     fn uppercase_v_toggles_out_of_visual() {
-        let (_, b) = fixture();
-        let h = populated_handle(&b);
+        let (_, b, a) = fixture();
+        let h = populated_handle(&b, &a);
         let r = dispatch_visual(
             &h,
             &ev(KeyCode::Char('V'), KeyModifiers::NONE),
             VisualKind::Linewise,
         );
-        assert!(matches!(r, Action::ExitVisual));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.exit_visual),
+            other => panic!("expected Invoke(exit_visual), got {other:?}"),
+        }
     }
 
     #[test]
     fn motion_h_invokes_char_left() {
-        let (_, b) = fixture();
-        let h = populated_handle(&b);
+        let (_, b, a) = fixture();
+        let h = populated_handle(&b, &a);
         let r = dispatch_visual(
             &h,
             &ev(KeyCode::Char('h'), KeyModifiers::NONE),
@@ -388,8 +406,8 @@ mod tests {
 
     #[test]
     fn arrow_left_aliases_to_char_left() {
-        let (_, b) = fixture();
-        let h = populated_handle(&b);
+        let (_, b, a) = fixture();
+        let h = populated_handle(&b, &a);
         let r = dispatch_visual(
             &h,
             &ev(KeyCode::Left, KeyModifiers::NONE),
@@ -403,8 +421,8 @@ mod tests {
 
     #[test]
     fn delete_in_visual_carries_selection_range() {
-        let (_, b) = fixture();
-        let h = populated_handle(&b);
+        let (_, b, a) = fixture();
+        let h = populated_handle(&b, &a);
         let r = dispatch_visual(
             &h,
             &ev(KeyCode::Char('d'), KeyModifiers::NONE),
@@ -424,8 +442,8 @@ mod tests {
 
     #[test]
     fn x_in_visual_aliases_to_delete() {
-        let (_, b) = fixture();
-        let h = populated_handle(&b);
+        let (_, b, a) = fixture();
+        let h = populated_handle(&b, &a);
         let r = dispatch_visual(
             &h,
             &ev(KeyCode::Char('x'), KeyModifiers::NONE),
@@ -439,8 +457,8 @@ mod tests {
 
     #[test]
     fn s_in_visual_aliases_to_change() {
-        let (_, b) = fixture();
-        let h = populated_handle(&b);
+        let (_, b, a) = fixture();
+        let h = populated_handle(&b, &a);
         let r = dispatch_visual(
             &h,
             &ev(KeyCode::Char('s'), KeyModifiers::NONE),
@@ -454,8 +472,8 @@ mod tests {
 
     #[test]
     fn capital_i_only_in_blockwise() {
-        let (_, b) = fixture();
-        let h = populated_handle(&b);
+        let (_, b, a) = fixture();
+        let h = populated_handle(&b, &a);
         // Charwise: I has no binding -> None.
         let r = dispatch_visual(
             &h,
@@ -481,8 +499,8 @@ mod tests {
 
     #[test]
     fn capital_a_only_in_blockwise() {
-        let (_, b) = fixture();
-        let h = populated_handle(&b);
+        let (_, b, a) = fixture();
+        let h = populated_handle(&b, &a);
         let r = dispatch_visual(
             &h,
             &ev(KeyCode::Char('A'), KeyModifiers::NONE),
@@ -499,8 +517,8 @@ mod tests {
 
     #[test]
     fn ctrl_modifier_yields_none() {
-        let (_, b) = fixture();
-        let h = populated_handle(&b);
+        let (_, b, a) = fixture();
+        let h = populated_handle(&b, &a);
         let r = dispatch_visual(
             &h,
             &ev(KeyCode::Char('h'), KeyModifiers::CONTROL),
@@ -515,8 +533,8 @@ mod tests {
     /// short-circuited CONTROL.
     #[test]
     fn alt_h_in_visual_invokes_char_left() {
-        let (_, b) = fixture();
-        let h = populated_handle(&b);
+        let (_, b, a) = fixture();
+        let h = populated_handle(&b, &a);
         let r = dispatch_visual(
             &h,
             &ev(KeyCode::Char('h'), KeyModifiers::ALT),
@@ -539,8 +557,8 @@ mod tests {
     /// that drifts `dispatch_visual` from the legacy semantics.
     #[test]
     fn registry_dispatch_matches_legacy_translate() {
-        let (_, b) = fixture();
-        let h = populated_handle(&b);
+        let (_, b, a) = fixture();
+        let h = populated_handle(&b, &a);
 
         let codes: Vec<KeyCode> = vec![
             KeyCode::Esc,
@@ -572,7 +590,7 @@ mod tests {
             for &code in &codes {
                 for &mods in &mod_sets {
                     let event = ev(code, mods);
-                    let legacy = legacy_translate_visual(event, kind, &b);
+                    let legacy = legacy_translate_visual(event, kind, &b, &a);
                     let new = dispatch_visual(&h, &event, kind);
                     assert!(
                         actions_equivalent(&legacy, &new),
@@ -583,7 +601,7 @@ mod tests {
             for &c in &chars {
                 for &mods in &mod_sets {
                     let event = ev(KeyCode::Char(c), mods);
-                    let legacy = legacy_translate_visual(event, kind, &b);
+                    let legacy = legacy_translate_visual(event, kind, &b, &a);
                     let new = dispatch_visual(&h, &event, kind);
                     assert!(
                         actions_equivalent(&legacy, &new),

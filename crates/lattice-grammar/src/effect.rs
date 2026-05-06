@@ -180,6 +180,11 @@ pub enum Effect {
     },
     /// `:TreeClose` -- dismiss the file-tree buffer.
     CloseFileTree,
+    /// `:Oil [path]` -- open an oil buffer for `path` (flat editable listing).
+    /// Absent = current document's parent directory / cwd.
+    OpenOil {
+        dir: Option<PathBuf>,
+    },
     /// `:describe-option NAME` -- render the option's metadata in
     /// a help view.
     DescribeOption {

@@ -11124,6 +11124,7 @@ impl App {
             Effect::BufferDelete { force } => self.do_buffer_delete(force),
             Effect::OpenFileTree { root } => self.do_open_file_tree(root),
             Effect::CloseFileTree => self.dismiss_file_tree(),
+            Effect::OpenOil { dir } => self.do_open_oil(dir),
             Effect::DescribeOption { name } => self.do_describe_option(&name),
             Effect::ListOptions => self.do_list_options(),
             Effect::OpenHover { markdown } => self.do_open_hover(&markdown),
@@ -12205,6 +12206,8 @@ impl App {
     /// spawning a duplicate -- matching `:e FILE`'s "already open"
     /// semantics. The active pane flips to the new (or existing)
     /// tree buffer.
+    fn do_open_oil(&mut self, _dir: Option<std::path::PathBuf>) {}
+
     fn do_open_file_tree(&mut self, root: Option<std::path::PathBuf>) {
         let root = match root {
             Some(p) => p,
@@ -14057,6 +14060,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::BufferDelete { .. }
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
+        | Effect::OpenOil { .. }
         | Effect::DescribeOption { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
@@ -14118,6 +14122,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::BufferDelete { .. }
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
+        | Effect::OpenOil { .. }
         | Effect::DescribeOption { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
@@ -20263,12 +20268,12 @@ mod tests {
             s.parse(&a.document.text());
         }
         // Open the tree, then dismiss.
-        a.command_line = format!("Tree {}", dir.display());
+        a.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(a.active_buffer, crate::buffers::BufferKind::FileTree));
         // `:TreeClose` (the path `q` takes in the tree).
-        a.command_line = "TreeClose".into();
+        a.command_line = "FiletreeClose".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(a.active_buffer, crate::buffers::BufferKind::Document));
@@ -20291,7 +20296,7 @@ mod tests {
         a.terminal_width = Some(80);
         a.apply(Action::SplitPaneVertical);
         a.apply(Action::NavigatePane(PaneDirection::Right));
-        a.command_line = format!("Tree {}", dir.display());
+        a.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
@@ -20574,7 +20579,7 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         std::fs::write(dir.join("a.txt"), "alpha").ok();
         let mut a = app_with("xx", 10);
-        a.command_line = format!("Tree {}", dir.display());
+        a.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.active_buffer, BufferKind::FileTree);
@@ -20587,7 +20592,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lattice-tree-close-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         let mut a = app_with("xx", 10);
-        a.command_line = format!("Tree {}", dir.display());
+        a.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         a.apply(Action::HelpDismiss);
@@ -20603,7 +20608,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "x").ok();
         std::fs::write(dir.join("b.txt"), "y").ok();
         let mut a = app_with("xx", 10);
-        a.command_line = format!("Tree {}", dir.display());
+        a.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let line_down = a.builtins.line_down;
@@ -23121,7 +23126,7 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         std::fs::write(dir.join("alpha.txt"), "hello").ok();
         let mut a = app_with("xx", 10);
-        a.command_line = format!("Tree {}", dir.display());
+        a.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Move cursor to the alpha.txt entry (row 1).

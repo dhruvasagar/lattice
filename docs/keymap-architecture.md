@@ -786,8 +786,41 @@ type-hoisting decisions, and the sub-slice plan.
     (`require_action`'s kind-mismatch path).
   - No call-site changes; bridge stays active. Workspace tests
     green: lattice-grammar 184 → 186; all other crates unchanged.
-- **8.i.1 -- Promote no-payload Action variants.** Pending.
+- **8.i.1 -- Promote no-payload Action variants.** ✅ landed
+  across 8 sub-batches (8.i.1.a-h). 41 distinct AppEffect variants
+  promoted; ~85 `bind_legacy` call sites swapped to `bind`.
+  `register_normal_bindings` / `register_visual_bindings` /
+  `register_insert_bindings` / `register_replace_bindings` all
+  now take `actions: &ActionIds`. Drift-test reference bodies in
+  Visual and Replace updated in lockstep with their respective
+  variant migrations. Workspace tests stay green at every batch
+  boundary; lattice-ui-tui at 1328 throughout.
+  - 8.i.1.a -- `%`, `~`, `o`, `O`, `K` (5 variants).
+  - 8.i.1.b -- search + history: `n`, `N`, `<C-o>`, `<Tab>` /
+    `<C-i>`, `g;`, `g,`, `<C-t>` (7 variants).
+  - 8.i.1.c -- fold ops: `zo`, `zc`, `za`, `zR`, `zM`, `zd`,
+    `zj`, `zk`, `zi` (9 variants).
+  - 8.i.1.d -- edit history + scroll: `u`, `<C-r>`, `.`,
+    `<C-f>`, `<C-b>`, `<C-y>`, `<C-e>` (7 variants).
+  - 8.i.1.e -- misc viewport / entry / paste: `<C-l>`, `:`,
+    `-`, `gv`, `p`, `P` (6 variants).
+  - 8.i.1.f -- LSP go-tos: `gd`, `gD`, `gy`, `gI`, `gr` (5
+    variants).
+  - 8.i.1.g -- final no-payload: `a`, `zf`, `<BS>` (insert),
+    `<C-Space>` / `<C-x><C-o>`, `<C-x><C-s>` (5 variants).
+  - 8.i.1.h -- drift-body migration: visual `<Esc>` / `v` /
+    `V`, replace `<BS>` (2 variants). `dispatch_replace` gained
+    its `Invoke` fallback alongside this batch.
 - **8.i.2 -- Promote parameterised Action variants.** Pending.
+  ~46 remaining `bind_legacy` sites all carry payloads:
+  `EnterMode(_)`, `EnterVisual(_)`, `EnterSearch(_)`,
+  `JoinLines{_}`, `JumpViewport(_)`, `ScrollCursorTo(_)`,
+  `SetPending(_)`, `SearchWordUnderCursor(_)`, `Insert(_)`,
+  `OverwriteChar(_)`, `JumpToMark*(_)`, `SetMark(_)`,
+  `SelectRegister(_)`, `StartMacroRecord(_)`, `PlayMacro(_)`,
+  `FindRepeat{_}`. Encoding choice is per-variant (distinct
+  `CommandId`s for small enum-bounded params; `args` for
+  char captures and numerics) per the memo §7.
 - **8.i.3 -- Wildcard-captured variants.** Pending.
 - **8.i.4 -- Retire Pending; finalise.** Pending.
   - At this point the `keymap.rs` drift test becomes obsolete

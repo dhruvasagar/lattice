@@ -9,7 +9,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use lattice_grammar::ModalState;
-use lattice_grammar::SearchDirection;
 use lattice_grammar::Target;
 use lattice_grammar::VisualKind;
 use lattice_grammar::args::Args;
@@ -18,7 +17,7 @@ use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::register::Register;
 use lattice_grammar::registry::{MotionId, OperatorId};
 
-use crate::app::{Action, FindKind, Pending, ScrollPos, ViewportPos};
+use crate::app::{Action, FindKind, Pending, ScrollPos};
 use crate::buffers::BufferKind;
 use crate::keymap_insert::dispatch_insert;
 use crate::keymap_registry::KeymapHandle;
@@ -172,6 +171,7 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
             ctx.builtins,
             ctx.pending_count,
             ctx.recording_macro,
+            ctx.keymap,
         ),
         ModalState::Command => translate_command(event, ctx.completion_open, ctx.chord_capture),
         ModalState::Search(_) => translate_search(event),
@@ -314,6 +314,7 @@ fn translate_normal(
     builtins: &Builtins,
     pending_count: u32,
     recording_macro: bool,
+    keymap: &KeymapHandle,
 ) -> Action {
     // Resolve any pending state first.
     match pending {
@@ -379,20 +380,29 @@ fn translate_normal(
             _ => Action::None,
         };
     }
-    // `Tab` (without Ctrl) is conventionally Ctrl-I in vim's jump-list,
-    // since terminals encode Tab as Ctrl-I. Bind both.
-    if matches!(event.code, KeyCode::Tab) && event.modifiers.is_empty() {
-        return Action::JumpHistoryForward;
-    }
-
     // Numeric prefix: `1`-`9` always start (or extend) a count; `0` extends
     // an in-progress count but otherwise is line_start. This is vim's
     // standard count parsing, exactly.
+    //
+    // Slice 8.g.iv migrates this into the dispatcher; for 8.g.i it stays
+    // here so the digit accumulator pre-empts the trie lookup of `0` =>
+    // line_start whenever a count is in flight.
     if let KeyCode::Char(c) = event.code
         && let Some(digit) = c.to_digit(10)
         && (digit > 0 || pending_count > 0)
     {
         return Action::PushDigit(digit as u8);
+    }
+
+    // Slice 8.g.i: simple single-key bindings live in the layered
+    // registry under `BindingMode::Normal`. `lookup_normal`
+    // returns `Some(action)` for the migrated subset; legacy
+    // bindings (operator-leading, pending-prefix, find-char,
+    // marks, register, macro control, `<C-w>`) fall through to
+    // the match arm below. Subsequent sub-slices migrate the
+    // remainder.
+    if let Some(action) = crate::keymap_normal::lookup_normal(keymap, &event) {
+        return action;
     }
 
     match event.code {
@@ -404,109 +414,18 @@ fn translate_normal(
         // register-name follow-up.
         KeyCode::Char('@') => Action::SetPending(Pending::AfterMacroPlay),
 
-        // Motions
-        KeyCode::Char('h') | KeyCode::Left => invoke(builtins.char_left),
-        KeyCode::Char('j') | KeyCode::Down => invoke(builtins.line_down),
-        KeyCode::Char('k') | KeyCode::Up => invoke(builtins.line_up),
-        KeyCode::Char('l') | KeyCode::Right => invoke(builtins.char_right),
-        KeyCode::Char('0') | KeyCode::Home => invoke(builtins.line_start),
-        KeyCode::Char('$') | KeyCode::End => invoke(builtins.line_end),
-        KeyCode::Char('^') => invoke(builtins.first_non_blank),
-        KeyCode::Char('w') => invoke(builtins.word_forward),
-        KeyCode::Char('b') => invoke(builtins.word_backward),
-        KeyCode::Char('e') => invoke(builtins.word_end),
-        KeyCode::Char('W') => invoke(builtins.big_word_forward),
-        KeyCode::Char('B') => invoke(builtins.big_word_backward),
-        KeyCode::Char('E') => invoke(builtins.big_word_end),
-        KeyCode::Char('}') => invoke(builtins.paragraph_forward),
-        KeyCode::Char('{') => invoke(builtins.paragraph_backward),
-        KeyCode::Char(')') => invoke(builtins.sentence_forward),
-        KeyCode::Char('(') => invoke(builtins.sentence_backward),
-        KeyCode::Char('G') => invoke(builtins.goto_last_line),
-
-        // Viewport jumps
-        KeyCode::Char('H') => Action::JumpViewport(ViewportPos::Top),
-        KeyCode::Char('M') => Action::JumpViewport(ViewportPos::Middle),
-        KeyCode::Char('L') => Action::JumpViewport(ViewportPos::Bottom),
-
-        // Pending key sequences
+        // Pending key sequences (8.g.ii, 8.g.v).
         KeyCode::Char('g') => Action::SetPending(Pending::AfterG),
         KeyCode::Char('z') => Action::SetPending(Pending::AfterZ),
 
-        // Operator-leading keys
+        // Operator-leading keys (8.g.iii).
         KeyCode::Char('d') => Action::SetPending(Pending::AfterOperator(builtins.delete)),
         KeyCode::Char('c') => Action::SetPending(Pending::AfterOperator(builtins.change)),
         KeyCode::Char('y') => Action::SetPending(Pending::AfterOperator(builtins.yank)),
         KeyCode::Char('>') => Action::SetPending(Pending::AfterOperator(builtins.indent_right)),
         KeyCode::Char('<') => Action::SetPending(Pending::AfterOperator(builtins.indent_left)),
 
-        // Paste
-        KeyCode::Char('p') => Action::PasteAfter,
-        KeyCode::Char('P') => Action::PasteBefore,
-
-        // Linewise yank shortcut: `Y` is equivalent to `yy` in vim's defaults.
-        KeyCode::Char('Y') => Action::Invoke(
-            CommandInvocation::of(builtins.yank.0).with_range(lattice_grammar::Range::CurrentLine),
-        ),
-
-        // Vim's `x` -- delete one char to the right.
-        KeyCode::Char('x') => Action::Invoke(
-            CommandInvocation::of(builtins.delete.0)
-                .with_target(Target::Motion(builtins.char_right, Args::None)),
-        ),
-
-        // `D` = `d$`, `C` = `c$`, `S` = `cc` (substitute line).
-        KeyCode::Char('D') => Action::Invoke(
-            CommandInvocation::of(builtins.delete.0)
-                .with_target(Target::Motion(builtins.line_end, Args::None)),
-        ),
-        KeyCode::Char('C') => Action::Invoke(
-            CommandInvocation::of(builtins.change.0)
-                .with_target(Target::Motion(builtins.line_end, Args::None)),
-        ),
-        KeyCode::Char('S') => Action::Invoke(
-            CommandInvocation::of(builtins.change.0)
-                .with_range(lattice_grammar::Range::CurrentLine),
-        ),
-
-        // Line join.
-        KeyCode::Char('J') => Action::JoinLines { with_space: true },
-
-        // Find-repeat (`;` keeps direction; `,` reverses).
-        KeyCode::Char(';') => Action::FindRepeat { reverse: false },
-        KeyCode::Char(',') => Action::FindRepeat { reverse: true },
-
-        // Mode entry
-        KeyCode::Char('i') => Action::EnterMode(ModalState::Insert),
-        KeyCode::Char('a') => Action::EnterAppend,
-        KeyCode::Char('o') => Action::OpenLineBelow,
-        KeyCode::Char('O') => Action::OpenLineAbove,
-        KeyCode::Char(':') => Action::EnterCommandLine,
-        KeyCode::Char('v') => Action::EnterVisual(VisualKind::Charwise),
-        KeyCode::Char('V') => Action::EnterVisual(VisualKind::Linewise),
-        KeyCode::Char('R') => Action::EnterMode(ModalState::Replace),
-
-        // Toggle case at cursor
-        KeyCode::Char('~') => Action::ToggleCaseAtCursor,
-
-        // LSP hover at cursor (Phase 4.2.b). Vim's `K` traditionally
-        // runs `keywordprg` (man-page lookup); we repurpose it for
-        // textDocument/hover to surface the symbol's docs without
-        // leaving the buffer. Cancellation rides on motion / mode
-        // change so a slow server can't drop a stale popup over a
-        // moved cursor.
-        KeyCode::Char('K') => Action::LspHoverRequest,
-
-        // Search
-        KeyCode::Char('/') => Action::EnterSearch(SearchDirection::Forward),
-        KeyCode::Char('?') => Action::EnterSearch(SearchDirection::Backward),
-        KeyCode::Char('n') => Action::SearchNext,
-        KeyCode::Char('N') => Action::SearchPrevious,
-        KeyCode::Char('*') => Action::SearchWordUnderCursor(SearchDirection::Forward),
-        KeyCode::Char('#') => Action::SearchWordUnderCursor(SearchDirection::Backward),
-        KeyCode::Char('%') => Action::MatchBracket,
-
-        // Find-char on the current line
+        // Find-char on the current line (8.g.v).
         KeyCode::Char('f') => Action::SetPending(Pending::AfterFindChar {
             kind: FindKind::Forward,
             operator: None,
@@ -524,27 +443,14 @@ fn translate_normal(
             operator: None,
         }),
 
-        // Undo
-        KeyCode::Char('u') => Action::Undo,
-
-        // Dot-repeat
-        KeyCode::Char('.') => Action::RepeatLastChange,
-
         // Register prefix: `"<reg>` selects the register for the next
-        // operator or paste.
+        // operator or paste (8.g.v).
         KeyCode::Char('"') => Action::SetPending(Pending::AfterRegister),
 
-        // Marks
+        // Marks (8.g.v).
         KeyCode::Char('m') => Action::SetPending(Pending::AfterSetMark),
         KeyCode::Char('\'') => Action::SetPending(Pending::AfterJumpMarkLine),
         KeyCode::Char('`') => Action::SetPending(Pending::AfterJumpMarkExact),
-
-        // Paging
-        KeyCode::PageDown => invoke_with_count(builtins.line_down, 10),
-        KeyCode::PageUp => invoke_with_count(builtins.line_up, 10),
-
-        // Oil: open parent directory listing
-        KeyCode::Char('-') => Action::OilNavigateUp,
 
         _ => Action::None,
     }
@@ -986,7 +892,9 @@ fn invoke_with_count(motion: MotionId, count: u32) -> Action {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+    use crate::app::ViewportPos;
     use lattice_grammar::CommandRegistry;
+    use lattice_grammar::SearchDirection;
     use lattice_grammar::builtins::populate;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -1014,15 +922,16 @@ mod tests {
     }
 
     /// Build a fresh `KeymapHandle` populated with every catalog
-    /// the per-mode dispatchers consult: Replace, Visual, Insert.
-    /// Each scenario-specific helper below starts from this and
-    /// pushes the relevant minor-mode overlays.
+    /// the per-mode dispatchers consult: Replace, Visual, Insert,
+    /// Normal. Each scenario-specific helper below starts from
+    /// this and pushes the relevant minor-mode overlays.
     fn build_base_keymap() -> KeymapHandle {
         let h = KeymapHandle::new();
         let b = shared_builtins();
         crate::keymap_replace::register_replace_bindings(&h);
         crate::keymap_visual::register_visual_bindings(&h, b);
         crate::keymap_insert::register_insert_bindings(&h);
+        crate::keymap_normal::register_normal_bindings(&h, b);
         h
     }
 

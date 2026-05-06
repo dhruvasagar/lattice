@@ -2451,13 +2451,17 @@ impl App {
             lang_registry,
             builtins,
             keymap: {
-                // Slices 8.d / 8.e / 8.f: register the per-mode
+                // Slices 8.d -- 8.g.i: register the per-mode
                 // built-in catalogs into the Builtin layer at
-                // startup. Normal follows in 8.g.
+                // startup. Normal mode is being migrated in
+                // sub-slices 8.g.i -- 8.g.vi; this slice
+                // (8.g.i) covers the simple single-key
+                // bindings.
                 let h = crate::keymap_registry::KeymapHandle::new();
                 crate::keymap_replace::register_replace_bindings(&h);
                 crate::keymap_visual::register_visual_bindings(&h, &builtins);
                 crate::keymap_insert::register_insert_bindings(&h);
+                crate::keymap_normal::register_normal_bindings(&h, &builtins);
                 h
             },
             completion_popup_layer: None,

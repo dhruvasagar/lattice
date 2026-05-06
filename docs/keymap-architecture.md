@@ -560,8 +560,20 @@ graceful error handling.
 
 The big one. Likely sub-sliced:
 
-- 8.g.i -- single-chord motions and operators (`j`, `w`, `dd`
-  as "operator + same-line target", `yy`, `cc`).
+- 8.g.i -- single-chord motions and operators (`j`, `w`,
+  pseudo-operators `D` / `C` / `S` / `Y` / `x`, mode entry,
+  paste, search nav, viewport jumps, etc.). ✅ landed: see
+  `keymap_normal::register_normal_bindings` /
+  `lookup_normal`. The legacy `input::translate_normal` keeps
+  its match arm for the bindings still pending migration
+  (operator-leading `d` / `c` / `y` / `>` / `<`,
+  pending-prefix `g` / `z`, find-char, marks, register, macro
+  control); subsequent sub-slices shrink that arm to nothing.
+  Doubled-operator forms (`dd`, `yy`, `cc`, `>>`, `<<`) stay
+  with the existing operator-pending state machine until 8.g.iii
+  -- the architecture-doc bullet groups them with 8.g.i for
+  conceptual completeness, but they ride the operator-pending
+  trie expansion in 8.g.iii.
 - 8.g.ii -- `g_` and `z_` family (`gg`, `gd`, `gD`, `gI`, `gy`,
   `gr`, `g~`, `gu`, `gU`, `zt`, `zb`, `zz`, `zo`, `zc`, `zR`,
   `zM`, `zd`, ...).

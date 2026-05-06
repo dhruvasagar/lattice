@@ -371,6 +371,49 @@ fn lsp_didchange_flush_16_edits(c: &mut Criterion) {
 
 use std::str::FromStr;
 
+/// Diagnostic-layer render-path read after the audit's C3 fix.
+/// Renderer calls `line_severity` once per visible line per
+/// frame (~50 lines × 60 Hz ≈ 3000/s on the render thread); the
+/// pre-fix path locked an inner Mutex + cloned the entire
+/// diagnostics list per call. The fix moves state into an
+/// `ArcSwap<DiagnosticsSnapshot>`; this bench measures the new
+/// wait-free read against a layer holding 32 diagnostics on
+/// one URI.
+fn diagnostics_layer_line_severity_wait_free(c: &mut Criterion) {
+    let logger = LspLogger::with_defaults();
+    let layer = lattice_lsp::DiagnosticsLayer::new(logger);
+    let uri = lsp_types::Uri::from_str("file:///workspace/lib.rs").unwrap();
+    let server_id: Arc<str> = Arc::from("rust");
+    let diagnostics: Vec<lsp_types::Diagnostic> = (0..32u32)
+        .map(|i| lsp_types::Diagnostic {
+            range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: i,
+                    character: 0,
+                },
+                end: lsp_types::Position {
+                    line: i,
+                    character: 4,
+                },
+            },
+            severity: Some(lsp_types::DiagnosticSeverity::WARNING),
+            ..Default::default()
+        })
+        .collect();
+    layer.apply(lattice_lsp::diagnostics::DiagnosticEvent {
+        uri: uri.clone(),
+        server_id,
+        version: Some(1),
+        diagnostics: Arc::from(diagnostics),
+    });
+    c.bench_function("lsp_diagnostics_line_severity_wait_free", |b| {
+        b.iter(|| {
+            let s = layer.line_severity(black_box(&uri), black_box(15));
+            black_box(s);
+        });
+    });
+}
+
 criterion_group!(
     benches,
     framing_parse_header,
@@ -387,5 +430,6 @@ criterion_group!(
     lsp_edit_publish_three_subs,
     lsp_edit_propagation_publish_to_recv,
     lsp_didchange_flush_16_edits,
+    diagnostics_layer_line_severity_wait_free,
 );
 criterion_main!(benches);

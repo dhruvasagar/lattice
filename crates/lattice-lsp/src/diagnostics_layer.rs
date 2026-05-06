@@ -56,6 +56,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use arc_swap::ArcSwap;
 use lsp_types::{Diagnostic, DiagnosticSeverity, Uri};
 use tokio::sync::broadcast;
 
@@ -69,19 +70,53 @@ struct DiagState {
     diagnostics: Arc<[Diagnostic]>,
 }
 
-/// Subsystem-wide diagnostics state. Cloneable; internal state
-/// is `Arc<Mutex<...>>` so all clones share the same store.
-#[derive(Clone)]
-pub struct DiagnosticsLayer {
-    inner: Arc<Mutex<DiagnosticsLayerInner>>,
-    logger: LspLogger,
+/// Wait-free read view of all diagnostic state. Built by every
+/// write into the layer; held in `DiagnosticsLayer.snapshot`
+/// inside an `ArcSwap` cell. Renderers `load_full()` and read
+/// per-URI without ever touching a mutex -- the audit's C3
+/// finding (3000+ lock+clone+filter+collect per second on the
+/// render thread) is gone.
+#[derive(Debug, Clone, Default)]
+struct DiagnosticsSnapshot {
+    /// (uri, server_id) → state. Multi-server scenario: same
+    /// URI can have entries from multiple servers; the
+    /// `by_uri` field below pre-merges them so render-path
+    /// readers do one O(1) lookup + an Arc clone.
+    by_key: HashMap<(Uri, Arc<str>), DiagState>,
+    /// uri → merged-and-sorted-by-(line, column) diagnostics.
+    /// Recomputed for the affected URI on every write.
+    by_uri: HashMap<Uri, Arc<[Diagnostic]>>,
 }
 
-struct DiagnosticsLayerInner {
-    /// (uri, server_id) → state. Multi-server scenario: same
-    /// URI can have entries from multiple servers; readers
-    /// merge.
-    by_key: HashMap<(Uri, Arc<str>), DiagState>,
+/// Subsystem-wide diagnostics state.
+///
+/// **Reads are wait-free.** [`Self::diagnostics_for`],
+/// [`Self::line_severity`], [`Self::diagnostics_on_line`], and
+/// the count helpers all go through one `ArcSwap::load`. The
+/// renderer's per-line `line_severity(uri, line)` call (50 lines
+/// × 60 Hz = 3000/s on the render thread per the audit) no
+/// longer takes a mutex.
+///
+/// **Writes serialise on a brief mutex.** [`Self::apply`],
+/// [`Self::clear*`] take a small write-side lock just long
+/// enough to clone the current snapshot, mutate it, recompute
+/// the affected URI's `by_uri` entry, and `ArcSwap::store` it.
+/// Writers don't block readers (ArcSwap is RCU-flavoured); two
+/// concurrent writers serialise via the write lock.
+///
+/// Cloneable; every clone shares the same `ArcSwap` cell + the
+/// same write lock (so the layer behaves as one logical state
+/// across actor pumps).
+#[derive(Clone)]
+pub struct DiagnosticsLayer {
+    /// Wait-free read cell. RCU-flavoured: `load` is ~2ns;
+    /// `store` is one atomic release-store.
+    snapshot: Arc<ArcSwap<DiagnosticsSnapshot>>,
+    /// Serialises writers. Held only across the snapshot
+    /// clone + mutation + store -- microseconds, never across
+    /// I/O.
+    write: Arc<Mutex<()>>,
+    logger: LspLogger,
 }
 
 impl DiagnosticsLayer {
@@ -89,28 +124,32 @@ impl DiagnosticsLayer {
     /// stale" telemetry.
     pub fn new(logger: LspLogger) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(DiagnosticsLayerInner {
-                by_key: HashMap::new(),
-            })),
+            snapshot: Arc::new(ArcSwap::from(Arc::new(DiagnosticsSnapshot::default()))),
+            write: Arc::new(Mutex::new(())),
             logger,
         }
     }
 
     /// Apply one [`DiagnosticEvent`]. Drops stale events; clears
     /// state on empty diagnostics; otherwise replaces the
-    /// `(uri, server_id)` entry.
+    /// `(uri, server_id)` entry. Single-snapshot publish at the
+    /// end: readers either see the prior state or the post-write
+    /// state, never a torn intermediate.
     pub fn apply(&self, event: DiagnosticEvent) {
         let key = (event.uri.clone(), Arc::clone(&event.server_id));
-        let mut g = lock(&self.inner);
+        let _g = self.write.lock().expect("DiagnosticsLayer write lock");
+        let current = self.snapshot.load_full();
 
         // Version gate: drop iff event.version < current and
         // both are Some. Equal versions are accepted (server
         // republishing is legal).
-        if let Some(prev) = g.by_key.get(&key)
+        if let Some(prev) = current.by_key.get(&key)
             && let (Some(p), Some(e)) = (prev.version, event.version)
             && e < p
         {
-            drop(g);
+            // Drop the lock guard before logging (logger may
+            // re-enter via Event::LspLogPushed on the bus).
+            drop(_g);
             self.logger.log(
                 Some(&event.server_id),
                 LogLevel::Debug,
@@ -125,33 +164,38 @@ impl DiagnosticsLayer {
             return;
         }
 
-        // Empty list = clear.
+        let mut next = (*current).clone();
         if event.diagnostics.is_empty() {
-            g.by_key.remove(&key);
-            return;
+            next.by_key.remove(&key);
+        } else {
+            next.by_key.insert(
+                key.clone(),
+                DiagState {
+                    version: event.version,
+                    diagnostics: event.diagnostics,
+                },
+            );
         }
-
-        g.by_key.insert(
-            key,
-            DiagState {
-                version: event.version,
-                diagnostics: event.diagnostics,
-            },
-        );
+        rebuild_by_uri(&mut next, &key.0);
+        self.snapshot.store(Arc::new(next));
     }
 
     /// All diagnostics for a URI, merged across every server
     /// that's attached to it. Returns an empty `Vec` when
-    /// there are none. Note: returns owned `Diagnostic`s
-    /// (LSP types are not `Copy`); cost is one clone per
-    /// diagnostic.
+    /// there are none.
     pub fn diagnostics_for(&self, uri: &Uri) -> Vec<Diagnostic> {
-        let g = lock(&self.inner);
-        g.by_key
-            .iter()
-            .filter(|((u, _), _)| u == uri)
-            .flat_map(|(_, s)| s.diagnostics.iter().cloned())
-            .collect()
+        match self.snapshot.load().by_uri.get(uri) {
+            Some(arr) => arr.to_vec(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Wait-free `Arc<[Diagnostic]>` borrow of the merged
+    /// diagnostics for `uri`. Preferred on the hot path
+    /// (renderer / picker fan-out) -- avoids the per-call
+    /// `Vec` allocation that `diagnostics_for` does.
+    pub fn diagnostics_arc(&self, uri: &Uri) -> Option<Arc<[Diagnostic]>> {
+        self.snapshot.load().by_uri.get(uri).cloned()
     }
 
     /// Diagnostics that overlap `line`. Half-open at the end:
@@ -162,19 +206,29 @@ impl DiagnosticsLayer {
     /// current line -- callers prefer "show, don't hide" for
     /// edge cases.
     pub fn diagnostics_on_line(&self, uri: &Uri, line: u32) -> Vec<Diagnostic> {
-        self.diagnostics_for(uri)
-            .into_iter()
-            .filter(|d| d.range.start.line <= line && line <= d.range.end.line)
-            .collect()
+        let snap = self.snapshot.load();
+        match snap.by_uri.get(uri) {
+            Some(arr) => arr
+                .iter()
+                .filter(|d| d.range.start.line <= line && line <= d.range.end.line)
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        }
     }
 
     /// Most severe severity present on `line`, or `None` if no
     /// diagnostic touches it. "Most severe" = lowest enum tag
     /// (Error == 1 < Warning == 2 < Information == 3 <
-    /// Hint == 4). Used by the gutter glyph provider.
+    /// Hint == 4). Used by the gutter glyph provider; runs once
+    /// per visible line per frame, so this path stays
+    /// allocation-free (filters the borrowed slice in place).
     pub fn line_severity(&self, uri: &Uri, line: u32) -> Option<DiagnosticSeverity> {
-        self.diagnostics_on_line(uri, line)
-            .into_iter()
+        let snap = self.snapshot.load();
+        snap.by_uri
+            .get(uri)?
+            .iter()
+            .filter(|d| d.range.start.line <= line && line <= d.range.end.line)
             .filter_map(|d| d.severity)
             .min_by_key(severity_rank)
     }
@@ -183,11 +237,11 @@ impl DiagnosticsLayer {
     /// alphabetically (stable for the `:diagnostics` buffer
     /// view).
     pub fn iter_uris(&self) -> Vec<Uri> {
-        let g = lock(&self.inner);
-        let mut uris: Vec<Uri> = g
-            .by_key
+        let snap = self.snapshot.load();
+        let mut uris: Vec<Uri> = snap
+            .by_uri
             .keys()
-            .map(|(u, _)| u.clone())
+            .cloned()
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
@@ -199,15 +253,16 @@ impl DiagnosticsLayer {
     /// `:diagnostics` buffer's body. URIs sorted; diagnostics
     /// within a URI ordered by (line, column).
     pub fn snapshot(&self) -> Vec<(Uri, Vec<Diagnostic>)> {
-        self.iter_uris()
-            .into_iter()
+        let snap = self.snapshot.load();
+        let mut uris: Vec<Uri> = snap.by_uri.keys().cloned().collect();
+        uris.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        uris.into_iter()
             .map(|uri| {
-                let mut diags = self.diagnostics_for(&uri);
-                diags.sort_by(|a, b| {
-                    a.range.start.line.cmp(&b.range.start.line).then(
-                        a.range.start.character.cmp(&b.range.start.character),
-                    )
-                });
+                let diags = snap
+                    .by_uri
+                    .get(&uri)
+                    .map(|arr| arr.to_vec())
+                    .unwrap_or_default();
                 (uri, diags)
             })
             .collect()
@@ -216,16 +271,20 @@ impl DiagnosticsLayer {
     /// Total diagnostic count across every URI / server. Used
     /// by the modeline summary ("rust: 3 errors, 2 warnings").
     pub fn count(&self) -> usize {
-        let g = lock(&self.inner);
-        g.by_key.values().map(|s| s.diagnostics.len()).sum()
+        self.snapshot
+            .load()
+            .by_key
+            .values()
+            .map(|s| s.diagnostics.len())
+            .sum()
     }
 
     /// Severity tally across every URI: (errors, warnings,
     /// info, hints). Modeline / status segment consumer.
     pub fn severity_counts(&self) -> SeverityCounts {
-        let g = lock(&self.inner);
+        let snap = self.snapshot.load();
         let mut counts = SeverityCounts::default();
-        for state in g.by_key.values() {
+        for state in snap.by_key.values() {
             for d in state.diagnostics.iter() {
                 match d.severity {
                     Some(DiagnosticSeverity::ERROR) => counts.errors += 1,
@@ -241,23 +300,67 @@ impl DiagnosticsLayer {
 
     /// Drop everything. Used by `:diag-clear` and tests.
     pub fn clear(&self) {
-        lock(&self.inner).by_key.clear();
+        let _g = self.write.lock().expect("DiagnosticsLayer write lock");
+        self.snapshot.store(Arc::new(DiagnosticsSnapshot::default()));
     }
 
     /// Drop every entry for a URI (across all servers). Used
     /// when a buffer closes -- the diagnostics are no longer
     /// relevant since we won't render them.
     pub fn clear_uri(&self, uri: &Uri) {
-        lock(&self.inner).by_key.retain(|(u, _), _| u != uri);
+        let _g = self.write.lock().expect("DiagnosticsLayer write lock");
+        let current = self.snapshot.load_full();
+        let mut next = (*current).clone();
+        next.by_key.retain(|(u, _), _| u != uri);
+        next.by_uri.remove(uri);
+        self.snapshot.store(Arc::new(next));
     }
 
     /// Drop every entry for one server -- used when a server
     /// dies / is detached.
     pub fn clear_server(&self, server_id: &Arc<str>) {
-        lock(&self.inner)
+        let _g = self.write.lock().expect("DiagnosticsLayer write lock");
+        let current = self.snapshot.load_full();
+        let mut next = (*current).clone();
+        let affected_uris: Vec<Uri> = next
             .by_key
+            .keys()
+            .filter(|(_, s)| Arc::ptr_eq(s, server_id) || s.as_ref() == server_id.as_ref())
+            .map(|(u, _)| u.clone())
+            .collect();
+        next.by_key
             .retain(|(_, s), _| !Arc::ptr_eq(s, server_id) && s.as_ref() != server_id.as_ref());
+        for uri in affected_uris {
+            rebuild_by_uri(&mut next, &uri);
+        }
+        self.snapshot.store(Arc::new(next));
     }
+}
+
+/// Recompute `next.by_uri[uri]` from `next.by_key`. Called
+/// inside the write critical section after every mutation that
+/// could have changed the affected URI's merged-list. Sort key
+/// is `(line, character)` so the picker / `:diagnostics` view
+/// gets stable ordering without sorting at read time.
+fn rebuild_by_uri(next: &mut DiagnosticsSnapshot, uri: &Uri) {
+    let mut merged: Vec<Diagnostic> = next
+        .by_key
+        .iter()
+        .filter(|((u, _), _)| u == uri)
+        .flat_map(|(_, s)| s.diagnostics.iter().cloned())
+        .collect();
+    if merged.is_empty() {
+        next.by_uri.remove(uri);
+        return;
+    }
+    merged.sort_by(|a, b| {
+        a.range
+            .start
+            .line
+            .cmp(&b.range.start.line)
+            .then(a.range.start.character.cmp(&b.range.start.character))
+    });
+    next.by_uri.insert(uri.clone(), Arc::from(merged));
 }
 
 impl std::fmt::Debug for DiagnosticsLayer {
@@ -328,10 +431,6 @@ pub async fn pump_diagnostics(
             Err(broadcast::error::RecvError::Closed) => return,
         }
     }
-}
-
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().expect("DiagnosticsLayer mutex poisoned")
 }
 
 #[cfg(test)]

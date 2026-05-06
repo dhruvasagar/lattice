@@ -395,6 +395,7 @@ itself never appears next to editor work in a flame graph.
 | `lsp_edit_publish_three_subs`         | **1.9µs**  | ~1.5µs / <50µs | UI-thread cost per applied edit: `EventBus::publish` of one `Event::DocumentChanged` with one `AppliedEdit`, three `DocumentChanged` subscribers attached. The *only* LSP work the keystroke thread does after the per-actor fan-in refactor (docs/lsp-architecture.md §11). |
 | `lsp_edit_propagation_publish_to_recv`| **227ns**  | ~200ns / <5µs  | Bus → mpsc receive hop: time from `EventBus::publish` to the per-actor fan-in's `mpsc::recv().await` returning. Excludes the actor's own `record_edit`. |
 | `lsp_didchange_flush_16_edits`        | **8.4µs**  | ~6µs / <50µs   | Actor-side debounce-arm cost: 16 `DocSync::record_edit` calls + `take_flush_payload` + serialise to `textDocument/didChange` JSON. Runs off the UI thread (post-debounce). |
+| `lsp_diagnostics_line_severity_wait_free` | **25ns** | ~20ns / <500ns | Render-thread `DiagnosticsLayer::line_severity(uri, line)` after the audit's C3 fix. Pre-fix path locked an inner `Mutex` + cloned the full diagnostics list per call (microseconds, ~3000 calls/sec on the render thread = milliseconds wasted). New path: one `ArcSwap::load` + a borrowed-slice filter — wait-free, allocation-free. |
 
 The full LSP feature matrix (per-method status) lives in
 [`lsp-features.md`](lsp-features.md); the architecture in

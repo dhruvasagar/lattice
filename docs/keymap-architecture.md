@@ -835,15 +835,25 @@ type-hoisting decisions, and the sub-slice plan.
     (`J`/`gJ`) + `FindRepeat{reverse}` (`;`/`,`).
   - 8.i.2.e -- insert literals (2 IDs): `InsertNewline` (Insert
     + Replace `<CR>`) + `InsertTab` (Insert `<Tab>`).
-- **8.i.3 -- Wildcard-captured variants.** Pending. Seven
-  remaining `bind_legacy` sites carry `'\0'` placeholders that
-  the dispatcher overrides with the captured char:
-  `OverwriteChar`, `SetMark`, `JumpToMarkLine`,
+- **8.i.3 -- Wildcard-captured variants.** ✅ landed as one
+  commit. Seven captured-char wildcards promoted in a single
+  batch (the seam was small enough that splitting wouldn't have
+  helped review): `OverwriteChar`, `SetMark`, `JumpToMarkLine`,
   `JumpToMarkExact`, `SelectRegister`, `StartMacroRecord`,
-  `PlayMacro`. Need `BoundCommand` to grow an `expects_capture`
-  flag (or equivalent) so the dispatcher knows to substitute the
-  captured char into the typed `CommandInvocation`'s args.
-- **8.i.4 -- Retire Pending; finalise.** Pending. The 18
+  `PlayMacro` (with `PlayLastMacro` as the `@@` branch of the
+  same `play-macro` action). Architecture call: validation lives
+  in the bound `ActionSpec`, not the per-mode dispatcher. The
+  dispatcher just folds `Args::Char(captured[0])` into the
+  invocation; each spec's apply closure validates per-variant
+  rules and either emits the typed `AppEffect` or returns
+  `Effect::None` (the no-op effect IS the "drop pending" signal,
+  since `App::apply` clears pending on every non-`SetPending(_)`
+  action). `Register::from_input_char` was added to
+  `lattice-grammar` as the canonical char-to-Register mapping
+  shared by the App and the `select-register` spec. The Replace
+  drift comparator's `Invoke` arm now compares `args` so
+  captured-char substitution regressions trip the test.
+- **8.i.4 -- Retire Pending; finalise.** Pending. The 17
   remaining `bind_legacy` sites all use
   `Action::SetPending(Pending::*)`; they go away when `Pending`
   dissolves into trie-driven partial-chord state per the memo

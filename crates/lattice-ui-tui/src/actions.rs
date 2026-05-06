@@ -52,6 +52,13 @@ pub struct ActionIds {
     pub goto_next_fold: CommandId,
     pub goto_prev_fold: CommandId,
     pub toggle_fold_enable: CommandId,
+    pub undo: CommandId,
+    pub redo: CommandId,
+    pub repeat_last_change: CommandId,
+    pub page_down: CommandId,
+    pub page_up: CommandId,
+    pub scroll_line_up: CommandId,
+    pub scroll_line_down: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -186,6 +193,48 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
             "Vim's `zi`: toggle the `foldenable` option.",
             AppEffect::ToggleFoldEnable,
         ),
+        undo: register_simple(
+            registry,
+            "action:undo",
+            "Vim's `u`: undo the last buffer change.",
+            AppEffect::Undo,
+        ),
+        redo: register_simple(
+            registry,
+            "action:redo",
+            "Vim's `<C-r>`: redo the last undone change.",
+            AppEffect::Redo,
+        ),
+        repeat_last_change: register_simple(
+            registry,
+            "action:repeat-last-change",
+            "Vim's `.`: repeat the last change.",
+            AppEffect::RepeatLastChange,
+        ),
+        page_down: register_simple(
+            registry,
+            "action:page-down",
+            "Vim's `<C-f>`: scroll the viewport down one page.",
+            AppEffect::PageDown,
+        ),
+        page_up: register_simple(
+            registry,
+            "action:page-up",
+            "Vim's `<C-b>`: scroll the viewport up one page.",
+            AppEffect::PageUp,
+        ),
+        scroll_line_up: register_simple(
+            registry,
+            "action:scroll-line-up",
+            "Vim's `<C-y>`: scroll viewport up one line.",
+            AppEffect::ScrollLineUp,
+        ),
+        scroll_line_down: register_simple(
+            registry,
+            "action:scroll-line-down",
+            "Vim's `<C-e>`: scroll viewport down one line.",
+            AppEffect::ScrollLineDown,
+        ),
     }
 }
 
@@ -249,6 +298,13 @@ mod tests {
             (ids.goto_next_fold, "action:goto-next-fold"),
             (ids.goto_prev_fold, "action:goto-prev-fold"),
             (ids.toggle_fold_enable, "action:toggle-fold-enable"),
+            (ids.undo, "action:undo"),
+            (ids.redo, "action:redo"),
+            (ids.repeat_last_change, "action:repeat-last-change"),
+            (ids.page_down, "action:page-down"),
+            (ids.page_up, "action:page-up"),
+            (ids.scroll_line_up, "action:scroll-line-up"),
+            (ids.scroll_line_down, "action:scroll-line-down"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

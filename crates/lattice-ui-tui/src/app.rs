@@ -11748,6 +11748,13 @@ impl App {
             AppEffect::GotoNextFold => self.apply(Action::GotoNextFold),
             AppEffect::GotoPrevFold => self.apply(Action::GotoPrevFold),
             AppEffect::ToggleFoldEnable => self.apply(Action::ToggleFoldEnable),
+            AppEffect::Undo => self.apply(Action::Undo),
+            AppEffect::Redo => self.apply(Action::Redo),
+            AppEffect::RepeatLastChange => self.apply(Action::RepeatLastChange),
+            AppEffect::PageDown => self.apply(Action::PageDown),
+            AppEffect::PageUp => self.apply(Action::PageUp),
+            AppEffect::ScrollLineUp => self.apply(Action::ScrollLineUp),
+            AppEffect::ScrollLineDown => self.apply(Action::ScrollLineDown),
         }
     }
 

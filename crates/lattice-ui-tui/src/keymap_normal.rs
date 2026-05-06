@@ -379,18 +379,18 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.match_bracket),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('u')],
-        Action::Undo,
+        CommandInvocation::of(actions.undo),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('.')],
-        Action::RepeatLastChange,
+        CommandInvocation::of(actions.repeat_last_change),
         source(),
     );
     handle.bind_legacy(
@@ -924,39 +924,39 @@ pub fn register_normal_bindings(
 
     // Viewport / scroll / undo-tree / jump history / tag stack /
     // redraw / blockwise visual.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('f'))],
-        Action::PageDown,
+        CommandInvocation::of(actions.page_down),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('b'))],
-        Action::PageUp,
+        CommandInvocation::of(actions.page_up),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('e'))],
-        Action::ScrollLineDown,
+        CommandInvocation::of(actions.scroll_line_down),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('y'))],
-        Action::ScrollLineUp,
+        CommandInvocation::of(actions.scroll_line_up),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('r'))],
-        Action::Redo,
+        CommandInvocation::of(actions.redo),
         source(),
     );
     handle.bind(

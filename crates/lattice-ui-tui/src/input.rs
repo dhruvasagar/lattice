@@ -1060,25 +1060,27 @@ mod tests {
     #[test]
     fn u_in_normal_undoes() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('u'))
-            ),
-            Action::Undo
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('u')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.undo),
+            other => panic!("expected Invoke(undo), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_r_in_normal_redoes() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                ctrl(KeyCode::Char('r'))
-            ),
-            Action::Redo
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            ctrl(KeyCode::Char('r')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.redo),
+            other => panic!("expected Invoke(redo), got {other:?}"),
+        }
     }
 
     // ---- Command modal ----
@@ -2715,49 +2717,53 @@ mod tests {
     #[test]
     fn ctrl_f_emits_page_down() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                ctrl(KeyCode::Char('f'))
-            ),
-            Action::PageDown
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            ctrl(KeyCode::Char('f')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.page_down),
+            other => panic!("expected Invoke(page_down), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_b_emits_page_up() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                ctrl(KeyCode::Char('b'))
-            ),
-            Action::PageUp
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            ctrl(KeyCode::Char('b')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.page_up),
+            other => panic!("expected Invoke(page_up), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_e_emits_scroll_line_down() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                ctrl(KeyCode::Char('e'))
-            ),
-            Action::ScrollLineDown
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            ctrl(KeyCode::Char('e')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.scroll_line_down),
+            other => panic!("expected Invoke(scroll_line_down), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_y_emits_scroll_line_up() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                ctrl(KeyCode::Char('y'))
-            ),
-            Action::ScrollLineUp
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            ctrl(KeyCode::Char('y')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.scroll_line_up),
+            other => panic!("expected Invoke(scroll_line_up), got {other:?}"),
+        }
     }
 
     #[test]
@@ -3315,13 +3321,14 @@ mod tests {
     #[test]
     fn dot_in_normal_emits_repeat_last_change() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('.'))
-            ),
-            Action::RepeatLastChange
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('.')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.repeat_last_change),
+            other => panic!("expected Invoke(repeat_last_change), got {other:?}"),
+        }
     }
 
     // ---- Visual mode entry / exit ----

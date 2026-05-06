@@ -127,6 +127,29 @@ pub enum AppEffect {
     /// every line renders flat regardless of any closed flag).
     /// Promoted from `Action::ToggleFoldEnable` in slice 8.i.1.c.
     ToggleFoldEnable,
+    /// Vim's `u`. Undo the last buffer change. Promoted from
+    /// `Action::Undo` in slice 8.i.1.d.
+    Undo,
+    /// Vim's `<C-r>`. Redo the last undone change. Promoted from
+    /// `Action::Redo` in slice 8.i.1.d.
+    Redo,
+    /// Vim's `.`. Repeat the last change (operator + motion +
+    /// register + count). Promoted from `Action::RepeatLastChange`
+    /// in slice 8.i.1.d.
+    RepeatLastChange,
+    /// Vim's `<C-f>`. Page-down: scroll the viewport down one
+    /// page. Promoted from `Action::PageDown` in slice 8.i.1.d.
+    PageDown,
+    /// Vim's `<C-b>`. Page-up: scroll the viewport up one page.
+    /// Promoted from `Action::PageUp` in slice 8.i.1.d.
+    PageUp,
+    /// Vim's `<C-y>`. Scroll viewport up one line (cursor
+    /// stays at the same screen position when possible).
+    /// Promoted from `Action::ScrollLineUp` in slice 8.i.1.d.
+    ScrollLineUp,
+    /// Vim's `<C-e>`. Scroll viewport down one line. Promoted
+    /// from `Action::ScrollLineDown` in slice 8.i.1.d.
+    ScrollLineDown,
 }
 
 #[cfg(test)]

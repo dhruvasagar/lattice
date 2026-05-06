@@ -3802,8 +3802,9 @@ impl App {
             },
             Action::FollowLink => match self.active_buffer {
                 BufferKind::Help => self.do_help_follow_link(),
+                BufferKind::Oil => self.do_oil_follow(),
                 BufferKind::FileTree => self.do_file_tree_follow(),
-                BufferKind::Document | BufferKind::Oil => {}
+                BufferKind::Document => {}
             },
 
             Action::SplitPaneHorizontal => self.do_split_pane(SplitOrientation::Horizontal),
@@ -4884,7 +4885,7 @@ impl App {
         if let Ok(meta) = std::fs::metadata(&target)
             && meta.is_dir()
         {
-            self.do_open_file_tree(Some(target));
+            self.do_open_oil(Some(target));
             return;
         }
         // If `target` is already open, switch to it. The dirty
@@ -10767,6 +10768,17 @@ impl App {
     }
 
     fn do_write(&mut self, path: Option<std::path::PathBuf>) {
+        if matches!(self.active_buffer, BufferKind::Oil) {
+            let oil_id = self.active_pane_buffer_id();
+            if let Some(oil) = self.buffers.oil_mut(oil_id) {
+                let dir_display = oil.dir.display().to_string();
+                match oil.apply() {
+                    Ok(()) => self.set_message(EchoLevel::Info, format!("oil: applied changes in {dir_display}")),
+                    Err(e) => self.set_message(EchoLevel::Error, format!("oil apply error: {e}")),
+                }
+            }
+            return;
+        }
         let result: Result<String, RuntimeError> = match path {
             Some(p) => self
                 .save_as_blocking(p.clone())
@@ -10817,11 +10829,40 @@ impl App {
             self.run_help_invocation(inv);
             return;
         }
+        if matches!(self.active_buffer, BufferKind::Oil) {
+            self.run_oil_invocation(inv);
+            return;
+        }
         if matches!(self.active_buffer, BufferKind::FileTree) {
             self.run_file_tree_invocation(inv);
             return;
         }
         self.run_document_invocation(inv);
+    }
+
+    fn run_oil_invocation(&mut self, inv: CommandInvocation) {
+        self.run_document_invocation(inv);
+    }
+
+    fn do_oil_follow(&mut self) {
+        let active_id = self.active_pane_buffer_id();
+        let Some(oil) = self.buffers.oil(active_id) else { return; };
+        let Some(entry) = oil.entry_at_cursor().cloned() else { return; };
+        let dir = oil.dir.clone();
+        if entry.is_dir {
+            if let Some(oil) = self.buffers.oil_mut(active_id) {
+                let sub = dir.join(&entry.name);
+                if let Err(e) = oil.navigate_into(sub) {
+                    self.set_message(EchoLevel::Error, format!("oil navigate: {e}"));
+                } else {
+                    self.cursor = Position::ZERO;
+                    self.scroll = 0;
+                }
+            }
+        } else {
+            let path = dir.join(&entry.name);
+            self.do_edit(Some(path), false);
+        }
     }
 
     /// Resolve a motion against the active file tree's content.
@@ -12206,7 +12247,53 @@ impl App {
     /// spawning a duplicate -- matching `:e FILE`'s "already open"
     /// semantics. The active pane flips to the new (or existing)
     /// tree buffer.
-    fn do_open_oil(&mut self, _dir: Option<std::path::PathBuf>) {}
+    fn do_open_oil(&mut self, dir: Option<std::path::PathBuf>) {
+        let dir = match dir {
+            Some(p) => p,
+            None => match self.document.path().and_then(|p| p.parent().map(Into::into)) {
+                Some(parent) => parent,
+                None => match std::env::current_dir() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.set_message(EchoLevel::Error, format!("cwd error: {e}"));
+                        return;
+                    }
+                },
+            },
+        };
+        if let Some(existing_id) = self.buffers.oil_with_dir(&dir) {
+            self.activate_oil(existing_id);
+            self.set_message(EchoLevel::Info, format!("oil: {} (already open)", dir.display()));
+            return;
+        }
+        let oil = match crate::oil::OilBuffer::open(&dir) {
+            Ok(o) => o,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("oil open error: {}: {e}", dir.display()));
+                return;
+            }
+        };
+        if matches!(self.active_buffer, BufferKind::Document) {
+            let cur = self.cursor;
+            self.push_position_history(cur, PositionSource::AutoJump);
+        }
+        let new_id = oil.id;
+        self.buffers.insert(BufferEntry {
+            id: new_id,
+            flags: BufferFlags::default(),
+            data: BufferData::Oil(oil),
+        });
+        self.snapshot_active_pane();
+        self.snapshot_active_document();
+        self.active_buffer = BufferKind::Oil;
+        let pane = self.pane_tree.active_mut();
+        pane.buffer = BufferKind::Oil;
+        pane.buffer_id = new_id;
+        pane.cursor = Position::ZERO;
+        pane.scroll = 0;
+        self.pending = Pending::None;
+        self.set_message(EchoLevel::Info, format!("oil: {}", dir.display()));
+    }
 
     fn do_open_file_tree(&mut self, root: Option<std::path::PathBuf>) {
         let root = match root {

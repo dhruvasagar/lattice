@@ -324,6 +324,7 @@ pub async fn spawn(
     workspace_root: std::path::PathBuf,
     logger: LspLogger,
     apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
+    configuration_bus: Option<crate::configuration::ConfigurationBus>,
 ) -> LspResult<ServerHandle> {
     let transport = ChildTransport::spawn(&config.binary, &config.args, Some(&workspace_root))
         .await
@@ -338,6 +339,7 @@ pub async fn spawn(
         Some(child),
         logger,
         apply_edit_bus,
+        configuration_bus,
     )
     .await
 }
@@ -359,6 +361,7 @@ pub async fn spawn_with_io<R, W>(
     child: Option<Child>,
     logger: LspLogger,
     apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
+    configuration_bus: Option<crate::configuration::ConfigurationBus>,
 ) -> LspResult<ServerHandle>
 where
     R: AsyncBufRead + Unpin + Send + 'static,
@@ -404,6 +407,7 @@ where
         diagnostics.clone(),
         logger.clone(),
         apply_edit_bus,
+        configuration_bus,
     ));
 
     let capabilities = handshake_rx
@@ -541,6 +545,7 @@ async fn actor_main<R, W>(
     diagnostics: DiagnosticsBus,
     logger: LspLogger,
     apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
+    configuration_bus: Option<crate::configuration::ConfigurationBus>,
 ) where
     R: AsyncBufRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -786,6 +791,32 @@ async fn actor_main<R, W>(
                                 .await;
                                 let _ = out_tx_clone.send(Message::Response(resp));
                             });
+                        } else if req.method == "workspace/configuration"
+                            && let Some(bus) = configuration_bus.as_ref()
+                        {
+                            // Phase 4.1 follow-up: real values
+                            // (not just `null` per item) require
+                            // the App to walk its cached TOML
+                            // tree. Same async pattern as
+                            // applyEdit -- dispatch via the bus,
+                            // await response, ferry back.
+                            let bus = bus.clone();
+                            let server_id_clone = Arc::clone(&server_id_arc);
+                            let logger_clone = logger.clone();
+                            let out_tx_clone = out_tx.clone();
+                            let req_id = req.id.clone();
+                            let params = req.params.clone();
+                            tokio::spawn(async move {
+                                let resp = handle_configuration_request(
+                                    server_id_clone,
+                                    req_id,
+                                    params,
+                                    &bus,
+                                    &logger_clone,
+                                )
+                                .await;
+                                let _ = out_tx_clone.send(Message::Response(resp));
+                            });
                         } else {
                             let resp = handle_server_request(&server_id_arc, &req, &logger);
                             let _ = out_tx.send(Message::Response(resp));
@@ -1022,6 +1053,65 @@ fn apply_edit_response(
             },
         ),
     }
+}
+
+/// Handle a `workspace/configuration` request asynchronously
+/// (Phase 4.1 follow-up). Parses the LSP `ConfigurationParams`,
+/// dispatches each item's `section` through the configuration
+/// bus to the App's drain, and converts the App's
+/// `Vec<serde_json::Value>` reply into the spec-shaped
+/// `Vec<Value>` response (one entry per requested item, in
+/// input order; missing sections come back as `Value::Null`).
+///
+/// Failure modes that fall back to `[null, ...]` so the server
+/// doesn't hang:
+/// - Malformed params (logged as Warn).
+/// - Receiver dropped before the App could respond.
+async fn handle_configuration_request(
+    server_id: Arc<str>,
+    req_id: RequestId,
+    params: Option<Value>,
+    bus: &crate::configuration::ConfigurationBus,
+    logger: &LspLogger,
+) -> Response {
+    let parsed: lsp_types::ConfigurationParams = match params {
+        Some(v) => match serde_json::from_value(v) {
+            Ok(p) => p,
+            Err(e) => {
+                logger.log(
+                    Some(&server_id),
+                    LogLevel::Warn,
+                    LogSource::Client,
+                    format!("workspace/configuration: malformed params: {e}"),
+                );
+                // Empty array reply -- the server's caller will
+                // see "no items" rather than a hang.
+                return Response::ok(req_id, Value::Array(Vec::new()));
+            }
+        },
+        None => return Response::ok(req_id, Value::Array(Vec::new())),
+    };
+    let sections: Vec<String> = parsed
+        .items
+        .iter()
+        .map(|i| i.section.clone().unwrap_or_default())
+        .collect();
+    let count = sections.len();
+    let (response_tx, response_rx) = oneshot::channel();
+    let inbound = crate::configuration::InboundConfigurationRequest {
+        server_id: Arc::clone(&server_id),
+        sections,
+        response: response_tx,
+    };
+    if bus.dispatch(inbound).is_err() {
+        let arr: Vec<Value> = (0..count).map(|_| Value::Null).collect();
+        return Response::ok(req_id, Value::Array(arr));
+    }
+    let values = match response_rx.await {
+        Ok(v) => v,
+        Err(_) => (0..count).map(|_| Value::Null).collect(),
+    };
+    Response::ok(req_id, Value::Array(values))
 }
 
 /// Handle a server-initiated request. Default behaviour is "we

@@ -260,6 +260,11 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // back to the originating server through the embedded
         // oneshot.
         app.drain_inbound_apply_edits();
+        // Drain server-initiated `workspace/configuration`
+        // requests (Phase 4.1 follow-up). Walk each requested
+        // section in the cached TOML tree at `lsp.<section>`
+        // and reply with the per-section value.
+        app.drain_inbound_configuration_requests();
         // Update viewport height. The buffer-area band is the
         // terminal minus the mode line + cmdline/echo row (and the
         // candidate-list row band, when a picker / completion popup

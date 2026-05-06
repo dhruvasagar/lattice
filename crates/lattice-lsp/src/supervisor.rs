@@ -135,6 +135,13 @@ pub struct LspSupervisor {
     /// METHOD_NOT_FOUND response (matches the pre-4.3
     /// behaviour).
     apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
+    /// Server-initiated `workspace/configuration` bus (Phase
+    /// 4.1 follow-up). `Some` once the App has called
+    /// [`Self::set_configuration_bus`] at startup; cloned into
+    /// every actor at spawn. `None` falls back to
+    /// `Vec<null>`-per-item replies (the pre-this-commit
+    /// stub).
+    configuration_bus: Option<crate::configuration::ConfigurationBus>,
 }
 
 impl LspSupervisor {
@@ -151,6 +158,7 @@ impl LspSupervisor {
             logger,
             diagnostics,
             apply_edit_bus: None,
+            configuration_bus: None,
         }
     }
 
@@ -163,6 +171,18 @@ impl LspSupervisor {
     /// (we don't track them for retro-fitting in v1).
     pub fn set_apply_edit_bus(&mut self, bus: crate::apply_edit::ApplyEditBus) {
         self.apply_edit_bus = Some(bus);
+    }
+
+    /// Install the configuration bus (Phase 4.1 follow-up).
+    /// Same shape as [`Self::set_apply_edit_bus`]: cloned into
+    /// every actor spawned after the call so server-initiated
+    /// `workspace/configuration` requests reach the App's
+    /// drain. `None` falls back to per-item `null` replies.
+    pub fn set_configuration_bus(
+        &mut self,
+        bus: crate::configuration::ConfigurationBus,
+    ) {
+        self.configuration_bus = Some(bus);
     }
 
     /// Borrow the shared logger (so callers can register their
@@ -283,6 +303,7 @@ impl LspSupervisor {
                         workspace.clone(),
                         self.logger.clone(),
                         self.apply_edit_bus.clone(),
+                        self.configuration_bus.clone(),
                     )
                     .await
                     {

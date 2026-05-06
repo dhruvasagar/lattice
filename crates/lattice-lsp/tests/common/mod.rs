@@ -212,6 +212,7 @@ impl MockServer {
             None,
             logger,
             None,
+            None,
         )
         .await
         .expect("mock spawn handshake should succeed");

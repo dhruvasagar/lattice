@@ -71,7 +71,7 @@ pub use core_options::{CoreOptions, register_core_options};
 pub use erased::ErasedOption;
 pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, default_user_config_path, load_default_paths,
-    load_file, project_config_path,
+    load_file, lookup_dotted_path, project_config_path,
 };
 pub use option::{Option, OptionBuilder, OptionHandle};
 pub use option_type::OptionType;

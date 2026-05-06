@@ -56,16 +56,48 @@ pub struct LoadOutcome {
     /// value is the sub-table verbatim. `BTreeMap` so iteration
     /// order is stable -- tests depend on this.
     pub structural: BTreeMap<String, toml::Table>,
+    /// Merged TOML tree of every loaded file -- preserves all
+    /// keys (registered + structural + unknown) verbatim. The
+    /// `extend` method deep-merges with later files overriding
+    /// earlier ones at scalar leaves; nested tables merge
+    /// recursively rather than being clobbered. Consumers like
+    /// `workspace/configuration` (Phase 4.1 follow-up) walk this
+    /// by dotted-path to surface server-namespaced config the
+    /// typed registry doesn't know about.
+    pub raw_tree: toml::Table,
 }
 
 impl LoadOutcome {
     /// Append another outcome's messages and structural sections
-    /// onto this one, preserving order. Used to merge user +
-    /// project file outcomes.
+    /// onto this one, preserving order, AND deep-merge the
+    /// raw-tree (later overrides earlier at scalar level; nested
+    /// tables merge recursively).
     pub fn extend(&mut self, other: LoadOutcome) {
         self.messages.extend(other.messages);
         for (k, v) in other.structural {
             self.structural.insert(k, v);
+        }
+        deep_merge_table(&mut self.raw_tree, other.raw_tree);
+    }
+}
+
+/// Deep-merge `incoming` into `base`. For each key:
+/// - Both sides are tables -> recurse.
+/// - Else -> incoming wins (later loaded file overrides).
+///
+/// Used by `LoadOutcome::extend` so a project config's
+/// `[lsp.rust-analyzer.cargo]` doesn't clobber the user's
+/// `[lsp.rust-analyzer.checkOnSave]` -- both survive in the
+/// merged tree.
+pub(crate) fn deep_merge_table(base: &mut toml::Table, incoming: toml::Table) {
+    for (key, incoming_val) in incoming {
+        match (base.get_mut(&key), incoming_val) {
+            (Some(toml::Value::Table(base_sub)), toml::Value::Table(in_sub)) => {
+                deep_merge_table(base_sub, in_sub);
+            }
+            (_, val) => {
+                base.insert(key, val);
+            }
         }
     }
 }
@@ -87,6 +119,28 @@ pub enum LoadMessageLevel {
     /// File loaded but a key was rejected (unknown / invalid /
     /// validator failure). Other keys still applied.
     Warning,
+}
+
+/// Walk a TOML table by a dotted path, returning the value at
+/// the leaf or `None` if any segment is missing or steps through
+/// a non-table. Used by `workspace/configuration` to look up
+/// server-namespaced keys (e.g. `"rust-analyzer.cargo.features"`
+/// walks `tree["rust-analyzer"]["cargo"]["features"]`).
+pub fn lookup_dotted_path<'a>(
+    tree: &'a toml::Table,
+    path: &str,
+) -> Option<&'a toml::Value> {
+    let mut node: &toml::Table = tree;
+    let segments: Vec<&str> = path.split('.').collect();
+    let last_idx = segments.len().checked_sub(1)?;
+    for (i, seg) in segments.iter().enumerate() {
+        let value = node.get(*seg)?;
+        if i == last_idx {
+            return Some(value);
+        }
+        node = value.as_table()?;
+    }
+    None
 }
 
 /// Default user config path. `Some` on platforms where
@@ -162,6 +216,10 @@ pub fn load_file(
             return out;
         }
     };
+    // Stash the parsed tree before walking. Consumers like
+    // `workspace/configuration` walk this by dotted-path; the
+    // walker's apply-and-bucket pass below stays unchanged.
+    out.raw_tree = table.clone();
     walk_table(registry, path, &mut out, structural_prefixes, &[], &table);
     out
 }
@@ -539,6 +597,94 @@ mod tests {
         assert_eq!(a.messages[0].body, "first");
         assert_eq!(a.messages[1].body, "second");
         assert_eq!(a.structural.len(), 2);
+    }
+
+    #[test]
+    fn load_file_populates_raw_tree_with_full_parsed_table() {
+        let r = registry_with_options();
+        let p = write_temp(
+            "raw-tree",
+            "[lsp.rust-analyzer.cargo]\n\
+             features = [\"foo\", \"bar\"]\n\
+             [lsp.rust-analyzer.checkOnSave]\n\
+             enable = true\n",
+        );
+        let out = load_file(&r, &p, &["lsp"]);
+        // Tree carries the full structure even though `lsp` was
+        // also handled as a structural namespace (the two
+        // surfaces coexist without conflict).
+        let features = lookup_dotted_path(
+            &out.raw_tree,
+            "lsp.rust-analyzer.cargo.features",
+        )
+        .expect("features path");
+        let arr = features.as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0].as_str(), Some("foo"));
+        assert_eq!(arr[1].as_str(), Some("bar"));
+        let enable = lookup_dotted_path(
+            &out.raw_tree,
+            "lsp.rust-analyzer.checkOnSave.enable",
+        )
+        .expect("enable path");
+        assert_eq!(enable.as_bool(), Some(true));
+    }
+
+    #[test]
+    fn extend_deep_merges_raw_trees_preserving_sibling_keys() {
+        // User config has `lsp.rust-analyzer.checkOnSave = true`.
+        // Project config has `lsp.rust-analyzer.cargo.features =
+        // ["proj"]`. Merged tree carries BOTH -- project's edit
+        // doesn't clobber user's sibling key inside the same
+        // `[lsp.rust-analyzer]` table.
+        let r = registry_with_options();
+        let user = write_temp(
+            "deep-user",
+            "[lsp.rust-analyzer]\ncheckOnSave = true\n",
+        );
+        let proj = write_temp(
+            "deep-proj",
+            "[lsp.rust-analyzer.cargo]\nfeatures = [\"proj\"]\n",
+        );
+        let mut out = load_file(&r, &user, &["lsp"]);
+        out.extend(load_file(&r, &proj, &["lsp"]));
+        let check =
+            lookup_dotted_path(&out.raw_tree, "lsp.rust-analyzer.checkOnSave")
+                .and_then(|v| v.as_bool());
+        assert_eq!(check, Some(true), "user's checkOnSave preserved");
+        let features = lookup_dotted_path(
+            &out.raw_tree,
+            "lsp.rust-analyzer.cargo.features",
+        )
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>());
+        assert_eq!(features, Some(vec!["proj"]), "project's features applied");
+    }
+
+    #[test]
+    fn extend_overrides_scalars_with_later_values() {
+        // Both files set the same scalar key -- the later
+        // (project) value wins.
+        let r = registry_with_options();
+        let user = write_temp("scalar-user", "tabstop = 2\n");
+        let proj = write_temp("scalar-proj", "tabstop = 8\n");
+        let mut out = load_file(&r, &user, &[]);
+        out.extend(load_file(&r, &proj, &[]));
+        let ts = lookup_dotted_path(&out.raw_tree, "tabstop").unwrap();
+        assert_eq!(ts.as_integer(), Some(8));
+    }
+
+    #[test]
+    fn lookup_dotted_path_returns_none_for_missing_segments() {
+        let mut t = toml::Table::new();
+        t.insert("a".into(), toml::Value::String("hello".into()));
+        assert!(lookup_dotted_path(&t, "missing").is_none());
+        // `a` is a string, not a table -- walking past it is None.
+        assert!(lookup_dotted_path(&t, "a.deeper").is_none());
+        assert_eq!(
+            lookup_dotted_path(&t, "a").and_then(|v| v.as_str()),
+            Some("hello"),
+        );
     }
 
     #[test]

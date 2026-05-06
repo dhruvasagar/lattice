@@ -52,12 +52,12 @@ fn build_lsp_subsystem() -> (
     DiagnosticsLayer,
     LspLogger,
     tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundApplyEdit>,
+    tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundConfigurationRequest>,
 ) {
     let logger = LspLogger::with_defaults();
     let mut sup = LspSupervisor::new(logger.clone());
     // Builtin registry: rust-analyzer, pyright, gopls,
     // typescript-language-server, clangd, lua-language-server.
-    // Users override via lsp.toml when §5.12 lands.
     sup.set_configs(lattice_lsp::builtin_servers());
     let diagnostics = sup.diagnostics().clone();
     // Apply-edit bus (Phase 4.3): App owns the receiver, every
@@ -67,11 +67,19 @@ fn build_lsp_subsystem() -> (
     // and replies via the embedded oneshot.
     let (apply_edit_bus, apply_edit_rx) = lattice_lsp::ApplyEditBus::new();
     sup.set_apply_edit_bus(apply_edit_bus);
+    // Configuration bus (Phase 4.1 follow-up): same shape as
+    // apply-edit. Server-initiated `workspace/configuration`
+    // requests ferry through this channel; the App's drain
+    // walks the cached TOML tree at `lsp.<section>` for each
+    // requested item.
+    let (configuration_bus, configuration_rx) = lattice_lsp::ConfigurationBus::new();
+    sup.set_configuration_bus(configuration_bus);
     (
         std::sync::Arc::new(tokio::sync::Mutex::new(sup)),
         diagnostics,
         logger,
         apply_edit_rx,
+        configuration_rx,
     )
 }
 use crate::excommand;
@@ -1407,6 +1415,25 @@ pub struct App {
     /// itself; matches `drain_option_changes` etc.).
     pub pending_apply_edit_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundApplyEdit>>,
+    /// Server-initiated `workspace/configuration` request stream
+    /// (Phase 4.1 follow-up). Drained per-frame by
+    /// [`Self::drain_inbound_configuration_requests`]; each
+    /// request walks the cached TOML tree at `lsp.<section>`
+    /// for every requested item and replies with the
+    /// per-section `serde_json::Value`s via the embedded
+    /// oneshot. Same take-and-restore pattern as the other
+    /// drain channels.
+    pub pending_configuration_rx: Option<
+        tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundConfigurationRequest>,
+    >,
+    /// Merged TOML tree of every loaded config file (user +
+    /// project, project deep-merged on top). Populated by
+    /// [`Self::load_persistent_config`] from the loader's new
+    /// `LoadOutcome.raw_tree` field. The
+    /// `workspace/configuration` drain walks this by
+    /// `lsp.<section>` to surface server-namespaced settings
+    /// the typed registry doesn't pre-register.
+    pub lsp_config_tree: toml::Table,
     /// `BufferId` → `Uri` map. Maintained by buffer-open /
     /// buffer-close paths; the supervisor's API is keyed by
     /// `Uri`, so this is the bridge.
@@ -2153,8 +2180,13 @@ impl App {
         // the App's `lsp_diagnostics` / `lsp_logger` reads land
         // on the same Arc-shared state the supervisor's actors
         // push to.
-        let (lsp, lsp_diagnostics, lsp_logger, lsp_apply_edit_rx) =
-            build_lsp_subsystem();
+        let (
+            lsp,
+            lsp_diagnostics,
+            lsp_logger,
+            lsp_apply_edit_rx,
+            lsp_configuration_rx,
+        ) = build_lsp_subsystem();
         let mut registry = CommandRegistry::new();
         let builtins = populate(&mut registry);
         // Register the built-in ex-commands as peers of motions /
@@ -2411,6 +2443,8 @@ impl App {
             lsp_diagnostics,
             lsp_logger,
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),
+            pending_configuration_rx: Some(lsp_configuration_rx),
+            lsp_config_tree: toml::Table::new(),
             buffer_uris: std::collections::HashMap::new(),
             pending_lsp_opens: Vec::new(),
             lsp_flush_signal: None,
@@ -8788,6 +8822,64 @@ impl App {
     /// missing the title. When buffers ARE open the rebuild walks
     /// the logger ring (≤ 10k records) and replaces the rope --
     /// well within frame budget for the editor's scale.
+    /// Drain server-initiated `workspace/configuration` requests
+    /// (Phase 4.1 follow-up). For each request, walk the cached
+    /// `lsp_config_tree` at `lsp.<section>` for every requested
+    /// item and reply with a `Vec<serde_json::Value>` (one
+    /// entry per item, in input order; missing sections come
+    /// back as `Value::Null`). Pre-this-commit the actor
+    /// stub-replied with `[null, ...]` directly; now the App's
+    /// drain surfaces real values from the user's TOML.
+    ///
+    /// Lookup convention: server-supplied `section` paths are
+    /// the namespaced keys the server expects in ITS config
+    /// tree (e.g. `"rust-analyzer.cargo.features"`). The
+    /// editor's TOML places these under an `[lsp.<server>]`
+    /// umbrella so multiple servers' keys don't collide with
+    /// each other or with editor-namespace keys
+    /// (`tabstop` etc.). The drain prepends `lsp.` to the
+    /// requested section before walking the tree.
+    pub fn drain_inbound_configuration_requests(&mut self) {
+        let Some(mut rx) = self.pending_configuration_rx.take() else {
+            return;
+        };
+        let mut requests: Vec<lattice_lsp::InboundConfigurationRequest> = Vec::new();
+        while let Ok(req) = rx.try_recv() {
+            requests.push(req);
+        }
+        self.pending_configuration_rx = Some(rx);
+        for req in requests {
+            let values: Vec<serde_json::Value> = req
+                .sections
+                .iter()
+                .map(|section| self.lookup_lsp_config_section(section))
+                .collect();
+            let _ = req.response.send(values);
+        }
+    }
+
+    /// Look up a server-supplied `section` path in the cached
+    /// TOML tree at `lsp.<section>`. Returns `Value::Null` when
+    /// the path is missing or the TOML value can't be converted
+    /// to JSON. Empty section (server asked for "all") returns
+    /// the whole `lsp` sub-tree.
+    fn lookup_lsp_config_section(&self, section: &str) -> serde_json::Value {
+        let path = if section.is_empty() {
+            "lsp".to_string()
+        } else {
+            format!("lsp.{section}")
+        };
+        let toml_value =
+            match lattice_config::lookup_dotted_path(&self.lsp_config_tree, &path) {
+                Some(v) => v,
+                None => return serde_json::Value::Null,
+            };
+        // toml::Value -> serde_json::Value via the round-trip
+        // serialiser. Both crates speak serde, so this is the
+        // direct path -- no manual variant matching.
+        serde_json::to_value(toml_value).unwrap_or(serde_json::Value::Null)
+    }
+
     /// Drain server-initiated `workspace/applyEdit` requests
     /// (Phase 4.3). Each request lands as an
     /// [`lattice_lsp::InboundApplyEdit`] carrying a typed
@@ -9178,9 +9270,11 @@ impl App {
         // The structural prefixes the App / future plugin host
         // own. The per-language layer drains
         // `completion.per-language.*`; the plugin host (Phase 7)
-        // will drain `plugin.*`. Both buckets accumulate here
-        // without further interpretation in this slice.
-        let prefixes = ["completion.per-language", "plugin"];
+        // will drain `plugin.*`; `lsp` is bucketed so the
+        // loader doesn't fire unknown-option warnings for
+        // server-namespaced keys (the cached raw_tree carries
+        // the values; `workspace/configuration` walks it).
+        let prefixes = ["completion.per-language", "plugin", "lsp"];
         let outcome = lattice_config::load_default_paths(
             &self.config,
             workspace_root,
@@ -9198,6 +9292,13 @@ impl App {
         for (k, v) in outcome.structural {
             self.pending_config_structural_sections.insert(k, v);
         }
+        // Cache the merged TOML tree so
+        // `workspace/configuration` can walk server-namespaced
+        // keys (Phase 4.1 follow-up). Project files override
+        // user files at deep-merge time so an `[lsp.X.Y]`
+        // sibling key in the user config survives a project
+        // override of `[lsp.X.Z]`.
+        self.lsp_config_tree = outcome.raw_tree;
         // Surface a single echo summarising loader diagnostics.
         // The renderer's modeline only shows the latest echo,
         // so multi-warn configs collapse into "<count> issues
@@ -25309,6 +25410,94 @@ mod tests {
             outcome.failure_reason.as_deref(),
             Some("empty workspace edit"),
         );
+    }
+
+    #[test]
+    fn drain_inbound_configuration_walks_cached_tree_at_lsp_prefix() {
+        // Stash an `[lsp.rust-analyzer.cargo]` block in the
+        // App's cached tree (mimics what
+        // `load_persistent_config` does after parsing user
+        // TOML). Drain receives a request for
+        // `"rust-analyzer.cargo.features"` and the
+        // `"rust-analyzer.checkOnSave"` -- both surface from
+        // the tree.
+        let mut a = app_with("", 5);
+        let toml_text = "[lsp.rust-analyzer.cargo]\n\
+                         features = [\"foo\", \"bar\"]\n\
+                         [lsp.rust-analyzer]\n\
+                         checkOnSave = true\n";
+        a.lsp_config_tree = toml_text.parse().expect("toml parse");
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        let req = lattice_lsp::InboundConfigurationRequest {
+            server_id: std::sync::Arc::from("rust-analyzer"),
+            sections: vec![
+                "rust-analyzer.cargo.features".into(),
+                "rust-analyzer.checkOnSave".into(),
+            ],
+            response: resp_tx,
+        };
+        let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
+        bus.dispatch(req).expect("dispatch");
+        a.pending_configuration_rx = Some(new_rx);
+        a.drain_inbound_configuration_requests();
+        let values = resp_rx.try_recv().expect("drain replied");
+        assert_eq!(values.len(), 2);
+        // First: features array.
+        let arr = values[0].as_array().expect("array");
+        assert_eq!(arr[0].as_str(), Some("foo"));
+        assert_eq!(arr[1].as_str(), Some("bar"));
+        // Second: bool.
+        assert_eq!(values[1].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn drain_inbound_configuration_returns_null_for_missing_section() {
+        let mut a = app_with("", 5);
+        // No tree populated -> every lookup is null.
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        let req = lattice_lsp::InboundConfigurationRequest {
+            server_id: std::sync::Arc::from("rust-analyzer"),
+            sections: vec!["rust-analyzer.cargo.features".into()],
+            response: resp_tx,
+        };
+        let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
+        bus.dispatch(req).expect("dispatch");
+        a.pending_configuration_rx = Some(new_rx);
+        a.drain_inbound_configuration_requests();
+        let values = resp_rx.try_recv().expect("drain replied");
+        assert_eq!(values.len(), 1);
+        assert!(values[0].is_null());
+    }
+
+    #[test]
+    fn drain_inbound_configuration_empty_section_returns_whole_lsp_subtree() {
+        // A server requesting `section: null` (or empty) wants
+        // the whole `lsp` sub-tree -- our convention serves
+        // this from the namespaced top.
+        let mut a = app_with("", 5);
+        let toml_text = "[lsp.rust-analyzer]\nchecker = \"clippy\"\n";
+        a.lsp_config_tree = toml_text.parse().unwrap();
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        let req = lattice_lsp::InboundConfigurationRequest {
+            server_id: std::sync::Arc::from("rust-analyzer"),
+            sections: vec![String::new()],
+            response: resp_tx,
+        };
+        let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
+        bus.dispatch(req).expect("dispatch");
+        a.pending_configuration_rx = Some(new_rx);
+        a.drain_inbound_configuration_requests();
+        let values = resp_rx.try_recv().expect("drain replied");
+        // Whole `lsp` sub-tree comes back as a JSON object.
+        let obj = values[0].as_object().expect("object");
+        assert!(obj.contains_key("rust-analyzer"));
+    }
+
+    #[test]
+    fn drain_inbound_configuration_no_op_when_channel_empty() {
+        let mut a = app_with("", 5);
+        a.drain_inbound_configuration_requests();
+        assert!(a.pending_configuration_rx.is_some());
     }
 
     #[test]

@@ -1015,32 +1015,35 @@ sends, paramount-goal violations). Findings closed in slices
   bounded `mpsc::channel(64)` to `unbounded_channel`.
   `RuntimeError::Busy` retired entirely (App-side callers
   were silently discarding it under bursts). Closed H3.
+- **Slice 7** — `FrameView` per-render-chain snapshot.
+  Reading the architecture honestly: GPUI ships as part
+  of 1.0 (TUI is a renderer peer, not the only target),
+  so "Rust ownership prevents the race today" stops being
+  a valid deferral once a second renderer that runs on a
+  separate thread enters the picture. `FrameView::from_app`
+  freezes `folds`, `visible_highlights`, and
+  `show_line_numbers` once at chain entry; helpers
+  (`compose_visible_lines_inner`, `render_gutter_for`,
+  `closed_fold_display_span`, `buffer_line_to_visible_row_with`,
+  `cursor_screen_position*`, `draw_inactive_document`)
+  consume `&FrameView`. Mirror methods
+  (`view.fold_start_at_any` / `fold_start_at` /
+  `line_inside_closed_fold`) read from the snapshot's frozen
+  Arc. Closed M2.
 
 Deferred with rationale:
 
-- **M2 (FrameView per-frame snapshot discipline)** — the audit
-  feared "future async path mutates `folds` mid-frame" but
-  the race requires `&mut App` access concurrent with render,
-  which Rust's ownership rules prevent in the current
-  single-threaded TUI architecture (the renderer takes
-  `&App`). The fix lands when the GPUI multi-threaded
-  renderer ships post-1.0; introducing `FrameView` now
-  would be an "abstraction beyond what the task requires"
-  (CLAUDE.md conventions). The contract is documented in
-  `crates/lattice-ui-tui/src/render.rs::draw_frame`'s
-  doc comment + the architectural rule "no code on any
-  thread other than the App's main loop may take `&mut App`."
 - **M3 (input.rs trie-driven dispatch)** — `input.rs` is
   4365 lines of hand-rolled `KeyCode` matching; plugins
-  can't bind chords (paramount goal #3 violation in spirit,
-  though the drift test catches descriptor-vs-binding
-  divergence). The audit graded it Medium and noted "this
-  was already noted; keep on the books"; `keymap.rs:13`
-  schedules it post-1.0. Folding it into the audit pass
-  would inflate scope past the bounded "fix one
-  class-of-bug per slice" framing. Stays as its own
-  multi-session refactor with proper scoping (likely a 4.5
-  or post-1.0 phase).
+  can't bind chords (paramount goal #3 violation: "the
+  grammar IS the public command API"). Real present-day
+  capability gap, scoped as Slice 8 of this audit pass
+  (in progress). The fix replaces the hand-rolled match
+  with a trie consuming the `KeymapEntry { chord,
+  command_invocation }` table from `keymap.rs`; metadata
+  surface in `keymap.rs` becomes the source of truth;
+  `input.rs` becomes a chord-string normaliser; plugins
+  gain a structured extension point.
 
 `docs/BENCHMARKS.md` got the new perf rows
 (`lsp_diagnostics_line_severity_wait_free` at 25ns, the

@@ -11,6 +11,8 @@
 //! | mode line: \[NORMAL\]  path                line:col   lang     |
 //! +----------------------------------------------------------------+
 
+use std::sync::Arc;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style as TuiStyle};
@@ -24,7 +26,108 @@ use lattice_protocol::selection::VisualMode;
 use lattice_runtime::DocumentSnapshot;
 use lattice_syntax::{Lang, Style, StyledSpan};
 
-use crate::app::{App, EchoLevel};
+use crate::app::{App, EchoLevel, Fold};
+
+/// Per-render-chain snapshot of App state the renderer reads.
+///
+/// Audit slice 7 / M2. The renderer is one of multiple peer
+/// renderer implementations (TUI today, GPUI as part of 1.0,
+/// future WebRenderer). The architecture is renderer-agnostic:
+/// no render path may depend on single-threaded discipline as
+/// its safety mechanism, because GPUI runs on a separate
+/// thread from the App's input loop.
+///
+/// `FrameView` is taken once at entry to each render chain
+/// (`compose_visible_lines`, `draw_inactive_document`) and
+/// threaded into the chain's helpers. Internal reads then go
+/// through immutable Arc-shared / by-value snapshots; an async
+/// mutator that writes the underlying App fields can no longer
+/// produce a torn mid-render view, regardless of which thread
+/// the renderer runs on.
+///
+/// Fields:
+/// - `app: &App` -- stable App fields (cursor, modal,
+///   command_line, picker, ...) that don't mutate during a
+///   render pass even under multi-thread rendering. Read
+///   directly through this borrowed reference.
+/// - `folds: Arc<[Fold]>` -- frozen snapshot. Replaces direct
+///   `app.folds.iter()` reads.
+/// - `visible_highlights: Arc<[Vec<StyledSpan>]>` -- frozen
+///   viewport highlight grid. Replaces direct
+///   `app.visible_highlights[...]` reads.
+/// - `show_line_numbers: bool` -- cached typed-options value.
+///   The typed-options ArcSwap read is wait-free per call, but
+///   caching once per chain keeps gutter computation
+///   deterministic if the option flips mid-chain under
+///   multi-thread input.
+///
+/// `app.lsp_diagnostics` is left as a borrowed
+/// `&DiagnosticsLayer` because that layer is already wait-free
+/// behind its own `ArcSwap` (audit slice 2); the existing
+/// `line_severity` / `diagnostics_on_line` API is structurally
+/// safe to call from any thread.
+pub struct FrameView<'a> {
+    pub app: &'a App,
+    pub folds: Arc<[Fold]>,
+    pub visible_highlights: Arc<[Vec<StyledSpan>]>,
+    pub show_line_numbers: bool,
+}
+
+impl<'a> FrameView<'a> {
+    /// Snapshot the App's per-render-chain state once.
+    ///
+    /// `Arc::from(Vec<T>)` is one alloc + a memcpy of the
+    /// slice metadata; the underlying span / fold data already
+    /// lives in heap-allocated vecs, so the snapshot cost is
+    /// O(folds.len() + viewport_height) -- negligible at
+    /// terminal sizes. GPUI-era multi-thread rendering can call
+    /// this from the render thread without taking any App
+    /// lock; the App's main loop owns the underlying vecs and
+    /// the snapshot is consistent at the moment `from_app` runs.
+    pub fn from_app(app: &'a App) -> Self {
+        Self {
+            app,
+            folds: Arc::from(app.folds.clone().into_boxed_slice()),
+            visible_highlights: Arc::from(
+                app.visible_highlights.clone().into_boxed_slice(),
+            ),
+            show_line_numbers: app.show_line_numbers(),
+        }
+    }
+
+    /// Mirror of [`App::fold_start_at_any`] but reads from the
+    /// frozen `view.folds` snapshot instead of `app.folds`.
+    /// Used by the gutter glyph provider so the renderer's view
+    /// of folds can't go out of sync with the snapshot it took
+    /// at chain entry.
+    pub fn fold_start_at_any(&self, line: u32) -> Option<&Fold> {
+        if !self.app.foldenable() {
+            return None;
+        }
+        self.folds.iter().find(|f| f.start_line == line)
+    }
+
+    /// Mirror of [`App::fold_start_at`] -- only matches CLOSED
+    /// folds at `line`. Reads from the frozen `view.folds`
+    /// snapshot.
+    pub fn fold_start_at(&self, line: u32) -> Option<&Fold> {
+        if !self.app.foldenable() {
+            return None;
+        }
+        self.folds.iter().find(|f| f.closed && f.start_line == line)
+    }
+
+    /// Mirror of [`App::line_inside_closed_fold`] reading from
+    /// the snapshot.
+    pub fn line_inside_closed_fold(&self, line: u32) -> bool {
+        if !self.app.foldenable() {
+            return false;
+        }
+        self.folds
+            .iter()
+            .any(|f| f.closed && line > f.start_line && line <= f.end_line)
+    }
+}
 
 /// Render one terminal frame.
 ///
@@ -34,38 +137,19 @@ use crate::app::{App, EchoLevel};
 /// snapshot -- inactive panes (different documents) still go
 /// through `entry.handle.snapshot()` since the cache is per-cell.
 ///
-/// ## Per-frame stability contract (audit M2 deferred-with-rationale)
+/// ## Per-render-chain stability (audit slice 7 / M2)
 ///
-/// The render path also reads non-`snap` App fields directly:
-/// `app.folds`, `app.visible_highlights`, `app.show_line_numbers()`,
-/// `app.lsp_diagnostics`. The audit flagged this as a violation of
-/// "one snapshot per frame, used for everything" with the concrete
-/// fear that a future async path mutating `folds` mid-frame would
-/// produce a torn render.
-///
-/// The contract holds in the current architecture by *Rust's
-/// ownership rules*, not by discipline: render takes `&App`, so no
-/// `&mut App` mutator can run concurrently with this function.
-/// `app.lsp_diagnostics` is wait-free behind `ArcSwap` (audit
-/// slice 2). `app.show_line_numbers()` reads from the typed-options
-/// `ArcSwap` -- wait-free per call.
-///
-/// The torn-state failure mode the audit fears materializes only
-/// when the renderer can run on a different thread than the App's
-/// main loop -- i.e. when the GPUI multi-threaded renderer ships
-/// post-1.0. At that point this fn must be reworked to take a
-/// `FrameView` snapshotting `folds` + `visible_highlights` at
-/// entry, and the call chain (compose_visible_lines + helpers,
-/// draw_inactive_document, ...) must thread it through. Until
-/// then, introducing `FrameView` is "abstraction beyond what the
-/// task requires" (CLAUDE.md conventions); the safer fix is this
-/// docstring + the architectural rule below.
-///
-/// **Architectural rule:** *no code on any thread other than the
-/// App's main loop may take `&mut App`*. The TUI runtime's
-/// single-threaded design enforces this today. Future plugin
-/// integrations / GPUI ports must add the `FrameView` snapshot
-/// step before introducing concurrent mutators.
+/// The renderer is one of multiple peer renderer implementations
+/// (TUI today; GPUI as part of 1.0; future WebRenderer). The
+/// architecture is renderer-agnostic: render paths must NOT depend
+/// on single-threaded discipline as their safety mechanism,
+/// because GPUI runs on a separate thread from the App's input
+/// loop. Each render chain (`compose_visible_lines`,
+/// `draw_inactive_document`) takes a [`FrameView`] at entry and
+/// threads it into its helpers; reads of `folds`,
+/// `visible_highlights`, and `show_line_numbers` go through that
+/// snapshot rather than the live App fields. `lsp_diagnostics`
+/// stays wait-free behind its own `ArcSwap` (audit slice 2).
 pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // Vertico-style layout (DESIGN.md §5.11.3, §5.9.7): when the
     // cmdline completion popup OR the picker is open, an extra row
@@ -204,8 +288,9 @@ fn draw_insert_completion_popup(
     // typing point. Active pane content rect computed via
     // the helper from the hover popup path.
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
+    let view = FrameView::from_app(app);
     let anchor_screen = cursor_screen_position_at(
-        app,
+        &view,
         snap,
         pane_rect,
         app.cursor,
@@ -281,8 +366,9 @@ fn draw_insert_completion_docs_popup(
     // Anchor: same anchor as the candidate popup. Pull the
     // active pane rect for placement math.
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
+    let view = FrameView::from_app(app);
     let anchor_screen = cursor_screen_position_at(
-        app,
+        &view,
         snap,
         pane_rect,
         app.cursor,
@@ -871,7 +957,8 @@ fn position_help_popup(
             (pane.cursor, pane.scroll)
         }
     };
-    let Some((cx, cy)) = cursor_screen_position_at(app, snap, pane_area, cursor, scroll) else {
+    let view = FrameView::from_app(app);
+    let Some((cx, cy)) = cursor_screen_position_at(&view, snap, pane_area, cursor, scroll) else {
         return centered();
     };
     // Vertical: prefer below the cursor row; if the popup wouldn't
@@ -1262,12 +1349,18 @@ fn draw_inactive_document(
     pane: &crate::pane::PaneState,
     pane_idx: usize,
 ) {
+    // Audit slice 7 / M2: snapshot once at chain entry. The
+    // inactive-pane chain is independent of the active-pane
+    // chain and gets its own `FrameView`; each chain stays
+    // internally consistent regardless of multi-thread render
+    // / input interleaving.
+    let view = FrameView::from_app(app);
     let Some(entry) = app.buffers.document(pane.buffer_id) else {
         return;
     };
     let snap = entry.handle.snapshot();
     let total_lines = snap.buffer.line_count();
-    let gutter_w = if app.show_line_numbers() {
+    let gutter_w = if view.show_line_numbers {
         gutter_width(total_lines)
     } else {
         2
@@ -1297,7 +1390,11 @@ fn draw_inactive_document(
         if let Some(spans) = app.pane_highlights.get(&pane_idx) {
             spans.clone()
         } else if active_doc_id == Some(pane.buffer_id) && pane.scroll == app.scroll {
-            app.visible_highlights.clone()
+            // Read from the FrameView snapshot rather than the
+            // live `app.visible_highlights` -- protects against
+            // a multi-thread renderer racing with App's
+            // `refresh_highlights`.
+            view.visible_highlights.iter().cloned().collect()
         } else {
             Vec::new()
         };
@@ -1316,7 +1413,7 @@ fn draw_inactive_document(
             continue;
         }
         let line_text = snap.buffer.line(buf_line).unwrap_or_default();
-        let gutter = render_gutter_for_inactive(app, pane.cursor.line, buf_line, gutter_w);
+        let gutter = render_gutter_for_inactive(&view, pane.cursor.line, buf_line, gutter_w);
         let spans = highlights.get(i as usize).map(Vec::as_slice).unwrap_or(&[]);
         let mut body = render_styled_line(&line_text, spans, buffer_w);
         if let Some(overlay) = dim_overlay {
@@ -1342,7 +1439,7 @@ fn draw_inactive_document(
 /// cursor line for relative-numbering -- the active pane uses
 /// `app.cursor.line` instead.
 fn render_gutter_for_inactive(
-    app: &App,
+    view: &FrameView<'_>,
     cursor_line: u32,
     line_idx: u32,
     gutter_w: u32,
@@ -1351,13 +1448,13 @@ fn render_gutter_for_inactive(
     // live on the active App), so we format an empty glyph slot --
     // but use the same shared layout helper so column alignment
     // matches the active pane.
-    if !app.show_line_numbers() {
+    if !view.show_line_numbers {
         return Span::styled(
             format_gutter_cell("", gutter_w, None),
             TuiStyle::default().fg(Color::DarkGray),
         );
     }
-    let n = if !app.relative_line_numbers() || line_idx == cursor_line {
+    let n = if !view.app.relative_line_numbers() || line_idx == cursor_line {
         (line_idx + 1).to_string()
     } else {
         line_idx.abs_diff(cursor_line).to_string()
@@ -1428,10 +1525,11 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
     // In Command (`:`) and Search (`/`, `?`) modal states the cursor lives
     // in the bottom prompt row -- handled by `draw_command_or_echo`.
     let prompt_owns_cursor = matches!(app.modal, ModalState::Command | ModalState::Search(_));
-    if !prompt_owns_cursor
-        && let Some((screen_x, screen_y)) = cursor_screen_position(app, snap, area)
-    {
-        frame.set_cursor_position((screen_x, screen_y));
+    if !prompt_owns_cursor {
+        let view = FrameView::from_app(app);
+        if let Some((screen_x, screen_y)) = cursor_screen_position(&view, snap, area) {
+            frame.set_cursor_position((screen_x, screen_y));
+        }
     }
 }
 
@@ -1593,6 +1691,23 @@ pub fn compose_visible_lines(
     height: u32,
     width: u32,
 ) -> Vec<Line<'static>> {
+    // Audit slice 7 / M2: snapshot the App's render-relevant
+    // state once at chain entry. Helpers below read through
+    // `view` rather than `app` for `folds` / `visible_highlights`
+    // / `show_line_numbers` so a multi-thread renderer (GPUI,
+    // future Web) can't see a torn mid-render view if a
+    // concurrent input event mutates the underlying App fields.
+    let view = FrameView::from_app(app);
+    compose_visible_lines_inner(&view, snap, height, width)
+}
+
+fn compose_visible_lines_inner(
+    view: &FrameView<'_>,
+    snap: &DocumentSnapshot,
+    height: u32,
+    width: u32,
+) -> Vec<Line<'static>> {
+    let app = view.app;
     // §5.6.8 contract: one snapshot per frame, used for everything.
     // The snapshot was loaded by the runtime via
     // `app.snapshot_cache.load_arc()` and threaded through.
@@ -1600,7 +1715,7 @@ pub fn compose_visible_lines(
     // ropey's line API and pull only the visible window. A 100MB
     // log file should cost the same per-frame as a 100-line file.
     let total_lines = snap.buffer.line_count();
-    let gutter_w = if app.show_line_numbers() {
+    let gutter_w = if view.show_line_numbers {
         gutter_width(total_lines)
     } else {
         // Keep one cell of left padding for the empty-marker `~` line
@@ -1650,7 +1765,7 @@ pub fn compose_visible_lines(
         // Pull just this line's text (O(log n) lookup +
         // O(line_len) materialisation).
         let line_text = snap.buffer.line(line_idx).unwrap_or_default();
-        let gutter = render_gutter_for(app, line_idx, gutter_w);
+        let gutter = render_gutter_for(view, line_idx, gutter_w);
         // Highlight slot is keyed by buffer-line offset from
         // `scroll`, NOT by viewport row -- once closed folds skip
         // interior lines, viewport row `i` no longer corresponds
@@ -1678,7 +1793,7 @@ pub fn compose_visible_lines(
                 // visually hide 5 lines but report only the first
                 // fold's own 3 lines, which doesn't match what the
                 // user just collapsed.
-                closed_fold_display_span(app, snap, f)
+                closed_fold_display_span(view, snap, f)
             });
         // Blockwise visual: per-line column band [min_col, max_col].
         // Charwise / Linewise visual go through `visual_range` instead.
@@ -1986,8 +2101,8 @@ fn gutter_width(line_count: u32) -> u32 {
 /// begins a closed fold, ▾ when it begins an open fold, or `None`
 /// when the line is unaffiliated with any fold start.
 /// (`docs/help/folding.md`).
-fn fold_glyph_for(app: &App, line_idx: u32) -> Option<char> {
-    let f = app.fold_start_at_any(line_idx)?;
+fn fold_glyph_for(view: &FrameView<'_>, line_idx: u32) -> Option<char> {
+    let f = view.fold_start_at_any(line_idx)?;
     Some(if f.closed { '▸' } else { '▾' })
 }
 
@@ -2016,9 +2131,9 @@ fn render_gutter(line_idx: u32, width: u32, glyph: Option<char>) -> Span<'static
     )
 }
 
-fn render_gutter_for(app: &App, line_idx: u32, width: u32) -> Span<'static> {
-    let glyph = fold_glyph_for(app, line_idx);
-    if !app.show_line_numbers() {
+fn render_gutter_for(view: &FrameView<'_>, line_idx: u32, width: u32) -> Span<'static> {
+    let glyph = fold_glyph_for(view, line_idx);
+    if !view.show_line_numbers {
         // No-numbers gutter: glyph (or empty) at the inner edge,
         // GUTTER_TRAILING_PAD - 1 trailing spaces, the rest leading
         // padding. The layout still aligns with the numbered case
@@ -2029,6 +2144,7 @@ fn render_gutter_for(app: &App, line_idx: u32, width: u32) -> Span<'static> {
             TuiStyle::default().fg(Color::DarkGray),
         );
     }
+    let app = view.app;
     if !app.relative_line_numbers() || line_idx == app.cursor.line {
         return render_gutter(line_idx, width, glyph);
     }
@@ -2238,7 +2354,7 @@ fn apply_underline_overlay(
 /// sibling folds touch (e.g. `(1, 3)` + `(3, 5)` from
 /// `foldmethod=indent` on a top-level if/else).
 fn closed_fold_display_span(
-    app: &App,
+    view: &FrameView<'_>,
     snap: &DocumentSnapshot,
     fold: &crate::app::Fold,
 ) -> u32 {
@@ -2250,7 +2366,7 @@ fn closed_fold_display_span(
         // (Includes the case where the next fold *starts* at the
         // probe -- start_line is its heading, which would be
         // hidden by *us* extending across it.)
-        let next_closed = app.folds.iter().find(|f| {
+        let next_closed = view.folds.iter().find(|f| {
             f.closed
                 && (probe == f.start_line
                     || (probe > f.start_line && probe <= f.end_line))
@@ -2283,7 +2399,7 @@ fn closed_fold_display_span(
 /// popup-anchor path passes the active pane's stashed doc scroll
 /// (State B) where the doc isn't the active buffer.
 fn buffer_line_to_visible_row_with(
-    app: &App,
+    view: &FrameView<'_>,
     snap: &DocumentSnapshot,
     target: u32,
     viewport_height: u32,
@@ -2300,7 +2416,7 @@ fn buffer_line_to_visible_row_with(
         // range collapses onto this single visible row. The cursor
         // resolves to this row whether it's at the fold heading or
         // anywhere in the hidden body.
-        let fold_at = app.fold_start_at(buf_line);
+        let fold_at = view.fold_start_at(buf_line);
         let next_buf_line = match fold_at {
             Some(fold) => fold.end_line + 1,
             None => buf_line + 1,
@@ -2319,7 +2435,7 @@ fn buffer_line_to_visible_row_with(
             // shows somewhere sensible.
             return Some(row);
         }
-        if app.line_inside_closed_fold(buf_line) {
+        if view.line_inside_closed_fold(buf_line) {
             // Hidden interior line -- not the start of any fold but
             // still part of one (the renderer skips it). Don't
             // increment row; just advance buf_line.
@@ -2333,11 +2449,11 @@ fn buffer_line_to_visible_row_with(
 }
 
 fn cursor_screen_position(
-    app: &App,
+    view: &FrameView<'_>,
     snap: &DocumentSnapshot,
     area: Rect,
 ) -> Option<(u16, u16)> {
-    cursor_screen_position_at(app, snap, area, app.cursor, app.scroll)
+    cursor_screen_position_at(view, snap, area, view.app.cursor, view.app.scroll)
 }
 
 /// Same as [`cursor_screen_position`] but with explicit `cursor`
@@ -2347,7 +2463,7 @@ fn cursor_screen_position(
 /// help buffer's). Folds are document-state and read straight off
 /// `app`, which is correct for both states.
 fn cursor_screen_position_at(
-    app: &App,
+    view: &FrameView<'_>,
     snap: &DocumentSnapshot,
     area: Rect,
     cursor: lattice_protocol::Position,
@@ -2366,8 +2482,8 @@ fn cursor_screen_position_at(
     // numbers underneath an unchanged cursor).
     let total_lines = snap.buffer.line_count().max(1);
     let row_in_view =
-        buffer_line_to_visible_row_with(app, snap, cursor.line, area.height as u32, scroll)?;
-    let gutter_w = if app.show_line_numbers() {
+        buffer_line_to_visible_row_with(view, snap, cursor.line, area.height as u32, scroll)?;
+    let gutter_w = if view.show_line_numbers {
         gutter_width(total_lines)
     } else {
         2
@@ -2624,7 +2740,7 @@ mod tests {
         let mut app = app_with("hello", 5);
         app.cursor.byte = 3;
         let area = Rect::new(0, 0, 80, 5);
-        let pos = cursor_screen_position(&app, &app.document.snapshot(),area).unwrap();
+        let pos = cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area).unwrap();
         // severity_cell (1) + gutter_width(1)=4 + 3 = 8.
         assert_eq!(pos.0, 8);
         assert_eq!(pos.1, 0);
@@ -2640,7 +2756,7 @@ mod tests {
         let mut app = app_with("- §8 Performance commitments", 5);
         app.cursor.byte = 6;
         let area = Rect::new(0, 0, 80, 5);
-        let pos = cursor_screen_position(&app, &app.document.snapshot(),area).unwrap();
+        let pos = cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area).unwrap();
         // severity_cell (1) + gutter_w (4) + 5 display cells = 10.
         assert_eq!(pos.0, 10);
     }
@@ -2653,7 +2769,7 @@ mod tests {
         let mut app = app_with("abc中 def", 5);
         app.cursor.byte = 6; // past the 3-byte CJK char
         let area = Rect::new(0, 0, 80, 5);
-        let pos = cursor_screen_position(&app, &app.document.snapshot(),area).unwrap();
+        let pos = cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area).unwrap();
         // severity_cell (1) + gutter_w (4) + 5 display cells = 10.
         assert_eq!(pos.0, 10);
     }
@@ -2664,7 +2780,7 @@ mod tests {
         app.scroll = 0;
         app.cursor.line = 4; // not in viewport [0,1]
         let area = Rect::new(0, 0, 80, 2);
-        assert!(cursor_screen_position(&app, &app.document.snapshot(),area).is_none());
+        assert!(cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area).is_none());
     }
 
     #[test]
@@ -2686,7 +2802,7 @@ mod tests {
             identity: None,
         });
         let area = Rect::new(0, 0, 80, 7);
-        let pos = cursor_screen_position(&app, &app.document.snapshot(),area).expect("cursor visible");
+        let pos = cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area).expect("cursor visible");
         // Visible rows: 0=line0, 1=line1, 2=line2 (heading + summary),
         // 3=line5, 4=line6. Cursor at hidden line 3 → screen row 2
         // (area.y + 2 since area.y is 0).

@@ -172,6 +172,27 @@ pub enum AppEffect {
     /// the cursor. Promoted from `Action::PasteBefore` in slice
     /// 8.i.1.e.
     PasteBefore,
+    /// `gd` (Phase 4.2.c). `textDocument/definition` -- jump to
+    /// the symbol's definition. Promoted from
+    /// `Action::LspDefinitionRequest` in slice 8.i.1.f.
+    LspDefinitionRequest,
+    /// `gD`. `textDocument/declaration` -- declaration ≠
+    /// definition for header / forward-declaration languages.
+    /// Promoted from `Action::LspDeclarationRequest` in slice
+    /// 8.i.1.f.
+    LspDeclarationRequest,
+    /// `gy`. `textDocument/typeDefinition` -- jump from a value
+    /// to its type's declaration site. Promoted from
+    /// `Action::LspTypeDefinitionRequest` in slice 8.i.1.f.
+    LspTypeDefinitionRequest,
+    /// `gI`. `textDocument/implementation` -- jump from a trait
+    /// or interface to its implementations. Promoted from
+    /// `Action::LspImplementationRequest` in slice 8.i.1.f.
+    LspImplementationRequest,
+    /// `gr`. `textDocument/references` -- list every reference
+    /// to the symbol at the cursor. Promoted from
+    /// `Action::LspReferencesRequest` in slice 8.i.1.f.
+    LspReferencesRequest,
 }
 
 #[cfg(test)]

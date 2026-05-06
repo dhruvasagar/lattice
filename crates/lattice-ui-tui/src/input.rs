@@ -2117,61 +2117,66 @@ mod tests {
     #[test]
     fn gd_after_g_emits_lsp_definition_request() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterG, &b),
-                key(KeyCode::Char('d'))
-            ),
-            Action::LspDefinitionRequest
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterG, &b),
+            key(KeyCode::Char('d')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_definition_request),
+            other => panic!("expected Invoke(lsp_definition_request), got {other:?}"),
+        }
     }
 
     #[test]
     fn capital_g_d_after_g_emits_lsp_declaration_request() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterG, &b),
-                key(KeyCode::Char('D'))
-            ),
-            Action::LspDeclarationRequest
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterG, &b),
+            key(KeyCode::Char('D')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_declaration_request),
+            other => panic!("expected Invoke(lsp_declaration_request), got {other:?}"),
+        }
     }
 
     #[test]
     fn gy_after_g_emits_lsp_type_definition_request() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterG, &b),
-                key(KeyCode::Char('y'))
-            ),
-            Action::LspTypeDefinitionRequest
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterG, &b),
+            key(KeyCode::Char('y')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_type_definition_request),
+            other => panic!("expected Invoke(lsp_type_definition_request), got {other:?}"),
+        }
     }
 
     #[test]
     fn capital_g_i_after_g_emits_lsp_implementation_request() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterG, &b),
-                key(KeyCode::Char('I'))
-            ),
-            Action::LspImplementationRequest
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterG, &b),
+            key(KeyCode::Char('I')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_implementation_request),
+            other => panic!("expected Invoke(lsp_implementation_request), got {other:?}"),
+        }
     }
 
     #[test]
     fn gr_after_g_emits_lsp_references_request() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterG, &b),
-                key(KeyCode::Char('r'))
-            ),
-            Action::LspReferencesRequest
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterG, &b),
+            key(KeyCode::Char('r')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_references_request),
+            other => panic!("expected Invoke(lsp_references_request), got {other:?}"),
+        }
     }
 
     // ---- Insert-mode completion (Phase 4.2.g.1) ----

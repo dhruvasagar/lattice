@@ -65,6 +65,11 @@ pub struct ActionIds {
     pub reselect_last_visual: CommandId,
     pub paste_after: CommandId,
     pub paste_before: CommandId,
+    pub lsp_definition_request: CommandId,
+    pub lsp_declaration_request: CommandId,
+    pub lsp_type_definition_request: CommandId,
+    pub lsp_implementation_request: CommandId,
+    pub lsp_references_request: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -277,6 +282,36 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
             "Vim's `P`: paste the unnamed register's contents before the cursor.",
             AppEffect::PasteBefore,
         ),
+        lsp_definition_request: register_simple(
+            registry,
+            "action:lsp-definition",
+            "`gd`: send `textDocument/definition` to attached LSP servers.",
+            AppEffect::LspDefinitionRequest,
+        ),
+        lsp_declaration_request: register_simple(
+            registry,
+            "action:lsp-declaration",
+            "`gD`: send `textDocument/declaration` to attached LSP servers.",
+            AppEffect::LspDeclarationRequest,
+        ),
+        lsp_type_definition_request: register_simple(
+            registry,
+            "action:lsp-type-definition",
+            "`gy`: send `textDocument/typeDefinition` to attached LSP servers.",
+            AppEffect::LspTypeDefinitionRequest,
+        ),
+        lsp_implementation_request: register_simple(
+            registry,
+            "action:lsp-implementation",
+            "`gI`: send `textDocument/implementation` to attached LSP servers.",
+            AppEffect::LspImplementationRequest,
+        ),
+        lsp_references_request: register_simple(
+            registry,
+            "action:lsp-references",
+            "`gr`: send `textDocument/references` to attached LSP servers.",
+            AppEffect::LspReferencesRequest,
+        ),
     }
 }
 
@@ -353,6 +388,11 @@ mod tests {
             (ids.reselect_last_visual, "action:reselect-last-visual"),
             (ids.paste_after, "action:paste-after"),
             (ids.paste_before, "action:paste-before"),
+            (ids.lsp_definition_request, "action:lsp-definition"),
+            (ids.lsp_declaration_request, "action:lsp-declaration"),
+            (ids.lsp_type_definition_request, "action:lsp-type-definition"),
+            (ids.lsp_implementation_request, "action:lsp-implementation"),
+            (ids.lsp_references_request, "action:lsp-references"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

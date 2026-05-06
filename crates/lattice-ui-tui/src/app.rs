@@ -11761,6 +11761,11 @@ impl App {
             AppEffect::ReselectLastVisual => self.apply(Action::ReselectLastVisual),
             AppEffect::PasteAfter => self.apply(Action::PasteAfter),
             AppEffect::PasteBefore => self.apply(Action::PasteBefore),
+            AppEffect::LspDefinitionRequest => self.apply(Action::LspDefinitionRequest),
+            AppEffect::LspDeclarationRequest => self.apply(Action::LspDeclarationRequest),
+            AppEffect::LspTypeDefinitionRequest => self.apply(Action::LspTypeDefinitionRequest),
+            AppEffect::LspImplementationRequest => self.apply(Action::LspImplementationRequest),
+            AppEffect::LspReferencesRequest => self.apply(Action::LspReferencesRequest),
         }
     }
 

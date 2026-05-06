@@ -497,39 +497,39 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.walk_mark_history_forward),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[g.clone(), lit_char('d')],
-        Action::LspDefinitionRequest,
+        CommandInvocation::of(actions.lsp_definition_request),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[g.clone(), lit_char('D')],
-        Action::LspDeclarationRequest,
+        CommandInvocation::of(actions.lsp_declaration_request),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[g.clone(), lit_char('y')],
-        Action::LspTypeDefinitionRequest,
+        CommandInvocation::of(actions.lsp_type_definition_request),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[g.clone(), lit_char('I')],
-        Action::LspImplementationRequest,
+        CommandInvocation::of(actions.lsp_implementation_request),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[g.clone(), lit_char('r')],
-        Action::LspReferencesRequest,
+        CommandInvocation::of(actions.lsp_references_request),
         source(),
     );
 
@@ -2142,13 +2142,16 @@ mod tests {
 
     #[test]
     fn gd_resolves_to_lsp_definition_request() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('g')],
             &ev(KeyCode::Char('d'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::LspDefinitionRequest));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.lsp_definition_request),
+            other => panic!("expected Invoke(lsp_definition_request), got {other:?}"),
+        }
     }
 
     #[test]

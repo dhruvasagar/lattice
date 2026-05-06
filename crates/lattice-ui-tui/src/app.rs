@@ -11783,6 +11783,14 @@ impl App {
             AppEffect::FindRepeat { reverse } => self.apply(Action::FindRepeat { reverse }),
             AppEffect::InsertNewline => self.apply(Action::Insert("\n".to_string())),
             AppEffect::InsertTab => self.apply(Action::Insert("\t".to_string())),
+            AppEffect::OverwriteChar(c) => self.apply(Action::OverwriteChar(c)),
+            AppEffect::SetMark(c) => self.apply(Action::SetMark(c)),
+            AppEffect::JumpToMarkLine(c) => self.apply(Action::JumpToMarkLine(c)),
+            AppEffect::JumpToMarkExact(c) => self.apply(Action::JumpToMarkExact(c)),
+            AppEffect::SelectRegister(reg) => self.apply(Action::SelectRegister(reg)),
+            AppEffect::StartMacroRecord(c) => self.apply(Action::StartMacroRecord(c)),
+            AppEffect::PlayMacro(c) => self.apply(Action::PlayMacro(c)),
+            AppEffect::PlayLastMacro => self.apply(Action::PlayLastMacro),
         }
     }
 

@@ -1488,37 +1488,51 @@ mod tests {
     #[test]
     fn letter_after_q_starts_recording() {
         let (_, b) = fixture();
+        let a = shared_actions();
         match translate(
             ctx(ModalState::Normal, Pending::AfterMacroStart, &b),
             key(KeyCode::Char('a')),
         ) {
-            Action::StartMacroRecord(c) => assert_eq!(c, 'a'),
-            other => panic!("expected StartMacroRecord, got {other:?}"),
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.start_macro_record);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('a')));
+            }
+            other => panic!("expected Invoke(start_macro_record, Char('a')), got {other:?}"),
         }
     }
 
     #[test]
     fn letter_after_at_plays_macro() {
         let (_, b) = fixture();
+        let a = shared_actions();
         match translate(
             ctx(ModalState::Normal, Pending::AfterMacroPlay, &b),
             key(KeyCode::Char('q')),
         ) {
-            Action::PlayMacro(c) => assert_eq!(c, 'q'),
-            other => panic!("expected PlayMacro, got {other:?}"),
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.play_macro);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('q')));
+            }
+            other => panic!("expected Invoke(play_macro, Char('q')), got {other:?}"),
         }
     }
 
     #[test]
     fn at_at_plays_last_macro() {
+        // Slice 8.i.3: dispatcher returns Invoke(play_macro,
+        // Char('@')); ActionSpec maps `@` to AppEffect::PlayLastMacro.
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterMacroPlay, &b),
-                key(KeyCode::Char('@'))
-            ),
-            Action::PlayLastMacro
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterMacroPlay, &b),
+            key(KeyCode::Char('@')),
+        ) {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.play_macro);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('@')));
+            }
+            other => panic!("expected Invoke(play_macro, Char('@')), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2554,62 +2568,90 @@ mod tests {
     #[test]
     fn lowercase_letter_after_quote_selects_named_register() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::AfterRegister, &b),
             key(KeyCode::Char('a')),
         );
         match action {
-            Action::SelectRegister(Register::Named(c)) => assert_eq!(c, 'a'),
-            other => panic!("expected SelectRegister(Named('a')), got {other:?}"),
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.select_register);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('a')));
+            }
+            other => panic!("expected Invoke(select_register, Char('a')), got {other:?}"),
         }
     }
 
     #[test]
     fn digit_after_quote_selects_numbered_register() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::AfterRegister, &b),
             key(KeyCode::Char('0')),
         );
         match action {
-            Action::SelectRegister(Register::Numbered(n)) => assert_eq!(n, 0),
-            other => panic!("expected SelectRegister(Numbered(0)), got {other:?}"),
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.select_register);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('0')));
+            }
+            other => panic!("expected Invoke(select_register, Char('0')), got {other:?}"),
         }
     }
 
     #[test]
     fn underscore_after_quote_selects_black_hole() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::AfterRegister, &b),
             key(KeyCode::Char('_')),
         );
-        assert!(matches!(
-            action,
-            Action::SelectRegister(Register::BlackHole)
-        ));
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.select_register);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('_')));
+            }
+            other => panic!("expected Invoke(select_register, Char('_')), got {other:?}"),
+        }
     }
 
     #[test]
     fn plus_after_quote_selects_system() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::AfterRegister, &b),
             key(KeyCode::Char('+')),
         );
-        assert!(matches!(action, Action::SelectRegister(Register::System)));
+        match action {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.select_register);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('+')));
+            }
+            other => panic!("expected Invoke(select_register, Char('+')), got {other:?}"),
+        }
     }
 
     #[test]
-    fn invalid_char_after_quote_clears_pending() {
+    fn invalid_char_after_quote_passes_to_actionspec() {
+        // Slice 8.i.3: validation lives in the bound `ActionSpec`,
+        // which calls `Register::from_input_char(c)`. The dispatcher
+        // returns `Invoke(select_register, Char(c))` regardless;
+        // the spec returns `Effect::None` when the char doesn't
+        // name a register.
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterRegister, &b),
-                key(KeyCode::Char('@'))
-            ),
-            Action::SetPending(Pending::None)
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterRegister, &b),
+            key(KeyCode::Char('@')),
+        ) {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.select_register);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('@')));
+            }
+            other => panic!("expected Invoke(select_register, Char('@')), got {other:?}"),
+        }
     }
 
     // ---- ~ toggle case at cursor ----
@@ -2850,12 +2892,16 @@ mod tests {
     #[test]
     fn char_in_replace_emits_overwrite() {
         let (_, b) = fixture();
+        let a = shared_actions();
         match translate(
             ctx(ModalState::Replace, Pending::None, &b),
             key(KeyCode::Char('z')),
         ) {
-            Action::OverwriteChar(c) => assert_eq!(c, 'z'),
-            other => panic!("expected OverwriteChar, got {other:?}"),
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.overwrite_char);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('z')));
+            }
+            other => panic!("expected Invoke(overwrite_char, Char('z')), got {other:?}"),
         }
     }
 
@@ -2926,11 +2972,15 @@ mod tests {
     #[test]
     fn alt_x_in_replace_overwrites_with_x() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let mut event = key(KeyCode::Char('x'));
         event.modifiers = KeyModifiers::ALT;
         match translate(ctx(ModalState::Replace, Pending::None, &b), event) {
-            Action::OverwriteChar('x') => {}
-            other => panic!("expected OverwriteChar('x'), got {other:?}"),
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.overwrite_char);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('x')));
+            }
+            other => panic!("expected Invoke(overwrite_char, Char('x')), got {other:?}"),
         }
     }
 
@@ -2975,39 +3025,51 @@ mod tests {
     #[test]
     fn ma_after_m_emits_set_mark() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::AfterSetMark, &b),
             key(KeyCode::Char('a')),
         );
         match action {
-            Action::SetMark(c) => assert_eq!(c, 'a'),
-            other => panic!("expected SetMark('a'), got {other:?}"),
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.set_mark);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('a')));
+            }
+            other => panic!("expected Invoke(set_mark, Char('a')), got {other:?}"),
         }
     }
 
     #[test]
     fn jump_mark_line_routes_correctly() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::AfterJumpMarkLine, &b),
             key(KeyCode::Char('z')),
         );
         match action {
-            Action::JumpToMarkLine(c) => assert_eq!(c, 'z'),
-            other => panic!("expected JumpToMarkLine('z'), got {other:?}"),
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.jump_to_mark_line);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('z')));
+            }
+            other => panic!("expected Invoke(jump_to_mark_line, Char('z')), got {other:?}"),
         }
     }
 
     #[test]
     fn jump_mark_exact_routes_correctly() {
         let (_, b) = fixture();
+        let a = shared_actions();
         let action = translate(
             ctx(ModalState::Normal, Pending::AfterJumpMarkExact, &b),
             key(KeyCode::Char('A')),
         );
         match action {
-            Action::JumpToMarkExact(c) => assert_eq!(c, 'A'),
-            other => panic!("expected JumpToMarkExact('A'), got {other:?}"),
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.jump_to_mark_exact);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('A')));
+            }
+            other => panic!("expected Invoke(jump_to_mark_exact, Char('A')), got {other:?}"),
         }
     }
 
@@ -3024,15 +3086,24 @@ mod tests {
     }
 
     #[test]
-    fn non_alpha_after_set_mark_clears_pending() {
+    fn non_alpha_after_set_mark_passes_char_to_actionspec() {
+        // Slice 8.i.3: dispatcher returns Invoke(set_mark) with
+        // the captured char regardless of validity; the bound
+        // ActionSpec returns Effect::None for non-alphanumeric
+        // chars, and App::apply clears the pending state on
+        // every Invoke.
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterSetMark, &b),
-                key(KeyCode::Char(' '))
-            ),
-            Action::SetPending(Pending::None)
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterSetMark, &b),
+            key(KeyCode::Char(' ')),
+        ) {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.set_mark);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char(' ')));
+            }
+            other => panic!("expected Invoke(set_mark, Char(' ')), got {other:?}"),
+        }
     }
 
     // ---- gv reselect ----

@@ -20,10 +20,13 @@
 use lattice_grammar::AppEffect;
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::ModalState;
+use lattice_grammar::Register;
 use lattice_grammar::ScrollPos;
 use lattice_grammar::SearchDirection;
 use lattice_grammar::ViewportPos;
 use lattice_grammar::VisualKind;
+use lattice_grammar::args::Args;
+use lattice_grammar::effect::Effect;
 use lattice_grammar::registry::ActionSpec;
 use lattice_protocol::ids::CommandId;
 
@@ -104,6 +107,13 @@ pub struct ActionIds {
     pub find_repeat_reverse: CommandId,
     pub insert_newline: CommandId,
     pub insert_tab: CommandId,
+    pub overwrite_char: CommandId,
+    pub set_mark: CommandId,
+    pub jump_to_mark_line: CommandId,
+    pub jump_to_mark_exact: CommandId,
+    pub select_register: CommandId,
+    pub start_macro_record: CommandId,
+    pub play_macro: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -520,7 +530,126 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
             "Insert mode's `<Tab>`: insert a literal tab at the cursor.",
             AppEffect::InsertTab,
         ),
+        overwrite_char: register_action(
+            registry,
+            "action:overwrite-char",
+            "Replace mode's bare-printable wildcard: overwrite the byte at the cursor with the captured char.",
+            captured_char_action(|c| Some(AppEffect::OverwriteChar(c))),
+        ),
+        set_mark: register_action(
+            registry,
+            "action:set-mark",
+            "Vim's `m<X>`: set mark `<X>` at the cursor (alphanumeric only).",
+            captured_char_action(|c| {
+                if c.is_ascii_alphanumeric() {
+                    Some(AppEffect::SetMark(c))
+                } else {
+                    None
+                }
+            }),
+        ),
+        jump_to_mark_line: register_action(
+            registry,
+            "action:jump-to-mark-line",
+            "Vim's `'<X>`: jump cursor to the line of mark `<X>` (alphanumeric only).",
+            captured_char_action(|c| {
+                if c.is_ascii_alphanumeric() {
+                    Some(AppEffect::JumpToMarkLine(c))
+                } else {
+                    None
+                }
+            }),
+        ),
+        jump_to_mark_exact: register_action(
+            registry,
+            "action:jump-to-mark-exact",
+            "Vim's `` `<X> ``: jump cursor to the exact position of mark `<X>`.",
+            captured_char_action(|c| {
+                if c.is_ascii_alphanumeric() {
+                    Some(AppEffect::JumpToMarkExact(c))
+                } else {
+                    None
+                }
+            }),
+        ),
+        select_register: register_action(
+            registry,
+            "action:select-register",
+            "Vim's `\"<X>`: select named register `<X>` for the next yank / paste / delete.",
+            captured_char_action(|c| {
+                Register::from_input_char(c).map(AppEffect::SelectRegister)
+            }),
+        ),
+        start_macro_record: register_action(
+            registry,
+            "action:start-macro-record",
+            "Vim's `q<X>`: start recording a macro into register `<X>` (alphanumeric only).",
+            captured_char_action(|c| {
+                if c.is_ascii_alphanumeric() {
+                    Some(AppEffect::StartMacroRecord(c))
+                } else {
+                    None
+                }
+            }),
+        ),
+        play_macro: register_action(
+            registry,
+            "action:play-macro",
+            "Vim's `@<X>`: play the macro stored in register `<X>`. `@@` replays the most recent macro.",
+            captured_char_action(|c| {
+                if c == '@' {
+                    Some(AppEffect::PlayLastMacro)
+                } else if c.is_ascii_alphanumeric() {
+                    Some(AppEffect::PlayMacro(c))
+                } else {
+                    None
+                }
+            }),
+        ),
     }
+}
+
+/// Helper for captured-char wildcard actions (`m<X>`, `'<X>`,
+/// `\"<X>`, `q<X>`, `@<X>`, Replace mode's wildcard).
+///
+/// The dispatcher folds the captured char into the bound
+/// `CommandInvocation`'s `args` as `Args::Char(c)`. This helper
+/// reads it back, hands it to `decide`, and emits either the
+/// chosen `AppEffect` or a no-op when the char doesn't validate.
+/// `Effect::None` is the no-op signal: `App::apply` clears any
+/// in-flight pending state on every Invoke (the pending field
+/// only survives `Action::SetPending(_)`), so a no-op naturally
+/// drops the pending half-chord without an explicit
+/// `SetPending(None)` round-trip.
+fn captured_char_action(
+    decide: impl Fn(char) -> Option<AppEffect> + Send + Sync + 'static,
+) -> ActionSpec {
+    ActionSpec {
+        apply: Box::new(move |ctx| {
+            let c = match ctx.args {
+                Args::Char(c) => c,
+                _ => return Ok(Effect::None),
+            };
+            Ok(match decide(c) {
+                Some(eff) => Effect::AppAction(eff),
+                None => Effect::None,
+            })
+        }),
+        args_schema: vec![],
+    }
+}
+
+/// Tiny adapter so the pattern-rich registrations above can keep
+/// the same call-site shape as `register_simple` but pass an
+/// already-built `ActionSpec`. Mirrors `register_simple`'s wrap
+/// of `CommandRegistry::register_action`.
+fn register_action(
+    registry: &mut CommandRegistry,
+    name: &str,
+    doc: &str,
+    spec: ActionSpec,
+) -> CommandId {
+    registry.register_action(name, doc, spec)
 }
 
 /// Helper for the common case: an action whose `apply` is the
@@ -630,6 +759,13 @@ mod tests {
             (ids.find_repeat_reverse, "action:find-repeat-reverse"),
             (ids.insert_newline, "action:insert-newline"),
             (ids.insert_tab, "action:insert-tab"),
+            (ids.overwrite_char, "action:overwrite-char"),
+            (ids.set_mark, "action:set-mark"),
+            (ids.jump_to_mark_line, "action:jump-to-mark-line"),
+            (ids.jump_to_mark_exact, "action:jump-to-mark-exact"),
+            (ids.select_register, "action:select-register"),
+            (ids.start_macro_record, "action:start-macro-record"),
+            (ids.play_macro, "action:play-macro"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")
@@ -655,6 +791,80 @@ mod tests {
         match eff {
             Effect::AppAction(AppEffect::MatchBracket) => {}
             other => panic!("expected MatchBracket, got {other:?}"),
+        }
+    }
+
+    /// Slice 8.i.3: captured-char `ActionSpec`s validate the
+    /// captured char and return `Effect::None` on rejection. The
+    /// dispatcher always passes through; the no-op effect is the
+    /// signal that the pending half-chord should drop without an
+    /// explicit `SetPending(None)` round-trip.
+    #[test]
+    fn captured_char_specs_validate() {
+        let mut registry = CommandRegistry::new();
+        let ids = populate(&mut registry);
+        let mut doc = lattice_core::Document::empty();
+        let cancel = CancellationToken::never();
+        let pos = lattice_protocol::position::Position::ZERO;
+
+        let dispatch_with_char = |id: lattice_protocol::ids::CommandId,
+                                  c: char,
+                                  registry: &CommandRegistry,
+                                  doc: &mut lattice_core::Document|
+         -> Effect {
+            execute(
+                registry,
+                doc,
+                pos,
+                CommandInvocation::of(id).with_args(Args::Char(c)),
+                &cancel,
+            )
+            .unwrap()
+        };
+
+        // Set-mark: alphanumeric pass, punctuation reject.
+        match dispatch_with_char(ids.set_mark, 'a', &registry, &mut doc) {
+            Effect::AppAction(AppEffect::SetMark('a')) => {}
+            other => panic!("expected SetMark('a'), got {other:?}"),
+        }
+        match dispatch_with_char(ids.set_mark, '!', &registry, &mut doc) {
+            Effect::None => {}
+            other => panic!("expected None for invalid mark name, got {other:?}"),
+        }
+
+        // Select-register: routes through `Register::from_input_char`.
+        match dispatch_with_char(ids.select_register, '+', &registry, &mut doc) {
+            Effect::AppAction(AppEffect::SelectRegister(Register::System)) => {}
+            other => panic!("expected SelectRegister(System), got {other:?}"),
+        }
+        match dispatch_with_char(ids.select_register, 'a', &registry, &mut doc) {
+            Effect::AppAction(AppEffect::SelectRegister(Register::Named('a'))) => {}
+            other => panic!("expected SelectRegister(Named('a')), got {other:?}"),
+        }
+        match dispatch_with_char(ids.select_register, '@', &registry, &mut doc) {
+            Effect::None => {}
+            other => panic!("expected None for invalid register char, got {other:?}"),
+        }
+
+        // Play-macro: `@` -> PlayLastMacro; alphanumeric ->
+        // PlayMacro(c); other -> None.
+        match dispatch_with_char(ids.play_macro, '@', &registry, &mut doc) {
+            Effect::AppAction(AppEffect::PlayLastMacro) => {}
+            other => panic!("expected PlayLastMacro, got {other:?}"),
+        }
+        match dispatch_with_char(ids.play_macro, 'q', &registry, &mut doc) {
+            Effect::AppAction(AppEffect::PlayMacro('q')) => {}
+            other => panic!("expected PlayMacro('q'), got {other:?}"),
+        }
+        match dispatch_with_char(ids.play_macro, '!', &registry, &mut doc) {
+            Effect::None => {}
+            other => panic!("expected None for invalid macro key, got {other:?}"),
+        }
+
+        // Overwrite-char: any char passes.
+        match dispatch_with_char(ids.overwrite_char, '$', &registry, &mut doc) {
+            Effect::AppAction(AppEffect::OverwriteChar('$')) => {}
+            other => panic!("expected OverwriteChar('$'), got {other:?}"),
         }
     }
 }

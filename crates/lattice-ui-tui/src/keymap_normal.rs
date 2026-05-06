@@ -750,11 +750,11 @@ pub fn register_normal_bindings(
         Action::SetPending(Pending::AfterSetMark),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('m'), ChordPattern::CharLiteral],
-        Action::SetMark('\0'),
+        CommandInvocation::of(actions.set_mark),
         source(),
     );
 
@@ -766,11 +766,11 @@ pub fn register_normal_bindings(
         Action::SetPending(Pending::AfterJumpMarkLine),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('\''), ChordPattern::CharLiteral],
-        Action::JumpToMarkLine('\0'),
+        CommandInvocation::of(actions.jump_to_mark_line),
         source(),
     );
 
@@ -782,11 +782,11 @@ pub fn register_normal_bindings(
         Action::SetPending(Pending::AfterJumpMarkExact),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('`'), ChordPattern::CharLiteral],
-        Action::JumpToMarkExact('\0'),
+        CommandInvocation::of(actions.jump_to_mark_exact),
         source(),
     );
 
@@ -798,11 +798,11 @@ pub fn register_normal_bindings(
         Action::SetPending(Pending::AfterRegister),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('"'), ChordPattern::CharLiteral],
-        Action::SelectRegister(Register::Unnamed),
+        CommandInvocation::of(actions.select_register),
         source(),
     );
 
@@ -817,11 +817,11 @@ pub fn register_normal_bindings(
         Action::SetPending(Pending::AfterMacroStart),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('q'), ChordPattern::CharLiteral],
-        Action::StartMacroRecord('\0'),
+        CommandInvocation::of(actions.start_macro_record),
         source(),
     );
 
@@ -833,11 +833,11 @@ pub fn register_normal_bindings(
         Action::SetPending(Pending::AfterMacroPlay),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('@'), ChordPattern::CharLiteral],
-        Action::PlayMacro('\0'),
+        CommandInvocation::of(actions.play_macro),
         source(),
     );
 
@@ -1584,14 +1584,25 @@ fn action_from_bound_with_capture(
     bound: &Arc<BoundCommand>,
     captured: &[char],
 ) -> Action {
-    let action = match bound.legacy_action.as_ref() {
-        Some(a) => a.clone(),
-        None => Action::Invoke(bound.command.clone()),
-    };
-    if captured.is_empty() {
-        return action;
+    if let Some(legacy) = bound.legacy_action.as_ref() {
+        let action = legacy.clone();
+        if captured.is_empty() {
+            return action;
+        }
+        return substitute_normal_capture(action, captured[0]);
     }
-    substitute_normal_capture(action, captured[0])
+    // Modern path (slice 8.i): typed `CommandInvocation`. Fold any
+    // captured wildcard char into `Args::Char(c)` so the bound
+    // `ActionSpec`'s apply closure can see it. Validation lives
+    // in the spec (e.g. `m<X>` requires `[a-zA-Z0-9]`); invalid
+    // chars dispatch to `Effect::None`, which is a benign no-op
+    // because `App::apply` clears the pending state on every
+    // non-`SetPending(_)` action.
+    let mut inv = bound.command.clone();
+    if let Some(&c) = captured.first() {
+        inv = substitute_invocation_char_arg(inv, c);
+    }
+    Action::Invoke(inv)
 }
 
 /// Substitute the captured wildcard char into a Normal-mode
@@ -2298,130 +2309,204 @@ mod tests {
 
     #[test]
     fn ma_resolves_to_set_mark_a() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('m')],
             &ev(KeyCode::Char('a'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::SetMark('a')));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.set_mark);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('a')));
+            }
+            other => panic!("expected Invoke(set_mark, Char('a')), got {other:?}"),
+        }
     }
 
     #[test]
-    fn m_invalid_drops_pending() {
-        // Non-alphanumeric mark name -> drop pending.
-        let (h, _, _) = populated_handle();
+    fn m_invalid_passes_char_to_actionspec() {
+        // Slice 8.i.3: validation moved from the dispatcher to
+        // the bound `ActionSpec`. The dispatcher returns
+        // `Invoke(set_mark)` with the captured `'!'` regardless
+        // of validity; the spec returns `Effect::None` for
+        // non-alphanumeric chars and `App::apply` clears the
+        // pending state on every Invoke.
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('m')],
             &ev(KeyCode::Char('!'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::SetPending(Pending::None)));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.set_mark);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('!')));
+            }
+            other => panic!("expected Invoke(set_mark, Char('!')), got {other:?}"),
+        }
     }
 
     #[test]
     fn apostrophe_a_resolves_to_jump_mark_line_a() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('\'')],
             &ev(KeyCode::Char('a'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::JumpToMarkLine('a')));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.jump_to_mark_line);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('a')));
+            }
+            other => panic!("expected Invoke(jump_to_mark_line, Char('a')), got {other:?}"),
+        }
     }
 
     #[test]
     fn backtick_a_resolves_to_jump_mark_exact_a() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('`')],
             &ev(KeyCode::Char('a'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::JumpToMarkExact('a')));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.jump_to_mark_exact);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('a')));
+            }
+            other => panic!("expected Invoke(jump_to_mark_exact, Char('a')), got {other:?}"),
+        }
     }
 
     #[test]
     fn quote_a_selects_named_register_a() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('"')],
             &ev(KeyCode::Char('a'), KeyModifiers::NONE),
         );
         match r {
-            Action::SelectRegister(Register::Named(c)) => assert_eq!(c, 'a'),
-            other => panic!("expected SelectRegister(Named('a')), got {other:?}"),
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.select_register);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('a')));
+            }
+            other => panic!("expected Invoke(select_register, Char('a')), got {other:?}"),
         }
     }
 
     #[test]
     fn quote_plus_selects_system_register() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('"')],
             &ev(KeyCode::Char('+'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::SelectRegister(Register::System)));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.select_register);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('+')));
+            }
+            other => panic!("expected Invoke(select_register, Char('+')), got {other:?}"),
+        }
     }
 
     #[test]
     fn quote_zero_selects_numbered_register_zero() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('"')],
             &ev(KeyCode::Char('0'), KeyModifiers::NONE),
         );
         match r {
-            Action::SelectRegister(Register::Numbered(n)) => assert_eq!(n, 0),
-            other => panic!("got {other:?}"),
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.select_register);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('0')));
+            }
+            other => panic!("expected Invoke(select_register, Char('0')), got {other:?}"),
         }
     }
 
     #[test]
-    fn quote_invalid_drops_pending() {
-        let (h, _, _) = populated_handle();
+    fn quote_invalid_passes_char_to_actionspec() {
+        // Slice 8.i.3: validation lives in the bound `ActionSpec`,
+        // not the dispatcher. The dispatched `Invoke` carries the
+        // captured `'!'`; the spec returns `Effect::None` for chars
+        // that don't name a register.
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('"')],
             &ev(KeyCode::Char('!'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::SetPending(Pending::None)));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.select_register);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('!')));
+            }
+            other => panic!("expected Invoke(select_register, Char('!')), got {other:?}"),
+        }
     }
 
     #[test]
     fn qa_starts_macro_record_a() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('q')],
             &ev(KeyCode::Char('a'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::StartMacroRecord('a')));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.start_macro_record);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('a')));
+            }
+            other => panic!("expected Invoke(start_macro_record, Char('a')), got {other:?}"),
+        }
     }
 
     #[test]
     fn at_at_plays_last_macro() {
-        let (h, _, _) = populated_handle();
+        // The dispatcher returns `Invoke(play_macro, Char('@'))`;
+        // the bound `ActionSpec` reads `@` and produces
+        // `AppEffect::PlayLastMacro` rather than `PlayMacro('@')`.
+        // Slice 8.i.3 moved this branching from the dispatcher's
+        // legacy substituter into the spec.
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('@')],
             &ev(KeyCode::Char('@'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::PlayLastMacro));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.play_macro);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('@')));
+            }
+            other => panic!("expected Invoke(play_macro, Char('@')), got {other:?}"),
+        }
     }
 
     #[test]
     fn at_a_plays_macro_a() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('@')],
             &ev(KeyCode::Char('a'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::PlayMacro('a')));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.play_macro);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('a')));
+            }
+            other => panic!("expected Invoke(play_macro, Char('a')), got {other:?}"),
+        }
     }
 
     #[test]

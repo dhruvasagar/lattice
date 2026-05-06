@@ -34,6 +34,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::modal::{ModalState, SearchDirection, VisualKind};
+use crate::register::Register;
 
 /// Vim's `H` / `M` / `L` target positions: where in the visible
 /// viewport the cursor lands. App-side concept hosted here so
@@ -317,6 +318,49 @@ pub enum AppEffect {
     /// cursor. Promoted from `Action::Insert("\t".into())` in
     /// slice 8.i.2.e.
     InsertTab,
+    /// Replace mode's bare-printable wildcard. Overwrites the
+    /// byte at the cursor with the captured char. Promoted from
+    /// `Action::OverwriteChar(c)` in slice 8.i.3.
+    OverwriteChar(char),
+    /// Vim's `m<X>`. Sets mark `<X>` at the cursor's current
+    /// position. Promoted from `Action::SetMark(c)` in slice
+    /// 8.i.3. The bound `ActionSpec` validates that `<X>` is
+    /// `[a-zA-Z0-9]` -- invalid chars dispatch to `Effect::None`
+    /// (effectively a no-op; `App::apply` clears the pending
+    /// state on every Invoke).
+    SetMark(char),
+    /// Vim's `'<X>`. Jumps the cursor to the line of mark `<X>`.
+    /// Promoted from `Action::JumpToMarkLine(c)` in slice 8.i.3.
+    JumpToMarkLine(char),
+    /// Vim's `` `<X> ``. Jumps the cursor to the exact position
+    /// (line + byte) of mark `<X>`. Promoted from
+    /// `Action::JumpToMarkExact(c)` in slice 8.i.3.
+    JumpToMarkExact(char),
+    /// Vim's `"<X>`. Selects the named register for the next
+    /// yank / paste / delete. Promoted from
+    /// `Action::SelectRegister(_)` in slice 8.i.3. The bound
+    /// `ActionSpec` validates the captured char via
+    /// [`Register::from_input_char`]; chars that don't name a
+    /// register dispatch to `Effect::None`.
+    SelectRegister(Register),
+    /// Vim's `q<X>`. Starts recording a macro into register
+    /// `<X>`. Promoted from `Action::StartMacroRecord(c)` in
+    /// slice 8.i.3.
+    StartMacroRecord(char),
+    /// Vim's `@<X>` for `<X>` alphanumeric. Plays the macro
+    /// stored in register `<X>`. Promoted from
+    /// `Action::PlayMacro(c)` in slice 8.i.3. The `@@` chord is
+    /// dispatched to [`Self::PlayLastMacro`] from the same
+    /// `play-macro` action (the spec branches on the captured
+    /// char).
+    PlayMacro(char),
+    /// Vim's `@@`. Replays the most recently played macro.
+    /// Promoted from `Action::PlayLastMacro` in slice 8.i.3.
+    /// Shares its bind site (`@<CharLiteral>`) with
+    /// [`Self::PlayMacro`]; the `play-macro` action's apply
+    /// closure picks one or the other based on the captured
+    /// char.
+    PlayLastMacro,
 }
 
 #[cfg(test)]

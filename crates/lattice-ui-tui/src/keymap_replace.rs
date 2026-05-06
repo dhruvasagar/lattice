@@ -101,16 +101,18 @@ pub fn register_replace_bindings(handle: &KeymapHandle, actions: &ActionIds) {
         replace_source(cr_line()),
     );
 
-    // Any bare printable char -> overwrite. The wildcard's
-    // `OverwriteChar(c)` is constructed by `dispatch_replace`
-    // from the captured char (the bound `Action` carries a
-    // placeholder `'\0'`; the dispatcher substitutes the
-    // captured char before firing).
-    handle.bind_legacy(
+    // Any bare printable char -> overwrite. The dispatcher's
+    // captured-char machinery substitutes
+    // `Args::Char(c)` into the dispatched
+    // `CommandInvocation`'s args; the registered `ActionSpec`
+    // returns `Effect::AppAction(AppEffect::OverwriteChar(c))`
+    // (no validation -- any captured char is valid for
+    // overwrite).
+    handle.bind(
         layer,
         mode,
         &[ChordPattern::CharLiteral],
-        Action::OverwriteChar('\0'),
+        CommandInvocation::of(actions.overwrite_char),
         replace_source(wildcard_line()),
     );
 }
@@ -214,7 +216,10 @@ pub fn dispatch_replace(handle: &KeymapHandle, event: &KeyEvent) -> Action {
             // `CommandInvocation` -- the App's `run_invocation`
             // routes it through the dispatcher's
             // `CommandKind::Action` branch, which produces the
-            // matching `Effect::AppAction(...)`.
+            // matching `Effect::AppAction(...)`. If the wildcard
+            // captured a char (slice 8.i.3), fold it into the
+            // dispatched invocation's `Args::Char(c)` so the
+            // bound `ActionSpec`'s apply closure can see it.
             match command.legacy_action.as_ref() {
                 Some(Action::OverwriteChar(_)) => {
                     if let Some(&c) = captured.first() {
@@ -224,7 +229,13 @@ pub fn dispatch_replace(handle: &KeymapHandle, event: &KeyEvent) -> Action {
                     }
                 }
                 Some(action) => action.clone(),
-                None => Action::Invoke(command.command.clone()),
+                None => {
+                    let mut inv = command.command.clone();
+                    if let Some(&c) = captured.first() {
+                        inv = inv.with_args(lattice_grammar::args::Args::Char(c));
+                    }
+                    Action::Invoke(inv)
+                }
             }
         }
         LookupResult::Partial | LookupResult::Unbound => Action::None,
@@ -261,7 +272,10 @@ mod tests {
             KeyCode::Esc => Action::Invoke(CommandInvocation::of(actions.enter_mode_normal)),
             KeyCode::Backspace => Action::Invoke(CommandInvocation::of(actions.replace_undo_last)),
             KeyCode::Enter => Action::Invoke(CommandInvocation::of(actions.insert_newline)),
-            KeyCode::Char(c) => Action::OverwriteChar(c),
+            KeyCode::Char(c) => Action::Invoke(
+                CommandInvocation::of(actions.overwrite_char)
+                    .with_args(lattice_grammar::args::Args::Char(c)),
+            ),
             _ => Action::None,
         }
     }
@@ -319,14 +333,18 @@ mod tests {
     #[test]
     fn printable_char_overwrites_with_correct_char() {
         let h = populated_handle();
+        let a = shared_actions();
         for c in ['a', 'A', '$', '0', ' '] {
             let r = dispatch_replace(
                 &h,
                 &ev(KeyCode::Char(c), KeyModifiers::NONE),
             );
             match r {
-                Action::OverwriteChar(got) => assert_eq!(got, c),
-                other => panic!("char {c}: expected OverwriteChar, got {other:?}"),
+                Action::Invoke(inv) => {
+                    assert_eq!(inv.command, a.overwrite_char);
+                    assert!(matches!(inv.args, lattice_grammar::args::Args::Char(got) if got == c));
+                }
+                other => panic!("char {c}: expected Invoke(overwrite_char, args=Char({c:?})), got {other:?}"),
             }
         }
     }
@@ -425,8 +443,15 @@ mod tests {
             (OverwriteChar(c1), OverwriteChar(c2)) => c1 == c2,
             // Slice 8.i: migrated bindings emit `Invoke(...)` from
             // both sides (legacy reference body + dispatch_replace).
+            // The OverwriteChar wildcard rides as
+            // `Invoke(overwrite_char, args=Char(c))` -- compare
+            // `args` so the drift test catches char-substitution
+            // regressions.
             (Invoke(a), Invoke(b)) => {
-                a.command == b.command && a.range == b.range && a.count == b.count
+                a.command == b.command
+                    && a.range == b.range
+                    && a.count == b.count
+                    && a.args == b.args
             }
             _ => false,
         }
@@ -441,13 +466,17 @@ mod tests {
     #[test]
     fn alt_modifier_falls_through_to_overwrite() {
         let h = populated_handle();
+        let a = shared_actions();
         let r = dispatch_replace(
             &h,
             &ev(KeyCode::Char('x'), KeyModifiers::ALT),
         );
         match r {
-            Action::OverwriteChar('x') => {}
-            other => panic!("expected OverwriteChar('x'), got {other:?}"),
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.overwrite_char);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('x')));
+            }
+            other => panic!("expected Invoke(overwrite_char, Char('x')), got {other:?}"),
         }
     }
 
@@ -457,13 +486,17 @@ mod tests {
     #[test]
     fn shift_only_printable_overwrites() {
         let h = populated_handle();
+        let a = shared_actions();
         let r = dispatch_replace(
             &h,
             &ev(KeyCode::Char('A'), KeyModifiers::SHIFT),
         );
         match r {
-            Action::OverwriteChar('A') => {}
-            other => panic!("expected OverwriteChar('A'), got {other:?}"),
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.overwrite_char);
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('A')));
+            }
+            other => panic!("expected Invoke(overwrite_char, Char('A')), got {other:?}"),
         }
     }
 

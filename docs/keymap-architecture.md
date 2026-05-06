@@ -811,18 +811,44 @@ type-hoisting decisions, and the sub-slice plan.
   - 8.i.1.h -- drift-body migration: visual `<Esc>` / `v` /
     `V`, replace `<BS>` (2 variants). `dispatch_replace` gained
     its `Invoke` fallback alongside this batch.
-- **8.i.2 -- Promote parameterised Action variants.** Pending.
-  ~46 remaining `bind_legacy` sites all carry payloads:
-  `EnterMode(_)`, `EnterVisual(_)`, `EnterSearch(_)`,
-  `JoinLines{_}`, `JumpViewport(_)`, `ScrollCursorTo(_)`,
-  `SetPending(_)`, `SearchWordUnderCursor(_)`, `Insert(_)`,
-  `OverwriteChar(_)`, `JumpToMark*(_)`, `SetMark(_)`,
-  `SelectRegister(_)`, `StartMacroRecord(_)`, `PlayMacro(_)`,
-  `FindRepeat{_}`. Encoding choice is per-variant (distinct
-  `CommandId`s for small enum-bounded params; `args` for
-  char captures and numerics) per the memo §7.
-- **8.i.3 -- Wildcard-captured variants.** Pending.
-- **8.i.4 -- Retire Pending; finalise.** Pending.
+- **8.i.2 -- Promote parameterised Action variants.** ✅ landed
+  across 5 sub-batches (8.i.2.a-e). 22 distinct CommandIds
+  promoted; ~28 `bind_legacy` call sites swapped to `bind`.
+  Encoding convention: distinct `CommandId` per param value;
+  AppEffect carries the typed param when the param type lives
+  in (or is hoisted into) `lattice-grammar`. App's
+  `apply_app_effect` matches a single arm per AppEffect variant
+  (e.g. `EnterMode(state)` -> `self.apply(Action::EnterMode(state))`)
+  rather than N flat variants. Slice 8.i.2.c hoisted
+  `ViewportPos` and `ScrollPos` from `lattice-ui-tui` into
+  `lattice-grammar/src/app_effect.rs`; the App keeps `pub use`
+  re-exports of both so existing `crate::app::ViewportPos` /
+  `crate::app::ScrollPos` callers stay compiling.
+  - 8.i.2.a -- mode entry (6 IDs): `EnterMode(Insert/Normal/
+    Replace)` + `EnterVisual(Charwise/Linewise/Blockwise)`.
+  - 8.i.2.b -- search (4 IDs): `EnterSearch(_)` (`/`/`?`) +
+    `SearchWordUnderCursor(_)` (`*`/`#`).
+  - 8.i.2.c -- viewport (6 IDs, type hoist): `JumpViewport(_)`
+    (`H`/`M`/`L`) + `ScrollCursorTo(_)` (`zt`/`zz`/`zb` and
+    aliases).
+  - 8.i.2.d -- operators (4 IDs): `JoinLines{with_space}`
+    (`J`/`gJ`) + `FindRepeat{reverse}` (`;`/`,`).
+  - 8.i.2.e -- insert literals (2 IDs): `InsertNewline` (Insert
+    + Replace `<CR>`) + `InsertTab` (Insert `<Tab>`).
+- **8.i.3 -- Wildcard-captured variants.** Pending. Seven
+  remaining `bind_legacy` sites carry `'\0'` placeholders that
+  the dispatcher overrides with the captured char:
+  `OverwriteChar`, `SetMark`, `JumpToMarkLine`,
+  `JumpToMarkExact`, `SelectRegister`, `StartMacroRecord`,
+  `PlayMacro`. Need `BoundCommand` to grow an `expects_capture`
+  flag (or equivalent) so the dispatcher knows to substitute the
+  captured char into the typed `CommandInvocation`'s args.
+- **8.i.4 -- Retire Pending; finalise.** Pending. The 18
+  remaining `bind_legacy` sites all use
+  `Action::SetPending(Pending::*)`; they go away when `Pending`
+  dissolves into trie-driven partial-chord state per the memo
+  §6. After that, the `bind_legacy` bridge / `legacy_action`
+  field / drift reference bodies retire entirely.
   - At this point the `keymap.rs` drift test becomes obsolete
     (descriptor IS behaviour); replace it with a "every catalog
     entry resolves to a real `CommandInvocation`" test.

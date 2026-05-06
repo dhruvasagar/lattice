@@ -75,48 +75,48 @@ Capability columns:
 
 ## Server-initiated requests
 
-| Method                             | Phase | Status | Notes                                                                                                       |
-|------------------------------------|-------|--------|-------------------------------------------------------------------------------------------------------------|
-| `client/registerCapability`        | 4.1   | ✅     | Accepted with `null` result. Dynamic-capability tracking lands in 4.4.                                      |
-| `client/unregisterCapability`      | 4.1   | ✅     | Accepted with `null` result.                                                                                |
+| Method                             | Phase | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+|------------------------------------|-------|--------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `client/registerCapability`        | 4.1   | ✅     | Accepted with `null` result. Dynamic-capability tracking lands in 4.4.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `client/unregisterCapability`      | 4.1   | ✅     | Accepted with `null` result.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `workspace/configuration`          | 4.1   | ✅     | Inbound channel (`lattice-lsp::ConfigurationBus` mpsc + per-request oneshot) ferries each request to the App. The loader caches the merged user + project TOML tree (deep-merge; project wins per scalar; sibling keys preserved); `App::drain_inbound_configuration_requests` looks each requested `section` up at `lsp.<section>` and replies with one `serde_json::Value` per item. Empty `section` returns the whole `lsp.*` sub-tree; missing sections come back as `null`. User puts server-namespaced settings under `[lsp.<server-id>]` (e.g. `[lsp.rust-analyzer.cargo] features = ["foo"]`). |
-| `workspace/applyEdit`              | 4.3   | ✅     | Inbound channel (`lattice-lsp::ApplyEditBus` mpsc + per-request oneshot) ferries each request to the App. `App::drain_inbound_apply_edits` runs once per main-loop iteration; reuses `flatten_workspace_edit` + `apply_lsp_text_edits` (the rename path) per file; replies via the oneshot with `applied` + optional `failure_reason`. Empty edits reply `applied: true`. v1 is non-atomic (per-file batches); `failed_change` is queued for the future `apply_workspace_edit_atomic`. |
-| `workspace/codeLens/refresh`       | 4.5   | ⏹️      | Re-fetch all visible code lenses.                                                                           |
-| `workspace/inlayHint/refresh`      | 4.4   | ⏹️      | Re-fetch all visible inlay hints.                                                                           |
-| `workspace/inlineValue/refresh`    | 4.5   | ⏹️      | Re-fetch all visible inline values.                                                                         |
-| `workspace/semanticTokens/refresh` | 4.4   | ⏹️      | Invalidate semantic-token cache + re-request.                                                               |
-| `workspace/diagnostic/refresh`     | 4.4   | ⏹️      | Re-fetch diagnostics across the workspace (pull-based diagnostics).                                         |
-| `window/workDoneProgress/create`   | 4.1   | ✅     | Accepted with `null` result.                                                                                |
-| `window/workDoneProgress/cancel`   | 4.4   | ⏹️      | Will cancel a created token's progress; needs the progress map.                                             |
+| `workspace/applyEdit`              | 4.3   | ✅     | Inbound channel (`lattice-lsp::ApplyEditBus` mpsc + per-request oneshot) ferries each request to the App. `App::drain_inbound_apply_edits` runs once per main-loop iteration; reuses `flatten_workspace_edit` + `apply_lsp_text_edits` (the rename path) per file; replies via the oneshot with `applied` + optional `failure_reason`. Empty edits reply `applied: true`. v1 is non-atomic (per-file batches); `failed_change` is queued for the future `apply_workspace_edit_atomic`.                                                                                                                 |
+| `workspace/codeLens/refresh`       | 4.5   | ⏹️      | Re-fetch all visible code lenses.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `workspace/inlayHint/refresh`      | 4.4   | ⏹️      | Re-fetch all visible inlay hints.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `workspace/inlineValue/refresh`    | 4.5   | ⏹️      | Re-fetch all visible inline values.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `workspace/semanticTokens/refresh` | 4.4   | ⏹️      | Invalidate semantic-token cache + re-request.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `workspace/diagnostic/refresh`     | 4.4   | ⏹️      | Re-fetch diagnostics across the workspace (pull-based diagnostics).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `window/workDoneProgress/create`   | 4.1   | ✅     | Accepted with `null` result.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `window/workDoneProgress/cancel`   | 4.4   | ⏹️      | Will cancel a created token's progress; needs the progress map.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 ## Workspace operations
 
-| Method                                | Phase | Status | Notes                                                          |
-|---------------------------------------|-------|--------|----------------------------------------------------------------|
-| `workspace/didChangeConfiguration`    | 4.4   | ⏹️      | Pushes config deltas to the server -- needs §5.12 hooks.       |
-| `workspace/didChangeWatchedFiles`     | 4.4   | ⏹️      | Driven by a native file-watcher (notify / fsevents / inotify). |
-| `workspace/didChangeWorkspaceFolders` | post  | ⏹️      | Multi-root workspaces -- post-1.0 feature; v1 is single-root.  |
-| `workspace/willCreateFiles`           | 4.4   | ⏹️      | Pre-create hook -- server may return edits to apply.           |
-| `workspace/didCreateFiles`            | 4.4   | ⏹️      | Post-create notification.                                      |
-| `workspace/willRenameFiles`           | 4.4   | ⏹️      | Pre-rename hook (e.g. update imports).                         |
-| `workspace/didRenameFiles`            | 4.4   | ⏹️      | Post-rename notification.                                      |
-| `workspace/willDeleteFiles`           | 4.4   | ⏹️      | Pre-delete hook (e.g. cascading edits).                        |
-| `workspace/didDeleteFiles`            | 4.4   | ⏹️      | Post-delete notification.                                      |
-| `workspace/executeCommand`            | 4.3   | ✅     | Wired through the codeAction Command-payload arm. `:code-actions` accept fires it via the originating server; capability-gated on `executeCommandProvider`. |
-| `workspace/symbol`                    | 4.2   | ✅     | `:lsp-workspace-symbol [query]` (Phase 4.2.f). Fans out across every running server (workspace-scoped); dedups by `(path, line, col, name)`; opens the merged list as a vertico `PickerSource::LspLocations` picker. Empty query → server's idea of "every workspace symbol". |
+| Method                                | Phase | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+|---------------------------------------|-------|--------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `workspace/didChangeConfiguration`    | 4.4   | ⏹️      | Pushes config deltas to the server -- needs §5.12 hooks.                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `workspace/didChangeWatchedFiles`     | 4.4   | ⏹️      | Driven by a native file-watcher (notify / fsevents / inotify).                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `workspace/didChangeWorkspaceFolders` | post  | ⏹️      | Multi-root workspaces -- post-1.0 feature; v1 is single-root.                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `workspace/willCreateFiles`           | 4.4   | ⏹️      | Pre-create hook -- server may return edits to apply.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `workspace/didCreateFiles`            | 4.4   | ⏹️      | Post-create notification.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `workspace/willRenameFiles`           | 4.4   | ⏹️      | Pre-rename hook (e.g. update imports).                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `workspace/didRenameFiles`            | 4.4   | ⏹️      | Post-rename notification.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `workspace/willDeleteFiles`           | 4.4   | ⏹️      | Pre-delete hook (e.g. cascading edits).                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `workspace/didDeleteFiles`            | 4.4   | ⏹️      | Post-delete notification.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `workspace/executeCommand`            | 4.3   | ✅     | Wired through the codeAction Command-payload arm. `:code-actions` accept fires it via the originating server; capability-gated on `executeCommandProvider`.                                                                                                                                                                                                                                                                                                                          |
+| `workspace/symbol`                    | 4.2   | ✅     | `:lsp-workspace-symbol [query]` (Phase 4.2.f). Fans out across every running server (workspace-scoped); dedups by `(path, line, col, name)`; opens the merged list as a vertico `PickerSource::LspLocations` picker. Empty query → server's idea of "every workspace symbol".                                                                                                                                                                                                        |
 | `workspaceSymbol/resolve`             | 4.2   | ✅     | LSP 3.17+ lazy-location path. `workspace/symbol` response upgrades from the legacy `Vec<SymbolInformation>` to `WorkspaceSymbolResponse` (`Flat \| Nested` union); `Nested` symbols whose `location` is `WorkspaceLocation` (URI only) eager-resolve at fan-out via `workspace_symbol_to_row` so the picker's row shape stays uniform. Falls back to `(path, 0, 0)` when the server doesn't advertise `resolveProvider` or resolve fails -- the user can still navigate to the file. |
 
 ## Language features (text document)
 
 ### Hover / signatures / completion
 
-| Method                          | Phase | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-|---------------------------------|-------|--------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `textDocument/hover`            | 4.2   | ✅     | `K` keystroke (Phase 4.2.b). Spawns the request on the LSP runtime; first non-empty body across attached servers wins; relay's cancellation token flips on a follow-up `K` so a stale response can't drop a popup over a moved cursor. Markdown body feeds the existing `HoverPopup` pipeline. Multi-server merge with `--- {name} ---` separators is a polish item.                                                                                       |
-| `textDocument/signatureHelp`    | 4.3   | ✅     | `:signature-help` (alias `:sighelp`). Fan-out across attached servers; first non-empty wins. `signature_help_to_markdown` renders the active signature + active parameter (fenced-code label + `**param:**` highlight + parameter docs); body feeds `do_open_hover` so the popup pipeline (markdown highlight, anchored placement, State A/B focus model) is shared with `K` hover. Trigger-character autopilot (`(` / `,` etc.) in Insert mode is queued. |
+| Method                          | Phase | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+|---------------------------------|-------|--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `textDocument/hover`            | 4.2   | ✅     | `K` keystroke (Phase 4.2.b). Spawns the request on the LSP runtime; first non-empty body across attached servers wins; relay's cancellation token flips on a follow-up `K` so a stale response can't drop a popup over a moved cursor. Markdown body feeds the existing `HoverPopup` pipeline. Multi-server merge with `--- {name} ---` separators is a polish item.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `textDocument/signatureHelp`    | 4.3   | ✅     | `:signature-help` (alias `:sighelp`). Fan-out across attached servers; first non-empty wins. `signature_help_to_markdown` renders the active signature + active parameter (fenced-code label + `**param:**` highlight + parameter docs); body feeds `do_open_hover` so the popup pipeline (markdown highlight, anchored placement, State A/B focus model) is shared with `K` hover. Trigger-character autopilot (`(` / `,` etc.) in Insert mode is queued.                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `textDocument/completion`       | 4.2   | ✅     | Insert-mode popup via `<C-x><C-o>` / `<C-Space>` / smart-tab (Phase 4.2.g full surface: shell + buffer-words + LSP source + docs popup + lazy `completionItem/resolve` + snippets + frequency ranking + per-source priority + per-language overrides + tree-sitter symbols + path source + commit chars + ghost text + cross-source visual dedup + typed picker routing). Item adaptation: `filterText` / `sortText` / `detail` / `documentation` / `commitCharacters` / `additionalTextEdits` / `textEdit.range` / `insertTextFormat`; `isIncomplete: true` re-fires per keystroke. Multi-server fan-out + dedup by `(label, kind)`. Sidecar metadata via `App.insert_completion_lsp_meta` keyed by `CandidateData::Extension { kind_id: LSP_COMPLETION_KIND_ID, payload }`. Picker bridge `:complete` (alias `:lspcomplete`) survives as the cmdline-driven peer. Behavioural spec at `docs/insert-completion.md`. |
-| `completionItem/resolve`        | 4.2   | ✅     | `completionItem/resolve` fires lazily when the user opens the docs popup for a candidate that arrived without `documentation`. Round-trips the original `CompletionItem` JSON to the originating server (preserves the opaque `data` blob); response fills in `documentation` / `detail` / `additionalTextEdits` / `command` on the host's `LspCompletionMeta` sidecar. Cancellation token rides on selection changes so a slow server's stale resolve never overwrites the popup body. Phase 4.2.g.3.                                                                                                                                                                                                                                                                                                              |
-| `textDocument/inlineCompletion` | 4.5   | ⏹️      | LSP 3.18 / pre-spec. Inline ghost-text suggestions; integrates with copilot-like flows once landed.                                                                                                                                                                                                                                                                                                                                                        |
+| `completionItem/resolve`        | 4.2   | ✅     | `completionItem/resolve` fires lazily when the user opens the docs popup for a candidate that arrived without `documentation`. Round-trips the original `CompletionItem` JSON to the originating server (preserves the opaque `data` blob); response fills in `documentation` / `detail` / `additionalTextEdits` / `command` on the host's `LspCompletionMeta` sidecar. Cancellation token rides on selection changes so a slow server's stale resolve never overwrites the popup body. Phase 4.2.g.3.                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `textDocument/inlineCompletion` | 4.5   | ⏹️      | LSP 3.18 / pre-spec. Inline ghost-text suggestions; integrates with copilot-like flows once landed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ### Navigation
 
@@ -140,16 +140,16 @@ Capability columns:
 
 ### Edits
 
-| Method                            | Phase | Status | Notes                                                                        |
-|-----------------------------------|-------|--------|------------------------------------------------------------------------------|
-| `textDocument/codeAction`         | 4.3   | ✅     | `:code-actions` (alias `:ca`). Picks first server with `codeActionProvider`; context carries overlapping diagnostics + `InvokedTriggerKind`. Visual selection / point cursor range. Vertico picker; accept routes `Command` payloads through `executeCommand` and `WorkspaceEdit` payloads through the rename apply path (per-file one-undo-unit). |
-| `codeAction/resolve`              | 4.3   | ✅     | Lazy-resolve fires when the chosen action arrived without both `edit` and `command`. Resolve response feeds the same apply path; the Resolved arm of `CodeActionOutcome` distinguishes from fresh-fetch.                                |
+| Method                            | Phase | Status | Notes                                                                                                                                                                                                                                                                                                                                                             |
+|-----------------------------------|-------|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `textDocument/codeAction`         | 4.3   | ✅     | `:code-actions` (alias `:ca`). Picks first server with `codeActionProvider`; context carries overlapping diagnostics + `InvokedTriggerKind`. Visual selection / point cursor range. Vertico picker; accept routes `Command` payloads through `executeCommand` and `WorkspaceEdit` payloads through the rename apply path (per-file one-undo-unit).                |
+| `codeAction/resolve`              | 4.3   | ✅     | Lazy-resolve fires when the chosen action arrived without both `edit` and `command`. Resolve response feeds the same apply path; the Resolved arm of `CodeActionOutcome` distinguishes from fresh-fetch.                                                                                                                                                          |
 | `textDocument/rename`             | 4.3   | ✅     | `:rename <new-name>` (alias `:rn`). Single highest-priority server with `renameProvider`. WorkspaceEdit flattens both legacy `changes` map and modern `document_changes` Edits arm; `AnnotatedTextEdit` unwraps to plain TextEdit. Active buffer applies as one undo unit; cross-file edits open via `:e` then apply (cross-file atomic rollback is a follow-up). |
-| `textDocument/prepareRename`      | 4.3   | ✅     | Runs before `rename` when the server advertises `prepare_provider`. RangeWithPlaceholder-shape responses pre-populate the new-name when the user types `:rename` with no arg; Range / DefaultBehavior responses fall through. NotRenameable echoes the server's reason. |
-| `textDocument/formatting`         | 4.3   | ✅     | `:format` (alias `:fmt`). Highest-priority server with `documentFormattingProvider`; returned `Vec<TextEdit>` applies as one undo unit. TextEdits sorted in REVERSE by start position before apply (LSP convention: non-overlapping edits relative to original document). Single-server strategy per architecture doc. |
-| `textDocument/rangeFormatting`    | 4.3   | ✅     | `:format-range`. Active Visual selection (when in Visual) or whole buffer; same dispatch as `formatting`. `=` operator on motions / objects -- queued. |
-| `textDocument/onTypeFormatting`   | 4.3   | ✅     | Insert-mode trigger-character autopilot. `do_insert_text` fires the request when the typed char matches the server's `documentOnTypeFormattingProvider.first_trigger_character` / `more_trigger_character`. Edits land via the format-channel apply path (one undo unit).                       |
-| `textDocument/linkedEditingRange` | 4.5   | ⏹️      | Multi-cursor mode for linked identifiers (HTML tag pairs, etc.).             |
+| `textDocument/prepareRename`      | 4.3   | ✅     | Runs before `rename` when the server advertises `prepare_provider`. RangeWithPlaceholder-shape responses pre-populate the new-name when the user types `:rename` with no arg; Range / DefaultBehavior responses fall through. NotRenameable echoes the server's reason.                                                                                           |
+| `textDocument/formatting`         | 4.3   | ✅     | `:format` (alias `:fmt`). Highest-priority server with `documentFormattingProvider`; returned `Vec<TextEdit>` applies as one undo unit. TextEdits sorted in REVERSE by start position before apply (LSP convention: non-overlapping edits relative to original document). Single-server strategy per architecture doc.                                            |
+| `textDocument/rangeFormatting`    | 4.3   | ✅     | `:format-range`. Active Visual selection (when in Visual) or whole buffer; same dispatch as `formatting`. `=` operator on motions / objects -- queued.                                                                                                                                                                                                            |
+| `textDocument/onTypeFormatting`   | 4.3   | ✅     | Insert-mode trigger-character autopilot. `do_insert_text` fires the request when the typed char matches the server's `documentOnTypeFormattingProvider.first_trigger_character` / `more_trigger_character`. Edits land via the format-channel apply path (one undo unit).                                                                                         |
+| `textDocument/linkedEditingRange` | 4.5   | ⏹️      | Multi-cursor mode for linked identifiers (HTML tag pairs, etc.).                                                                                                                                                                                                                                                                                                  |
 
 ### Decorations / inline information
 
@@ -228,3 +228,130 @@ When you finish a feature, flip its Status column and update the
 phase rollup. The matrix is the single source of truth: every
 LSP feature in lattice has a row here, and every row reflects
 reality.
+
+## 4.4 slicing plan
+
+Phase 4.4's items split into six affinity groups. Recommended
+order is depth-first by group; rationale beside each. Slice
+ids (`4.4.a`, `4.4.b`, ...) follow the same scheme as 4.2.g.
+
+### Group 1 — server → editor messaging
+
+`window/showMessage`, `window/showMessageRequest`, `window/showDocument`,
+`window/logMessage`, `telemetry/event`, `$/setTrace` (C → S),
+`$/logTrace` (S → C). All map onto primitives that already exist
+(minibuffer notifications, modal pickers, buffer-open, the
+`*lsp:<server>:trace*` buffer). Several are partially logged
+today; flipping them to first-class UI is the highest UX-per-line
+ratio of the phase.
+
+- **4.4.a** -- `window/showMessage` + `window/logMessage` +
+  `telemetry/event`. The three currently-logged items get a
+  proper UI surface (minibuffer for show, opt-in plugin
+  subscription for telemetry).
+- **4.4.b** -- `window/showMessageRequest` (modal action-button
+  picker) + `window/showDocument` (URI open via existing buffer
+  / browser path) + `$/setTrace` + `$/logTrace`. The trace pair
+  flips `:lsp-trace` to drive `$/setTrace` on the wire; logTrace
+  routes into the existing trace buffer.
+
+### Group 2 — server → editor live state
+
+`$/progress` → modeline progress slot, `window/workDoneProgress/cancel`,
+plus the supervisor work needed for `:lsp-restart` to actually
+shut down + respawn an actor and replay `didOpen` to every attached
+buffer. Stays close to the per-actor DocSync work that's fresh in
+mind.
+
+- **4.4.c** -- `$/progress` accumulator + modeline slot +
+  `workDoneProgress/cancel`.
+- **4.4.d** -- supervisor restart-with-backoff + `:lsp-restart`
+  wiring + crash-detection auto-restart (the supervisor's "today
+  the actor detects pipe close" comment becomes "and the
+  supervisor responds with a graceful respawn").
+
+### Group 3 — new renderer overlays
+
+`textDocument/documentHighlight`, `textDocument/selectionRange`,
+`textDocument/inlayHint` + `inlayHint/resolve` + workspace refresh,
+`textDocument/foldingRange`. Each adds a renderer layer; can land
+in any order. Suggested grouping is by infra reuse:
+
+- **4.4.e** -- `documentHighlight` + `selectionRange`. Both
+  cursor-driven, both small; share the "request-on-cursor-move"
+  plumbing we'll need anyway for inlay hint hover-resolve.
+- **4.4.f** -- `foldingRange`. New `FoldMethod::Lsp` provider
+  feeding the existing fold infra (recompute, identity hash,
+  gutter glyphs all reusable).
+- **4.4.g** -- inlay hints (`textDocument/inlayHint` +
+  `inlayHint/resolve` + `workspace/inlayHint/refresh`). Renderer
+  virtual-text overlay is new infrastructure; landing it once
+  here pays for future inline-value / inline-completion work too.
+
+### Group 4 — semantic tokens
+
+`textDocument/semanticTokens/full` + `/delta` + `/range`,
+`workspace/semanticTokens/refresh`. Most complex single feature in
+4.4: relative-position varint encoding, modifier bitmask, layered
+highlight resolution against tree-sitter. Stays standalone so the
+tree-sitter highlight fast paths don't churn under unrelated
+changes.
+
+- **4.4.h** -- `semanticTokens/full` + highlight-layer integration
+  (LSP layer ranks above tree-sitter when both produce a token at
+  the same range).
+- **4.4.i** -- `semanticTokens/full/delta` + `semanticTokens/range`
+  + `workspace/semanticTokens/refresh` (delta encoding + viewport
+  request + invalidation trigger).
+
+### Group 5 — pull-based + workspace integration
+
+Pull diagnostics, configuration push, file watchers. The largest
+single dependency surface in 4.4 (the `notify` crate) lands here.
+
+- **4.4.j** -- pull diagnostics (`textDocument/diagnostic`,
+  `workspace/diagnostic`, `workspace/diagnostic/refresh`).
+  Capability-gated; when a server advertises pull-only,
+  `DiagnosticsLayer` switches its source from the push subscription
+  to a periodic + on-edit-debounce pull request.
+- **4.4.k** -- `workspace/didChangeConfiguration` driven by §5.12
+  `OptionChanged` events on `lsp.*` keys. Pairs naturally with the
+  inbound `workspace/configuration` path that already exists.
+- **4.4.l** -- file watchers: `notify` crate dep, per-server
+  glob-pattern subscriptions matched against
+  `client/registerCapability`'s file-watcher registrations,
+  `workspace/didChangeWatchedFiles` fan-out.
+- **4.4.m** -- workspace file lifecycle (`willCreateFiles` /
+  `didCreateFiles` / `willRenameFiles` / `didRenameFiles` /
+  `willDeleteFiles` / `didDeleteFiles`). Hooks into our buffer
+  save / `:bd` / `:saveas` paths; pre-events may return
+  `WorkspaceEdit`s to apply (reuses the rename apply pipeline).
+
+### Group 6 — capability + config polish
+
+- **4.4.n** -- dynamic registration tracking. Today
+  `client/registerCapability` accepts and drops; this slice gives
+  `Capabilities` a "static + dynamic" snapshot model so feature
+  dispatch reads from the union.
+- **4.4.o** -- `lsp.toml` log keys (`log_level`, `log_capacity`,
+  `trace_io`) wired through the §5.12 typed-options layer at
+  startup; today only the runtime `:lsp-log-level` / `:lsp-trace`
+  paths exist.
+
+### Trade-offs flagged
+
+- **Semantic tokens (Group 4) ahead of overlays (Group 3)** is
+  defensible if you'd rather get the highest-impact polish in
+  first, but it's also the highest churn risk -- highlight
+  layering interacts with tree-sitter and the renderer's fast
+  paths. Default order keeps it after the overlays so the
+  renderer changes that group introduces are stable before
+  semantic tokens layer on top.
+- **File watchers (Group 5) earlier as standalone infra** would
+  unlock non-LSP features (markdown live-preview, etc.) sooner,
+  but they're standalone enough to stay where they are without
+  blocking anything.
+- **`:lsp-restart` (4.4.d) could fold into 4.4.c** as a single
+  "supervisor lifecycle" slice, but the two touch different
+  surfaces (modeline rendering vs. actor lifecycle) and read
+  cleaner as separate commits.

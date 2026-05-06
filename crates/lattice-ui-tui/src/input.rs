@@ -9,10 +9,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use lattice_grammar::ModalState;
-use lattice_grammar::VisualKind;
 use lattice_grammar::builtins::Builtins;
-use lattice_grammar::command::CommandInvocation;
-use lattice_grammar::registry::MotionId;
 
 use crate::app::{Action, FindKind, Pending};
 use crate::buffers::BufferKind;
@@ -20,7 +17,6 @@ use crate::keymap_insert::dispatch_insert;
 use crate::keymap_registry::KeymapHandle;
 use crate::keymap_replace::dispatch_replace;
 use crate::keymap_visual::dispatch_visual;
-use crate::pane::PaneDirection;
 
 pub struct TranslateContext<'a> {
     pub modal: ModalState,
@@ -352,7 +348,13 @@ fn compute_normal_action(
 ) -> Action {
     // Resolve any pending state first.
     match pending {
-        Pending::AfterCtrlW => return resolve_after_ctrl_w(event),
+        Pending::AfterCtrlW => {
+            return crate::keymap_normal::lookup_normal_with_prefix(
+                keymap,
+                &[crate::chord::KeyChord::ctrl('w')],
+                &event,
+            );
+        }
         Pending::AfterG => {
             return crate::keymap_normal::lookup_normal_with_prefix(
                 keymap,
@@ -479,44 +481,6 @@ fn compute_normal_action(
         Pending::None => {}
     }
 
-    if event.modifiers.contains(KeyModifiers::CONTROL) {
-        return match event.code {
-            KeyCode::Char('d') => invoke_with_count(builtins.line_down, 10),
-            KeyCode::Char('u') => invoke_with_count(builtins.line_up, 10),
-            KeyCode::Char('f') => Action::PageDown,
-            KeyCode::Char('b') => Action::PageUp,
-            KeyCode::Char('e') => Action::ScrollLineDown,
-            KeyCode::Char('y') => Action::ScrollLineUp,
-            KeyCode::Char('r') => Action::Redo,
-            KeyCode::Char('o') => Action::JumpHistoryBack,
-            KeyCode::Char('i') => Action::JumpHistoryForward,
-            // `<C-t>` -- pop the tag stack (vim's `:pop`). The
-            // tag stack is the LIFO chain of `gd` / `gD` / `gy`
-            // / `gI` drill-downs, distinct from `<C-o>`'s jump
-            // list. Both walks coexist with different push
-            // semantics.
-            KeyCode::Char('t') => Action::TagStackPop,
-            // `<C-l>` -- vim's "redraw screen" key. Reparses syntax
-            // and tells the runtime to clear the terminal so any
-            // visual glitch (stale highlight cache, leftover ANSI
-            // from a crashed sub-process, terminal-resize race)
-            // gets repainted from scratch.
-            KeyCode::Char('l') => Action::RedrawScreen,
-            // Ctrl+V and Ctrl+Q both enter blockwise Visual. Vim binds
-            // both for the same reason: many terminals (Konsole, Windows
-            // Terminal, tmux paste-key) hijack Ctrl+V for clipboard
-            // paste before it reaches us. Ctrl+Q is the universal
-            // fallback. We also enable bracketed paste in `runtime.rs`,
-            // so a hijacked Ctrl+V arrives as `Event::Paste` -- the
-            // user's paste still works either way.
-            KeyCode::Char('v') | KeyCode::Char('q') => Action::EnterVisual(VisualKind::Blockwise),
-            // `<C-w>` -- window-management chord prefix. The next
-            // key resolves to split / close / navigate (see
-            // `resolve_after_ctrl_w`).
-            KeyCode::Char('w') => Action::SetPending(Pending::AfterCtrlW),
-            _ => Action::None,
-        };
-    }
     // Numeric prefix: `1`-`9` always start (or extend) a count; `0` extends
     // an in-progress count but otherwise is line_start. This is vim's
     // standard count parsing, exactly.
@@ -541,72 +505,15 @@ fn compute_normal_action(
         return Action::StopMacroRecord;
     }
 
-    // Slice 8.g.i / 8.g.v: every Normal-mode chord that doesn't
-    // depend on App-side state (count accumulator, recording
-    // flag, `<C-w>` prefix) lives in the layered registry under
-    // `BindingMode::Normal`. `lookup_normal` returns
-    // `Some(action)` for any matched chord; on `None` we fall
-    // through to `Action::None`. The `<C-w>` sub-tree migrates
-    // in 8.g.vi.
+    // Slice 8.g.vi closes out: every Normal-mode chord -- bare,
+    // SHIFT-cased, CTRL-bearing, multi-key prefix, wildcard --
+    // now lives in the layered registry under
+    // `BindingMode::Normal`. The dispatcher reduces to: pending
+    // resolution -> digit prefix -> recording-`q` short-circuit
+    // -> trie lookup. `lookup_normal` returns `Some(action)` for
+    // any matched chord; on `None` we fall through to
+    // `Action::None`.
     crate::keymap_normal::lookup_normal(keymap, &event).unwrap_or(Action::None)
-}
-
-/// Resolve the second key of a `<C-w>...` window-management chord
-/// (DESIGN.md §5.9). vim keymap:
-/// - `<C-w>s` / `<C-w>S` -- horizontal split (new pane below).
-/// - `<C-w>v` -- vertical split (new pane right).
-/// - `<C-w>c` / `<C-w>q` -- close active pane.
-/// - `<C-w>h/j/k/l` -- navigate to spatial neighbour.
-/// - `<C-w>w` / `<C-w><C-w>` -- cycle to next pane.
-/// - `<C-w>W` -- cycle to previous pane.
-/// - Anything else: clear pending and no-op.
-fn resolve_after_ctrl_w(event: KeyEvent) -> Action {
-    if matches!(event.code, KeyCode::Esc) {
-        return Action::SetPending(Pending::None);
-    }
-    // Within the AfterCtrlW chord we accept either Ctrl-modified or
-    // bare keys -- vim is lenient because <C-w> is a sticky prefix
-    // (typing <C-w><C-w> for "next pane" is muscle memory).
-    if event.modifiers.contains(KeyModifiers::CONTROL) {
-        // Vim accepts Ctrl-modified second keys after `<C-w>` so
-        // the user can hold Ctrl through the whole chord
-        // (`<C-w><C-l>` and `<C-w>l` both navigate right). Many
-        // terminals collapse `<C-h>` to Backspace and `<C-i>` to
-        // Tab; we honour those mappings via the bare-key paths
-        // below.
-        return match event.code {
-            KeyCode::Char('w') => Action::NextPane,
-            KeyCode::Char('h') => Action::NavigatePane(PaneDirection::Left),
-            KeyCode::Char('j') => Action::NavigatePane(PaneDirection::Down),
-            KeyCode::Char('k') => Action::NavigatePane(PaneDirection::Up),
-            KeyCode::Char('l') => Action::NavigatePane(PaneDirection::Right),
-            KeyCode::Char('s') => Action::SplitPaneHorizontal,
-            KeyCode::Char('v') => Action::SplitPaneVertical,
-            KeyCode::Char('c') | KeyCode::Char('q') => Action::ClosePane,
-            _ => Action::SetPending(Pending::None),
-        };
-    }
-    match event.code {
-        KeyCode::Char('s') | KeyCode::Char('S') => Action::SplitPaneHorizontal,
-        KeyCode::Char('v') => Action::SplitPaneVertical,
-        KeyCode::Char('c') | KeyCode::Char('q') => Action::ClosePane,
-        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
-            Action::NavigatePane(PaneDirection::Left)
-        }
-        KeyCode::Char('j') | KeyCode::Down => Action::NavigatePane(PaneDirection::Down),
-        KeyCode::Char('k') | KeyCode::Up => Action::NavigatePane(PaneDirection::Up),
-        KeyCode::Char('l') | KeyCode::Right => Action::NavigatePane(PaneDirection::Right),
-        KeyCode::Char('w') | KeyCode::Tab => Action::NextPane,
-        KeyCode::Char('W') | KeyCode::BackTab => Action::PrevPane,
-        _ => Action::SetPending(Pending::None),
-    }
-}
-
-
-fn invoke_with_count(motion: MotionId, count: u32) -> Action {
-    Action::Invoke(
-        CommandInvocation::of(motion.0).with_count(lattice_grammar::command::Count(count)),
-    )
 }
 
 #[cfg(test)]
@@ -614,9 +521,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use crate::app::{ScrollPos, ViewportPos};
+    use crate::pane::PaneDirection;
     use lattice_grammar::CommandRegistry;
     use lattice_grammar::SearchDirection;
     use lattice_grammar::Target;
+    use lattice_grammar::VisualKind;
     use lattice_grammar::builtins::populate;
     use lattice_grammar::register::Register;
 

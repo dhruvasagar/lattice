@@ -664,7 +664,34 @@ The big one. Likely sub-sliced:
   `f<C-x>` drops the pending state instead of using `'x'` as
   the find target. Terminals don't typically emit such chord
   combinations.
-- 8.g.vi -- `<C-w>` window-management sub-tree.
+- 8.g.vi -- `<C-w>` window-management sub-tree. ✅ landed.
+  Closes Normal mode out. Every CTRL chord (`<C-d>` /
+  `<C-u>` / `<C-f>` / `<C-b>` / `<C-e>` / `<C-y>` / `<C-r>`
+  / `<C-o>` / `<C-i>` / `<C-t>` / `<C-l>` / `<C-v>` /
+  `<C-q>`) now lives at depth 1 in the Normal trie -- the
+  legacy CTRL guard at the top of `compute_normal_action` is
+  gone. `<C-w>` is a terminal-with-children: depth-1 binds
+  `SetPending(AfterCtrlW)`; depth-2 covers both bare
+  (`<C-w>w` / `<C-w>l` / ...) and ctrl-modified
+  (`<C-w><C-w>` / `<C-w><C-l>` / ...) second-key forms,
+  including the `<Tab>` / `<S-Tab>` (= `BackTab`) /
+  `<Backspace>` / arrow aliases vim's lenient `<C-w>` prefix
+  accepts. The `Pending::AfterCtrlW` arm in
+  `input::translate_normal` calls
+  `lookup_normal_with_prefix(handle, &[KeyChord::ctrl('w')],
+  event)`; `resolve_after_ctrl_w` is gone.
+  After this slice `compute_normal_action` reduces to:
+  pending resolution -> digit prefix -> recording-`q`
+  short-circuit -> `lookup_normal`. The legacy match arm is
+  empty; the function is essentially a thin orchestrator
+  around the registry.
+  `<C-c>` (universal Quit) is intentionally not registered
+  in the trie -- it's intercepted by `input::translate`
+  before mode dispatch. The `<C-c>` branch of legacy
+  `resolve_after_ctrl_w`'s ctrl table was unreachable in
+  practice; its registration in the trie is kept for parity
+  with the legacy reference but produces the same
+  unreachable behaviour.
 
 Each sub-slice ships independently green; the drift test is
 the regression net.

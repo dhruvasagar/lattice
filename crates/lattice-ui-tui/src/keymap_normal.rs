@@ -79,8 +79,9 @@ use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::{ModalState, SearchDirection, Target, VisualKind};
 
 use crate::app::{Action, FindKind, Pending, ScrollPos, ViewportPos};
+use crate::pane::PaneDirection;
 use lattice_grammar::register::Register;
-use crate::chord::{KeyChord, KeyMods, SpecialKey};
+use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
 use crate::keymap_replace::KeymapHandleLegacyExt;
@@ -873,6 +874,236 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins) {
         Action::SetPending(Pending::AfterOperator(builtins.indent_left)),
         source(),
     );
+
+    // ---- Slice 8.g.vi: CTRL chord bindings.
+    //
+    // Direct depth-1 entries, modifier preserved. Modifier
+    // normalisation in `lookup_normal` keeps CTRL+SHIFT, so
+    // `<C-d>` resolves as `(Char('d'), CTRL)` -- the chord the
+    // trie stores. The legacy CTRL guard at the top of
+    // `compute_normal_action` retires once these registrations
+    // land; every CTRL-bearing chord now flows through the
+    // registry like every other binding.
+    //
+    // `<C-c>` (the universal quit hatch) is intercepted by
+    // `input::translate` *before* mode dispatch and so never
+    // reaches this trie -- skipping the registration is
+    // intentional.
+
+    // `<C-d>` / `<C-u>` -- half-page scroll. Bake `Count(10)`
+    // into the invocation so 8.g.iv's `attach_count` honours it
+    // when no user-typed prefix is in flight.
+    handle.bind(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('d'))],
+        CommandInvocation::of(builtins.line_down.0)
+            .with_count(lattice_grammar::command::Count(10)),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('u'))],
+        CommandInvocation::of(builtins.line_up.0)
+            .with_count(lattice_grammar::command::Count(10)),
+        source(),
+    );
+
+    // Viewport / scroll / undo-tree / jump history / tag stack /
+    // redraw / blockwise visual.
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('f'))],
+        Action::PageDown,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('b'))],
+        Action::PageUp,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('e'))],
+        Action::ScrollLineDown,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('y'))],
+        Action::ScrollLineUp,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('r'))],
+        Action::Redo,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('o'))],
+        Action::JumpHistoryBack,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('i'))],
+        Action::JumpHistoryForward,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('t'))],
+        Action::TagStackPop,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('l'))],
+        Action::RedrawScreen,
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('v'))],
+        Action::EnterVisual(lattice_grammar::VisualKind::Blockwise),
+        source(),
+    );
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('q'))],
+        Action::EnterVisual(lattice_grammar::VisualKind::Blockwise),
+        source(),
+    );
+
+    // ---- `<C-w>` window-management sub-tree.
+    //
+    // Depth-1: terminal `SetPending(AfterCtrlW)` plus children
+    // for the second-key resolution. Same shape as `d` / `c` /
+    // `y` / `>` / `<` from 8.g.iii.
+    handle.bind_legacy(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('w'))],
+        Action::SetPending(Pending::AfterCtrlW),
+        source(),
+    );
+    register_ctrl_w_sub_tree(handle);
+}
+
+/// Register every `[<C-w>, X]` path covered by the legacy
+/// `resolve_after_ctrl_w`. Vim is lenient about the second key
+/// after `<C-w>`: both ctrl-modified (`<C-w><C-l>`) and bare
+/// (`<C-w>l`) variants navigate identically. Many terminals
+/// also collapse `<C-h>` to Backspace and `<C-i>` to Tab; we
+/// honour those mappings via the bare-key paths.
+fn register_ctrl_w_sub_tree(handle: &KeymapHandle) {
+    let layer = KeymapLayer::Builtin;
+    let mode = BindingMode::Normal;
+    let cw = lit(KeyChord::ctrl('w'));
+
+    // Bare-key second chord (NextPane / PrevPane / split / close /
+    // navigate). Includes the Tab / BackTab / arrow / Backspace
+    // aliases the legacy supported.
+    let bare_table: &[(&[ChordPattern], Action)] = &[
+        (
+            &[lit_char('s'), lit_char('S')],
+            Action::SplitPaneHorizontal,
+        ),
+        (&[lit_char('v')], Action::SplitPaneVertical),
+        (&[lit_char('c'), lit_char('q')], Action::ClosePane),
+        (
+            &[
+                lit_char('h'),
+                lit_special(SpecialKey::Left),
+                lit_special(SpecialKey::Backspace),
+            ],
+            Action::NavigatePane(PaneDirection::Left),
+        ),
+        (
+            &[lit_char('j'), lit_special(SpecialKey::Down)],
+            Action::NavigatePane(PaneDirection::Down),
+        ),
+        (
+            &[lit_char('k'), lit_special(SpecialKey::Up)],
+            Action::NavigatePane(PaneDirection::Up),
+        ),
+        (
+            &[lit_char('l'), lit_special(SpecialKey::Right)],
+            Action::NavigatePane(PaneDirection::Right),
+        ),
+        (
+            &[lit_char('w'), lit_special(SpecialKey::Tab)],
+            Action::NextPane,
+        ),
+        (
+            &[
+                lit_char('W'),
+                ChordPattern::Literal(KeyChord {
+                    key: KeyKind::Special(SpecialKey::Tab),
+                    mods: KeyMods::SHIFT,
+                }),
+            ],
+            Action::PrevPane,
+        ),
+    ];
+    for (chords, action) in bare_table {
+        for chord in chords.iter() {
+            handle.bind_legacy(
+                layer,
+                mode,
+                &[cw.clone(), chord.clone()],
+                action.clone(),
+                source(),
+            );
+        }
+    }
+
+    // Ctrl-modified second chord: `<C-w><C-X>` mirrors `<C-w>X`
+    // for the navigation / split / close / NextPane bindings.
+    // `<C-c>` and `<C-q>` both map to ClosePane in the legacy
+    // even though `<C-c>` is intercepted as Quit before the
+    // pending arm runs (so the `<C-c>` registration is
+    // unreachable in practice -- kept for parity with the
+    // legacy table).
+    let ctrl_table: &[(char, Action)] = &[
+        ('w', Action::NextPane),
+        ('h', Action::NavigatePane(PaneDirection::Left)),
+        ('j', Action::NavigatePane(PaneDirection::Down)),
+        ('k', Action::NavigatePane(PaneDirection::Up)),
+        ('l', Action::NavigatePane(PaneDirection::Right)),
+        ('s', Action::SplitPaneHorizontal),
+        ('v', Action::SplitPaneVertical),
+        ('c', Action::ClosePane),
+        ('q', Action::ClosePane),
+    ];
+    for (c, action) in ctrl_table {
+        handle.bind_legacy(
+            layer,
+            mode,
+            &[cw.clone(), lit(KeyChord::ctrl(*c))],
+            action.clone(),
+            source(),
+        );
+    }
+}
+
+fn lit(chord: KeyChord) -> ChordPattern {
+    ChordPattern::Literal(chord)
 }
 
 /// Register the slice 8.g.iii operator-pending paths for one
@@ -2358,5 +2589,189 @@ mod tests {
             }
             other => panic!("got {other:?}"),
         }
+    }
+
+    // ---- Slice 8.g.vi: CTRL chords + <C-w> sub-tree ----
+
+    #[test]
+    fn ctrl_d_resolves_to_line_down_count_ten() {
+        let (h, b) = populated_handle();
+        let r = lookup_normal(
+            &h,
+            &ev(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        );
+        match r {
+            Some(Action::Invoke(inv)) => {
+                assert_eq!(inv.command, b.line_down.0);
+                assert_eq!(inv.count, Some(lattice_grammar::command::Count(10)));
+            }
+            other => panic!("expected Invoke(line_down, count=10), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_o_resolves_to_jump_history_back() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal(
+            &h,
+            &ev(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(r, Some(Action::JumpHistoryBack)));
+    }
+
+    #[test]
+    fn ctrl_v_enters_blockwise_visual() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal(
+            &h,
+            &ev(KeyCode::Char('v'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(
+            r,
+            Some(Action::EnterVisual(lattice_grammar::VisualKind::Blockwise))
+        ));
+    }
+
+    #[test]
+    fn ctrl_w_arms_after_ctrl_w_pending() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal(
+            &h,
+            &ev(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(
+            r,
+            Some(Action::SetPending(Pending::AfterCtrlW))
+        ));
+    }
+
+    #[test]
+    fn ctrl_w_then_l_navigates_pane_right() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::ctrl('w')],
+            &ev(KeyCode::Char('l'), KeyModifiers::NONE),
+        );
+        assert!(matches!(
+            r,
+            Action::NavigatePane(crate::pane::PaneDirection::Right)
+        ));
+    }
+
+    #[test]
+    fn ctrl_w_then_ctrl_l_also_navigates_pane_right() {
+        // Vim accepts ctrl-modified second keys after `<C-w>`
+        // (sticky-prefix muscle memory).
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::ctrl('w')],
+            &ev(KeyCode::Char('l'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(
+            r,
+            Action::NavigatePane(crate::pane::PaneDirection::Right)
+        ));
+    }
+
+    #[test]
+    fn ctrl_w_then_arrow_left_navigates_pane_left() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::ctrl('w')],
+            &ev(KeyCode::Left, KeyModifiers::NONE),
+        );
+        assert!(matches!(
+            r,
+            Action::NavigatePane(crate::pane::PaneDirection::Left)
+        ));
+    }
+
+    #[test]
+    fn ctrl_w_then_backspace_navigates_pane_left() {
+        // Many terminals collapse `<C-h>` to Backspace; the
+        // bare-Backspace path covers that.
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::ctrl('w')],
+            &ev(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+        assert!(matches!(
+            r,
+            Action::NavigatePane(crate::pane::PaneDirection::Left)
+        ));
+    }
+
+    #[test]
+    fn ctrl_w_then_tab_cycles_to_next_pane() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::ctrl('w')],
+            &ev(KeyCode::Tab, KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::NextPane));
+    }
+
+    #[test]
+    fn ctrl_w_then_back_tab_cycles_to_prev_pane() {
+        // BackTab normalises to chord `(Tab, SHIFT)` via
+        // `KeyChord::from_event`; the trie has the explicit
+        // `<S-Tab>` registration under `[<C-w>]`.
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::ctrl('w')],
+            &ev(KeyCode::BackTab, KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::PrevPane));
+    }
+
+    #[test]
+    fn ctrl_w_then_v_splits_vertical() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::ctrl('w')],
+            &ev(KeyCode::Char('v'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::SplitPaneVertical));
+    }
+
+    #[test]
+    fn ctrl_w_then_capital_s_splits_horizontal() {
+        // `<C-w>S` is a legacy alias for `<C-w>s`.
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::ctrl('w')],
+            &ev(KeyCode::Char('S'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::SplitPaneHorizontal));
+    }
+
+    #[test]
+    fn ctrl_w_then_q_closes_pane() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::ctrl('w')],
+            &ev(KeyCode::Char('q'), KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::ClosePane));
+    }
+
+    #[test]
+    fn ctrl_w_then_esc_drops_pending() {
+        let (h, _) = populated_handle();
+        let r = lookup_normal_with_prefix(
+            &h,
+            &[KeyChord::ctrl('w')],
+            &ev(KeyCode::Esc, KeyModifiers::NONE),
+        );
+        assert!(matches!(r, Action::SetPending(Pending::None)));
     }
 }

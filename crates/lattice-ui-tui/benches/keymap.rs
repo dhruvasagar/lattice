@@ -29,6 +29,8 @@ use lattice_grammar::CommandInvocation;
 use lattice_grammar::SourceLocation;
 use lattice_protocol::ids::CommandId;
 use lattice_ui_tui::chord::{KeyChord, parse_chord_sequence};
+use lattice_ui_tui::keymap::BindingMode;
+use lattice_ui_tui::keymap_registry::KeymapHandle;
 use lattice_ui_tui::keymap_trie::{
     BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult,
 };
@@ -309,6 +311,119 @@ fn keymap_trie_merge_overlay(c: &mut Criterion) {
     });
 }
 
+// ---------------------------------------------------------------
+// KeymapRegistry benches (audit slice 8.c)
+//
+// End-to-end keystroke path: `ArcSwap::load` + per-mode trie
+// lookup. This is the actual cost the input dispatcher will
+// pay on every keypress -- everything below is a sub-step
+// already benched separately.
+// ---------------------------------------------------------------
+
+fn populated_handle() -> KeymapHandle {
+    let h = KeymapHandle::new();
+    let lit = |c: char| ChordPattern::Literal(KeyChord::char(c));
+    let invocation = || CommandInvocation::of(CommandId::new(0));
+    let src = || SourceLocation::synthetic("bench");
+    // Spread bindings across modes the way a real boot does:
+    // some Normal, some Visual, some Insert. ~16 entries per
+    // mode is below the eventual ~70 in real Normal but enough
+    // to exercise HashMap lookup + ArcSwap load realistically.
+    for c in ['j', 'k', 'h', 'l', 'w', 'b', 'e', 'g', 'd', 'y', 'c', 'p', 'P', 'u', 'r'] {
+        h.bind(
+            KeymapLayer::Builtin,
+            BindingMode::Normal,
+            &[lit(c)],
+            invocation(),
+            src(),
+        );
+    }
+    h.bind(
+        KeymapLayer::Builtin,
+        BindingMode::Normal,
+        &[lit('g'), lit('d')],
+        invocation(),
+        src(),
+    );
+    h.bind(
+        KeymapLayer::Builtin,
+        BindingMode::Normal,
+        &[lit('g'), lit('g')],
+        invocation(),
+        src(),
+    );
+    h.bind(
+        KeymapLayer::Builtin,
+        BindingMode::Normal,
+        &[lit('d'), lit('i'), lit('w')],
+        invocation(),
+        src(),
+    );
+    for c in ['j', 'k', 'h', 'l', 'd', 'y', 'c', 'v'] {
+        h.bind(
+            KeymapLayer::Builtin,
+            BindingMode::Visual,
+            &[lit(c)],
+            invocation(),
+            src(),
+        );
+    }
+    for c in ['<', '>'] {
+        h.bind(
+            KeymapLayer::Builtin,
+            BindingMode::Insert,
+            &[lit(c)],
+            invocation(),
+            src(),
+        );
+    }
+    h
+}
+
+/// Hot path. Single-chord lookup through the registry handle:
+/// `ArcSwap::load` + per-mode `HashMap::get` + the trie walk
+/// from slice 8.b. The number a real keystroke pays.
+fn keymap_handle_lookup_single(c: &mut Criterion) {
+    let h = populated_handle();
+    let path = vec![KeyChord::char('j')];
+    c.bench_function("keymap_handle_lookup_single", |b| {
+        b.iter(|| {
+            let r = h.lookup(BindingMode::Normal, black_box(&path));
+            black_box(r);
+        });
+    });
+}
+
+/// Hot path. Two-chord lookup through the handle (`gd`).
+fn keymap_handle_lookup_two_chord(c: &mut Criterion) {
+    let h = populated_handle();
+    let path = vec![KeyChord::char('g'), KeyChord::char('d')];
+    c.bench_function("keymap_handle_lookup_two_chord", |b| {
+        b.iter(|| {
+            let r = h.lookup(BindingMode::Normal, black_box(&path));
+            black_box(r);
+        });
+    });
+}
+
+/// Hot path. Three-chord lookup through the handle (`diw`)
+/// -- the deepest realistic lookup. End-to-end keystroke
+/// path including ArcSwap load.
+fn keymap_handle_lookup_three_chord(c: &mut Criterion) {
+    let h = populated_handle();
+    let path = vec![
+        KeyChord::char('d'),
+        KeyChord::char('i'),
+        KeyChord::char('w'),
+    ];
+    c.bench_function("keymap_handle_lookup_three_chord", |b| {
+        b.iter(|| {
+            let r = h.lookup(BindingMode::Normal, black_box(&path));
+            black_box(r);
+        });
+    });
+}
+
 criterion_group!(
     benches,
     keychord_from_event_plain_letter,
@@ -327,5 +442,8 @@ criterion_group!(
     keymap_trie_lookup_unbound,
     keymap_trie_lookup_wildcard,
     keymap_trie_merge_overlay,
+    keymap_handle_lookup_single,
+    keymap_handle_lookup_two_chord,
+    keymap_handle_lookup_three_chord,
 );
 criterion_main!(benches);

@@ -850,6 +850,7 @@ name = "lattice-ui-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "criterion",
  "crossterm",
  "fancy-regex",

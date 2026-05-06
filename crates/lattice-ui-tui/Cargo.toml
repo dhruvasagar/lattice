@@ -22,6 +22,7 @@ streaming-iterator = { workspace = true }
 fancy-regex = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+arc-swap = { workspace = true }
 unicode-width = "0.2"
 anyhow = { workspace = true }
 thiserror = { workspace = true }

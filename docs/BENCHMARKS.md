@@ -468,6 +468,9 @@ startup catalog enumeration).
 | `keymap_trie_lookup_unbound`                | **11.1ns** | ~10ns / <30ns  | Hot path. Unbound lookup (`q` not in trie). HashMap miss at root + return.                                                                                                                     |
 | `keymap_trie_lookup_wildcard`               | **25.6ns** | ~22ns / <60ns  | Hot path. Wildcard fallback (`f x` -> capture `'x'`). One exact miss + one wildcard descent + a one-element `Vec<char>` allocation for the captured char.                                       |
 | `keymap_trie_merge_overlay`                 | **444ns**  | ~400ns / <1µs  | Off the hot path. `merge_over` for a layer-overlay add (~16 base bindings + 2 overlays). Runs at minor-mode push / pop -- mode transitions are rare.                                            |
+| `keymap_handle_lookup_single`               | **33.8ns** | ~30ns / <80ns  | Hot path. End-to-end keystroke lookup through the registry handle: `ArcSwap::load` + per-mode `HashMap::get` + trie walk. Single-chord (`j`). Slice 8.c.                                       |
+| `keymap_handle_lookup_two_chord`            | **47.2ns** | ~45ns / <100ns | Hot path. End-to-end two-chord lookup (`gd`).                                                                                                                                                    |
+| `keymap_handle_lookup_three_chord`          | **60.7ns** | ~55ns / <120ns | Hot path. End-to-end three-chord lookup (`diw`). **Combined with `keychord_from_event` (~2 ns), full keystroke path is ~63 ns vs. the architecture's 1 µs commitment -- ~16× headroom.**         |
 
 ### Why these targets
 

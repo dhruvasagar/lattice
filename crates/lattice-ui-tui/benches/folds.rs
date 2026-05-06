@@ -93,7 +93,7 @@ fn bench_syntax_rust(c: &mut Criterion) {
             let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
             s.parse(src);
             bencher.iter(|| {
-                let folds = compute_syntax_folds(black_box(&s));
+                let folds = compute_syntax_folds(black_box(s.snapshot()));
                 black_box(folds);
             });
         });

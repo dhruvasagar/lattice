@@ -39,10 +39,12 @@ fn rust_corpus(n_fns: usize) -> String {
 fn build_app(corpus: &str, viewport: u32) -> App {
     let mut a = App::new(Document::from_text(corpus));
     a.set_viewport_height(viewport);
-    a.syntax = Syntax::for_language(Lang::Rust).unwrap();
-    if let Some(s) = a.syntax.as_mut() {
-        s.parse(&a.document.text());
-    }
+    // Slice 3 / SyntaxActor: build a `Syntax`, parse synchronously,
+    // wrap it in a `SyntaxHandle::seeded` so the bench sees an
+    // already-populated snapshot from the first frame.
+    let mut syn = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+    syn.parse(&a.document.text());
+    a.syntax = Some(lattice_syntax::SyntaxHandle::seeded(syn));
     a.refresh_highlights();
     a
 }

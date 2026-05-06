@@ -40,5 +40,9 @@ harness = false
 name = "render"
 harness = false
 
+[[bench]]
+name = "keymap"
+harness = false
+
 [lints]
 workspace = true

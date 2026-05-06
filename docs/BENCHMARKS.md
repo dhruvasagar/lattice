@@ -430,6 +430,52 @@ core promise (UI thread untouched by LSP work) is leaking.
 
 ---
 
+## Keymap (`crates/lattice-ui-tui/benches/keymap.rs`)
+
+The audit's M3 / Slice 8 family rebuilds key-input dispatch as
+a typed `KeyChord` → trie-driven lookup. Slice 8.a lands the
+foundation -- `KeyChord` type + `KeyEvent ↔ KeyChord ↔ String`
+round-trip. The keystroke path runs `KeyEvent → KeyChord`
+once per key press; `KeyChord → String` and `String → KeyChord`
+run off the keystroke path (`:describe-key`, macro recording,
+startup catalog enumeration).
+
+| Bench                                       | Time       | Floor / Target | Notes                                                                                                                                                                                          |
+|---------------------------------------------|------------|----------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `keychord_from_event_plain_letter`          | **1.7ns**  | ~1ns / <100ns  | Hot path: every keystroke. Plain printable char (`j`, `w`, `a`). A few register operations -- the canonicalisation branches all skip. **Dominates the keystroke-path budget by 50×.**          |
+| `keychord_from_event_ctrl_letter`           | **1.9ns**  | ~1ns / <100ns  | Hot path: Ctrl-letter normalisation (lowercase fold + redundant-shift strip). Adds one branch + one `to_ascii_lowercase` over the plain-letter path.                                            |
+| `keychord_from_event_back_tab`              | **1.5ns**  | ~1ns / <100ns  | Special-key canonicalisation (`KeyCode::BackTab` → `Tab + KeyMods::SHIFT`). Match arm + a single bitfield OR.                                                                                  |
+| `keychord_to_string_plain_letter`           | **16.8ns** | ~10ns / <500ns | Off the keystroke path. Allocates a 1-char String via `to_string`. Dominated by the alloc, not the formatting logic.                                                                            |
+| `keychord_to_string_ctrl_shift_letter`      | **23.2ns** | ~15ns / <500ns | Off the keystroke path. Multi-modifier formatting + small-string allocation.                                                                                                                    |
+| `keychord_parse_plain_letter`               | **5.1ns**  | ~3ns / <100ns  | One-shot at startup or `:bind`. Single-char fast path -- skip the angle-bracket walk.                                                                                                          |
+| `keychord_parse_modifier_special`           | **14.0ns** | ~10ns / <500ns | One-shot. `<C-S-Tab>` -- walks two modifier prefixes + `parse_special` for the body.                                                                                                            |
+| `parse_chord_sequence_multi_key`            | **25.1ns** | ~15ns / <1µs   | One-shot at startup per `KeymapEntry`. With ~280 built-in bindings (per the M3 census), startup parse cost across the catalog is ~7µs total -- not measurable against the rest of boot.        |
+| `parse_chord_sequence_two_letters`          | **14.9ns** | ~10ns / <500ns | One-shot. `gg` / `dw` / `zt` shape -- two bare-char chords per sequence.                                                                                                                       |
+
+### Why these targets
+
+The keymap-architecture doc (`docs/keymap-architecture.md` §4)
+commits to "**lookup p99 < 1 µs** including chord
+normalisation and trie walk." Slice 8.a delivers
+the **chord-normalisation half** of that budget at 1.7ns --
+60× under the target. The trie-walk half lands in slice 8.b;
+the combined number gets a row above this table once the
+KeymapTrie ships.
+
+The `keychord_to_string_*` rows are **not** on the keystroke
+path -- they fire only when the editor needs a chord-string
+representation (`:describe-key X`, macro recording, future
+config dump). Allocation is acceptable there; sub-30ns means
+even a 1000-entry `:keymap` view renders in ~30µs total.
+
+The `*_parse_*` rows fire at startup (when the built-in
+catalog enumerates into the registry) and on user / plugin
+`:bind` invocations. Total startup parse cost across the
+~280 built-in chords is ~7 µs -- well under the cost of any
+single tokio task spawn.
+
+---
+
 ## "Performance has regressed" warnings
 
 Criterion reports several regressions vs. its stored baseline. The

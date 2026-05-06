@@ -93,11 +93,11 @@ pub fn register_replace_bindings(handle: &KeymapHandle, actions: &ActionIds) {
 
     // <CR> -> insert a newline (vim breaks the line in
     // Replace mode, doesn't overwrite the existing one).
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[ChordPattern::Literal(KeyChord::special(SpecialKey::Enter))],
-        Action::Insert("\n".to_string()),
+        CommandInvocation::of(actions.insert_newline),
         replace_source(cr_line()),
     );
 
@@ -260,7 +260,7 @@ mod tests {
         match event.code {
             KeyCode::Esc => Action::Invoke(CommandInvocation::of(actions.enter_mode_normal)),
             KeyCode::Backspace => Action::Invoke(CommandInvocation::of(actions.replace_undo_last)),
-            KeyCode::Enter => Action::Insert("\n".into()),
+            KeyCode::Enter => Action::Invoke(CommandInvocation::of(actions.insert_newline)),
             KeyCode::Char(c) => Action::OverwriteChar(c),
             _ => Action::None,
         }
@@ -308,10 +308,11 @@ mod tests {
     #[test]
     fn enter_inserts_newline() {
         let h = populated_handle();
+        let a = shared_actions();
         let r = dispatch_replace(&h, &ev(KeyCode::Enter, KeyModifiers::NONE));
         match r {
-            Action::Insert(s) => assert_eq!(s, "\n"),
-            other => panic!("expected Insert(\\n), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.insert_newline),
+            other => panic!("expected Invoke(insert_newline), got {other:?}"),
         }
     }
 

@@ -11781,6 +11781,8 @@ impl App {
                 self.apply(Action::JoinLines { with_space })
             }
             AppEffect::FindRepeat { reverse } => self.apply(Action::FindRepeat { reverse }),
+            AppEffect::InsertNewline => self.apply(Action::Insert("\n".to_string())),
+            AppEffect::InsertTab => self.apply(Action::Insert("\t".to_string())),
         }
     }
 

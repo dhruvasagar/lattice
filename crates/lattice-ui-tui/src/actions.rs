@@ -102,6 +102,8 @@ pub struct ActionIds {
     pub join_lines_bare: CommandId,
     pub find_repeat_forward: CommandId,
     pub find_repeat_reverse: CommandId,
+    pub insert_newline: CommandId,
+    pub insert_tab: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -506,6 +508,18 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
             "Vim's `,`: repeat the most recent f/F/t/T find in the reverse direction.",
             AppEffect::FindRepeat { reverse: true },
         ),
+        insert_newline: register_simple(
+            registry,
+            "action:insert-newline",
+            "Insert / Replace mode's `<CR>`: insert a literal newline at the cursor.",
+            AppEffect::InsertNewline,
+        ),
+        insert_tab: register_simple(
+            registry,
+            "action:insert-tab",
+            "Insert mode's `<Tab>`: insert a literal tab at the cursor.",
+            AppEffect::InsertTab,
+        ),
     }
 }
 
@@ -614,6 +628,8 @@ mod tests {
             (ids.join_lines_bare, "action:join-lines-bare"),
             (ids.find_repeat_forward, "action:find-repeat-forward"),
             (ids.find_repeat_reverse, "action:find-repeat-reverse"),
+            (ids.insert_newline, "action:insert-newline"),
+            (ids.insert_tab, "action:insert-tab"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

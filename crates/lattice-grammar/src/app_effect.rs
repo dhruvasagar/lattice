@@ -304,6 +304,19 @@ pub enum AppEffect {
     /// the opposite direction (`reverse: true`). Promoted from
     /// `Action::FindRepeat` in slice 8.i.2.d.
     FindRepeat { reverse: bool },
+    /// Insert / Replace mode's `<CR>`. Inserts a literal newline
+    /// at the cursor. Promoted from
+    /// `Action::Insert("\n".into())` in slice 8.i.2.e. Distinct
+    /// flat variant rather than a `String`-payload `Insert(_)`
+    /// because the keymap-bound forms always pin a fixed
+    /// literal; the wildcard "type any printable char" path
+    /// stays on `Action::Insert(c.to_string())` since it isn't
+    /// keymap-bound.
+    InsertNewline,
+    /// Insert mode's `<Tab>`. Inserts a literal tab at the
+    /// cursor. Promoted from `Action::Insert("\t".into())` in
+    /// slice 8.i.2.e.
+    InsertTab,
 }
 
 #[cfg(test)]

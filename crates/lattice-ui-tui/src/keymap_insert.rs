@@ -142,18 +142,18 @@ pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
         CommandInvocation::of(actions.delete_char_backward),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_special(SpecialKey::Enter)],
-        Action::Insert("\n".into()),
+        CommandInvocation::of(actions.insert_newline),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_special(SpecialKey::Tab)],
-        Action::Insert("\t".into()),
+        CommandInvocation::of(actions.insert_tab),
         source(),
     );
     handle.bind(
@@ -572,22 +572,24 @@ mod tests {
     #[test]
     fn enter_in_base_insert_inserts_newline() {
         let h = populated_handle();
+        let a = shared_actions();
         match dispatch_insert(
             &h,
             &ev(KeyCode::Enter, KeyModifiers::NONE),
             Pending::None,
         ) {
-            Action::Insert(s) => assert_eq!(s, "\n"),
-            other => panic!("expected Insert(\\n), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.insert_newline),
+            other => panic!("expected Invoke(insert_newline), got {other:?}"),
         }
     }
 
     #[test]
     fn tab_in_base_insert_inserts_tab() {
         let h = populated_handle();
+        let a = shared_actions();
         match dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), Pending::None) {
-            Action::Insert(s) => assert_eq!(s, "\t"),
-            other => panic!("expected Insert(\\t), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.insert_tab),
+            other => panic!("expected Invoke(insert_tab), got {other:?}"),
         }
     }
 

@@ -1037,12 +1037,13 @@ mod tests {
     #[test]
     fn enter_in_insert_inserts_newline() {
         let (_, b) = fixture();
+        let a = shared_actions();
         match translate(
             ctx(ModalState::Insert, Pending::None, &b),
             key(KeyCode::Enter),
         ) {
-            Action::Insert(s) => assert_eq!(s, "\n"),
-            _ => panic!("expected Insert(\"\\n\")"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.insert_newline),
+            other => panic!("expected Invoke(insert_newline), got {other:?}"),
         }
     }
 
@@ -2887,12 +2888,13 @@ mod tests {
     #[test]
     fn enter_in_replace_inserts_newline() {
         let (_, b) = fixture();
+        let a = shared_actions();
         match translate(
             ctx(ModalState::Replace, Pending::None, &b),
             key(KeyCode::Enter),
         ) {
-            Action::Insert(s) => assert_eq!(s, "\n"),
-            other => panic!("expected Insert, got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.insert_newline),
+            other => panic!("expected Invoke(insert_newline), got {other:?}"),
         }
     }
 

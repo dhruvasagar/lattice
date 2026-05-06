@@ -762,6 +762,10 @@ pub enum Action {
     /// `:describe-key CHORD`, `file:PATH:LINE` opens the file at
     /// the line. Cursor not on a link is a no-op.
     FollowLink,
+    /// `-` in any normal-mode context — context-sensitive:
+    /// • Document / FileTree → open oil for parent dir of current file / hovered entry
+    /// • Oil buffer → `oil.navigate_up()`
+    OilNavigateUp,
 
     // ---- Search (`/`, `?`, `n`, `N`) ----
     /// Pressed `/` (Forward) or `?` (Backward) -- enter Search modal with
@@ -3880,13 +3884,15 @@ impl App {
             Action::HelpDismiss => match self.active_buffer {
                 BufferKind::Help => self.dismiss_help(),
                 BufferKind::FileTree => self.dismiss_file_tree(),
-                BufferKind::Document => {}
+                BufferKind::Document | BufferKind::Oil => {}
             },
             Action::FollowLink => match self.active_buffer {
                 BufferKind::Help => self.do_help_follow_link(),
+                BufferKind::Oil => self.do_oil_follow(),
                 BufferKind::FileTree => self.do_file_tree_follow(),
                 BufferKind::Document => {}
             },
+            Action::OilNavigateUp => self.do_oil_navigate_up(),
 
             Action::SplitPaneHorizontal => self.do_split_pane(SplitOrientation::Horizontal),
             Action::SplitPaneVertical => self.do_split_pane(SplitOrientation::Vertical),
@@ -4984,7 +4990,7 @@ impl App {
         if let Ok(meta) = std::fs::metadata(&target)
             && meta.is_dir()
         {
-            self.do_open_file_tree(Some(target));
+            self.do_open_oil(Some(target));
             return;
         }
         // If `target` is already open, switch to it. The dirty
@@ -5406,6 +5412,13 @@ impl App {
                     lines.push(format!(
                         "  {active_marker}{listed_marker} #{:<3} help     {}",
                         id.0, h.title,
+                    ));
+                }
+                BufferData::Oil(o) => {
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} oil      {}",
+                        id.0,
+                        o.dir.display()
                     ));
                 }
             }
@@ -9270,6 +9283,7 @@ impl App {
             BufferKind::Document => self.activate_document(id),
             BufferKind::FileTree => self.activate_file_tree(id),
             BufferKind::Help => self.activate_help_in_pane(id),
+            BufferKind::Oil => self.activate_oil(id),
         }
     }
 
@@ -9305,6 +9319,24 @@ impl App {
         pane.buffer_id = id;
         pane.cursor = stash_cursor;
         pane.scroll = stash_scroll;
+    }
+
+    /// Switch the active pane to the oil buffer with `id`.
+    pub fn activate_oil(&mut self, id: BufferId) {
+        if self.buffers.oil(id).is_none() {
+            return;
+        }
+        let oil_cursor = self.buffers.oil(id).map(|o| o.cursor).unwrap_or(Position::ZERO);
+        let oil_scroll = self.buffers.oil(id).map(|o| o.scroll).unwrap_or(0);
+        self.active_buffer = BufferKind::Oil;
+        let pane = self.pane_tree.active_mut();
+        pane.buffer = BufferKind::Oil;
+        pane.buffer_id = id;
+        pane.cursor = oil_cursor;
+        pane.scroll = oil_scroll as u32;
+        self.cursor = oil_cursor;
+        self.scroll = oil_scroll as u32;
+        self.pending = Pending::None;
     }
 
     /// `:set [option | option=value | nooption | option?]`.
@@ -11096,6 +11128,17 @@ impl App {
     }
 
     fn do_write(&mut self, path: Option<std::path::PathBuf>) {
+        if matches!(self.active_buffer, BufferKind::Oil) {
+            let oil_id = self.active_pane_buffer_id();
+            if let Some(oil) = self.buffers.oil_mut(oil_id) {
+                let dir_display = oil.dir.display().to_string();
+                match oil.apply() {
+                    Ok(()) => self.set_message(EchoLevel::Info, format!("oil: applied changes in {dir_display}")),
+                    Err(e) => self.set_message(EchoLevel::Error, format!("oil apply error: {e}")),
+                }
+            }
+            return;
+        }
         let result: Result<String, RuntimeError> = match path {
             Some(p) => self
                 .save_as_blocking(p.clone())
@@ -11146,11 +11189,78 @@ impl App {
             self.run_help_invocation(inv);
             return;
         }
+        if matches!(self.active_buffer, BufferKind::Oil) {
+            self.run_oil_invocation(inv);
+            return;
+        }
         if matches!(self.active_buffer, BufferKind::FileTree) {
             self.run_file_tree_invocation(inv);
             return;
         }
         self.run_document_invocation(inv);
+    }
+
+    fn run_oil_invocation(&mut self, inv: CommandInvocation) {
+        self.run_document_invocation(inv);
+    }
+
+    fn do_oil_navigate_up(&mut self) {
+        match self.active_buffer {
+            BufferKind::Oil => {
+                let id = self.active_pane_buffer_id();
+                if let Some(oil) = self.buffers.oil_mut(id) {
+                    if let Err(e) = oil.navigate_up() {
+                        self.set_message(EchoLevel::Error, format!("oil navigate up: {e}"));
+                        return;
+                    }
+                    self.cursor = Position::ZERO;
+                    self.scroll = 0;
+                }
+            }
+            BufferKind::FileTree => {
+                let id = self.active_pane_buffer_id();
+                let dir = self
+                    .buffers
+                    .file_tree(id)
+                    .and_then(|t| t.entry_at_cursor())
+                    .map(|e| {
+                        if matches!(e.kind, crate::file_tree::FileTreeEntryKind::Directory { .. }) {
+                            e.path.clone()
+                        } else {
+                            e.path.parent().unwrap_or(&e.path).to_path_buf()
+                        }
+                    });
+                self.do_open_oil(dir);
+            }
+            _ => {
+                let dir = self
+                    .document
+                    .path()
+                    .and_then(|p| p.parent().map(Into::into));
+                self.do_open_oil(dir);
+            }
+        }
+    }
+
+    fn do_oil_follow(&mut self) {
+        let active_id = self.active_pane_buffer_id();
+        let Some(oil) = self.buffers.oil(active_id) else { return; };
+        let Some(entry) = oil.entry_at_cursor().cloned() else { return; };
+        let dir = oil.dir.clone();
+        if entry.is_dir {
+            if let Some(oil) = self.buffers.oil_mut(active_id) {
+                let sub = dir.join(&entry.name);
+                if let Err(e) = oil.navigate_into(sub) {
+                    self.set_message(EchoLevel::Error, format!("oil navigate: {e}"));
+                } else {
+                    self.cursor = Position::ZERO;
+                    self.scroll = 0;
+                }
+            }
+        } else {
+            let path = dir.join(&entry.name);
+            self.do_edit(Some(path), false);
+        }
     }
 
     /// Resolve a motion against the active file tree's content.
@@ -11453,6 +11563,7 @@ impl App {
             Effect::BufferDelete { force } => self.do_buffer_delete(force),
             Effect::OpenFileTree { root } => self.do_open_file_tree(root),
             Effect::CloseFileTree => self.dismiss_file_tree(),
+            Effect::OpenOil { dir } => self.do_open_oil(dir),
             Effect::DescribeOption { name } => self.do_describe_option(&name),
             Effect::ListOptions => self.do_list_options(),
             Effect::OpenHover { markdown } => self.do_open_hover(&markdown),
@@ -12255,6 +12366,12 @@ impl App {
                     t.scroll = scroll as usize;
                 }
             }
+            BufferKind::Oil => {
+                if let Some(o) = self.buffers.oil_mut(pane_id) {
+                    o.cursor = cursor;
+                    o.scroll = scroll as usize;
+                }
+            }
             BufferKind::Document => {}
         }
         let active = self.pane_tree.active_mut();
@@ -12526,6 +12643,54 @@ impl App {
     /// spawning a duplicate -- matching `:e FILE`'s "already open"
     /// semantics. The active pane flips to the new (or existing)
     /// tree buffer.
+    fn do_open_oil(&mut self, dir: Option<std::path::PathBuf>) {
+        let dir = match dir {
+            Some(p) => p,
+            None => match self.document.path().and_then(|p| p.parent().map(Into::into)) {
+                Some(parent) => parent,
+                None => match std::env::current_dir() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.set_message(EchoLevel::Error, format!("cwd error: {e}"));
+                        return;
+                    }
+                },
+            },
+        };
+        if let Some(existing_id) = self.buffers.oil_with_dir(&dir) {
+            self.activate_oil(existing_id);
+            self.set_message(EchoLevel::Info, format!("oil: {} (already open)", dir.display()));
+            return;
+        }
+        let oil = match crate::oil::OilBuffer::open(&dir) {
+            Ok(o) => o,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("oil open error: {}: {e}", dir.display()));
+                return;
+            }
+        };
+        if matches!(self.active_buffer, BufferKind::Document) {
+            let cur = self.cursor;
+            self.push_position_history(cur, PositionSource::AutoJump);
+        }
+        let new_id = oil.id;
+        self.buffers.insert(BufferEntry {
+            id: new_id,
+            flags: BufferFlags::default(),
+            data: BufferData::Oil(oil),
+        });
+        self.snapshot_active_pane();
+        self.snapshot_active_document();
+        self.active_buffer = BufferKind::Oil;
+        let pane = self.pane_tree.active_mut();
+        pane.buffer = BufferKind::Oil;
+        pane.buffer_id = new_id;
+        pane.cursor = Position::ZERO;
+        pane.scroll = 0;
+        self.pending = Pending::None;
+        self.set_message(EchoLevel::Info, format!("oil: {}", dir.display()));
+    }
+
     fn do_open_file_tree(&mut self, root: Option<std::path::PathBuf>) {
         let root = match root {
             Some(p) => p,
@@ -12553,7 +12718,7 @@ impl App {
             );
             return;
         }
-        let tree = match FileTreeBuffer::open(&root) {
+        let tree = match FileTreeBuffer::open(&root, self.theme.nerd_fonts) {
             Ok(t) => t,
             Err(e) => {
                 self.set_message(
@@ -13013,7 +13178,9 @@ impl App {
                 .as_ref()
                 .map(|h| h.id)
                 .unwrap_or(self.document_buffer_id),
-            BufferKind::Document | BufferKind::FileTree => self.pane_tree.active().buffer_id,
+            BufferKind::Document | BufferKind::FileTree | BufferKind::Oil => {
+                self.pane_tree.active().buffer_id
+            }
         }
     }
 
@@ -13118,6 +13285,7 @@ impl App {
                     self.buffers.help(e.buffer_id).is_some()
                         || popup_help_id == Some(e.buffer_id)
                 }
+                BufferKind::Oil => self.buffers.contains(e.buffer_id),
             }
         };
         let combined = |e: &PositionEntry| pred(e) && reachable(e);
@@ -13174,6 +13342,15 @@ impl App {
                     self.active_buffer = BufferKind::FileTree;
                     self.cursor = entry.position;
                     self.pane_tree.active_mut().buffer = BufferKind::FileTree;
+                    self.pane_tree.active_mut().buffer_id = entry.buffer_id;
+                    self.clamp_cursor_to_active_buffer();
+                }
+            }
+            BufferKind::Oil => {
+                if self.buffers.oil(entry.buffer_id).is_some() {
+                    self.active_buffer = BufferKind::Oil;
+                    self.cursor = entry.position;
+                    self.pane_tree.active_mut().buffer = BufferKind::Oil;
                     self.pane_tree.active_mut().buffer_id = entry.buffer_id;
                     self.clamp_cursor_to_active_buffer();
                 }
@@ -13954,6 +14131,11 @@ impl App {
                 .file_tree(self.active_pane_buffer_id())
                 .map(|t| t.cursor)
                 .unwrap_or(self.cursor),
+            BufferKind::Oil => self
+                .buffers
+                .oil(self.active_pane_buffer_id())
+                .map(|o| o.cursor)
+                .unwrap_or(self.cursor),
         }
     }
 
@@ -14007,6 +14189,11 @@ impl App {
                 .map(|t| t.content.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
             BufferKind::Document => self.document.snapshot().buffer.clone(),
+            BufferKind::Oil => self
+                .buffers
+                .oil(self.active_pane_buffer_id())
+                .map(|o| o.content.clone())
+                .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
         }
     }
 
@@ -14356,6 +14543,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::BufferDelete { .. }
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
+        | Effect::OpenOil { .. }
         | Effect::DescribeOption { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
@@ -14417,6 +14605,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::BufferDelete { .. }
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
+        | Effect::OpenOil { .. }
         | Effect::DescribeOption { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
@@ -14494,6 +14683,10 @@ pub(crate) fn raw_buffer_candidates(
             BufferData::Help(h) => (
                 format!("#{:<3} {}", id.0, h.title),
                 format!("help{active_marker}"),
+            ),
+            BufferData::Oil(o) => (
+                format!("#{:<3} {}", id.0, o.dir.display()),
+                format!("oil{active_marker}"),
             ),
         };
         // `text` is the user-facing buffer id; matcher matches
@@ -20603,12 +20796,12 @@ mod tests {
         // Wire up a Rust syntax instance so there's something to lose.
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         // Open the tree, then dismiss.
-        a.command_line = format!("Tree {}", dir.display());
+        a.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(a.active_buffer, crate::buffers::BufferKind::FileTree));
         // `:TreeClose` (the path `q` takes in the tree).
-        a.command_line = "TreeClose".into();
+        a.command_line = "FiletreeClose".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(a.active_buffer, crate::buffers::BufferKind::Document));
@@ -20631,7 +20824,7 @@ mod tests {
         a.terminal_width = Some(80);
         a.apply(Action::SplitPaneVertical);
         a.apply(Action::NavigatePane(PaneDirection::Right));
-        a.command_line = format!("Tree {}", dir.display());
+        a.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
@@ -20914,7 +21107,7 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         std::fs::write(dir.join("a.txt"), "alpha").ok();
         let mut a = app_with("xx", 10);
-        a.command_line = format!("Tree {}", dir.display());
+        a.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.active_buffer, BufferKind::FileTree);
@@ -20927,7 +21120,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lattice-tree-close-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         let mut a = app_with("xx", 10);
-        a.command_line = format!("Tree {}", dir.display());
+        a.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         a.apply(Action::HelpDismiss);
@@ -20943,7 +21136,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "x").ok();
         std::fs::write(dir.join("b.txt"), "y").ok();
         let mut a = app_with("xx", 10);
-        a.command_line = format!("Tree {}", dir.display());
+        a.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let line_down = a.builtins.line_down;
@@ -23457,7 +23650,7 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         std::fs::write(dir.join("alpha.txt"), "hello").ok();
         let mut a = app_with("xx", 10);
-        a.command_line = format!("Tree {}", dir.display());
+        a.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Move cursor to the alpha.txt entry (row 1).

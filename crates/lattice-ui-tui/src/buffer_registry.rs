@@ -27,6 +27,7 @@ use lattice_syntax::SyntaxHandle;
 
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
 use crate::file_tree::FileTreeBuffer;
+use crate::oil::OilBuffer;
 use crate::help::HelpBuffer;
 
 /// Per-document registry payload. Each entry carries the actor
@@ -75,6 +76,7 @@ impl BufferEntry {
             BufferData::Document(_) => BufferKind::Document,
             BufferData::FileTree(_) => BufferKind::FileTree,
             BufferData::Help(_) => BufferKind::Help,
+            BufferData::Oil(_) => BufferKind::Oil,
         }
     }
 
@@ -119,6 +121,20 @@ impl BufferEntry {
             _ => None,
         }
     }
+
+    pub fn oil(&self) -> Option<&OilBuffer> {
+        match &self.data {
+            BufferData::Oil(o) => Some(o),
+            _ => None,
+        }
+    }
+
+    pub fn oil_mut(&mut self) -> Option<&mut OilBuffer> {
+        match &mut self.data {
+            BufferData::Oil(o) => Some(o),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -134,6 +150,8 @@ pub enum BufferData {
     /// a real pane, can be split, switched, listed via `:ls`,
     /// and updated live when their backing source emits events.
     Help(HelpBuffer),
+    /// Flat editable directory listing (oil.nvim-style).
+    Oil(OilBuffer),
 }
 
 /// The App's buffer registry. Wraps a `HashMap<BufferId,
@@ -311,6 +329,36 @@ impl BufferRegistry {
     pub fn help_mut(&mut self, id: BufferId) -> Option<&mut HelpBuffer> {
         self.by_id.get_mut(&id).and_then(BufferEntry::help_mut)
     }
+
+    pub fn oil_ids_sorted(&self) -> Vec<BufferId> {
+        let mut ids: Vec<BufferId> = self
+            .by_id
+            .iter()
+            .filter(|(_, e)| matches!(e.data, BufferData::Oil(_)))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    pub fn oil_with_dir(&self, dir: &std::path::Path) -> Option<BufferId> {
+        for entry in self.by_id.values() {
+            if let BufferData::Oil(o) = &entry.data
+                && o.dir == dir
+            {
+                return Some(entry.id);
+            }
+        }
+        None
+    }
+
+    pub fn oil(&self, id: BufferId) -> Option<&OilBuffer> {
+        self.by_id.get(&id).and_then(BufferEntry::oil)
+    }
+
+    pub fn oil_mut(&mut self, id: BufferId) -> Option<&mut OilBuffer> {
+        self.by_id.get_mut(&id).and_then(BufferEntry::oil_mut)
+    }
 }
 
 #[cfg(test)]
@@ -341,6 +389,7 @@ mod tests {
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
+                nerd_fonts: false,
             }),
         });
         r.insert(BufferEntry {
@@ -353,6 +402,7 @@ mod tests {
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
+                nerd_fonts: false,
             }),
         });
         r.insert(BufferEntry {
@@ -365,6 +415,7 @@ mod tests {
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
+                nerd_fonts: false,
             }),
         });
         let sorted = r.sorted_ids();
@@ -389,6 +440,7 @@ mod tests {
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
+                nerd_fonts: false,
             }),
         });
         r.insert(BufferEntry {
@@ -404,6 +456,7 @@ mod tests {
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
+                nerd_fonts: false,
             }),
         });
         let listed = r.listed_ids_sorted();
@@ -427,6 +480,7 @@ mod tests {
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
+                nerd_fonts: false,
             }),
         });
         assert_eq!(r.file_tree_with_root(&path), Some(id));

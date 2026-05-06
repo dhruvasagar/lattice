@@ -32,6 +32,8 @@ pub mod pane;
 pub mod picker;
 pub mod render;
 pub mod runtime;
+pub mod icons;
+pub mod oil;
 pub mod theme;
 pub mod tui_options;
 

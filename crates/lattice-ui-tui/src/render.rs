@@ -1233,6 +1233,9 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
             crate::buffers::BufferKind::FileTree => {
                 draw_file_tree_pane(frame, content_rect, app, &pane, is_active);
             }
+            crate::buffers::BufferKind::Oil => {
+                draw_oil_pane(frame, content_rect, app, &pane, is_active);
+            }
         }
         if let Some(sr) = status_rect {
             draw_pane_status_line(frame, sr, app, &pane, is_active);
@@ -1311,6 +1314,14 @@ fn draw_pane_status_line(
             .file_tree(pane.buffer_id)
             .map(|t| format!("[tree] {}", t.root.display()))
             .unwrap_or_else(|| "[tree]".to_string()),
+        crate::buffers::BufferKind::Oil => app
+            .buffers
+            .oil(pane.buffer_id)
+            .map(|o| {
+                let dirty = if o.is_dirty() { " [+]" } else { "" };
+                format!("[oil] {}{dirty}", o.dir.display())
+            })
+            .unwrap_or_else(|| "[oil]".to_string()),
     };
     let pos = format!("{}:{}", pane.cursor.line + 1, pane.cursor.byte);
     let style = if is_active {
@@ -1491,21 +1502,29 @@ fn draw_file_tree_pane(
         (pane.cursor.line as usize, pane.scroll as usize)
     };
     let viewport = area.height as usize;
-    let lines: Vec<Line> = tree
-        .content
-        .as_string()
+    let nerd_fonts = app.theme.nerd_fonts;
+    let theme = &app.theme;
+    let raw_text = tree.content.as_string();
+    let lines: Vec<Line> = raw_text
         .split('\n')
+        .enumerate()
+        .zip(tree.entries.iter())
         .skip(scroll)
         .take(viewport)
-        .enumerate()
-        .map(|(i, l)| {
+        .map(|((i, raw_line), entry)| {
             let line_idx = scroll + i;
-            let style = if is_active && line_idx == cursor_line {
-                TuiStyle::default().add_modifier(Modifier::REVERSED)
+            let is_cursor = is_active && line_idx == cursor_line;
+            let is_dir =
+                matches!(entry.kind, crate::file_tree::FileTreeEntryKind::Directory { .. });
+            let (_glyph, entry_style) =
+                crate::icons::icon_for_entry(&entry.path, is_dir, nerd_fonts, theme);
+            let cursor_mod = if is_cursor {
+                Modifier::REVERSED
             } else {
-                TuiStyle::default()
+                Modifier::empty()
             };
-            Line::from(Span::styled(l.to_string(), style))
+            let span_style = entry_style.add_modifier(cursor_mod);
+            Line::from(Span::styled(raw_line.to_string(), span_style))
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
@@ -1513,6 +1532,55 @@ fn draw_file_tree_pane(
         let row_off = (app.cursor.line as usize).saturating_sub(app.scroll as usize);
         let row_off = row_off.min(area.height.saturating_sub(1) as usize);
         let col_off = (app.cursor.byte as usize).min(area.width.saturating_sub(1) as usize);
+        frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
+    }
+}
+
+fn draw_oil_pane(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    pane: &crate::pane::PaneState,
+    is_active: bool,
+) {
+    let Some(oil) = app.buffers.oil(pane.buffer_id) else {
+        return;
+    };
+    let (cursor_line, scroll) = if is_active {
+        (app.cursor.line as usize, app.scroll as usize)
+    } else {
+        (pane.cursor.line as usize, pane.scroll as usize)
+    };
+    let viewport = area.height as usize;
+    let nerd_fonts = app.theme.nerd_fonts;
+    let theme = &app.theme;
+    let raw_text = oil.content.as_string();
+    let snapshot = oil.snapshot_entries();
+    let lines: Vec<Line> = raw_text
+        .split('\n')
+        .enumerate()
+        .skip(scroll)
+        .take(viewport)
+        .map(|(i, name_str)| {
+            let line_idx = scroll + i;
+            let is_cursor = is_active && line_idx == cursor_line;
+            let entry = snapshot.get(line_idx);
+            let is_dir = entry.map(|e| e.is_dir).unwrap_or(false);
+            let entry_name = entry.map(|e| e.name.as_str()).unwrap_or("");
+            let path = oil.dir.join(entry_name);
+            let (icon, entry_style) = crate::icons::icon_for_entry(&path, is_dir, nerd_fonts, theme);
+            let cursor_mod = if is_cursor { Modifier::REVERSED } else { Modifier::empty() };
+            let icon_span = Span::styled(icon.to_string(), entry_style.add_modifier(cursor_mod));
+            let name_span = Span::styled(name_str.to_string(), entry_style.add_modifier(cursor_mod));
+            Line::from(vec![icon_span, name_span])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+    if is_active && area.height > 0 && area.width > 0 {
+        let row_off = (app.cursor.line as usize).saturating_sub(app.scroll as usize);
+        let row_off = row_off.min(area.height.saturating_sub(1) as usize);
+        let icon_width = if nerd_fonts { 2 } else { 0 };
+        let col_off = (app.cursor.byte as usize + icon_width).min(area.width.saturating_sub(1) as usize);
         frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
     }
 }

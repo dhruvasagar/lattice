@@ -56,6 +56,7 @@ pub struct ExBuiltins {
     pub buffer_delete: ExCommandId,
     pub file_tree: ExCommandId,
     pub file_tree_close: ExCommandId,
+    pub oil: ExCommandId,
     pub describe_option: ExCommandId,
     pub list_options: ExCommandId,
     pub hover: ExCommandId,
@@ -449,8 +450,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         },
     );
     let file_tree = registry.register_ex_command(
-        "ex:tree",
-        "Open a file-tree buffer (`:Tree [path]`). Absent = current dir.",
+        "ex:filetree",
+        "Open a file-tree buffer (`:Filetree [path]`). Absent = current dir.",
         ExCommandSpec {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
@@ -475,8 +476,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         },
     );
     let file_tree_close = registry.register_ex_command(
-        "ex:tree-close",
-        "Dismiss the file-tree buffer (`:TreeClose`).",
+        "ex:filetree-close",
+        "Dismiss the file-tree buffer (`:FiletreeClose`).",
         ExCommandSpec {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
@@ -484,6 +485,32 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::CloseFileTree)),
             args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let oil = registry.register_ex_command(
+        "ex:oil",
+        "Open an oil buffer (`:Oil [path]`). Absent = current dir.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| {
+                let dir = match &ctx.args {
+                    Args::String(p) if !p.is_empty() => Some(std::path::PathBuf::from(p.as_str())),
+                    _ => None,
+                };
+                Ok(Effect::OpenOil { dir })
+            }),
+            args_schema: vec![ArgSpec {
+                name: "dir",
+                kind: ArgKind::String,
+                doc: "Directory to open. Absent = current document's parent.",
+                prompt: "dir:",
+                default: ArgDefault::None,
+                completion: Some("gen:files"),
+            }],
             surface_form: SurfaceForm::Keyword,
         },
     );
@@ -1010,6 +1037,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         buffer_delete,
         file_tree,
         file_tree_close,
+        oil,
         describe_option,
         list_options,
         hover,

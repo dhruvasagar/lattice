@@ -47,6 +47,15 @@ pub struct Theme {
     /// that disable per-pane status lines.
     pub pane_separator_horizontal: char,
 
+    /// Style for directory entries in file-tree and oil buffers.
+    pub file_tree_dir_style: Style,
+    /// Style for hidden files (names starting with `.`).
+    pub file_tree_hidden_style: Style,
+    /// Base style for regular file entries.
+    pub file_tree_file_style: Style,
+    /// Whether to use nerd-font glyphs. When false, icons module returns empty glyphs.
+    pub nerd_fonts: bool,
+
     // ---- Diagnostics (Phase 4.1.d.iii) ---------------------
 
     /// Glyph + color for an Error-severity diagnostic. Rendered
@@ -92,6 +101,10 @@ impl Default for Theme {
             diagnostic_hint_style: Style::new()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
+            file_tree_dir_style: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            file_tree_hidden_style: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+            file_tree_file_style: Style::new(),
+            nerd_fonts: true,
         }
     }
 }

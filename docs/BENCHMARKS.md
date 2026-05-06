@@ -12,6 +12,16 @@ Each row points back at the §8.2 commitment it backs, so a
 regression here is identifiable as a violation of a specific
 target rather than just a slower number.
 
+> **On the `Floor / Target` column.** "Floor" is the typical
+> achieved number on this hardware (median of recent runs).
+> "Target" is **what we want to keep delivering**, not the
+> §8.2 spec ceiling. Where current achievement is well under
+> the §8.2 ceiling we set the target tight (~2-3× the floor)
+> so any meaningful regression flags. Strive for best:
+> the spec value is a guide, the achieved number is the bar.
+> When a regression is intentional the row's target moves with
+> the new floor in the same commit -- never silently relaxed.
+
 > Run `cargo bench --workspace` to reproduce. Times shown are
 > criterion's median estimate. Each row's outer `[low high]`
 > bracket is the 95% confidence interval; we report the median.
@@ -392,10 +402,10 @@ itself never appears next to editor work in a flame graph.
 | `lsp::logging::log_info`              | **91ns**   | ~80ns / <500ns | Per-record cost: lock + push + format + tracing fan-out. Background-class.                         |
 | `lsp::logging::log_trace_off`         | **9ns**    | ~5ns / <50ns   | Trace toggle off short-circuit -- a HashSet lookup + return. Hot path when trace stays disabled.  |
 | `lsp::logging::log_trace_on`          | **99ns**   | ~80ns / <500ns | Trace toggle on -- includes the ring push. Negligible at editor pace; perceptible at indexer bursts. |
-| `lsp_edit_publish_three_subs`         | **1.9µs**  | ~1.5µs / <50µs | UI-thread cost per applied edit: `EventBus::publish` of one `Event::DocumentChanged` with one `AppliedEdit`, three `DocumentChanged` subscribers attached. The *only* LSP work the keystroke thread does after the per-actor fan-in refactor (docs/lsp-architecture.md §11). |
-| `lsp_edit_propagation_publish_to_recv`| **227ns**  | ~200ns / <5µs  | Bus → mpsc receive hop: time from `EventBus::publish` to the per-actor fan-in's `mpsc::recv().await` returning. Excludes the actor's own `record_edit`. |
-| `lsp_didchange_flush_16_edits`        | **8.4µs**  | ~6µs / <50µs   | Actor-side debounce-arm cost: 16 `DocSync::record_edit` calls + `take_flush_payload` + serialise to `textDocument/didChange` JSON. Runs off the UI thread (post-debounce). |
-| `lsp_diagnostics_line_severity_wait_free` | **25ns** | ~20ns / <500ns | Render-thread `DiagnosticsLayer::line_severity(uri, line)` after the audit's C3 fix. Pre-fix path locked an inner `Mutex` + cloned the full diagnostics list per call (microseconds, ~3000 calls/sec on the render thread = milliseconds wasted). New path: one `ArcSwap::load` + a borrowed-slice filter — wait-free, allocation-free. |
+| `lsp_edit_publish_three_subs`         | **1.9µs**  | ~1.5µs / <5µs  | UI-thread cost per applied edit: `EventBus::publish` of one `Event::DocumentChanged` with one `AppliedEdit`, three `DocumentChanged` subscribers attached. The *only* LSP work the keystroke thread does after the per-actor fan-in refactor (docs/lsp-architecture.md §11). |
+| `lsp_edit_propagation_publish_to_recv`| **227ns**  | ~200ns / <600ns| Bus → mpsc receive hop: time from `EventBus::publish` to the per-actor fan-in's `mpsc::recv().await` returning. Excludes the actor's own `record_edit`. |
+| `lsp_didchange_flush_16_edits`        | **8.4µs**  | ~6µs / <25µs   | Actor-side debounce-arm cost: 16 `DocSync::record_edit` calls + `take_flush_payload` + serialise to `textDocument/didChange` JSON. Runs off the UI thread (post-debounce). |
+| `lsp_diagnostics_line_severity_wait_free` | **25ns** | ~20ns / <75ns  | Render-thread `DiagnosticsLayer::line_severity(uri, line)` after the audit's C3 fix. Pre-fix path locked an inner `Mutex` + cloned the full diagnostics list per call (microseconds, ~3000 calls/sec on the render thread = milliseconds wasted). New path: one `ArcSwap::load` + a borrowed-slice filter — wait-free, allocation-free. |
 
 The full LSP feature matrix (per-method status) lives in
 [`lsp-features.md`](lsp-features.md); the architecture in
@@ -442,15 +452,15 @@ startup catalog enumeration).
 
 | Bench                                       | Time       | Floor / Target | Notes                                                                                                                                                                                          |
 |---------------------------------------------|------------|----------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `keychord_from_event_plain_letter`          | **1.7ns**  | ~1ns / <100ns  | Hot path: every keystroke. Plain printable char (`j`, `w`, `a`). A few register operations -- the canonicalisation branches all skip. **Dominates the keystroke-path budget by 50×.**          |
-| `keychord_from_event_ctrl_letter`           | **1.9ns**  | ~1ns / <100ns  | Hot path: Ctrl-letter normalisation (lowercase fold + redundant-shift strip). Adds one branch + one `to_ascii_lowercase` over the plain-letter path.                                            |
-| `keychord_from_event_back_tab`              | **1.5ns**  | ~1ns / <100ns  | Special-key canonicalisation (`KeyCode::BackTab` → `Tab + KeyMods::SHIFT`). Match arm + a single bitfield OR.                                                                                  |
-| `keychord_to_string_plain_letter`           | **16.8ns** | ~10ns / <500ns | Off the keystroke path. Allocates a 1-char String via `to_string`. Dominated by the alloc, not the formatting logic.                                                                            |
-| `keychord_to_string_ctrl_shift_letter`      | **23.2ns** | ~15ns / <500ns | Off the keystroke path. Multi-modifier formatting + small-string allocation.                                                                                                                    |
-| `keychord_parse_plain_letter`               | **5.1ns**  | ~3ns / <100ns  | One-shot at startup or `:bind`. Single-char fast path -- skip the angle-bracket walk.                                                                                                          |
-| `keychord_parse_modifier_special`           | **14.0ns** | ~10ns / <500ns | One-shot. `<C-S-Tab>` -- walks two modifier prefixes + `parse_special` for the body.                                                                                                            |
-| `parse_chord_sequence_multi_key`            | **25.1ns** | ~15ns / <1µs   | One-shot at startup per `KeymapEntry`. With ~280 built-in bindings (per the M3 census), startup parse cost across the catalog is ~7µs total -- not measurable against the rest of boot.        |
-| `parse_chord_sequence_two_letters`          | **14.9ns** | ~10ns / <500ns | One-shot. `gg` / `dw` / `zt` shape -- two bare-char chords per sequence.                                                                                                                       |
+| `keychord_from_event_plain_letter`          | **1.7ns**  | ~1.5ns / <5ns  | Hot path: every keystroke. Plain printable char (`j`, `w`, `a`). A few register operations -- the canonicalisation branches all skip. **Dominates the keystroke-path budget by 50×.**          |
+| `keychord_from_event_ctrl_letter`           | **1.9ns**  | ~1.5ns / <5ns  | Hot path: Ctrl-letter normalisation (lowercase fold + redundant-shift strip). Adds one branch + one `to_ascii_lowercase` over the plain-letter path.                                            |
+| `keychord_from_event_back_tab`              | **1.5ns**  | ~1.5ns / <5ns  | Special-key canonicalisation (`KeyCode::BackTab` → `Tab + KeyMods::SHIFT`). Match arm + a single bitfield OR.                                                                                  |
+| `keychord_to_string_plain_letter`           | **16.8ns** | ~15ns / <40ns  | Off the keystroke path. Allocates a 1-char String via `to_string`. Dominated by the alloc, not the formatting logic.                                                                            |
+| `keychord_to_string_ctrl_shift_letter`      | **23.2ns** | ~20ns / <50ns  | Off the keystroke path. Multi-modifier formatting + small-string allocation.                                                                                                                    |
+| `keychord_parse_plain_letter`               | **5.1ns**  | ~5ns / <15ns   | One-shot at startup or `:bind`. Single-char fast path -- skip the angle-bracket walk.                                                                                                          |
+| `keychord_parse_modifier_special`           | **14.0ns** | ~12ns / <30ns  | One-shot. `<C-S-Tab>` -- walks two modifier prefixes + `parse_special` for the body.                                                                                                            |
+| `parse_chord_sequence_multi_key`            | **25.1ns** | ~20ns / <60ns  | One-shot at startup per `KeymapEntry`. With ~280 built-in bindings (per the M3 census), startup parse cost across the catalog is ~7µs total -- not measurable against the rest of boot.        |
+| `parse_chord_sequence_two_letters`          | **14.9ns** | ~12ns / <30ns  | One-shot. `gg` / `dw` / `zt` shape -- two bare-char chords per sequence.                                                                                                                       |
 
 ### Why these targets
 

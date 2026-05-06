@@ -15,3 +15,7 @@ Cargo.lock.bak
 # automatically; anything sensitive or personal stays in
 # settings.local.json on each machine.
 .claude/settings.local.json
+# Per-session worktrees that Claude Code's agent system creates
+# under .claude/worktrees/ for isolated sub-agent runs. They live
+# only as long as the owning session and aren't part of the repo.
+.claude/worktrees/

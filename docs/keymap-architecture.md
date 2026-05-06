@@ -759,15 +759,43 @@ infrastructure** every future host integration sits on top of:
   meaningfully requires the WASM init-module loading machinery
   that doesn't exist yet.
 
-### Slice 8.i -- Drift test retirement + close-out
+### Slice 8.i -- Retire the `bind_legacy` bridge
 
-- The `keymap.rs` drift test becomes obsolete (descriptor IS
-  behaviour). Replace it with a "every catalog entry resolves
-  to a real `CommandInvocation`" test.
-- Bench rollup in `BENCHMARKS.md`.
-- This file finalised; cross-references added to
-  `docs/DESIGN.md §5.2.3` so the spec doc points to the
-  authoritative architecture reference.
+The full approach memo lives at
+[`docs/8i-approach.md`](8i-approach.md): goal, the
+`Effect::AppAction(AppEffect)` carrier shape (option α), the
+type-hoisting decisions, and the sub-slice plan.
+
+**Sub-slice status:**
+
+- **8.i.0 -- Carrier + dispatcher's Action branch.** ✅ landed.
+  - Adds `lattice_grammar::AppEffect` (initial variant: `Quit`).
+  - Adds `Effect::AppAction(AppEffect)`.
+  - Adds `ActionSpec` / `ActionContext` / `register_action` /
+    `require_action` parallel to the existing motion / operator /
+    text-object / ex-command spec machinery.
+  - Replaces `CommandRegistration::Stub` with
+    `CommandRegistration::Action(ActionSpec)`.
+  - Wires `CommandKind::Action` in
+    `dispatcher::execute` (was an `InvalidArgs` stub).
+  - `App::apply_effect` gains an `Effect::AppAction(app)` arm
+    delegating to a new `App::apply_app_effect(app)` method.
+  - Tests: `dispatcher::tests::execute_routes_action_kind_to_action_spec`
+    (carrier flows through `execute()` and surfaces the spec's
+    Effect) + `action_branch_rejects_non_action_entries`
+    (`require_action`'s kind-mismatch path).
+  - No call-site changes; bridge stays active. Workspace tests
+    green: lattice-grammar 184 → 186; all other crates unchanged.
+- **8.i.1 -- Promote no-payload Action variants.** Pending.
+- **8.i.2 -- Promote parameterised Action variants.** Pending.
+- **8.i.3 -- Wildcard-captured variants.** Pending.
+- **8.i.4 -- Retire Pending; finalise.** Pending.
+  - At this point the `keymap.rs` drift test becomes obsolete
+    (descriptor IS behaviour); replace it with a "every catalog
+    entry resolves to a real `CommandInvocation`" test.
+  - Bench rollup in `BENCHMARKS.md`.
+  - Cross-references added to `docs/DESIGN.md §5.2.3` so the
+    spec doc points to the authoritative architecture reference.
 
 ## 10. Trade-offs flagged
 

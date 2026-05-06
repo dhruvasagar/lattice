@@ -263,14 +263,62 @@ impl std::fmt::Debug for ExCommandSpec {
     }
 }
 
+/// Context passed to a free-form action's evaluator. Mirrors
+/// [`ExCommandContext`]'s shape (no document mutation; the App
+/// applies the returned [`crate::effect::Effect`]) but omits the
+/// `bang` bit -- chord-bound actions never carry one. The
+/// `register` / `count` slots flow the count and register prefixes
+/// the user typed before the chord (vim's `3"+yy`-style); most
+/// actions ignore them.
+pub struct ActionContext {
+    pub args: Args,
+    pub register: Register,
+    pub count: Count,
+    /// Cooperative cancellation handle (DESIGN.md §5.2.5). Most
+    /// actions are O(1) state mutations and ignore this; long-
+    /// running ones (a hypothetical "rebuild fold tree" action)
+    /// poll `cancel.check()?` between iterations.
+    pub cancel: crate::CancellationToken,
+}
+
+/// Evaluator callback for a free-form action. Returns the
+/// [`crate::effect::Effect`] the host should apply -- typically
+/// `Effect::AppAction(AppEffect::Foo)` for a chord-bound action,
+/// occasionally a richer `Effect::Many([...])` if the action also
+/// emits an edit / mode transition / yank.
+type ActionFn =
+    Box<dyn Fn(&ActionContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
+
+pub struct ActionSpec {
+    pub apply: ActionFn,
+    /// Per-positional-argument metadata (DESIGN.md §B.1). Empty
+    /// for actions without args (the common case for chord
+    /// bindings -- the args slot is reserved for future
+    /// captured-char / numeric-param variants in slice 8.i.2-3).
+    pub args_schema: Vec<ArgSpec>,
+}
+
+impl std::fmt::Debug for ActionSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActionSpec").finish_non_exhaustive()
+    }
+}
+
 /// What a registered command holds in the registry, beyond its metadata.
 pub enum CommandRegistration {
     Motion(MotionSpec),
     Operator(OperatorSpec),
     TextObject(TextObjectSpec),
     ExCommand(ExCommandSpec),
-    /// Phase 1 stub for free-form actions populated later.
-    Stub,
+    /// Free-form App-side action. The dispatcher's
+    /// `CommandKind::Action` branch invokes the spec's `apply`
+    /// closure and returns its [`crate::effect::Effect`] -- almost
+    /// always an [`crate::effect::Effect::AppAction`] carrying a
+    /// typed [`crate::app_effect::AppEffect`]. Wired in slice 8.i.0;
+    /// populated from the per-mode keymap modules during 8.i.1-3 as
+    /// the legacy `Action` bridge retires. See
+    /// `docs/8i-approach.md`.
+    Action(ActionSpec),
 }
 
 impl CommandRegistration {
@@ -280,7 +328,7 @@ impl CommandRegistration {
             CommandRegistration::Operator(_) => CommandKind::Operator,
             CommandRegistration::TextObject(_) => CommandKind::TextObject,
             CommandRegistration::ExCommand(_) => CommandKind::ExCommand,
-            CommandRegistration::Stub => CommandKind::Action,
+            CommandRegistration::Action(_) => CommandKind::Action,
         }
     }
 }
@@ -450,6 +498,47 @@ impl CommandRegistry {
         ExCommandId(id)
     }
 
+    /// Register a free-form action (DESIGN.md §5.2.1; see
+    /// `docs/8i-approach.md`). Used by chord bindings whose
+    /// historical `Action` enum payload had no grammar concept
+    /// attached. The spec's `apply` returns an
+    /// [`crate::effect::Effect`] -- typically
+    /// `Effect::AppAction(AppEffect::...)`.
+    #[track_caller]
+    pub fn register_action(
+        &mut self,
+        name: &str,
+        doc: &str,
+        spec: ActionSpec,
+    ) -> CommandId {
+        let source = capture_builtin_source();
+        self.insert_action(name, doc, spec, source)
+    }
+
+    pub(crate) fn insert_action(
+        &mut self,
+        name: &str,
+        doc: &str,
+        spec: ActionSpec,
+        source: SourceLocation,
+    ) -> CommandId {
+        let id = next_command_id();
+        let args_schema = spec.args_schema.clone();
+        self.insert(CommandEntry {
+            spec: CommandSpec {
+                id,
+                name: name.to_string(),
+                kind: CommandKind::Action,
+                doc: doc.to_string(),
+                args_schema,
+                source,
+                latency_class: crate::command::LatencyClass::Reflex,
+            },
+            registration: CommandRegistration::Action(spec),
+        });
+        id
+    }
+
     pub fn lookup(&self, id: CommandId) -> Option<&CommandSpec> {
         self.by_id.get(&id).map(|e| &e.spec)
     }
@@ -558,6 +647,16 @@ pub(crate) fn require_ex_command(entry: &CommandEntry) -> GrammarResult<&ExComma
         CommandRegistration::ExCommand(s) => Ok(s),
         other => Err(CommandError::KindMismatch {
             expected: "ex-command",
+            actual: other.kind().label(),
+        }),
+    }
+}
+
+pub(crate) fn require_action(entry: &CommandEntry) -> GrammarResult<&ActionSpec> {
+    match &entry.registration {
+        CommandRegistration::Action(s) => Ok(s),
+        other => Err(CommandError::KindMismatch {
+            expected: "action",
             actual: other.kind().label(),
         }),
     }

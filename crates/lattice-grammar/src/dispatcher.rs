@@ -9,8 +9,9 @@
 //!
 //! Phase 1 implements operator-with-motion-target (the most common path),
 //! motion-alone, text-object-alone, and explicit grammar `Range` resolution.
-//! Stub `Action` and `ExCommand` paths return an error until those layers
-//! land.
+//! `ExCommand` and `Action` paths are wired -- the latter via slice 8.i.0
+//! (see `docs/8i-approach.md`); registry entries grow during slices
+//! 8.i.1-3 as the legacy `Action` bridge in `lattice-ui-tui` retires.
 
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
@@ -21,8 +22,9 @@ use crate::error::{CommandError, GrammarResult};
 use crate::modal::ModalState;
 use crate::range::Range;
 use crate::registry::{
-    CommandEntry, CommandRegistry, ExCommandContext, MotionContext, OperatorContext,
-    TextObjectContext, require_ex_command, require_motion, require_operator, require_text_object,
+    ActionContext, CommandEntry, CommandRegistry, ExCommandContext, MotionContext,
+    OperatorContext, TextObjectContext, require_action, require_ex_command, require_motion,
+    require_operator, require_text_object,
 };
 use crate::target::Target;
 use lattice_core::{Buffer, Document};
@@ -62,10 +64,23 @@ pub fn execute(
             execute_operator(registry, document, cursor, &invocation, entry, cancel)
         }
         CommandKind::ExCommand => execute_ex_command(&invocation, entry, cancel),
-        CommandKind::Action => Err(CommandError::InvalidArgs(
-            "free-form actions are not yet wired in Phase 1",
-        )),
+        CommandKind::Action => execute_action(&invocation, entry, cancel),
     }
+}
+
+fn execute_action(
+    invocation: &CommandInvocation,
+    entry: &CommandEntry,
+    cancel: &CancellationToken,
+) -> GrammarResult<Effect> {
+    let spec = require_action(entry)?;
+    let ctx = ActionContext {
+        args: invocation.args.clone(),
+        register: invocation.register_or_default(),
+        count: invocation.count_or_default(),
+        cancel: cancel.clone(),
+    };
+    (spec.apply)(&ctx)
 }
 
 /// Resolve a *motion-only* invocation against a bare [`Buffer`] +
@@ -620,4 +635,71 @@ fn line_byte_len(buffer: &lattice_core::Buffer, line: u32) -> u32 {
         .get(line as usize)
         .map(|l| l.trim_end_matches('\n').len() as u32)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use crate::CancellationToken;
+    use crate::app_effect::AppEffect;
+    use crate::registry::ActionSpec;
+
+    /// Slice 8.i.0 wiring: a `CommandKind::Action` registry entry
+    /// flows through `execute()` and surfaces the spec's
+    /// `Effect::AppAction(...)` payload. The carrier exists; later
+    /// slices populate it from the per-mode keymap modules as the
+    /// `bind_legacy` bridge retires.
+    #[test]
+    fn execute_routes_action_kind_to_action_spec() {
+        let mut registry = CommandRegistry::new();
+        let id = registry.register_action(
+            "test:quit-action",
+            "smoke variant for slice 8.i.0",
+            ActionSpec {
+                apply: Box::new(|_ctx| Ok(Effect::AppAction(AppEffect::Quit))),
+                args_schema: vec![],
+            },
+        );
+
+        let mut doc = lattice_core::Document::empty();
+        let inv = CommandInvocation::of(id);
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        match eff {
+            Effect::AppAction(AppEffect::Quit) => {}
+            other => panic!("expected Effect::AppAction(Quit), got {other:?}"),
+        }
+    }
+
+    /// `require_action`'s kind-mismatch path: dispatching a motion
+    /// id through the `Action` branch (impossible in normal flow,
+    /// but the helper is shared) errors with the labeled mismatch
+    /// rather than panicking.
+    #[test]
+    fn action_branch_rejects_non_action_entries() {
+        let mut registry = CommandRegistry::new();
+        let _ = crate::builtins::populate(&mut registry);
+        // Look up a known motion id; pretend-route it through the
+        // action helper directly to confirm the require_action
+        // gate behaves.
+        let motion_id = registry.id_by_name("motion:word-forward").unwrap();
+        let entry = registry.entry(motion_id).unwrap();
+        let err =
+            crate::registry::require_action(entry).expect_err("motion entry must reject");
+        assert!(
+            matches!(
+                err,
+                crate::error::CommandError::KindMismatch { expected, actual }
+                    if expected == "action" && actual == "motion"
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
 }

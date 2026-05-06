@@ -11686,11 +11686,30 @@ impl App {
             Effect::LspCodeAction => self.do_lsp_code_action_request(),
             Effect::SnippetExpand => self.do_snippet_expand_at_cursor(),
             Effect::ReloadSnippets => self.do_reload_snippets(),
+            Effect::AppAction(app) => self.apply_app_effect(app),
             Effect::Many(many) => {
                 for e in many {
                     self.apply_effect(e);
                 }
             }
+        }
+    }
+
+    /// Slice 8.i.0 -- the `Effect::AppAction(...)` consumer.
+    /// Today the keymap modules still bind chords via the legacy
+    /// `Action` bridge (`bind_legacy`), so this method is only
+    /// reached when something explicitly produces an
+    /// `Effect::AppAction(...)`. Slices 8.i.1-3 promote per-mode
+    /// bindings to typed `CommandInvocation`s whose registered
+    /// `ActionSpec` returns `Effect::AppAction(AppEffect::...)`,
+    /// at which point this method becomes the live dispatch site.
+    /// Each new variant lands a one-line arm here that delegates to
+    /// the existing per-action handler; slice 8.i.4 inlines the
+    /// bodies once the legacy `Action` enum retires.
+    fn apply_app_effect(&mut self, app: lattice_grammar::AppEffect) {
+        use lattice_grammar::AppEffect;
+        match app {
+            AppEffect::Quit => self.apply(Action::Quit),
         }
     }
 
@@ -14659,7 +14678,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
         | Effect::SnippetExpand
-        | Effect::ReloadSnippets => false,
+        | Effect::ReloadSnippets
+        | Effect::AppAction(_) => false,
     }
 }
 
@@ -14721,7 +14741,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::LspCodeAction
         | Effect::SnippetExpand
-        | Effect::ReloadSnippets => false,
+        | Effect::ReloadSnippets
+        | Effect::AppAction(_) => false,
     }
 }
 

@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use lattice_core::buffer::AppliedEdit;
 use lattice_protocol::selection::SelectionSet;
 
+use crate::app_effect::AppEffect;
 use crate::command::CommandInvocation;
 use crate::modal::ModalState;
 use crate::register::Register;
@@ -326,6 +327,16 @@ pub enum Effect {
     /// 4.2.g.4). Useful after editing a `.code-snippets` /
     /// `.json` file in the project's snippet directory.
     ReloadSnippets,
+
+    /// Free-form App-side effect produced by a `CommandKind::Action`
+    /// dispatch. Carries an [`AppEffect`] -- the typed App-side
+    /// counterpart to the dispatcher-native variants above. The
+    /// host's `apply_effect` matches the inner `AppEffect` to drive
+    /// chord-bound work that has no grammar concept attached
+    /// (`<Esc>` exits Visual, `<C-w>v` splits a pane, `o` opens a
+    /// line below). Slice 8.i wires this surface; see
+    /// `docs/8i-approach.md`.
+    AppAction(AppEffect),
 
     Many(Vec<Effect>),
 }

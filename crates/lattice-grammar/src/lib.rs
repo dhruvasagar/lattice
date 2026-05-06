@@ -21,6 +21,7 @@
 //! - The keystroke-to-CommandInvocation parser (state machine).
 //! - Macros, marks, dot-repeat, registers (the storage; the type exists).
 
+pub mod app_effect;
 pub mod args;
 pub mod builtins;
 pub mod cancel;
@@ -37,6 +38,7 @@ pub mod registry;
 pub mod source;
 pub mod target;
 
+pub use crate::app_effect::AppEffect;
 pub use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 pub use crate::cancel::{CancellationToken, CheckCancelled};
 pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count, LatencyClass};
@@ -51,8 +53,8 @@ pub use crate::modal::{ModalState, SearchDirection, VisualKind};
 pub use crate::range::{Range, RangeBound};
 pub use crate::register::Register;
 pub use crate::registry::{
-    CommandRegistration, CommandRegistry, ExCommandContext, ExCommandSpec, MotionSpec,
-    OperatorContext, OperatorSpec, SurfaceForm, TextObjectSpec,
+    ActionContext, ActionSpec, CommandRegistration, CommandRegistry, ExCommandContext,
+    ExCommandSpec, MotionSpec, OperatorContext, OperatorSpec, SurfaceForm, TextObjectSpec,
 };
 pub use crate::registry::{ExCommandId, MotionId, OperatorId, TextObjectId};
 pub use crate::source::{SourceKind, SourceLayer, SourceLocation};

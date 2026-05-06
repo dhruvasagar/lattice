@@ -39,24 +39,36 @@ use serde::{Deserialize, Serialize};
 /// Variants are added incrementally during slice 8.i as each
 /// historical `Action` variant is promoted from the legacy
 /// `bind_legacy` bridge to a typed `CommandInvocation`.
-///
-/// Initial variant set (8.i.0):
-///
-/// - [`Self::Quit`] -- vim's `<C-c>` chord and the `:q` /
-///   `:quit` ex-command's "graceful shutdown" intent. Today the
-///   App receives this as `Action::Quit`; 8.i.0 wires the
-///   carrier so a registry-driven chord can produce it. The
-///   per-mode binding migration (slice 8.i.1) flips the existing
-///   `bind_legacy(... Action::Quit ...)` site to a `bind(...)`
-///   that resolves to a `CommandKind::Action` entry returning
-///   `Effect::AppAction(AppEffect::Quit)`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AppEffect {
     /// Graceful editor shutdown. The App's `apply_effect` arm
     /// publishes `Event::BeforeQuit` and sets the `should_quit`
     /// flag the runtime polls between frames; matches today's
-    /// `Action::Quit` semantics exactly.
+    /// `Action::Quit` semantics exactly. (8.i.0 smoke variant;
+    /// the `<C-c>` binding lives in `input.rs` so the legacy
+    /// site doesn't migrate until the input-layer rewrite.)
     Quit,
+    /// Vim's `%`. Jumps to the bracket / brace / paren matching
+    /// the one at-or-after the cursor on the current line.
+    /// Promoted from `Action::MatchBracket` in slice 8.i.1.a.
+    MatchBracket,
+    /// Vim's `~`. Toggles the case of the char at the cursor and
+    /// advances by one byte. Promoted from
+    /// `Action::ToggleCaseAtCursor` in slice 8.i.1.a.
+    ToggleCaseAtCursor,
+    /// Vim's `o`. Opens a new line below the current line and
+    /// enters Insert. Promoted from `Action::OpenLineBelow` in
+    /// slice 8.i.1.a.
+    OpenLineBelow,
+    /// Vim's `O`. Opens a new line above the current line and
+    /// enters Insert. Promoted from `Action::OpenLineAbove` in
+    /// slice 8.i.1.a.
+    OpenLineAbove,
+    /// `K` (Phase 4.2.b). Sends `textDocument/hover` to every
+    /// LSP server attached to the active document; renders the
+    /// first non-empty markdown body in the hover popup.
+    /// Promoted from `Action::LspHoverRequest` in slice 8.i.1.a.
+    LspHoverRequest,
 }
 
 #[cfg(test)]

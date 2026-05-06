@@ -16,6 +16,7 @@
 //! engine drives input through `CommandInvocation`s instead of the
 //! hardcoded `Action` enum used here.
 
+pub mod actions;
 pub mod app;
 pub mod buffer_registry;
 pub mod buffers;

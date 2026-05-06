@@ -1050,6 +1050,14 @@ pub struct App {
     /// language tag) sourced from this same registry.
     pub lang_registry: Arc<LangRegistry>,
     pub builtins: Builtins,
+    /// App-side typed action IDs (`CommandKind::Action`
+    /// registrations from `crate::actions::populate`). Each
+    /// field is a `CommandId` resolving to an `ActionSpec` whose
+    /// `apply` returns `Effect::AppAction(AppEffect::Foo)`. Per-
+    /// mode keymap modules consume this alongside `builtins` to
+    /// build typed `CommandInvocation`s for chord bindings (slice
+    /// 8.i; see `docs/8i-approach.md`).
+    pub action_ids: crate::actions::ActionIds,
     /// Layered keymap registry (DESIGN.md §5.2.3, audit slice 8.c).
     /// Populated at construction time; the input dispatcher reads
     /// from it on every keystroke. Wait-free reads via the
@@ -2295,6 +2303,14 @@ impl App {
         // looks them up by name -- but registering them populates the
         // registry so `:`-line parsing can route to them.
         let _ex_builtins = lattice_grammar::ex_commands::populate(&mut registry);
+        // App-side action registrations (slice 8.i; see
+        // `docs/8i-approach.md`). Each `CommandKind::Action`
+        // entry returns `Effect::AppAction(AppEffect::Foo)`;
+        // per-mode keymap modules consume the resulting
+        // `ActionIds` to build typed `CommandInvocation`s for
+        // chord bindings as the legacy `bind_legacy` bridge
+        // retires.
+        let action_ids = crate::actions::populate(&mut registry);
         // §5.11.3 completion pipeline: register the built-in
         // generators / matchers / rankers / annotators and wire
         // sensible defaults (prefix matcher, score ranker, kind +
@@ -2480,6 +2496,7 @@ impl App {
             pending_code_action_handle: None,
             lang_registry,
             builtins,
+            action_ids,
             keymap: {
                 // Slices 8.d -- 8.g.i: register the per-mode
                 // built-in catalogs into the Builtin layer at
@@ -2491,7 +2508,7 @@ impl App {
                 crate::keymap_replace::register_replace_bindings(&h);
                 crate::keymap_visual::register_visual_bindings(&h, &builtins);
                 crate::keymap_insert::register_insert_bindings(&h);
-                crate::keymap_normal::register_normal_bindings(&h, &builtins);
+                crate::keymap_normal::register_normal_bindings(&h, &builtins, &action_ids);
                 h
             },
             completion_popup_layer: None,
@@ -11710,6 +11727,11 @@ impl App {
         use lattice_grammar::AppEffect;
         match app {
             AppEffect::Quit => self.apply(Action::Quit),
+            AppEffect::MatchBracket => self.apply(Action::MatchBracket),
+            AppEffect::ToggleCaseAtCursor => self.apply(Action::ToggleCaseAtCursor),
+            AppEffect::OpenLineBelow => self.apply(Action::OpenLineBelow),
+            AppEffect::OpenLineAbove => self.apply(Action::OpenLineAbove),
+            AppEffect::LspHoverRequest => self.apply(Action::LspHoverRequest),
         }
     }
 

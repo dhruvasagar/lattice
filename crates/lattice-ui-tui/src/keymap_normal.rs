@@ -78,6 +78,7 @@ use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::{ModalState, SearchDirection, Target, VisualKind};
 
+use crate::actions::ActionIds;
 use crate::app::{Action, FindKind, Pending, ScrollPos, ViewportPos};
 use crate::pane::PaneDirection;
 use lattice_grammar::register::Register;
@@ -93,7 +94,18 @@ use crate::keymap_trie::{
 /// supplied handle's `Builtin` layer. The legacy
 /// `input::translate_normal` keeps its match arm for the
 /// bindings not yet in this catalog.
-pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins) {
+///
+/// `actions` is the App-side action ID table (slice 8.i; see
+/// `docs/8i-approach.md`). Bindings that historically fired an
+/// `Action::Foo` directly via `bind_legacy` get migrated to
+/// `bind(... CommandInvocation::of(actions.foo) ...)` as the
+/// per-batch slices land; the rest stay on the bridge until
+/// their batch's turn.
+pub fn register_normal_bindings(
+    handle: &KeymapHandle,
+    builtins: &Builtins,
+    actions: &ActionIds,
+) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
 
@@ -239,18 +251,18 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins) {
         Action::EnterAppend,
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('o')],
-        Action::OpenLineBelow,
+        CommandInvocation::of(actions.open_line_below),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('O')],
-        Action::OpenLineAbove,
+        CommandInvocation::of(actions.open_line_above),
         source(),
     );
     handle.bind_legacy(
@@ -304,18 +316,18 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins) {
         Action::FindRepeat { reverse: true },
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('~')],
-        Action::ToggleCaseAtCursor,
+        CommandInvocation::of(actions.toggle_case_at_cursor),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('K')],
-        Action::LspHoverRequest,
+        CommandInvocation::of(actions.lsp_hover_request),
         source(),
     );
     handle.bind_legacy(
@@ -360,11 +372,11 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins) {
         Action::SearchWordUnderCursor(SearchDirection::Backward),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('%')],
-        Action::MatchBracket,
+        CommandInvocation::of(actions.match_bracket),
         source(),
     );
     handle.bind_legacy(
@@ -1715,22 +1727,23 @@ mod tests {
         }
     }
 
-    fn fixture() -> (CommandRegistry, Builtins) {
+    fn fixture() -> (CommandRegistry, Builtins, ActionIds) {
         let mut r = CommandRegistry::new();
         let b = lattice_grammar::builtins::populate(&mut r);
-        (r, b)
+        let a = crate::actions::populate(&mut r);
+        (r, b, a)
     }
 
-    fn populated_handle() -> (KeymapHandle, Builtins) {
-        let (_, b) = fixture();
+    fn populated_handle() -> (KeymapHandle, Builtins, ActionIds) {
+        let (_, b, a) = fixture();
         let h = KeymapHandle::new();
-        register_normal_bindings(&h, &b);
-        (h, b)
+        register_normal_bindings(&h, &b, &a);
+        (h, b, a)
     }
 
     #[test]
     fn motion_h_invokes_char_left() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('h'), KeyModifiers::NONE));
         match r {
             Some(Action::Invoke(inv)) => assert_eq!(inv.command, b.char_left.0),
@@ -1740,7 +1753,7 @@ mod tests {
 
     #[test]
     fn arrow_left_aliases_char_left() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Left, KeyModifiers::NONE));
         match r {
             Some(Action::Invoke(inv)) => assert_eq!(inv.command, b.char_left.0),
@@ -1750,7 +1763,7 @@ mod tests {
 
     #[test]
     fn upper_g_invokes_goto_last_line() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('G'), KeyModifiers::NONE));
         match r {
             Some(Action::Invoke(inv)) => assert_eq!(inv.command, b.goto_last_line.0),
@@ -1760,7 +1773,7 @@ mod tests {
 
     #[test]
     fn pseudo_operator_x_carries_char_right_target() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('x'), KeyModifiers::NONE));
         match r {
             Some(Action::Invoke(inv)) => {
@@ -1773,7 +1786,7 @@ mod tests {
 
     #[test]
     fn pseudo_operator_d_carries_line_end_target() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('D'), KeyModifiers::NONE));
         match r {
             Some(Action::Invoke(inv)) => {
@@ -1786,7 +1799,7 @@ mod tests {
 
     #[test]
     fn pseudo_operator_y_capital_uses_current_line_range() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('Y'), KeyModifiers::NONE));
         match r {
             Some(Action::Invoke(inv)) => {
@@ -1802,14 +1815,14 @@ mod tests {
 
     #[test]
     fn viewport_h_jumps_to_top() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('H'), KeyModifiers::NONE));
         assert!(matches!(r, Some(Action::JumpViewport(ViewportPos::Top))));
     }
 
     #[test]
     fn mode_entry_v_enters_charwise_visual() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('v'), KeyModifiers::NONE));
         assert!(matches!(
             r,
@@ -1819,14 +1832,14 @@ mod tests {
 
     #[test]
     fn paste_p_lower_pastes_after() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('p'), KeyModifiers::NONE));
         assert!(matches!(r, Some(Action::PasteAfter)));
     }
 
     #[test]
     fn search_slash_enters_forward_search() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('/'), KeyModifiers::NONE));
         assert!(matches!(
             r,
@@ -1836,14 +1849,14 @@ mod tests {
 
     #[test]
     fn tab_jumps_history_forward() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Tab, KeyModifiers::NONE));
         assert!(matches!(r, Some(Action::JumpHistoryForward)));
     }
 
     #[test]
     fn page_down_invokes_line_down_with_count_ten() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::PageDown, KeyModifiers::NONE));
         match r {
             Some(Action::Invoke(inv)) => {
@@ -1861,7 +1874,7 @@ mod tests {
     /// because the depth-1 node carries a binding.
     #[test]
     fn d_arms_after_operator_delete_pending() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('d'), KeyModifiers::NONE));
         match r {
             Some(Action::SetPending(Pending::AfterOperator(op))) => {
@@ -1875,7 +1888,7 @@ mod tests {
 
     #[test]
     fn dw_resolves_to_delete_with_word_forward_target() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d')],
@@ -1895,7 +1908,7 @@ mod tests {
 
     #[test]
     fn dd_resolves_to_delete_current_line() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d')],
@@ -1915,7 +1928,7 @@ mod tests {
 
     #[test]
     fn yy_resolves_to_yank_current_line() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('y')],
@@ -1935,7 +1948,7 @@ mod tests {
 
     #[test]
     fn cc_resolves_to_change_current_line() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('c')],
@@ -1955,7 +1968,7 @@ mod tests {
 
     #[test]
     fn di_arms_after_text_object_pending_inner() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d')],
@@ -1975,7 +1988,7 @@ mod tests {
 
     #[test]
     fn diw_resolves_to_delete_inner_word() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d'), KeyChord::char('i')],
@@ -1996,7 +2009,7 @@ mod tests {
     #[test]
     fn dab_resolves_to_delete_around_paren() {
         // Alias check: `b` inside `da` resolves to around_paren.
-        let (h, b_) = populated_handle();
+        let (h, b_, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d'), KeyChord::char('a')],
@@ -2016,7 +2029,7 @@ mod tests {
 
     #[test]
     fn df_arms_after_find_char_with_operator() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d')],
@@ -2037,7 +2050,7 @@ mod tests {
 
     #[test]
     fn d_unrecognised_drops_pending() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d')],
@@ -2050,7 +2063,7 @@ mod tests {
     /// upper. The prefix walk is `[g, U, U]`.
     #[test]
     fn g_uu_resolves_to_upper_current_line() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('g'), KeyChord::char('U')],
@@ -2071,7 +2084,7 @@ mod tests {
     /// `gUw` -- upper applied to the word_forward motion target.
     #[test]
     fn g_uw_resolves_to_upper_with_word_forward() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('g'), KeyChord::char('U')],
@@ -2095,21 +2108,21 @@ mod tests {
     /// dispatcher arms the second-key resolver.
     #[test]
     fn g_arms_after_g_pending() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('g'), KeyModifiers::NONE));
         assert!(matches!(r, Some(Action::SetPending(Pending::AfterG))));
     }
 
     #[test]
     fn z_arms_after_z_pending() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('z'), KeyModifiers::NONE));
         assert!(matches!(r, Some(Action::SetPending(Pending::AfterZ))));
     }
 
     #[test]
     fn gg_resolves_to_goto_first_line() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('g')],
@@ -2123,7 +2136,7 @@ mod tests {
 
     #[test]
     fn gd_resolves_to_lsp_definition_request() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('g')],
@@ -2134,7 +2147,7 @@ mod tests {
 
     #[test]
     fn gu_arms_after_operator_pending_for_lower() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('g')],
@@ -2150,7 +2163,7 @@ mod tests {
 
     #[test]
     fn g_capital_j_resolves_to_join_lines_without_space() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('g')],
@@ -2161,7 +2174,7 @@ mod tests {
 
     #[test]
     fn zz_centers_cursor() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
@@ -2172,7 +2185,7 @@ mod tests {
 
     #[test]
     fn z_dot_aliases_zz() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
@@ -2183,7 +2196,7 @@ mod tests {
 
     #[test]
     fn z_enter_aliases_zt() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
@@ -2194,7 +2207,7 @@ mod tests {
 
     #[test]
     fn z_dash_aliases_zb() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
@@ -2205,7 +2218,7 @@ mod tests {
 
     #[test]
     fn za_toggles_fold_at_cursor() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
@@ -2216,7 +2229,7 @@ mod tests {
 
     #[test]
     fn z_unrecognized_drops_pending() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
@@ -2227,7 +2240,7 @@ mod tests {
 
     #[test]
     fn z_esc_drops_pending() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
@@ -2243,7 +2256,7 @@ mod tests {
     /// trie lookup -- the registry doesn't see App state.
     #[test]
     fn q_arms_after_macro_start_pending() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(matches!(
             r,
@@ -2255,7 +2268,7 @@ mod tests {
 
     #[test]
     fn ma_resolves_to_set_mark_a() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('m')],
@@ -2267,7 +2280,7 @@ mod tests {
     #[test]
     fn m_invalid_drops_pending() {
         // Non-alphanumeric mark name -> drop pending.
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('m')],
@@ -2278,7 +2291,7 @@ mod tests {
 
     #[test]
     fn apostrophe_a_resolves_to_jump_mark_line_a() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('\'')],
@@ -2289,7 +2302,7 @@ mod tests {
 
     #[test]
     fn backtick_a_resolves_to_jump_mark_exact_a() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('`')],
@@ -2300,7 +2313,7 @@ mod tests {
 
     #[test]
     fn quote_a_selects_named_register_a() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('"')],
@@ -2314,7 +2327,7 @@ mod tests {
 
     #[test]
     fn quote_plus_selects_system_register() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('"')],
@@ -2325,7 +2338,7 @@ mod tests {
 
     #[test]
     fn quote_zero_selects_numbered_register_zero() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('"')],
@@ -2339,7 +2352,7 @@ mod tests {
 
     #[test]
     fn quote_invalid_drops_pending() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('"')],
@@ -2350,7 +2363,7 @@ mod tests {
 
     #[test]
     fn qa_starts_macro_record_a() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('q')],
@@ -2361,7 +2374,7 @@ mod tests {
 
     #[test]
     fn at_at_plays_last_macro() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('@')],
@@ -2372,7 +2385,7 @@ mod tests {
 
     #[test]
     fn at_a_plays_macro_a() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('@')],
@@ -2383,7 +2396,7 @@ mod tests {
 
     #[test]
     fn f_x_resolves_to_find_char_forward_with_args() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('f')],
@@ -2404,7 +2417,7 @@ mod tests {
     #[test]
     fn dfx_resolves_to_delete_with_find_char_target() {
         // `df<X>` -- delete forward up to and including 'X'.
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d'), KeyChord::char('f')],
@@ -2434,7 +2447,7 @@ mod tests {
     /// alternative chord representation is the trie's invariant.
     #[test]
     fn f_ctrl_x_falls_through_to_drop_pending() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('f')],
@@ -2448,7 +2461,7 @@ mod tests {
     /// only needs `(Char('h'), NONE)`. Pin that here.
     #[test]
     fn shift_h_resolves_via_lowercase_chord() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('h'), KeyModifiers::SHIFT));
         match r {
             Some(Action::Invoke(inv)) => assert_eq!(inv.command, b.char_left.0),
@@ -2463,7 +2476,7 @@ mod tests {
     /// Visual.
     #[test]
     fn alt_h_resolves_to_char_left() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('h'), KeyModifiers::ALT));
         match r {
             Some(Action::Invoke(inv)) => assert_eq!(inv.command, b.char_left.0),
@@ -2595,7 +2608,7 @@ mod tests {
 
     #[test]
     fn ctrl_d_resolves_to_line_down_count_ten() {
-        let (h, b) = populated_handle();
+        let (h, b, _) = populated_handle();
         let r = lookup_normal(
             &h,
             &ev(KeyCode::Char('d'), KeyModifiers::CONTROL),
@@ -2611,7 +2624,7 @@ mod tests {
 
     #[test]
     fn ctrl_o_resolves_to_jump_history_back() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal(
             &h,
             &ev(KeyCode::Char('o'), KeyModifiers::CONTROL),
@@ -2621,7 +2634,7 @@ mod tests {
 
     #[test]
     fn ctrl_v_enters_blockwise_visual() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal(
             &h,
             &ev(KeyCode::Char('v'), KeyModifiers::CONTROL),
@@ -2634,7 +2647,7 @@ mod tests {
 
     #[test]
     fn ctrl_w_arms_after_ctrl_w_pending() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal(
             &h,
             &ev(KeyCode::Char('w'), KeyModifiers::CONTROL),
@@ -2647,7 +2660,7 @@ mod tests {
 
     #[test]
     fn ctrl_w_then_l_navigates_pane_right() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
@@ -2663,7 +2676,7 @@ mod tests {
     fn ctrl_w_then_ctrl_l_also_navigates_pane_right() {
         // Vim accepts ctrl-modified second keys after `<C-w>`
         // (sticky-prefix muscle memory).
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
@@ -2677,7 +2690,7 @@ mod tests {
 
     #[test]
     fn ctrl_w_then_arrow_left_navigates_pane_left() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
@@ -2693,7 +2706,7 @@ mod tests {
     fn ctrl_w_then_backspace_navigates_pane_left() {
         // Many terminals collapse `<C-h>` to Backspace; the
         // bare-Backspace path covers that.
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
@@ -2707,7 +2720,7 @@ mod tests {
 
     #[test]
     fn ctrl_w_then_tab_cycles_to_next_pane() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
@@ -2721,7 +2734,7 @@ mod tests {
         // BackTab normalises to chord `(Tab, SHIFT)` via
         // `KeyChord::from_event`; the trie has the explicit
         // `<S-Tab>` registration under `[<C-w>]`.
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
@@ -2732,7 +2745,7 @@ mod tests {
 
     #[test]
     fn ctrl_w_then_v_splits_vertical() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
@@ -2744,7 +2757,7 @@ mod tests {
     #[test]
     fn ctrl_w_then_capital_s_splits_horizontal() {
         // `<C-w>S` is a legacy alias for `<C-w>s`.
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
@@ -2755,7 +2768,7 @@ mod tests {
 
     #[test]
     fn ctrl_w_then_q_closes_pane() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],
@@ -2766,7 +2779,7 @@ mod tests {
 
     #[test]
     fn ctrl_w_then_esc_drops_pending() {
-        let (h, _) = populated_handle();
+        let (h, _, _) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],

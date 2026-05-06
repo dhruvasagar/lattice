@@ -537,20 +537,32 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::CONTROL)
     }
 
-    /// Process-wide shared [`Builtins`]. Built once on first
-    /// access. `fixture()` returns a *copy* of this; the
-    /// scenario-specific `shared_keymap_*` helpers below register
-    /// against the same builtins so trie-bound `CommandInvocation`
-    /// ids stay in lockstep with what each test compares against.
-    fn shared_builtins() -> &'static Builtins {
+    /// Process-wide shared [`Builtins`] + [`crate::actions::ActionIds`].
+    /// Built once on first access from a single shared registry;
+    /// returned as a static reference so every test fixture in
+    /// this module sees the same id space. `fixture()` returns a
+    /// copy; the scenario-specific `shared_keymap_*` helpers below
+    /// register against the same ids so trie-bound
+    /// `CommandInvocation` ids stay in lockstep with what each
+    /// test compares against.
+    fn shared_init() -> &'static (Builtins, crate::actions::ActionIds) {
         use std::sync::OnceLock;
-        static B: OnceLock<Builtins> = OnceLock::new();
-        B.get_or_init(|| {
+        static INIT: OnceLock<(Builtins, crate::actions::ActionIds)> = OnceLock::new();
+        INIT.get_or_init(|| {
             let mut r = CommandRegistry::new();
             let b = populate(&mut r);
             let _ex = lattice_grammar::ex_commands::populate(&mut r);
-            b
+            let a = crate::actions::populate(&mut r);
+            (b, a)
         })
+    }
+
+    fn shared_builtins() -> &'static Builtins {
+        &shared_init().0
+    }
+
+    fn shared_actions() -> &'static crate::actions::ActionIds {
+        &shared_init().1
     }
 
     /// Build a fresh `KeymapHandle` populated with every catalog
@@ -560,10 +572,11 @@ mod tests {
     fn build_base_keymap() -> KeymapHandle {
         let h = KeymapHandle::new();
         let b = shared_builtins();
+        let a = shared_actions();
         crate::keymap_replace::register_replace_bindings(&h);
         crate::keymap_visual::register_visual_bindings(&h, b);
         crate::keymap_insert::register_insert_bindings(&h);
-        crate::keymap_normal::register_normal_bindings(&h, b);
+        crate::keymap_normal::register_normal_bindings(&h, b, a);
         h
     }
 
@@ -890,20 +903,25 @@ mod tests {
     #[test]
     fn o_opens_line_below() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('o'))
-            ),
-            Action::OpenLineBelow
-        ));
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('O'))
-            ),
-            Action::OpenLineAbove
-        ));
+        let a = shared_actions();
+        // Slice 8.i.1.a: `o` / `O` are now `CommandKind::Action`
+        // dispatch (`Effect::AppAction(AppEffect::OpenLine{Below,Above})`)
+        // routed through `run_invocation`, surfaced at the
+        // input layer as `Action::Invoke`.
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('o')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.open_line_below),
+            other => panic!("expected Invoke(open_line_below), got {other:?}"),
+        }
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('O')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.open_line_above),
+            other => panic!("expected Invoke(open_line_above), got {other:?}"),
+        }
     }
 
     // ---- Operator-pending state ----
@@ -2559,13 +2577,14 @@ mod tests {
     #[test]
     fn tilde_emits_toggle_case_at_cursor() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('~'))
-            ),
-            Action::ToggleCaseAtCursor
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('~')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.toggle_case_at_cursor),
+            other => panic!("expected Invoke(toggle_case_at_cursor), got {other:?}"),
+        }
     }
 
     // ---- Word-search and matching-bracket ----
@@ -2597,13 +2616,14 @@ mod tests {
     #[test]
     fn percent_emits_match_bracket() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('%'))
-            ),
-            Action::MatchBracket
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('%')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.match_bracket),
+            other => panic!("expected Invoke(match_bracket), got {other:?}"),
+        }
     }
 
     // ---- Viewport motions: H, M, L, z*, Ctrl-F/B/Y/E ----

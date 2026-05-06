@@ -742,14 +742,12 @@ pub fn register_normal_bindings(
     // ---- `substitute_normal_capture` rewrites with the
     // ---- captured char.
 
-    // `m<X>` -- set mark X.
-    handle.bind_legacy(
-        layer,
-        mode,
-        &[lit_char('m')],
-        Action::SetPending(Pending::AfterSetMark),
-        source(),
-    );
+    // `m<X>` -- set mark X. The `[m]` standalone prefix is
+    // unbound (slice 8.i.4.a): the trie returns Partial because
+    // `[m, *]` exists, and `lookup_normal` synthesises
+    // `Action::AbsorbPartialChord(m)` so `App::partial_chord` =
+    // `[m]`. Same shape for `'`, `` ` ``, `"`, `q`, `@`, `<C-w>`
+    // below, plus `g` and `z` which never had a standalone bind.
     handle.bind(
         layer,
         mode,
@@ -759,13 +757,6 @@ pub fn register_normal_bindings(
     );
 
     // `'<X>` -- jump to mark X (line).
-    handle.bind_legacy(
-        layer,
-        mode,
-        &[lit_char('\'')],
-        Action::SetPending(Pending::AfterJumpMarkLine),
-        source(),
-    );
     handle.bind(
         layer,
         mode,
@@ -775,13 +766,6 @@ pub fn register_normal_bindings(
     );
 
     // `` `<X> `` -- jump to mark X (exact).
-    handle.bind_legacy(
-        layer,
-        mode,
-        &[lit_char('`')],
-        Action::SetPending(Pending::AfterJumpMarkExact),
-        source(),
-    );
     handle.bind(
         layer,
         mode,
@@ -791,13 +775,6 @@ pub fn register_normal_bindings(
     );
 
     // `"<X>` -- select register X for the next operator / paste.
-    handle.bind_legacy(
-        layer,
-        mode,
-        &[lit_char('"')],
-        Action::SetPending(Pending::AfterRegister),
-        source(),
-    );
     handle.bind(
         layer,
         mode,
@@ -810,13 +787,6 @@ pub fn register_normal_bindings(
     // `q` while recording stops; that case is handled before
     // the trie lookup in `compute_normal_action` because it
     // depends on the App-side `recording_macro` state.
-    handle.bind_legacy(
-        layer,
-        mode,
-        &[lit_char('q')],
-        Action::SetPending(Pending::AfterMacroStart),
-        source(),
-    );
     handle.bind(
         layer,
         mode,
@@ -826,13 +796,6 @@ pub fn register_normal_bindings(
     );
 
     // `@<X>` -- play macro from register X (`@@` repeats last).
-    handle.bind_legacy(
-        layer,
-        mode,
-        &[lit_char('@')],
-        Action::SetPending(Pending::AfterMacroPlay),
-        source(),
-    );
     handle.bind(
         layer,
         mode,
@@ -1004,16 +967,11 @@ pub fn register_normal_bindings(
 
     // ---- `<C-w>` window-management sub-tree.
     //
-    // Depth-1: terminal `SetPending(AfterCtrlW)` plus children
-    // for the second-key resolution. Same shape as `d` / `c` /
-    // `y` / `>` / `<` from 8.g.iii.
-    handle.bind_legacy(
-        layer,
-        mode,
-        &[lit(KeyChord::ctrl('w'))],
-        Action::SetPending(Pending::AfterCtrlW),
-        source(),
-    );
+    // Slice 8.i.4.a: the standalone `[<C-w>]` bind is gone --
+    // the trie returns `Partial` and `lookup_normal` emits
+    // `AbsorbPartialChord` (same shape as `g` / `z` / `m` / `'`
+    // / etc. above). Children of `[<C-w>, *]` register their
+    // resolutions below.
     register_ctrl_w_sub_tree(handle);
 }
 
@@ -1428,13 +1386,21 @@ pub fn lookup_normal(handle: &KeymapHandle, event: &KeyEvent) -> Option<Action> 
             Some(action_from_bound_with_capture(&command, &captured))
         }
         LookupResult::Partial => {
-            if chord == KeyChord::char('g') {
-                Some(Action::SetPending(Pending::AfterG))
-            } else if chord == KeyChord::char('z') {
-                Some(Action::SetPending(Pending::AfterZ))
-            } else {
-                None
-            }
+            // Slice 8.i.4.a: every `Partial` result absorbs into
+            // `App::partial_chord` via `AbsorbPartialChord`. The
+            // App's next keystroke runs through
+            // `dispatch_normal` with this stack as prefix, hitting
+            // the trie's resolved binding for the full path.
+            // Replaces the prior `g`/`z` -> `SetPending(After*)`
+            // synthesis. The 9 simple prefix-only Pending variants
+            // (`AfterG`, `AfterZ`, `AfterCtrlW`, `AfterSetMark`,
+            // `AfterJumpMarkLine`, `AfterJumpMarkExact`,
+            // `AfterRegister`, `AfterMacroStart`,
+            // `AfterMacroPlay`) all funnel through here now.
+            // Parameterised pendings (`AfterOperator(_)`,
+            // `AfterTextObject{_}`, `AfterFindChar{_}`) keep their
+            // own `SetPending` flow until 8.i.4.b.
+            Some(Action::AbsorbPartialChord(chord))
         }
         LookupResult::Unbound => None,
     }
@@ -2127,17 +2093,25 @@ mod tests {
     /// `LookupResult::Partial` into `SetPending(AfterG)` so the
     /// dispatcher arms the second-key resolver.
     #[test]
-    fn g_arms_after_g_pending() {
+    fn g_absorbs_partial_chord() {
+        // Slice 8.i.4.a: trie's `Partial` -> `AbsorbPartialChord(g)`.
         let (h, _, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('g'), KeyModifiers::NONE));
-        assert!(matches!(r, Some(Action::SetPending(Pending::AfterG))));
+        assert!(matches!(
+            r,
+            Some(Action::AbsorbPartialChord(c)) if c == KeyChord::char('g')
+        ));
     }
 
     #[test]
-    fn z_arms_after_z_pending() {
+    fn z_absorbs_partial_chord() {
+        // Slice 8.i.4.a: trie's `Partial` -> `AbsorbPartialChord(z)`.
         let (h, _, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('z'), KeyModifiers::NONE));
-        assert!(matches!(r, Some(Action::SetPending(Pending::AfterZ))));
+        assert!(matches!(
+            r,
+            Some(Action::AbsorbPartialChord(c)) if c == KeyChord::char('z')
+        ));
     }
 
     #[test]
@@ -2296,12 +2270,13 @@ mod tests {
     /// in `compute_normal_action` as a short-circuit before the
     /// trie lookup -- the registry doesn't see App state.
     #[test]
-    fn q_arms_after_macro_start_pending() {
+    fn q_absorbs_partial_chord() {
+        // Slice 8.i.4.a: trie's `Partial` -> `AbsorbPartialChord(q)`.
         let (h, _, _) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(matches!(
             r,
-            Some(Action::SetPending(Pending::AfterMacroStart))
+            Some(Action::AbsorbPartialChord(c)) if c == KeyChord::char('q')
         ));
     }
 
@@ -2764,7 +2739,8 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_w_arms_after_ctrl_w_pending() {
+    fn ctrl_w_absorbs_partial_chord() {
+        // Slice 8.i.4.a: trie's `Partial` -> `AbsorbPartialChord(<C-w>)`.
         let (h, _, _) = populated_handle();
         let r = lookup_normal(
             &h,
@@ -2772,7 +2748,7 @@ mod tests {
         );
         assert!(matches!(
             r,
-            Some(Action::SetPending(Pending::AfterCtrlW))
+            Some(Action::AbsorbPartialChord(c)) if c == KeyChord::ctrl('w')
         ));
     }
 

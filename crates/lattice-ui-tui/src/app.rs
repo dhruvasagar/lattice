@@ -386,6 +386,21 @@ pub enum Action {
     Quit,
     /// Run a CommandInvocation through `lattice_grammar::execute()`.
     Invoke(CommandInvocation),
+    /// Slice 8.i.4.a -- absorb the captured chord into
+    /// `App::partial_chord`, marking that we're partway through
+    /// a multi-key sequence the trie hasn't fully resolved yet.
+    /// Replaces the `Action::SetPending(Pending::After*)` flow
+    /// for prefixes whose only role was "wait for the next key"
+    /// (`g`, `z`, `<C-w>`, `m`, `'`, `` ` ``, `"`, `q`, `@`).
+    /// `App::apply` appends the chord and otherwise no-ops; the
+    /// next keystroke runs through `dispatch_normal` with
+    /// `partial_chord` as the prefix, hitting the trie's
+    /// resolved binding (`gd`, `zo`, `<C-w>v`, ...). Parameterised
+    /// Pending variants (`AfterOperator(_)`,
+    /// `AfterTextObject{_}`, `AfterFindChar{_}`, `AfterCtrlX`)
+    /// stay on the `SetPending` flow for now -- 8.i.4.b retires
+    /// those.
+    AbsorbPartialChord(crate::chord::KeyChord),
     /// Insert a string at the cursor (used by Insert mode).
     Insert(String),
     /// Delete the byte before the cursor (Insert-mode backspace).
@@ -903,6 +918,23 @@ pub struct App {
     pub terminal_width: Option<u16>,
     pub modal: ModalState,
     pub pending: Pending,
+    /// Slice 8.i.4.a partial-chord cursor (replaces the simple
+    /// prefix-only `Pending::After*` variants -- `AfterG`,
+    /// `AfterZ`, `AfterCtrlW`, `AfterSetMark`,
+    /// `AfterJumpMarkLine`, `AfterJumpMarkExact`, `AfterRegister`,
+    /// `AfterMacroStart`, `AfterMacroPlay`). When the trie
+    /// returns `LookupResult::Partial`, `dispatch_normal` emits
+    /// `Action::AbsorbPartialChord(c)` and `App::apply` appends
+    /// `c` here. The next keystroke calls
+    /// `lookup_normal_with_prefix(handle, &partial_chord, event)`,
+    /// hitting the trie's resolved binding for the full path.
+    /// Cleared on every non-`AbsorbPartialChord` action, mirroring
+    /// the existing `pending` reset on every non-`SetPending`
+    /// action. Parameterised pendings
+    /// (`AfterOperator(_)`, `AfterTextObject{_}`,
+    /// `AfterFindChar{_}`, `AfterCtrlX`) stay on `pending` for
+    /// now; 8.i.4.b retires those.
+    pub partial_chord: Vec<crate::chord::KeyChord>,
     /// Grammar registry shared with the document actor by `Arc`. The
     /// actor calls `lattice_grammar::execute` with this registry from
     /// inside its own task. The App also reads it directly for the
@@ -2467,6 +2499,7 @@ impl App {
             terminal_width: None,
             modal: ModalState::Normal,
             pending: Pending::None,
+            partial_chord: Vec::new(),
             registry,
             event_bus: event_bus.clone(),
             option_change_rx: Some(option_change_rx),
@@ -3542,6 +3575,16 @@ impl App {
         if !matches!(action, Action::SetPending(_)) {
             self.pending = Pending::None;
         }
+        // Slice 8.i.4.a partial-chord lifecycle: same shape as the
+        // `pending` reset above. Any action that *isn't*
+        // `AbsorbPartialChord(_)` resolves (or aborts) the in-flight
+        // multi-key sequence, so the chord stack must clear. Without
+        // this an unbound second key (e.g. `g!` after `g`) would
+        // leak `[g]` into the next keystroke's prefix lookup and
+        // mis-route it as `gd` / `gv` / etc.
+        if !matches!(action, Action::AbsorbPartialChord(_)) {
+            self.partial_chord.clear();
+        }
         // Read-only guard for help: when a help buffer holds focus
         // (DESIGN.md §5.9 active-buffer routing), buffer-mutating
         // actions (Insert / Delete / Paste / Undo / Redo / fold ops
@@ -3564,6 +3607,14 @@ impl App {
                 self.should_quit = true;
             }
             Action::Invoke(inv) => self.run_invocation(inv),
+            Action::AbsorbPartialChord(chord) => {
+                // Slice 8.i.4.a: the trie returned `Partial`; the
+                // input layer wrapped the captured chord in this
+                // signal. Append to `partial_chord` and otherwise
+                // no-op -- the next keystroke runs through
+                // `dispatch_normal` with this stack as prefix.
+                self.partial_chord.push(chord);
+            }
             Action::Insert(s) => self.do_insert_text(&s),
             Action::DeleteCharBackward => self.do_delete_char_backward(),
             Action::EnterMode(state) => self.enter_mode(state),

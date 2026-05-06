@@ -329,6 +329,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         insert_completion_open: app.insert_completion.is_some(),
                         snippet_active: app.active_snippet.is_some(),
                         keymap: &app.keymap,
+                        partial_chord: &app.partial_chord,
                     };
                     let action = translate(ctx, k);
                     app.apply(action);

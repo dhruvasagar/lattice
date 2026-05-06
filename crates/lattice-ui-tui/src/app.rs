@@ -11732,6 +11732,13 @@ impl App {
             AppEffect::OpenLineBelow => self.apply(Action::OpenLineBelow),
             AppEffect::OpenLineAbove => self.apply(Action::OpenLineAbove),
             AppEffect::LspHoverRequest => self.apply(Action::LspHoverRequest),
+            AppEffect::SearchNext => self.apply(Action::SearchNext),
+            AppEffect::SearchPrevious => self.apply(Action::SearchPrevious),
+            AppEffect::JumpHistoryBack => self.apply(Action::JumpHistoryBack),
+            AppEffect::JumpHistoryForward => self.apply(Action::JumpHistoryForward),
+            AppEffect::WalkMarkHistoryBack => self.apply(Action::WalkMarkHistoryBack),
+            AppEffect::WalkMarkHistoryForward => self.apply(Action::WalkMarkHistoryForward),
+            AppEffect::TagStackPop => self.apply(Action::TagStackPop),
         }
     }
 

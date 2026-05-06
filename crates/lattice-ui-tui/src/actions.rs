@@ -36,6 +36,13 @@ pub struct ActionIds {
     pub open_line_below: CommandId,
     pub open_line_above: CommandId,
     pub lsp_hover_request: CommandId,
+    pub search_next: CommandId,
+    pub search_previous: CommandId,
+    pub jump_history_back: CommandId,
+    pub jump_history_forward: CommandId,
+    pub walk_mark_history_back: CommandId,
+    pub walk_mark_history_forward: CommandId,
+    pub tag_stack_pop: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -73,6 +80,48 @@ pub fn populate(registry: &mut CommandRegistry) -> ActionIds {
             "action:lsp-hover",
             "`K`: send `textDocument/hover` to every attached LSP server.",
             AppEffect::LspHoverRequest,
+        ),
+        search_next: register_simple(
+            registry,
+            "action:search-next",
+            "Vim's `n`: re-run the last search forward.",
+            AppEffect::SearchNext,
+        ),
+        search_previous: register_simple(
+            registry,
+            "action:search-previous",
+            "Vim's `N`: re-run the last search in the reverse direction.",
+            AppEffect::SearchPrevious,
+        ),
+        jump_history_back: register_simple(
+            registry,
+            "action:jump-history-back",
+            "Vim's `<C-o>`: step backward through the position history.",
+            AppEffect::JumpHistoryBack,
+        ),
+        jump_history_forward: register_simple(
+            registry,
+            "action:jump-history-forward",
+            "Vim's `<C-i>`: step forward through the position history.",
+            AppEffect::JumpHistoryForward,
+        ),
+        walk_mark_history_back: register_simple(
+            registry,
+            "action:walk-mark-history-back",
+            "Vim's `g;`: walk backward through the mark history.",
+            AppEffect::WalkMarkHistoryBack,
+        ),
+        walk_mark_history_forward: register_simple(
+            registry,
+            "action:walk-mark-history-forward",
+            "Vim's `g,`: walk forward through the mark history.",
+            AppEffect::WalkMarkHistoryForward,
+        ),
+        tag_stack_pop: register_simple(
+            registry,
+            "action:tag-stack-pop",
+            "Vim's `<C-t>`: pop the tag stack and jump back to the prior origin.",
+            AppEffect::TagStackPop,
         ),
     }
 }
@@ -121,6 +170,13 @@ mod tests {
             (ids.open_line_below, "action:open-line-below"),
             (ids.open_line_above, "action:open-line-above"),
             (ids.lsp_hover_request, "action:lsp-hover"),
+            (ids.search_next, "action:search-next"),
+            (ids.search_previous, "action:search-previous"),
+            (ids.jump_history_back, "action:jump-history-back"),
+            (ids.jump_history_forward, "action:jump-history-forward"),
+            (ids.walk_mark_history_back, "action:walk-mark-history-back"),
+            (ids.walk_mark_history_forward, "action:walk-mark-history-forward"),
+            (ids.tag_stack_pop, "action:tag-stack-pop"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

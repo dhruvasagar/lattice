@@ -69,6 +69,34 @@ pub enum AppEffect {
     /// first non-empty markdown body in the hover popup.
     /// Promoted from `Action::LspHoverRequest` in slice 8.i.1.a.
     LspHoverRequest,
+    /// Vim's `n`. Re-runs the last search forward. Promoted from
+    /// `Action::SearchNext` in slice 8.i.1.b.
+    SearchNext,
+    /// Vim's `N`. Re-runs the last search in the reverse
+    /// direction. Promoted from `Action::SearchPrevious` in
+    /// slice 8.i.1.b.
+    SearchPrevious,
+    /// Vim's `<C-o>`. Walk one step backward through the position
+    /// history (DESIGN.md §5.1.1). Promoted from
+    /// `Action::JumpHistoryBack` in slice 8.i.1.b.
+    JumpHistoryBack,
+    /// Vim's `<C-i>` / `<Tab>`. Walk one step forward through the
+    /// position history. Promoted from `Action::JumpHistoryForward`
+    /// in slice 8.i.1.b.
+    JumpHistoryForward,
+    /// Vim's `g;`. Walk one step backward through the
+    /// mark history (oldest -> newest cursor positions in this
+    /// buffer). Promoted from `Action::WalkMarkHistoryBack` in
+    /// slice 8.i.1.b.
+    WalkMarkHistoryBack,
+    /// Vim's `g,`. Walk one step forward through the mark
+    /// history. Promoted from `Action::WalkMarkHistoryForward` in
+    /// slice 8.i.1.b.
+    WalkMarkHistoryForward,
+    /// Vim's `<C-t>`. Pop one entry off the tag stack and jump
+    /// back to where the previous `gd` / `<C-]>` originated.
+    /// Promoted from `Action::TagStackPop` in slice 8.i.1.b.
+    TagStackPop,
 }
 
 #[cfg(test)]

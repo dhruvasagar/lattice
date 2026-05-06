@@ -344,18 +344,18 @@ pub fn register_normal_bindings(
         Action::EnterSearch(SearchDirection::Backward),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('n')],
-        Action::SearchNext,
+        CommandInvocation::of(actions.search_next),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_char('N')],
-        Action::SearchPrevious,
+        CommandInvocation::of(actions.search_previous),
         source(),
     );
     handle.bind_legacy(
@@ -402,11 +402,11 @@ pub fn register_normal_bindings(
     );
 
     // Specials.
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit_special(SpecialKey::Tab)],
-        Action::JumpHistoryForward,
+        CommandInvocation::of(actions.jump_history_forward),
         source(),
     );
     // PageDown / PageUp -- count-10 line-down / line-up. These
@@ -483,18 +483,18 @@ pub fn register_normal_bindings(
         Action::JoinLines { with_space: false },
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[g.clone(), lit_char(';')],
-        Action::WalkMarkHistoryBack,
+        CommandInvocation::of(actions.walk_mark_history_back),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[g.clone(), lit_char(',')],
-        Action::WalkMarkHistoryForward,
+        CommandInvocation::of(actions.walk_mark_history_forward),
         source(),
     );
     handle.bind_legacy(
@@ -959,25 +959,25 @@ pub fn register_normal_bindings(
         Action::Redo,
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('o'))],
-        Action::JumpHistoryBack,
+        CommandInvocation::of(actions.jump_history_back),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('i'))],
-        Action::JumpHistoryForward,
+        CommandInvocation::of(actions.jump_history_forward),
         source(),
     );
-    handle.bind_legacy(
+    handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('t'))],
-        Action::TagStackPop,
+        CommandInvocation::of(actions.tag_stack_pop),
         source(),
     );
     handle.bind_legacy(
@@ -1849,9 +1849,12 @@ mod tests {
 
     #[test]
     fn tab_jumps_history_forward() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Tab, KeyModifiers::NONE));
-        assert!(matches!(r, Some(Action::JumpHistoryForward)));
+        match r {
+            Some(Action::Invoke(inv)) => assert_eq!(inv.command, a.jump_history_forward),
+            other => panic!("expected Invoke(jump_history_forward), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2624,12 +2627,15 @@ mod tests {
 
     #[test]
     fn ctrl_o_resolves_to_jump_history_back() {
-        let (h, _, _) = populated_handle();
+        let (h, _, a) = populated_handle();
         let r = lookup_normal(
             &h,
             &ev(KeyCode::Char('o'), KeyModifiers::CONTROL),
         );
-        assert!(matches!(r, Some(Action::JumpHistoryBack)));
+        match r {
+            Some(Action::Invoke(inv)) => assert_eq!(inv.command, a.jump_history_back),
+            other => panic!("expected Invoke(jump_history_back), got {other:?}"),
+        }
     }
 
     #[test]

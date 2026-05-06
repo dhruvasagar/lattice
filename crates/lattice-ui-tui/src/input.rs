@@ -1210,25 +1210,27 @@ mod tests {
     #[test]
     fn n_in_normal_repeats_search_forward() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('n'))
-            ),
-            Action::SearchNext
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('n')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.search_next),
+            other => panic!("expected Invoke(search_next), got {other:?}"),
+        }
     }
 
     #[test]
     fn capital_n_in_normal_repeats_search_reverse() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Char('N'))
-            ),
-            Action::SearchPrevious
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Char('N')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.search_previous),
+            other => panic!("expected Invoke(search_previous), got {other:?}"),
+        }
     }
 
     #[test]
@@ -1771,13 +1773,14 @@ mod tests {
         // crossing the document <-> help boundary is what
         // active_buffer routing makes possible.
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx_help_active(ModalState::Normal, Pending::None, &b),
-                ctrl(KeyCode::Char('o'))
-            ),
-            Action::JumpHistoryBack
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx_help_active(ModalState::Normal, Pending::None, &b),
+            ctrl(KeyCode::Char('o')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.jump_history_back),
+            other => panic!("expected Invoke(jump_history_back), got {other:?}"),
+        }
     }
 
     // ---- Pane navigation (DESIGN.md §5.9, B.1.b) ----
@@ -2077,25 +2080,27 @@ mod tests {
     #[test]
     fn g_semicolon_after_g_walks_mark_history_back() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterG, &b),
-                key(KeyCode::Char(';'))
-            ),
-            Action::WalkMarkHistoryBack
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterG, &b),
+            key(KeyCode::Char(';')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.walk_mark_history_back),
+            other => panic!("expected Invoke(walk_mark_history_back), got {other:?}"),
+        }
     }
 
     #[test]
     fn g_comma_after_g_walks_mark_history_forward() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::AfterG, &b),
-                key(KeyCode::Char(','))
-            ),
-            Action::WalkMarkHistoryForward
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::AfterG, &b),
+            key(KeyCode::Char(',')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.walk_mark_history_forward),
+            other => panic!("expected Invoke(walk_mark_history_forward), got {other:?}"),
+        }
     }
 
     // ---- LSP navigation (gd / gD / gy / gI) ----
@@ -2452,25 +2457,27 @@ mod tests {
     #[test]
     fn ctrl_o_emits_jump_history_back() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                ctrl(KeyCode::Char('o'))
-            ),
-            Action::JumpHistoryBack
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            ctrl(KeyCode::Char('o')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.jump_history_back),
+            other => panic!("expected Invoke(jump_history_back), got {other:?}"),
+        }
     }
 
     #[test]
     fn ctrl_i_emits_jump_history_forward() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                ctrl(KeyCode::Char('i'))
-            ),
-            Action::JumpHistoryForward
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            ctrl(KeyCode::Char('i')),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.jump_history_forward),
+            other => panic!("expected Invoke(jump_history_forward), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2488,13 +2495,14 @@ mod tests {
     #[test]
     fn tab_in_normal_emits_jump_history_forward() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx(ModalState::Normal, Pending::None, &b),
-                key(KeyCode::Tab)
-            ),
-            Action::JumpHistoryForward
-        ));
+        let a = shared_actions();
+        match translate(
+            ctx(ModalState::Normal, Pending::None, &b),
+            key(KeyCode::Tab),
+        ) {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.jump_history_forward),
+            other => panic!("expected Invoke(jump_history_forward), got {other:?}"),
+        }
     }
 
     // ---- Register prefix ----

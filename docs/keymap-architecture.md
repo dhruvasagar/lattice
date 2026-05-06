@@ -869,25 +869,39 @@ type-hoisting decisions, and the sub-slice plan.
     `match pending` body. The 9 migrated `match pending` arms
     are unreachable post-migration but kept as a defensive
     no-op until 8.i.4.c retires the Pending enum.
-  - 8.i.4.b -- Retire parameterised Pending. Pending. 8
-    remaining `bind_legacy` sites carry parameterised
-    `SetPending(Pending::*)`: `AfterOperator(OperatorId)` (8
-    operator-prefix sites), `AfterTextObject{op, around}` (1
-    site, registered via `register_operator_pending`'s text-
-    object resolution), `AfterFindChar{kind, operator}` (1
-    site). Plus `AfterCtrlX` in Insert mode. These need a
-    different migration shape because their payloads encode
-    semantic info the trie's plain `Partial` doesn't carry --
-    the `op_count` latching on `AfterOperator` is the
-    load-bearing example.
-  - 8.i.4.c -- Final retirement. Pending. Drop the `Pending`
+  - 8.i.4.b -- AfterCtrlX (Insert mode). ✅ landed.
+    `dispatch_insert` grows a `partial_chord` parameter; the
+    trie's `Partial` for `<C-x>` (because `[<C-x>, <C-o>]` and
+    `[<C-x>, <C-s>]` are bound) emits
+    `Action::AbsorbPartialChord(<C-x>)` instead of the prior
+    `SetPending(AfterCtrlX)` synthesis.
+  - 8.i.4.c -- AfterOperator + AfterTextObject + AfterFindChar.
+    ✅ landed. The 10 remaining `bind_legacy(... SetPending(After*))`
+    sites retire. AfterOperator (8 sites) needs op_count
+    latching that the trie's plain `Partial` doesn't carry, so
+    a new `AppEffect::AbsorbOperatorPrefix(OperatorId)` variant
+    handles both atomic effects (latch `pending_count` ->
+    `op_count`, push prefix to `partial_chord`); each operator
+    binds a typed `CommandInvocation` whose `ActionSpec`
+    returns this variant. AfterTextObject and AfterFindChar
+    delete cleanly -- their `[op, i / a]` and `[op, f / F / t /
+    T]` paths are natural `Partial` nodes once the standalone
+    binds are gone. `lookup_normal_with_prefix`'s `Partial` arm
+    now emits `AbsorbPartialChord(chord)` (was
+    `SetPending(None)`), required for nested partials like
+    `[d, i]` and `[d, f]`. `compute_normal_action`'s `match
+    pending` body collapses to one defensive no-op covering
+    all 13 Pending variants. `actions::populate` grew a
+    `&Builtins` parameter so the operator-prefix helpers can
+    capture the `OperatorId` in their closures.
+  - 8.i.4.d -- Final retirement. Pending. Drop the `Pending`
     enum entirely, drop `Action::SetPending`, drop
     `bind_legacy` / `legacy_action` / `KeymapHandleLegacyExt` /
     `legacy_action_command_id` / `BoundCommand::from_legacy_action`,
     drop the 4 drift reference bodies in
     `keymap_replace`/`keymap_visual`/`keymap_insert`, drop
-    `compute_normal_action`'s `match pending` body. Bench
-    rollup. Doc updates.
+    `compute_normal_action`'s defensive `match pending` body.
+    Bench rollup. Doc updates.
   - At this point the `keymap.rs` drift test becomes obsolete
     (descriptor IS behaviour); replace it with a "every catalog
     entry resolves to a real `CommandInvocation`" test.

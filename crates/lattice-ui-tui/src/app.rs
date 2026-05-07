@@ -3569,6 +3569,109 @@ impl App {
         if self.syntax.is_some() {
             self.pending_syntax_edits
                 .extend(applied.iter().map(|a| a.delta));
+            // Slice C.3: shift `visible_highlights` synchronously
+            // so line indices track the post-edit content even
+            // before the worker publishes a fresh snapshot. For
+            // line-deletes, this drains the deleted lines'
+            // entries from the cached spans; for line-inserts,
+            // it inserts empty placeholders. The result is that
+            // unchanged-content lines below an edit keep their
+            // (still-correct) spans at their NEW indices --
+            // eliminating the "lines below the delete flicker"
+            // user-visible symptom. Combined with the stale-
+            // snapshot hold in `refresh_highlights`, the cached
+            // spans never go through an empty/wrong intermediate
+            // state during the worker window.
+            for a in applied {
+                self.shift_highlights_for_edit(&a.delta);
+            }
+        }
+    }
+
+    /// Slice C.3: keep `visible_highlights` line-aligned with the
+    /// current document immediately after an edit, before the
+    /// syntax worker publishes a fresh snapshot.
+    ///
+    /// `visible_highlights` is indexed by viewport row =
+    /// `buffer_line - scroll`. When an edit changes the line
+    /// count (line-delete, line-insert, multi-line replace), the
+    /// content at row N now corresponds to a different buffer
+    /// line than before, but the cached span entries don't shift
+    /// automatically. The renderer would paint pre-edit spans
+    /// onto post-edit content, producing the user-reported "old
+    /// span gaps appear as white characters on the new line"
+    /// flicker.
+    ///
+    /// Fix: derive the line-shift from the delta's positions and
+    /// apply it to `visible_highlights` as a Vec splice.
+    /// Lines above the edit are untouched. Lines at and below
+    /// the edit's start line are drained (delete) or padded with
+    /// empty placeholders (insert) -- but unchanged lines further
+    /// below still have correct spans at their NEW indices.
+    ///
+    /// Pure ns-fast: a Vec drain or insert of a few elements.
+    /// Only mutates the cache; doesn't touch the snapshot.
+    fn shift_highlights_for_edit(&mut self, delta: &lattice_protocol::edit::EditDelta) {
+        let edit_start = delta.start_position.line;
+        let scroll = self.scroll;
+        if edit_start < scroll {
+            // Edit started above the visible viewport. Bail and
+            // let the worker's publish drive a normal recompute.
+            return;
+        }
+        let viewport_idx = (edit_start - scroll) as usize;
+        if viewport_idx >= self.visible_highlights.len() {
+            // Edit started below the visible viewport. Nothing
+            // visible changes.
+            return;
+        }
+        let old_end = delta.old_end_position.line;
+        let new_end = delta.new_end_position.line;
+        let old_lines = old_end.saturating_sub(edit_start) as usize;
+        let new_lines = new_end.saturating_sub(edit_start) as usize;
+        if old_lines == new_lines {
+            // In-line edit. The line at `viewport_idx` had its
+            // content modified but stays at the same index --
+            // its cached spans become slightly stale until the
+            // worker publishes; no shift needed.
+            return;
+        }
+        // Decide where to apply the shift. If the edit starts at
+        // the very beginning of `start.line` (byte 0), then
+        // `start.line`'s pre-edit content has moved -- it's now
+        // located further down (for inserts) or has been
+        // consumed (for deletes). The shift point IS
+        // `viewport_idx`. If the edit starts mid-line or at
+        // line-end (byte > 0), then `start.line`'s content (or
+        // prefix) is preserved at `viewport_idx`; the shift
+        // applies to the line AFTER it.
+        //
+        // Concrete impact:
+        // - `O` (newline at line start, byte 0): insert at
+        //   viewport_idx; original line spans move down.
+        // - `o` (newline at line end, byte > 0): insert at
+        //   viewport_idx + 1; original line spans preserved.
+        // - `dd` (delete whole line, start byte 0):
+        //   drain at viewport_idx; the deleted line's spans go.
+        // - Backspace joining lines (delete \n at line end,
+        //   start byte > 0): drain at viewport_idx + 1; the
+        //   joined-into line's spans preserved.
+        let action_idx = if delta.start_position.byte == 0 {
+            viewport_idx
+        } else {
+            (viewport_idx + 1).min(self.visible_highlights.len())
+        };
+        if old_lines > new_lines {
+            let to_remove = old_lines - new_lines;
+            let drain_end = (action_idx + to_remove).min(self.visible_highlights.len());
+            if action_idx < drain_end {
+                self.visible_highlights.drain(action_idx..drain_end);
+            }
+        } else {
+            let to_insert = new_lines - old_lines;
+            for _ in 0..to_insert {
+                self.visible_highlights.insert(action_idx, Vec::new());
+            }
         }
     }
 
@@ -4293,27 +4396,31 @@ impl App {
             // Cache hit -- existing visible_highlights is valid.
             return;
         }
-        // Cache miss: recompute spans from whatever snapshot is
-        // currently published. Note: when the worker is mid-
-        // parse (document.text_version > snap.text_version),
-        // we deliberately do NOT drop spans -- doing so produced
-        // a visible "highlighting flickers off and back on"
-        // effect on every keystroke. Painting spans computed
-        // against the (slightly stale) snapshot keeps unchanged
-        // content correctly highlighted; only the just-edited
-        // region's spans are briefly positionally off until the
-        // worker publishes (~50µs typical at 1600 lines per
-        // §8.2). At 60Hz that's well below one frame, so the
-        // user perceives continuous highlighting with at most
-        // a single line briefly showing a subtle color shift.
+        // Cache miss. Decide between recompute and HOLD based on
+        // whether the snapshot is current enough to give correct
+        // spans.
         //
-        // Future C.2: worker can publish a transient snapshot
-        // immediately after `tree.edit()` (byte ranges shifted)
-        // before running `Parser::parse`. That makes EVERY span
-        // byte-aligned during the worker window; only the
-        // changed region's tree shape is stale (which usually
-        // doesn't affect color). Tracked separately.
+        // Slice C.3 stale-snapshot hold: if the document has
+        // advanced past the worker's published snapshot, any
+        // spans we compute would be against pre-edit data --
+        // possibly producing wrong colors or wrong line counts
+        // for the brief window before the worker publishes.
+        // Instead, hold the existing visible_highlights (kept
+        // line-aligned by `shift_highlights_for_edit` on edit)
+        // and just update the key. The renderer paints the held
+        // spans, which are byte-correct for unchanged content
+        // and line-aligned even after line-deletes / inserts.
         //
+        // When the worker publishes (snapshot_ptr changes),
+        // we'll re-enter this path with a fresh snapshot and
+        // recompute correctly. The spans only ever transition
+        // from one CORRECT set to another -- never through an
+        // empty/wrong intermediate that would visibly flicker.
+        if snap.text_version() < self.document.text_version() {
+            self.visible_highlights_key = Some(key);
+            return;
+        }
+        // Snapshot is current with the document. Recompute.
         // The window stretches via `visible_buffer_line_extent`
         // to cover lines under closed folds (see method
         // docstring).
@@ -16156,46 +16263,163 @@ mod tests {
 
     #[test]
     fn refresh_highlights_holds_spans_while_worker_catches_up() {
-        // Inverted contract: when document advances but syntax
-        // worker hasn't published yet, refresh_highlights must
-        // KEEP the previous frame's spans -- not drop them. The
-        // earlier "drop spans when stale" guard caused a visible
-        // flicker (highlighting disappeared for ~1 frame on
-        // every keystroke) which the user reported as a jarring
-        // effect. Keeping spans means unchanged lines stay
-        // correctly highlighted continuously; only the just-
-        // edited line is briefly at stale byte positions until
-        // the worker publishes (~50µs typical, well under one
-        // frame at 60Hz).
+        // Slice C.3: when document advances but syntax worker
+        // hasn't published yet, refresh_highlights must HOLD the
+        // existing visible_highlights instead of recomputing
+        // against stale data. Combined with shift_highlights_
+        // for_edit (which keeps line indices aligned), spans
+        // never go through an empty/wrong intermediate state --
+        // unchanged-content lines stay correctly highlighted
+        // continuously throughout the worker window.
         let mut a = app_with("fn main() {}", 5);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
         assert!(!a.visible_highlights.is_empty());
-        let spans_before = a.visible_highlights.clone();
-        // Apply an edit. Without a real worker (no tokio
-        // runtime in lib tests), the syntax snapshot stays at
-        // the old version -- exactly the shape of the in-flight-
-        // worker window in production.
+        let line0_spans_before = a.visible_highlights[0].clone();
+        // Apply an edit that adds a new line below line 0.
+        // Without a real worker (no tokio runtime in lib tests),
+        // the syntax snapshot stays at the old version -- the
+        // exact shape of the in-flight-worker window in
+        // production.
         a.apply_edit_blocking(Edit::insert(Position::new(0, 12), "\nfn b() {}"))
             .unwrap();
         a.maybe_reparse_syntax();
         a.refresh_highlights();
-        // Spans persist (cache hit on snapshot-version key,
-        // which didn't change because worker didn't publish).
-        // Visible-stable highlighting until the worker catches up.
+        // Line 0's content is unchanged by the edit; its spans
+        // must be preserved. shift_highlights_for_edit inserted
+        // an empty placeholder at index 1 (the new line) without
+        // disturbing index 0.
         assert!(
             !a.visible_highlights.is_empty(),
-            "refresh_highlights must NOT drop spans during the worker window -- \
-             dropping them produces a flicker on every keystroke. Spans persist \
-             from the previous frame; unchanged-line spans stay positionally \
-             correct, only the edited line is briefly off."
+            "refresh_highlights must NOT drop spans during the worker window"
         );
         assert_eq!(
-            a.visible_highlights, spans_before,
-            "spans should be unchanged while worker is catching up -- \
-             cache key is keyed on snapshot version, not document version, \
-             so an edit alone doesn't trigger recomputation"
+            a.visible_highlights[0], line0_spans_before,
+            "line 0's spans must be preserved -- its content didn't change"
         );
+        // The new line 1 has an empty placeholder spans entry
+        // (will be filled in when the worker publishes).
+        assert!(
+            a.visible_highlights.len() >= 2,
+            "shift should have inserted a placeholder for the new line"
+        );
+    }
+
+    // ---- C.3 line-delete / line-insert shift regressions ------
+
+    #[test]
+    fn line_delete_shifts_visible_highlights_to_keep_below_lines_aligned() {
+        // User-reported scenario: "comments below the deleted
+        // line briefly turn white." Cause: visible_highlights[N]
+        // was for the OLD line at index N, painted on NEW line N
+        // (which is OLD line N+1 after delete). If OLD line N's
+        // spans had gaps (e.g. code spans), the gaps render as
+        // uncolored = white characters on the new content.
+        //
+        // Fix: shift_highlights_for_edit drains the deleted
+        // line's spans, so visible_highlights[N] is now what was
+        // at index N+1 -- correctly aligned with the new
+        // content at line N.
+        let mut a = app_with(
+            "fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}",
+            10,
+        );
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        let line0_spans = a.visible_highlights[0].clone();
+        let line2_spans_before_delete = a.visible_highlights[2].clone();
+        // Delete the entire line 1 (`fn b() {}\n` at bytes
+        // [10..20]).
+        let range = lattice_protocol::Range::new(
+            Position::new(1, 0),
+            Position::new(2, 0),
+        );
+        a.apply_edit_blocking(Edit::delete(range)).unwrap();
+        // visible_highlights should have one fewer entry.
+        // Line 0's spans unchanged. Line 1 (post-delete) now
+        // has the spans that USED to be at index 2.
+        assert_eq!(a.visible_highlights[0], line0_spans);
+        assert_eq!(
+            a.visible_highlights[1], line2_spans_before_delete,
+            "line below the deleted line must inherit its prior spans -- \
+             this is what eliminates the gray->white->gray flicker"
+        );
+    }
+
+    #[test]
+    fn line_insert_at_end_preserves_start_line_spans() {
+        // `o` style insert: newline at end of current line.
+        // Pre-edit line content unchanged; the new line is
+        // appended below.
+        let mut a = app_with("fn main() {}", 10);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        let line0_spans = a.visible_highlights[0].clone();
+        // Insert "\nfn b() {}" at end of line 0 (byte 12).
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 12), "\nfn b() {}"))
+            .unwrap();
+        // Line 0's spans preserved at index 0; empty
+        // placeholder inserted at index 1.
+        assert_eq!(a.visible_highlights[0], line0_spans);
+        assert!(
+            a.visible_highlights.len() >= 2,
+            "line insert should add a placeholder entry"
+        );
+        assert!(
+            a.visible_highlights[1].is_empty(),
+            "new line's placeholder should be empty until worker publishes"
+        );
+    }
+
+    #[test]
+    fn line_insert_at_start_shifts_existing_spans_down() {
+        // `O` style insert: newline at start of current line.
+        // The existing line's content moves to the next index;
+        // the new (empty) line takes the original index.
+        let mut a = app_with("fn main() {}", 10);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        let line0_spans = a.visible_highlights[0].clone();
+        // Insert "\n" at start of line 0 (byte 0). After:
+        // line 0 = "" (new), line 1 = "fn main() {}" (old).
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 0), "\n"))
+            .unwrap();
+        // visible_highlights[0] is now empty (placeholder for
+        // new line); visible_highlights[1] has the original
+        // spans.
+        assert!(
+            a.visible_highlights[0].is_empty(),
+            "new empty line's placeholder at index 0"
+        );
+        assert_eq!(
+            a.visible_highlights[1], line0_spans,
+            "original line content moved to index 1"
+        );
+    }
+
+    #[test]
+    fn inline_edit_does_not_shift_visible_highlights() {
+        // `>>` style: indent inserts spaces at line start. The
+        // line count is unchanged. visible_highlights stays at
+        // the same shape; the edited line's spans are slightly
+        // stale but no shifting is needed.
+        let mut a = app_with("fn main() {}", 10);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        let len_before = a.visible_highlights.len();
+        let line0_before = a.visible_highlights[0].clone();
+        // Insert "    " at start of line 0 (mimics >> indent).
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 0), "    "))
+            .unwrap();
+        // Length unchanged; spans for line 0 unchanged in
+        // structure (held). The held spans are slightly stale
+        // (the line's content shifted by 4 bytes) but won't
+        // produce visible white -- the renderer paints them on
+        // the new content's first 12 bytes (4 spaces + "fn main"
+        // -- prefix is correctly painted as Keyword/Identifier,
+        // just at slightly off byte positions).
+        assert_eq!(a.visible_highlights.len(), len_before);
+        assert_eq!(a.visible_highlights[0], line0_before);
     }
 
     #[test]

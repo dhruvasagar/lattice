@@ -55,7 +55,8 @@ better.
 | Frame render TUI 200×60                      | <800µs      | ~325µs           | `highlight::rust_viewport` + `render::frame_60_lines` | ✅ under target                                      |
 | Open 100MB log (rope construction)           | <100ms      | 76ms             | `buffer::open_large/100mb`                            | ✅ under target                                      |
 | Search literal worst-case 200k               | <2ms        | 659µs            | `search::no_match_with_wrap/200k`                     | ✅ under target                                      |
-| Tree-sitter incremental reparse              | <500µs      | unmeasured       | not built (Tree::edit not yet threaded)               | ⚠️ gap                                                |
+| Tree-sitter incremental reparse             | scale-by-size | **325µs (1600 lines), 1.77ms (16k lines)** | `highlight::reparse_incremental_single_char_change` | ✅ landed (B.2); ~8–14× under full reparse. tree.edit is O(num_nodes) — floor scales with tree size. See Slice B.2 calibration below. |
+| Highlight span cache hit (steady-state)     | <50ns       | **20ns**         | `render::refresh_highlights_cache_hit`                | ✅ at floor (B.3); ~8900× faster than the pre-B.3 path. |
 | Reflex motion / operator                     | <2ms        | all under budget | `motion::*`, `operator::*`                            | ✅                                                   |
 | LSP framing parse (Content-Length)           | <500ns      | **77ns**         | `lsp::framing::parse_header_block`                    | ✅ Background-class                                  |
 | LSP encode `didChange`                       | <2µs        | **208ns**        | `lsp::encode::did_change`                             | ✅ per-keystroke debounced outgoing                  |

@@ -16,16 +16,32 @@
 //! LSP supervisor:
 //!
 //! - **Worker task.** Owns the `Syntax` instance + `Parser`.
-//!   Receives `(text_version, text)` reparse requests on an
-//!   unbounded mpsc channel. Each request runs the parse on
-//!   `tokio::task::spawn_blocking` so the long-running
-//!   tree-sitter call doesn't tie up a worker thread for the
-//!   whole runtime; on completion the worker stores a fresh
-//!   [`SyntaxSnapshot`] in the handle's `ArcSwap` cell.
-//! - **Coalescing.** Newer requests supersede older ones. Before
-//!   running a parse, the worker drains any queued newer
-//!   `(text_version, text)` and uses only the latest. Bursts of
-//!   keystrokes -> at most one parse per coalesce window.
+//!   Receives `(from_version, text_version, buffer, edits)`
+//!   reparse requests on an unbounded mpsc channel. Each request
+//!   runs the parse on `tokio::task::spawn_blocking` so the
+//!   long-running tree-sitter call doesn't tie up a worker
+//!   thread for the whole runtime; on completion the worker
+//!   stores a fresh [`SyntaxSnapshot`] in the handle's `ArcSwap`
+//!   cell.
+//! - **Buffer-not-text** (slice B.5). The request carries a
+//!   `Buffer` (O(1) Arc-bump clone via ropey's internal sharing)
+//!   instead of a pre-materialized `String`. The worker calls
+//!   `buffer.as_string()` on its `spawn_blocking` thread, so the
+//!   O(n) source materialization stays off the input thread per
+//!   paramount goal #1.
+//! - **Incremental reparse** (slice B.2). Non-empty `edits` route
+//!   to `Syntax::parse_at_with_edits`, which applies `tree.edit()`
+//!   per delta then runs `Parser::parse(_, Some(&old_tree))` so
+//!   unchanged subtrees are reused. Empty edits or any guard
+//!   violation falls back to full reparse.
+//! - **Coalescing.** When multiple requests are queued, the
+//!   worker accumulates `edits` in arrival order, takes the
+//!   latest `buffer` and `text_version`, keeps the earliest
+//!   `from_version`. Preserves edit ordering across the burst;
+//!   the burst maps to a single `Parser::parse`. Coalesced edit
+//!   count is capped at [`MAX_INCREMENTAL_EDITS_PER_REQUEST`]
+//!   (256) to bound worst-case `tree.edit()` overhead;
+//!   pathological bursts fall through to full reparse.
 //! - **Wait-free reads.** The App / renderer / fold provider
 //!   reads the latest snapshot via `handle.snapshot()` (one
 //!   `ArcSwap::load_full`). No mutex, no actor round-trip.

@@ -67,7 +67,7 @@ Reasons this ordering wins:
 | 0     | Foundation                            | ✅ done                  | Workspace, lattice-core, document/buffer/undo, file I/O, protocol enums                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | 1     | Modal Editing                         | ✅ done                  | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch + substitute live preview) / folds / ex-commands (every command -- including `:s` / `:g` / `:v` via `Args::List` -- registered as `ExCommandSpec` peers, dispatched through unified `grammar::execute()` per §5.2.1, §B.2). Blockwise visual: per-row dispatch for `d` / `y` / `c` plus blockwise paste; `>` / `<` indent each line in the block; `I` / `A` enter Insert at the block's left/right column with the typed prefix replicated to every row on Esc. Every operator lands as a single undo unit -- counts on linewise ops (`2dd`, `2>>`), block-visual rectangle ops, and I/A replications all collapse to one `u`. |
 | 2     | Terminal UI Bootstrap                 | ✅ done                  | crossterm + ratatui; modal cursor; mode line; gutter                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| 3     | Tree-Sitter                           | ✅ done (Rust/Python/JS/Markdown) | Highlights wired through a shared `LangRegistry` (process-wide `Arc`); injection callback resolves fenced ` ```rust ``` ` blocks in markdown to the rust config (and any registered language to its config) without per-document copies. Markdown is the dual-grammar split (block + inline). Grammar extension API used by builtins, not yet by plugins. New `Style` variants (`Heading1..6`, `Bold`, `Italic`, `Link`, `Url`, `MarkupRaw`, `Markup`) for precise theme targeting. |
+| 3     | Tree-Sitter                           | ✅ done (Rust/Python/JS/Markdown) + Option B incremental reparse | Highlights wired through a shared `LangRegistry` (process-wide `Arc`); injection callback resolves fenced ` ```rust ``` ` blocks in markdown to the rust config (and any registered language to its config) without per-document copies. Markdown is the dual-grammar split (block + inline). Grammar extension API used by builtins, not yet by plugins. New `Style` variants (`Heading1..6`, `Bold`, `Italic`, `Link`, `Url`, `MarkupRaw`, `Markup`) for precise theme targeting. **Option B (B.1–B.5) lit up incremental reparse + frame-level span cache** — see "Option B: incremental reparse + span cache" below. |
 | 4     | LSP                                   | 🚧 in progress (4.2)      | `lattice-lsp` crate: wire layer + per-server actor + document sync + diagnostics broadcast + supervisor + App-side wiring + edit-dispatch + open-on-`:e` (Phase 4.1 complete). Phase 4.2 navigation **9/12 + 1 partial**: hover, definition family (`gd`/`gD`/`gy`/`gI`), references (`gr`), symbols (`:lsp-symbols` / `:lsp-workspace-symbol`), completion picker bridge (`:complete`). Phase 4.3 edits **9/9 shipped**: formatting + rangeFormatting + onTypeFormatting; signatureHelp + Insert-mode autopilot; rename + prepareRename; codeAction + resolve + executeCommand; willSave + willSaveWaitUntil (format-on-save) + didSave. Tag stack `<C-t>` pops `gd`-family drill-downs (distinct from `<C-o>`/`<C-i>` jump list). All multi-result LSP lookups + `:diagnostics` route through one vertico picker. Cancellation tokens plumbed through every wrapper. Remaining 4.2: Insert-mode completion shell + completionItem/resolve + workspaceSymbol/resolve. Remaining 4.3 polish: workspace/applyEdit (server-initiated channel). Then 4.4 polish, 4.5 expansion. |
 | 5     | GPU Rendering Foundation              | ⛔ not started           | TUI is the live renderer for v1; GPU is a separate paint surface                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | 6     | Document Renderer + UI Components     | ⛔ not started           | Popups, pickers, panels-as-buffers all live in §5.9                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -101,6 +101,60 @@ view → 4.1.e final doc polish → 4.2 navigation → 4.3 edits →
 4.4 polish (semantic tokens, inlay hints, folding, document
 highlight) → 4.5 expansion (call/type hierarchy, code lens,
 inline completion).
+
+---
+
+## Option B: incremental reparse + span cache
+
+**The keystroke-to-fresh-tree architecture** specified in
+DESIGN.md §5.3 / §8.2: every edit produces an `EditDelta`,
+threaded to the syntax worker which applies `tree.edit()` and
+runs `Parser::parse(.., Some(&old_tree))` for incremental
+reparse. The frame-level span cache turns steady-state
+re-highlighting into a no-op.
+
+Originally diagnosed against a user-visible bug ("after `>>`
+the highlighting breaks instantly; characters bleed into stale
+colours"). Root cause: spans computed against an old syntax
+snapshot were being painted onto current document bytes; the
+spans never caught up because (a) full reparse was the only
+path, and (b) `document.text()` allocated the full buffer on
+the input thread per keystroke. Both fixed.
+
+| Slice | Status | What landed                                                                                                                                                                                                                                                                                                                                                       |
+|-------|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| B.1   | ✅     | `Buffer::apply_edit` returns an `AppliedEdit { ..., delta: EditDelta }`. New `EditDelta` type in `lattice-protocol::edit` carrying tree-sitter-shaped byte/Position deltas. Six u32 writes + three Position copies at the tail of `apply_edit` -- bench `input_edit_construction` measures **1.87ns**, at §8.2's ~2ns floor. Pure-data slice.                                                                          |
+| B.2/1 | ✅     | `Syntax::parse_at_with_edits(source, text_version, from_version, edits)` applies each delta via `tree.edit()` then `Parser::parse(_, Some(&old_tree))`. Layered guards fall back to full reparse on any inconsistency (no cached tree, from_version mismatch, byte-length mismatch). `SyntaxHandle` worker coalesces queued requests by accumulating edits in arrival order, capped at 256 per burst. |
+| B.2/2 | ✅     | App accumulates `EditDelta`s on `pending_syntax_edits` via the four edit chokepoints (`apply_edit_blocking`, `apply_edit_batch_blocking`, `undo_blocking`, `redo_blocking`). `maybe_reparse_syntax` drains and ships them to the worker. Per-document `last_synced_syntax_version` on App + `DocumentEntry`. Includes the `apply_edit_*` family's `&self → &mut self` refactor (no interior mutability introduced). |
+| B.3   | ✅     | Frame-level highlight span cache on App, keyed `(snapshot_ptr, text_version, scroll, viewport_height, fold_hash)`. Cache hit at **20ns flat** across all corpus sizes -- **8900× speedup** vs the pre-B.3 ~178µs full QueryCursor walk every frame. Steady-state norm (cursor blinking, no edit) → ~100% hit rate. Load-bearing for paramount goal #1's strict reading on the steady-state floor. |
+| B.4   | ✅     | Parametrized parity matrix in `lattice-syntax::syntax::tests`: 27 tests pinning `incremental tree.to_sexp() == full-reparse tree.to_sexp()` across edge positions, multi-line shape changes, whitespace-only edits, sequential batches, per-language coverage (Rust / Python / JavaScript / Markdown), pathological / minimal-buffer cases. Hardens the silent-wrong-tree surface. |
+| B.5   | ✅     | `ReparseRequest` carries `Buffer` (O(1) Arc-bump clone via ropey's internal sharing) instead of pre-materialized `String`. Worker calls `buffer.as_string()` on `spawn_blocking` thread. Bench `clone_vs_text`: **7.7ns** flat across sizes vs. pre-B.5 path's 79ns / 990ns / 189µs (10 / 1k / 100k lines). **24,500× faster at 100k lines** -- closes the last input-thread allocation in the syntax-reparse hot path per goal #1. |
+
+**Combined post-Option-B per-keystroke cost on the input
+thread**: ~100ns (Buffer::clone + Vec::take + mpsc send +
+counter bump). The actual reparse (tree.edit + Parser::parse)
+runs on the worker's `spawn_blocking` thread, ~50µs at 1600
+lines / ~100µs at 16k lines.
+
+**Combined steady-state per-frame cost on the input thread**:
+~33µs (compose 13µs + cache check 20ns), down from ~192µs
+pre-Option-B (the ~178µs `highlight_lines` walk every frame
+was wasted work whenever nothing changed).
+
+Bench rows live in `BENCHMARKS.md` under "Native highlight"
+(B.2/B.4 incremental rows), "Frame render" (B.3 cache rows),
+and "Buffer ops" (B.1/B.5 rows). §8.2 floor-rows updated with
+measured numbers.
+
+Two follow-ups deliberately deferred:
+
+- **Per-pattern QueryCursor caching** (BENCHMARKS.md "Improvement
+  target" on `highlight::rust/200`): drops the cache-miss highlight
+  cost when an edit invalidates the span cache. Lower priority --
+  cache miss only fires on actual changes.
+- **Per-pane edit accumulation** for inactive panes (currently
+  falls back to full reparse on the inactive-pane refresh path).
+  Rare in practice; bounded.
 
 ---
 

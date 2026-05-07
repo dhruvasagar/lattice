@@ -1,26 +1,42 @@
 //! `Syntax`: per-document tree-sitter state.
 //!
-//! Wraps a `tree_sitter_highlight::Highlighter` plus a borrow of the
-//! shared [`crate::LangRegistry`]'s `HighlightConfiguration` for the
-//! document's primary language. The highlighter handles overlap
-//! resolution (innermost capture wins) and produces a flat event
-//! stream that we walk to assemble per-line `StyledSpan`s.
+//! Owns a `tree_sitter::Parser` + the latest cached `Tree` plus a
+//! shared [`crate::LangRegistry`] for the document's primary
+//! language and any injection targets. The hand-rolled native
+//! pipeline runs `highlights.scm` directly via
+//! `tree_sitter::QueryCursor`, walks each match into per-line
+//! `StyledSpan`s, and recursively highlights ranges captured by
+//! `injections.scm`.
+//!
+//! ## Reparse
+//!
+//! Two entry points (slice B.2):
+//!
+//! - [`Syntax::parse_at`]: full reparse. Used for cold-start /
+//!   file-load / fallback. `Parser::parse(bytes, None)`.
+//! - [`Syntax::parse_at_with_edits`]: incremental reparse.
+//!   Applies each `EditDelta` to the cached tree via
+//!   `tree.edit()` then `Parser::parse(bytes, Some(&old_tree))`,
+//!   so tree-sitter reuses unchanged subtrees. Falls back to
+//!   full reparse if any guard fails (no cached tree,
+//!   `from_version` mismatch, or post-edit byte-length mismatch
+//!   between accumulated deltas and new source).
+//!
+//! Both methods stamp the resulting snapshot with a caller-
+//! supplied `text_version` so consumers (renderer / fold provider
+//! / completion) can compare freshness against
+//! `DocumentSnapshot::text_version`.
 //!
 //! ## Injections
 //!
 //! Markdown's grammar is split block / inline; the block parser's
-//! `injections.scm` injects the inline parser into paragraph content
-//! and the named language parser into fenced code blocks. Our
-//! injection callback (in `highlight_lines`) closes over the shared
-//! registry and looks up sibling configs by name -- so a
+//! `injections.scm` injects the inline parser into paragraph
+//! content and the named language parser into fenced code blocks.
+//! Our injection callback (in `highlight_lines`) closes over the
+//! shared registry and looks up sibling configs by name -- so a
 //! ` ```rust ... ``` ` block in a markdown buffer gets rust
 //! highlighting, an autolink in a paragraph gets inline-markdown
 //! highlighting, etc.
-//!
-//! Reparse is a `parse(source: &str)` call. Internally we re-run the
-//! highlighter on the full source. Incremental reparse via `Tree::edit`
-//! is a follow-up; the public surface won't change because today's full
-//! reparse stays correct.
 
 use std::sync::Arc;
 

@@ -1390,6 +1390,38 @@ fn last_addressable_line(buffer: &lattice_core::Buffer) -> u32 {
     }
 }
 
+/// Extend a linewise content range to consume the trailing
+/// newline so `dd` / `Ndd` reduces the buffer's line count by
+/// `count` (vim semantics). When the range ends at the buffer's
+/// last addressable line (no trailing newline available),
+/// consume the LEADING newline before `start_line` instead --
+/// otherwise the previous line would acquire a phantom newline.
+/// A whole-buffer range (start at line 0 AND end at last line)
+/// has no surrounding newline to claim and passes through
+/// unchanged.
+///
+/// Used by `dd` (edit + slice). `yy` doesn't use this -- a
+/// linewise yank's content always ends with `\n` regardless of
+/// whether the source line had a trailing newline, so yank
+/// appends `\n` to the original slice rather than walking the
+/// buffer.
+fn extend_linewise_range(
+    buffer: &lattice_core::Buffer,
+    range: ProtoRange,
+) -> ProtoRange {
+    let last = last_addressable_line(buffer);
+    let end_line = range.end.line;
+    if end_line < last {
+        ProtoRange::new(range.start, Position::new(end_line + 1, 0))
+    } else if range.start.line > 0 {
+        let prev_line = range.start.line - 1;
+        let prev_len = line_byte_len(buffer, prev_line);
+        ProtoRange::new(Position::new(prev_line, prev_len), range.end)
+    } else {
+        range
+    }
+}
+
 // ---- Paragraph text objects (vim's `ip`, `ap`) ----
 
 fn text_object_inner_paragraph(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
@@ -1844,8 +1876,31 @@ fn operator_delete(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     if ctx.range.is_empty() {
         return Ok(Effect::None);
     }
-    let yanked = ctx.document.buffer().slice(ctx.range)?;
-    let edit = Edit::delete(ctx.range);
+    // Slice 8.i.4.g: vim's `dd` / `Ndd` consumes the line(s) AND
+    // the trailing newline so the line count drops by `count`.
+    // Pure-content delete (charwise / non-linewise visual)
+    // continues to leave the line structure intact, matching
+    // `dw` / `d$` semantics.
+    let edit_range = if ctx.linewise {
+        extend_linewise_range(ctx.document.buffer(), ctx.range)
+    } else {
+        ctx.range
+    };
+    // Yank content always ends with `\n` for linewise -- the
+    // register kind drives paste behaviour, but the content
+    // string itself follows vim's clipboard convention. The
+    // edit consumes the same range, so this keeps yank-on-
+    // delete and the actual edit aligned.
+    let yanked = if ctx.linewise {
+        let mut s = ctx.document.buffer().slice(ctx.range)?;
+        if !s.ends_with('\n') {
+            s.push('\n');
+        }
+        s
+    } else {
+        ctx.document.buffer().slice(ctx.range)?
+    };
+    let edit = Edit::delete(edit_range);
     let applied = ctx.document.apply_edit(edit)?;
     let yank_kind = if ctx.linewise {
         YankKind::Linewise
@@ -1902,7 +1957,21 @@ fn operator_yank(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     if ctx.range.is_empty() {
         return Ok(Effect::None);
     }
-    let content = ctx.document.buffer().slice(ctx.range)?;
+    // Slice 8.i.4.g: vim's `yy` / `Nyy` yanks line(s) WITH the
+    // trailing newline so the register content can be pasted
+    // linewise without splicing newlines in by hand. Append `\n`
+    // when missing rather than walking the buffer for the
+    // trailing newline -- linewise yank on the last line still
+    // gets a trailing `\n` to match the canonical convention.
+    let content = if ctx.linewise {
+        let mut s = ctx.document.buffer().slice(ctx.range)?;
+        if !s.ends_with('\n') {
+            s.push('\n');
+        }
+        s
+    } else {
+        ctx.document.buffer().slice(ctx.range)?
+    };
     let kind = if ctx.linewise {
         YankKind::Linewise
     } else {
@@ -2235,9 +2304,9 @@ mod tests {
             &CancellationToken::never(),
         )
         .unwrap();
-        // `CurrentLine` covers the line content but not its trailing newline
-        // -- BBB is removed; the surrounding newlines stay.
-        assert_eq!(doc.text(), "aaa\n\nccc");
+        // Slice 8.i.4.g: `dd` consumes BBB AND its trailing
+        // newline so the line count drops by 1 (vim semantics).
+        assert_eq!(doc.text(), "aaa\nccc");
     }
 
     #[test]
@@ -3935,7 +4004,9 @@ mod tests {
         match effect {
             Effect::Many(parts) => match &parts[0] {
                 Effect::Yank { content, kind, .. } => {
-                    assert_eq!(content, "BBB");
+                    // Slice 8.i.4.g: linewise yank content always
+                    // ends with `\n` so paste can splice cleanly.
+                    assert_eq!(content, "BBB\n");
                     assert_eq!(*kind, YankKind::Linewise);
                 }
                 other => panic!("expected Yank, got {other:?}"),
@@ -3959,7 +4030,11 @@ mod tests {
         match effect {
             Effect::Many(parts) => match &parts[0] {
                 Effect::Yank { content, kind, .. } => {
-                    assert_eq!(content, "hello\nworld");
+                    // Slice 8.i.4.g: linewise yank content always
+                    // ends with `\n` so paste can splice cleanly,
+                    // even when the source had no trailing
+                    // newline (here: `:y` of "hello\nworld").
+                    assert_eq!(content, "hello\nworld\n");
                     assert_eq!(*kind, YankKind::Linewise);
                 }
                 other => panic!("expected Yank, got {other:?}"),

@@ -15513,6 +15513,20 @@ mod tests {
         assert_eq!(a.cursor.line, 3);
     }
 
+    /// `3dd` deletes 3 lines: count latches into op_count via
+    /// the `d` action-kind dispatch; the second `d` resolves
+    /// linewise with the count baked in by `attach_count`. Pins
+    /// slice 8.i.4.f's removal of the dispatcher's redundant
+    /// multiplication, AND slice 8.i.4.g's `dd`-consumes-newline
+    /// fix (line count drops by 3 -- the buffer goes from 5
+    /// lines to 2, with no leading empty line).
+    #[test]
+    fn key_harness_count_before_operator_dd_deletes_n_lines() {
+        let mut a = app_with("a\nb\nc\nd\ne", 10);
+        press_chars(&mut a, "3dd");
+        assert_eq!(a.document.text(), "d\ne");
+    }
+
     /// `d2w` deletes 2 words: the `2` between operator and motion
     /// must reach the digit accumulator, not get eaten by the
     /// partial_chord lookup. Pins slice 8.i.4.f's hoist of digit
@@ -18696,12 +18710,13 @@ mod tests {
         let inv = CommandInvocation::of(a.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
-        assert_eq!(a.document.text(), "aaa\n\nccc\nddd");
-        // `.` repeats: empty line is now "deleted" -> empty stays.
+        // Slice 8.i.4.g: `dd` consumes BBB + its trailing newline.
+        assert_eq!(a.document.text(), "aaa\nccc\nddd");
+        // Cursor is now on what used to be `ccc` (line 1). `.`
+        // repeats the linewise delete -- removes that line + its
+        // trailing newline.
         a.apply(Action::RepeatLastChange);
-        // `.` re-runs `dd` at the cursor; line 1 (empty) becomes a no-op
-        // edit since CurrentLine is empty. Buffer unchanged.
-        assert_eq!(a.document.text(), "aaa\n\nccc\nddd");
+        assert_eq!(a.document.text(), "aaa\nddd");
     }
 
     #[test]
@@ -18853,13 +18868,14 @@ mod tests {
         a.cursor = Position::new(1, 1); // mid-line on "BBB"
         a.apply(Action::EnterVisual(VisualKind::Linewise));
         // Selection is single line; yank captures the whole line
-        // regardless of byte offsets.
+        // regardless of byte offsets. Slice 8.i.4.g: linewise yank
+        // content always ends with `\n`.
         let inv =
             CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
-        assert_eq!(reg.content, "BBB");
+        assert_eq!(reg.content, "BBB\n");
     }
 
     #[test]
@@ -18872,8 +18888,9 @@ mod tests {
         a.apply(Action::Invoke(inv));
         let reg = a.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
-        // Lines 0 and 1 -> "aaa\nbbb".
-        assert_eq!(reg.content, "aaa\nbbb");
+        // Lines 0 and 1 -> "aaa\nbbb\n" (slice 8.i.4.g: trailing
+        // `\n` always present for linewise content).
+        assert_eq!(reg.content, "aaa\nbbb\n");
     }
 
     #[test]
@@ -19138,7 +19155,7 @@ mod tests {
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
         let reg = a.unnamed_register.as_ref().unwrap();
-        assert_eq!(reg.content, "BBB");
+        assert_eq!(reg.content, "BBB\n");
         assert_eq!(reg.kind, YankKind::Linewise);
         assert_eq!(a.document.text(), "aaa\nBBB\nccc");
     }
@@ -19153,7 +19170,7 @@ mod tests {
         a.apply(Action::Invoke(inv));
         let reg = a.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
-        assert_eq!(reg.content, "BBB");
+        assert_eq!(reg.content, "BBB\n");
     }
 
     #[test]
@@ -19378,11 +19395,10 @@ mod tests {
     fn dd_on_non_fold_line_uses_count_one() {
         // Sanity: the fold-expansion only kicks in when the cursor
         // is on a closed-fold heading. A normal `dd` outside any
-        // fold operates on just one line. (The standard `delete`
-        // operator's CurrentLine range preserves the trailing
-        // newline, leaving an empty line; that's an existing app
-        // contract, not something fold-aware expansion should
-        // change.)
+        // fold operates on just one line. Slice 8.i.4.g: `dd`
+        // consumes BBB and its trailing newline (vim semantics);
+        // the linewise register content carries the `\n` so paste
+        // splices cleanly.
         let mut a = app_with("aaa\nBBB\nccc", 10);
         a.set_foldmethod_for_test(FoldMethod::Indent);
         a.recompute_folds();
@@ -19392,7 +19408,7 @@ mod tests {
         a.apply(Action::Invoke(inv));
         let reg = a.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
-        assert_eq!(reg.content, "BBB");
+        assert_eq!(reg.content, "BBB\n");
     }
 
     #[test]

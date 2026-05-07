@@ -354,6 +354,30 @@ fn compute_normal_action(
     keymap: &KeymapHandle,
     partial_chord: &[crate::chord::KeyChord],
 ) -> Action {
+    let _ = builtins;
+    // Numeric prefix: `1`-`9` always start (or extend) a count;
+    // `0` extends an in-progress count but otherwise is
+    // line_start. This is vim's standard count parsing.
+    //
+    // Slice 8.i.4.f: digit handling must run BEFORE the
+    // partial_chord short-circuit. Without this hoist, typing
+    // `2` after `d` (partial_chord=['d']) routes to
+    // `lookup_normal_with_prefix(['d'], '2')` -- unbound -- which
+    // returns `Action::None` and silently aborts the operator.
+    // Vim flows like `d2w`, `2d3w`, `5gg` would never see the
+    // digit. Safe to hoist because no built-in chord has a digit
+    // as second key (verified 8.i.4.f: no `[d, digit]`,
+    // `[g, digit]`, `[<C-w>, digit]`, etc.). If a future plugin
+    // wants `[X, digit]` chords the rule grows to "digit handler
+    // unless `[partial_chord, digit]` is bound" -- the registry
+    // already has the data needed.
+    if let KeyCode::Char(c) = event.code
+        && let Some(digit) = c.to_digit(10)
+        && (digit > 0 || pending_count > 0)
+    {
+        return Action::PushDigit(digit as u8);
+    }
+
     // Slice 8.i.4: every multi-key Normal-mode chord flows
     // through `App::partial_chord`. When non-empty, the next
     // keystroke routes through the trie with this stack as
@@ -362,27 +386,12 @@ fn compute_normal_action(
     // `Action::AbsorbPartialChord`, and `Unbound` returns
     // `Action::None` (which `App::apply` turns into a
     // partial_chord clear).
-    let _ = builtins;
     if !partial_chord.is_empty() {
         return crate::keymap_normal::lookup_normal_with_prefix(
             keymap,
             partial_chord,
             &event,
         );
-    }
-
-    // Numeric prefix: `1`-`9` always start (or extend) a count; `0` extends
-    // an in-progress count but otherwise is line_start. This is vim's
-    // standard count parsing, exactly.
-    //
-    // Slice 8.g.iv migrates this into the dispatcher; for 8.g.i it stays
-    // here so the digit accumulator pre-empts the trie lookup of `0` =>
-    // line_start whenever a count is in flight.
-    if let KeyCode::Char(c) = event.code
-        && let Some(digit) = c.to_digit(10)
-        && (digit > 0 || pending_count > 0)
-    {
-        return Action::PushDigit(digit as u8);
     }
 
     // `q` while a macro is recording stops the recording. The

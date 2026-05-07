@@ -3520,13 +3520,18 @@ impl App {
             rec.actions.push(action.clone());
         }
         // Slice 8.i.4 partial-chord lifecycle: any action that
-        // *isn't* `AbsorbPartialChord(_)` resolves (or aborts)
-        // the in-flight multi-key sequence, so the chord stack
-        // must clear. Without this an unbound second key (e.g.
-        // `g!` after `g`) would leak `[g]` into the next
-        // keystroke's prefix lookup and mis-route it as `gd` /
-        // `gv` / etc.
-        if !matches!(action, Action::AbsorbPartialChord(_)) {
+        // *isn't* `AbsorbPartialChord(_)` (or accumulating count
+        // via `PushDigit`) resolves or aborts the in-flight
+        // multi-key sequence, so the chord stack must clear.
+        // Without this an unbound second key (e.g. `g!` after
+        // `g`) would leak `[g]` into the next keystroke's prefix
+        // lookup and mis-route it as `gd` / `gv` / etc.
+        //
+        // Slice 8.i.4.f: `PushDigit` is also exempt -- vim's
+        // motion-count-after-operator (`d2w`, `2d3w`, `5gg`)
+        // accumulates count chars BETWEEN chord steps. The
+        // operator-pending stack must survive the digit input.
+        if !matches!(action, Action::AbsorbPartialChord(_) | Action::PushDigit(_)) {
             self.partial_chord.clear();
         }
         // Read-only guard for help: when a help buffer holds focus
@@ -11416,7 +11421,7 @@ impl App {
     /// scroll-aware visibility) are identical. Non-motion command
     /// classes (operators, text-objects, ex bodies that reach
     /// here) echo "buffer is read-only" and bail.
-    fn run_read_only_motion(&mut self, mut inv: CommandInvocation) {
+    fn run_read_only_motion(&mut self, inv: CommandInvocation) {
         let Some(spec) = self.registry.lookup(inv.command) else {
             return;
         };
@@ -11435,19 +11440,11 @@ impl App {
             let cur = self.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
-        let motion_count = if self.pending_count > 0 {
-            self.pending_count
-        } else {
-            inv.count.map(|c| c.0).unwrap_or(1)
-        };
-        let final_count = if self.op_count > 0 {
-            self.op_count.saturating_mul(motion_count)
-        } else {
-            motion_count
-        };
-        if final_count > 1 {
-            inv = inv.with_count(lattice_grammar::command::Count(final_count));
-        }
+        // Slice 8.i.4.f: count multiplication lives entirely in
+        // `keymap_normal::attach_count` (input-side). The dispatcher
+        // reads the baked `inv.count` and dispatches with it -- no
+        // `pending_count * op_count` math here. Read-only motions
+        // arriving without a baked count default to 1.
         self.pending_count = 0;
         self.op_count = 0;
         let buffer = self.active_text();
@@ -11516,21 +11513,12 @@ impl App {
                 self.last_find = Some(LastFind { kind, target: c });
             }
         }
-        // Apply the count multiplication: the operator's count (latched at
-        // `op_count`) multiplies with the motion's count (the in-progress
-        // `pending_count`, or the invocation's own count default of 1).
-        // Vim semantics: `2d3w` -> d6w. Either alone replaces the default.
-        let motion_count = if self.pending_count > 0 {
-            self.pending_count
-        } else {
-            inv.count.map(|c| c.0).unwrap_or(1)
-        };
-        let final_count = if self.op_count > 0 {
-            self.op_count.saturating_mul(motion_count)
-        } else {
-            motion_count
-        };
-        let mut effective_count = final_count;
+        // Slice 8.i.4.f: count multiplication lives entirely in
+        // `keymap_normal::attach_count` (input-side). The dispatcher
+        // reads the baked `inv.count` and dispatches with it -- no
+        // `pending_count * op_count` math here. Bare invocations
+        // arriving without a baked count default to 1.
+        let mut effective_count = inv.count.map(|c| c.0).unwrap_or(1);
         // Fold-aware operator expansion (`docs/help/folding.md`):
         // when the cursor sits on the heading line of a closed fold
         // and the operator's range is `CurrentLine` (the `dd` / `yy`
@@ -15440,6 +15428,185 @@ mod tests {
         a
     }
 
+    /// End-to-end key-event harness. Drives a single
+    /// [`crossterm::event::KeyEvent`] through
+    /// [`crate::input::translate`] + [`App::apply`] -- the same
+    /// path the real input loop in `runtime.rs` walks. Catches
+    /// bugs that live in the seam between translate and apply
+    /// (count flow through `attach_count` plus dispatcher
+    /// multiplication, partial_chord state machine across multiple
+    /// keystrokes, etc.). The translate-layer tests in
+    /// `input::tests` only check the returned `Action`, and the
+    /// App-layer tests above hand-construct `Action::Invoke(...)`;
+    /// neither exercises this seam.
+    fn press(app: &mut App, event: crossterm::event::KeyEvent) {
+        let ctx = crate::input::TranslateContext {
+            modal: app.modal,
+            builtins: &app.builtins,
+            pending_count: app.pending_count,
+            op_count: app.op_count,
+            recording_macro: app.macro_recording.is_some(),
+            active_buffer: app.active_buffer,
+            completion_open: app.completion_state.is_some(),
+            chord_capture: app.chord_capture_active(),
+            picker_open: app.picker.is_some(),
+            insert_completion_open: app.insert_completion.is_some(),
+            snippet_active: app.active_snippet.is_some(),
+            keymap: &app.keymap,
+            partial_chord: &app.partial_chord,
+        };
+        let action = crate::input::translate(ctx, event);
+        app.apply(action);
+    }
+
+    /// Convenience: drive a sequence of bare-char keystrokes
+    /// through [`press`]. Each char becomes a
+    /// `KeyCode::Char(c)` event with no modifiers -- handy for
+    /// vim-style chord sequences (`"2dd"`, `"d2w"`, `">>"`).
+    /// For modifiers or special keys, build a `KeyEvent` and
+    /// call [`press`] directly.
+    fn press_chars(app: &mut App, keys: &str) {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for c in keys.chars() {
+            press(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+
+    /// Sanity check: a bare motion drives the cursor through
+    /// the full translate + apply path. If this fails, the
+    /// harness itself is broken; every other `press_*` test
+    /// is suspect.
+    #[test]
+    fn key_harness_j_advances_cursor_one_line() {
+        let mut a = app_with("one\ntwo\nthree", 10);
+        press_chars(&mut a, "j");
+        assert_eq!(a.cursor.line, 1);
+    }
+
+    /// Sanity check: an operator + motion deletes the right
+    /// span end-to-end. Exercises the `[d]` action-kind
+    /// short-circuit (pushes `d` into `partial_chord`) plus
+    /// the `[d, w]` resolution under the prefix.
+    #[test]
+    fn key_harness_dw_deletes_first_word() {
+        let mut a = app_with("one two three", 10);
+        press_chars(&mut a, "dw");
+        assert_eq!(a.document.text(), "two three");
+    }
+
+    // -- count flow seam ----------------------------------------
+    //
+    // These pin the path translate -> attach_count -> dispatcher
+    // multiplication. Slice 8.i.4.d documented the failure mode if
+    // the action-kind short-circuit didn't bypass
+    // `run_document_invocation`'s `pending_count = 0;`: the reset
+    // would fire before `AbsorbOperatorPrefix` could latch op_count,
+    // breaking `2dw`-style flows. These tests would catch a
+    // regression of that fix.
+
+    /// `3j` moves down 3 lines: pending_count fed straight to a
+    /// motion (no operator latch path).
+    #[test]
+    fn key_harness_count_before_motion_advances_n_lines() {
+        let mut a = app_with("a\nb\nc\nd\ne", 10);
+        press_chars(&mut a, "3j");
+        assert_eq!(a.cursor.line, 3);
+    }
+
+    /// `d2w` deletes 2 words: the `2` between operator and motion
+    /// must reach the digit accumulator, not get eaten by the
+    /// partial_chord lookup. Pins slice 8.i.4.f's hoist of digit
+    /// handling above the partial_chord short-circuit.
+    #[test]
+    fn key_harness_count_after_operator_d2w_deletes_two_words() {
+        let mut a = app_with("one two three four", 10);
+        press_chars(&mut a, "d2w");
+        assert_eq!(a.document.text(), "three four");
+    }
+
+    /// `2d2w` deletes 4 words: op_count=2 multiplies with
+    /// motion_count=2. Pins both 8.i.4.f fixes end-to-end --
+    /// digit-after-operator survives, and the dispatcher honours
+    /// the input-side baked count without re-multiplying.
+    #[test]
+    fn key_harness_counts_multiply_on_both_sides() {
+        let mut a = app_with("a b c d e f g", 10);
+        press_chars(&mut a, "2d2w");
+        assert_eq!(a.document.text(), "e f g");
+    }
+
+    /// After `3j`, a bare `j` moves only one line: pending_count
+    /// must reset after the motion fires.
+    #[test]
+    fn key_harness_count_clears_after_motion_fires() {
+        let mut a = app_with("a\nb\nc\nd\ne\nf", 10);
+        press_chars(&mut a, "3j");
+        assert_eq!(a.cursor.line, 3);
+        press_chars(&mut a, "j");
+        assert_eq!(a.cursor.line, 4);
+    }
+
+    // -- partial_chord state machine ----------------------------
+    //
+    // Pins the multi-keystroke prefix walk. `gg` is a Normal-mode
+    // multi-key motion (no operator); `dd` is the operator
+    // self-key linewise resolution; `df,` is a 3-keystroke chord
+    // (operator -> find-char prefix -> captured delimiter).
+
+    /// `gg` jumps to the first line: prefix `g` parks in
+    /// partial_chord, second `g` resolves the terminal.
+    #[test]
+    fn key_harness_gg_jumps_to_first_line() {
+        let mut a = app_with("one\ntwo\nthree\nfour", 10);
+        press_chars(&mut a, "G");
+        assert_eq!(a.cursor.line, 3);
+        press_chars(&mut a, "gg");
+        assert_eq!(a.cursor.line, 0);
+    }
+
+    /// `df,` deletes up to (exclusive of) the comma: 3-keystroke
+    /// chord across the operator + find-char captured-delimiter
+    /// sub-tree (slice 8.i.4.c). Lattice's `f`-motion is exclusive
+    /// (see `df_deletes_through_target_char` near the dispatch
+    /// tests), so the comma stays.
+    #[test]
+    fn key_harness_df_delim_deletes_up_to_match() {
+        let mut a = app_with("alpha, beta, gamma", 10);
+        press_chars(&mut a, "df,");
+        assert_eq!(a.document.text(), ", beta, gamma");
+    }
+
+    // -- <C-w> sub-tree (action-kind short-circuit, 8.i.4.d) ----
+
+    /// `<C-w>v` splits the active pane vertically. Exercises the
+    /// `<C-w>` action-kind short-circuit + the AfterCtrlW layer.
+    #[test]
+    fn key_harness_ctrl_w_v_creates_second_pane() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app_with("xx", 10);
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        );
+        press_chars(&mut a, "v");
+        assert_eq!(a.pane_tree.len(), 2);
+    }
+
+    // -- mode transition seam -----------------------------------
+
+    /// `i` enters Insert, typed chars land in the buffer, `<Esc>`
+    /// returns to Normal. Pins the modal state machine across a
+    /// mode round-trip in a single keystroke stream.
+    #[test]
+    fn key_harness_insert_round_trip_inserts_text_and_returns_normal() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app_with("", 10);
+        press_chars(&mut a, "ihi");
+        press(&mut a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(a.document.text(), "hi");
+        assert_eq!(a.modal, ModalState::Normal);
+    }
+
     /// Subscribe a channel sink to the App's event bus. Returns
     /// the receiver so tests can drain published events. The
     /// subscription stays alive for the rx's lifetime.
@@ -18711,10 +18878,17 @@ mod tests {
 
     #[test]
     fn visual_anchor_persists_across_count_motion() {
+        // Slice 8.i.4.f: count multiplication is input-side
+        // (`attach_count`); the dispatcher reads the baked
+        // `inv.count`. To exercise `2w` here we invoke
+        // word_forward with `Count(2)` directly -- the
+        // press_* harness covers the keystroke -> count flow.
         let mut a = app_with("one two three four five", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
-        a.apply(Action::PushDigit(2));
-        a.apply(invoke_motion(a.builtins.word_forward));
+        a.apply(Action::Invoke(
+            CommandInvocation::of(a.builtins.word_forward.0)
+                .with_count(lattice_grammar::command::Count(2)),
+        ));
         let sels = a.document.selections();
         let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
@@ -18734,11 +18908,18 @@ mod tests {
     }
 
     #[test]
-    fn invoke_consumes_pending_count_into_motion() {
+    fn dispatcher_runs_counted_motion() {
+        // Slice 8.i.4.f: count multiplication is input-side. The
+        // dispatcher consumes the baked `inv.count` -- App still
+        // resets `pending_count` at end-of-dispatch (drained by
+        // attach_count earlier in the pipeline). Press-harness
+        // tests cover the full keystroke flow.
         let mut a = app_with("one two three four five", 10);
-        a.apply(Action::PushDigit(3));
-        let id = a.builtins.word_forward;
-        a.apply(invoke_motion(id));
+        a.pending_count = 3;
+        a.apply(Action::Invoke(
+            CommandInvocation::of(a.builtins.word_forward.0)
+                .with_count(lattice_grammar::command::Count(3)),
+        ));
         // 3w from origin: "one two three FOUR five" -> 'f' of "four" at byte 14.
         assert_eq!(a.cursor, Position::new(0, 14));
         // pending_count is reset after dispatch.
@@ -18748,26 +18929,32 @@ mod tests {
     #[test]
     fn count_with_line_motion_advances_count_lines() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 20);
-        a.apply(Action::PushDigit(5));
-        let id = a.builtins.line_down;
-        a.apply(invoke_motion(id));
+        a.apply(Action::Invoke(
+            CommandInvocation::of(a.builtins.line_down.0)
+                .with_count(lattice_grammar::command::Count(5)),
+        ));
         assert_eq!(a.cursor.line, 5);
     }
 
+    // Slice 8.i.4.f: the next batch of tests bake `Count(N)`
+    // directly into the operator invocation -- mirroring what the
+    // input-side `attach_count` produces when the keystroke
+    // pipeline runs. The dispatcher's job is now to honour the
+    // baked count and drain `pending_count` / `op_count` from
+    // App state. The full keystroke -> count pipeline lives in
+    // the `key_harness_*` press-harness tests.
+
     #[test]
-    fn operator_then_motion_with_count_multiplies() {
-        // `2dw` -> delete 2 words from cursor.
+    fn dispatcher_runs_counted_operator_on_motion_2dw() {
         let mut a = app_with("one two three four five", 10);
-        a.apply(Action::PushDigit(2));
-        // Slice 8.i.4.c: AbsorbOperatorPrefix latches the count as op_count.
-        a.apply(Action::Invoke(CommandInvocation::of(
-            a.action_ids.absorb_operator_delete,
-        )));
-        assert_eq!(a.op_count, 2);
-        assert_eq!(a.pending_count, 0);
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
+        // Mirror translate-time state: `2d` already absorbed.
+        a.op_count = 2;
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_target(lattice_grammar::Target::Motion(
+                a.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ))
+            .with_count(lattice_grammar::command::Count(2));
         a.apply(Action::Invoke(inv));
         // 2dw: deletes "one two " leaving "three four five".
         assert_eq!(a.document.text(), "three four five");
@@ -18775,18 +18962,16 @@ mod tests {
     }
 
     #[test]
-    fn count_on_both_sides_multiplies_2d3w_equals_6w() {
-        // `2d3w`: op_count = 2, motion count = 3, final count = 6.
+    fn dispatcher_runs_counted_operator_on_motion_2d3w_equals_count_6() {
         let mut a = app_with("a b c d e f g h i j", 10);
-        a.apply(Action::PushDigit(2));
-        a.apply(Action::Invoke(CommandInvocation::of(
-            a.action_ids.absorb_operator_delete,
-        )));
-        assert_eq!(a.op_count, 2);
-        a.apply(Action::PushDigit(3));
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
+        a.op_count = 2;
+        a.pending_count = 3;
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_target(lattice_grammar::Target::Motion(
+                a.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ))
+            .with_count(lattice_grammar::command::Count(6));
         a.apply(Action::Invoke(inv));
         // 6 words deleted from "a b c d e f g h i j" leaves "g h i j".
         assert_eq!(a.document.text(), "g h i j");
@@ -18799,13 +18984,10 @@ mod tests {
         // single `u` should restore the original buffer.
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
-        a.apply(Action::PushDigit(2));
-        a.apply(Action::Invoke(CommandInvocation::of(
-            a.action_ids.absorb_operator_delete,
-        )));
-        assert_eq!(a.op_count, 2);
+        a.op_count = 2;
         let inv = CommandInvocation::of(a.builtins.delete.0)
-            .with_range(lattice_grammar::Range::CurrentLine);
+            .with_range(lattice_grammar::Range::CurrentLine)
+            .with_count(lattice_grammar::command::Count(2));
         a.apply(Action::Invoke(inv));
         // Lines 0 and 1 ("one" and "two") deleted; line 2 ("three") survives.
         let text = a.document.text();
@@ -18827,12 +19009,10 @@ mod tests {
         // via apply_edit_batch.
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
-        a.apply(Action::PushDigit(2));
-        a.apply(Action::Invoke(CommandInvocation::of(
-            a.action_ids.absorb_operator_indent_right,
-        )));
+        a.op_count = 2;
         let inv = CommandInvocation::of(a.builtins.indent_right.0)
-            .with_range(lattice_grammar::Range::CurrentLine);
+            .with_range(lattice_grammar::Range::CurrentLine)
+            .with_count(lattice_grammar::command::Count(2));
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "    one\n    two\nthree\nfour");
         // Single undo restores the original buffer.
@@ -18844,12 +19024,10 @@ mod tests {
     fn count_with_indent_left_dedents_n_lines_as_single_undo() {
         let mut a = app_with("    one\n    two\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
-        a.apply(Action::PushDigit(2));
-        a.apply(Action::Invoke(CommandInvocation::of(
-            a.action_ids.absorb_operator_indent_left,
-        )));
+        a.op_count = 2;
         let inv = CommandInvocation::of(a.builtins.indent_left.0)
-            .with_range(lattice_grammar::Range::CurrentLine);
+            .with_range(lattice_grammar::Range::CurrentLine)
+            .with_count(lattice_grammar::command::Count(2));
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "one\ntwo\nthree\nfour");
         let _ = a.undo_blocking();

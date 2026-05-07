@@ -306,9 +306,11 @@ impl Syntax {
     ///    truncated edit lists. Full reparse + log warning.
     ///
     /// Tree-sitter's failure mode for a malformed `InputEdit` is
-    /// a silently wrong tree, not a panic. Layering these guards
-    /// + parity tests (slice B.4 hardens this further) keeps the
-    /// silent-corruption surface contained.
+    /// a silently wrong tree, not a panic. The layered guards
+    /// here + the slice-B.4 parametrized parity matrix in this
+    /// file's test module (incremental == full reparse across
+    /// 27 edit shapes × Rust / Python / JavaScript / Markdown)
+    /// keep the silent-corruption surface contained.
     pub fn parse_at_with_edits(
         &mut self,
         source: &str,
@@ -1515,5 +1517,395 @@ const MAX: i32 = 10;\n\
         assert_eq!(inp.old_end_position.column, 8);
         assert_eq!(inp.new_end_position.row, 2);
         assert_eq!(inp.new_end_position.column, 13);
+    }
+
+    // ---- Slice B.4: parametrized parity matrix ------------------
+    //
+    // Tree-sitter's failure mode for a malformed `InputEdit` is a
+    // silently wrong tree -- the parser produces a syntactically
+    // valid tree whose node ranges are off, with no error. The
+    // representative-shape parity tests above (B.2) catch the
+    // common cases; this matrix broadens to the long tail:
+    //
+    // - **Edge positions**: edits at byte 0, edits at end-of-buffer,
+    //   edits at line boundaries.
+    // - **Multi-line shape changes**: insert / delete newlines
+    //   so the line count itself shifts.
+    // - **Sequential batches**: simulate keystroke bursts (each
+    //   delta operating on the post-prior-edit state) and indent-
+    //   style multi-line edits.
+    // - **Per-language**: same shape in Rust / Python /
+    //   JavaScript so language-specific drift in the
+    //   `EditDelta -> InputEdit` mapping or `tree.edit()` semantics
+    //   surfaces.
+    //
+    // Each test asserts the incremental parse's tree s-expression
+    // equals the full-reparse s-expression on the same final
+    // source. Failures pinpoint the (language, edit shape) where
+    // the deltas drift -- a precise regression net.
+
+    /// Build the post-edit source + an `EditDelta` for an edit
+    /// described by `(start_byte, old_end_byte, new_text)`. Self-
+    /// contained -- doesn't depend on `lattice-core::Buffer` so
+    /// `lattice-syntax` tests stay free of that dependency.
+    fn delta_for_edit(
+        source_a: &str,
+        start_byte: usize,
+        old_end_byte: usize,
+        new_text: &str,
+    ) -> (String, EditDelta) {
+        let pos_at = |byte: usize, src: &str| -> lattice_protocol::Position {
+            let prefix = &src[..byte];
+            let line = prefix.matches('\n').count() as u32;
+            let col = (byte - prefix.rfind('\n').map(|i| i + 1).unwrap_or(0)) as u32;
+            lattice_protocol::Position::new(line, col)
+        };
+        let mut source_b = String::with_capacity(
+            source_a.len() - (old_end_byte - start_byte) + new_text.len(),
+        );
+        source_b.push_str(&source_a[..start_byte]);
+        source_b.push_str(new_text);
+        source_b.push_str(&source_a[old_end_byte..]);
+        let new_end_byte = start_byte + new_text.len();
+        let delta = EditDelta {
+            start_byte: start_byte as u32,
+            old_end_byte: old_end_byte as u32,
+            new_end_byte: new_end_byte as u32,
+            start_position: pos_at(start_byte, source_a),
+            old_end_position: pos_at(old_end_byte, source_a),
+            new_end_position: pos_at(new_end_byte, &source_b),
+        };
+        (source_b, delta)
+    }
+
+    /// Apply a sequence of edits to `source_a`, returning the
+    /// final source + the per-edit deltas (in apply order). Each
+    /// edit's positions are derived against the buffer state
+    /// AFTER the prior edit applied -- mirroring how App's
+    /// chokepoint produces deltas via successive
+    /// `Buffer::apply_edit` calls.
+    fn apply_sequential_edits(
+        source_a: &str,
+        edits: &[(usize, usize, &str)],
+    ) -> (String, Vec<EditDelta>) {
+        let mut current = source_a.to_string();
+        let mut deltas = Vec::with_capacity(edits.len());
+        for (start, old_end, new_text) in edits {
+            let (next, delta) = delta_for_edit(&current, *start, *old_end, new_text);
+            current = next;
+            deltas.push(delta);
+        }
+        (current, deltas)
+    }
+
+    /// Run incremental + full reparse on `source_a` -> `source_b`
+    /// via `edits`, asserting tree-shape equality. Failure
+    /// message names the language + the source pair.
+    fn assert_parity(
+        lang: Lang,
+        source_a: &str,
+        edits: &[EditDelta],
+        source_b: &str,
+        case: &str,
+    ) {
+        let mut s_inc = Syntax::for_language(lang).unwrap().unwrap();
+        s_inc.parse_at(source_a, 1);
+        s_inc.parse_at_with_edits(source_b, 2, 1, edits);
+        let inc = s_inc.tree().unwrap().root_node().to_sexp();
+
+        let mut s_full = Syntax::for_language(lang).unwrap().unwrap();
+        s_full.parse_at(source_b, 1);
+        let full = s_full.tree().unwrap().root_node().to_sexp();
+
+        assert_eq!(
+            inc, full,
+            "incremental != full reparse for {lang:?} / {case}\n  source_a: {source_a:?}\n  source_b: {source_b:?}"
+        );
+    }
+
+    /// Single-edit parity helper: derive delta from
+    /// `(start_byte, old_end_byte, new_text)`, run parity check.
+    fn assert_single_edit_parity(
+        lang: Lang,
+        source_a: &str,
+        start_byte: usize,
+        old_end_byte: usize,
+        new_text: &str,
+        case: &str,
+    ) {
+        let (source_b, delta) = delta_for_edit(source_a, start_byte, old_end_byte, new_text);
+        assert_parity(lang, source_a, &[delta], &source_b, case);
+    }
+
+    // ==== Edge-position single edits ============================
+
+    #[test]
+    fn parity_insert_at_byte_zero_rust() {
+        assert_single_edit_parity(
+            Lang::Rust,
+            "fn main() {}",
+            0,
+            0,
+            "// header\n",
+            "insert at byte 0",
+        );
+    }
+
+    #[test]
+    fn parity_insert_at_end_of_buffer_rust() {
+        let src = "fn main() {}";
+        assert_single_edit_parity(Lang::Rust, src, src.len(), src.len(), "\nfn b() {}", "insert at end");
+    }
+
+    #[test]
+    fn parity_delete_first_char_rust() {
+        assert_single_edit_parity(Lang::Rust, "Xfn main() {}", 0, 1, "", "delete first byte");
+    }
+
+    #[test]
+    fn parity_delete_last_char_rust() {
+        let src = "fn main() {};";
+        assert_single_edit_parity(Lang::Rust, src, src.len() - 1, src.len(), "", "delete last byte");
+    }
+
+    #[test]
+    fn parity_replace_whole_buffer_rust() {
+        let src = "fn a() {}";
+        assert_single_edit_parity(
+            Lang::Rust,
+            src,
+            0,
+            src.len(),
+            "fn b(x: i32) -> i32 { x + 1 }",
+            "replace whole buffer",
+        );
+    }
+
+    #[test]
+    fn parity_insert_at_line_boundary_rust() {
+        // After the newline ending line 0; before any content
+        // on line 1.
+        let src = "fn a() {}\n";
+        assert_single_edit_parity(
+            Lang::Rust,
+            src,
+            10,
+            10,
+            "fn b() {}\n",
+            "insert at line boundary",
+        );
+    }
+
+    // ==== Multi-line shape changes ==============================
+
+    #[test]
+    fn parity_insert_newline_splitting_a_line_rust() {
+        // Insert "\n    " mid-statement, breaking it across lines.
+        let src = "fn a() { let x = 1; }";
+        assert_single_edit_parity(Lang::Rust, src, 9, 9, "\n    ", "insert newline mid-line");
+    }
+
+    #[test]
+    fn parity_delete_newline_joining_lines_rust() {
+        // Source has two lines; delete the connecting newline.
+        let src = "fn a() {\n    1;\n}";
+        assert_single_edit_parity(Lang::Rust, src, 8, 9, "", "delete newline");
+    }
+
+    #[test]
+    fn parity_replace_single_with_multi_line_rust() {
+        let src = "fn a() { 1 }";
+        assert_single_edit_parity(
+            Lang::Rust,
+            src,
+            9,
+            10,
+            "\n    let x = 1;\n    x\n",
+            "single-line -> multi-line",
+        );
+    }
+
+    #[test]
+    fn parity_replace_multi_with_single_line_rust() {
+        let src = "fn a() {\n    let x = 1;\n    x\n}";
+        // Replace lines 1-2 ("    let x = 1;\n    x\n") with " 42 ".
+        assert_single_edit_parity(Lang::Rust, src, 9, 30, " 42 ", "multi-line -> single-line");
+    }
+
+    // ==== Whitespace-only edits =================================
+
+    #[test]
+    fn parity_insert_indent_whitespace_rust() {
+        let src = "fn a() {\nlet x = 1;\n}";
+        assert_single_edit_parity(Lang::Rust, src, 9, 9, "    ", "insert indentation");
+    }
+
+    #[test]
+    fn parity_delete_trailing_whitespace_rust() {
+        let src = "fn a() {    \n}";
+        assert_single_edit_parity(Lang::Rust, src, 8, 12, "", "delete trailing whitespace");
+    }
+
+    // ==== Sequential edit batches ===============================
+
+    #[test]
+    fn parity_three_keystroke_burst_rust() {
+        // Simulate typing "abc" one char at a time inside an
+        // identifier slot.
+        let (source_b, deltas) = apply_sequential_edits(
+            "fn  () {}",
+            &[(3, 3, "a"), (4, 4, "b"), (5, 5, "c")],
+        );
+        assert_parity(Lang::Rust, "fn  () {}", &deltas, &source_b, "3-keystroke burst");
+    }
+
+    #[test]
+    fn parity_indent_batch_rust() {
+        // Simulate `>>` over two lines: insert 4 spaces at the
+        // start of each. Each subsequent edit's position is
+        // shifted by the prior edit's effect.
+        let src = "fn a() {\nlet x = 1;\nlet y = 2;\n}";
+        // Line 1 starts at byte 9; line 2 starts at byte 20 in
+        // the original. After inserting 4 spaces at byte 9, line
+        // 2 starts at byte 24.
+        let (source_b, deltas) = apply_sequential_edits(src, &[(9, 9, "    "), (24, 24, "    ")]);
+        assert_parity(Lang::Rust, src, &deltas, &source_b, "indent batch");
+    }
+
+    #[test]
+    fn parity_backspace_burst_rust() {
+        // Simulate pressing backspace 3 times -- delete one byte
+        // at a time from a known position.
+        let src = "fn aaaa() {}";
+        let (source_b, deltas) = apply_sequential_edits(
+            src,
+            &[(6, 7, ""), (5, 6, ""), (4, 5, "")],
+        );
+        assert_parity(Lang::Rust, src, &deltas, &source_b, "backspace burst");
+    }
+
+    // ==== Per-language coverage =================================
+
+    #[test]
+    fn parity_python_insert_in_def() {
+        let src = "def f(x):\n    return x\n";
+        assert_single_edit_parity(Lang::Python, src, 6, 6, "y, ", "insert arg in python def");
+    }
+
+    #[test]
+    fn parity_python_delete_a_line() {
+        let src = "def f(x):\n    y = 1\n    return x + y\n";
+        // Delete "    y = 1\n" (indices 10..23).
+        assert_single_edit_parity(Lang::Python, src, 10, 23, "", "delete line in python");
+    }
+
+    #[test]
+    fn parity_python_replace_function_body() {
+        let src = "def f(x):\n    return x\n";
+        assert_single_edit_parity(
+            Lang::Python,
+            src,
+            10,
+            22,
+            "    return x * 2",
+            "replace python body",
+        );
+    }
+
+    #[test]
+    fn parity_javascript_insert_in_function() {
+        let src = "function f(x) { return x; }";
+        assert_single_edit_parity(Lang::JavaScript, src, 24, 24, " + 1", "insert in JS function");
+    }
+
+    #[test]
+    fn parity_javascript_replace_arrow_body() {
+        let src = "const f = (x) => x;";
+        assert_single_edit_parity(
+            Lang::JavaScript,
+            src,
+            17,
+            18,
+            "x * 2",
+            "replace arrow body",
+        );
+    }
+
+    #[test]
+    fn parity_javascript_indent_batch() {
+        let src = "function f() {\nlet x = 1;\nlet y = 2;\n}";
+        let (source_b, deltas) = apply_sequential_edits(src, &[(15, 15, "  "), (28, 28, "  ")]);
+        assert_parity(Lang::JavaScript, src, &deltas, &source_b, "JS indent batch");
+    }
+
+    // ==== Pathological / minimal-buffer cases ===================
+
+    #[test]
+    fn parity_edit_in_single_char_buffer_rust() {
+        // Single-char buffer: delete the only char.
+        assert_single_edit_parity(Lang::Rust, ";", 0, 1, "", "delete only char");
+    }
+
+    #[test]
+    fn parity_insert_into_minimal_buffer_rust() {
+        // Empty / near-empty buffer; insert valid syntax.
+        assert_single_edit_parity(Lang::Rust, "fn", 2, 2, " a() {}", "insert into minimal buffer");
+    }
+
+    #[test]
+    fn parity_replace_with_empty_string_rust() {
+        // Pure delete via replace with empty new text.
+        let src = "fn a() {}\nfn b() {}";
+        assert_single_edit_parity(Lang::Rust, src, 9, 19, "", "replace with empty");
+    }
+
+    // ==== Markdown =============================================
+    //
+    // Markdown is the trickiest language because of its
+    // injections (block grammar -> inline grammar -> any fenced
+    // language). The full-reparse path runs the same injection
+    // pipeline as incremental, so tree-shape parity at the
+    // outer (block) level is the right invariant -- inner
+    // injection trees aren't part of `tree()` (they're managed
+    // by the highlighter, not the parser).
+
+    #[test]
+    fn parity_markdown_insert_heading() {
+        let src = "body paragraph\n";
+        assert_single_edit_parity(
+            Lang::Markdown,
+            src,
+            0,
+            0,
+            "# Title\n\n",
+            "insert heading",
+        );
+    }
+
+    #[test]
+    fn parity_markdown_replace_in_paragraph() {
+        let src = "first line\nsecond line\n";
+        assert_single_edit_parity(
+            Lang::Markdown,
+            src,
+            6,
+            10,
+            "FOO",
+            "replace word in paragraph",
+        );
+    }
+
+    #[test]
+    fn parity_markdown_delete_fenced_block() {
+        let src = "intro\n\n```rust\nfn x() {}\n```\n\noutro\n";
+        // Delete the fenced block (bytes 7..29 == "```rust\nfn x() {}\n```\n").
+        assert_single_edit_parity(
+            Lang::Markdown,
+            src,
+            7,
+            29,
+            "",
+            "delete fenced code block",
+        );
     }
 }

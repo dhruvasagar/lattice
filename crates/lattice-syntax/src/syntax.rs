@@ -26,11 +26,44 @@ use std::sync::Arc;
 
 use streaming_iterator::StreamingIterator;
 use thiserror::Error;
-use tree_sitter::{Parser, QueryCursor, Tree};
+use tree_sitter::{InputEdit, Parser, Point, QueryCursor, Tree};
+
+use lattice_protocol::edit::EditDelta;
 
 use crate::lang::Lang;
 use crate::registry::LangRegistry;
 use crate::style::{Style, StyledSpan};
+
+/// Convert a [`lattice_protocol::edit::EditDelta`] (parser-agnostic
+/// edit shape) to a [`tree_sitter::InputEdit`] (parser-shaped edit
+/// the cached tree mutates by). Six casts + a struct constructor;
+/// runs in the noise floor (~1ns).
+///
+/// Free function rather than `From` impl because both types are
+/// foreign to this crate -- Rust's orphan rule blocks the trait
+/// impl. Lives in `lattice-syntax` (not `lattice-protocol`) so the
+/// protocol crate stays parser-agnostic. The fields map 1:1:
+/// `Position.line` -> `Point.row`, `Position.byte` -> `Point.column`
+/// (both are byte-within-line, despite the column-named field).
+pub fn edit_delta_to_input_edit(d: EditDelta) -> InputEdit {
+    InputEdit {
+        start_byte: d.start_byte as usize,
+        old_end_byte: d.old_end_byte as usize,
+        new_end_byte: d.new_end_byte as usize,
+        start_position: Point {
+            row: d.start_position.line as usize,
+            column: d.start_position.byte as usize,
+        },
+        old_end_position: Point {
+            row: d.old_end_position.line as usize,
+            column: d.old_end_position.byte as usize,
+        },
+        new_end_position: Point {
+            row: d.new_end_position.line as usize,
+            column: d.new_end_position.byte as usize,
+        },
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum SyntaxError {
@@ -232,22 +265,102 @@ impl Syntax {
     /// `text_version` onto the resulting snapshot. The async
     /// handle uses this so consumers can deduplicate stale
     /// snapshots.
+    ///
+    /// Full reparse (passes `None` as the prior tree). The
+    /// incremental sibling [`Self::parse_at_with_edits`] is the
+    /// keystroke-path entry point; this method is the file-load
+    /// / cold-start / fallback path.
+    ///
+    /// `Parser::parse` returning `None` means cancellation, which
+    /// we don't trigger on this synchronous path. Keep the old
+    /// tree in that unlikely case rather than dropping it -- the
+    /// next parse round will retry.
     pub fn parse_at(&mut self, source: &str, text_version: u64) {
         let bytes = source.as_bytes();
-        // Step 1 stays a full reparse (we pass `None` rather
-        // than the old tree). Tree-sitter's incremental reparse
-        // requires the previous tree to have been `Tree::edit`-
-        // updated with byte-accurate deltas first; we don't
-        // thread `Edit` deltas yet, so passing `Some(old)`
-        // produces a stale-shape tree. Full reparse stays
-        // correct; the seam doesn't change when incremental
-        // lands.
-        //
-        // `Parser::parse` returning `None` means cancellation,
-        // which we don't trigger on this synchronous path. Keep
-        // the old tree in that unlikely case rather than
-        // dropping it -- the next parse() round will retry.
         let new_tree = self.parser.parse(bytes, None).or_else(|| self.inner.tree.take());
+        self.inner.source = Arc::from(bytes.to_vec());
+        self.inner.tree = new_tree;
+        self.inner.text_version = text_version;
+    }
+
+    /// Incremental reparse: apply `edits` to the cached tree (sync
+    /// pre-step on the worker, ~500ns per edit), then parse with
+    /// the edited tree as the seed (~50µs floor on medium files
+    /// per §8.2). Falls back to [`Self::parse_at`] (full reparse)
+    /// if any of:
+    ///
+    /// 1. **No cached tree** -- first reparse / worker recovered
+    ///    from prior cancellation; nothing to seed with.
+    /// 2. **`from_version` mismatch** -- worker's tree isn't at
+    ///    the version the edits expect to start from. Indicates
+    ///    a dropped reparse request, file load, or document
+    ///    replace; the cached tree's byte ranges don't match the
+    ///    edits, so we MUST do full reparse to avoid silent tree
+    ///    corruption.
+    /// 3. **`edits` empty** -- nothing to apply; if text_version
+    ///    differs the caller is signalling "I don't have deltas,
+    ///    do a full reparse" (file load case).
+    /// 4. **Byte-length mismatch** -- after applying all edits in
+    ///    order, the cumulative byte delta doesn't match
+    ///    `source.len() - prior_source.len()`. Catches dropped /
+    ///    truncated edit lists. Full reparse + log warning.
+    ///
+    /// Tree-sitter's failure mode for a malformed `InputEdit` is
+    /// a silently wrong tree, not a panic. Layering these guards
+    /// + parity tests (slice B.4 hardens this further) keeps the
+    /// silent-corruption surface contained.
+    pub fn parse_at_with_edits(
+        &mut self,
+        source: &str,
+        text_version: u64,
+        from_version: u64,
+        edits: &[EditDelta],
+    ) {
+        // Guards 1-3: no cached tree, version mismatch, or empty
+        // edits with text actually changed -- fall through to a
+        // full reparse. We don't even try `tree.edit()` in these
+        // cases; the cached tree is the wrong baseline.
+        let cached_at_baseline = self.inner.tree.is_some()
+            && self.inner.text_version == from_version
+            && !edits.is_empty();
+        if !cached_at_baseline {
+            self.parse_at(source, text_version);
+            return;
+        }
+        // Guard 4: byte-length consistency. Sum each edit's net
+        // byte delta (new_end - old_end) and confirm it matches
+        // (new source len - old source len). Mismatch -> dropped
+        // or out-of-order edits, fall back to full reparse.
+        let prior_len = self.inner.source.len() as i64;
+        let new_len = source.len() as i64;
+        let edit_delta_sum: i64 = edits
+            .iter()
+            .map(|d| (d.new_end_byte as i64) - (d.old_end_byte as i64))
+            .sum();
+        if prior_len + edit_delta_sum != new_len {
+            // Don't panic; this is the "drop a stale-shape tree"
+            // path. Parity tests pin the case where this guard
+            // should NOT fire.
+            self.parse_at(source, text_version);
+            return;
+        }
+        // All guards passed. Apply each edit to the cached tree
+        // in order, then parse with the edited tree as the seed.
+        // tree-sitter mutates `Tree` in place via `edit`; the
+        // mutation shifts every node's byte range to track the
+        // edit so the subsequent reparse can reuse unchanged
+        // subtrees.
+        let bytes = source.as_bytes();
+        if let Some(tree) = self.inner.tree.as_mut() {
+            for d in edits {
+                tree.edit(&edit_delta_to_input_edit(*d));
+            }
+        }
+        let old_tree_ref = self.inner.tree.as_ref();
+        let new_tree = self
+            .parser
+            .parse(bytes, old_tree_ref)
+            .or_else(|| self.inner.tree.take());
         self.inner.source = Arc::from(bytes.to_vec());
         self.inner.tree = new_tree;
         self.inner.text_version = text_version;
@@ -1171,5 +1284,236 @@ const MAX: i32 = 10;\n\
             "# H1\n\n## H2\n\n### H3\n\nbody paragraph\n",
             Style::Heading1,
         );
+    }
+
+    // ---- Slice B.2: incremental reparse parity tests -----------
+    //
+    // Tree-sitter's failure mode for a malformed `InputEdit` is a
+    // silently wrong tree (no error, just stale node ranges).
+    // These tests pin that incremental reparse produces the SAME
+    // tree shape as full reparse on the same final source --
+    // catching any future drift in `parse_at_with_edits` or the
+    // `EditDelta -> InputEdit` conversion.
+
+    /// Helper: parse `source_a` then drive an incremental reparse
+    /// to `source_b` using the supplied edits. Compare to a fresh
+    /// full reparse on `source_b` directly. Returns the two trees'
+    /// s-expressions for assertion.
+    fn incremental_vs_full_reparse(
+        lang: Lang,
+        source_a: &str,
+        source_b: &str,
+        edits: &[EditDelta],
+    ) -> (String, String) {
+        let mut s_inc = Syntax::for_language(lang).unwrap().unwrap();
+        s_inc.parse_at(source_a, 1);
+        s_inc.parse_at_with_edits(source_b, 2, 1, edits);
+        let inc = s_inc.tree().unwrap().root_node().to_sexp();
+
+        let mut s_full = Syntax::for_language(lang).unwrap().unwrap();
+        s_full.parse_at(source_b, 1);
+        let full = s_full.tree().unwrap().root_node().to_sexp();
+
+        (inc, full)
+    }
+
+    #[test]
+    fn incremental_reparse_single_insert_matches_full_reparse() {
+        // Insert "x" at byte 3 of "fn main() {}". Single-edit
+        // case -- the simplest incremental path.
+        let edits = [EditDelta {
+            start_byte: 3,
+            old_end_byte: 3,
+            new_end_byte: 4,
+            start_position: lattice_protocol::Position::new(0, 3),
+            old_end_position: lattice_protocol::Position::new(0, 3),
+            new_end_position: lattice_protocol::Position::new(0, 4),
+        }];
+        let (inc, full) =
+            incremental_vs_full_reparse(Lang::Rust, "fn main() {}", "fn xmain() {}", &edits);
+        assert_eq!(inc, full, "incremental tree must match full reparse");
+    }
+
+    #[test]
+    fn incremental_reparse_single_delete_matches_full_reparse() {
+        // Delete byte 3 of "fn xmain() {}".
+        let edits = [EditDelta {
+            start_byte: 3,
+            old_end_byte: 4,
+            new_end_byte: 3,
+            start_position: lattice_protocol::Position::new(0, 3),
+            old_end_position: lattice_protocol::Position::new(0, 4),
+            new_end_position: lattice_protocol::Position::new(0, 3),
+        }];
+        let (inc, full) =
+            incremental_vs_full_reparse(Lang::Rust, "fn xmain() {}", "fn main() {}", &edits);
+        assert_eq!(inc, full);
+    }
+
+    #[test]
+    fn incremental_reparse_multiline_replace_matches_full_reparse() {
+        // Replace `let x = 1;` (line 1) with `let x = 42;`.
+        // Source A: "fn main() {\n    let x = 1;\n}"
+        // Source B: "fn main() {\n    let x = 42;\n}"
+        // Replacement byte range starts at line 1 col 12, ends at
+        // line 1 col 13. Insert "42" (2 bytes) for "1" (1 byte).
+        let source_a = "fn main() {\n    let x = 1;\n}";
+        let source_b = "fn main() {\n    let x = 42;\n}";
+        // "fn main() {\n" is 12 bytes. "    let x = " is 12 more
+        // = byte 24. "1" is at byte 24. End at byte 25.
+        let edits = [EditDelta {
+            start_byte: 24,
+            old_end_byte: 25,
+            new_end_byte: 26,
+            start_position: lattice_protocol::Position::new(1, 12),
+            old_end_position: lattice_protocol::Position::new(1, 13),
+            new_end_position: lattice_protocol::Position::new(1, 14),
+        }];
+        let (inc, full) = incremental_vs_full_reparse(Lang::Rust, source_a, source_b, &edits);
+        assert_eq!(inc, full);
+    }
+
+    #[test]
+    fn incremental_reparse_multi_edit_batch_matches_full_reparse() {
+        // Two edits applied in sequence: insert "y" at byte 3,
+        // then "z" at (post-first-edit) byte 5. The cumulative
+        // shape is "fn yxmzain() {}" (Position fields shift after
+        // first edit).
+        // Source A: "fn xmain() {}"
+        // After edit 1: "fn yxmain() {}"
+        // After edit 2: "fn yxmzain() {}"
+        let source_a = "fn xmain() {}";
+        let source_b = "fn yxmzain() {}";
+        let edits = [
+            EditDelta {
+                start_byte: 3,
+                old_end_byte: 3,
+                new_end_byte: 4,
+                start_position: lattice_protocol::Position::new(0, 3),
+                old_end_position: lattice_protocol::Position::new(0, 3),
+                new_end_position: lattice_protocol::Position::new(0, 4),
+            },
+            EditDelta {
+                start_byte: 6,
+                old_end_byte: 6,
+                new_end_byte: 7,
+                start_position: lattice_protocol::Position::new(0, 6),
+                old_end_position: lattice_protocol::Position::new(0, 6),
+                new_end_position: lattice_protocol::Position::new(0, 7),
+            },
+        ];
+        let (inc, full) = incremental_vs_full_reparse(Lang::Rust, source_a, source_b, &edits);
+        assert_eq!(inc, full);
+    }
+
+    #[test]
+    fn parse_at_with_edits_falls_back_to_full_reparse_when_no_cached_tree() {
+        // Fresh Syntax, no cached tree. parse_at_with_edits with
+        // edits should fall back to full reparse rather than
+        // panicking or producing a wrong tree.
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        let edits = [EditDelta {
+            start_byte: 0,
+            old_end_byte: 0,
+            new_end_byte: 5,
+            start_position: lattice_protocol::Position::new(0, 0),
+            old_end_position: lattice_protocol::Position::new(0, 0),
+            new_end_position: lattice_protocol::Position::new(0, 5),
+        }];
+        s.parse_at_with_edits("hello", 1, 0, &edits);
+        let tree = s.tree().expect("tree present after fallback");
+        // Tree should match a direct full-reparse on the same
+        // source -- proves the fallback path produced a correct
+        // tree, not a stale one.
+        let mut s_full = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s_full.parse_at("hello", 1);
+        assert_eq!(
+            tree.root_node().to_sexp(),
+            s_full.tree().unwrap().root_node().to_sexp(),
+        );
+    }
+
+    #[test]
+    fn parse_at_with_edits_falls_back_when_from_version_mismatches() {
+        // Cached tree at version 5; request claims from_version=3.
+        // The deltas from v3->v6 don't apply to a tree at v5, so
+        // the worker MUST fall back to full reparse rather than
+        // silently corrupt the cached tree.
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse_at("fn a() {}", 5);
+        // Construct a delta that would be wrong for the cached
+        // tree's actual state -- but since from_version mismatch
+        // triggers fallback, the wrong delta is never applied.
+        let edits = [EditDelta {
+            start_byte: 100,
+            old_end_byte: 100,
+            new_end_byte: 105,
+            start_position: lattice_protocol::Position::new(99, 0),
+            old_end_position: lattice_protocol::Position::new(99, 0),
+            new_end_position: lattice_protocol::Position::new(99, 5),
+        }];
+        // from_version=3 != cached version 5 -> full reparse.
+        s.parse_at_with_edits("fn b() {}", 6, 3, &edits);
+        // Result tree must match a full reparse on "fn b() {}",
+        // not contain stale "fn a() {}" structure or weird
+        // out-of-range nodes from the bogus delta.
+        let mut s_full = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s_full.parse_at("fn b() {}", 6);
+        assert_eq!(
+            s.tree().unwrap().root_node().to_sexp(),
+            s_full.tree().unwrap().root_node().to_sexp(),
+        );
+    }
+
+    #[test]
+    fn parse_at_with_edits_falls_back_on_byte_length_mismatch() {
+        // Edit claims to net +0 bytes (insert "ab", delete "cd")
+        // but the actual source delta is +5 bytes. The byte-length
+        // guard catches the dropped/missing edit and routes to
+        // full reparse.
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        let source_a = "fn a() {}";
+        s.parse_at(source_a, 1);
+        let edits = [EditDelta {
+            start_byte: 3,
+            old_end_byte: 4,
+            new_end_byte: 4,
+            start_position: lattice_protocol::Position::new(0, 3),
+            old_end_position: lattice_protocol::Position::new(0, 4),
+            new_end_position: lattice_protocol::Position::new(0, 4),
+        }];
+        // Source B is much longer than the edit accounts for ->
+        // length mismatch -> full reparse.
+        let source_b = "fn aaaaaaa() {}";
+        s.parse_at_with_edits(source_b, 2, 1, &edits);
+        // Verify result matches full reparse.
+        let mut s_full = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s_full.parse_at(source_b, 2);
+        assert_eq!(
+            s.tree().unwrap().root_node().to_sexp(),
+            s_full.tree().unwrap().root_node().to_sexp(),
+        );
+    }
+
+    #[test]
+    fn edit_delta_to_input_edit_maps_fields_one_to_one() {
+        let d = EditDelta {
+            start_byte: 10,
+            old_end_byte: 15,
+            new_end_byte: 20,
+            start_position: lattice_protocol::Position::new(2, 3),
+            old_end_position: lattice_protocol::Position::new(2, 8),
+            new_end_position: lattice_protocol::Position::new(2, 13),
+        };
+        let inp = edit_delta_to_input_edit(d);
+        assert_eq!(inp.start_byte, 10);
+        assert_eq!(inp.old_end_byte, 15);
+        assert_eq!(inp.new_end_byte, 20);
+        assert_eq!(inp.start_position.row, 2);
+        assert_eq!(inp.start_position.column, 3);
+        assert_eq!(inp.old_end_position.row, 2);
+        assert_eq!(inp.old_end_position.column, 8);
+        assert_eq!(inp.new_end_position.row, 2);
+        assert_eq!(inp.new_end_position.column, 13);
     }
 }

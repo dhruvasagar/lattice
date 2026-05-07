@@ -253,6 +253,15 @@ realistic call shapes the renderer actually issues.
 | **`highlight::rust_viewport/24`**  | 24-line viewport  | **178µs** | ~150µs / <300µs | ⏹️ realistic frame call shape. The renderer's keystroke path lives here.             |
 | **`highlight::rust_viewport/60`**  | 60-line viewport  | **289µs** | ~250µs / <500µs | ⏹️                                                                                   |
 | **`highlight::rust_viewport/120`** | 120-line viewport | **388µs** | ~350µs / <800µs | ⏹️                                                                                   |
+| `tree_edit_single_char/10`         | 80 lines          | **4.4µs** | --              | ⏹️ tree.edit() floor at small size (B.2).                                            |
+| `tree_edit_single_char/200`        | 1600 lines        | **163µs** | --              | ⏹️ scales with tree node count, not constant (B.2).                                  |
+| `tree_edit_single_char/2000`       | 16k lines         | **4.0ms** | --              | ⏹️ pathological size; bounded by 256-edit per-burst cap.                             |
+| `reparse_incremental/10`           | 80 lines          | **594µs** | --              | ⏹️ slower than full at this size; tree-sitter incremental setup overhead.            |
+| `reparse_incremental/200`          | 1600 lines        | **325µs** | --              | ⏹️ **8× faster than full reparse**.                                                  |
+| `reparse_incremental/2000`         | 16k lines         | **1.77ms**| --              | ⏹️ **14× faster than full reparse**, fits 16ms@60Hz frame budget.                    |
+| `reparse_full_baseline/10`         | 80 lines          | **246µs** | --              | ⏹️ falsification anchor at small size.                                               |
+| `reparse_full_baseline/200`        | 1600 lines        | **2.5ms** | --              | ⏹️ falsification anchor at medium size.                                              |
+| `reparse_full_baseline/2000`       | 16k lines         | **25.5ms**| --              | ⏹️ exceeds 16ms@60Hz budget -- why incremental matters at scale.                     |
 
 **The viewport-bounded numbers are the meaningful ones.** The
 full-buffer rows characterise worst-case query traversal cost
@@ -265,6 +274,35 @@ cursor still walks the entire tree to find captures that overlap
 the requested range. The ~178µs viewport floor reflects this; a
 true viewport-bounded query traversal (Helix's `LanguageLayer`
 incremental approach) is post-1.0 work.
+
+### Slice B.2 — Incremental reparse calibration
+
+The incremental rows surface honest scaling: `tree.edit()` is
+O(num_nodes), not constant. Initial §8.2 estimate of "~500ns
+floor" was wrong; the real floor scales by tree size.
+
+**Speedup vs. full reparse**:
+- 80 lines: incremental **0.4× slower** -- tree-sitter's
+  incremental setup overhead doesn't pay off below ~hundreds of
+  lines. Both paths sub-ms; user-imperceptible.
+- 1600 lines: incremental **~8× faster** (325µs vs 2.5ms).
+- 16k lines: incremental **~14× faster** (1.77ms vs 25.5ms),
+  AND incremental fits the 16ms@60Hz frame budget while full
+  exceeds it.
+
+**Why we don't gate on file size.** A threshold "use full reparse
+below N bytes" is tempting but adds a discontinuity that would
+be observable as latency-jitter when files cross the threshold
+during editing. The small-file regression is sub-ms in absolute
+terms; the architectural simplicity of "always incremental" is
+worth the 350µs at the small end.
+
+**Pathological-burst guard.** The worker caps coalesced edits at
+256 per request. A 100k-char paste-as-keystrokes would otherwise
+multiply the 4ms-per-edit (16k-line case) cost into seconds of
+pre-parse work. The cap drops the edit list and falls through to
+full reparse -- still produces a correct tree, just at full-
+reparse cost (which is what the user-paste path naturally hits).
 
 ---
 

@@ -4002,7 +4002,18 @@ impl App {
             return;
         }
         if let Some(syntax) = self.syntax.as_ref() {
-            syntax.request_reparse(tv, self.document.text());
+            // Slice B.2 part 1/2: API now takes from_version +
+            // edits. Part 2/2 (separate commit) wires the actual
+            // EditDelta accumulation; for now we pass the prior
+            // version + empty edits, which routes the worker to
+            // the existing full-reparse path. Preserves today's
+            // behaviour until App-side plumbing lands.
+            syntax.request_reparse(
+                self.last_parsed_text_version,
+                tv,
+                self.document.text(),
+                Vec::new(),
+            );
         }
         self.last_parsed_text_version = tv;
         // Recompute computed folds in lockstep with the syntax
@@ -4229,7 +4240,16 @@ impl App {
             }
             if let Some(syntax) = entry.syntax.as_ref() {
                 if tv != entry.last_parsed_text_version {
-                    syntax.request_reparse(tv, snap.buffer.as_string());
+                    // Slice B.2 part 1/2: same shape as the
+                    // active-pane path -- empty edits + prior
+                    // version routes to full reparse. Part 2/2
+                    // wires per-DocumentEntry edit accumulation.
+                    syntax.request_reparse(
+                        entry.last_parsed_text_version,
+                        tv,
+                        snap.buffer.as_string(),
+                        Vec::new(),
+                    );
                     entry.last_parsed_text_version = tv;
                 }
                 let end = scroll.saturating_add(height);

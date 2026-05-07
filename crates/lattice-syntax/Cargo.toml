@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 arc-swap = { workspace = true }
+lattice-protocol = { path = "../lattice-protocol" }
 tokio = { workspace = true, features = ["sync", "rt", "macros"] }
 tree-sitter = { workspace = true }
 streaming-iterator = { workspace = true }

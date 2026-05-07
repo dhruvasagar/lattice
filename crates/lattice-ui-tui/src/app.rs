@@ -12253,6 +12253,28 @@ impl App {
         if let Some(first) = edits.first() {
             self.cursor = first.original_range.start;
         }
+        // Slice C.5: grammar-driven edits (operators like `>>`,
+        // `dd`, `c`, `y`) reach this path with `Effect::Edits`
+        // -- the actor already applied them to the document.
+        // They bypass the `apply_edit_blocking` chokepoint that
+        // does `publish_document_changed`. Without manual
+        // wiring here, the LSP `didChange` fan-out, the
+        // `pending_syntax_edits` accumulation, and the
+        // `shift_highlights_for_edit` byte-shift all SKIP these
+        // edits -- which is what produced the user-reported
+        // flicker on `>>` and `dd`: spans never shifted on the
+        // input thread, so when the worker eventually published
+        // the recompute landed as a visible repaint.
+        //
+        // Route them through the same chokepoint so:
+        // - LSP servers see the didChange.
+        // - Syntax worker sees the EditDeltas (incremental
+        //   reparse instead of falling back to full).
+        // - visible_highlights stays line- and byte-aligned via
+        //   shift_highlights_for_edit.
+        if !edits.is_empty() {
+            self.publish_document_changed(edits);
+        }
     }
 
     /// Jump the cursor to a viewport-relative line. `H` -> top of view,

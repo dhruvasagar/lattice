@@ -1661,7 +1661,18 @@ pub struct Fold {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VisibleHighlightsKey {
     snapshot_ptr: usize,
-    text_version: u64,
+    /// Syntax snapshot's `text_version` (== version the worker
+    /// has parsed up to).
+    syntax_text_version: u64,
+    /// Document's `text_version` (== latest edit applied). Equals
+    /// `syntax_text_version` once the worker has caught up.
+    /// Included in the key so frames where the document advanced
+    /// but the syntax worker hasn't yet trigger a cache miss --
+    /// otherwise we'd reuse spans computed against the stale
+    /// snapshot's bytes and paint them on the new content,
+    /// producing the user-reported "highlighting stuck to byte
+    /// positions, not content" symptom.
+    document_text_version: u64,
     scroll: u32,
     viewport_height: u32,
     fold_hash: u64,
@@ -2476,11 +2487,21 @@ impl App {
         // `ArcSwap`. (Audit slice 3.)
         let initial_text = document.text();
         let initial_text_version = document.text_version();
+        // Production: pass the explicit LSP runtime handle so the
+        // syntax worker actually starts. `SyntaxHandle::seeded` fell
+        // back to `Handle::try_current()` which silently fails when
+        // App::new runs before the main loop enters tokio context --
+        // the worker would never spawn and Option B's incremental
+        // reparse pipeline would be entirely dead. Same shape as
+        // the LSP supervisor handle above.
         let syntax: Option<lattice_syntax::SyntaxHandle> =
             match lattice_syntax::Syntax::for_language_with_registry(lang, lang_registry.clone()) {
                 Ok(Some(mut s)) => {
                     s.parse_at(&initial_text, initial_text_version);
-                    Some(lattice_syntax::SyntaxHandle::seeded(s))
+                    Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+                        s,
+                        &runtime_handle,
+                    ))
                 }
                 _ => None,
             };
@@ -4259,9 +4280,11 @@ impl App {
             return;
         };
         let snap = syntax.snapshot();
+        let document_text_version = self.document.text_version();
         let key = VisibleHighlightsKey {
             snapshot_ptr: std::sync::Arc::as_ptr(&snap) as usize,
-            text_version: snap.text_version(),
+            syntax_text_version: snap.text_version(),
+            document_text_version,
             scroll: self.scroll,
             viewport_height: self.viewport_height,
             fold_hash: compute_fold_hash(&self.folds),
@@ -4270,8 +4293,26 @@ impl App {
             // Cache hit -- existing visible_highlights is valid.
             return;
         }
-        // Cache miss: recompute and store both the spans and
-        // the key. The window stretches via
+        // Render-time staleness guard: if the document has
+        // advanced past the syntax worker's published snapshot,
+        // any spans we compute would be anchored to old bytes
+        // (snap.source) but painted onto new content. That's the
+        // positional-staleness symptom the user reported. With
+        // B.2's incremental reparse landing in ~50µs typical,
+        // the worker catches up within one frame at 60Hz in
+        // nearly all cases; until it does, drop spans (paint
+        // plain text) rather than show misaligned colours.
+        // Belt-and-suspenders alongside bug-#1's worker spawn
+        // fix -- with that fix, the worker runs at all; with
+        // this guard, the brief in-flight window doesn't
+        // visibly bleed.
+        if snap.text_version() < document_text_version {
+            self.visible_highlights = Vec::new();
+            self.visible_highlights_key = Some(key);
+            return;
+        }
+        // Cache miss with a fresh snapshot: recompute and store
+        // both the spans and the key. The window stretches via
         // `visible_buffer_line_extent` to cover lines under
         // closed folds (see method docstring).
         let start = self.scroll;
@@ -5216,7 +5257,10 @@ impl App {
                     match Syntax::for_language_with_registry(lang, self.lang_registry.clone()) {
                         Ok(Some(mut s)) => {
                             s.parse_at(&initial_text, initial_text_version);
-                            Some(lattice_syntax::SyntaxHandle::seeded(s))
+                            Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+                                s,
+                                crate::runtime::lsp_runtime().handle(),
+                            ))
                         }
                         _ => None,
                     };
@@ -5266,7 +5310,10 @@ impl App {
             match Syntax::for_language_with_registry(lang, self.lang_registry.clone()) {
                 Ok(Some(mut s)) => {
                     s.parse_at(&initial_text, initial_text_version);
-                    Some(lattice_syntax::SyntaxHandle::seeded(s))
+                    Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+                        s,
+                        crate::runtime::lsp_runtime().handle(),
+                    ))
                 }
                 _ => None,
             };
@@ -13595,9 +13642,18 @@ impl App {
     fn do_redraw_screen(&mut self) {
         // Force a syntax reparse on the next frame.
         self.last_parsed_text_version = u64::MAX;
-        // Drop cached spans so refresh_highlights can't return
-        // stale data for a single frame.
+        // Drop cached spans AND the cache key so
+        // refresh_highlights's B.3 cache check sees a miss and
+        // recomputes. Without clearing the key, the next
+        // refresh_highlights computes the same key as the
+        // previous frame (snapshot didn't change), hits the
+        // cache, and returns the (now empty) `visible_highlights`
+        // -- which manifests as syntax highlighting visibly
+        // disappearing after `<C-l>` until the user scrolls (or
+        // anything else invalidates the key). Regression test
+        // pinned in `redraw_screen_repopulates_visible_highlights`.
         self.visible_highlights.clear();
+        self.visible_highlights_key = None;
         self.pane_highlights.clear();
         // Recompute folds in case the fold set drifted from the
         // current document state (paranoia; the seam already runs
@@ -16010,6 +16066,119 @@ mod tests {
         a.refresh_highlights();
         let key2 = a.visible_highlights_key;
         assert_ne!(key1, key2, "edit must invalidate cache");
+    }
+
+    // ---- Regression tests for the three production bugs -------
+    //
+    // 1. Syntax worker silently dies because `Handle::try_current`
+    //    fails before the editor's main loop enters tokio context.
+    //    Symptom: edits never trigger reparses; spans stay anchored
+    //    to the seeded snapshot's bytes forever.
+    // 2. `<C-l>` clears `visible_highlights` but not the cache key,
+    //    so the next `refresh_highlights` finds the same key, hits
+    //    the cache, and returns the now-empty spans -- highlighting
+    //    visibly disappears until something else invalidates the
+    //    key (scroll change).
+    // 3. After an edit, the document advances but the syntax
+    //    worker may not have published yet. Pre-fix the cache key
+    //    only included the syntax snapshot's text_version; if the
+    //    snapshot was stale, the cache hit and stale spans got
+    //    painted on new bytes (positional staleness).
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn syntax_worker_actually_publishes_after_request_reparse() {
+        // Bug #1 regression: production callers MUST use
+        // `seeded_with_runtime`, otherwise the worker is never
+        // spawned and `request_reparse` sends to a dropped
+        // channel. This test exercises the worker round-trip
+        // end-to-end inside a real tokio context.
+        use lattice_core::Buffer;
+        use lattice_syntax::{Lang, Syntax, SyntaxHandle};
+        let mut syn = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        syn.parse_at("fn a() {}", 1);
+        let handle = SyntaxHandle::seeded_with_runtime(syn, &tokio::runtime::Handle::current());
+        let initial_version = handle.snapshot().text_version();
+        // Fire a reparse with a fresh buffer at version 2.
+        let new_buffer = Buffer::from_text("fn a() {}\nfn b() {}");
+        handle.request_reparse(initial_version, 2, new_buffer, Vec::new());
+        // Poll for the snapshot to update. With a real worker,
+        // this completes within milliseconds; we cap at 1 second
+        // so a regression to "worker never runs" fails fast.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            if handle.snapshot().text_version() == 2 {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!(
+                    "syntax worker did not publish a fresh snapshot within 1s -- \
+                     worker likely never spawned (bug #1 regression)"
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        // Confirm the new tree has both function items.
+        let snap = handle.snapshot();
+        let tree = snap.tree().unwrap();
+        assert_eq!(tree.root_node().child_count(), 2);
+    }
+
+    #[test]
+    fn redraw_screen_repopulates_visible_highlights() {
+        // Bug #2 regression: after `<C-l>`, the next
+        // `refresh_highlights` must recompute spans, not return
+        // the cleared (empty) spans via a cache hit.
+        let mut a = app_with("fn main() {}", 5);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        let spans_before = a.visible_highlights.clone();
+        assert!(!spans_before.is_empty());
+        // <C-l> should clear both spans + key.
+        a.apply(Action::RedrawScreen);
+        assert!(
+            a.visible_highlights.is_empty(),
+            "<C-l> should clear visible_highlights synchronously"
+        );
+        assert!(
+            a.visible_highlights_key.is_none(),
+            "<C-l> must clear the cache key too -- otherwise the next refresh hits cache"
+        );
+        // Next refresh must recompute, not hit cache and return
+        // the cleared spans.
+        a.refresh_highlights();
+        assert!(
+            !a.visible_highlights.is_empty(),
+            "refresh_highlights after <C-l> must recompute spans -- bug-#2 regression"
+        );
+    }
+
+    #[test]
+    fn refresh_highlights_drops_spans_when_snapshot_stale() {
+        // Bug #3 regression: when document advanced but syntax
+        // worker hasn't published yet, refresh_highlights must
+        // return empty spans, not paint stale spans on new
+        // content. The seeded test handle never runs a worker
+        // (no tokio runtime in lib tests), so this is the exact
+        // shape of the in-flight-worker window in production.
+        let mut a = app_with("fn main() {}", 5);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        assert!(!a.visible_highlights.is_empty());
+        // Apply an edit -- bumps document.text_version. Without
+        // a real worker, the syntax snapshot stays at the old
+        // version (the seeded snapshot).
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 12), "\nfn b() {}"))
+            .unwrap();
+        a.maybe_reparse_syntax();
+        a.refresh_highlights();
+        // Spans should be empty: snap.text_version still at old
+        // value, document.text_version advanced.
+        assert!(
+            a.visible_highlights.is_empty(),
+            "refresh_highlights must drop spans when syntax snapshot is stale -- \
+             bug-#3 regression. Painting stale-aligned spans on new content was \
+             the original user-reported symptom."
+        );
     }
 
     #[test]

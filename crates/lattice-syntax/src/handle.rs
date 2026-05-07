@@ -130,11 +130,18 @@ impl SyntaxHandle {
     /// that already constructed a `Syntax` for other reasons
     /// (one-shot help-buffer markdown highlighting).
     ///
-    /// If a tokio runtime is ambient, the worker task is
-    /// spawned and subsequent `request_reparse` calls process
-    /// asynchronously. If not, the handle stays read-only --
-    /// the snapshot reflects the seeded state and reparse
-    /// requests fail silently. (App's sync unit tests live here.)
+    /// **Production callers must use [`Self::seeded_with_runtime`]
+    /// instead.** This method falls back to
+    /// `Handle::try_current()` which silently fails when the
+    /// caller hasn't entered a tokio context (notably: editor
+    /// startup runs from a synchronous `main()`, before the
+    /// runtime is set up). When that fails, the worker is never
+    /// spawned and `request_reparse` calls go to a dropped
+    /// channel -- the snapshot stays at the seeded state forever
+    /// and no reparses ever run. LSP solved the same problem
+    /// with an explicit runtime handle (see app.rs:96-100); this
+    /// constructor remains for tests that already run inside a
+    /// tokio context.
     pub fn seeded(syntax: Syntax) -> Self {
         let snapshot = Arc::new(ArcSwap::from_pointee(syntax.snapshot_owned()));
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ReparseRequest>();
@@ -148,6 +155,31 @@ impl SyntaxHandle {
                 drop(syntax);
             }
         }
+        Self { snapshot, cmd_tx }
+    }
+
+    /// Wrap a pre-built `Syntax` and spawn the worker on the
+    /// supplied tokio runtime handle. **This is the production
+    /// constructor.** Mirrors what
+    /// `lattice_lsp::supervisor::LspSupervisor::spawn` does: take
+    /// an explicit handle so the worker actually starts even when
+    /// the caller hasn't entered a tokio context yet (editor
+    /// startup runs from synchronous `main()` and constructs the
+    /// handle before the main loop enters tokio).
+    ///
+    /// Without this, `Handle::try_current()` in [`Self::seeded`]
+    /// silently fails, the worker is never spawned, and Option B's
+    /// entire incremental-reparse pipeline is dead -- `request_reparse`
+    /// sends to a dropped channel, the snapshot stays at the seeded
+    /// state, and no edit ever produces a fresh tree. The user-visible
+    /// symptom is "syntax highlighting is stuck to byte positions and
+    /// never tracks document edits" -- which was the bug originally
+    /// reported against indent (`>>`) and backspace flows.
+    pub fn seeded_with_runtime(syntax: Syntax, runtime: &tokio::runtime::Handle) -> Self {
+        let snapshot = Arc::new(ArcSwap::from_pointee(syntax.snapshot_owned()));
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ReparseRequest>();
+        let snapshot_for_task = snapshot.clone();
+        runtime.spawn(worker_main(syntax, cmd_rx, snapshot_for_task));
         Self { snapshot, cmd_tx }
     }
 

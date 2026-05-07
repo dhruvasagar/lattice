@@ -6,7 +6,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 use lattice_core::Buffer;
-use lattice_protocol::edit::Edit;
+use lattice_protocol::edit::{Edit, EditDelta};
 use lattice_protocol::position::{Position, Range};
 
 fn build_buffer(n_lines: usize) -> String {
@@ -123,6 +123,28 @@ fn open_large_buffer(c: &mut Criterion) {
     g.finish();
 }
 
+/// Slice B.1: isolate the cost of constructing an [`EditDelta`].
+/// Backs §8.2's "InputEdit construction (per `Document::apply_edit`)"
+/// row -- floor ~2ns, target <10ns. This is the new struct literal
+/// `Buffer::apply_edit` builds at its tail; values come from
+/// already-computed locals so the construction site is just six
+/// u32 writes + three Position copies.
+fn input_edit_construction(c: &mut Criterion) {
+    c.bench_function("input_edit_construction", |bencher| {
+        bencher.iter(|| {
+            let d = EditDelta {
+                start_byte: black_box(0),
+                old_end_byte: black_box(5),
+                new_end_byte: black_box(10),
+                start_position: black_box(Position::new(0, 0)),
+                old_end_position: black_box(Position::new(0, 5)),
+                new_end_position: black_box(Position::new(0, 10)),
+            };
+            black_box(d);
+        });
+    });
+}
+
 criterion_group!(
     benches,
     insert_at_origin,
@@ -130,5 +152,6 @@ criterion_group!(
     delete_one_byte,
     position_to_byte_round_trip,
     open_large_buffer,
+    input_edit_construction,
 );
 criterion_main!(benches);

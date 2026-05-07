@@ -12,7 +12,7 @@
 
 use ropey::Rope;
 
-use lattice_protocol::edit::{Edit, EditKind};
+use lattice_protocol::edit::{Edit, EditDelta, EditKind};
 use lattice_protocol::error::ProtocolError;
 use lattice_protocol::position::{Position, Range};
 
@@ -30,12 +30,19 @@ pub struct Buffer {
 /// keep it on the struct so subscribers (notably the LSP fan-in, which
 /// needs `range + text` per change) don't have to re-read the buffer
 /// after every applied edit.
+///
+/// `delta` is the tree-sitter-shaped sibling: byte/position deltas
+/// the syntax worker uses to drive incremental reparse via
+/// `Tree::edit` + `Parser::parse(_, Some(&old_tree))`. Constructed
+/// from values already computed during the rope mutation -- no
+/// extra rope reads. See [`EditDelta`] for field semantics.
 #[derive(Debug, Clone)]
 pub struct AppliedEdit {
     pub original_range: Range,
     pub inserted_range: Range,
     pub replaced_text: String,
     pub inserted_text: String,
+    pub delta: EditDelta,
 }
 
 impl Buffer {
@@ -164,11 +171,27 @@ impl Buffer {
         let inserted_text = match &edit.kind {
             EditKind::Replace { text } => text.clone(),
         };
+        // Tree-sitter-shaped delta. Every field is already
+        // computed above; this is a six-cast struct literal --
+        // ~ns regime, no rope reads. The casts to u32 honour
+        // lattice's existing Position-byte cap (Position::byte
+        // is u32, so documents are already capped at 4 GB on
+        // the line-byte axis); a saturating cast keeps wildly
+        // oversized buffers from panicking on cast overflow.
+        let delta = EditDelta {
+            start_byte: u32::try_from(start_byte).unwrap_or(u32::MAX),
+            old_end_byte: u32::try_from(end_byte).unwrap_or(u32::MAX),
+            new_end_byte: u32::try_from(inserted_end_byte).unwrap_or(u32::MAX),
+            start_position: edit.range.start,
+            old_end_position: edit.range.end,
+            new_end_position: inserted_end,
+        };
         Ok(AppliedEdit {
             original_range: edit.range,
             inserted_range: Range::new(edit.range.start, inserted_end),
             replaced_text,
             inserted_text,
+            delta,
         })
     }
 
@@ -424,5 +447,134 @@ mod tests {
         ))
         .expect("invert");
         assert_eq!(b.as_string(), original);
+    }
+
+    // ---- Slice B.1: edit delta plumbing -------------------------
+    //
+    // `AppliedEdit::delta` carries the six tree-sitter-shaped
+    // fields the syntax worker needs to drive incremental
+    // reparse via `Tree::edit`. These tests pin the field
+    // semantics across the four edit shapes (insert, delete,
+    // replace, multi-line) plus invariants that catch field
+    // drift at the construction site.
+
+    #[test]
+    fn delta_shape_for_simple_insert() {
+        // Insert "hello" at the start of "world" -- pure insert,
+        // no bytes deleted. old_end == start; new_end ==
+        // start + len(text).
+        let mut b = Buffer::from_text("world");
+        let applied = b
+            .apply_edit(&Edit::insert(Position::new(0, 0), "hello"))
+            .expect("insert");
+        let d = applied.delta;
+        assert_eq!(d.start_byte, 0);
+        assert_eq!(d.old_end_byte, 0);
+        assert_eq!(d.new_end_byte, 5);
+        assert_eq!(d.start_position, Position::new(0, 0));
+        assert_eq!(d.old_end_position, Position::new(0, 0));
+        assert_eq!(d.new_end_position, Position::new(0, 5));
+    }
+
+    #[test]
+    fn delta_shape_for_pure_delete() {
+        // Delete "bcd" from "abcdef" -- pure delete, no bytes
+        // inserted. new_end == start; old_end captures the
+        // deleted span's end.
+        let mut b = Buffer::from_text("abcdef");
+        let range = Range::new(Position::new(0, 1), Position::new(0, 4));
+        let applied = b.apply_edit(&Edit::delete(range)).expect("delete");
+        let d = applied.delta;
+        assert_eq!(d.start_byte, 1);
+        assert_eq!(d.old_end_byte, 4);
+        assert_eq!(d.new_end_byte, 1);
+        assert_eq!(d.start_position, Position::new(0, 1));
+        assert_eq!(d.old_end_position, Position::new(0, 4));
+        assert_eq!(d.new_end_position, Position::new(0, 1));
+    }
+
+    #[test]
+    fn delta_shape_for_multiline_replace() {
+        // Replace `world\nbar` (spans lines 1-2) with a single
+        // `Y`. The range starts at (1,0) -- line 1's first byte
+        // -- and ends at (2,3), the end of "bar". The result is
+        // `hello\nY\nfoo`. new_end_byte=7 lands at line 1 byte 1
+        // (cursor right after the 'Y', before the trailing \n);
+        // line 0 is unchanged by byte_to_position's mapping.
+        let mut b = Buffer::from_text("hello\nworld\nbar\nfoo");
+        let range = Range::new(Position::new(1, 0), Position::new(2, 3));
+        let applied = b.apply_edit(&Edit::replace(range, "Y")).expect("replace");
+        assert_eq!(b.as_string(), "hello\nY\nfoo");
+        let d = applied.delta;
+        assert_eq!(d.start_byte, 6);
+        assert_eq!(d.old_end_byte, 15); // "hello\n" + "world\nbar" = 6+9
+        assert_eq!(d.new_end_byte, 7); // "hello\n" + "Y"
+        assert_eq!(d.start_position, Position::new(1, 0));
+        assert_eq!(d.old_end_position, Position::new(2, 3));
+        assert_eq!(d.new_end_position, Position::new(1, 1));
+    }
+
+    #[test]
+    fn delta_byte_invariants_hold_for_replace() {
+        // The two key invariants tree-sitter relies on:
+        //   new_end_byte - start_byte == inserted_text.len()
+        //   old_end_byte - start_byte == replaced_text.len()
+        // Catches any future field drift at the construction
+        // site without naming specific values.
+        let mut b = Buffer::from_text("aaa\nbbb\nccc");
+        let range = Range::new(Position::new(0, 1), Position::new(1, 2));
+        let applied = b.apply_edit(&Edit::replace(range, "XYZ")).expect("replace");
+        let d = applied.delta;
+        assert_eq!(
+            (d.new_end_byte - d.start_byte) as usize,
+            applied.inserted_text.len(),
+        );
+        assert_eq!(
+            (d.old_end_byte - d.start_byte) as usize,
+            applied.replaced_text.len(),
+        );
+    }
+
+    #[test]
+    fn delta_positions_match_inserted_and_original_ranges() {
+        // start_position == original_range.start; old_end_position
+        // == original_range.end; new_end_position ==
+        // inserted_range.end. Pins the AppliedEdit's existing
+        // range fields and the new delta to a consistent shape.
+        let mut b = Buffer::from_text("line0\nline1\nline2");
+        let range = Range::new(Position::new(0, 2), Position::new(1, 3));
+        let applied = b.apply_edit(&Edit::replace(range, "AB")).expect("replace");
+        assert_eq!(applied.delta.start_position, applied.original_range.start);
+        assert_eq!(applied.delta.old_end_position, applied.original_range.end);
+        assert_eq!(applied.delta.new_end_position, applied.inserted_range.end);
+    }
+
+    #[test]
+    fn delta_for_inverse_edit_swaps_old_and_new() {
+        // Apply an insert, then apply its inverse (delete what
+        // was inserted). The inverse's delta has start_byte
+        // unchanged but old_end and new_end swapped relative to
+        // the original. Pins undo/redo correctness without
+        // exercising the Document layer.
+        let mut b = Buffer::from_text("abc");
+        let forward = b
+            .apply_edit(&Edit::insert(Position::new(0, 1), "XY"))
+            .expect("forward");
+        // After forward: "aXYbc". Inverse: delete the "XY" we
+        // just inserted -- range [(0,1), (0,3)).
+        let inverse = b
+            .apply_edit(&Edit::delete(Range::new(
+                Position::new(0, 1),
+                Position::new(0, 3),
+            )))
+            .expect("inverse");
+        // Forward: start=1, old_end=1, new_end=3 (insert 2 bytes).
+        // Inverse: start=1, old_end=3, new_end=1 (delete 2 bytes).
+        assert_eq!(forward.delta.start_byte, 1);
+        assert_eq!(forward.delta.old_end_byte, 1);
+        assert_eq!(forward.delta.new_end_byte, 3);
+        assert_eq!(inverse.delta.start_byte, 1);
+        assert_eq!(inverse.delta.old_end_byte, 3);
+        assert_eq!(inverse.delta.new_end_byte, 1);
     }
 }

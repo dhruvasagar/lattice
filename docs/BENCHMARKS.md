@@ -345,6 +345,15 @@ Direct rope mutations.
 | `insert_at_middle`         | 2.34µs   | 1.75µs   | 72.8µs     | ⏹️                                   |
 | `delete_one_byte`          | 2.54µs   | 1.68µs   | 77.3µs     | ⏹️                                   |
 | `position_byte_round_trip` | 1.12µs   | 419ns    | **390ns**  | ⏹️ B-tree is faster on bigger ropes  |
+| `input_edit_construction`  | **1.87ns** | --     | --         | ⏹️ at §8.2's ~2ns floor (B.1)        |
+
+`input_edit_construction` is the new tree-sitter-shaped delta
+construction at the tail of `Buffer::apply_edit` -- six u32 writes
+plus three `Position` copies. Backs §8.2's Write-path row "InputEdit
+construction (per `Document::apply_edit`)" -- floor ~2ns, target
+<10ns, today **1.87ns**. The full `apply_edit` cost is dominated by
+the rope mutation above (`insert_at_origin` ≈ 2µs); delta
+construction is in the noise floor.
 
 | Open-large benchmark | size  | time      | throughput | Floor / Target | Improvement target                                             |
 |----------------------|-------|-----------|------------|----------------|----------------------------------------------------------------|

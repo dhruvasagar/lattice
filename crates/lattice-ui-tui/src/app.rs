@@ -1105,6 +1105,23 @@ pub struct App {
     /// from `[scroll, scroll + viewport_height)`. Recomputed each frame by
     /// `refresh_highlights` (called from the runtime before drawing).
     pub visible_highlights: Vec<Vec<StyledSpan>>,
+    /// Slice B.3: cache key validating the contents of
+    /// `visible_highlights`. When `refresh_highlights` finds the
+    /// freshly-computed key matches this stored key, the
+    /// existing `visible_highlights` is still valid and the
+    /// `highlight_lines` call is skipped entirely (~178µs at
+    /// 24-line viewport on rust per BENCHMARKS.md →
+    /// noise-floor on cache hit).
+    ///
+    /// Invariant: `Some` ⟹ `visible_highlights` was computed
+    /// against this key's snapshot+state. `None` after construction,
+    /// after the syntax handle is replaced, and after a state-
+    /// change render where the key check passes the recompute
+    /// branch (the new key is stored).
+    ///
+    /// Steady-state hit rate: ~100% (cursor blinking, no edit).
+    /// Drops cleanly to 0% during edits/scroll/fold-toggle.
+    visible_highlights_key: Option<VisibleHighlightsKey>,
     /// In-progress `/` or `?` search. `Some` only while
     /// `modal == ModalState::Search(_)`.
     pub search_line: Option<SearchLine>,
@@ -1615,6 +1632,56 @@ pub struct Fold {
     pub end_line: u32,
     pub closed: bool,
     pub identity: Option<u64>,
+}
+
+/// Slice B.3: cache key for `App.visible_highlights`. When the
+/// freshly-computed key matches the stored one, the existing
+/// `visible_highlights` is reused as-is and the (~178µs) call to
+/// `highlight_lines` is skipped.
+///
+/// The five fields together capture every input that affects the
+/// computed spans:
+///
+/// - `snapshot_ptr`: `Arc::as_ptr` of the syntax snapshot. Distinct
+///   pointer = distinct snapshot (different file or different
+///   parse). Required because `text_version` alone isn't unique
+///   across syntax handles -- a new file's first publish has
+///   `text_version = 0` regardless.
+/// - `text_version`: snapshot's parse version. Bumped on each
+///   reparse; differentiates successive parses within one handle.
+/// - `scroll` / `viewport_height`: the visible-window range.
+/// - `fold_hash`: hash of the fold list. Toggling a fold open/
+///   closed changes which buffer lines are visible, so the
+///   highlight window changes.
+///
+/// Mode, cursor, and selection are deliberately excluded -- they
+/// don't affect span computation. That's the steady-state hit:
+/// the cursor blinks but nothing else changes, so the key stays
+/// equal across frames and we never re-run the QueryCursor walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VisibleHighlightsKey {
+    snapshot_ptr: usize,
+    text_version: u64,
+    scroll: u32,
+    viewport_height: u32,
+    fold_hash: u64,
+}
+
+/// Hash a slice of folds into a single u64 for the highlight
+/// cache key. `start_line` / `end_line` / `closed` is the
+/// minimum that affects the visible window; `identity` is
+/// excluded -- two folds with the same range and state but
+/// different identities don't change which bytes are visible.
+fn compute_fold_hash(folds: &[Fold]) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    folds.len().hash(&mut h);
+    for f in folds {
+        f.start_line.hash(&mut h);
+        f.end_line.hash(&mut h);
+        f.closed.hash(&mut h);
+    }
+    h.finish()
 }
 
 // `FoldMethod` moved to `lattice_core::folding::FoldMethod` for
@@ -2522,6 +2589,7 @@ impl App {
             pending_syntax_edits: Vec::new(),
             last_synced_syntax_version: 0,
             visible_highlights: Vec::new(),
+            visible_highlights_key: None,
             search_line: None,
             last_search: None,
             current_match: None,
@@ -4167,21 +4235,46 @@ impl App {
     /// the user sees as "syntax highlighting drops out further
     /// down". The visible-buffer-line walk here mirrors what
     /// `compose_visible_lines` does in the renderer.
+    ///
+    /// Slice B.3 cache fast path: if the freshly-computed key
+    /// (snapshot pointer + text_version + scroll + viewport
+    /// height + fold_hash) matches the stored
+    /// `visible_highlights_key`, the existing
+    /// `visible_highlights` is still valid -- skip the
+    /// `highlight_lines` call entirely. Steady-state norm
+    /// (cursor blinking, no edit) → ~100% hit rate, dropping
+    /// per-frame cost from ~178µs to noise floor (key compare +
+    /// fold hash, ~50ns).
     pub fn refresh_highlights(&mut self) {
+        let Some(syntax) = self.syntax.as_ref() else {
+            self.visible_highlights = Vec::new();
+            self.visible_highlights_key = None;
+            return;
+        };
+        let snap = syntax.snapshot();
+        let key = VisibleHighlightsKey {
+            snapshot_ptr: std::sync::Arc::as_ptr(&snap) as usize,
+            text_version: snap.text_version(),
+            scroll: self.scroll,
+            viewport_height: self.viewport_height,
+            fold_hash: compute_fold_hash(&self.folds),
+        };
+        if self.visible_highlights_key == Some(key) {
+            // Cache hit -- existing visible_highlights is valid.
+            return;
+        }
+        // Cache miss: recompute and store both the spans and
+        // the key. The window stretches via
+        // `visible_buffer_line_extent` to cover lines under
+        // closed folds (see method docstring).
         let start = self.scroll;
         let end = self
             .visible_buffer_line_extent(start, self.viewport_height)
             .saturating_add(1);
-        // Wait-free read of the latest published parse snapshot.
-        // If the worker is mid-parse, the highlights reflect the
-        // prior text version -- self-corrects on the next frame.
-        self.visible_highlights = match self.syntax.as_ref() {
-            Some(syntax) => syntax
-                .snapshot()
-                .highlight_lines(start, end)
-                .unwrap_or_default(),
-            None => Vec::new(),
-        };
+        self.visible_highlights = snap
+            .highlight_lines(start, end)
+            .unwrap_or_default();
+        self.visible_highlights_key = Some(key);
     }
 
     /// Last buffer-line index that ends up rendered when the
@@ -15769,6 +15862,196 @@ mod tests {
         // this as `from_version`.
         assert!(a.last_synced_syntax_version > initial_synced);
         assert_eq!(a.last_synced_syntax_version, a.document.text_version());
+    }
+
+    // ---- Slice B.3: highlight span cache --------------------
+    //
+    // Pin that visible_highlights_key tracks correctly across
+    // state changes, that cache hits skip recomputation, and
+    // that misses populate the cache fresh.
+
+    #[test]
+    fn refresh_highlights_caches_on_first_call() {
+        let mut a = app_with("fn main() {}", 5);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        assert!(a.visible_highlights_key.is_none());
+        a.refresh_highlights();
+        assert!(a.visible_highlights_key.is_some());
+    }
+
+    #[test]
+    fn refresh_highlights_clears_key_when_no_syntax() {
+        // No syntax handle attached -> visible_highlights_key
+        // stays None so a future syntax attach triggers a fresh
+        // recompute.
+        let mut a = app_with("fn main() {}", 5);
+        a.refresh_highlights();
+        assert!(a.visible_highlights_key.is_none());
+        assert!(a.visible_highlights.is_empty());
+    }
+
+    #[test]
+    fn refresh_highlights_cache_hit_on_unchanged_state() {
+        // Two consecutive calls with identical state. The second
+        // call's visible_highlights_key matches the first's, so
+        // visible_highlights doesn't need to be re-derived. The
+        // contract check: visible_highlights_key stays
+        // identical (same struct value) across the two calls.
+        let mut a = app_with("fn main() {}", 5);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        let key1 = a.visible_highlights_key;
+        a.refresh_highlights();
+        let key2 = a.visible_highlights_key;
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn refresh_highlights_cache_invalidates_on_scroll() {
+        let mut a = app_with("fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}", 2);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        let key1 = a.visible_highlights_key;
+        a.scroll = 2;
+        a.refresh_highlights();
+        let key2 = a.visible_highlights_key;
+        assert_ne!(key1, key2, "scroll change must invalidate cache");
+    }
+
+    #[test]
+    fn refresh_highlights_cache_invalidates_on_viewport_resize() {
+        let mut a = app_with("fn main() {}", 5);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        let key1 = a.visible_highlights_key;
+        a.set_viewport_height(20);
+        a.refresh_highlights();
+        let key2 = a.visible_highlights_key;
+        assert_ne!(key1, key2, "viewport resize must invalidate cache");
+    }
+
+    #[test]
+    fn refresh_highlights_cache_invalidates_on_fold_change() {
+        let mut a = app_with("fn a() {\n    1;\n}\nfn b() {}", 5);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        let key1 = a.visible_highlights_key;
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 2,
+            closed: true,
+            identity: None,
+        });
+        a.refresh_highlights();
+        let key2 = a.visible_highlights_key;
+        assert_ne!(key1, key2, "fold push must invalidate cache");
+    }
+
+    #[test]
+    fn refresh_highlights_cache_invalidates_on_fold_toggle() {
+        let mut a = app_with("fn a() {\n    1;\n}\nfn b() {}", 5);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.folds.push(Fold {
+            start_line: 0,
+            end_line: 2,
+            closed: false,
+            identity: None,
+        });
+        a.refresh_highlights();
+        let key1 = a.visible_highlights_key;
+        a.folds[0].closed = true;
+        a.refresh_highlights();
+        let key2 = a.visible_highlights_key;
+        assert_ne!(key1, key2, "fold open->closed must invalidate cache");
+    }
+
+    #[test]
+    fn refresh_highlights_cache_invalidates_on_edit() {
+        // Apply edit -> document text_version bumps ->
+        // maybe_reparse_syntax publishes a new snapshot ->
+        // refresh_highlights sees a new snapshot pointer +
+        // text_version, so the cache key is fresh.
+        let mut a = app_with("fn main() {}", 5);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        let key1 = a.visible_highlights_key;
+        // Edit + reparse seam (mirrors what App::apply does at
+        // the end of an Action).
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 11), "\nfn b() {}"))
+            .unwrap();
+        a.maybe_reparse_syntax();
+        // The seeded syntax handle's worker runs synchronously
+        // in the seeded path (no tokio runtime in lib tests
+        // means the worker doesn't run, so the snapshot stays
+        // at the prior version). Drive the parse explicitly so
+        // the cache key reflects the new snapshot.
+        if let Some(syntax) = a.syntax.as_ref() {
+            // Re-seed via the test helper: parses the current
+            // text synchronously, replaces the handle. Mirrors
+            // the worker's effect.
+            let new_text = a.document.text();
+            let new_tv = a.document.text_version();
+            let mut s = lattice_syntax::Syntax::for_language(syntax.lang())
+                .unwrap()
+                .expect("syntax registered for lang");
+            s.parse_at(&new_text, new_tv);
+            a.syntax = Some(lattice_syntax::SyntaxHandle::seeded(s));
+            a.last_synced_syntax_version = new_tv;
+        }
+        a.refresh_highlights();
+        let key2 = a.visible_highlights_key;
+        assert_ne!(key1, key2, "edit must invalidate cache");
+    }
+
+    #[test]
+    fn fold_hash_distinguishes_closed_vs_open() {
+        let f_open = Fold {
+            start_line: 0,
+            end_line: 2,
+            closed: false,
+            identity: None,
+        };
+        let f_closed = Fold {
+            closed: true,
+            ..f_open
+        };
+        assert_ne!(compute_fold_hash(&[f_open]), compute_fold_hash(&[f_closed]));
+    }
+
+    #[test]
+    fn fold_hash_distinguishes_different_ranges() {
+        let f1 = Fold {
+            start_line: 0,
+            end_line: 2,
+            closed: false,
+            identity: None,
+        };
+        let f2 = Fold {
+            start_line: 0,
+            end_line: 3,
+            closed: false,
+            identity: None,
+        };
+        assert_ne!(compute_fold_hash(&[f1]), compute_fold_hash(&[f2]));
+    }
+
+    #[test]
+    fn fold_hash_ignores_identity() {
+        // identity is metadata for closed-state preservation
+        // across recomputes; doesn't affect which bytes are
+        // visible. Two folds with same range/state but
+        // different identities should hash equal.
+        let f1 = Fold {
+            start_line: 0,
+            end_line: 2,
+            closed: false,
+            identity: Some(42),
+        };
+        let f2 = Fold {
+            identity: Some(99),
+            ..f1
+        };
+        assert_eq!(compute_fold_hash(&[f1]), compute_fold_hash(&[f2]));
     }
 
     #[test]

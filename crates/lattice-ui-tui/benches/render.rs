@@ -105,5 +105,38 @@ fn frame_render_120(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(render, frame_render_24, frame_render_60, frame_render_120);
+/// Slice B.3: highlight span cache hit cost. Measures the
+/// steady-state cost of `refresh_highlights` when the cache key
+/// matches -- i.e. cursor is blinking, no edit / scroll / fold
+/// change happened. Backs §8.2's "Highlight span cache hit
+/// (steady-state)" row -- floor ~10ns, target <50ns.
+///
+/// The cache-hit path is: Arc-clone the syntax snapshot
+/// (~16ns), compute the cache key (Arc::as_ptr + fold hash ~50ns
+/// for ~0 folds + struct ctor), compare keys (~5ns), early
+/// return. Pre-B.3 this same call ran a full QueryCursor walk
+/// at ~178µs.
+fn refresh_highlights_cache_hit(c: &mut Criterion) {
+    let mut g = c.benchmark_group("refresh_highlights_cache_hit");
+    for n in [10usize, 200, 2000] {
+        let corpus = rust_corpus(n);
+        let mut app = build_app(&corpus, 24);
+        // build_app already calls refresh_highlights so the
+        // cache is primed; subsequent calls hit the cache.
+        g.bench_with_input(BenchmarkId::from_parameter(n), &(), |bencher, _| {
+            bencher.iter(|| {
+                app.refresh_highlights();
+            });
+        });
+    }
+    g.finish();
+}
+
+criterion_group!(
+    render,
+    frame_render_24,
+    frame_render_60,
+    frame_render_120,
+    refresh_highlights_cache_hit,
+);
 criterion_main!(render);

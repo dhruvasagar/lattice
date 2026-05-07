@@ -314,9 +314,12 @@ work above.
 
 | Benchmark                     | size             | time     | Floor / Target | Improvement target         |
 |-------------------------------|------------------|----------|----------------|----------------------------|
-| `render::frame_24_lines/200`  | 80×24, 200 fns   | **13µs** | ~10µs / <50µs  | ⏹️ at the practical floor.  |
-| `render::frame_60_lines/200`  | 200×60, 200 fns  | **42µs** | ~30µs / <100µs | ⏹️                          |
-| `render::frame_120_lines/200` | 200×120, 200 fns | **78µs** | ~70µs / <150µs | ⏹️                          |
+| `render::frame_24_lines/200`         | 80×24, 200 fns   | **13µs** | ~10µs / <50µs  | ⏹️ at the practical floor.                            |
+| `render::frame_60_lines/200`         | 200×60, 200 fns  | **42µs** | ~30µs / <100µs | ⏹️                                                    |
+| `render::frame_120_lines/200`        | 200×120, 200 fns | **78µs** | ~70µs / <150µs | ⏹️                                                    |
+| `refresh_highlights_cache_hit/10`    | 80 lines         | **20ns** | ~10ns / <50ns  | ⏹️ steady-state cache hit (B.3); independent of size. |
+| `refresh_highlights_cache_hit/200`   | 1600 lines       | **20ns** | ~10ns / <50ns  | ⏹️ same -- key compare short-circuits before any work.|
+| `refresh_highlights_cache_hit/2000`  | 16k lines        | **20ns** | ~10ns / <50ns  | ⏹️ same; ~8900× faster than the pre-B.3 ~178µs path.  |
 
 The frame_60 / frame_120 rows ticked down ~15% after the renderer
 migrated to `Cache::load` + a single per-frame snapshot
@@ -331,6 +334,17 @@ total per-frame cost on the editor side is ~192µs -- well under
 the §8.2 "Frame render TUI <500µs" target. The remaining cost is
 ratatui's terminal write, which isn't measured here (hardware-
 bound; not benchable without a real TTY).
+
+**Slice B.3 -- highlight span cache** (`refresh_highlights_cache_hit`
+above): on the steady-state frame (cursor blinking, no edit /
+scroll / fold change), the 178µs `highlight_lines` call is now a
+20ns key-compare + early return. The total editor-side per-frame
+cost on a steady-state frame drops from ~192µs to ~33µs (compose
+13µs + cache check 20ns), a ~6× speedup -- the cache check
+component is **8900× faster** than the path it replaces. Cache
+key is `(snapshot_ptr, text_version, scroll, viewport_height,
+fold_hash)`; any actual change invalidates it and falls through
+to the original recompute path, which is unchanged.
 
 **Typed-options migration** (75e2390 → 1bfee16): the initial
 landing of `lattice-config` regressed render frames by 25-57%

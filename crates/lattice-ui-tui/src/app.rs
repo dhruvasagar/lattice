@@ -3891,9 +3891,19 @@ impl App {
                 self.command_line.clear();
                 self.modal = ModalState::Command;
                 self.last_message = None;
-                // Q16: opening the cmdline dismisses any open help.
-                // The user can only focus on one thing.
-                self.dismiss_help();
+                // Q16: opening the cmdline dismisses STATE A
+                // help popups (hover overlay still anchored to
+                // doc cursor). State B help buffers (`:lsp-log`,
+                // `:lsp-trace-log`, `:describe-*` opened in a
+                // pane) are first-class buffers per the
+                // everything-is-a-buffer model -- the user
+                // expects to run `:bd`, `:diagnostics`, etc.
+                // without losing their log view. Only auto-
+                // dismiss when active_buffer is Document, which
+                // is the State A shape.
+                if matches!(self.active_buffer, BufferKind::Document) {
+                    self.dismiss_help();
+                }
                 self.completion_state = None;
             }
             Action::CommandLineAppend(c) => {

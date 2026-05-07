@@ -882,15 +882,19 @@ fn draw_help_overlay(
     // Always wrap inside help / log / `:lsp-trace-log` popups --
     // the content is prose / JSON-RPC payloads / log records, not
     // code, and the right-edge clip on long lines hides the data
-    // the user opened the buffer to read. Decoupled from the
-    // global `wrap` option (which targets code buffers); help
-    // buffers wrap unconditionally. `trim: false` preserves
-    // leading whitespace on continuation rows so markdown /
-    // fenced-code indentation survives. Cursor positioning at the
-    // end of this fn still uses the unwrapped line index -- it
-    // lands on the wrap origin row, good-enough until the cursor
-    // walker grows wrap-awareness.
-    let para = Paragraph::new(visible).wrap(Wrap { trim: false });
+    // the user opened the buffer to read.
+    //
+    // We do the wrap MANUALLY (not via ratatui's `Paragraph::wrap`)
+    // so the wrap algorithm is identical between the renderer and
+    // the cursor positioning math, AND so we can prepend a visible
+    // continuation marker (`↪ `) at the start of each wrapped row
+    // -- the user gets a clear visual signal that "this row is a
+    // continuation of the previous logical line, not a new line".
+    // Without manual wrap, ratatui breaks at internal positions we
+    // can't observe, and the cursor visibly drifts away from the
+    // edited byte on long lines.
+    let wrapped = manually_wrap_lines(visible, inner.width as usize);
+    let para = Paragraph::new(wrapped);
     frame.render_widget(para, inner);
 
     // Place the terminal cursor INSIDE the popup only in State
@@ -904,11 +908,199 @@ fn draw_help_overlay(
         && inner.width > 0
         && matches!(app.active_buffer, crate::buffers::BufferKind::Help)
     {
-        let row_off = (app.cursor.line as usize).saturating_sub(scroll);
-        let row_off = row_off.min(inner.height.saturating_sub(1) as usize);
-        let col_off = (app.cursor.byte as usize).min(inner.width.saturating_sub(1) as usize);
+        // Wrap-aware screen-position computation matching
+        // `manually_wrap_lines`: each line's first display row
+        // holds bytes `[0, inner_width)`; subsequent rows hold
+        // bytes `[inner_width + (k-1)*(inner_width-2), ...)` (the
+        // `-2` accounts for the leading "↪ " marker on each
+        // continuation row).
+        let (row_off, col_off) = wrap_aware_cursor_offset(
+            &lines,
+            scroll,
+            app.cursor.line as usize,
+            app.cursor.byte as usize,
+            inner.width as usize,
+            inner.height as usize,
+        );
         frame.set_cursor_position((inner.x + col_off as u16, inner.y + row_off as u16));
     }
+}
+
+/// Width in cells of the continuation-row marker at the start of
+/// every wrapped line in the help-overlay popup. Currently `↪ `
+/// (the U+21AA arrow + a space). Pinned as a constant so the
+/// renderer and the cursor math agree.
+const HELP_WRAP_MARKER: &str = "↪ ";
+const HELP_WRAP_MARKER_WIDTH: usize = 2;
+
+/// Manually wrap each input `Line` into multiple display rows at
+/// `inner_width`. Continuation rows get a `↪ ` marker prefix
+/// (styled dim) so the user can see at a glance which rows are
+/// continuations vs. fresh logical lines.
+///
+/// Wrap algorithm (byte-based; assumes ASCII / single-cell-per-
+/// byte content -- LSP log payloads, JSON-RPC, prose are all in
+/// scope; non-ASCII would need char-aware width which is a
+/// post-1.0 concern):
+///
+/// - First chunk consumes up to `inner_width` cells.
+/// - Each subsequent chunk consumes up to `inner_width -
+///   HELP_WRAP_MARKER_WIDTH` cells (the marker eats the rest).
+/// - Spans are split at chunk boundaries; styling is preserved
+///   across chunks.
+/// - An empty input line still emits one (empty) output row.
+fn manually_wrap_lines(lines: Vec<Line<'static>>, inner_width: usize) -> Vec<Line<'static>> {
+    if inner_width == 0 {
+        return lines;
+    }
+    let cont_width = inner_width.saturating_sub(HELP_WRAP_MARKER_WIDTH).max(1);
+    let marker_style = TuiStyle::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        // Compute total byte length of the line.
+        let total_len: usize = line.spans.iter().map(|s| s.content.len()).sum();
+        if total_len <= inner_width {
+            // Fits in one row -- emit as-is.
+            out.push(line);
+            continue;
+        }
+        // Walk through spans, emitting a new Line at each chunk
+        // boundary. Track current row's remaining width and the
+        // current byte position within the line.
+        let mut cursor: usize = 0;
+        let mut current_spans: Vec<Span<'static>> = Vec::new();
+        let mut row_idx: usize = 0;
+        for span in line.spans {
+            let mut span_bytes = span.content.as_ref();
+            let span_style = span.style;
+            while !span_bytes.is_empty() {
+                let row_capacity = if row_idx == 0 {
+                    inner_width
+                } else {
+                    cont_width
+                };
+                let row_used = if row_idx == 0 {
+                    cursor
+                } else {
+                    cursor - inner_width - (row_idx - 1) * cont_width
+                };
+                let remaining = row_capacity.saturating_sub(row_used);
+                if remaining == 0 {
+                    // Row is full; flush and start a new continuation row.
+                    out.push(Line::from(std::mem::take(&mut current_spans)));
+                    row_idx += 1;
+                    current_spans.push(Span::styled(HELP_WRAP_MARKER.to_string(), marker_style));
+                    continue;
+                }
+                let take = remaining.min(span_bytes.len());
+                // Defensive char-boundary clamp so we don't slice
+                // mid-multibyte. Walk back to the previous char
+                // boundary if needed.
+                let take = clamp_to_char_boundary(span_bytes, take);
+                if take == 0 {
+                    // Couldn't take anything (mid-char). Force a row
+                    // break to avoid infinite loop.
+                    out.push(Line::from(std::mem::take(&mut current_spans)));
+                    row_idx += 1;
+                    current_spans.push(Span::styled(HELP_WRAP_MARKER.to_string(), marker_style));
+                    continue;
+                }
+                let (chunk, rest) = span_bytes.split_at(take);
+                current_spans.push(Span::styled(chunk.to_string(), span_style));
+                cursor += take;
+                span_bytes = rest;
+            }
+        }
+        if !current_spans.is_empty() {
+            out.push(Line::from(current_spans));
+        }
+    }
+    out
+}
+
+/// Walk back from `at` to the nearest UTF-8 char boundary so
+/// `s.split_at(at)` doesn't panic. Returns 0 when `at == 0`.
+fn clamp_to_char_boundary(s: &str, at: usize) -> usize {
+    if at >= s.len() {
+        return s.len();
+    }
+    let mut i = at;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Compute the (row, col) offset from `inner.{x,y}` for a cursor
+/// at `(cursor_line, cursor_byte)` when `lines[scroll..]` are
+/// rendered with the same wrap algorithm as
+/// `manually_wrap_lines`.
+///
+/// Each logical line at index `i >= scroll`:
+/// - First display row holds bytes `[0, inner_width)`.
+/// - Subsequent rows hold bytes
+///   `[inner_width + (k-1)*cont_width, inner_width + k*cont_width)`
+///   where `cont_width = inner_width - HELP_WRAP_MARKER_WIDTH`.
+/// - An empty line still occupies 1 row.
+///
+/// The cursor's column on row 0 is `cursor_byte`; on continuation
+/// rows it's `HELP_WRAP_MARKER_WIDTH + (offset % cont_width)`.
+///
+/// Result is clamped to `(inner_height - 1, inner_width - 1)`
+/// when the cursor's logical position falls past the visible
+/// region.
+fn wrap_aware_cursor_offset(
+    lines: &[String],
+    scroll: usize,
+    cursor_line: usize,
+    cursor_byte: usize,
+    inner_width: usize,
+    inner_height: usize,
+) -> (usize, usize) {
+    if inner_width == 0 || inner_height == 0 {
+        return (0, 0);
+    }
+    let cont_width = inner_width.saturating_sub(HELP_WRAP_MARKER_WIDTH).max(1);
+    // Sum display rows for every visible line above cursor_line.
+    let mut row: usize = 0;
+    let start = scroll;
+    let end = cursor_line.min(lines.len());
+    for line_idx in start..end {
+        let len = lines[line_idx].len();
+        let rows = display_rows_for_len(len, inner_width, cont_width);
+        row = row.saturating_add(rows);
+        if row >= inner_height {
+            return (
+                inner_height.saturating_sub(1),
+                cursor_byte.min(inner_width.saturating_sub(1)),
+            );
+        }
+    }
+    // Cursor's intra-line position. Bytes [0, inner_width) -> row
+    // 0; bytes >= inner_width -> continuation rows.
+    let (intra_row, intra_col) = if cursor_byte < inner_width {
+        (0, cursor_byte)
+    } else {
+        let off = cursor_byte - inner_width;
+        let k = off / cont_width + 1; // continuation row index
+        let col = HELP_WRAP_MARKER_WIDTH + (off % cont_width);
+        (k, col)
+    };
+    let row_off = (row + intra_row).min(inner_height.saturating_sub(1));
+    let col_off = intra_col.min(inner_width.saturating_sub(1));
+    (row_off, col_off)
+}
+
+fn display_rows_for_len(len: usize, inner_width: usize, cont_width: usize) -> usize {
+    if len == 0 {
+        return 1;
+    }
+    if len <= inner_width {
+        return 1;
+    }
+    1 + (len - inner_width).div_ceil(cont_width)
 }
 
 /// Tooltip-style placement for the hover / help popup overlay.

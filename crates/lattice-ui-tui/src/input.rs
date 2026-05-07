@@ -145,9 +145,15 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         && matches!(ctx.modal, ModalState::Normal)
         && ctx.partial_chord.is_empty()
     {
+        // Esc dismisses; `q` does NOT (it falls through to its
+        // normal Normal-mode meaning -- macro-record start). Help
+        // and log buffers should behave like other buffers per
+        // the user's everything-is-a-buffer expectation; the only
+        // explicit close paths are Esc here, `:bd`, and
+        // `Action::HelpDismiss` triggered by the State-A auto-
+        // dismiss in App::apply.
         match event.code {
             KeyCode::Esc => return Action::HelpDismiss,
-            KeyCode::Char('q') if !ctx.recording_macro => return Action::HelpDismiss,
             KeyCode::Enter => return Action::FollowLink,
             KeyCode::Char('-') => return Action::OilNavigateUp,
             _ => {}
@@ -1720,11 +1726,17 @@ mod tests {
     }
 
     #[test]
-    fn help_active_intercepts_q_to_dismiss() {
+    fn help_active_does_not_intercept_q_to_dismiss() {
         let (_, b) = fixture();
-        // While help is the active buffer, `q` dismisses (does NOT
-        // start macro recording, the usual Normal-mode meaning).
-        assert!(matches!(
+        // Reverted contract: `q` no longer auto-dismisses help /
+        // log buffers. They should behave like other buffers --
+        // only Esc and `:bd` close them. Pressing `q` while in a
+        // log buffer would otherwise destroy the user's view
+        // unexpectedly. With the early-return for `q` removed,
+        // `q` falls through to its normal Normal-mode meaning
+        // (macro-record start). Macros in a help buffer are a
+        // no-op since the buffer is read-only; harmless.
+        assert!(!matches!(
             translate(
                 ctx_help_active(ModalState::Normal, &b),
                 key(KeyCode::Char('q'))

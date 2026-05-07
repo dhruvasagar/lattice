@@ -28,12 +28,14 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifi
 use lattice_grammar::CommandInvocation;
 use lattice_grammar::SourceLocation;
 use lattice_protocol::ids::CommandId;
+use lattice_ui_tui::buffers::BufferKind;
 use lattice_ui_tui::chord::{KeyChord, parse_chord_sequence};
 use lattice_ui_tui::keymap::BindingMode;
 use lattice_ui_tui::keymap_registry::KeymapHandle;
 use lattice_ui_tui::keymap_trie::{
     BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult,
 };
+use lattice_ui_tui::{TranslateContext, translate};
 
 fn ev(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
     KeyEvent {
@@ -424,6 +426,107 @@ fn keymap_handle_lookup_three_chord(c: &mut Criterion) {
     });
 }
 
+// ---------------------------------------------------------------
+// Slice 8.i.4 dispatcher end-to-end benches
+//
+// Slices 8.i.0-8.i.4 retired the per-`Pending` `match` body in
+// `compute_normal_action` in favour of a `partial_chord` stack
+// + trie lookup driven by the catalog's chord notation. The
+// trie-lookup half is already covered above; these benches
+// pin the **full `translate()` round-trip** -- i.e. the cost a
+// real keystroke pays through the App's input thread, including
+// the ArcSwap load, the per-mode dispatch fan-out, and any
+// `AbsorbPartialChord` / `AbsorbOperatorPrefix` short-circuit
+// that the new dispatch shape introduces. If a future slice
+// regresses dispatch latency, these rows surface it before the
+// trie-only rows do.
+// ---------------------------------------------------------------
+
+/// Build a `KeymapHandle` populated by the production
+/// `register_*_bindings` calls -- same wiring `App::default`
+/// runs at boot. Used by the `translate_*` benches below so
+/// they exercise the actual catalog, not a synthetic stand-in.
+fn production_keymap() -> (
+    KeymapHandle,
+    lattice_grammar::builtins::Builtins,
+    lattice_ui_tui::actions::ActionIds,
+) {
+    let mut r = lattice_grammar::CommandRegistry::new();
+    let b = lattice_grammar::builtins::populate(&mut r);
+    let _ex = lattice_grammar::ex_commands::populate(&mut r);
+    let a = lattice_ui_tui::actions::populate(&mut r, &b);
+    let h = KeymapHandle::new();
+    lattice_ui_tui::keymap_replace::register_replace_bindings(&h, &a);
+    lattice_ui_tui::keymap_visual::register_visual_bindings(&h, &b, &a);
+    lattice_ui_tui::keymap_insert::register_insert_bindings(&h, &a);
+    lattice_ui_tui::keymap_normal::register_normal_bindings(&h, &b, &a);
+    (h, b, a)
+}
+
+fn translate_ctx<'a>(
+    keymap: &'a KeymapHandle,
+    builtins: &'a lattice_grammar::builtins::Builtins,
+    partial_chord: &'a [KeyChord],
+) -> TranslateContext<'a> {
+    TranslateContext {
+        modal: lattice_grammar::ModalState::Normal,
+        builtins,
+        pending_count: 0,
+        op_count: 0,
+        recording_macro: false,
+        active_buffer: BufferKind::Document,
+        completion_open: false,
+        chord_capture: false,
+        picker_open: false,
+        insert_completion_open: false,
+        snippet_active: false,
+        keymap,
+        partial_chord,
+    }
+}
+
+/// Hot path. Full `translate()` for the second key of a
+/// two-chord sequence (`g` already on the partial stack;
+/// the bench resolves `gd`). Exercises the post-8.i.4
+/// `partial_chord` dispatch shape: trie lookup with a
+/// non-empty prefix, returning a resolved `Action::Invoke`
+/// (or `AbsorbPartialChord` for an unbound second key).
+fn dispatch_translate_full_two_chord(c: &mut Criterion) {
+    let (h, b, _) = production_keymap();
+    let partial: [KeyChord; 1] = [KeyChord::char('g')];
+    let event = ev(KeyCode::Char('d'), KeyModifiers::NONE);
+    c.bench_function("dispatch_translate_full_two_chord", |bench| {
+        bench.iter(|| {
+            let action = translate(
+                translate_ctx(&h, &b, black_box(&partial)),
+                black_box(event),
+            );
+            black_box(action);
+        });
+    });
+}
+
+/// Hot path. Full `translate()` for the motion key of an
+/// operator-motion (`d` already on the partial stack; the
+/// bench resolves `dw`). Exercises the operator-prefix
+/// dispatch shape: trie lookup with `d` prefix returning a
+/// resolved invocation that latches via the operator-side
+/// `op_count` flow that 8.i.4.c rebuilt.
+fn dispatch_translate_full_operator_motion(c: &mut Criterion) {
+    let (h, b, _) = production_keymap();
+    let partial: [KeyChord; 1] = [KeyChord::char('d')];
+    let event = ev(KeyCode::Char('w'), KeyModifiers::NONE);
+    c.bench_function("dispatch_translate_full_operator_motion", |bench| {
+        bench.iter(|| {
+            let action = translate(
+                translate_ctx(&h, &b, black_box(&partial)),
+                black_box(event),
+            );
+            black_box(action);
+        });
+    });
+}
+
 criterion_group!(
     benches,
     keychord_from_event_plain_letter,
@@ -445,5 +548,7 @@ criterion_group!(
     keymap_handle_lookup_single,
     keymap_handle_lookup_two_chord,
     keymap_handle_lookup_three_chord,
+    dispatch_translate_full_two_chord,
+    dispatch_translate_full_operator_motion,
 );
 criterion_main!(benches);

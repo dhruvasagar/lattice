@@ -471,6 +471,8 @@ startup catalog enumeration).
 | `keymap_handle_lookup_single`               | **33.8ns** | ~30ns / <80ns  | Hot path. End-to-end keystroke lookup through the registry handle: `ArcSwap::load` + per-mode `HashMap::get` + trie walk. Single-chord (`j`). Slice 8.c.                                       |
 | `keymap_handle_lookup_two_chord`            | **47.2ns** | ~45ns / <100ns | Hot path. End-to-end two-chord lookup (`gd`).                                                                                                                                                    |
 | `keymap_handle_lookup_three_chord`          | **60.7ns** | ~55ns / <120ns | Hot path. End-to-end three-chord lookup (`diw`). **Combined with `keychord_from_event` (~2 ns), full keystroke path is ~63 ns vs. the architecture's 1 µs commitment -- ~16× headroom.**         |
+| `dispatch_translate_full_two_chord`         | **102ns**  | ~100ns / <300ns| Hot path. Full `translate()` round-trip for the second key of `gd` -- partial_chord stack of `[g]`, event `d`. Exercises the post-8.i.4 dispatch shape: ArcSwap load + per-mode fan-out + trie lookup with prefix + resolved `Action::Invoke` materialisation. ~3× the bare `keymap_handle_lookup_two_chord` row -- the rest is the dispatcher's mode match + Action construction. Slice 8.i.4.h. |
+| `dispatch_translate_full_operator_motion`   | **105ns**  | ~100ns / <300ns| Hot path. Full `translate()` for `dw` -- partial_chord `[d]`, event `w`. Operator-motion variant of the above; latches op_count via the `AbsorbOperatorPrefix` flow that 8.i.4.c rebuilt, then resolves to a motion `Action::Invoke`. Slice 8.i.4.h.                                                                                                                                              |
 
 ### Why these targets
 
@@ -493,6 +495,22 @@ catalog enumerates into the registry) and on user / plugin
 `:bind` invocations. Total startup parse cost across the
 ~280 built-in chords is ~7 µs -- well under the cost of any
 single tokio task spawn.
+
+### Slice 8.i.0-8.i.4 -- dispatcher rebuild stayed in budget
+
+Slices 8.i.0 through 8.i.4.h retired the per-`Pending`
+`match` body in `compute_normal_action` in favour of a
+`partial_chord` stack + trie lookup driven by the catalog's
+chord notation. The two `dispatch_translate_full_*` rows
+above measure the full round-trip a real keystroke pays
+through `translate()` -- ArcSwap load, per-mode dispatch
+fan-out, trie lookup with prefix, and resolved-Action
+materialisation. ~100 ns each, well under the 1 µs
+commitment, and within ~3× the bare trie-lookup numbers
+above (the rest is dispatcher fan-out + Action
+construction). The `AbsorbPartialChord` /
+`AbsorbOperatorPrefix` short-circuits the new dispatch
+shape introduces don't measurably hurt the hot path.
 
 ---
 

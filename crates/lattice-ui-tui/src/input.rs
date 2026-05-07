@@ -2103,16 +2103,21 @@ mod tests {
 
     #[test]
     fn keymap_descriptors_dont_drift_from_translate() {
-        // Every descriptor in `keymap::default_keymap()` must produce a
-        // non-`None` Action when its chord is simulated through
-        // `translate()` in the matching mode. This catches:
+        // One of two complementary catalog drift checks (see also
+        // `every_catalog_command_resolves_in_registry` below). This
+        // one runs each descriptor's chord through `translate()` and
+        // asserts the chord still resolves to a non-`None` Action --
+        // i.e. the catalog's chord notation matches what the
+        // dispatcher accepts. Catches:
         //   - removed bindings (descriptor still in table)
         //   - moved bindings (descriptor in wrong mode)
         //   - typo'd chord notation
-        // Adding a binding to `input.rs` without updating
-        // `default_keymap()` is *not* caught here -- the inverse drift
-        // is fine for v1 (descriptors are a discoverability surface;
-        // unmentioned bindings still work).
+        // The companion test catches the orthogonal failure: a
+        // descriptor that names a command which doesn't exist in the
+        // registry. Both stay in place until `default_keymap()`
+        // becomes the trie's source-of-truth (post-1.0); at that
+        // point the chord side becomes tautological and this test
+        // retires.
         let (_, b) = fixture();
         for entry in crate::keymap::default_keymap() {
             let action = simulate_chord(entry.chord, entry.mode, &b);
@@ -2123,6 +2128,41 @@ mod tests {
                 entry.chord,
                 entry.mode.label(),
                 entry.doc,
+            );
+        }
+    }
+
+    #[test]
+    fn every_catalog_command_resolves_in_registry() {
+        // Companion to `keymap_descriptors_dont_drift_from_translate`.
+        // Every catalog entry that names a canonical command via
+        // `command: Some(name)` must resolve to a real registry entry.
+        // Catches the orthogonal drift the chord-side check misses:
+        //   - descriptor names a command that was renamed at the
+        //     registry side without updating the catalog,
+        //   - descriptor names a command that doesn't exist at all
+        //     (typo, copy-paste from a sibling entry),
+        //   - a registry refactor dropped a command but the catalog
+        //     still claims it.
+        // Synthetic-action descriptors (`PushDigit`, `SetPending`,
+        // mode-entry primitives, ...) carry `command: None` and are
+        // skipped -- they don't have a registry-resolvable name.
+        let mut r = CommandRegistry::new();
+        let b = populate(&mut r);
+        let _ex = lattice_grammar::ex_commands::populate(&mut r);
+        let _a = crate::actions::populate(&mut r, &b);
+        for entry in crate::keymap::default_keymap() {
+            let Some(name) = entry.command else {
+                continue;
+            };
+            assert!(
+                r.id_by_name(name).is_some(),
+                "keymap descriptor `{}` ({}) names command `{}` -- \
+                 not found in CommandRegistry. Possible rename or \
+                 typo; catalog is out of sync with the registry.",
+                entry.chord,
+                entry.mode.label(),
+                name,
             );
         }
     }

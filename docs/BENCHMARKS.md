@@ -398,6 +398,8 @@ Direct rope mutations.
 | `delete_one_byte`          | 2.54µs   | 1.68µs   | 77.3µs     | ⏹️                                   |
 | `position_byte_round_trip` | 1.12µs   | 419ns    | **390ns**  | ⏹️ B-tree is faster on bigger ropes  |
 | `input_edit_construction`  | **1.87ns** | --     | --         | ⏹️ at §8.2's ~2ns floor (B.1)        |
+| `clone_vs_text/clone`      | **7.7ns**  | **7.7ns** | **7.7ns**  | ⏹️ Arc bump on ropey's internal Arc (B.5) |
+| `clone_vs_text/as_string`  | 79ns     | 990ns    | **189µs**  | falsification anchor; pre-B.5 path (full materialization) |
 
 `input_edit_construction` is the new tree-sitter-shaped delta
 construction at the tail of `Buffer::apply_edit` -- six u32 writes
@@ -406,6 +408,15 @@ construction (per `Document::apply_edit`)" -- floor ~2ns, target
 <10ns, today **1.87ns**. The full `apply_edit` cost is dominated by
 the rope mutation above (`insert_at_origin` ≈ 2µs); delta
 construction is in the noise floor.
+
+`clone_vs_text` measures the slice-B.5 input-thread cost reduction.
+Pre-B.5, `Document::text()` materialized the full buffer to a
+`String` on every keystroke (~189µs at 100k lines, on the input
+thread). Post-B.5, `Buffer::clone()` (Arc bump) replaces it
+(~7.7ns flat, independent of size). **24,500× faster** at large
+sizes; the full-text alloc moves to the syntax worker per goal #1.
+The `as_string` row stays as the falsification anchor -- if it
+ever matches `clone`, ropey's internal sharing changed.
 
 | Open-large benchmark | size  | time      | throughput | Floor / Target | Improvement target                                             |
 |----------------------|-------|-----------|------------|----------------|----------------------------------------------------------------|

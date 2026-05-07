@@ -4107,11 +4107,18 @@ impl App {
             // back to full reparse on any inconsistency
             // (from_version mismatch, byte-length mismatch, no
             // cached tree, empty edits).
+            //
+            // Slice B.5: pass the Buffer (clones in O(1) via
+            // ropey's internal Arc) instead of materializing the
+            // full text here. Worker calls buffer.as_string() on
+            // its thread, so the O(n) alloc + memcpy stays off
+            // the input thread.
             let edits = std::mem::take(&mut self.pending_syntax_edits);
+            let buffer = self.document.snapshot().buffer.clone();
             syntax.request_reparse(
                 self.last_synced_syntax_version,
                 tv,
-                self.document.text(),
+                buffer,
                 edits,
             );
         }
@@ -4380,10 +4387,12 @@ impl App {
                     // inactive-pane path is rare (only fires
                     // when pane shows a different document) so
                     // the perf cost stays bounded.
+                    // Slice B.5: pass Buffer (O(1) clone) instead
+                    // of pre-materializing the String here.
                     syntax.request_reparse(
                         entry.last_synced_syntax_version,
                         tv,
-                        snap.buffer.as_string(),
+                        snap.buffer.clone(),
                         Vec::new(),
                     );
                     entry.last_parsed_text_version = tv;

@@ -43,6 +43,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
 
+use lattice_core::Buffer;
 use lattice_protocol::edit::EditDelta;
 
 use crate::lang::Lang;
@@ -77,9 +78,15 @@ struct ReparseRequest {
     /// Version the resulting snapshot should be stamped with
     /// AFTER the parse completes.
     text_version: u64,
-    /// Full source text at `text_version`. Used both as the
-    /// parser input and as the published snapshot's `source`.
-    text: String,
+    /// Buffer at `text_version`. Slice B.5: carries the rope
+    /// (cloning is O(1) via ropey's internal Arc) instead of a
+    /// pre-materialized `String`. The worker materializes the
+    /// rope to bytes via `buffer.as_string()` on the worker
+    /// thread immediately before parse, moving the O(n) alloc
+    /// off the input thread per paramount goal #1 ("UI thread
+    /// does no I/O, no parsing"). Input-thread cost goes from
+    /// O(n) String alloc + memcpy down to O(1) Arc bump (~ns).
+    buffer: Buffer,
     /// Edit deltas in apply-order, taking the buffer from
     /// `from_version` to `text_version`. Empty = "no deltas
     /// available, do full reparse" (file load, document replace).
@@ -148,10 +155,15 @@ impl SyntaxHandle {
         self.snapshot.load().lang()
     }
 
-    /// Request that the worker reparse `text` and stamp the
+    /// Request that the worker reparse `buffer` and stamp the
     /// resulting snapshot with `text_version`. Fire-and-forget;
     /// the new snapshot is observable via [`Self::snapshot`]
     /// once the worker completes the parse.
+    ///
+    /// Slice B.5: takes `Buffer` (clones in O(1) via ropey's
+    /// internal Arc) rather than `String`. The full source
+    /// materialization moves to the worker, off the input
+    /// thread.
     ///
     /// `from_version` is the version-baseline the worker's tree
     /// is expected to be at BEFORE applying `edits`. The worker
@@ -165,7 +177,7 @@ impl SyntaxHandle {
     /// (file load / cold-start path).
     ///
     /// Coalesced: queued requests' edits are accumulated in
-    /// order; the latest queued request's `text` and
+    /// order; the latest queued request's `buffer` and
     /// `text_version` win; the earliest queued request's
     /// `from_version` survives so the burst's baseline is
     /// preserved.
@@ -173,13 +185,13 @@ impl SyntaxHandle {
         &self,
         from_version: u64,
         text_version: u64,
-        text: String,
+        buffer: Buffer,
         edits: Vec<EditDelta>,
     ) {
         let _ = self.cmd_tx.send(ReparseRequest {
             from_version,
             text_version,
-            text,
+            buffer,
             edits,
         });
     }
@@ -222,14 +234,14 @@ async fn worker_main(
 ) {
     while let Some(mut req) = cmd_rx.recv().await {
         // Coalesce queued requests: accumulate edits in order,
-        // take latest text/text_version, keep earliest
+        // take latest buffer/text_version, keep earliest
         // from_version. The mailbox is FIFO so this preserves
         // edit ordering across the burst.
         let mut acc_edits = std::mem::take(&mut req.edits);
         while let Ok(mut next) = cmd_rx.try_recv() {
             if next.text_version >= req.text_version {
                 acc_edits.append(&mut next.edits);
-                req.text = next.text;
+                req.buffer = next.buffer;
                 req.text_version = next.text_version;
             }
         }
@@ -251,10 +263,18 @@ async fn worker_main(
         let ReparseRequest {
             from_version,
             text_version,
-            text,
+            buffer,
             edits,
         } = req;
         let parsed = tokio::task::spawn_blocking(move || {
+            // Slice B.5: materialize the source bytes on the
+            // worker thread, not the input thread. `as_string`
+            // is O(n) for the rope but happens here on the
+            // spawn_blocking pool. For large buffers (~MB) this
+            // is the difference between paying ~ms on the input
+            // thread (violating goal #1) vs. paying it
+            // asynchronously where it doesn't block render.
+            let text = buffer.as_string();
             // Dispatch: empty edits -> full reparse (file load,
             // cold start, coalesce-cap fallback). Non-empty ->
             // incremental, with parse_at_with_edits internally

@@ -145,6 +145,44 @@ fn input_edit_construction(c: &mut Criterion) {
     });
 }
 
+/// Slice B.5: input-thread cost of preparing a buffer for the
+/// syntax worker. Pre-B.5: `Document::text()` materializes a
+/// fresh `String` of the entire buffer -- O(n) alloc + memcpy.
+/// Post-B.5: `Buffer::clone()` bumps ropey's internal Arc -- O(1).
+///
+/// Benches both at the same sizes so the savings are visible
+/// at-a-glance in BENCHMARKS.md. The `text` (pre-B.5) path is
+/// kept as the falsification anchor -- if the alloc cost ever
+/// converges to `clone()`, something changed in ropey.
+fn buffer_clone_vs_text(c: &mut Criterion) {
+    let mut g = c.benchmark_group("buffer::clone_vs_text");
+    for size in [10usize, 1_000, 100_000] {
+        let text = build_buffer(size);
+        let buffer = Buffer::from_text(&text);
+        g.bench_with_input(
+            BenchmarkId::new("clone", size),
+            &buffer,
+            |bencher, buf| {
+                bencher.iter(|| {
+                    let cloned = black_box(buf.clone());
+                    black_box(cloned);
+                });
+            },
+        );
+        g.bench_with_input(
+            BenchmarkId::new("as_string", size),
+            &buffer,
+            |bencher, buf| {
+                bencher.iter(|| {
+                    let s = black_box(buf.as_string());
+                    black_box(s);
+                });
+            },
+        );
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
     insert_at_origin,
@@ -152,6 +190,7 @@ criterion_group!(
     delete_one_byte,
     position_to_byte_round_trip,
     open_large_buffer,
+    buffer_clone_vs_text,
     input_edit_construction,
 );
 criterion_main!(benches);

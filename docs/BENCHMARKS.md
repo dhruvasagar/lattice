@@ -305,6 +305,35 @@ pre-parse work. The cap drops the edit list and falls through to
 full reparse -- still produces a correct tree, just at full-
 reparse cost (which is what the user-paste path naturally hits).
 
+### C-series (C.1–C.5) — bench numbers now reflect production
+
+The B.2 bench numbers were *algorithmically* correct from the day
+they landed but *operationally* dead until slice C.1. Pre-C.1, the
+syntax worker silently never spawned in production
+(`tokio::runtime::Handle::try_current()` failed because `main` was
+synchronous). Every `request_reparse` sent into a dropped channel;
+the snapshot stayed at the seeded state forever. The B.2 incremental
+numbers reflected what the worker *would do* if it ran -- they
+didn't reflect what users experienced. The C.1 `#[tokio::main]`
+migration plumbed the runtime in from program start; only then did
+production users actually see incremental reparse.
+
+The C-series adds no new benches but introduces a **sub-µs
+synchronous-shift cost** on every edit:
+
+- `shift_highlights_for_edit`: O(N) Vec drain/insert where N is
+  lines added or removed by the edit. Typically 0 (in-line) or
+  1 (line delete/insert). ~tens of ns.
+- `shift_spans_within_line`: O(span_count) on the edited line,
+  with each span doing a single i64 add. Typical line has <20
+  spans. ~hundreds of ns.
+
+Total C-series input-thread overhead per edit: <1µs. Doesn't show
+up in the existing bench rows because they don't exercise the
+edit→render cycle as a unit. The visible-side win (flicker
+elimination) is correctness-not-perf; the existing
+`refresh_highlights_cache_hit/200` at 20ns is unchanged.
+
 ---
 
 ## Frame render (`crates/lattice-ui-tui/benches/render.rs`)

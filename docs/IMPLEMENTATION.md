@@ -158,6 +158,82 @@ Two follow-ups deliberately deferred:
 
 ---
 
+## C-series: runtime fixes + flicker elimination
+
+A follow-up to Option B that turned the algorithmically-correct
+incremental-reparse pipeline into a user-visibly-flicker-free
+syntax-highlighting experience. Originally diagnosed against a
+specific user complaint: "even after Option B landed, syntax
+highlighting still goes through a brief 'gone, then back' phase
+on every edit -- especially noticeable on `>>` and `dd`. Vim has
+zero visual indication of any update. We should match that bar."
+
+The story across five slices:
+
+| Slice | Status | What landed |
+|-------|--------|-------------|
+| C.1   | ✅     | `#[tokio::main]` on `lattice-cli`. Pre-C.1, `main` was synchronous and `tokio::runtime::Handle::try_current()` failed silently inside `App::new`, causing `SyntaxHandle::seeded`'s worker to never spawn. Option B's entire incremental-reparse pipeline was routing through a non-existent worker -- spans stayed at the initial-seeded snapshot forever. Also adds nested-runtime-safe `block_on` (via `block_in_place`) so `apply_edit_blocking` etc. still work from inside the runtime. |
+| C.2   | ✅     | Worker publishes an intermediate snapshot AFTER `tree.edit()` shifts byte ranges, BEFORE running `Parser::parse`. The intermediate has the new source + tree-edited tree (byte ranges aligned with new content; tree shape pre-parse for the changed regions). Renderers see byte-aligned spans during the entire parse window -- lines below a delete or after a multi-byte insert paint at correct positions immediately. Splits `parse_at_with_edits` into `try_apply_intermediate` + `reparse_with_cached_tree`. |
+| C.3   | ✅     | Two complementary fixes: `shift_highlights_for_edit` runs synchronously in `publish_document_changed` to keep `App.visible_highlights` line-aligned across line-deletes / line-inserts (drains entries on delete; inserts empty placeholders on insert). `refresh_highlights` HOLDs the existing spans when `snap.text_version() < document.text_version()` instead of recomputing against stale data -- the cache only updates from one CORRECT set to another, never through an empty intermediate. |
+| C.4   | ✅     | Byte-shift spans within the affected line for in-line edits. `>>` (insert "    " at line start) shifts every span on the line right by 4 bytes immediately. Crossing spans get their end extended/contracted; spans collapsed to empty get dropped. Held spans on frame N+1 are byte-aligned with new content, identical to what the worker's recompute will produce on frame N+2 -- zero visual transition. |
+| C.5   | ✅     | **The missing link.** Grammar-driven edits (`>>`, `dd`, `cc`, `c`, `y`, `x`, `D`, `C`, `Y`, every operator) flow through the dispatcher → actor → `Effect::Edits(applied)` → `App::handle_edits`, which previously only updated the cursor. They bypassed `publish_document_changed` entirely, so all the C.1–C.4 machinery had no effect on the most common edit shape (operators). Routing them through the chokepoint fixed three things at once: spans byte-shift on input thread, `pending_syntax_edits` accumulates so the worker does incremental reparse instead of falling back to full, AND LSP `didChange` fires for operator edits (server-side document drift on `>>` / `dd` is gone). |
+
+**User-visible result.** The complete chain (B + C) gives:
+
+- **No flicker on `>>`** — the indented line's spans byte-shift
+  immediately on the input thread; the worker's recompute lands
+  with identical spans; the renderer never paints a transition.
+- **No flicker on `dd`** — the deleted line's entry drains;
+  lines below inherit their (still-correct) spans at their new
+  indices; the worker's recompute confirms.
+- **No flicker on typing** — single-char insert/delete byte-shifts
+  spans on the affected line; the user sees colors track the
+  cursor's edit point continuously.
+- **Steady-state highlight cost stays at ~20ns/frame** (the B.3
+  cache hit). The C-series is correctness-not-perf for the hot
+  path; it adds a sub-µs `shift_highlights_for_edit` call per
+  edit but no per-frame overhead.
+
+**Implementation surface.**
+
+- `lattice-cli/src/main.rs`: `#[tokio::main(flavor = "multi_thread")]`.
+- `lattice-runtime/src/runtime.rs::block_on`: `block_in_place`
+  wrap when nested in a runtime context.
+- `lattice-syntax/src/handle.rs::worker_main`: two-stage parse
+  with intermediate `ArcSwap::store` between `try_apply_intermediate`
+  and `reparse_with_cached_tree`. New `seeded_with_runtime`
+  constructor (kept alongside `seeded` for tests in tokio
+  context).
+- `lattice-syntax/src/syntax.rs`: split `parse_at_with_edits`
+  into `try_apply_intermediate` (fast, no parse) +
+  `reparse_with_cached_tree` (slow, parse). The convenience
+  method runs both back-to-back.
+- `lattice-ui-tui/src/app.rs`:
+  - `App.visible_highlights_key`: cache key holds `syntax_text_version`
+    only (not `document_text_version`) so edits don't trigger
+    recomputation against stale snapshots.
+  - `refresh_highlights` stale-snapshot HOLD path.
+  - `shift_highlights_for_edit` — line-shift on edit.
+  - `shift_spans_within_line` — byte-shift on in-line edit.
+  - `handle_edits` — routes grammar-driven edits through
+    `publish_document_changed`.
+
+Three follow-ups deliberately deferred (open):
+
+- **LSP-side staleness symptoms**: diagnostics retention (`:diagnostics`
+  shows errors that no longer exist), hover-position offset on
+  rapid edits. C.5's `didChange`-now-fires-for-operators may have
+  partially fixed hover staleness as a side effect; diagnostics
+  retention is a separate decoration-pipeline bug.
+- **Per-pattern QueryCursor caching**: the BENCHMARKS.md improvement
+  target on `highlight::rust/200` (3.2ms → ~1ms achievable). Cache
+  miss only fires on actual changes; lower priority.
+- **Per-DocumentEntry edit accumulation** for inactive panes:
+  currently they fall back to full reparse on the rare cross-doc
+  refresh path. Bounded scope.
+
+---
+
 ## Vim grammar coverage (Phase 1 catalog)
 
 This section enumerates every named primitive in vim's grammar against its

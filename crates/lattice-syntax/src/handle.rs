@@ -29,11 +29,20 @@
 //!   `buffer.as_string()` on its `spawn_blocking` thread, so the
 //!   O(n) source materialization stays off the input thread per
 //!   paramount goal #1.
-//! - **Incremental reparse** (slice B.2). Non-empty `edits` route
-//!   to `Syntax::parse_at_with_edits`, which applies `tree.edit()`
-//!   per delta then runs `Parser::parse(_, Some(&old_tree))` so
-//!   unchanged subtrees are reused. Empty edits or any guard
-//!   violation falls back to full reparse.
+//! - **Incremental reparse with intermediate publish** (slices
+//!   B.2 + C.2). Non-empty `edits` route to
+//!   `Syntax::try_apply_intermediate` first -- this applies
+//!   `tree.edit()` per delta and updates the cached source +
+//!   `text_version`, but does NOT yet run `Parser::parse`. The
+//!   worker then publishes an intermediate `ArcSwap::store` of
+//!   this byte-shifted-but-pre-parse-shape snapshot, so renderers
+//!   immediately see byte-aligned spans for unchanged content
+//!   (only the changed region's tree shape is briefly stale).
+//!   THEN `reparse_with_cached_tree` runs `Parser::parse(_,
+//!   Some(&old_tree))` which reuses unchanged subtrees, and
+//!   the worker publishes the final snapshot. Empty edits or
+//!   any guard violation in `try_apply_intermediate` falls
+//!   through to full reparse with a single publish.
 //! - **Coalescing.** When multiple requests are queued, the
 //!   worker accumulates `edits` in arrival order, takes the
 //!   latest `buffer` and `text_version`, keeps the earliest

@@ -13,6 +13,19 @@
 //!   the input thread doesn't allocate the source. App-side cache
 //!   on `App.visible_highlights_key` short-circuits the per-frame
 //!   `highlight_lines` walk when nothing changed.
+//! - **Flicker-free updates landed (C-series, slices C.1–C.5).**
+//!   The C-series turns the algorithmically-correct B-series into
+//!   a user-visibly-flicker-free experience. The two-stage parse
+//!   exposes `Syntax::try_apply_intermediate` (fast: tree.edit +
+//!   source/version update, no parse) and `reparse_with_cached_tree`
+//!   (slow: Parser::parse with cached tree as seed) so the
+//!   `SyntaxHandle` worker can publish a byte-aligned intermediate
+//!   snapshot before the parse completes. `App` synchronously
+//!   line-shifts and byte-shifts its `visible_highlights` cache on
+//!   every edit so held spans stay aligned with current content;
+//!   the renderer never sees an empty/wrong intermediate. Grammar-
+//!   driven edits (operators) flow through the same chokepoint
+//!   so the C.x logic applies uniformly.
 //! - Plugin extension API used by builtins, not yet by plugins.
 //!
 //! Adding a new language:

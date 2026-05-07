@@ -571,16 +571,26 @@ A command that fails its class's budget is a CI regression on the same gate that
 
 Tree-sitter is responsible for **all** structural code understanding.
 
-**Update flow** (Option B, slices B.1–B.5):
+**Update flow** (Option B + C-series, slices B.1–B.5 / C.1–C.5):
 edit → `Buffer::apply_edit` returns `EditDelta` (~2ns) → App
-accumulates deltas → end of Action: input thread does `Buffer::clone`
-(O(1) Arc bump) + non-blocking `mpsc::send` → syntax worker
-applies `tree.edit()` per delta + `Parser::parse(.., Some(&old_tree))`
-on `spawn_blocking` → atomic snapshot swap via `ArcSwap` →
-renderer queries new tree on next frame. Renderer never blocks
-waiting for fresh tree; one-frame-stale highlights are acceptable.
-Layered guards (no cached tree, version mismatch, byte-length
-mismatch) fall back to full reparse without panic.
+accumulates deltas + **synchronously shifts `visible_highlights`
+to track line/byte moves** (slice C.3/C.4) → end of Action: input
+thread does `Buffer::clone` (O(1) Arc bump) + non-blocking
+`mpsc::send` → syntax worker applies `tree.edit()` per delta +
+**publishes intermediate snapshot with shifted byte ranges**
+(slice C.2) + `Parser::parse(.., Some(&old_tree))` on
+`spawn_blocking` → atomic final snapshot swap via `ArcSwap` →
+renderer queries new tree on next frame. Renderer **never sees
+empty/wrong spans during the parse window**: held spans are
+line-aligned by C.3 and byte-aligned by C.4, so they paint
+correctly even before the worker publishes; the intermediate
+publish then makes the byte alignment "official" via the cache
+key invalidation. The single-line tree-shape staleness in the
+changed region settles within ~50µs (sub-frame at 60Hz). Layered
+guards (no cached tree, version mismatch, byte-length mismatch)
+fall back to full reparse without panic. Grammar-driven edits
+(operators) flow through the same chokepoint via slice C.5 so
+the byte-shift logic and `didChange` fire-out apply uniformly.
 
 **Highlight queries** evaluated lazily on visible viewport + overscan, cached per `(snapshot_ptr, text_version, viewport_range, fold_hash)`. Cache hit (steady-state norm: cursor blinking, no edit) is ~20ns; cache miss runs the QueryCursor walk (rayon-parallelized over patterns is post-1.0 work). Slice B.3 lit this up.
 
@@ -2393,6 +2403,32 @@ isolation -- specific architecture decisions enable each one:
   on its `spawn_blocking` thread. Honours goal #1 strictly
   regardless of buffer size; without it, B.2's incremental-
   reparse win was capped by an O(n) input-thread alloc.
+- **`#[tokio::main]` + nested-runtime-safe `block_on`** (Slice C.1)
+  ensures `Handle::try_current()` succeeds from program start so
+  the syntax worker actually spawns. Pre-C.1, `main` was synchronous
+  and the seeded handle's worker silently never started -- Option
+  B's incremental-reparse pipeline routed every request to a
+  dropped channel. `block_in_place` wrap lets existing
+  `apply_edit_blocking` etc. `block_on` calls work from inside
+  the runtime without panicking.
+- **Intermediate-snapshot publish + synchronous span shifting**
+  (Slices C.2/C.3/C.4): worker publishes a byte-aligned snapshot
+  immediately after `tree.edit()` (before parse); App also
+  synchronously line-shifts and byte-shifts `visible_highlights`
+  on the input thread for every edit. Combined, the renderer
+  never sees empty / positionally-wrong spans during the parse
+  window -- spans only ever transition from one CORRECT set to
+  another. Eliminates the user-visible "flicker on `>>` / `dd`"
+  that survived all the B-series work because spans had no way
+  to track byte movements before the worker caught up.
+- **Grammar-driven-edits go through `publish_document_changed`**
+  (Slice C.5): operators (`>>`, `dd`, `cc`, `c`, `y`, `x`, every
+  mutation that flows through the dispatcher → actor) reach the
+  same chokepoint as direct App edits (backspace, paste,
+  type-key). Without this, the C.x synchronous-shift logic and
+  the B.5 EditDelta accumulation skipped the most common edit
+  shape; the worker fell back to full reparse on every operator
+  and LSP `didChange` never fired. Now uniform.
 - **memmem-driven literal search on rope chunks** (B-α + B-β)
   replaces a naive char-by-char walk with SIMD-prefiltered
   scanning; backs the search floors above.

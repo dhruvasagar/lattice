@@ -52,6 +52,14 @@ pub struct DocumentEntry {
     pub handle: DocumentHandle,
     pub syntax: Option<SyntaxHandle>,
     pub last_parsed_text_version: u64,
+    /// Slice B.2 part 2: parallels App's
+    /// `last_synced_syntax_version` for inactive-pane documents.
+    /// When this entry's syntax handle is the target of a
+    /// reparse request (via `refresh_pane_highlights`), the
+    /// previous value is sent as `from_version` so the worker
+    /// can verify edits apply to the right tree baseline.
+    /// Updated to `text_version` after each request.
+    pub last_synced_syntax_version: u64,
     /// Per-buffer fold list. Empty means "not yet computed for
     /// this buffer." The activation hook recomputes against
     /// the current `App.foldmethod` on first activation;

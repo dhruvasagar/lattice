@@ -1084,6 +1084,23 @@ pub struct App {
     /// channel. Used to skip republishing identical state when
     /// no text mutation has happened since the previous frame.
     last_parsed_text_version: u64,
+    /// Slice B.2 part 2: tree-sitter-shaped edit deltas
+    /// accumulated since the last `maybe_reparse_syntax` call.
+    /// Pushed by `publish_document_changed` after each
+    /// `Buffer::apply_edit`; drained by `maybe_reparse_syntax`
+    /// and shipped to the syntax worker as `Vec<EditDelta>` for
+    /// incremental reparse via `tree.edit()` + `Parser::parse(_,
+    /// Some(&old_tree))`. Empty between Actions; never grows
+    /// unboundedly because every Action ends in
+    /// `maybe_reparse_syntax` which drains.
+    pending_syntax_edits: Vec<lattice_protocol::edit::EditDelta>,
+    /// `text_version` the syntax worker's tree is known to be at.
+    /// Sent as `from_version` on the next reparse request so the
+    /// worker can verify edits apply to the correct tree
+    /// baseline; mismatch triggers full-reparse fallback. Reset
+    /// to 0 when a fresh syntax handle is wired up (file open /
+    /// language change / active-buffer switch).
+    last_synced_syntax_version: u64,
     /// Per-line `StyledSpan`s for the currently visible viewport, indexed
     /// from `[scroll, scroll + viewport_height)`. Recomputed each frame by
     /// `refresh_highlights` (called from the runtime before drawing).
@@ -2435,6 +2452,7 @@ impl App {
                 // until a switch snapshots the active state back.
                 syntax: None,
                 last_parsed_text_version: 0,
+                last_synced_syntax_version: 0,
                 folds: Vec::new(),
             }),
         });
@@ -2501,6 +2519,8 @@ impl App {
             pending_redraw: false,
             syntax,
             last_parsed_text_version,
+            pending_syntax_edits: Vec::new(),
+            last_synced_syntax_version: 0,
             visible_highlights: Vec::new(),
             search_line: None,
             last_search: None,
@@ -3179,7 +3199,7 @@ impl App {
     /// [`Event::DocumentChanged`] to the App's event bus and
     /// records the edit with the LSP supervisor (Phase
     /// 4.1.i.2) so attached servers see `didChange`.
-    pub fn apply_edit_blocking(&self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
+    pub fn apply_edit_blocking(&mut self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
         let result = block_on(self.document.apply_edit(edit));
         if let Ok(applied) = result.as_ref() {
             self.publish_document_changed(std::slice::from_ref(applied));
@@ -3192,7 +3212,7 @@ impl App {
     /// batch is also fed to the LSP supervisor in order
     /// (Phase 4.1.i.2).
     pub fn apply_edit_batch_blocking(
-        &self,
+        &mut self,
         edits: Vec<Edit>,
     ) -> Result<Vec<AppliedEdit>, RuntimeError> {
         let result = block_on(self.document.apply_edit_batch(edits));
@@ -3202,7 +3222,7 @@ impl App {
         result
     }
 
-    pub fn undo_blocking(&self) -> Result<Vec<AppliedEdit>, RuntimeError> {
+    pub fn undo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
         let result = block_on(self.document.undo());
         if let Ok(applied) = result.as_ref() {
             self.publish_document_changed(applied);
@@ -3210,7 +3230,7 @@ impl App {
         result
     }
 
-    pub fn redo_blocking(&self) -> Result<Vec<AppliedEdit>, RuntimeError> {
+    pub fn redo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
         let result = block_on(self.document.redo());
         if let Ok(applied) = result.as_ref() {
             self.publish_document_changed(applied);
@@ -3430,7 +3450,7 @@ impl App {
     /// downstream subscribers (notably the per-server LSP fan-in)
     /// can sync without re-walking the buffer or holding the
     /// supervisor lock.
-    fn publish_document_changed(&self, applied: &[AppliedEdit]) {
+    fn publish_document_changed(&mut self, applied: &[AppliedEdit]) {
         let snap = self.document.snapshot();
         let path = snap.path().map(|p| p.to_path_buf());
         let edits: Vec<lattice_protocol::event::AppliedEdit> = applied
@@ -3448,6 +3468,17 @@ impl App {
             version: snap.version,
             edits,
         });
+        // Slice B.2 part 2: accumulate tree-sitter-shaped edit
+        // deltas for the next syntax reparse request.
+        // `maybe_reparse_syntax` drains this and ships them to
+        // the worker, which applies them via tree.edit() before
+        // running an incremental Parser::parse. If no syntax
+        // handle is attached, skip the push to keep the vec
+        // bounded.
+        if self.syntax.is_some() {
+            self.pending_syntax_edits
+                .extend(applied.iter().map(|a| a.delta));
+        }
     }
 
     /// Build + publish [`Event::SelectionsChanged`] from the current
@@ -4002,20 +4033,26 @@ impl App {
             return;
         }
         if let Some(syntax) = self.syntax.as_ref() {
-            // Slice B.2 part 1/2: API now takes from_version +
-            // edits. Part 2/2 (separate commit) wires the actual
-            // EditDelta accumulation; for now we pass the prior
-            // version + empty edits, which routes the worker to
-            // the existing full-reparse path. Preserves today's
-            // behaviour until App-side plumbing lands.
+            // Slice B.2 part 2: ship the accumulated EditDeltas
+            // to the worker. Worker applies them via tree.edit()
+            // before running incremental Parser::parse, falling
+            // back to full reparse on any inconsistency
+            // (from_version mismatch, byte-length mismatch, no
+            // cached tree, empty edits).
+            let edits = std::mem::take(&mut self.pending_syntax_edits);
             syntax.request_reparse(
-                self.last_parsed_text_version,
+                self.last_synced_syntax_version,
                 tv,
                 self.document.text(),
-                Vec::new(),
+                edits,
             );
         }
         self.last_parsed_text_version = tv;
+        // Worker WILL be at this version after the request
+        // completes. If a request gets dropped (worker panicked),
+        // the next request's from_version mismatch triggers a
+        // full reparse and self-corrects.
+        self.last_synced_syntax_version = tv;
         // Recompute computed folds in lockstep with the syntax
         // reparse request so `foldmethod=indent` stays in sync.
         // Manual foldmethod skips the recompute (the user's `zf`
@@ -4240,17 +4277,24 @@ impl App {
             }
             if let Some(syntax) = entry.syntax.as_ref() {
                 if tv != entry.last_parsed_text_version {
-                    // Slice B.2 part 1/2: same shape as the
-                    // active-pane path -- empty edits + prior
-                    // version routes to full reparse. Part 2/2
-                    // wires per-DocumentEntry edit accumulation.
+                    // Slice B.2 part 2: inactive-pane path
+                    // doesn't yet accumulate per-document edit
+                    // deltas (the active-pane path does, on
+                    // App.pending_syntax_edits). For now we send
+                    // empty edits which routes the worker to
+                    // full reparse. Per-DocumentEntry edit
+                    // accumulation is its own follow-up; the
+                    // inactive-pane path is rare (only fires
+                    // when pane shows a different document) so
+                    // the perf cost stays bounded.
                     syntax.request_reparse(
-                        entry.last_parsed_text_version,
+                        entry.last_synced_syntax_version,
                         tv,
                         snap.buffer.as_string(),
                         Vec::new(),
                     );
                     entry.last_parsed_text_version = tv;
+                    entry.last_synced_syntax_version = tv;
                 }
                 let end = scroll.saturating_add(height);
                 let spans = syntax
@@ -5137,6 +5181,7 @@ impl App {
                 // a switch.
                 syntax: None,
                 last_parsed_text_version: 0,
+                last_synced_syntax_version: 0,
                 folds: Vec::new(),
             }),
         });
@@ -15655,16 +15700,103 @@ mod tests {
 
     #[test]
     fn event_bus_publishes_document_changed_on_apply_edit() {
-        let a = app_with("hello", 5);
+        let mut a = app_with("hello", 5);
         let mut rx = subscribe_all_events(&a);
         a.apply_edit_blocking(Edit::insert(Position::new(0, 5), " world"))
             .unwrap();
         assert!(matches!(rx.try_recv(), Ok(Event::DocumentChanged { .. })));
     }
 
+    // ---- Slice B.2 part 2: edit-delta accumulation -------------
+    //
+    // Pin that EditDeltas accumulate on App.pending_syntax_edits
+    // across edits, drain on maybe_reparse_syntax, and the
+    // version baseline tracks correctly. The actual incremental
+    // reparse correctness is covered by lattice-syntax's parity
+    // tests; these App-level tests pin the plumbing.
+
+    #[test]
+    fn apply_edit_accumulates_delta_when_syntax_attached() {
+        let mut a = app_with("hello", 5);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        assert_eq!(a.pending_syntax_edits.len(), 0);
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 5), " world"))
+            .unwrap();
+        assert_eq!(a.pending_syntax_edits.len(), 1);
+        let delta = a.pending_syntax_edits[0];
+        assert_eq!(delta.start_byte, 5);
+        assert_eq!(delta.old_end_byte, 5);
+        assert_eq!(delta.new_end_byte, 11);
+    }
+
+    #[test]
+    fn apply_edit_skips_delta_accumulation_when_no_syntax() {
+        // No syntax attached -> publish_document_changed
+        // short-circuits the delta push to keep the vec bounded.
+        let mut a = app_with("hello", 5);
+        assert!(a.syntax.is_none());
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 5), " world"))
+            .unwrap();
+        assert_eq!(a.pending_syntax_edits.len(), 0);
+    }
+
+    #[test]
+    fn apply_edit_batch_accumulates_one_delta_per_edit() {
+        let mut a = app_with("abc", 5);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        let edits = vec![
+            Edit::insert(Position::new(0, 0), "1"),
+            Edit::insert(Position::new(0, 2), "2"),
+        ];
+        a.apply_edit_batch_blocking(edits).unwrap();
+        assert_eq!(a.pending_syntax_edits.len(), 2);
+    }
+
+    #[test]
+    fn maybe_reparse_syntax_drains_pending_edits_and_updates_version() {
+        let mut a = app_with("hello", 5);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        let initial_synced = a.last_synced_syntax_version;
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 5), " world"))
+            .unwrap();
+        assert_eq!(a.pending_syntax_edits.len(), 1);
+        // Drive the reparse-request seam directly (mirrors what
+        // the runtime loop does at the end of each Action).
+        a.maybe_reparse_syntax();
+        // Edits drained.
+        assert_eq!(a.pending_syntax_edits.len(), 0);
+        // Version baseline advanced -- next request will use
+        // this as `from_version`.
+        assert!(a.last_synced_syntax_version > initial_synced);
+        assert_eq!(a.last_synced_syntax_version, a.document.text_version());
+    }
+
+    #[test]
+    fn undo_redo_accumulate_inverse_deltas() {
+        // Forward edit + undo + redo each push a delta. The
+        // undo's delta is the inverse of the forward (start_byte
+        // unchanged; old_end / new_end swapped).
+        let mut a = app_with("a", 5);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 1), "b"))
+            .unwrap();
+        assert_eq!(a.pending_syntax_edits.len(), 1);
+        let forward = a.pending_syntax_edits[0];
+        a.undo_blocking().unwrap();
+        assert_eq!(a.pending_syntax_edits.len(), 2);
+        let undo_delta = a.pending_syntax_edits[1];
+        // Undo's old_end/new_end are swapped relative to
+        // forward.
+        assert_eq!(undo_delta.start_byte, forward.start_byte);
+        assert_eq!(undo_delta.old_end_byte, forward.new_end_byte);
+        assert_eq!(undo_delta.new_end_byte, forward.old_end_byte);
+        a.redo_blocking().unwrap();
+        assert_eq!(a.pending_syntax_edits.len(), 3);
+    }
+
     #[test]
     fn event_bus_publishes_document_changed_on_undo_redo() {
-        let a = app_with("a", 5);
+        let mut a = app_with("a", 5);
         a.apply_edit_blocking(Edit::insert(Position::new(0, 1), "b"))
             .unwrap();
         let mut rx = subscribe_all_events(&a);
@@ -25350,14 +25482,14 @@ mod tests {
         // Without a buffer_uri mapping, lsp_record_edit
         // short-circuits. No panic, no crash, edit still
         // commits.
-        let app = app_with("hi\n", 5);
+        let mut app = app_with("hi\n", 5);
         let r = app.apply_edit_blocking(Edit::insert(Position::new(0, 0), "x"));
         assert!(r.is_ok());
     }
 
     #[test]
     fn apply_edit_batch_blocking_records_each_edit_in_order() {
-        let app = app_with("abc\n", 5);
+        let mut app = app_with("abc\n", 5);
         let edits = vec![
             Edit::insert(Position::new(0, 0), "1"),
             Edit::insert(Position::new(0, 1), "2"),

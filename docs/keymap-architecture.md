@@ -947,6 +947,68 @@ type-hoisting decisions, and the sub-slice plan.
     second path to drift against; the per-binding `match`
     tests in each module continue to pin the exact
     `Invoke(...)` shape.
+  - 8.i.4.f -- Close the count-flow seam. ✅ landed.
+    Two latent seam bugs surfaced once an end-to-end
+    `key_harness_*` press harness landed in
+    `app::tests` (drives `crossterm::KeyEvent` through
+    `input::translate` + `App::apply` -- the same path
+    `runtime.rs` walks). Both bugs were invisible to the
+    per-layer tests: the translate-side tests assert on
+    the returned `Action`, the App-side tests
+    hand-construct `Action::Invoke(...)`; nothing
+    exercised the seam between them.
+    - Bug A: dispatcher double-applied count. After
+      8.g.iv routed count multiplication into
+      `keymap_normal::attach_count` (input-side), the
+      App-side math in `run_document_invocation` and
+      `run_read_only_motion` was never removed. With
+      `attach_count` baking `Count(N)` into the inv and
+      the dispatcher then computing
+      `op_count.saturating_mul(motion_count)` over that
+      already-multiplied count, `2dd` ran with `op*motion
+      = 2*2 = 4` and `3dd` saturated the buffer at 9.
+      Fix: drop the dispatcher-side multiplication;
+      dispatcher now reads `inv.count` directly and
+      drains `pending_count` / `op_count` from App
+      state. The three App-layer tests that bypassed
+      `attach_count` by manually feeding
+      `Action::PushDigit + Invoke(operator) + Invoke(motion)`
+      were migrated to bake the right count into the
+      invocation themselves -- mirroring what
+      `attach_count` would produce.
+    - Bug B: digit eaten in operator-pending state.
+      `compute_normal_action` checked the
+      `partial_chord` short-circuit BEFORE the digit
+      handler. After `d` absorbed into
+      `partial_chord=['d']`, typing `2` routed to
+      `lookup_normal_with_prefix(['d'], '2')` -- unbound
+      -- which returned `Action::None` and silently
+      aborted the operator (App's partial_chord-clear
+      guard at the top of `apply` ate the prefix). Vim's
+      `d2w`, `2d3w`, `5gg` could never fire because the
+      digit never reached the `pending_count`
+      accumulator. Fix: hoist the digit handler above
+      the `partial_chord` short-circuit in
+      `compute_normal_action`. Safe today (no built-in
+      chord has a digit as second key); a future plugin
+      that wants `[X, digit]` chords would expand the
+      rule to "digit handler unless `[partial, digit]`
+      is bound", with the registry already carrying the
+      data needed. Coordinated change in App's
+      partial_chord-clear guard: `Action::PushDigit(_)`
+      is now exempt alongside `AbsorbPartialChord(_)`,
+      since accumulating a count between chord steps is
+      neither a resolution nor an abort of the
+      multi-key sequence.
+    - The `key_harness_*` press tests now pin both
+      fixes: `count_after_operator_d2w_deletes_two_words`,
+      `counts_multiply_on_both_sides`, and
+      `count_clears_after_motion_fires`. The tests sit
+      alongside the original two sanity tests
+      (`j_advances_cursor_one_line`,
+      `dw_deletes_first_word`) plus coverage for the
+      `<C-w>` action-kind short-circuit (slice 8.i.4.d)
+      and the Insert mode round-trip.
   - At this point the `keymap.rs` drift test becomes obsolete
     (descriptor IS behaviour); replace it with a "every catalog
     entry resolves to a real `CommandInvocation`" test.

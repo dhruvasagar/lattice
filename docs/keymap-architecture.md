@@ -1009,6 +1009,51 @@ type-hoisting decisions, and the sub-slice plan.
       `dw_deletes_first_word`) plus coverage for the
       `<C-w>` action-kind short-circuit (slice 8.i.4.d)
       and the Insert mode round-trip.
+  - 8.i.4.g -- Linewise-operator newline semantics. ✅
+    landed. The press harness `key_harness_count_before_
+    operator_dd_deletes_n_lines` (deferred from 8.i.4.f)
+    surfaced a third bug -- distinct from the count-flow
+    seam -- in the linewise operators themselves. Vim's
+    `dd` consumes the line AND its trailing newline so
+    the line count drops by `count`; lattice's
+    `Range::CurrentLine` returned just the line content
+    `[(line, 0), (line, line_len)]`, so `dd` left a
+    phantom empty line behind. Same bug for `yy`: the
+    yanked content was `"BBB"` instead of vim's
+    `"BBB\n"`, breaking paste-after-linewise round-trips.
+    `cc`, `>>`, `<<` were already correct -- `cc`'s
+    "delete content + enter Insert" produces vim's
+    "delete line + reinsert blank line" by byte
+    coincidence (`Range::CurrentLine`'s byte span across
+    multiple lines does include interior newlines, just
+    not the trailing one); `>>` / `<<` deliberately
+    operate on content only.
+    - Fix lives operator-side, not in the shared
+      `Range::CurrentLine` resolver, so `>>` / `<<` /
+      `cc` keep their current ranges. New helper
+      `extend_linewise_range(buffer, range)` in
+      `lattice-grammar::builtins`: extends the range to
+      consume the trailing newline; on the last line
+      (no trailing newline available) consumes the
+      LEADING newline instead so the previous line
+      doesn't gain a phantom newline; whole-buffer
+      ranges pass through unchanged.
+    - `operator_delete` uses the extended range as both
+      the slice source and the edit range, so the
+      register content and the buffer-side delete agree.
+    - `operator_yank` doesn't walk the buffer for the
+      newline -- linewise yank content always ends with
+      `\n` (vim clipboard convention), so yank just
+      appends `\n` to the original slice if missing.
+      That gives the same `"BBB\n"` whether the source
+      line had a trailing newline or not.
+    - Test fallout: 3 grammar tests + 6 UI-layer tests
+      pinned the old "leaves an empty line" / `"BBB"`
+      shapes; updated to the vim-correct shapes
+      (`"aaa\nccc"` and `"BBB\n"` respectively). The
+      stale "existing app contract" comment at
+      `dd_on_non_fold_line_uses_count_one` is gone --
+      the contract is now "matches vim".
   - At this point the `keymap.rs` drift test becomes obsolete
     (descriptor IS behaviour); replace it with a "every catalog
     entry resolves to a real `CommandInvocation`" test.

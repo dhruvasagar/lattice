@@ -726,6 +726,7 @@ dependencies = [
  "clap",
  "lattice-core",
  "lattice-ui-tui",
+ "tokio",
 ]
 
 [[package]]

@@ -52,12 +52,28 @@ pub fn shared_runtime() -> &'static Handle {
 /// need to wait on a [`crate::Pending`] from outside an async
 /// context.
 ///
-/// Calling this from inside an async context (a `#[tokio::test]`,
-/// for instance) panics with tokio's "cannot block_on inside a
-/// runtime" message -- callers in async contexts should `await` the
-/// `Pending` instead.
+/// **Nested-runtime safety**: when called from inside another
+/// tokio runtime (e.g. from the editor's `#[tokio::main]` body
+/// per slice C.1), naively calling `block_on` would panic with
+/// "Cannot start a runtime from within a runtime". Wrapping in
+/// [`tokio::task::block_in_place`] tells tokio to relinquish the
+/// current task's worker so other tasks keep running while we
+/// block. The shared runtime itself is a separate instance from
+/// any caller-side runtime, so its `block_on` is allowed once
+/// `block_in_place` has cleared the way.
+///
+/// On a non-tokio caller (sync `main`, sync test) the
+/// `try_current` check fails and we fall through to the direct
+/// `block_on` -- no overhead.
 pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
-    shared_runtime().block_on(fut)
+    let target = shared_runtime();
+    if Handle::try_current().is_ok() {
+        // Already inside some runtime -- relinquish the worker
+        // before driving `fut` on `target`.
+        tokio::task::block_in_place(|| target.block_on(fut))
+    } else {
+        target.block_on(fut)
+    }
 }
 
 #[cfg(test)]

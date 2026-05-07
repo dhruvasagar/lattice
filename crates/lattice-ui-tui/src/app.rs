@@ -1662,17 +1662,19 @@ pub struct Fold {
 struct VisibleHighlightsKey {
     snapshot_ptr: usize,
     /// Syntax snapshot's `text_version` (== version the worker
-    /// has parsed up to).
+    /// has parsed up to). Cache invalidates when the worker
+    /// publishes a fresh tree -- that's the right trigger for
+    /// re-highlighting. The document's own `text_version` is
+    /// deliberately NOT in the key: between an edit and the
+    /// worker's publish, the latest snapshot has no new
+    /// information, so re-highlighting against it would just
+    /// produce the same (slightly stale) result as the previous
+    /// frame at the cost of a ~178µs walk. Letting the cache
+    /// hold across that window keeps unchanged lines'
+    /// highlighting continuous; only the just-edited line's
+    /// spans are briefly at stale byte positions until the
+    /// worker publishes.
     syntax_text_version: u64,
-    /// Document's `text_version` (== latest edit applied). Equals
-    /// `syntax_text_version` once the worker has caught up.
-    /// Included in the key so frames where the document advanced
-    /// but the syntax worker hasn't yet trigger a cache miss --
-    /// otherwise we'd reuse spans computed against the stale
-    /// snapshot's bytes and paint them on the new content,
-    /// producing the user-reported "highlighting stuck to byte
-    /// positions, not content" symptom.
-    document_text_version: u64,
     scroll: u32,
     viewport_height: u32,
     fold_hash: u64,
@@ -4280,11 +4282,9 @@ impl App {
             return;
         };
         let snap = syntax.snapshot();
-        let document_text_version = self.document.text_version();
         let key = VisibleHighlightsKey {
             snapshot_ptr: std::sync::Arc::as_ptr(&snap) as usize,
             syntax_text_version: snap.text_version(),
-            document_text_version,
             scroll: self.scroll,
             viewport_height: self.viewport_height,
             fold_hash: compute_fold_hash(&self.folds),
@@ -4293,28 +4293,30 @@ impl App {
             // Cache hit -- existing visible_highlights is valid.
             return;
         }
-        // Render-time staleness guard: if the document has
-        // advanced past the syntax worker's published snapshot,
-        // any spans we compute would be anchored to old bytes
-        // (snap.source) but painted onto new content. That's the
-        // positional-staleness symptom the user reported. With
-        // B.2's incremental reparse landing in ~50µs typical,
-        // the worker catches up within one frame at 60Hz in
-        // nearly all cases; until it does, drop spans (paint
-        // plain text) rather than show misaligned colours.
-        // Belt-and-suspenders alongside bug-#1's worker spawn
-        // fix -- with that fix, the worker runs at all; with
-        // this guard, the brief in-flight window doesn't
-        // visibly bleed.
-        if snap.text_version() < document_text_version {
-            self.visible_highlights = Vec::new();
-            self.visible_highlights_key = Some(key);
-            return;
-        }
-        // Cache miss with a fresh snapshot: recompute and store
-        // both the spans and the key. The window stretches via
-        // `visible_buffer_line_extent` to cover lines under
-        // closed folds (see method docstring).
+        // Cache miss: recompute spans from whatever snapshot is
+        // currently published. Note: when the worker is mid-
+        // parse (document.text_version > snap.text_version),
+        // we deliberately do NOT drop spans -- doing so produced
+        // a visible "highlighting flickers off and back on"
+        // effect on every keystroke. Painting spans computed
+        // against the (slightly stale) snapshot keeps unchanged
+        // content correctly highlighted; only the just-edited
+        // region's spans are briefly positionally off until the
+        // worker publishes (~50µs typical at 1600 lines per
+        // §8.2). At 60Hz that's well below one frame, so the
+        // user perceives continuous highlighting with at most
+        // a single line briefly showing a subtle color shift.
+        //
+        // Future C.2: worker can publish a transient snapshot
+        // immediately after `tree.edit()` (byte ranges shifted)
+        // before running `Parser::parse`. That makes EVERY span
+        // byte-aligned during the worker window; only the
+        // changed region's tree shape is stale (which usually
+        // doesn't affect color). Tracked separately.
+        //
+        // The window stretches via `visible_buffer_line_extent`
+        // to cover lines under closed folds (see method
+        // docstring).
         let start = self.scroll;
         let end = self
             .visible_buffer_line_extent(start, self.viewport_height)
@@ -16153,31 +16155,46 @@ mod tests {
     }
 
     #[test]
-    fn refresh_highlights_drops_spans_when_snapshot_stale() {
-        // Bug #3 regression: when document advanced but syntax
+    fn refresh_highlights_holds_spans_while_worker_catches_up() {
+        // Inverted contract: when document advances but syntax
         // worker hasn't published yet, refresh_highlights must
-        // return empty spans, not paint stale spans on new
-        // content. The seeded test handle never runs a worker
-        // (no tokio runtime in lib tests), so this is the exact
-        // shape of the in-flight-worker window in production.
+        // KEEP the previous frame's spans -- not drop them. The
+        // earlier "drop spans when stale" guard caused a visible
+        // flicker (highlighting disappeared for ~1 frame on
+        // every keystroke) which the user reported as a jarring
+        // effect. Keeping spans means unchanged lines stay
+        // correctly highlighted continuously; only the just-
+        // edited line is briefly at stale byte positions until
+        // the worker publishes (~50µs typical, well under one
+        // frame at 60Hz).
         let mut a = app_with("fn main() {}", 5);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
         assert!(!a.visible_highlights.is_empty());
-        // Apply an edit -- bumps document.text_version. Without
-        // a real worker, the syntax snapshot stays at the old
-        // version (the seeded snapshot).
+        let spans_before = a.visible_highlights.clone();
+        // Apply an edit. Without a real worker (no tokio
+        // runtime in lib tests), the syntax snapshot stays at
+        // the old version -- exactly the shape of the in-flight-
+        // worker window in production.
         a.apply_edit_blocking(Edit::insert(Position::new(0, 12), "\nfn b() {}"))
             .unwrap();
         a.maybe_reparse_syntax();
         a.refresh_highlights();
-        // Spans should be empty: snap.text_version still at old
-        // value, document.text_version advanced.
+        // Spans persist (cache hit on snapshot-version key,
+        // which didn't change because worker didn't publish).
+        // Visible-stable highlighting until the worker catches up.
         assert!(
-            a.visible_highlights.is_empty(),
-            "refresh_highlights must drop spans when syntax snapshot is stale -- \
-             bug-#3 regression. Painting stale-aligned spans on new content was \
-             the original user-reported symptom."
+            !a.visible_highlights.is_empty(),
+            "refresh_highlights must NOT drop spans during the worker window -- \
+             dropping them produces a flicker on every keystroke. Spans persist \
+             from the previous frame; unchanged-line spans stay positionally \
+             correct, only the edited line is briefly off."
+        );
+        assert_eq!(
+            a.visible_highlights, spans_before,
+            "spans should be unchanged while worker is catching up -- \
+             cache key is keyed on snapshot version, not document version, \
+             so an edit alone doesn't trigger recomputation"
         );
     }
 

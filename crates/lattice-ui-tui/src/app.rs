@@ -3630,10 +3630,28 @@ impl App {
         let old_lines = old_end.saturating_sub(edit_start) as usize;
         let new_lines = new_end.saturating_sub(edit_start) as usize;
         if old_lines == new_lines {
-            // In-line edit. The line at `viewport_idx` had its
-            // content modified but stays at the same index --
-            // its cached spans become slightly stale until the
-            // worker publishes; no shift needed.
+            // In-line edit (line count unchanged). Shift spans
+            // on the affected line by the byte delta within the
+            // line so the held spans stay byte-aligned with the
+            // new content. Without this, e.g. `>>` (insert "    "
+            // at byte 0) leaves spans pointing at OLD byte
+            // positions: the renderer paints "Keyword" color on
+            // the new whitespace bytes 0..3 and leaves the
+            // shifted "let" bytes 4..7 unstyled. When the worker
+            // publishes the corrected spans on the next frame,
+            // the bytes transition from "Keyword color on
+            // whitespace" to "default color on whitespace" --
+            // the "default color" reads as the visible flicker
+            // the user reported.
+            //
+            // Slice C.4: shift each span by the byte delta:
+            // - Entirely before the edit: unchanged.
+            // - Entirely after the edit: both endpoints shifted.
+            // - Crossing the edit point: extend (or contract) the
+            //   end by the byte delta to keep the span covering
+            //   the (now-resized) content. The start stays
+            //   because the prefix bytes are preserved.
+            self.shift_spans_within_line(viewport_idx, delta);
             return;
         }
         // Decide where to apply the shift. If the edit starts at
@@ -3673,6 +3691,69 @@ impl App {
                 self.visible_highlights.insert(action_idx, Vec::new());
             }
         }
+    }
+
+    /// Slice C.4: shift the spans on a single visible-line entry
+    /// by the byte-delta of an in-line edit, so the held spans
+    /// stay byte-aligned with the post-edit content during the
+    /// brief window before the syntax worker publishes corrected
+    /// spans. Eliminates the "spans paint on shifted bytes →
+    /// recompute → bytes transition to default color" flicker
+    /// that `>>` indents and other in-line edits produced.
+    ///
+    /// Three cases per span:
+    /// 1. Entirely before the edit (`span.end <= edit_byte`):
+    ///    unchanged.
+    /// 2. Entirely after the edit (`span.start >= old_end_byte`):
+    ///    both endpoints shift by `byte_delta`.
+    /// 3. Crossing the edit (overlaps the edited range): the
+    ///    prefix bytes [`span.start`, `edit_byte`) are unchanged,
+    ///    so the span's start stays put. The end extends (or
+    ///    contracts) by `byte_delta` to keep the span covering
+    ///    its now-resized content. If the span collapses to
+    ///    empty (delete consumed all of it), drop it.
+    fn shift_spans_within_line(
+        &mut self,
+        viewport_idx: usize,
+        delta: &lattice_protocol::edit::EditDelta,
+    ) {
+        let edit_byte = delta.start_position.byte as usize;
+        let old_end_byte = delta.old_end_position.byte as usize;
+        let new_end_byte = delta.new_end_position.byte as usize;
+        let byte_delta: i64 = new_end_byte as i64 - old_end_byte as i64;
+        if edit_byte == old_end_byte && byte_delta == 0 {
+            // No-op edit: empty range replaced with empty text.
+            return;
+        }
+        let Some(line_spans) = self.visible_highlights.get_mut(viewport_idx) else {
+            return;
+        };
+        line_spans.retain_mut(|span| {
+            if span.end <= edit_byte {
+                // Entirely before the edit; unchanged.
+                true
+            } else if span.start >= old_end_byte {
+                // Entirely after the edit; shift both endpoints.
+                let new_start = (span.start as i64) + byte_delta;
+                let new_end = (span.end as i64) + byte_delta;
+                span.start = new_start.max(0) as usize;
+                span.end = new_end.max(0) as usize;
+                true
+            } else {
+                // Span crosses the edit. Extend / contract end by
+                // byte_delta to track the resized content; start
+                // stays put (the prefix is preserved bytes).
+                let extended_end = (span.end as i64) + byte_delta;
+                if extended_end <= span.start as i64 {
+                    // Span collapsed entirely (e.g. a multi-byte
+                    // delete consumed the whole span). Drop.
+                    false
+                } else {
+                    span.end = extended_end as usize;
+                    true
+                }
+            }
+        });
     }
 
     /// Build + publish [`Event::SelectionsChanged`] from the current
@@ -16398,11 +16479,15 @@ mod tests {
     }
 
     #[test]
-    fn inline_edit_does_not_shift_visible_highlights() {
-        // `>>` style: indent inserts spaces at line start. The
-        // line count is unchanged. visible_highlights stays at
-        // the same shape; the edited line's spans are slightly
-        // stale but no shifting is needed.
+    fn inline_edit_byte_shifts_spans_on_affected_line() {
+        // Slice C.4: `>>` style indent — insert at line start —
+        // must byte-shift each span on the affected line by the
+        // inserted byte count. Without this, held spans paint
+        // colors on the new whitespace bytes and the recompute
+        // transitions to "default color on whitespace" --
+        // visible flicker. With this, spans line up with new
+        // byte positions on frame N+1, identical to what the
+        // recompute will produce on frame N+2 → no transition.
         let mut a = app_with("fn main() {}", 10);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
@@ -16411,15 +16496,108 @@ mod tests {
         // Insert "    " at start of line 0 (mimics >> indent).
         a.apply_edit_blocking(Edit::insert(Position::new(0, 0), "    "))
             .unwrap();
-        // Length unchanged; spans for line 0 unchanged in
-        // structure (held). The held spans are slightly stale
-        // (the line's content shifted by 4 bytes) but won't
-        // produce visible white -- the renderer paints them on
-        // the new content's first 12 bytes (4 spaces + "fn main"
-        // -- prefix is correctly painted as Keyword/Identifier,
-        // just at slightly off byte positions).
+        // Line count unchanged; visible_highlights length stays.
         assert_eq!(a.visible_highlights.len(), len_before);
-        assert_eq!(a.visible_highlights[0], line0_before);
+        // Each span on line 0 should have shifted right by 4 --
+        // they were entirely after byte 0 (the edit point).
+        let line0_after = &a.visible_highlights[0];
+        assert_eq!(
+            line0_after.len(),
+            line0_before.len(),
+            "no spans dropped (none crossed byte 0)"
+        );
+        for (before, after) in line0_before.iter().zip(line0_after.iter()) {
+            assert_eq!(after.start, before.start + 4, "start shifted by 4");
+            assert_eq!(after.end, before.end + 4, "end shifted by 4");
+            assert_eq!(after.style, before.style, "style preserved");
+        }
+    }
+
+    #[test]
+    fn inline_edit_byte_shifts_spans_after_edit_point_only() {
+        // Insert in the middle of a line shifts only spans whose
+        // start is at or past the edit point. Spans entirely
+        // before the edit are unchanged.
+        let mut a = app_with("fn main() { let x = 1; }", 10);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        let line0_before = a.visible_highlights[0].clone();
+        // Insert "abc" at byte 12 (between "{ " and "let").
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 12), "abc"))
+            .unwrap();
+        let line0_after = &a.visible_highlights[0];
+        // For each span, classify based on its position relative
+        // to byte 12. Spans with end <= 12 unchanged. Spans
+        // with start >= 12 shifted by +3.
+        for (before, after) in line0_before.iter().zip(line0_after.iter()) {
+            if before.end <= 12 {
+                assert_eq!(after.start, before.start, "before-edit span unchanged");
+                assert_eq!(after.end, before.end);
+            } else if before.start >= 12 {
+                assert_eq!(after.start, before.start + 3, "after-edit span shifted");
+                assert_eq!(after.end, before.end + 3);
+            }
+        }
+    }
+
+    #[test]
+    fn inline_edit_extends_crossing_span() {
+        // Span overlapping the edit point gets its end extended
+        // (or contracted) to track the resized content. Start
+        // stays put because the prefix bytes are preserved.
+        let mut a = app_with("fn longname() {}", 10);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        // Find the span covering "longname" -- it crosses any
+        // mid-identifier insert.
+        let line0_before = a.visible_highlights[0].clone();
+        // Insert "X" at byte 6 (mid-"longname": "long" + "X" +
+        // "name").
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 6), "X"))
+            .unwrap();
+        let line0_after = &a.visible_highlights[0];
+        // For each span, if it crossed byte 6, its end should
+        // have extended by 1 while start stayed.
+        for (before, after) in line0_before.iter().zip(line0_after.iter()) {
+            if before.start < 6 && before.end > 6 {
+                assert_eq!(after.start, before.start, "crossing span: start preserved");
+                assert_eq!(
+                    after.end,
+                    before.end + 1,
+                    "crossing span: end extended by 1"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inline_delete_contracts_spans() {
+        // Delete bytes from a line: spans after the delete shift
+        // left; spans crossing the delete contract their end.
+        let mut a = app_with("fn main() { let xx = 1; }", 10);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        a.refresh_highlights();
+        let line0_before = a.visible_highlights[0].clone();
+        // Delete byte 17 ("x" -- one of the two chars in "xx").
+        let range = lattice_protocol::Range::new(
+            Position::new(0, 17),
+            Position::new(0, 18),
+        );
+        a.apply_edit_blocking(Edit::delete(range)).unwrap();
+        let line0_after = &a.visible_highlights[0];
+        for (before, after) in line0_before.iter().zip(line0_after.iter()) {
+            if before.end <= 17 {
+                assert_eq!(after.start, before.start, "before-delete span unchanged");
+                assert_eq!(after.end, before.end);
+            } else if before.start >= 18 {
+                assert_eq!(
+                    after.start,
+                    before.start - 1,
+                    "after-delete span shifted left"
+                );
+                assert_eq!(after.end, before.end - 1);
+            }
+        }
     }
 
     #[test]

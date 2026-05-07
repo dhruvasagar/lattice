@@ -77,16 +77,13 @@ use lattice_grammar::args::Args;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_protocol::ids::CommandId;
-use lattice_grammar::{ModalState, SearchDirection, Target, VisualKind};
+use lattice_grammar::Target;
 
 use crate::actions::ActionIds;
-use crate::app::{Action, FindKind, ScrollPos, ViewportPos};
-use crate::pane::PaneDirection;
-use lattice_grammar::register::Register;
+use crate::app::{Action, FindKind};
 use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
-use crate::keymap_replace::KeymapHandleLegacyExt;
 use crate::keymap_trie::{
     BoundCommand, ChordPattern, KeymapLayer, LookupResult,
 };
@@ -1550,88 +1547,17 @@ fn action_from_bound_with_capture(
     bound: &Arc<BoundCommand>,
     captured: &[char],
 ) -> Action {
-    if let Some(legacy) = bound.legacy_action.as_ref() {
-        let action = legacy.clone();
-        if captured.is_empty() {
-            return action;
-        }
-        return substitute_normal_capture(action, captured[0]);
-    }
-    // Modern path (slice 8.i): typed `CommandInvocation`. Fold any
-    // captured wildcard char into `Args::Char(c)` so the bound
-    // `ActionSpec`'s apply closure can see it. Validation lives
-    // in the spec (e.g. `m<X>` requires `[a-zA-Z0-9]`); invalid
-    // chars dispatch to `Effect::None`, which is a benign no-op
-    // because `App::apply` clears the pending state on every
-    // non-`SetPending(_)` action.
+    // Fold any captured wildcard char into `Args::Char(c)` so the
+    // bound `ActionSpec`'s apply closure can see it. Validation
+    // lives in the spec (e.g. `m<X>` requires `[a-zA-Z0-9]`);
+    // invalid chars dispatch to `Effect::None`, which is a benign
+    // no-op because `App::apply` clears the partial-chord stack on
+    // every non-`AbsorbPartialChord(_)` action.
     let mut inv = bound.command.clone();
     if let Some(&c) = captured.first() {
         inv = substitute_invocation_char_arg(inv, c);
     }
     Action::Invoke(inv)
-}
-
-/// Substitute the captured wildcard char into a Normal-mode
-/// action. Returns `Action::None` when the
-/// captured char is invalid for the action shape (e.g. a
-/// non-alphanumeric mark name) -- mirrors the legacy
-/// `_ => SetPending(None)` catchall in `resolve_after_set_mark`,
-/// `resolve_after_register`, `resolve_after_macro_*`, etc.
-fn substitute_normal_capture(action: Action, c: char) -> Action {
-    match action {
-        Action::SetMark(_) => {
-            if c.is_ascii_alphanumeric() {
-                Action::SetMark(c)
-            } else {
-                Action::None
-            }
-        }
-        Action::JumpToMarkLine(_) => {
-            if c.is_ascii_alphanumeric() {
-                Action::JumpToMarkLine(c)
-            } else {
-                Action::None
-            }
-        }
-        Action::JumpToMarkExact(_) => {
-            if c.is_ascii_alphanumeric() {
-                Action::JumpToMarkExact(c)
-            } else {
-                Action::None
-            }
-        }
-        Action::SelectRegister(_) => match register_for_char(c) {
-            Some(reg) => Action::SelectRegister(reg),
-            None => Action::None,
-        },
-        Action::StartMacroRecord(_) => {
-            if c.is_ascii_alphanumeric() {
-                Action::StartMacroRecord(c)
-            } else {
-                Action::None
-            }
-        }
-        Action::PlayMacro(_) => {
-            // `@@` -> repeat last; otherwise alphanumeric register.
-            if c == '@' {
-                Action::PlayLastMacro
-            } else if c.is_ascii_alphanumeric() {
-                Action::PlayMacro(c)
-            } else {
-                Action::None
-            }
-        }
-        Action::Invoke(inv) => {
-            // Find-char and operator-targeted find-char land here.
-            // The bound invocation has `Args::None` (or
-            // `Target::Motion(_, Args::None)` for the operator
-            // form); fold the captured char in as `Args::Char(c)`.
-            Action::Invoke(substitute_invocation_char_arg(inv, c))
-        }
-        // No substitution: pass through. (Some wildcard paths
-        // bind actions that don't need the captured char.)
-        other => other,
-    }
 }
 
 fn substitute_invocation_char_arg(
@@ -1653,21 +1579,6 @@ fn substitute_invocation_char_arg(
         inv = inv.with_args(Args::Char(c));
     }
     inv
-}
-
-/// Map a user-typed char to a [`Register`] variant, mirroring
-/// the legacy `resolve_after_register`. Returns `None` for
-/// unrecognised chars so `substitute_normal_capture` can drop
-/// the pending state.
-fn register_for_char(c: char) -> Option<Register> {
-    match c {
-        'a'..='z' | 'A'..='Z' => Some(Register::Named(c)),
-        '0'..='9' => Some(Register::Numbered((c as u8) - b'0')),
-        '"' => Some(Register::Unnamed),
-        '_' => Some(Register::BlackHole),
-        '+' | '*' => Some(Register::System),
-        _ => None,
-    }
 }
 
 fn lit_char(c: char) -> ChordPattern {

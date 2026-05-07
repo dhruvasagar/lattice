@@ -62,7 +62,6 @@ use crate::app::Action;
 use crate::chord::{KeyChord, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
-use crate::keymap_replace::KeymapHandleLegacyExt;
 use crate::keymap_trie::{
     BoundCommand, ChordPattern, KeymapLayer, LookupResult,
 };
@@ -198,11 +197,10 @@ fn source() -> SourceLocation {
 ///    documents the rationale (slice 8.d): legacy matched on
 ///    `event.code` alone after the CONTROL guard, so
 ///    non-CONTROL modifiers must be transparent.
-/// 4. `Bound` -> the bound action. For `from_invocation`
-///    bindings (motions, operators), return
-///    `Action::Invoke(command.clone())`. For `legacy_action`
-///    bindings (the three `ExitVisual` exits), return the
-///    cloned legacy action.
+/// 4. `Bound` -> `Action::Invoke(command.clone())`. The
+///    dispatcher's `CommandKind::Action` branch routes the
+///    invocation to the bound `ActionSpec`, which produces the
+///    matching `Effect::AppAction(...)`.
 /// 5. `Unbound` / `Partial` -> `Action::None`. Visual mode has
 ///    no multi-key chords today; `Partial` is reserved for a
 ///    user-config / plugin layer that registers one.
@@ -233,10 +231,7 @@ pub fn dispatch_visual(
 }
 
 fn action_from_bound(bound: &Arc<BoundCommand>) -> Action {
-    match bound.legacy_action.as_ref() {
-        Some(action) => action.clone(),
-        None => Action::Invoke(bound.command.clone()),
-    }
+    Action::Invoke(bound.command.clone())
 }
 
 #[cfg(test)]
@@ -245,7 +240,6 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyEventKind, KeyEventState};
     use lattice_grammar::{CommandRegistry, builtins::populate};
-    use lattice_protocol::ids::CommandId;
 
     fn ev(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent {
@@ -267,79 +261,6 @@ mod tests {
         let h = KeymapHandle::new();
         register_visual_bindings(&h, b, a);
         h
-    }
-
-    /// Reference implementation -- the exact match arms today's
-    /// `input::translate_visual` runs. Kept private to the drift
-    /// test; once `translate_visual` switches to call
-    /// `dispatch_visual`, this stays as the per-binding regression
-    /// net for slice 8.e. Updated as variants migrate from the
-    /// legacy `Action` bridge to typed `CommandInvocation` (slice
-    /// 8.i) so the comparator's `Invoke` arm picks up equality.
-    fn legacy_translate_visual(
-        event: KeyEvent,
-        kind: VisualKind,
-        builtins: &Builtins,
-        actions: &ActionIds,
-    ) -> Action {
-        if event.modifiers.contains(KeyModifiers::CONTROL) {
-            return Action::None;
-        }
-        if matches!(kind, VisualKind::Blockwise) {
-            match event.code {
-                KeyCode::Char('I') => return Action::EnterBlockVisualInsert,
-                KeyCode::Char('A') => return Action::EnterBlockVisualAppend,
-                _ => {}
-            }
-        }
-        match event.code {
-            KeyCode::Esc => invoke(actions.exit_visual),
-            KeyCode::Char('v') => invoke(actions.exit_visual),
-            KeyCode::Char('V') => invoke(actions.exit_visual),
-            KeyCode::Char('h') | KeyCode::Left => invoke(builtins.char_left.0),
-            KeyCode::Char('j') | KeyCode::Down => invoke(builtins.line_down.0),
-            KeyCode::Char('k') | KeyCode::Up => invoke(builtins.line_up.0),
-            KeyCode::Char('l') | KeyCode::Right => invoke(builtins.char_right.0),
-            KeyCode::Char('0') | KeyCode::Home => invoke(builtins.line_start.0),
-            KeyCode::Char('$') | KeyCode::End => invoke(builtins.line_end.0),
-            KeyCode::Char('^') => invoke(builtins.first_non_blank.0),
-            KeyCode::Char('w') => invoke(builtins.word_forward.0),
-            KeyCode::Char('b') => invoke(builtins.word_backward.0),
-            KeyCode::Char('e') => invoke(builtins.word_end.0),
-            KeyCode::Char('W') => invoke(builtins.big_word_forward.0),
-            KeyCode::Char('B') => invoke(builtins.big_word_backward.0),
-            KeyCode::Char('E') => invoke(builtins.big_word_end.0),
-            KeyCode::Char('}') => invoke(builtins.paragraph_forward.0),
-            KeyCode::Char('{') => invoke(builtins.paragraph_backward.0),
-            KeyCode::Char(')') => invoke(builtins.sentence_forward.0),
-            KeyCode::Char('(') => invoke(builtins.sentence_backward.0),
-            KeyCode::Char('G') => invoke(builtins.goto_last_line.0),
-            KeyCode::Char('d') | KeyCode::Char('x') => Action::Invoke(
-                CommandInvocation::of(builtins.delete.0)
-                    .with_range(lattice_grammar::Range::Selection),
-            ),
-            KeyCode::Char('c') | KeyCode::Char('s') => Action::Invoke(
-                CommandInvocation::of(builtins.change.0)
-                    .with_range(lattice_grammar::Range::Selection),
-            ),
-            KeyCode::Char('y') => Action::Invoke(
-                CommandInvocation::of(builtins.yank.0)
-                    .with_range(lattice_grammar::Range::Selection),
-            ),
-            KeyCode::Char('>') => Action::Invoke(
-                CommandInvocation::of(builtins.indent_right.0)
-                    .with_range(lattice_grammar::Range::Selection),
-            ),
-            KeyCode::Char('<') => Action::Invoke(
-                CommandInvocation::of(builtins.indent_left.0)
-                    .with_range(lattice_grammar::Range::Selection),
-            ),
-            _ => Action::None,
-        }
-    }
-
-    fn invoke(id: CommandId) -> Action {
-        Action::Invoke(CommandInvocation::of(id))
     }
 
     #[test]
@@ -546,86 +467,4 @@ mod tests {
         }
     }
 
-    /// Exhaustive drift test: registry-driven dispatch matches
-    /// the legacy `translate_visual` for every key event Visual
-    /// mode cares about, across the cross-product of {key} ×
-    /// {modifier} × {VisualKind}.
-    ///
-    /// Per the architecture doc §9 / slice 8.e: this test is
-    /// the migration's safety net while both paths exist; it
-    /// stays after the switchover to detect any future refactor
-    /// that drifts `dispatch_visual` from the legacy semantics.
-    #[test]
-    fn registry_dispatch_matches_legacy_translate() {
-        let (_, b, a) = fixture();
-        let h = populated_handle(&b, &a);
-
-        let codes: Vec<KeyCode> = vec![
-            KeyCode::Esc,
-            KeyCode::Left,
-            KeyCode::Right,
-            KeyCode::Up,
-            KeyCode::Down,
-            KeyCode::Home,
-            KeyCode::End,
-            KeyCode::Tab,
-            KeyCode::Enter,
-            KeyCode::Backspace,
-            KeyCode::F(1),
-        ];
-        let chars: Vec<char> = "hjklwbeWBEvVIA0$^{}()<>dxcsy GqzN".chars().collect();
-        let mod_sets: Vec<KeyModifiers> = vec![
-            KeyModifiers::NONE,
-            KeyModifiers::SHIFT,
-            KeyModifiers::CONTROL,
-            KeyModifiers::ALT,
-        ];
-        let kinds = [
-            VisualKind::Charwise,
-            VisualKind::Linewise,
-            VisualKind::Blockwise,
-        ];
-
-        for &kind in &kinds {
-            for &code in &codes {
-                for &mods in &mod_sets {
-                    let event = ev(code, mods);
-                    let legacy = legacy_translate_visual(event, kind, &b, &a);
-                    let new = dispatch_visual(&h, &event, kind);
-                    assert!(
-                        actions_equivalent(&legacy, &new),
-                        "drift kind={kind:?} {event:?}: legacy={legacy:?} new={new:?}"
-                    );
-                }
-            }
-            for &c in &chars {
-                for &mods in &mod_sets {
-                    let event = ev(KeyCode::Char(c), mods);
-                    let legacy = legacy_translate_visual(event, kind, &b, &a);
-                    let new = dispatch_visual(&h, &event, kind);
-                    assert!(
-                        actions_equivalent(&legacy, &new),
-                        "drift kind={kind:?} {event:?}: legacy={legacy:?} new={new:?}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// Same shape comparator as `keymap_replace` -- `Action`
-    /// doesn't impl `PartialEq`. Compares the variants Visual
-    /// mode actually emits.
-    fn actions_equivalent(a: &Action, b: &Action) -> bool {
-        use Action::*;
-        match (a, b) {
-            (None, None) => true,
-            (ExitVisual, ExitVisual) => true,
-            (EnterBlockVisualInsert, EnterBlockVisualInsert) => true,
-            (EnterBlockVisualAppend, EnterBlockVisualAppend) => true,
-            (Invoke(a), Invoke(b)) => {
-                a.command == b.command && a.range == b.range && a.count == b.count
-            }
-            _ => false,
-        }
-    }
 }

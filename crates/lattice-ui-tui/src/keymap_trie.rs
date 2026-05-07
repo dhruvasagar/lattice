@@ -54,7 +54,6 @@ use std::sync::Arc;
 
 use lattice_grammar::{CommandInvocation, SourceLocation};
 
-use crate::app::Action;
 use crate::chord::{KeyChord, KeyKind, KeyMods};
 
 /// Where in the five-layer model (DESIGN.md §5.2.3) a binding
@@ -82,32 +81,20 @@ pub enum KeymapLayer {
 ///
 /// Carries enough provenance for `:describe-key` and enough
 /// information for the dispatcher to fire the binding:
-/// - `command` -- the typed `CommandInvocation`. Eventually
-///   the only dispatch path; today (slices 8.d-h) some
-///   bindings have a `LEGACY_ACTION_ID` placeholder here
-///   and route through `legacy_action` instead.
-/// - `legacy_action` -- migration-phase escape hatch. When
-///   `Some`, dispatch goes through the App's `Action` enum
-///   directly. The translate-side wildcard cases (e.g.
-///   Replace-mode "any printable char -> overwrite") leave
-///   this `None` and rely on `LookupResult::captured` so the
-///   bridge can construct the right `Action::OverwriteChar(c)`
-///   from the matched char. Slice 8.i drops this field once
-///   every binding has a real `CommandInvocation`.
+/// - `command` -- the typed `CommandInvocation` to dispatch.
 /// - `source` -- where the binding was registered (catalog
 ///   entry, user `init.rs:42`, plugin `foo.wit:7`).
 /// - `layer` -- priority tier for tie-break / shadowing.
 #[derive(Debug, Clone)]
 pub struct BoundCommand {
     pub command: CommandInvocation,
-    pub legacy_action: Option<Action>,
     pub source: SourceLocation,
     pub layer: KeymapLayer,
 }
 
 impl BoundCommand {
     /// Construct a binding that dispatches via the
-    /// `CommandInvocation` directly (no legacy bridge).
+    /// `CommandInvocation`.
     pub fn from_invocation(
         command: CommandInvocation,
         source: SourceLocation,
@@ -115,36 +102,10 @@ impl BoundCommand {
     ) -> Self {
         Self {
             command,
-            legacy_action: None,
             source,
             layer,
         }
     }
-
-    /// Migration-phase constructor: bind to a legacy `Action`
-    /// directly. The `command` field is set to a placeholder
-    /// invocation; consumers that see `legacy_action.is_some()`
-    /// must dispatch via the action and ignore `command`.
-    pub fn from_legacy_action(
-        action: Action,
-        source: SourceLocation,
-        layer: KeymapLayer,
-    ) -> Self {
-        Self {
-            command: CommandInvocation::of(legacy_action_command_id()),
-            legacy_action: Some(action),
-            source,
-            layer,
-        }
-    }
-}
-
-/// Placeholder `CommandId` used by `BoundCommand::from_legacy_action`
-/// during the migration. Has no real entry in the
-/// `CommandRegistry`; consumers branch on `legacy_action.is_some()`
-/// rather than dispatching this.
-pub fn legacy_action_command_id() -> lattice_protocol::ids::CommandId {
-    lattice_protocol::ids::CommandId::new(0)
 }
 
 /// One element of a registration path.

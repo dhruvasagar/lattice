@@ -142,6 +142,26 @@ pub struct ActionIds {
     pub navigate_pane_right: CommandId,
     pub next_pane: CommandId,
     pub prev_pane: CommandId,
+    /// Slice 8.i.4.e: completion-popup overlay actions
+    /// (registered into a minor-mode layer pushed when the
+    /// popup opens; popped on close). Each ID is the typed
+    /// `CommandInvocation` peer of the legacy
+    /// `Action::Completion*` variants.
+    pub completion_next: CommandId,
+    pub completion_prev: CommandId,
+    pub completion_accept: CommandId,
+    pub completion_cancel: CommandId,
+    pub completion_cancel_and_exit_insert: CommandId,
+    pub completion_toggle_docs: CommandId,
+    pub completion_docs_scroll_down: CommandId,
+    pub completion_docs_scroll_up: CommandId,
+    pub completion_accept_then_insert: CommandId,
+    /// Slice 8.i.4.e: active-snippet overlay actions
+    /// (registered into a minor-mode layer pushed when a
+    /// snippet activates; popped on exit).
+    pub snippet_next_placeholder: CommandId,
+    pub snippet_prev_placeholder: CommandId,
+    pub snippet_leave: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -736,6 +756,88 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Vim's `<C-w>W`: cycle focus to the previous pane.",
             AppEffect::PrevPane,
         ),
+        completion_next: register_simple(
+            registry,
+            "action:completion-next",
+            "Completion-popup `<C-n>` / `<Down>`: focus the next entry.",
+            AppEffect::CompletionNext,
+        ),
+        completion_prev: register_simple(
+            registry,
+            "action:completion-prev",
+            "Completion-popup `<C-p>` / `<Up>`: focus the previous entry.",
+            AppEffect::CompletionPrev,
+        ),
+        completion_accept: register_simple(
+            registry,
+            "action:completion-accept",
+            "Completion-popup `<C-y>` / `<Tab>` / `<CR>`: accept the focused candidate.",
+            AppEffect::CompletionAccept,
+        ),
+        completion_cancel: register_simple(
+            registry,
+            "action:completion-cancel",
+            "Completion-popup `<C-e>`: cancel the popup, stay in Insert.",
+            AppEffect::CompletionCancel,
+        ),
+        completion_cancel_and_exit_insert: register_simple(
+            registry,
+            "action:completion-cancel-and-exit-insert",
+            "Completion-popup `<Esc>`: cancel the popup and exit Insert.",
+            AppEffect::CompletionCancelAndExitInsert,
+        ),
+        completion_toggle_docs: register_simple(
+            registry,
+            "action:completion-toggle-docs",
+            "Completion-popup `<C-d>`: toggle the doc popup.",
+            AppEffect::CompletionToggleDocs,
+        ),
+        completion_docs_scroll_down: register_simple(
+            registry,
+            "action:completion-docs-scroll-down",
+            "Completion-popup `<C-f>`: scroll the doc popup down.",
+            AppEffect::CompletionDocsScrollDown,
+        ),
+        completion_docs_scroll_up: register_simple(
+            registry,
+            "action:completion-docs-scroll-up",
+            "Completion-popup `<C-b>`: scroll the doc popup up.",
+            AppEffect::CompletionDocsScrollUp,
+        ),
+        completion_accept_then_insert: register_action(
+            registry,
+            "action:completion-accept-then-insert",
+            "Completion-popup bare-printable wildcard: accept then insert the captured char (control chars filtered).",
+            captured_char_action(|c| {
+                // Mirror the legacy popup's `if !c.is_control()`
+                // filter so synthetic control chars don't leak
+                // into the inserted text via the trie's
+                // CharLiteral wildcard.
+                if c.is_control() {
+                    None
+                } else {
+                    Some(AppEffect::CompletionAcceptThenInsert(c))
+                }
+            }),
+        ),
+        snippet_next_placeholder: register_simple(
+            registry,
+            "action:snippet-next-placeholder",
+            "Active-snippet `<Tab>`: jump to the next placeholder.",
+            AppEffect::SnippetNextPlaceholder,
+        ),
+        snippet_prev_placeholder: register_simple(
+            registry,
+            "action:snippet-prev-placeholder",
+            "Active-snippet `<S-Tab>`: jump to the previous placeholder.",
+            AppEffect::SnippetPrevPlaceholder,
+        ),
+        snippet_leave: register_simple(
+            registry,
+            "action:snippet-leave",
+            "Active-snippet `<Esc>`: exit the snippet.",
+            AppEffect::SnippetLeave,
+        ),
     }
 }
 
@@ -936,6 +1038,18 @@ mod tests {
             (ids.navigate_pane_right, "action:navigate-pane-right"),
             (ids.next_pane, "action:next-pane"),
             (ids.prev_pane, "action:prev-pane"),
+            (ids.completion_next, "action:completion-next"),
+            (ids.completion_prev, "action:completion-prev"),
+            (ids.completion_accept, "action:completion-accept"),
+            (ids.completion_cancel, "action:completion-cancel"),
+            (ids.completion_cancel_and_exit_insert, "action:completion-cancel-and-exit-insert"),
+            (ids.completion_toggle_docs, "action:completion-toggle-docs"),
+            (ids.completion_docs_scroll_down, "action:completion-docs-scroll-down"),
+            (ids.completion_docs_scroll_up, "action:completion-docs-scroll-up"),
+            (ids.completion_accept_then_insert, "action:completion-accept-then-insert"),
+            (ids.snippet_next_placeholder, "action:snippet-next-placeholder"),
+            (ids.snippet_prev_placeholder, "action:snippet-prev-placeholder"),
+            (ids.snippet_leave, "action:snippet-leave"),
         ] {
             let spec = registry.lookup(id).unwrap_or_else(|| {
                 panic!("missing registry entry for `{expected_name}`")

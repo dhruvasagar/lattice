@@ -25,7 +25,6 @@ use lattice_grammar::builtins::{Builtins, populate};
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::effect::Effect;
 use lattice_grammar::register::Register;
-use lattice_grammar::registry::OperatorId;
 use lattice_protocol::Event;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
@@ -9701,7 +9700,7 @@ impl App {
             let id = self.keymap.push_layer(
                 crate::keymap_registry::PushLayerKind::MinorMode,
                 "active-snippet",
-                crate::keymap_insert::active_snippet_layer_bindings(),
+                crate::keymap_insert::active_snippet_layer_bindings(&self.action_ids),
             );
             self.snippet_layer = Some(id);
         }
@@ -9709,7 +9708,7 @@ impl App {
             let id = self.keymap.push_layer(
                 crate::keymap_registry::PushLayerKind::MinorMode,
                 "completion-popup",
-                crate::keymap_insert::completion_popup_layer_bindings(),
+                crate::keymap_insert::completion_popup_layer_bindings(&self.action_ids),
             );
             self.completion_popup_layer = Some(id);
         }
@@ -11837,6 +11836,22 @@ impl App {
             AppEffect::NavigatePane(dir) => self.apply(Action::NavigatePane(dir)),
             AppEffect::NextPane => self.apply(Action::NextPane),
             AppEffect::PrevPane => self.apply(Action::PrevPane),
+            AppEffect::CompletionNext => self.apply(Action::CompletionNext),
+            AppEffect::CompletionPrev => self.apply(Action::CompletionPrev),
+            AppEffect::CompletionAccept => self.apply(Action::CompletionAccept),
+            AppEffect::CompletionCancel => self.apply(Action::CompletionCancel),
+            AppEffect::CompletionCancelAndExitInsert => {
+                self.apply(Action::CompletionCancelAndExitInsert)
+            }
+            AppEffect::CompletionToggleDocs => self.apply(Action::CompletionToggleDocs),
+            AppEffect::CompletionDocsScrollDown => self.apply(Action::CompletionDocsScrollDown),
+            AppEffect::CompletionDocsScrollUp => self.apply(Action::CompletionDocsScrollUp),
+            AppEffect::CompletionAcceptThenInsert(c) => {
+                self.apply(Action::CompletionAcceptThenInsert(c))
+            }
+            AppEffect::SnippetNextPlaceholder => self.apply(Action::SnippetNextPlaceholder),
+            AppEffect::SnippetPrevPlaceholder => self.apply(Action::SnippetPrevPlaceholder),
+            AppEffect::SnippetLeave => self.apply(Action::SnippetLeave),
         }
     }
 

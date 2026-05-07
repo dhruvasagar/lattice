@@ -47,10 +47,8 @@
 //! the migration; drop it in slice 8.i when the merged
 //! catalog covers the whole keystroke surface.
 
-use std::sync::Arc;
-
 use crossterm::event::{KeyEvent, KeyModifiers};
-use lattice_grammar::{CommandInvocation, ModalState, SourceLocation};
+use lattice_grammar::{CommandInvocation, SourceLocation};
 
 use crate::actions::ActionIds;
 use crate::app::Action;
@@ -58,7 +56,7 @@ use crate::chord::{KeyChord, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
 use crate::keymap_trie::{
-    BoundCommand, ChordPattern, KeymapLayer, LookupResult,
+    ChordPattern, KeymapLayer, LookupResult,
 };
 
 /// Register the four Replace-mode bindings into the supplied
@@ -137,42 +135,11 @@ const fn wildcard_line() -> u32 {
 
 /// Convenience extension on [`KeymapHandle`] used by the
 /// per-mode registration helpers in this slice family.
-/// Wraps `bind` to construct a `BoundCommand` carrying a
-/// legacy `Action` directly. Slice 8.i drops this once
-/// every binding has a real `CommandInvocation`.
-pub trait KeymapHandleLegacyExt {
-    fn bind_legacy(
-        &self,
-        layer: KeymapLayer,
-        mode: BindingMode,
-        path: &[ChordPattern],
-        action: Action,
-        source: SourceLocation,
-    );
-}
-
-impl KeymapHandleLegacyExt for KeymapHandle {
-    fn bind_legacy(
-        &self,
-        layer: KeymapLayer,
-        mode: BindingMode,
-        path: &[ChordPattern],
-        action: Action,
-        source: SourceLocation,
-    ) {
-        let bound = Arc::new(BoundCommand::from_legacy_action(
-            action, source, layer,
-        ));
-        // Use the registry's internal `bind_arc` -- but the
-        // public API wants a CommandInvocation, so route
-        // through a small adapter on the handle. For now we
-        // duplicate the work: fetch the inner registry's
-        // mutex and insert directly. Slice 8.h will replace
-        // this with a clean public API once the
-        // CommandInvocation collapse is in flight.
-        self.bind_bound(layer, mode, path, bound);
-    }
-}
+// Slice 8.i.4.e: the `KeymapHandleLegacyExt` trait + `bind_legacy`
+// method retired. Every per-mode keymap module now binds typed
+// `CommandInvocation`s through `KeymapHandle::bind`; the
+// `BoundCommand::legacy_action` field is gone, and so is the
+// adapter that staged an `Action` payload through it.
 
 /// Dispatch a key event through the keymap registry.
 ///
@@ -207,36 +174,19 @@ pub fn dispatch_replace(handle: &KeymapHandle, event: &KeyEvent) -> Action {
     };
     match handle.lookup(BindingMode::Replace, &[chord]) {
         LookupResult::Bound { command, captured } => {
-            // Bridge: pull the legacy `Action` out of
-            // `BoundCommand`. For wildcard bindings, the
-            // captured char overrides the `'\0'` placeholder
-            // baked at registration time. For migrated bindings
-            // (slice 8.i; `legacy_action.is_none()`) surface an
-            // `Action::Invoke(...)` carrying the bound
-            // `CommandInvocation` -- the App's `run_invocation`
-            // routes it through the dispatcher's
-            // `CommandKind::Action` branch, which produces the
-            // matching `Effect::AppAction(...)`. If the wildcard
-            // captured a char (slice 8.i.3), fold it into the
-            // dispatched invocation's `Args::Char(c)` so the
-            // bound `ActionSpec`'s apply closure can see it.
-            match command.legacy_action.as_ref() {
-                Some(Action::OverwriteChar(_)) => {
-                    if let Some(&c) = captured.first() {
-                        Action::OverwriteChar(c)
-                    } else {
-                        Action::None
-                    }
-                }
-                Some(action) => action.clone(),
-                None => {
-                    let mut inv = command.command.clone();
-                    if let Some(&c) = captured.first() {
-                        inv = inv.with_args(lattice_grammar::args::Args::Char(c));
-                    }
-                    Action::Invoke(inv)
-                }
+            // Surface an `Action::Invoke(...)` carrying the bound
+            // `CommandInvocation`; `App::run_invocation` routes it
+            // through the dispatcher's `CommandKind::Action`
+            // branch, which produces the matching
+            // `Effect::AppAction(...)`. If the wildcard captured
+            // a char (slice 8.i.3), fold it into the dispatched
+            // invocation's `Args::Char(c)` so the bound
+            // `ActionSpec`'s apply closure can see it.
+            let mut inv = command.command.clone();
+            if let Some(&c) = captured.first() {
+                inv = inv.with_args(lattice_grammar::args::Args::Char(c));
             }
+            Action::Invoke(inv)
         }
         LookupResult::Partial | LookupResult::Unbound => Action::None,
     }
@@ -254,29 +204,6 @@ mod tests {
             modifiers: mods,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
-        }
-    }
-
-    /// Reference implementation -- the exact match arms today's
-    /// `input.rs::translate_replace` runs. Kept private to the
-    /// drift test; once `translate_replace` switches to call
-    /// `dispatch_replace`, this stays as the per-binding
-    /// regression net for slice 8.d. Updated as variants migrate
-    /// from the legacy `Action` bridge to typed
-    /// `CommandInvocation` (slice 8.i).
-    fn legacy_translate_replace(event: KeyEvent, actions: &ActionIds) -> Action {
-        if event.modifiers.contains(KeyModifiers::CONTROL) {
-            return Action::None;
-        }
-        match event.code {
-            KeyCode::Esc => Action::Invoke(CommandInvocation::of(actions.enter_mode_normal)),
-            KeyCode::Backspace => Action::Invoke(CommandInvocation::of(actions.replace_undo_last)),
-            KeyCode::Enter => Action::Invoke(CommandInvocation::of(actions.insert_newline)),
-            KeyCode::Char(c) => Action::Invoke(
-                CommandInvocation::of(actions.overwrite_char)
-                    .with_args(lattice_grammar::args::Args::Char(c)),
-            ),
-            _ => Action::None,
         }
     }
 
@@ -369,91 +296,6 @@ mod tests {
                 matches!(r, Action::None),
                 "code {code:?}: expected None, got {r:?}"
             );
-        }
-    }
-
-    /// Exhaustive drift test: the registry-driven dispatch
-    /// matches the legacy `translate_replace` for every key
-    /// event Replace mode cares about.
-    ///
-    /// Per the architecture doc §9 / Slice 8.d: this test is
-    /// the migration's safety net. Stays in place during the
-    /// migration; trips if either path drifts.
-    #[test]
-    fn registry_dispatch_matches_legacy_translate() {
-        let h = populated_handle();
-
-        // Build the cross product of {key code} × {modifier
-        // set} that Replace mode plausibly observes.
-        let codes: Vec<KeyCode> = vec![
-            KeyCode::Esc,
-            KeyCode::Backspace,
-            KeyCode::Enter,
-            KeyCode::Tab,
-            KeyCode::Up,
-            KeyCode::Down,
-            KeyCode::Left,
-            KeyCode::Right,
-            KeyCode::Home,
-            KeyCode::End,
-            KeyCode::F(1),
-        ];
-        let chars: Vec<char> = "abcXYZ012$ ".chars().collect();
-        let mod_sets: Vec<KeyModifiers> = vec![
-            KeyModifiers::NONE,
-            KeyModifiers::SHIFT,
-            KeyModifiers::CONTROL,
-            KeyModifiers::ALT,
-        ];
-
-        for &code in &codes {
-            for &mods in &mod_sets {
-                let event = ev(code, mods);
-                let legacy = legacy_translate_replace(event, shared_actions());
-                let new = dispatch_replace(&h, &event);
-                assert!(
-                    actions_equivalent(&legacy, &new),
-                    "drift for {event:?}: legacy={legacy:?}, new={new:?}"
-                );
-            }
-        }
-        for &c in &chars {
-            for &mods in &mod_sets {
-                let event = ev(KeyCode::Char(c), mods);
-                let legacy = legacy_translate_replace(event, shared_actions());
-                let new = dispatch_replace(&h, &event);
-                assert!(
-                    actions_equivalent(&legacy, &new),
-                    "drift for {event:?}: legacy={legacy:?}, new={new:?}"
-                );
-            }
-        }
-    }
-
-    /// `Action` doesn't impl `PartialEq` (some variants carry
-    /// non-Eq payloads), so the drift test compares by
-    /// shape + payload via this manual matcher.
-    fn actions_equivalent(a: &Action, b: &Action) -> bool {
-        use Action::*;
-        match (a, b) {
-            (None, None) => true,
-            (EnterMode(am), EnterMode(bm)) => am == bm,
-            (ReplaceUndoLast, ReplaceUndoLast) => true,
-            (Insert(s1), Insert(s2)) => s1 == s2,
-            (OverwriteChar(c1), OverwriteChar(c2)) => c1 == c2,
-            // Slice 8.i: migrated bindings emit `Invoke(...)` from
-            // both sides (legacy reference body + dispatch_replace).
-            // The OverwriteChar wildcard rides as
-            // `Invoke(overwrite_char, args=Char(c))` -- compare
-            // `args` so the drift test catches char-substitution
-            // regressions.
-            (Invoke(a), Invoke(b)) => {
-                a.command == b.command
-                    && a.range == b.range
-                    && a.count == b.count
-                    && a.args == b.args
-            }
-            _ => false,
         }
     }
 

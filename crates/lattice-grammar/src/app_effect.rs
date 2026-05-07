@@ -417,6 +417,54 @@ pub enum AppEffect {
     /// previous pane. Promoted from `Action::PrevPane` in
     /// slice 8.i.4.d.
     PrevPane,
+    /// Completion-popup overlay: focus the next entry. Promoted
+    /// from `Action::CompletionNext` in slice 8.i.4.e.
+    CompletionNext,
+    /// Completion-popup overlay: focus the previous entry.
+    /// Promoted from `Action::CompletionPrev` in slice 8.i.4.e.
+    CompletionPrev,
+    /// Completion-popup overlay: accept the focused candidate.
+    /// Promoted from `Action::CompletionAccept` in slice
+    /// 8.i.4.e.
+    CompletionAccept,
+    /// Completion-popup overlay: cancel the popup, stay in
+    /// Insert. Promoted from `Action::CompletionCancel` in
+    /// slice 8.i.4.e.
+    CompletionCancel,
+    /// Completion-popup overlay: cancel the popup and exit
+    /// Insert. Promoted from
+    /// `Action::CompletionCancelAndExitInsert` in slice 8.i.4.e.
+    CompletionCancelAndExitInsert,
+    /// Completion-popup overlay: toggle the doc-popup
+    /// (`<C-d>`). Promoted from `Action::CompletionToggleDocs`
+    /// in slice 8.i.4.e.
+    CompletionToggleDocs,
+    /// Completion-popup overlay: scroll the doc-popup down
+    /// (`<C-f>`). Promoted from
+    /// `Action::CompletionDocsScrollDown` in slice 8.i.4.e.
+    CompletionDocsScrollDown,
+    /// Completion-popup overlay: scroll the doc-popup up
+    /// (`<C-b>`). Promoted from
+    /// `Action::CompletionDocsScrollUp` in slice 8.i.4.e.
+    CompletionDocsScrollUp,
+    /// Completion-popup overlay: bare-printable wildcard.
+    /// Accept the focused candidate, then insert the captured
+    /// char (so the user can finish typing through a
+    /// confirmed prefix). Promoted from
+    /// `Action::CompletionAcceptThenInsert(c)` in slice
+    /// 8.i.4.e.
+    CompletionAcceptThenInsert(char),
+    /// Active-snippet overlay: jump to the next placeholder
+    /// (`<Tab>`). Promoted from
+    /// `Action::SnippetNextPlaceholder` in slice 8.i.4.e.
+    SnippetNextPlaceholder,
+    /// Active-snippet overlay: jump to the previous placeholder
+    /// (`<S-Tab>`). Promoted from
+    /// `Action::SnippetPrevPlaceholder` in slice 8.i.4.e.
+    SnippetPrevPlaceholder,
+    /// Active-snippet overlay: exit the snippet (`<Esc>`).
+    /// Promoted from `Action::SnippetLeave` in slice 8.i.4.e.
+    SnippetLeave,
 }
 
 #[cfg(test)]

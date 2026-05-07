@@ -11,7 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use lattice_grammar::ModalState;
 use lattice_grammar::builtins::Builtins;
 
-use crate::app::{Action, FindKind};
+use crate::app::Action;
 use crate::buffers::BufferKind;
 use crate::keymap_insert::dispatch_insert;
 use crate::keymap_registry::KeymapHandle;
@@ -410,14 +410,11 @@ fn compute_normal_action(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-    use crate::app::{ScrollPos, ViewportPos};
-    use crate::pane::PaneDirection;
     use lattice_grammar::CommandRegistry;
     use lattice_grammar::SearchDirection;
     use lattice_grammar::Target;
     use lattice_grammar::VisualKind;
     use lattice_grammar::builtins::populate;
-    use lattice_grammar::register::Register;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -487,7 +484,7 @@ mod tests {
             h.push_layer(
                 crate::keymap_registry::PushLayerKind::MinorMode,
                 "completion-popup",
-                crate::keymap_insert::completion_popup_layer_bindings(),
+                crate::keymap_insert::completion_popup_layer_bindings(shared_actions()),
             );
             h
         })
@@ -502,7 +499,7 @@ mod tests {
             h.push_layer(
                 crate::keymap_registry::PushLayerKind::MinorMode,
                 "active-snippet",
-                crate::keymap_insert::active_snippet_layer_bindings(),
+                crate::keymap_insert::active_snippet_layer_bindings(shared_actions()),
             );
             h
         })
@@ -519,12 +516,12 @@ mod tests {
             h.push_layer(
                 crate::keymap_registry::PushLayerKind::MinorMode,
                 "active-snippet",
-                crate::keymap_insert::active_snippet_layer_bindings(),
+                crate::keymap_insert::active_snippet_layer_bindings(shared_actions()),
             );
             h.push_layer(
                 crate::keymap_registry::PushLayerKind::MinorMode,
                 "completion-popup",
-                crate::keymap_insert::completion_popup_layer_bindings(),
+                crate::keymap_insert::completion_popup_layer_bindings(shared_actions()),
             );
             h
         })
@@ -2308,74 +2305,94 @@ mod tests {
     #[test]
     fn popup_open_ctrl_n_navigates_next() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('n'))),
-            Action::CompletionNext
-        ));
+        let a = shared_actions();
+        let r = translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('n')));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_next),
+            other => panic!("expected Invoke(completion_next), got {other:?}"),
+        }
     }
 
     #[test]
     fn popup_open_ctrl_p_navigates_prev() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('p'))),
-            Action::CompletionPrev
-        ));
+        let a = shared_actions();
+        let r = translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('p')));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_prev),
+            other => panic!("expected Invoke(completion_prev), got {other:?}"),
+        }
     }
 
     #[test]
     fn popup_open_tab_accepts() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_insert_completion(&b), key(KeyCode::Tab)),
-            Action::CompletionAccept
-        ));
+        let a = shared_actions();
+        let r = translate(ctx_insert_completion(&b), key(KeyCode::Tab));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_accept),
+            other => panic!("expected Invoke(completion_accept), got {other:?}"),
+        }
     }
 
     #[test]
     fn popup_open_ctrl_y_accepts() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('y'))),
-            Action::CompletionAccept
-        ));
+        let a = shared_actions();
+        let r = translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('y')));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_accept),
+            other => panic!("expected Invoke(completion_accept), got {other:?}"),
+        }
     }
 
     #[test]
     fn popup_open_enter_accepts() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_insert_completion(&b), key(KeyCode::Enter)),
-            Action::CompletionAccept
-        ));
+        let a = shared_actions();
+        let r = translate(ctx_insert_completion(&b), key(KeyCode::Enter));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_accept),
+            other => panic!("expected Invoke(completion_accept), got {other:?}"),
+        }
     }
 
     #[test]
     fn popup_open_ctrl_e_cancels_keeps_insert() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('e'))),
-            Action::CompletionCancel
-        ));
+        let a = shared_actions();
+        let r = translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('e')));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_cancel),
+            other => panic!("expected Invoke(completion_cancel), got {other:?}"),
+        }
     }
 
     #[test]
     fn popup_open_esc_cancels_and_exits_insert() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_insert_completion(&b), key(KeyCode::Esc)),
-            Action::CompletionCancelAndExitInsert
-        ));
+        let a = shared_actions();
+        let r = translate(ctx_insert_completion(&b), key(KeyCode::Esc));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.completion_cancel_and_exit_insert)
+            }
+            other => panic!("expected Invoke(completion_cancel_and_exit_insert), got {other:?}"),
+        }
     }
 
     #[test]
     fn popup_open_ctrl_d_toggles_docs_only_inside_minor_mode() {
         let (_, b) = fixture();
+        let a = shared_actions();
         // Inside the popup minor mode -- claim it.
-        assert!(matches!(
-            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('d'))),
-            Action::CompletionToggleDocs
-        ));
+        let r = translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('d')));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.completion_toggle_docs)
+            }
+            other => panic!("expected Invoke(completion_toggle_docs), got {other:?}"),
+        }
         // OUTSIDE the minor mode (Normal mode) -- the popup
         // layer doesn't fire; falls through to Normal-mode
         // half-page-down. This verifies the layer's
@@ -2384,34 +2401,49 @@ mod tests {
             ctx(ModalState::Normal, &b),
             ctrl(KeyCode::Char('d')),
         );
-        assert!(!matches!(half_down, Action::CompletionToggleDocs));
+        match half_down {
+            Action::Invoke(inv) => {
+                assert_ne!(inv.command, a.completion_toggle_docs);
+            }
+            _ => {}
+        }
     }
 
     #[test]
     fn popup_open_ctrl_f_pages_docs_down() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('f'))),
-            Action::CompletionDocsScrollDown
-        ));
+        let a = shared_actions();
+        let r = translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('f')));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.completion_docs_scroll_down)
+            }
+            other => panic!("expected Invoke(completion_docs_scroll_down), got {other:?}"),
+        }
     }
 
     #[test]
     fn popup_open_ctrl_b_pages_docs_up() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('b'))),
-            Action::CompletionDocsScrollUp
-        ));
+        let a = shared_actions();
+        let r = translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('b')));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.completion_docs_scroll_up)
+            }
+            other => panic!("expected Invoke(completion_docs_scroll_up), got {other:?}"),
+        }
     }
 
     #[test]
     fn popup_open_ctrl_space_re_triggers() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_insert_completion(&b), ctrl(KeyCode::Char(' '))),
-            Action::CompletionTrigger
-        ));
+        let a = shared_actions();
+        let r = translate(ctx_insert_completion(&b), ctrl(KeyCode::Char(' ')));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_trigger),
+            other => panic!("expected Invoke(completion_trigger), got {other:?}"),
+        }
     }
 
     // ---- Active-snippet minor mode (Phase 4.2.g.4) ----
@@ -2440,28 +2472,38 @@ mod tests {
     #[test]
     fn snippet_active_tab_jumps_to_next_placeholder() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_snippet_active(&b), key(KeyCode::Tab)),
-            Action::SnippetNextPlaceholder
-        ));
+        let a = shared_actions();
+        let r = translate(ctx_snippet_active(&b), key(KeyCode::Tab));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.snippet_next_placeholder)
+            }
+            other => panic!("expected Invoke(snippet_next_placeholder), got {other:?}"),
+        }
     }
 
     #[test]
     fn snippet_active_back_tab_jumps_to_prev_placeholder() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_snippet_active(&b), key(KeyCode::BackTab)),
-            Action::SnippetPrevPlaceholder
-        ));
+        let a = shared_actions();
+        let r = translate(ctx_snippet_active(&b), key(KeyCode::BackTab));
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.snippet_prev_placeholder)
+            }
+            other => panic!("expected Invoke(snippet_prev_placeholder), got {other:?}"),
+        }
     }
 
     #[test]
     fn snippet_active_esc_leaves_snippet() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_snippet_active(&b), key(KeyCode::Esc)),
-            Action::SnippetLeave
-        ));
+        let a = shared_actions();
+        let r = translate(ctx_snippet_active(&b), key(KeyCode::Esc));
+        match r {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.snippet_leave),
+            other => panic!("expected Invoke(snippet_leave), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2486,11 +2528,15 @@ mod tests {
         // second) ensures popup wins. The shared
         // `with_both_overlays` keymap mirrors that order.
         let (_, b) = fixture();
+        let a = shared_actions();
         let mut ctx = ctx_snippet_active(&b);
         ctx.insert_completion_open = true;
         ctx.keymap = shared_keymap_with_both_overlays();
         let action = translate(ctx, key(KeyCode::Tab));
-        assert!(matches!(action, Action::CompletionAccept));
+        match action {
+            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_accept),
+            other => panic!("expected Invoke(completion_accept), got {other:?}"),
+        }
     }
 
     #[test]
@@ -2500,11 +2546,18 @@ mod tests {
         // Normal-mode `<Tab>` (which is `<C-i>` -- jump-list
         // forward).
         let (_, b) = fixture();
+        let a = shared_actions();
         let mut ctx = ctx_snippet_active(&b);
         ctx.modal = ModalState::Normal;
         let action = translate(ctx, key(KeyCode::Tab));
-        // Normal-mode `<Tab>` is `<C-i>` -- jump history forward.
-        assert!(!matches!(action, Action::SnippetNextPlaceholder));
+        // Normal-mode `<Tab>` is `<C-i>` -- jump history forward,
+        // not the snippet placeholder action.
+        match action {
+            Action::Invoke(inv) => {
+                assert_ne!(inv.command, a.snippet_next_placeholder);
+            }
+            _ => {}
+        }
     }
 
     #[test]

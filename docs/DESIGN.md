@@ -496,6 +496,8 @@ registry.register_ex_command(ExCommandSpec {
 
 Every registration returns an id usable in keymaps, in `:` invocations, in scripts, and in plugin-to-plugin calls. **Tree-sitter-driven motions and text objects are post-v1, but the extension point is first-class today** -- a `tree-sitter-motions` plugin registers motions whose evaluators query the tree-sitter tree, with no host changes required.
 
+The keymap-side companion of this extension point -- how plugins and user config bind chords to the ids returned here, layer priority across builtin / major-mode / minor-mode / user / per-buffer, and the trie merge cost on overlay push / pop -- is documented in [`docs/keymap-architecture.md`](keymap-architecture.md) §5 (extensibility) and §6 (layered registry).
+
 **Macros, marks, registers, and dot-repeat** are mechanical because every change flows through `execute(invocation)`. The `last change` for `.` is the most recent recorded `CommandInvocation`. **Macros record `CommandInvocation` sequences -- not raw keystrokes.** Replay survives keymap changes, plays back faster (no parse pass), and is editable as data: opening the macro register in a buffer-backed view (`*macro:q*`) yields a one-invocation-per-line buffer the user can hand-edit and re-store.
 
 **Visual mode IS the active region.** When Visual is active, the current selection is automatically supplied as the `range` argument to any range-accepting command. Vim users see "operate on visual selection"; users coming from emacs see "operate on region." Both reduce to: the dispatcher receives `range = Some(Range::Selection)` when no explicit range is given and Visual is active. This is the `Range::Selection` variant added to the range type for exactly this purpose.
@@ -1787,6 +1789,8 @@ Built-in introspection commands:
 Each opens a buffer-backed help view (consistent with everything-is-a-buffer). The view is rendered by `EditorRenderer` for code-like content and `DocumentRenderer` for prose-heavy descriptions; cross-references inside it are clickable / followable via standard motions.
 
 **Cost model.** Metadata lives next to registrations and is only materialized when an introspection command runs. The catalog is queryable in O(1) by id and O(log N) by name; `:apropos` is a streaming picker (§5.9.7) over all metadata.
+
+The keymap descriptor metadata that backs `:describe-key` -- the typed `KeymapEntry` rows, their forgery-prevented `SourceLocation` capture, and the catalog/registry consistency invariants -- is specified in [`docs/keymap-architecture.md`](keymap-architecture.md) §3.5 and §6.
 
 #### 5.11.1 Provenance: source-of-truth for every binding
 

@@ -853,7 +853,7 @@ type-hoisting decisions, and the sub-slice plan.
   shared by the App and the `select-register` spec. The Replace
   drift comparator's `Invoke` arm now compares `args` so
   captured-char substitution regressions trip the test.
-- **8.i.4 -- Retire Pending; finalise.** In progress.
+- **8.i.4 -- Retire Pending; finalise.** ✅ landed.
   - 8.i.4.a -- Scaffold + 9 simple-prefix migration. ✅ landed.
     Adds `App::partial_chord: Vec<KeyChord>` and
     `Action::AbsorbPartialChord(KeyChord)`; `lookup_normal`
@@ -1054,12 +1054,52 @@ type-hoisting decisions, and the sub-slice plan.
       stale "existing app contract" comment at
       `dd_on_non_fold_line_uses_count_one` is gone --
       the contract is now "matches vim".
-  - At this point the `keymap.rs` drift test becomes obsolete
-    (descriptor IS behaviour); replace it with a "every catalog
-    entry resolves to a real `CommandInvocation`" test.
-  - Bench rollup in `BENCHMARKS.md`.
-  - Cross-references added to `docs/DESIGN.md §5.2.3` so the
-    spec doc points to the authoritative architecture reference.
+  - 8.i.4.h -- Wrap-up: catalog⇄registry test, dispatcher
+    end-to-end bench, cross-refs. ✅ landed. Three small
+    threads bundled into one slice so the four-artefact
+    rule lands as one cohesive unit.
+    - Test: new `every_catalog_command_resolves_in_registry`
+      in `input.rs`'s test module asserts every
+      `default_keymap()` entry with `command: Some(name)`
+      resolves to a real registry entry. Catches descriptor
+      drift the existing `keymap_descriptors_dont_drift_
+      from_translate` test misses -- the chord-side check
+      verifies `chord -> Action` round-trip; the new check
+      verifies `descriptor.command -> CommandRegistry`
+      consistency. They're complementary, not competing.
+    - Drift-test retirement deferred. The wrap-up plan
+      originally called for retiring the chord-side test
+      ("descriptor IS behaviour"). Held off: that's only
+      true once `default_keymap()` is the trie's
+      source-of-truth, which is the post-1.0 promotion
+      slice. Until then, the chord-side test still catches
+      bugs the registry-side check can't (chord notation
+      drift, mode mis-routing). Both stay; one retires
+      when source-of-truth promotion lands.
+    - Bench: two new `dispatch_translate_full_*` rows in
+      `benches/keymap.rs` measuring full `translate()`
+      round-trip through the production-wired keymap
+      (real `register_*_bindings` calls -- not the
+      synthetic `populated_handle()` the trie-only rows
+      use). `_two_chord` covers the partial_chord
+      dispatch (`gd`); `_operator_motion` covers the
+      operator-prefix flow that 8.i.4.c rebuilt (`dw`).
+      Both ~100 ns -- ~10× under the 1 µs keystroke
+      commitment, ~3× the bare trie-lookup numbers (the
+      remainder is dispatcher fan-out + Action
+      construction).
+    - `docs/BENCHMARKS.md`: rows added + a slice-8.i
+      narrative paragraph confirming the dispatcher
+      rebuild stayed in budget; AbsorbPartialChord /
+      AbsorbOperatorPrefix short-circuits don't
+      measurably hurt the hot path.
+    - `docs/DESIGN.md`: cross-references added to §5.2.4
+      (Extensibility) and §5.11 (Introspection). §5.2.3
+      already pointed at the architecture doc; §5.2.4 now
+      points at §5 / §6 here for keymap-side extension
+      mechanics, and §5.11 points at §3.5 / §6 for the
+      typed-descriptor metadata surface that backs
+      `:describe-key`.
 
 ## 10. Trade-offs flagged
 

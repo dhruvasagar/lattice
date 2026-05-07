@@ -186,7 +186,7 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 
 ### Counts, registers, ranges, marks, macros, dot-repeat
 
-| Feature                                        | Status                                | Anchor         |
+| Feature                                       | Status                                | Anchor         |
 |------------------------------------------------|---------------------------------------|----------------|
 | Numeric prefix counts (3w, 5j, 2dw, 2d3w)      | ✅                                    | §5.2.2         |
 | Register prefix `"<reg>`                       | ✅                                    | §5.2.2         |
@@ -524,25 +524,25 @@ guarantees that any caller observing the reply also observes the new
 snapshot via `arc_swap::load` -- without this ordering, callers can
 race past their own commit.
 
-| Concern                                                    | Status               | Anchor                                  |
-|------------------------------------------------------------|----------------------|-----------------------------------------|
-| Document actor / bounded mpsc mailbox                      | ✅                   | §5.7 (`lattice-runtime::DocumentActor`) |
-| `Pending<T>` returned by every mutating call               | ✅                   | §5.2.1 (`lattice-runtime::Pending`)     |
-| Bounded backpressure (`RuntimeError::Busy`)                | ✅                   | §5.2.1 (mailbox cap = 64)               |
-| `arc-swap` published `DocumentSnapshot`                    | ✅                   | §5.6.8 (`PublishedSnapshot`)            |
-| Renderer reads via single snapshot load per frame          | ✅                   | §5.6.8 (`render::draw_*`)               |
-| Publish-before-reply ordering                              | ✅                   | §5.6.8 (acquire/release contract)       |
-| Sync `lattice_grammar::execute` (runs inside actor)        | ✅                   | §5.2.1 (purity preserved)               |
-| Latency-class declarations (Reflex / Display / Background) | ✅ declarative        | §5.2.5 (`LatencyClass` field on `CommandSpec`; runtime enforcement deferred) |
-| Cancellation token contract                                | ✅ user-Esc           | §5.2.5; `CancellationToken` (Arc<AtomicBool>) plumbed through `dispatch_with_cancel` → grammar dispatcher → operator/motion/text-object contexts → search loops. Deadline-timer flipper (Reflex < 2 ms, Display < 10 ms) is the remaining piece. |
-| Event bus (observation baseline)                           | ✅                   | §5.10; `EventBus` in lattice-runtime: kind-indexed dispatch, `SubscriptionTarget::Channel` (mpsc) + `Invocation` (queued via `drain_pending_invocations`). |
-| App-side event publish                                     | ✅                   | §5.10; App publishes `DocumentChanged` (apply_edit / batch / undo / redo), `SelectionsChanged` (set_selections), `ModalModeChanged` (only on actual axis movement), `BeforeSave` + `DocumentSaved` (sync wrapper around save / save_as), `BeforeQuit` (Action::Quit + `:q` after dirty-check), `OptionChanged` (every typed-options registry write — including `:set foo=bar`, `:set nofoo`, and direct `config.set` paths; carries canonical name + old + new formatted strings). |
-| Config → event bus bridge                                  | ✅                   | §5.10 + §5.12; `lattice-config::ConfigRegistry` exposes `set_event_publisher(EventPublisher)`. App wires the bus at boot via a closure that calls `event_bus.publish(event)`. Subscribers see option changes through `Event::OptionChanged` instead of polling.                                                                                                                                                                              |
+| Concern                                                    | Status               | Anchor                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+|------------------------------------------------------------|----------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Document actor / bounded mpsc mailbox                      | ✅                   | §5.7 (`lattice-runtime::DocumentActor`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `Pending<T>` returned by every mutating call               | ✅                   | §5.2.1 (`lattice-runtime::Pending`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Bounded backpressure (`RuntimeError::Busy`)                | ✅                   | §5.2.1 (mailbox cap = 64)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `arc-swap` published `DocumentSnapshot`                    | ✅                   | §5.6.8 (`PublishedSnapshot`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Renderer reads via single snapshot load per frame          | ✅                   | §5.6.8 (`render::draw_*`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Publish-before-reply ordering                              | ✅                   | §5.6.8 (acquire/release contract)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Sync `lattice_grammar::execute` (runs inside actor)        | ✅                   | §5.2.1 (purity preserved)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Latency-class declarations (Reflex / Display / Background) | ✅ declarative       | §5.2.5 (`LatencyClass` field on `CommandSpec`; runtime enforcement deferred)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Cancellation token contract                                | ✅ user-Esc          | §5.2.5; `CancellationToken` (Arc<AtomicBool>) plumbed through `dispatch_with_cancel` → grammar dispatcher → operator/motion/text-object contexts → search loops. Deadline-timer flipper (Reflex < 2 ms, Display < 10 ms) is the remaining piece.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Event bus (observation baseline)                           | ✅                   | §5.10; `EventBus` in lattice-runtime: kind-indexed dispatch, `SubscriptionTarget::Channel` (mpsc) + `Invocation` (queued via `drain_pending_invocations`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| App-side event publish                                     | ✅                   | §5.10; App publishes `DocumentChanged` (apply_edit / batch / undo / redo), `SelectionsChanged` (set_selections), `ModalModeChanged` (only on actual axis movement), `BeforeSave` + `DocumentSaved` (sync wrapper around save / save_as), `BeforeQuit` (Action::Quit + `:q` after dirty-check), `OptionChanged` (every typed-options registry write — including `:set foo=bar`, `:set nofoo`, and direct `config.set` paths; carries canonical name + old + new formatted strings).                                                                                                                                                                                                                                                                          |
+| Config → event bus bridge                                  | ✅                   | §5.10 + §5.12; `lattice-config::ConfigRegistry` exposes `set_event_publisher(EventPublisher)`. App wires the bus at boot via a closure that calls `event_bus.publish(event)`. Subscribers see option changes through `Event::OptionChanged` instead of polling.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | App-side cascade via bus subscription                      | ✅                   | §5.10 + §5.12. App subscribes a `tokio::sync::mpsc::UnboundedReceiver<Event>` filtered to `EventKind::OptionChanged` at boot; `App::drain_option_changes` consumes it and runs the per-option cascade (`relativenumber⇒number`, `foldmethod⇒recompute_folds`, `ui.*⇒sync_theme_from_config`). Drained at the end of `do_set` (synchronous user-visible behaviour preserved) and at the top of every main_loop iteration (backstop for writes outside the keystroke path -- plugin tasks, customize buffer, init.rs). The chained cascade case (`relativenumber⇒number` itself fires another `OptionChanged`) is handled by the drain's `while let Ok` loop. No registry-mutex re-entrancy risk: publisher closure runs after the registry drops every lock. |
-| Veto-class hooks (1ms p99)                                 | ⛔                   | §5.2.1 (needs Before-event return-path so handlers can mutate / abort; v1 publish is observation-only) |
-| Events-over-invocation rule                                | ⛔                   | §5.2.5 (needs `:autocmd` and `add-hook` parser front-ends to desugar into `subscribe`) |
-| Interactive arg-prompts (§B.1 phase 2)                     | ✅                   | Submitting bare `:cmd<CR>` with a Required first arg arms a prompt: prefills `:cmd `, surfaces the schema's prompt in the echo area, and waits for typed input (Chord-kind args additionally auto-submit on the next captured chord). Optional-default args take the parser's normal path. |
-| Multi-pane selection transformation                        | n/a (single-pane v1) | §5.6.8                                  |
+| Veto-class hooks (1ms p99)                                 | ⛔                   | §5.2.1 (needs Before-event return-path so handlers can mutate / abort; v1 publish is observation-only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Events-over-invocation rule                                | ⛔                   | §5.2.5 (needs `:autocmd` and `add-hook` parser front-ends to desugar into `subscribe`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Interactive arg-prompts (§B.1 phase 2)                     | ✅                   | Submitting bare `:cmd<CR>` with a Required first arg arms a prompt: prefills `:cmd `, surfaces the schema's prompt in the echo area, and waits for typed input (Chord-kind args additionally auto-submit on the next captured chord). Optional-default args take the parser's normal path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Multi-pane selection transformation                        | n/a (single-pane v1) | §5.6.8                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 This is **Phase 4 / 7's prerequisite** — LSP clients and the WASM
 plugin host can now share `DocumentHandle` with the App; both
@@ -555,20 +555,20 @@ restructuring it.
 
 ## Performance posture
 
-| Concern                                     | Status | Anchor          |
-|---------------------------------------------|--------|-----------------|
-| Criterion bench harness                     | ✅     | §8.2            |
-| Render hot-path is viewport-bounded         | ✅     | §8.2 (this commit) |
-| Actor / runtime benches                     | ✅     | §5.6.8 / §8.2   |
-| `LatencyClass` declaration on `CommandSpec` | ✅     | §5.2.5          |
-| Test + clippy CI gate                       | ✅     | (.github/workflows/ci.yml) |
-| Bench-compile CI gate                       | ✅     | (catches bench rot) |
-| Bench baseline recording (push to main)     | ✅     | (artifact upload, no diff yet) |
-| Bench regression detection (>10% threshold) | ⛔     | §8.2 -- needs stable runner |
+| Concern                                     | Status | Anchor                                          |
+|---------------------------------------------|--------|-------------------------------------------------|
+| Criterion bench harness                     | ✅     | §8.2                                            |
+| Render hot-path is viewport-bounded         | ✅     | §8.2 (this commit)                              |
+| Actor / runtime benches                     | ✅     | §5.6.8 / §8.2                                   |
+| `LatencyClass` declaration on `CommandSpec` | ✅     | §5.2.5                                          |
+| Test + clippy CI gate                       | ✅     | (.github/workflows/ci.yml)                      |
+| Bench-compile CI gate                       | ✅     | (catches bench rot)                             |
+| Bench baseline recording (push to main)     | ✅     | (artifact upload, no diff yet)                  |
+| Bench regression detection (>10% threshold) | ⛔     | §8.2 -- needs stable runner                     |
 | Per-class budget assertions in CI           | ⛔     | §5.2.5 -- needs cancellation/deadline machinery |
-| Allocation discipline check in CI           | ⛔     | §A.6            |
-| Long-running session benches                | ⛔     | §A.6            |
-| Cross-platform acceptance suite             | ⛔     | §A.6            |
+| Allocation discipline check in CI           | ⛔     | §A.6                                            |
+| Long-running session benches                | ⛔     | §A.6                                            |
+| Cross-platform acceptance suite             | ⛔     | §A.6                                            |
 
 **Render hot path.** `compose_visible_lines` previously did
 `buffer.as_string().split('\n').collect::<Vec<String>>()` once per
@@ -581,12 +581,12 @@ same per-frame cost as 100-line files.
 **Actor benches** (`crates/lattice-runtime/benches/actor.rs`)
 characterize the load-bearing async primitives:
 
-| Benchmark | DESIGN target (p99) | Observed (median) |
-|---|---|---|
-| `apply_edit` round-trip | <100µs | ~80µs (constant across 10/1k/50k lines) |
-| `snapshot_load` (`load_full`) | <20ns | ~17ns (Arc bump path) |
-| `snapshot_load_cached` (`Cache::load`, steady) | <500ps | ~305ps |
-| `snapshot_post_publish_read` | -- | ~17ns |
+| Benchmark                                      | DESIGN target (p99) | Observed (median)                       |
+|------------------------------------------------|---------------------|-----------------------------------------|
+| `apply_edit` round-trip                        | <100µs              | ~80µs (constant across 10/1k/50k lines) |
+| `snapshot_load` (`load_full`)                  | <20ns               | ~17ns (Arc bump path)                   |
+| `snapshot_load_cached` (`Cache::load`, steady) | <500ps              | ~305ps                                  |
+| `snapshot_post_publish_read`                   | --                  | ~17ns                                   |
 
 The `apply_edit` round-trip meets §8.2 with 20% margin. The renderer
 now reads through `arc_swap::Cache::load` per frame (~50× faster than
@@ -1044,25 +1044,25 @@ sends, paramount-goal violations). Findings closed in slices
   supervisor task never spawned and every write returned
   `LspError::ActorGone`. Both fixed in this slice:
   - `LspSupervisor::spawn` now takes an explicit
-    `&tokio::runtime::Handle`; callers pass
-    `runtime::lsp_runtime().handle()`. No more
-    `try_current()` footgun.
+	`&tokio::runtime::Handle`; callers pass
+	`runtime::lsp_runtime().handle()`. No more
+	`try_current()` footgun.
   - Buffer-open is event-driven: `App::new` and
-    `App::do_edit` set `BufferId → Uri` eagerly and publish
-    [`Event::DocumentOpened { id, path, version, text }`](../crates/lattice-protocol/src/event.rs)
-    on the bus. The new `lattice_lsp::attach_driver` module
-    subscribes on the LSP runtime, runs a serial
-    `recv → supervisor.open_buffer.await` loop, and logs
-    failures. UI thread never parks. Single path for
-    initial + subsequent opens.
+	`App::do_edit` set `BufferId → Uri` eagerly and publish
+	[`Event::DocumentOpened { id, path, version, text }`](../crates/lattice-protocol/src/event.rs)
+	on the bus. The new `lattice_lsp::attach_driver` module
+	subscribes on the LSP runtime, runs a serial
+	`recv → supervisor.open_buffer.await` loop, and logs
+	failures. UI thread never parks. Single path for
+	initial + subsequent opens.
   - Removed: `App::pending_lsp_opens`, `App::queue_lsp_open`,
-    `App::drain_pending_lsp_opens`, `App::initialize_lsp`,
-    `runtime::initialize_lsp_blocking`,
-    `runtime::drain_pending_lsp_opens_blocking`, and the
-    main-loop drain step. Net diff is removal-heavy.
+	`App::drain_pending_lsp_opens`, `App::initialize_lsp`,
+	`runtime::initialize_lsp_blocking`,
+	`runtime::drain_pending_lsp_opens_blocking`, and the
+	main-loop drain step. Net diff is removal-heavy.
   - Closes the no-rust-analyzer-attach regression that
-    surfaced as `"server actor is no longer running"` on
-    every editor launch.
+	surfaced as `"server actor is no longer running"` on
+	every editor launch.
 
 Deferred with rationale:
 
@@ -1178,71 +1178,71 @@ slice boundary.
 4. **Multi-buffer foundations** (§5.9) — the trigger for `HelpDisplayMode`
    beyond `Popup`. Until this lands, all introspection is overlay-rendered.
    - **B.1.a buffer abstraction + active-buffer routing** ✅ done.
-     `BufferKind { Document, Help }` + `BufferId` newtype; `App::active_buffer`
-     decides which cursor a motion / page / scroll / `<C-o>` / `<C-i>`
-     action mutates. Help routes through the same `translate_normal` chord
-     grammar as document buffers; only three buffer-local bindings differ
-     (`Esc` / `q` dismiss, `<CR>` follows the link under the cursor). The
-     unified position-history ring carries `(buffer, buffer_id)` so jump-list
-     walks switch active_buffer cleanly when crossing buffer boundaries.
-     `lattice_grammar::execute_motion_only` exposes a read-only motion
-     dispatch path that resolves a `CommandInvocation` against a bare
-     `Buffer` -- no `Document` / undo / selections required, suitable for
-     help and (later) file-tree / outline / diagnostics views.
+	 `BufferKind { Document, Help }` + `BufferId` newtype; `App::active_buffer`
+	 decides which cursor a motion / page / scroll / `<C-o>` / `<C-i>`
+	 action mutates. Help routes through the same `translate_normal` chord
+	 grammar as document buffers; only three buffer-local bindings differ
+	 (`Esc` / `q` dismiss, `<CR>` follows the link under the cursor). The
+	 unified position-history ring carries `(buffer, buffer_id)` so jump-list
+	 walks switch active_buffer cleanly when crossing buffer boundaries.
+	 `lattice_grammar::execute_motion_only` exposes a read-only motion
+	 dispatch path that resolves a `CommandInvocation` against a bare
+	 `Buffer` -- no `Document` / undo / selections required, suitable for
+	 help and (later) file-tree / outline / diagnostics views.
    - **B.1.b pane tree + splits** ✅ done. Recursive binary-split
-     `PaneTree` with `<C-w>{s,v,c,q,h,j,k,l,w,W}` chord grammar. Each
-     leaf carries per-pane viewport stash (cursor + scroll); the
-     active pane's stash is hot-loaded into `App::cursor` /
-     `App::scroll` so motion code stays unchanged. Active-pane
-     switches snapshot back into the source pane's stash and load
-     from the destination's. Geometry-aware navigation
-     (`<C-w>{h,j,k,l}`) walks the spatial neighbour computed from
-     `compute_rects`. Inactive-pane rendering is a placeholder
-     until B.1.c brings meaningfully distinct buffer content.
+	 `PaneTree` with `<C-w>{s,v,c,q,h,j,k,l,w,W}` chord grammar. Each
+	 leaf carries per-pane viewport stash (cursor + scroll); the
+	 active pane's stash is hot-loaded into `App::cursor` /
+	 `App::scroll` so motion code stays unchanged. Active-pane
+	 switches snapshot back into the source pane's stash and load
+	 from the destination's. Geometry-aware navigation
+	 (`<C-w>{h,j,k,l}`) walks the spatial neighbour computed from
+	 `compute_rects`. Inactive-pane rendering is a placeholder
+	 until B.1.c brings meaningfully distinct buffer content.
    - **B.1.c multiple Document buffers** ✅ done. Replaced by the
-     unified registry below; original implementation used a
-     dedicated `documents: HashMap<BufferId, DocumentEntry>`.
+	 unified registry below; original implementation used a
+	 dedicated `documents: HashMap<BufferId, DocumentEntry>`.
    - **B.1.d buffer-as-content kinds: file-tree** ✅ done. New
-     `BufferKind::FileTree` variant + `FileTreeBuffer` (rope-
-     backed, same shape as `HelpBuffer`). `:Tree [path]` opens a
-     tree buffer rooted at `path` (or the document's parent dir /
-     cwd); same path de-dups (already-open trees are switched to,
-     not duplicated). Multiple trees coexist (one per
-     distinct root). `:TreeClose` removes from the registry.
-     Standard motions route via the same active-buffer dispatch
-     as Help. `<CR>` on a directory toggles expansion; on a file
-     opens it via the standard `:e FILE` path. Outline + diagnostics
-     panels queue behind their own integrations.
+	 `BufferKind::FileTree` variant + `FileTreeBuffer` (rope-
+	 backed, same shape as `HelpBuffer`). `:Tree [path]` opens a
+	 tree buffer rooted at `path` (or the document's parent dir /
+	 cwd); same path de-dups (already-open trees are switched to,
+	 not duplicated). Multiple trees coexist (one per
+	 distinct root). `:TreeClose` removes from the registry.
+	 Standard motions route via the same active-buffer dispatch
+	 as Help. `<CR>` on a directory toggles expansion; on a file
+	 opens it via the standard `:e FILE` path. Outline + diagnostics
+	 panels queue behind their own integrations.
    - **Unified `BufferRegistry`** ✅ done. Documents and file trees
-     live in a single keyspace under `App.buffers`
-     (`HashMap<BufferId, BufferEntry>` with `BufferData::Document |
-     FileTree` discriminant). `:bn` / `:bp` / `:ls` / `:bd` /
-     `:b N` operate on the registry uniformly -- cycling between a
-     document and a tree feels the same as cycling between two
-     documents. Each entry carries `BufferFlags { listed, hidden }`;
-     unlisted buffers are skipped by `:bn` / `:bp`. `:e folder`
-     defers to `:Tree folder` (vim's `:Explore` semantics). Help
-     stays overlay-rendered for now -- moving it into the registry
-     is a follow-up that doesn't require structural change.
-     `DocumentEntry` stashes per-buffer hot-path state (syntax tree,
-     fold list, last-parsed version) when a buffer leaves active;
-     a single `App::activate_buffer_state` lifecycle hook fires on
-     every transition into a document buffer (both `:e <new>` and
-     `:b N` paths), reparsing if needed and seeding folds against
-     the active `foldmethod` so users no longer have to reach for
-     `<C-l>` after switching files. New buffer-level state plugs
-     into the same hook -- no per-option fixups across the
-     activation paths.
+	 live in a single keyspace under `App.buffers`
+	 (`HashMap<BufferId, BufferEntry>` with `BufferData::Document |
+	 FileTree` discriminant). `:bn` / `:bp` / `:ls` / `:bd` /
+	 `:b N` operate on the registry uniformly -- cycling between a
+	 document and a tree feels the same as cycling between two
+	 documents. Each entry carries `BufferFlags { listed, hidden }`;
+	 unlisted buffers are skipped by `:bn` / `:bp`. `:e folder`
+	 defers to `:Tree folder` (vim's `:Explore` semantics). Help
+	 stays overlay-rendered for now -- moving it into the registry
+	 is a follow-up that doesn't require structural change.
+	 `DocumentEntry` stashes per-buffer hot-path state (syntax tree,
+	 fold list, last-parsed version) when a buffer leaves active;
+	 a single `App::activate_buffer_state` lifecycle hook fires on
+	 every transition into a document buffer (both `:e <new>` and
+	 `:b N` paths), reparsing if needed and seeding folds against
+	 the active `foldmethod` so users no longer have to reach for
+	 `<C-l>` after switching files. New buffer-level state plugs
+	 into the same hook -- no per-option fixups across the
+	 activation paths.
    - **Pane visuals** ✅ done. Each pane gets a vim-style status
-     line (active reverse-videoed via theme, inactive dim);
-     `│` separator drawn between vertically split panes. Inactive
-     Document panes keep their tree-sitter syntax highlights
-     (refreshed lazily by `App::refresh_pane_highlights`); a
-     `Theme::inactive_pane_overlay` modifier (default `DIM`)
-     layers on top so focus stays unambiguous without losing
-     color. Customizable via `:set ui.dim_inactive`,
-     `ui.separator`, `ui.separator_color`,
-     `ui.statusline_active_fg`, `ui.statusline_inactive_fg`.
+	 line (active reverse-videoed via theme, inactive dim);
+	 `│` separator drawn between vertically split panes. Inactive
+	 Document panes keep their tree-sitter syntax highlights
+	 (refreshed lazily by `App::refresh_pane_highlights`); a
+	 `Theme::inactive_pane_overlay` modifier (default `DIM`)
+	 layers on top so focus stays unambiguous without losing
+	 color. Customizable via `:set ui.dim_inactive`,
+	 `ui.separator`, `ui.separator_color`,
+	 `ui.statusline_active_fg`, `ui.statusline_inactive_fg`.
 5. **Hover popup + inline completion popup polish** — completion popup
    is wired (vertico-style); hover popup scaffolding ✅ done. New
    `HoverPopup` type with markdown body + buffer-position anchor;
@@ -1252,20 +1252,20 @@ slice boundary.
    will source `text` from `textDocument/hover`); `:HoverClose`
    dismisses.
 5b. **Help topic surface (`:help`)** ✅ done.
-    `lattice-ui-tui::help_topics` defines a `HelpTopicRegistry`
-    keyed by name; bodies are either `Static(&'static str)`
-    (built-ins are sourced from `docs/help/*.md` via
-    `include_str!` so the binary is self-contained) or
-    `Dynamic(closure)` -- the seam for LSP / plugin / config-
-    supplied topics. `:help` with no arg opens the registry's
-    `index` topic (the README content); `:help <topic>` opens the
-    named topic; `:h` is an alias. `<Tab>` enumerates topics via a
-    new `gen:help-topics` completion source. `:describe-*`
-    appends `See also: [topic](help:topic)` cross-links when a
-    topic's `related_command_patterns` substring-matches the
-    described command. New `HelpLinkTarget::Topic(name)` variant
-    + `help:` URL scheme so topic links are first-class everywhere
-    a help body can render.
+	`lattice-ui-tui::help_topics` defines a `HelpTopicRegistry`
+	keyed by name; bodies are either `Static(&'static str)`
+	(built-ins are sourced from `docs/help/*.md` via
+	`include_str!` so the binary is self-contained) or
+	`Dynamic(closure)` -- the seam for LSP / plugin / config-
+	supplied topics. `:help` with no arg opens the registry's
+	`index` topic (the README content); `:help <topic>` opens the
+	named topic; `:h` is an alias. `<Tab>` enumerates topics via a
+	new `gen:help-topics` completion source. `:describe-*`
+	appends `See also: [topic](help:topic)` cross-links when a
+	topic's `related_command_patterns` substring-matches the
+	described command. New `HelpLinkTarget::Topic(name)` variant
+	+ `help:` URL scheme so topic links are first-class everywhere
+	a help body can render.
 6. **Help major mode + tree-sitter grammar** — defines sections,
    link-targets, code-blocks. Needs the help mode registered as a major
    mode, which depends on the modes registry (Phase 8) but the *grammar*
@@ -1282,7 +1282,7 @@ slice boundary.
    `bencher.dev`); shared GitHub runners have ~20% bench variance that
    dwarfs a 10% regression signal.
 10. **Render-hot-path alloc discipline** — dhat-based assertion that
-    steady-state frames produce no allocations.
+	steady-state frames produce no allocations.
 
 ---
 

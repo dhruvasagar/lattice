@@ -916,18 +916,37 @@ type-hoisting decisions, and the sub-slice plan.
     inside it would fire before the dispatched
     `AppEffect::AbsorbOperatorPrefix(_)` could latch op_count,
     breaking `2dw`-style flows.
-  - 8.i.4.e -- Retire `bind_legacy` machinery. Pending.
-    `KeymapHandleLegacyExt`, `BoundCommand::legacy_action`,
-    `BoundCommand::from_legacy_action`,
-    `legacy_action_command_id` are still used by the
-    completion-popup and active-snippet minor-mode layer
-    builders (`keymap_insert::bind_action` shape), which fire
-    ~14 popup/snippet `Action::Foo` variants directly. Each of
-    those needs migration to a typed CommandInvocation +
-    AppEffect variant before the machinery can fully retire.
-    Drift reference bodies in
-    `keymap_replace`/`keymap_visual`/`keymap_insert` retire
-    too. Bench rollup + doc finalisation lands here.
+  - 8.i.4.e -- Retire `bind_legacy` machinery. ✅ landed.
+    Migrated the completion-popup and active-snippet
+    minor-mode layer builders to bind typed
+    `CommandInvocation`s through `bind_invocation`; promoted
+    13 popup/snippet variants into `AppEffect`
+    (`CompletionNext`, `CompletionPrev`, `CompletionAccept`,
+    `CompletionCancel`, `CompletionCancelAndExitInsert`,
+    `CompletionToggleDocs`, `CompletionDocsScrollDown`,
+    `CompletionDocsScrollUp`, `CompletionAcceptThenInsert(c)`,
+    `SnippetNextPlaceholder`, `SnippetPrevPlaceholder`,
+    `SnippetLeave`, plus `CompletionTrigger` already migrated
+    earlier). The wildcard `<bare-char>` chord in the popup
+    layer rides as `Args::Char(c)` on the
+    `completion-accept-then-insert` invocation; control chars
+    are filtered in the spec. With every binding now carrying
+    a real `CommandInvocation`, the `KeymapHandleLegacyExt`
+    trait + `bind_legacy` adapter, the
+    `BoundCommand::legacy_action` field +
+    `from_legacy_action` constructor, the
+    `legacy_action_command_id()` placeholder, and the
+    `legacy_action.is_some()` branches in `dispatch_replace` /
+    `dispatch_visual` / `action_from_bound_with_capture` are
+    deleted. Drift reference bodies in
+    `keymap_replace::tests::legacy_translate_replace` and
+    `keymap_visual::tests::legacy_translate_visual` (and their
+    paired `actions_equivalent` comparators + cross-product
+    `registry_dispatch_matches_legacy_translate` tests) are
+    deleted as well -- with the legacy bridge gone there is no
+    second path to drift against; the per-binding `match`
+    tests in each module continue to pin the exact
+    `Invoke(...)` shape.
   - At this point the `keymap.rs` drift test becomes obsolete
     (descriptor IS behaviour); replace it with a "every catalog
     entry resolves to a real `CommandInvocation`" test.

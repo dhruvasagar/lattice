@@ -303,30 +303,15 @@ impl Syntax {
     /// pre-step on the worker, ~500ns per edit), then parse with
     /// the edited tree as the seed (~50µs floor on medium files
     /// per §8.2). Falls back to [`Self::parse_at`] (full reparse)
-    /// if any of:
+    /// if the guards on [`Self::try_apply_intermediate`] fail.
     ///
-    /// 1. **No cached tree** -- first reparse / worker recovered
-    ///    from prior cancellation; nothing to seed with.
-    /// 2. **`from_version` mismatch** -- worker's tree isn't at
-    ///    the version the edits expect to start from. Indicates
-    ///    a dropped reparse request, file load, or document
-    ///    replace; the cached tree's byte ranges don't match the
-    ///    edits, so we MUST do full reparse to avoid silent tree
-    ///    corruption.
-    /// 3. **`edits` empty** -- nothing to apply; if text_version
-    ///    differs the caller is signalling "I don't have deltas,
-    ///    do a full reparse" (file load case).
-    /// 4. **Byte-length mismatch** -- after applying all edits in
-    ///    order, the cumulative byte delta doesn't match
-    ///    `source.len() - prior_source.len()`. Catches dropped /
-    ///    truncated edit lists. Full reparse + log warning.
-    ///
-    /// Tree-sitter's failure mode for a malformed `InputEdit` is
-    /// a silently wrong tree, not a panic. The layered guards
-    /// here + the slice-B.4 parametrized parity matrix in this
-    /// file's test module (incremental == full reparse across
-    /// 27 edit shapes × Rust / Python / JavaScript / Markdown)
-    /// keep the silent-corruption surface contained.
+    /// Slice C.2 split this into two halves so the worker can
+    /// publish an intermediate snapshot between them -- byte
+    /// ranges shifted to track the edit but tree shape pre-parse,
+    /// so renderers see byte-aligned spans during the entire
+    /// parse window. This convenience runs both halves back-to-
+    /// back without an intermediate publish; the worker calls
+    /// the two halves directly with the publish in between.
     pub fn parse_at_with_edits(
         &mut self,
         source: &str,
@@ -334,21 +319,54 @@ impl Syntax {
         from_version: u64,
         edits: &[EditDelta],
     ) {
-        // Guards 1-3: no cached tree, version mismatch, or empty
-        // edits with text actually changed -- fall through to a
-        // full reparse. We don't even try `tree.edit()` in these
-        // cases; the cached tree is the wrong baseline.
+        match self.try_apply_intermediate(source, text_version, from_version, edits) {
+            Ok(_) => self.reparse_with_cached_tree(),
+            Err(_) => self.parse_at(source, text_version),
+        }
+    }
+
+    /// Slice C.2: try to apply `edits` to the cached tree and
+    /// update `source` + `text_version`, WITHOUT running
+    /// `Parser::parse`. Returns `Ok(())` if the resulting state
+    /// is valid for the worker to publish as an intermediate
+    /// snapshot (byte ranges shifted via `tree.edit` to track the
+    /// edits; tree shape is pre-parse for the changed regions).
+    /// Returns `Err(())` if any of:
+    ///
+    /// 1. **No cached tree** -- first reparse / worker recovered
+    ///    from prior cancellation; nothing to seed with.
+    /// 2. **`from_version` mismatch** -- worker's tree isn't at
+    ///    the version the edits expect to start from. Indicates
+    ///    a dropped reparse request, file load, or document
+    ///    replace; the cached tree's byte ranges don't match the
+    ///    edits.
+    /// 3. **`edits` empty** -- nothing to apply.
+    /// 4. **Byte-length mismatch** -- accumulated edit delta
+    ///    doesn't match the source-length delta. Catches dropped
+    ///    or truncated edit lists.
+    ///
+    /// On `Err`, the caller falls back to [`Self::parse_at`]
+    /// (full reparse).
+    ///
+    /// Tree-sitter's failure mode for a malformed `InputEdit` is
+    /// a silently wrong tree, not a panic. The layered guards
+    /// here + the slice-B.4 parametrized parity matrix
+    /// (incremental == full reparse across 27 edit shapes ×
+    /// Rust / Python / JavaScript / Markdown) keep the silent-
+    /// corruption surface contained.
+    pub fn try_apply_intermediate(
+        &mut self,
+        source: &str,
+        text_version: u64,
+        from_version: u64,
+        edits: &[EditDelta],
+    ) -> Result<(), ()> {
         let cached_at_baseline = self.inner.tree.is_some()
             && self.inner.text_version == from_version
             && !edits.is_empty();
         if !cached_at_baseline {
-            self.parse_at(source, text_version);
-            return;
+            return Err(());
         }
-        // Guard 4: byte-length consistency. Sum each edit's net
-        // byte delta (new_end - old_end) and confirm it matches
-        // (new source len - old source len). Mismatch -> dropped
-        // or out-of-order edits, fall back to full reparse.
         let prior_len = self.inner.source.len() as i64;
         let new_len = source.len() as i64;
         let edit_delta_sum: i64 = edits
@@ -356,32 +374,41 @@ impl Syntax {
             .map(|d| (d.new_end_byte as i64) - (d.old_end_byte as i64))
             .sum();
         if prior_len + edit_delta_sum != new_len {
-            // Don't panic; this is the "drop a stale-shape tree"
-            // path. Parity tests pin the case where this guard
-            // should NOT fire.
-            self.parse_at(source, text_version);
-            return;
+            return Err(());
         }
         // All guards passed. Apply each edit to the cached tree
-        // in order, then parse with the edited tree as the seed.
-        // tree-sitter mutates `Tree` in place via `edit`; the
-        // mutation shifts every node's byte range to track the
-        // edit so the subsequent reparse can reuse unchanged
-        // subtrees.
+        // in order. tree-sitter mutates `Tree` in place via
+        // `edit`; the mutation shifts every affected node's byte
+        // range to track the edit. Source + text_version updated
+        // so the snapshot's `source.len()` matches the edited
+        // tree's byte ranges.
         let bytes = source.as_bytes();
         if let Some(tree) = self.inner.tree.as_mut() {
             for d in edits {
                 tree.edit(&edit_delta_to_input_edit(*d));
             }
         }
+        self.inner.source = Arc::from(bytes.to_vec());
+        self.inner.text_version = text_version;
+        Ok(())
+    }
+
+    /// Slice C.2: re-parse using `self.inner.source` and the
+    /// cached tree (assumed to already have `tree.edit` applied
+    /// via [`Self::try_apply_intermediate`]) as seed. Updates
+    /// `self.inner.tree` to the freshly-parsed shape.
+    ///
+    /// Pairs with `try_apply_intermediate`: the worker calls
+    /// `try_apply_intermediate` (fast), publishes the intermediate
+    /// snapshot, then calls this to run the actual parse (slow).
+    pub fn reparse_with_cached_tree(&mut self) {
+        let bytes = self.inner.source.clone();
         let old_tree_ref = self.inner.tree.as_ref();
         let new_tree = self
             .parser
-            .parse(bytes, old_tree_ref)
+            .parse(&*bytes, old_tree_ref)
             .or_else(|| self.inner.tree.take());
-        self.inner.source = Arc::from(bytes.to_vec());
         self.inner.tree = new_tree;
-        self.inner.text_version = text_version;
     }
 }
 
@@ -1908,6 +1935,113 @@ const MAX: i32 = 10;\n\
             10,
             "FOO",
             "replace word in paragraph",
+        );
+    }
+
+    // ---- Slice C.2: intermediate-snapshot byte-alignment -------
+    //
+    // try_apply_intermediate must produce a snapshot whose tree's
+    // byte ranges match the new source. Spans walked against this
+    // intermediate must land at correct byte positions even though
+    // Parser::parse hasn't run yet -- that's what makes lines
+    // below a delete (or after a multi-byte insert) paint without
+    // flicker.
+
+    #[test]
+    fn try_apply_intermediate_shifts_byte_ranges_to_new_source() {
+        // Insert "X" at byte 3 of "fn a() {}" -> "fn aX() {}".
+        // The function-name node was [3, 4) for "a"; after
+        // tree.edit it should span [3, 5) for "aX". Pre-parse
+        // shape (the tree still thinks of it as a single
+        // identifier node), but byte ranges shifted.
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse_at("fn a() {}", 1);
+        let edit = EditDelta {
+            start_byte: 4,
+            old_end_byte: 4,
+            new_end_byte: 5,
+            start_position: lattice_protocol::Position::new(0, 4),
+            old_end_position: lattice_protocol::Position::new(0, 4),
+            new_end_position: lattice_protocol::Position::new(0, 5),
+        };
+        let new_source = "fn aX() {}";
+        s.try_apply_intermediate(new_source, 2, 1, &[edit])
+            .expect("intermediate should succeed");
+        // Source updated.
+        assert_eq!(s.source(), new_source.as_bytes());
+        // Tree present, byte ranges shifted.
+        let tree = s.tree().expect("tree present");
+        let root = tree.root_node();
+        // Find the source_file's last byte; should match new
+        // source length (10).
+        assert_eq!(root.end_byte(), new_source.len());
+    }
+
+    #[test]
+    fn try_apply_intermediate_then_reparse_matches_parse_at_with_edits() {
+        // Two-stage path (try_apply_intermediate + reparse_with_cached_tree)
+        // must produce the SAME final tree as the convenience
+        // parse_at_with_edits path. Sanity check on the split.
+        let edit = EditDelta {
+            start_byte: 4,
+            old_end_byte: 4,
+            new_end_byte: 5,
+            start_position: lattice_protocol::Position::new(0, 4),
+            old_end_position: lattice_protocol::Position::new(0, 4),
+            new_end_position: lattice_protocol::Position::new(0, 5),
+        };
+        let mut split = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        split.parse_at("fn a() {}", 1);
+        split
+            .try_apply_intermediate("fn aX() {}", 2, 1, &[edit])
+            .unwrap();
+        split.reparse_with_cached_tree();
+
+        let mut combined = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        combined.parse_at("fn a() {}", 1);
+        combined.parse_at_with_edits("fn aX() {}", 2, 1, &[edit]);
+
+        assert_eq!(
+            split.tree().unwrap().root_node().to_sexp(),
+            combined.tree().unwrap().root_node().to_sexp(),
+        );
+    }
+
+    #[test]
+    fn try_apply_intermediate_shifts_ranges_after_line_delete() {
+        // The user-reported scenario: deleting a line should
+        // shift every subsequent byte range. Verify highlight
+        // spans land at correct positions in the new source
+        // BEFORE Parser::parse runs.
+        let source_a = "fn a() {}\nfn b() {}\nfn c() {}";
+        let source_b = "fn a() {}\nfn c() {}";
+        // Delete "fn b() {}\n" at bytes 10..20.
+        let edit = EditDelta {
+            start_byte: 10,
+            old_end_byte: 20,
+            new_end_byte: 10,
+            start_position: lattice_protocol::Position::new(1, 0),
+            old_end_position: lattice_protocol::Position::new(2, 0),
+            new_end_position: lattice_protocol::Position::new(1, 0),
+        };
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse_at(source_a, 1);
+        s.try_apply_intermediate(source_b, 2, 1, &[edit])
+            .expect("intermediate should succeed");
+        // Highlight against the intermediate. The "fn" keyword
+        // span on the second line of the new source (was the
+        // third line of the old source) should land at byte 10
+        // (start of "fn c"), not at byte 20 (where the OLD tree
+        // would have placed it without the tree.edit shift).
+        let lines = s.highlight_lines(0, 2).unwrap();
+        // Line 1 of the new source is "fn c() {}" -- it should
+        // have at least one span (the "fn" keyword). With pre-
+        // C.2 (no tree.edit shift), that span would land on the
+        // wrong line.
+        assert!(
+            !lines[1].is_empty(),
+            "line 1 of intermediate (post-delete) must have spans -- \
+             this is what eliminates 'lines below flicker' on line delete"
         );
     }
 

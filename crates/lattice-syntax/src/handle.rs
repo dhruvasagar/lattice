@@ -314,25 +314,54 @@ async fn worker_main(
             buffer,
             edits,
         } = req;
+        let snapshot_for_intermediate = snapshot.clone();
         let parsed = tokio::task::spawn_blocking(move || {
             // Slice B.5: materialize the source bytes on the
             // worker thread, not the input thread. `as_string`
             // is O(n) for the rope but happens here on the
-            // spawn_blocking pool. For large buffers (~MB) this
-            // is the difference between paying ~ms on the input
-            // thread (violating goal #1) vs. paying it
-            // asynchronously where it doesn't block render.
+            // spawn_blocking pool.
             let text = buffer.as_string();
-            // Dispatch: empty edits -> full reparse (file load,
-            // cold start, coalesce-cap fallback). Non-empty ->
-            // incremental, with parse_at_with_edits internally
-            // handling version-baseline + byte-length guards
-            // and falling back to full reparse if anything
-            // looks inconsistent.
-            if edits.is_empty() {
-                syntax.parse_at(&text, text_version);
+            // Slice C.2: two-stage parse with intermediate
+            // publish.
+            //
+            // Stage 1 (fast, ~µs): try_apply_intermediate runs
+            // tree.edit() per delta -- shifts every node's byte
+            // range to track the edits -- and updates the
+            // snapshot's source + text_version. The result is
+            // byte-aligned (all node ranges match the new
+            // source) but tree shape is pre-parse for the
+            // changed regions.
+            //
+            // Publishing the intermediate now means the renderer
+            // sees byte-aligned spans for the entire parse
+            // window. Lines below a deleted line, lines after a
+            // multi-byte insert, etc. all paint at correct
+            // positions immediately -- no flicker for unchanged
+            // content. Only the changed region's tree shape is
+            // briefly stale (which usually doesn't affect
+            // colour: shape-staleness within a string node, an
+            // identifier node, etc. produces the same span as
+            // the post-parse shape).
+            //
+            // Stage 2 (slow, ~50-300µs): reparse_with_cached_tree
+            // runs Parser::parse with the (already edited) tree
+            // as seed. tree-sitter reuses unchanged subtrees;
+            // only the edited region gets re-parsed. The final
+            // publish lands a moment later.
+            //
+            // On guard failure (no cached tree, version mismatch,
+            // byte-length mismatch), Stage 1 returns Err, and we
+            // fall through to a full reparse with a single
+            // publish.
+            let intermediate_ok = !edits.is_empty()
+                && syntax
+                    .try_apply_intermediate(&text, text_version, from_version, &edits)
+                    .is_ok();
+            if intermediate_ok {
+                snapshot_for_intermediate.store(Arc::new(syntax.snapshot_owned()));
+                syntax.reparse_with_cached_tree();
             } else {
-                syntax.parse_at_with_edits(&text, text_version, from_version, &edits);
+                syntax.parse_at(&text, text_version);
             }
             syntax
         })

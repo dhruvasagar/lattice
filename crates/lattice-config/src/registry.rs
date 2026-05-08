@@ -263,12 +263,32 @@ impl ConfigRegistry {
         Some(OptionHandle::<D::Value>::new(idx))
     }
 
+    /// Type-keyed write: set the option declared by `D` to `value`.
+    /// Runs the option's validator before committing, publishes
+    /// [`Event::OptionChanged`] on success, returns the validator
+    /// error (or a missing-registration error) on failure.
+    ///
+    /// Hot-path-equivalent to the legacy `set(handle, value)`
+    /// shape; one TypeId lookup per write. Writes are rare (user
+    /// `:set foo=bar` cmdline, programmatic toggles), so the
+    /// extra hash bears no measurable cost.
+    pub fn set_typed<D: OptionDecl>(&self, value: D::Value) -> Result<(), String>
+    where
+        D::Value: Clone + Send + Sync + 'static,
+    {
+        let handle = self
+            .handle_for_decl::<D>()
+            .ok_or_else(|| format!("config: option `{}` not registered", D::NAME))?;
+        self.set(handle, value)
+    }
+
     /// Boot loop: walk the [`OPTION_DECLS`] linkme slice and
     /// register every option declared anywhere in the workspace.
-    /// Called once at App startup, before any user-facing work.
-    /// Idempotent against the registry's `by_name` invariants
-    /// (duplicate names panic via the existing `register` shim);
-    /// duplicate `TypeId` panics with a config-level error.
+    /// Idempotent: calling more than once is a no-op (the second
+    /// call observes that every option is already registered and
+    /// returns without doing anything). Boot panics on a true
+    /// programming error (e.g. two distinct `OptionDecl` types
+    /// happen to declare the same display name across crates).
     ///
     /// After this returns, every `options! { ... }` declaration
     /// is reachable via [`Self::get_typed`] / [`Self::lookup`] /
@@ -276,6 +296,17 @@ impl ConfigRegistry {
     /// "the option exists" goes from "compile-time fact in the
     /// declaring crate" to "runtime fact in the registry."
     pub fn init_from_linkme(&self) {
+        let already_registered = {
+            let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+            !inner.by_typeid.is_empty()
+        };
+        if already_registered {
+            // Caller invoked us a second time (e.g. App::new
+            // called init, then a per-feature helper also called
+            // it). Skip the walk -- every option already lives
+            // in the registry from the first call.
+            return;
+        }
         for decl in OPTION_DECLS.iter() {
             (decl.register_fn)(self);
         }

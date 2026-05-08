@@ -20,7 +20,8 @@
 use std::sync::Arc;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use lattice_config::{ConfigRegistry, EventPublisher, Option, OptionHandle};
+use lattice_config::option::{Option, OptionHandle};
+use lattice_config::{ConfigRegistry, EventPublisher};
 
 fn bench_typed_get(c: &mut Criterion) {
     let registry = ConfigRegistry::new();

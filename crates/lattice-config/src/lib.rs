@@ -66,12 +66,18 @@
 extern crate self as lattice_config;
 
 pub mod completion;
-mod core_options;
+pub mod core_options;
 mod domain;
 mod erased;
 pub mod group;
 pub mod loader;
-mod option;
+// `option` is `pub` so the proc macros' generated code can name
+// `::lattice_config::option::Option<T>` for runtime spec
+// construction. Direct construction of `Option<T>` is the
+// macro-internal path (the macros' `build_spec()` calls
+// `Option::<T>::builder(...)`); consumer-level code uses the
+// macro and `config.get_typed::<X>()` instead.
+pub mod option;
 mod option_decl;
 mod option_type;
 mod overrides;
@@ -94,7 +100,17 @@ pub use linkme;
 pub use lattice_config_macros::{groups, options};
 
 pub use completion::OptionsGenerator;
-pub use core_options::{CoreOptions, register_core_options};
+// M.2.0c: re-export the macro-generated option types at the
+// crate root for ergonomic type-keyed access.
+// Callers write `config.get_typed::<lattice_config::Tabstop>()`
+// instead of the longer `lattice_config::core_options::Tabstop`.
+pub use core_options::{
+    CompletionAutoInsertSingle, CompletionExtraCommitChars, CompletionGhostText,
+    CompletionSourceBufferWordsPriority, CompletionSourceLspPriority,
+    CompletionSourcePathPriority, CompletionSourceSnippetPriority,
+    CompletionSourceTreeSitterPriority, FoldEnable, FoldMethodOption, IgnoreCase, Number,
+    RelativeNumber, Scrolloff, Tabstop, Wrap,
+};
 pub use erased::ErasedOption;
 pub use group::{
     Appearance, Completion, Display, Editing, Editor, Filetree, GROUP_DECLS, Help, Lsp,
@@ -104,7 +120,13 @@ pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, default_user_config_path, load_default_paths,
     load_file, lookup_dotted_path, project_config_path,
 };
-pub use option::{Option, OptionBuilder, OptionHandle};
+// M.2.0c: `Option<T>`, `OptionBuilder<T>`, `OptionHandle<T>`
+// remain `pub` from the `option` module so the macros' generated
+// `build_spec()` methods can name them, but they are no longer
+// re-exported at the crate root. The intended public surface is
+// the macro path -- callers declare options via `options! { ... }`
+// and read via `config.get_typed::<X>()`. Direct construction of
+// `Option<T>` survives for the future plugin-adapter path.
 pub use option_decl::{HasGroup, OPTION_DECLS, OptionDecl, OptionDeclMetadata};
 pub use option_type::OptionType;
 pub use overrides::{OptionOverride, OptionOverrideSet, OverridePriority};

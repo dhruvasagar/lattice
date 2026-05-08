@@ -1247,15 +1247,11 @@ pub struct App {
     /// option's *current value* lives in here behind an
     /// `ArcSwap<T>`; `:set` parses against it; the customize
     /// buffer view (post-1.0) reads + writes through the same
-    /// surface. Renderer-agnostic options register via
-    /// [`lattice_config::register_core_options`]; this renderer's
-    /// own options register via [`crate::tui_options::register_tui_options`].
+    /// surface. Renderer-agnostic options self-register via
+    /// the `linkme`-aggregated `OPTION_DECLS` slice; this
+    /// renderer's own options register via
+    /// [`crate::tui_options::register_tui_options`].
     pub config: std::sync::Arc<lattice_config::ConfigRegistry>,
-    /// Typed handles to the renderer-agnostic options registered
-    /// at [`Self::new`] time. Used by the cmdline path
-    /// (`config.parse_and_set_command`) and the cascade hook
-    /// (`drain_option_changes`) that refreshes [`Self::option_cache`].
-    pub core_options: lattice_config::CoreOptions,
     /// Hot-path read cache for the option values. Populated at
     /// [`Self::new`] time; refreshed inside the
     /// `Event::OptionChanged` cascade so writes through any path
@@ -1269,11 +1265,10 @@ pub struct App {
     /// benchmarks. Single source of truth stays in
     /// [`Self::config`]; this struct is a derived projection.
     pub option_cache: OptionCache,
-    /// Typed handles to the TUI-specific options. Same shape as
-    /// [`Self::core_options`], scoped to options that only make
-    /// sense for the terminal renderer (`ui.separator`,
-    /// `ui.statusline_active_fg`, ...).
-    pub tui_options: crate::tui_options::TuiOptions,
+    // M.2.0c: TUI-specific options self-register via the
+    // linkme slice. No `tui_options` field needed -- callers
+    // read directly via `config.get_typed::<UiDimInactive>()`
+    // etc. (see `sync_theme_from_config`).
     /// Free-form help topic registry (DESIGN.md §5.11). `:help`
     /// reads from this; built-ins are sourced from `docs/help/*.md`
     /// at build time. Plugins / future LSP integrations register
@@ -1469,8 +1464,8 @@ pub struct App {
     pub lsp_log_event_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_protocol::Event>>,
     // `completion.auto_insert_single` lives on the typed-options
-    // registry now (`self.config` keyed by
-    // `self.core_options.completion_auto_insert_single`). Read via
+    // registry (`self.config` type-keyed by
+    // `lattice_config::CompletionAutoInsertSingle`). Read via
     // [`Self::completion_auto_insert_single`].
     /// One-shot "auto-submit on next chord" flag. Set when the
     /// user submitted a Chord-arg-required command with no value
@@ -2463,8 +2458,12 @@ impl App {
         config.set_event_publisher(std::sync::Arc::new(move |event| {
             bus_for_publisher.publish(event);
         }));
-        let core_options = lattice_config::register_core_options(&config);
-        let tui_options = crate::tui_options::register_tui_options(&config);
+        // M.2.0c: every option (core + TUI-specific) self-
+        // registers via the proc-macro-emitted `register_fn`
+        // thunks aggregated in `OPTION_DECLS`. One
+        // `init_from_linkme()` call boots them all; idempotent
+        // if called again.
+        config.init_from_linkme();
         // `gen:options` -- completion source for `:set <Tab>` and
         // `:set name=<Tab>`. Wired to the same `ConfigRegistry` the
         // `:set` parser consults so completions never drift from
@@ -2641,13 +2640,11 @@ impl App {
             recording_insert: None,
             pending_block_insert: None,
             config,
-            core_options,
             // Default placeholder; rebuilt from config below before
             // the App is returned. The placeholder lets the struct
             // literal type-check; the rebuild is the canonical
             // initial population.
             option_cache: OptionCache::default(),
-            tui_options,
             help_topics,
             theme: crate::theme::Theme::default(),
             pane_highlights: HashMap::new(),
@@ -2819,18 +2816,34 @@ impl App {
     /// plugin, customize buffer) refreshes the renderer-visible
     /// projection. Cheap: 9 typed reads (~30ns each).
     fn rebuild_option_cache(&mut self) {
+        use lattice_config::{
+            CompletionAutoInsertSingle, FoldEnable, FoldMethodOption, IgnoreCase, Number,
+            RelativeNumber, Scrolloff, Tabstop, Wrap,
+        };
+        // Type-keyed reads against the post-boot registry.
+        // `expect` is fine here -- registration happens in
+        // `App::new` before this function is reachable, and a
+        // missing option is a build-config bug, not a runtime
+        // condition we recover from.
         self.option_cache = OptionCache {
-            show_line_numbers: *self.config.get(self.core_options.number),
-            relative_line_numbers: *self.config.get(self.core_options.relativenumber),
-            wrap_lines: *self.config.get(self.core_options.wrap),
-            ignorecase: *self.config.get(self.core_options.ignorecase),
-            tabstop: *self.config.get(self.core_options.tabstop) as u32,
-            foldenable: *self.config.get(self.core_options.foldenable),
-            foldmethod: *self.config.get(self.core_options.foldmethod),
-            scrolloff: *self.config.get(self.core_options.scrolloff) as u32,
+            show_line_numbers: *self.config.get_typed::<Number>().expect("Number"),
+            relative_line_numbers: *self
+                .config
+                .get_typed::<RelativeNumber>()
+                .expect("RelativeNumber"),
+            wrap_lines: *self.config.get_typed::<Wrap>().expect("Wrap"),
+            ignorecase: *self.config.get_typed::<IgnoreCase>().expect("IgnoreCase"),
+            tabstop: *self.config.get_typed::<Tabstop>().expect("Tabstop") as u32,
+            foldenable: *self.config.get_typed::<FoldEnable>().expect("FoldEnable"),
+            foldmethod: *self
+                .config
+                .get_typed::<FoldMethodOption>()
+                .expect("FoldMethodOption"),
+            scrolloff: *self.config.get_typed::<Scrolloff>().expect("Scrolloff") as u32,
             completion_auto_insert_single: *self
                 .config
-                .get(self.core_options.completion_auto_insert_single),
+                .get_typed::<CompletionAutoInsertSingle>()
+                .expect("CompletionAutoInsertSingle"),
         };
     }
 
@@ -2848,7 +2861,7 @@ impl App {
     /// after the cmdline path.
     pub fn set_foldmethod_for_test(&mut self, fm: FoldMethod) {
         self.config
-            .set(self.core_options.foldmethod, fm)
+            .set_typed::<lattice_config::FoldMethodOption>(fm)
             .expect("set foldmethod");
         self.drain_option_changes();
     }
@@ -2856,7 +2869,7 @@ impl App {
     /// Set `foldenable` directly. Drains the cascade so the cache
     /// reflects the new value before the caller observes it.
     pub fn set_foldenable_for_test(&mut self, on: bool) {
-        let _ = self.config.set(self.core_options.foldenable, on);
+        let _ = self.config.set_typed::<lattice_config::FoldEnable>(on);
         self.drain_option_changes();
     }
 
@@ -2866,7 +2879,7 @@ impl App {
     pub fn set_completion_auto_insert_single_for_test(&mut self, on: bool) {
         let _ = self
             .config
-            .set(self.core_options.completion_auto_insert_single, on);
+            .set_typed::<lattice_config::CompletionAutoInsertSingle>(on);
         self.drain_option_changes();
     }
 
@@ -4082,7 +4095,7 @@ impl App {
                 // subsequent reads in this same `apply` call (and
                 // before the next frame draws).
                 let cur = self.foldenable();
-                let _ = self.config.set(self.core_options.foldenable, !cur);
+                let _ = self.config.set_typed::<lattice_config::FoldEnable>(!cur);
                 self.drain_option_changes();
             }
             Action::LspHoverRequest => self.do_lsp_hover_request(),
@@ -7468,19 +7481,38 @@ impl App {
         &self,
         source: &lattice_completion::SourceId,
     ) -> u32 {
-        let handle = match source.as_str() {
-            "gen:lsp-completion" => self.core_options.completion_source_lsp_priority,
-            "gen:snippet" => self.core_options.completion_source_snippet_priority,
-            "gen:buffer-words" => {
-                self.core_options.completion_source_buffer_words_priority
-            }
-            "gen:tree-sitter-symbol" => {
-                self.core_options.completion_source_tree_sitter_priority
-            }
-            "gen:path" => self.core_options.completion_source_path_priority,
+        use lattice_config::{
+            CompletionSourceBufferWordsPriority, CompletionSourceLspPriority,
+            CompletionSourcePathPriority, CompletionSourceSnippetPriority,
+            CompletionSourceTreeSitterPriority,
+        };
+        // Type-keyed read per source. Five distinct option types
+        // ⇒ the type can't be variable, so the dispatch is a
+        // match on source.as_str() returning the read value
+        // directly.
+        let raw: i64 = match source.as_str() {
+            "gen:lsp-completion" => *self
+                .config
+                .get_typed::<CompletionSourceLspPriority>()
+                .expect("CompletionSourceLspPriority"),
+            "gen:snippet" => *self
+                .config
+                .get_typed::<CompletionSourceSnippetPriority>()
+                .expect("CompletionSourceSnippetPriority"),
+            "gen:buffer-words" => *self
+                .config
+                .get_typed::<CompletionSourceBufferWordsPriority>()
+                .expect("CompletionSourceBufferWordsPriority"),
+            "gen:tree-sitter-symbol" => *self
+                .config
+                .get_typed::<CompletionSourceTreeSitterPriority>()
+                .expect("CompletionSourceTreeSitterPriority"),
+            "gen:path" => *self
+                .config
+                .get_typed::<CompletionSourcePathPriority>()
+                .expect("CompletionSourcePathPriority"),
             _ => return 0,
         };
-        let raw = *self.config.get(handle);
         // Validator clamps to [0, 9999] so this saturating cast
         // is a no-op in practice; defend against config writes
         // that bypass the validator (none today, but cheap).
@@ -7606,7 +7638,11 @@ impl App {
     ///   everything; ghosting the first arbitrary candidate
     ///   would surprise the user).
     pub fn completion_ghost_text_suffix(&self) -> Option<String> {
-        if !*self.config.get(self.core_options.completion_ghost_text) {
+        if !*self
+            .config
+            .get_typed::<lattice_config::CompletionGhostText>()
+            .expect("CompletionGhostText")
+        {
             return None;
         }
         if self.completion_in_path_context {
@@ -7646,7 +7682,10 @@ impl App {
             .lsp_completion_meta_for(candidate)
             .map(|meta| meta.commit_characters.clone())
             .unwrap_or_default();
-        let extra = self.config.get(self.core_options.completion_extra_commit_chars);
+        let extra = self
+            .config
+            .get_typed::<lattice_config::CompletionExtraCommitChars>()
+            .expect("CompletionExtraCommitChars");
         for c in extra.chars() {
             if !chars.contains(&c) {
                 chars.push(c);
@@ -8390,23 +8429,24 @@ impl App {
             .collect();
         // Disjoint-field borrows: `state` aliases
         // `self.insert_completion` mutably, so the bonus closure
-        // captures `freq` / `config` / `core_options` through
-        // direct field refs (mirrors `completion_total_bonus`,
-        // which can't be called here without re-borrowing self).
+        // captures `freq` / `config` through direct field refs
+        // (mirrors `completion_total_bonus`, which can't be
+        // called here without re-borrowing self). Type-keyed
+        // reads via `config.get_typed::<T>()` -- same TypeId
+        // lookup the priority_for_source helper uses.
         let freq = &self.completion_accept_freq;
         let config = &self.config;
-        let opts = &self.core_options;
         ranker.rank_with_bonus(&mut scored, |raw| {
             let priority = match raw.source.as_ref().map(|s| s.as_str()) {
-                Some("gen:lsp-completion") => {
-                    *config.get(opts.completion_source_lsp_priority)
-                }
-                Some("gen:snippet") => {
-                    *config.get(opts.completion_source_snippet_priority)
-                }
-                Some("gen:buffer-words") => {
-                    *config.get(opts.completion_source_buffer_words_priority)
-                }
+                Some("gen:lsp-completion") => *config
+                    .get_typed::<lattice_config::CompletionSourceLspPriority>()
+                    .expect("CompletionSourceLspPriority"),
+                Some("gen:snippet") => *config
+                    .get_typed::<lattice_config::CompletionSourceSnippetPriority>()
+                    .expect("CompletionSourceSnippetPriority"),
+                Some("gen:buffer-words") => *config
+                    .get_typed::<lattice_config::CompletionSourceBufferWordsPriority>()
+                    .expect("CompletionSourceBufferWordsPriority"),
                 _ => 0,
             }
             .clamp(0, u32::MAX as i64) as u32;
@@ -8941,21 +8981,20 @@ impl App {
         let ranker = lattice_completion::InsertRanker::new();
         // Same disjoint-borrow shape as the post-edit refresh
         // path; combines per-source priority with the capped
-        // frequency lift.
+        // frequency lift. Type-keyed reads via `get_typed`.
         let freq = &self.completion_accept_freq;
         let config = &self.config;
-        let opts = &self.core_options;
         ranker.rank_with_bonus(&mut scored, |raw| {
             let priority = match raw.source.as_ref().map(|s| s.as_str()) {
-                Some("gen:lsp-completion") => {
-                    *config.get(opts.completion_source_lsp_priority)
-                }
-                Some("gen:snippet") => {
-                    *config.get(opts.completion_source_snippet_priority)
-                }
-                Some("gen:buffer-words") => {
-                    *config.get(opts.completion_source_buffer_words_priority)
-                }
+                Some("gen:lsp-completion") => *config
+                    .get_typed::<lattice_config::CompletionSourceLspPriority>()
+                    .expect("CompletionSourceLspPriority"),
+                Some("gen:snippet") => *config
+                    .get_typed::<lattice_config::CompletionSourceSnippetPriority>()
+                    .expect("CompletionSourceSnippetPriority"),
+                Some("gen:buffer-words") => *config
+                    .get_typed::<lattice_config::CompletionSourceBufferWordsPriority>()
+                    .expect("CompletionSourceBufferWordsPriority"),
                 _ => 0,
             }
             .clamp(0, u32::MAX as i64) as u32;
@@ -10104,7 +10143,7 @@ impl App {
                 // Conditional on the new value being `true`, which
                 // we re-read through the typed handle (cheap).
                 if self.relative_line_numbers() {
-                    let _ = self.config.set(self.core_options.number, true);
+                    let _ = self.config.set_typed::<lattice_config::Number>(true);
                 }
             }
             "foldmethod" => {
@@ -10176,28 +10215,42 @@ impl App {
     /// ui.*` so the cached theme stays in lockstep with the
     /// canonical primitives in config.
     pub fn sync_theme_from_config(&mut self) {
+        use crate::tui_options::{
+            UiDimInactive, UiSeparator, UiSeparatorColor, UiStatuslineActiveFg,
+            UiStatuslineInactiveFg,
+        };
         use ratatui::style::Style;
         // ui.dim_inactive -- bool flag projected directly.
-        self.theme.dim_inactive_panes = *self.config.get(self.tui_options.dim_inactive);
+        self.theme.dim_inactive_panes =
+            *self.config.get_typed::<UiDimInactive>().expect("UiDimInactive");
         // ui.separator -- one-character glyph for the vertical
         // pane divider. Validated to len==1 at parse; fall back to
         // the default if a forged value sneaks through.
-        let sep = self.config.get(self.tui_options.separator);
+        let sep = self.config.get_typed::<UiSeparator>().expect("UiSeparator");
         self.theme.pane_separator_vertical = sep.chars().next().unwrap_or('│');
         // ui.separator_color -- color name; parse_color returned
         // Ok during validate so unwrap-via-fallback is safe.
-        let sep_color = self.config.get(self.tui_options.separator_color);
+        let sep_color = self
+            .config
+            .get_typed::<UiSeparatorColor>()
+            .expect("UiSeparatorColor");
         if let Ok(c) = crate::theme::parse_color(&sep_color) {
             self.theme.pane_separator = Style::default().fg(c);
         }
         // ui.statusline_active_fg -- foreground only; preserve any
         // existing modifiers / background by chaining `.fg(c)` on
         // the current style.
-        let active_fg = self.config.get(self.tui_options.statusline_active_fg);
+        let active_fg = self
+            .config
+            .get_typed::<UiStatuslineActiveFg>()
+            .expect("UiStatuslineActiveFg");
         if let Ok(c) = crate::theme::parse_color(&active_fg) {
             self.theme.pane_status_active = self.theme.pane_status_active.fg(c);
         }
-        let inactive_fg = self.config.get(self.tui_options.statusline_inactive_fg);
+        let inactive_fg = self
+            .config
+            .get_typed::<UiStatuslineInactiveFg>()
+            .expect("UiStatuslineInactiveFg");
         if let Ok(c) = crate::theme::parse_color(&inactive_fg) {
             self.theme.pane_status_inactive = self.theme.pane_status_inactive.fg(c);
         }
@@ -16874,7 +16927,7 @@ mod tests {
         let mut a = app_with("def f():\n    pass\n    pass\n", 10);
         // No :set involved -- direct write to the registry.
         a.config
-            .set(a.core_options.foldmethod, FoldMethod::Indent)
+            .set_typed::<lattice_config::FoldMethodOption>(FoldMethod::Indent)
             .unwrap();
         // Folds should not be populated yet -- the cascade is
         // queued but hasn't been drained.
@@ -16896,12 +16949,12 @@ mod tests {
         // `:set rnu` implies `:set nu`.
         let mut a = app_with("xx", 10);
         // Start with number off so the cascade has something to do.
-        a.config.set(a.core_options.number, false).unwrap();
+        a.config.set_typed::<lattice_config::Number>(false).unwrap();
         a.drain_option_changes();
         assert!(!a.show_line_numbers());
         // Now flip relativenumber on directly.
         a.config
-            .set(a.core_options.relativenumber, true)
+            .set_typed::<lattice_config::RelativeNumber>(true)
             .unwrap();
         a.drain_option_changes();
         assert!(a.relative_line_numbers());
@@ -16917,7 +16970,7 @@ mod tests {
         // cached theme projections via `sync_theme_from_config`.
         let mut a = app_with("xx", 10);
         a.config
-            .set(a.tui_options.dim_inactive, false)
+            .set_typed::<crate::tui_options::UiDimInactive>(false)
             .unwrap();
         a.drain_option_changes();
         assert!(
@@ -16934,10 +16987,10 @@ mod tests {
         // dropping it. Confirm by starting from a clean state and
         // asserting both options ended up correctly set.
         let mut a = app_with("xx", 10);
-        a.config.set(a.core_options.number, false).unwrap();
+        a.config.set_typed::<lattice_config::Number>(false).unwrap();
         a.drain_option_changes();
         a.config
-            .set(a.core_options.relativenumber, true)
+            .set_typed::<lattice_config::RelativeNumber>(true)
             .unwrap();
         a.drain_option_changes();
         assert!(a.relative_line_numbers());
@@ -26766,9 +26819,9 @@ mod tests {
         let mut a = app_with("", 5);
         // tabstop default is 8; override should land before
         // first frame.
-        assert_eq!(*a.config.get(a.core_options.tabstop), 8);
+        assert_eq!(*a.config.get_typed::<lattice_config::Tabstop>().unwrap(), 8);
         a.load_persistent_config(Some(&ws));
-        assert_eq!(*a.config.get(a.core_options.tabstop), 4);
+        assert_eq!(*a.config.get_typed::<lattice_config::Tabstop>().unwrap(), 4);
     }
 
     #[test]

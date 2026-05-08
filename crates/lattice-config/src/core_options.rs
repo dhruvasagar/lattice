@@ -28,10 +28,6 @@
 
 use lattice_core::FoldMethod;
 
-use crate::option::OptionHandle;
-use crate::option_decl::OptionDecl;
-use crate::registry::ConfigRegistry;
-
 // Validators referenced by `#[validate(...)]` on the options
 // below. Plain Rust functions; the macro just records the path.
 fn validate_tabstop(i: &i64) -> Result<(), String> {
@@ -194,127 +190,46 @@ crate::options! {
     pub CompletionGhostText: bool = false;
 }
 
-/// Typed handles to every core option, populated post-boot. M.2.0b
-/// transitional shim -- existing callers that read via
-/// `config.get(core_options.tabstop)` continue to work; M.2.0c
-/// migrates them to `config.get_typed::<Tabstop>()` and retires
-/// the struct. Field types and names match the pre-migration
-/// API one-for-one.
-pub struct CoreOptions {
-    pub number: OptionHandle<bool>,
-    pub relativenumber: OptionHandle<bool>,
-    pub wrap: OptionHandle<bool>,
-    pub ignorecase: OptionHandle<bool>,
-    pub tabstop: OptionHandle<i64>,
-    pub foldenable: OptionHandle<bool>,
-    pub foldmethod: OptionHandle<FoldMethod>,
-    pub scrolloff: OptionHandle<i64>,
-    pub completion_auto_insert_single: OptionHandle<bool>,
-    /// Priority bucket for the LSP source. Higher buckets sort
-    /// above lower; ties broken by the matcher score + frequency
-    /// bonus per `docs/insert-completion.md` §3.6. Defaults
-    /// follow §3.4: lsp 200, snippet 150, buffer-words 100.
-    pub completion_source_lsp_priority: OptionHandle<i64>,
-    pub completion_source_snippet_priority: OptionHandle<i64>,
-    pub completion_source_buffer_words_priority: OptionHandle<i64>,
-    pub completion_source_tree_sitter_priority: OptionHandle<i64>,
-    pub completion_source_path_priority: OptionHandle<i64>,
-    pub completion_extra_commit_chars: OptionHandle<String>,
-    pub completion_ghost_text: OptionHandle<bool>,
-}
-
-/// Boot every renderer-agnostic option against `registry` and
-/// return the typed handle struct for back-compat.
-///
-/// M.2.0b semantics: the registration is driven by the
-/// macro-generated `linkme` slice; this function calls
-/// [`ConfigRegistry::init_from_linkme`] and then looks up each
-/// pre-declared option's handle by [`OptionDecl::NAME`]. Idempotent
-/// only by duplication — calling twice panics on the first
-/// duplicate registration (registry's invariant).
-pub fn register_core_options(registry: &ConfigRegistry) -> CoreOptions {
-    registry.init_from_linkme();
-
-    fn handle_for<D: OptionDecl>(registry: &ConfigRegistry) -> OptionHandle<D::Value> {
-        registry
-            .handle_for_decl::<D>()
-            .unwrap_or_else(|| panic!("config: option `{}` missing after init_from_linkme", D::NAME))
-    }
-
-    CoreOptions {
-        number: handle_for::<Number>(registry),
-        relativenumber: handle_for::<RelativeNumber>(registry),
-        wrap: handle_for::<Wrap>(registry),
-        ignorecase: handle_for::<IgnoreCase>(registry),
-        tabstop: handle_for::<Tabstop>(registry),
-        foldenable: handle_for::<FoldEnable>(registry),
-        foldmethod: handle_for::<FoldMethodOption>(registry),
-        scrolloff: handle_for::<Scrolloff>(registry),
-        completion_auto_insert_single: handle_for::<CompletionAutoInsertSingle>(registry),
-        completion_source_lsp_priority: handle_for::<CompletionSourceLspPriority>(registry),
-        completion_source_snippet_priority: handle_for::<CompletionSourceSnippetPriority>(registry),
-        completion_source_buffer_words_priority: handle_for::<CompletionSourceBufferWordsPriority>(
-            registry,
-        ),
-        completion_source_tree_sitter_priority: handle_for::<CompletionSourceTreeSitterPriority>(
-            registry,
-        ),
-        completion_source_path_priority: handle_for::<CompletionSourcePathPriority>(registry),
-        completion_extra_commit_chars: handle_for::<CompletionExtraCommitChars>(registry),
-        completion_ghost_text: handle_for::<CompletionGhostText>(registry),
-    }
-}
+// M.2.0c: `CoreOptions` struct and `register_core_options`
+// helper retired. Built-in options self-register via the
+// macro-generated `register_fn` thunks (`OPTION_DECLS` linkme
+// slice); consumers boot via `ConfigRegistry::init_from_linkme()`
+// and read via `config.get_typed::<Tabstop>()`.
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic, unsafe_code)]
     use super::*;
+    use crate::registry::ConfigRegistry;
 
     #[test]
-    fn register_core_options_returns_handles_to_all_options() {
+    fn type_keyed_reads_after_init_from_linkme() {
         let r = ConfigRegistry::new();
-        let h = register_core_options(&r);
-        assert!(*r.get(h.number));
-        assert!(!*r.get(h.relativenumber));
-        assert!(!*r.get(h.wrap));
-        assert!(!*r.get(h.ignorecase));
-        assert_eq!(*r.get(h.tabstop), 8);
-        assert!(*r.get(h.foldenable));
-        assert_eq!(*r.get(h.foldmethod), FoldMethod::Manual);
-        assert_eq!(*r.get(h.scrolloff), 0);
-        assert!(*r.get(h.completion_auto_insert_single));
-        assert_eq!(*r.get(h.completion_source_lsp_priority), 200);
-        assert_eq!(*r.get(h.completion_source_snippet_priority), 150);
-        assert_eq!(*r.get(h.completion_source_buffer_words_priority), 100);
-        assert_eq!(*r.get(h.completion_source_tree_sitter_priority), 80);
-        assert_eq!(*r.get(h.completion_source_path_priority), 90);
-        assert_eq!(r.get(h.completion_extra_commit_chars).as_str(), "");
-        assert!(!*r.get(h.completion_ghost_text));
-    }
-
-    #[test]
-    fn type_keyed_reads_work_post_boot() {
-        let r = ConfigRegistry::new();
-        register_core_options(&r);
+        r.init_from_linkme();
         assert_eq!(*r.get_typed::<Tabstop>().unwrap(), 8);
-        assert_eq!(*r.get_typed::<Number>().unwrap(), true);
+        assert!(*r.get_typed::<Number>().unwrap());
+        assert!(!*r.get_typed::<RelativeNumber>().unwrap());
+        assert!(!*r.get_typed::<Wrap>().unwrap());
         assert_eq!(*r.get_typed::<FoldMethodOption>().unwrap(), FoldMethod::Manual);
+        assert_eq!(*r.get_typed::<Scrolloff>().unwrap(), 0);
+        assert!(*r.get_typed::<CompletionAutoInsertSingle>().unwrap());
+        assert_eq!(*r.get_typed::<CompletionSourceLspPriority>().unwrap(), 200);
     }
 
     #[test]
     fn completion_source_priority_validate_rejects_out_of_range() {
         let r = ConfigRegistry::new();
-        let h = register_core_options(&r);
-        assert!(r.set(h.completion_source_lsp_priority, -1).is_err());
-        assert!(r.set(h.completion_source_lsp_priority, 10_000).is_err());
-        assert!(r.set(h.completion_source_lsp_priority, 0).is_ok());
-        assert!(r.set(h.completion_source_lsp_priority, 9999).is_ok());
+        r.init_from_linkme();
+        assert!(r.set_typed::<CompletionSourceLspPriority>(-1).is_err());
+        assert!(r.set_typed::<CompletionSourceLspPriority>(10_000).is_err());
+        assert!(r.set_typed::<CompletionSourceLspPriority>(0).is_ok());
+        assert!(r.set_typed::<CompletionSourceLspPriority>(9999).is_ok());
     }
 
     #[test]
     fn registered_options_are_lookable_by_alias() {
         let r = ConfigRegistry::new();
-        register_core_options(&r);
+        r.init_from_linkme();
         assert_eq!(r.lookup("nu").unwrap().name(), "number");
         assert_eq!(r.lookup("rnu").unwrap().name(), "relativenumber");
         assert_eq!(r.lookup("ic").unwrap().name(), "ignorecase");
@@ -327,7 +242,7 @@ mod tests {
     #[test]
     fn tabstop_validate_rejects_out_of_range_with_legacy_message() {
         let r = ConfigRegistry::new();
-        register_core_options(&r);
+        r.init_from_linkme();
         let err = r.parse_and_set_command("tabstop=99").unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("tabstop out of range [1, 32]: 99"));
@@ -336,7 +251,7 @@ mod tests {
     #[test]
     fn foldmethod_parse_error_preserves_legacy_wording() {
         let r = ConfigRegistry::new();
-        register_core_options(&r);
+        r.init_from_linkme();
         let err = r.parse_and_set_command("foldmethod=xyz").unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("expected `manual`, `indent`, `markdown`, or `syntax`"));

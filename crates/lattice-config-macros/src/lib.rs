@@ -217,12 +217,16 @@ fn expand_one_option(
         }
 
         impl #name_ident {
-            /// Build the runtime `Option<T>` spec for this
-            /// declaration. Used by the registry's
-            /// self-registration boot path; not generally
-            /// called by hand.
-            pub fn build_spec() -> ::lattice_config::Option<#ty> {
-                let b = ::lattice_config::Option::<#ty>::builder(
+            /// Build the runtime spec for this declaration.
+            /// Used by the registry's self-registration boot
+            /// path; not generally called by hand. Direct
+            /// construction of `Option<T>` is the macro's
+            /// internal-only path -- consumer code uses
+            /// `config.get_typed::<#name_ident>()` to read
+            /// and `config.set_typed::<#name_ident>(...)` to
+            /// write.
+            pub fn build_spec() -> ::lattice_config::option::Option<#ty> {
+                let b = ::lattice_config::option::Option::<#ty>::builder(
                     #display_name_lit,
                     #default,
                     #doc_lit,

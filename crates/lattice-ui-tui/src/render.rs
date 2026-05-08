@@ -3203,7 +3203,7 @@ mod tests {
         app.modal = lattice_grammar::ModalState::Insert;
         app.cursor = pos(0, 3);
         app.config
-            .set(app.core_options.completion_ghost_text, true)
+            .set_typed::<lattice_config::CompletionGhostText>(true)
             .expect("set ghost_text");
         // Install a popup with `foobar` as the top candidate
         // and `foo` as the typed query.
@@ -3256,7 +3256,7 @@ mod tests {
         app.modal = lattice_grammar::ModalState::Insert;
         app.cursor = pos(0, 3); // between `foo` and `baz`
         app.config
-            .set(app.core_options.completion_ghost_text, true)
+            .set_typed::<lattice_config::CompletionGhostText>(true)
             .expect("set ghost_text");
         let mut state = lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,

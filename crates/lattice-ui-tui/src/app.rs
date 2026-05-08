@@ -2688,7 +2688,20 @@ impl App {
             // M.2.1: per-buffer mode-resolved options cache.
             // Empty until the first `recompute_options_for_buffer`
             // call after registration / mode activation.
-            mode_registry: std::sync::Arc::new(lattice_mode::ModeRegistry::new()),
+            // M.3.0: register every built-in major mode at App
+            // boot. The registry is created mutably, populated,
+            // then wrapped in Arc -- after which it's immutable
+            // for the App's lifetime (plugin-driven dynamic
+            // registration is M.10 territory and uses a
+            // different surface).
+            mode_registry: {
+                let mut registry = lattice_mode::ModeRegistry::new();
+                lattice_mode::register_foundation_modes(&mut registry);
+                lattice_syntax::register_language_modes(&mut registry);
+                lattice_lsp::modes::register_lsp_log_modes(&mut registry);
+                crate::modes::register_buffer_kind_modes(&mut registry);
+                std::sync::Arc::new(registry)
+            },
             active_modes: std::collections::HashMap::new(),
             resolved_options: std::collections::HashMap::new(),
             buffer_local_overrides: std::collections::HashMap::new(),
@@ -28447,5 +28460,60 @@ mod tests {
         // registry's current value.
         let v = a.resolved_option::<lattice_config::Tabstop>(buf);
         assert_eq!(*v, 8);
+    }
+
+    // ---- M.3.0: built-in major modes registered at boot ----
+
+    #[test]
+    fn app_boot_registers_every_built_in_major_mode() {
+        let a = app_with("hi", 5);
+        // Foundation
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_mode::TextMode::mode_id())
+        );
+        // Languages (lattice-syntax)
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_syntax::RustMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_syntax::PythonMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_syntax::JavascriptMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_syntax::MarkdownMode::mode_id())
+        );
+        // Buffer-kind majors (lattice-ui-tui)
+        assert!(
+            a.mode_registry
+                .is_registered(crate::modes::HelpMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(crate::modes::FileTreeMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(crate::modes::OilMode::mode_id())
+        );
+        // LSP log majors (lattice-lsp)
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_lsp::modes::LspLogMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_lsp::modes::LspTraceLogMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_lsp::modes::LspServerLogMode::mode_id())
+        );
     }
 }

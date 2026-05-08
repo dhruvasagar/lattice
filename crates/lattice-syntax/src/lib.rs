@@ -52,12 +52,17 @@
 
 pub mod handle;
 pub mod lang;
+pub mod modes;
 pub mod registry;
 pub mod style;
 pub mod syntax;
 
 pub use crate::handle::SyntaxHandle;
 pub use crate::lang::Lang;
+pub use crate::modes::{
+    JavascriptMode, MarkdownMode, PythonMode, RustMode, major_mode_id_for_lang,
+    register_language_modes,
+};
 pub use crate::registry::LangRegistry;
 pub use crate::style::{Style, StyledSpan};
 pub use crate::syntax::{Syntax, SyntaxError, SyntaxSnapshot};

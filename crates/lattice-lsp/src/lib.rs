@@ -60,6 +60,7 @@ pub mod features;
 pub mod framing;
 pub mod jsonrpc;
 pub mod logging;
+pub mod modes;
 pub mod pending;
 pub mod position;
 pub mod supervisor;

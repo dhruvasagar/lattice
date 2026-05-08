@@ -58,6 +58,7 @@ pub mod contributions;
 pub mod error;
 pub mod event;
 pub mod mode;
+pub mod modes;
 pub mod overrides;
 pub mod registry;
 
@@ -68,5 +69,6 @@ pub use crate::contributions::{DecorationProvider, Keymap, Subscription};
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
 pub use crate::mode::{Mode, ModeId, ModeKind};
+pub use crate::modes::{TextMode, register_foundation_modes};
 pub use crate::overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
 pub use crate::registry::{ModeRegistry, RegistrationError};

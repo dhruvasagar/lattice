@@ -34,6 +34,7 @@ pub mod keymap_registry;
 pub mod keymap_replace;
 pub mod keymap_trie;
 pub mod keymap_visual;
+pub mod modes;
 pub mod pane;
 pub mod picker;
 pub mod render;
@@ -46,6 +47,9 @@ pub mod tui_options;
 pub use app::{Action, App, EchoLevel, EchoMessage};
 pub use buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
 pub use buffers::{BufferFlags, BufferId, BufferKind};
+pub use modes::{
+    FileTreeMode, HelpMode, OilMode, major_mode_id_for_buffer_kind, register_buffer_kind_modes,
+};
 pub use excommand::ExCommandError;
 pub use input::{TranslateContext, translate};
 pub use lattice_syntax::{Lang, Style, StyledSpan, Syntax};

@@ -188,11 +188,25 @@ impl BufferLocals {
         self.map.is_empty()
     }
 
-    /// Insert (or replace) the local of type `T`. Owner-mode
-    /// enforcement is performed at the [`crate::ModeContext`]
-    /// surface; this raw-map insert is `pub(crate)` so only the
-    /// context can call it.
-    pub(crate) fn insert<T: BufferLocal>(&mut self, value: T) {
+    /// Insert (or replace) the local of type `T`. Public so
+    /// the App can seed locals at buffer-construction time
+    /// (e.g. help-mode parsing the markdown links into
+    /// `HelpLinks` when a help buffer is constructed -- the
+    /// "owner" semantically is help-mode, but the App is the
+    /// caller because parsing lives in the constructor).
+    ///
+    /// The owner-mode check is intentionally NOT enforced
+    /// here; that's [`crate::ModeContext::set_local`]'s job
+    /// for *active modes' runtime writes*. App-level
+    /// construction-time seeding is a separate path: the App
+    /// is presumed to insert locals owned by the buffer's
+    /// eventual major mode, and the local's `OWNER_MODE`
+    /// field is metadata for `:describe-buffer` attribution
+    /// rather than an access-control mechanism on this
+    /// surface. Mirrors emacs's `setq-local` -- any code can
+    /// set a buffer-local; the major mode's claim of
+    /// ownership is by convention.
+    pub fn insert<T: BufferLocal>(&mut self, value: T) {
         self.map.insert(TypeId::of::<T>(), Box::new(value));
     }
 

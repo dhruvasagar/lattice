@@ -24,12 +24,72 @@
 //! the slice that ships them.
 
 use lattice_mode::{
-    CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind, ModeRegistry,
-    OptionOverrideSet, TextMode,
+    BufferLocal, CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind,
+    ModeRegistry, OptionOverrideSet, TextMode,
 };
 use lattice_syntax::Lang;
 
 use crate::buffers::BufferKind;
+use crate::help::{HelpAnchor, HelpLink};
+
+// ---- M.3.2.b.1: help-mode buffer-locals ----
+//
+// Three newtypes carrying the per-buffer mode-internal data
+// help-mode owns. Currently mirrored alongside the existing
+// `HelpBuffer.links` / `.anchors` / `.highlights` fields;
+// M.3.2.b.2 flips readers to these locals and removes the
+// per-variant fields. Each newtype's `OWNER_MODE` is
+// `"help-mode"` so `:describe-buffer` attributes them
+// correctly.
+
+/// Help buffer's parsed `[label](url)` markdown links.
+#[derive(Debug, Clone)]
+pub struct HelpLinks(pub Vec<HelpLink>);
+
+impl BufferLocal for HelpLinks {
+    const NAME: &'static str = "help-mode.links";
+    const DOC: &'static str =
+        "Parsed `[label](url)` markdown links; produced at \
+         buffer construction by the help-text parser.";
+    const OWNER_MODE: &'static str = "help-mode";
+    fn describe(&self) -> String {
+        format!("{} link(s)", self.0.len())
+    }
+}
+
+/// Help buffer's named anchors (heading slugs +
+/// introspection-recorded anchors).
+#[derive(Debug, Clone)]
+pub struct HelpAnchors(pub Vec<HelpAnchor>);
+
+impl BufferLocal for HelpAnchors {
+    const NAME: &'static str = "help-mode.anchors";
+    const DOC: &'static str =
+        "Named scroll targets inside the help body. Heading \
+         slugs auto-generated; introspection renderers may add \
+         additional `kind:name` anchors.";
+    const OWNER_MODE: &'static str = "help-mode";
+    fn describe(&self) -> String {
+        format!("{} anchor(s)", self.0.len())
+    }
+}
+
+/// Help buffer's pre-computed per-line markdown highlight
+/// spans. Empty when the buffer was constructed without a
+/// language registry (test paths).
+#[derive(Debug, Clone)]
+pub struct HelpHighlights(pub Vec<Vec<lattice_syntax::StyledSpan>>);
+
+impl BufferLocal for HelpHighlights {
+    const NAME: &'static str = "help-mode.highlights";
+    const DOC: &'static str =
+        "Pre-computed per-line markdown highlight spans, indexed \
+         by visible line. Populated by `with_markdown_syntax`.";
+    const OWNER_MODE: &'static str = "help-mode";
+    fn describe(&self) -> String {
+        format!("{} line(s) of highlights", self.0.len())
+    }
+}
 
 /// Macro for buffer-kind majors that are read-only (Help,
 /// FileTree). Oil is writable so it gets its own impl.

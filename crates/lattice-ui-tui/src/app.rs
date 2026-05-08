@@ -13576,10 +13576,39 @@ impl App {
         // ReadOnly = true contribution lands in the resolved
         // options cache.
         self.activate_major_for_buffer_kind(id, BufferKind::Help);
+        // M.3.2.b.1: mirror help-mode-owned data into the
+        // buffer-locals map. The data is parsed at HelpBuffer
+        // construction (links from markdown source, anchors
+        // from headings, highlights from tree-sitter); this
+        // step copies it into the typed-map so future reads
+        // can transition off `HelpBuffer.X` and onto
+        // `app.buffer_locals[id].get::<HelpLinks>()` etc.
+        // (M.3.2.b.2 flips readers, then drops the fields
+        // from `HelpBuffer`.)
+        self.seed_help_locals(id, &buffer);
         // Take ownership of the original for the popup hot-path.
         self.help_buffer = Some(buffer);
         self.activate_help_in_pane(id);
         id
+    }
+
+    /// Mirror help-mode-owned data from a `HelpBuffer` into
+    /// the buffer-locals map for `buffer_id`. Called at help-
+    /// buffer creation time (M.3.2.b.1). Idempotent: a second
+    /// call with the same buffer overwrites the prior locals
+    /// since `BufferLocals::insert` is replace-on-collision.
+    fn seed_help_locals(
+        &mut self,
+        buffer_id: crate::buffers::BufferId,
+        buffer: &crate::help::HelpBuffer,
+    ) {
+        let locals = self
+            .buffer_locals
+            .entry(buffer_id)
+            .or_default();
+        locals.insert(crate::modes::HelpLinks(buffer.links.clone()));
+        locals.insert(crate::modes::HelpAnchors(buffer.anchors.clone()));
+        locals.insert(crate::modes::HelpHighlights(buffer.highlights.clone()));
     }
 
     /// Switch the active pane to an existing help buffer in the
@@ -28828,6 +28857,62 @@ mod tests {
             !locs.contains::<TestLocalCounter>(),
             "deactivate should remove the mode's local"
         );
+    }
+
+    // ---- M.3.2.b.1: help-mode locals seeded at construction ----
+
+    #[test]
+    fn open_help_in_pane_seeds_help_locals() {
+        let mut a = app_with("hi", 5);
+        let help = crate::help::HelpBuffer::from_lines(
+            "test-locals",
+            vec![
+                "# Heading One".to_string(),
+                "see [ex:write](command:ex:write)".to_string(),
+            ],
+        );
+        let help_id = a.open_help_in_pane(help);
+        let locals = a
+            .buffer_locals
+            .get(&help_id)
+            .expect("buffer_locals should be populated for help buffer");
+        // Links parsed from `[ex:write](command:ex:write)`.
+        let links = locals
+            .get::<crate::modes::HelpLinks>()
+            .expect("HelpLinks local seeded");
+        assert_eq!(links.0.len(), 1);
+        // Anchors come from heading slug generation. `from_lines`
+        // doesn't auto-anchor headings (only
+        // `from_lines_and_anchors` plumbs anchors); the seed
+        // should still be present, just empty.
+        let anchors = locals
+            .get::<crate::modes::HelpAnchors>()
+            .expect("HelpAnchors local seeded (possibly empty)");
+        assert_eq!(anchors.0.len(), 0);
+        // Highlights are empty without a markdown registry.
+        let highlights = locals
+            .get::<crate::modes::HelpHighlights>()
+            .expect("HelpHighlights local seeded (possibly empty)");
+        assert_eq!(highlights.0.len(), 0);
+    }
+
+    #[test]
+    fn help_locals_carry_owner_metadata_for_describe_buffer() {
+        let mut a = app_with("hi", 5);
+        let help = crate::help::HelpBuffer::from_lines("t", vec!["body".into()]);
+        let help_id = a.open_help_in_pane(help);
+        let locals = a.buffer_locals.get(&help_id).unwrap();
+        // Every seeded local should claim help-mode as its owner.
+        let descriptors: Vec<_> = locals.iter_descriptors().collect();
+        assert!(!descriptors.is_empty());
+        for d in &descriptors {
+            assert_eq!(d.owner_mode, "help-mode");
+            assert!(
+                d.name.starts_with("help-mode."),
+                "name {:?} should be namespaced under help-mode",
+                d.name
+            );
+        }
     }
 
     #[test]

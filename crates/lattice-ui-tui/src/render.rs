@@ -1293,9 +1293,8 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(body)
         })
         .collect();
-    let para = Paragraph::new(visible).wrap(Wrap { trim: false });
+    let para = Paragraph::new(visible);
     frame.render_widget(para, area);
-    // Cursor placement: same math as the popup path.
     if area.height > 0 && area.width > 0 {
         let row_off = cursor_line.saturating_sub(scroll);
         let row_off = row_off.min(area.height.saturating_sub(1) as usize);
@@ -1336,7 +1335,7 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
             Line::from(render_help_line(l, &spans))
         })
         .collect();
-    frame.render_widget(Paragraph::new(visible).wrap(Wrap { trim: false }), area);
+    frame.render_widget(Paragraph::new(visible), area);
 }
 
 /// Lay the pane tree out across `area` and draw each pane

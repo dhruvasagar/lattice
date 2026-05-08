@@ -4,8 +4,9 @@ use internment::Intern;
 
 use crate::capability::CapabilitySet;
 use crate::context::ModeContext;
-use crate::contributions::{DecorationProvider, Keymap, OptionOverrideSet, Subscription};
+use crate::contributions::{DecorationProvider, Keymap, Subscription};
 use crate::error::ModeActivationError;
+use crate::overrides::OptionOverrideSet;
 
 /// Canonical identity of a mode. Interned-string for `Copy + Eq +
 /// Hash` at zero allocation cost on the hot path.

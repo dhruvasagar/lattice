@@ -1269,6 +1269,46 @@ pub struct App {
     // linkme slice. No `tui_options` field needed -- callers
     // read directly via `config.get_typed::<UiDimInactive>()`
     // etc. (see `sync_theme_from_config`).
+    /// Mode registry (M.1). Owns the catalogue of registered
+    /// modes; activation / deactivation routes through here.
+    /// One process-shared registry; all Documents share the
+    /// same mode definitions.
+    pub mode_registry: std::sync::Arc<lattice_mode::ModeRegistry>,
+    /// Per-buffer active modes (major + minors). M.1 wired the
+    /// field on `Document` for the document buffer, but
+    /// `Document` lives behind the actor's snapshot-cache, so
+    /// for M.2.1 the App layer maintains a parallel
+    /// per-buffer map keyed by `buffers::BufferId` -- this is
+    /// the version `recompute_options_for_buffer` reads to
+    /// pull mode contributions. `Document.modes` and this map
+    /// converge in M.4 when `ActiveModes` joins
+    /// `DocumentSnapshot`.
+    pub active_modes: std::collections::HashMap<
+        crate::buffers::BufferId,
+        lattice_mode::ActiveModes,
+    >,
+    /// Per-buffer mode-resolved options cache (M.2.1, see
+    /// `mode-architecture.md` §6.3 / §9.4 — note: the doc shows
+    /// this on `Document`, but lattice-core cannot depend on
+    /// lattice-config without a dep cycle, so the cache lives
+    /// at the App layer keyed by `buffers::BufferId` (the App's
+    /// per-buffer key, not the lower-level
+    /// `lattice_protocol::BufferId`). Refreshed eagerly on mode
+    /// toggle and option write per §6.3.1. Reads via type-keyed
+    /// access against the cached snapshot are O(1).
+    pub resolved_options: std::collections::HashMap<
+        crate::buffers::BufferId,
+        lattice_config::ResolvedOptions,
+    >,
+    /// Buffer-local explicit overrides (`:setlocal foo=bar`)
+    /// per buffer. Inputs to resolution; the resolver chains
+    /// these with mode contributions before writing
+    /// [`Self::resolved_options`]. Empty for buffers the user
+    /// has never run `:setlocal` against.
+    pub buffer_local_overrides: std::collections::HashMap<
+        crate::buffers::BufferId,
+        lattice_config::OptionOverrideSet,
+    >,
     /// Free-form help topic registry (DESIGN.md §5.11). `:help`
     /// reads from this; built-ins are sourced from `docs/help/*.md`
     /// at build time. Plugins / future LSP integrations register
@@ -2645,6 +2685,13 @@ impl App {
             // literal type-check; the rebuild is the canonical
             // initial population.
             option_cache: OptionCache::default(),
+            // M.2.1: per-buffer mode-resolved options cache.
+            // Empty until the first `recompute_options_for_buffer`
+            // call after registration / mode activation.
+            mode_registry: std::sync::Arc::new(lattice_mode::ModeRegistry::new()),
+            active_modes: std::collections::HashMap::new(),
+            resolved_options: std::collections::HashMap::new(),
+            buffer_local_overrides: std::collections::HashMap::new(),
             help_topics,
             theme: crate::theme::Theme::default(),
             pane_highlights: HashMap::new(),
@@ -2845,6 +2892,124 @@ impl App {
                 .get_typed::<CompletionAutoInsertSingle>()
                 .expect("CompletionAutoInsertSingle"),
         };
+    }
+
+    /// Recompute the resolved-options cache for `buffer` by
+    /// stitching every layer of the resolution stack
+    /// (`mode-architecture.md` §6.1) and writing the result
+    /// into [`Self::resolved_options`].
+    ///
+    /// Layer ordering (highest priority first):
+    /// 1. Modal-state override -- M.7+ when modal-state-keyed
+    ///    options exist; today the layer is empty.
+    /// 2. Buffer-local explicit set
+    ///    ([`Self::buffer_local_overrides`] for this buffer).
+    /// 3. Active minor modes' contributions, in activation order.
+    /// 4. Active major mode's contributions.
+    /// 5. Global registry value (the canonical
+    ///    [`Self::config`] current value -- bootstrap layer).
+    /// 6. Built-in default (implicitly the registry's initial
+    ///    value before any `:set`).
+    ///
+    /// Eager whole-cache recompute (§6.3.1). For a buffer with
+    /// 10 active minor modes and ~30 options, the call is
+    /// ~3µs end-to-end. Within the §6.3.2 perf gate.
+    ///
+    /// Called whenever any resolution layer for `buffer`
+    /// changes: mode toggle (via `activate_*` /
+    /// `deactivate_*`), buffer-local set, modal-state
+    /// transition for modal-keyed options, or option write
+    /// (the cascade in `drain_option_changes` propagates global
+    /// `:set` writes to every buffer's cache).
+    pub fn recompute_options_for_buffer(
+        &mut self,
+        buffer: crate::buffers::BufferId,
+    ) {
+        let mut resolved = lattice_config::ResolvedOptions::new();
+        // Layer 5/6: bootstrap with current registry values.
+        self.config
+            .bootstrap_resolved_with_current_values(&mut resolved);
+
+        // Active modes (layers 4 + 3): walk in activation order
+        // for minors, prepend major. Pulled from
+        // `self.active_modes[buffer]`; absent ⇒ empty (no major,
+        // no minors). M.3 lands the per-kind majors that
+        // populate this map at buffer creation.
+        let modes_snapshot = self
+            .active_modes
+            .get(&buffer)
+            .cloned()
+            .unwrap_or_default();
+
+        let mut mode_contributions: Vec<lattice_config::OptionOverrideSet> =
+            Vec::with_capacity(modes_snapshot.minors().len() + 1);
+        // Major first (lower priority than minors per §6.1).
+        if let Some(major_id) = modes_snapshot.major()
+            && let Some(major) = self.mode_registry.get(major_id)
+        {
+            mode_contributions.push(major.options());
+        }
+        // Minors in activation order.
+        for &minor_id in modes_snapshot.minors() {
+            if let Some(minor) = self.mode_registry.get(minor_id) {
+                mode_contributions.push(minor.options());
+            }
+        }
+
+        // Buffer-local overrides (layer 2).
+        let buffer_local = self
+            .buffer_local_overrides
+            .get(&buffer)
+            .cloned()
+            .unwrap_or_default();
+
+        // Layer order for the resolver: highest priority first.
+        // Modal-state layer (1) is empty for now; M.7 wires it.
+        let modal_layer = lattice_config::OptionOverrideSet::new();
+
+        // Build the layer iter. The resolver pulls in
+        // declaration order (highest first); we put modal
+        // first, then buffer-local, then the *reversed* mode
+        // contributions so the last-activated minor is highest
+        // in the layered walk (per §6.2 last-activated-wins
+        // for ties).
+        let mut layered: Vec<&lattice_config::OptionOverrideSet> = Vec::new();
+        layered.push(&modal_layer);
+        layered.push(&buffer_local);
+        for set in mode_contributions.iter().rev() {
+            layered.push(set);
+        }
+
+        let resolver = lattice_config::Resolver::new();
+        resolver.resolve_into(layered, &mut resolved);
+
+        self.resolved_options.insert(buffer, resolved);
+    }
+
+    /// Read a resolved option's value for `buffer`. Returns the
+    /// option's bootstrap default if the cache for `buffer`
+    /// hasn't been recomputed yet (transient state during boot
+    /// before the first `recompute_options_for_buffer`).
+    ///
+    /// Hot-path read; O(1) `TypeId` lookup on the cached
+    /// `ResolvedOptions`. The fallback to the registry's
+    /// current value covers the buffer-creation race window
+    /// before mode activation has triggered a recompute.
+    pub fn resolved_option<D: lattice_config::OptionDecl>(
+        &self,
+        buffer: crate::buffers::BufferId,
+    ) -> std::sync::Arc<D::Value>
+    where
+        D::Value: Clone + Send + Sync + 'static,
+    {
+        if let Some(cache) = self.resolved_options.get(&buffer)
+            && let Some(v) = cache.get::<D>()
+        {
+            return v;
+        }
+        self.config
+            .get_typed::<D>()
+            .expect("option not registered")
     }
 
     // ---- Test-only typed setters (kept on the public surface
@@ -28147,5 +28312,140 @@ mod tests {
         // different language slot.
         assert!(a.snippet_registry.lookup("python", "for").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- M.2.1: option resolution per buffer ----
+
+    /// Test fixture: a registered minor mode that contributes
+    /// option overrides via the `overrides!` macro. Confirms
+    /// the end-to-end pipeline (mode contribution → resolver
+    /// → resolved cache → type-keyed read).
+    struct OptionContributingMode {
+        id: lattice_mode::ModeId,
+    }
+
+    impl OptionContributingMode {
+        fn new() -> Self {
+            Self {
+                id: lattice_mode::ModeId::new("test-option-contrib-mode"),
+            }
+        }
+    }
+
+    impl lattice_mode::Mode for OptionContributingMode {
+        fn id(&self) -> lattice_mode::ModeId {
+            self.id
+        }
+        fn kind(&self) -> lattice_mode::ModeKind {
+            lattice_mode::ModeKind::Minor
+        }
+        fn options(&self) -> lattice_config::OptionOverrideSet {
+            lattice_config::overrides! {
+                lattice_config::Tabstop = 4i64,
+                lattice_config::Number = false,
+            }
+        }
+    }
+
+    #[test]
+    fn recompute_options_uses_registry_defaults_when_no_modes() {
+        let mut a = app_with("hi", 5);
+        let buf = a.document_buffer_id;
+        a.recompute_options_for_buffer(buf);
+        // No active modes, no buffer-locals: the resolved cache
+        // should mirror the registry's current defaults.
+        let v = a.resolved_option::<lattice_config::Tabstop>(buf);
+        assert_eq!(*v, 8);
+        let n = a.resolved_option::<lattice_config::Number>(buf);
+        assert!(*n);
+    }
+
+    #[test]
+    fn recompute_options_overlays_active_mode_contributions() {
+        let mut a = app_with("hi", 5);
+        let buf = a.document_buffer_id;
+
+        // Register the test mode and activate it for the
+        // document buffer. We use Arc::get_mut to mutate the
+        // registry — fine in tests since nothing else holds the
+        // Arc yet.
+        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
+            .expect("mode_registry should be uniquely held in test setup");
+        let mode_id = registry
+            .register(OptionContributingMode::new())
+            .expect("register");
+        let mut active = lattice_mode::ActiveModes::new();
+        a.mode_registry
+            .activate_minor(
+                &mut active,
+                lattice_protocol::ids::BufferId::new(0),
+                mode_id,
+                lattice_mode::CapabilitySet::empty(),
+            )
+            .expect("activate");
+        a.active_modes.insert(buf, active);
+
+        a.recompute_options_for_buffer(buf);
+
+        // Mode contributes Tabstop=4 and Number=false; both
+        // should appear in the resolved cache (overriding the
+        // registry's 8 / true defaults).
+        let v = a.resolved_option::<lattice_config::Tabstop>(buf);
+        assert_eq!(*v, 4);
+        let n = a.resolved_option::<lattice_config::Number>(buf);
+        assert!(!*n);
+    }
+
+    #[test]
+    fn buffer_local_override_beats_mode_contribution() {
+        let mut a = app_with("hi", 5);
+        let buf = a.document_buffer_id;
+
+        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
+            .expect("mode_registry uniquely held");
+        let mode_id = registry
+            .register(OptionContributingMode::new())
+            .expect("register");
+        let mut active = lattice_mode::ActiveModes::new();
+        a.mode_registry
+            .activate_minor(
+                &mut active,
+                lattice_protocol::ids::BufferId::new(0),
+                mode_id,
+                lattice_mode::CapabilitySet::empty(),
+            )
+            .expect("activate");
+        a.active_modes.insert(buf, active);
+
+        // Add a buffer-local override that wins over the
+        // mode's contribution (per §6.1: buffer-local =
+        // priority 2, mode = priority 3-4).
+        let mut local = lattice_config::OptionOverrideSet::new();
+        local.push(lattice_config::OptionOverride::new(
+            std::any::TypeId::of::<lattice_config::Tabstop>(),
+            16i64,
+        ));
+        a.buffer_local_overrides.insert(buf, local);
+
+        a.recompute_options_for_buffer(buf);
+
+        // Buffer-local 16 wins over mode's 4.
+        let v = a.resolved_option::<lattice_config::Tabstop>(buf);
+        assert_eq!(*v, 16);
+        // Mode's Number=false still wins (no buffer-local
+        // override for Number).
+        let n = a.resolved_option::<lattice_config::Number>(buf);
+        assert!(!*n);
+    }
+
+    #[test]
+    fn resolved_option_falls_back_to_registry_pre_recompute() {
+        let a = app_with("hi", 5);
+        let buf = a.document_buffer_id;
+        // No `recompute_options_for_buffer` call yet -- the
+        // cache is empty. The fallback path should return the
+        // registry's current value.
+        let v = a.resolved_option::<lattice_config::Tabstop>(buf);
+        assert_eq!(*v, 8);
     }
 }

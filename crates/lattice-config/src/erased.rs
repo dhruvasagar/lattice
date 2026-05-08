@@ -8,6 +8,7 @@
 //! [`ErasedOption`].
 
 use std::any::Any;
+use std::sync::Arc;
 
 use crate::option::Option;
 use crate::option_type::OptionType;
@@ -64,6 +65,14 @@ pub trait ErasedOption: Send + Sync {
     /// this in the public surface but document it as
     /// implementation-detail.
     fn as_any(&self) -> &dyn Any;
+
+    /// Return the option's *current* value as an erased
+    /// `Arc<dyn Any + Send + Sync>`. Used by
+    /// [`crate::ConfigRegistry::bootstrap_resolved_with_current_values`]
+    /// to seed the [`crate::ResolvedOptions`] cache with each
+    /// option's current registry value (resolution layer 5)
+    /// before mode/buffer-local layers overlay on top.
+    fn current_value_erased(&self) -> Arc<dyn Any + Send + Sync>;
 }
 
 impl<T: OptionType> ErasedOption for Option<T> {
@@ -116,6 +125,15 @@ impl<T: OptionType> ErasedOption for Option<T> {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn current_value_erased(&self) -> Arc<dyn Any + Send + Sync> {
+        // ArcSwap::load_full returns Arc<T>; coerce to
+        // Arc<dyn Any + Send + Sync> via Rust's unsized
+        // coercion (T: 'static + Send + Sync from OptionType
+        // bounds satisfies Any + Send + Sync).
+        let v: Arc<T> = self.cell.load_full();
+        v
     }
 }
 

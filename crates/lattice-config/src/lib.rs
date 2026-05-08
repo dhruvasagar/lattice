@@ -80,7 +80,6 @@ pub mod loader;
 pub mod option;
 mod option_decl;
 mod option_type;
-mod overrides;
 mod parse;
 #[cfg(test)]
 mod proc_macro_tests;
@@ -95,9 +94,10 @@ mod resolver;
 pub use linkme;
 
 // Re-export the proc macros from `lattice-config-macros`.
-// Users write `lattice_config::options! { ... }` / `groups! { ... }`;
-// the proc-macro crate is a private implementation detail.
-pub use lattice_config_macros::{groups, options};
+// Users write `lattice_config::options! { ... }` /
+// `groups! { ... }` / `overrides! { ... }`; the proc-macro
+// crate is a private implementation detail.
+pub use lattice_config_macros::{groups, options, overrides};
 
 pub use completion::OptionsGenerator;
 // M.2.0c: re-export the macro-generated option types at the
@@ -129,7 +129,14 @@ pub use loader::{
 // `Option<T>` survives for the future plugin-adapter path.
 pub use option_decl::{HasGroup, OPTION_DECLS, OptionDecl, OptionDeclMetadata};
 pub use option_type::OptionType;
-pub use overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
+// Re-export the layer-input types from lattice-mode at the
+// lattice-config crate root so consumers (modes, plugins,
+// future buffer-local-set machinery) get one canonical import
+// surface for the option system. Definitions live in
+// lattice-mode (per the dependency-cycle rationale documented
+// in lattice-mode::overrides), but ergonomically the user
+// imports them from lattice-config alongside the registry.
+pub use lattice_mode::{OptionOverride, OptionOverrideSet, OverridePriority};
 pub use parse::{ParsedSet, parse_set};
 pub use registry::{ConfigError, ConfigRegistry, EventPublisher};
 pub use resolved::ResolvedOptions;

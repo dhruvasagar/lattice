@@ -282,6 +282,30 @@ impl ConfigRegistry {
         self.set(handle, value)
     }
 
+    /// Bootstrap a [`crate::ResolvedOptions`] cache with every
+    /// registered option's *current* value (layer 5 + 6 of the
+    /// resolution stack -- `mode-architecture.md` §6.1). Walks
+    /// the typeid map and writes each option's
+    /// [`crate::ErasedOption::current_value_erased`] into the
+    /// cache, keyed by `TypeId`.
+    ///
+    /// Used by [`crate::Resolver::resolve_into`] callers that
+    /// want a fully-populated resolved cache without manually
+    /// chaining a "default" layer. After this returns, the
+    /// caller layers any mode / buffer-local / modal overrides
+    /// on top via the resolver.
+    pub fn bootstrap_resolved_with_current_values(
+        &self,
+        out: &mut crate::ResolvedOptions,
+    ) {
+        let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        for (type_id, &idx) in inner.by_typeid.iter() {
+            let arc = std::sync::Arc::clone(&inner.by_id[idx]);
+            let value_erased = arc.current_value_erased();
+            out.insert_erased(*type_id, value_erased);
+        }
+    }
+
     /// Boot loop: walk the [`OPTION_DECLS`] linkme slice and
     /// register every option declared anywhere in the workspace.
     /// Idempotent: calling more than once is a no-op (the second

@@ -93,6 +93,61 @@ fn bench_set_with_publisher(c: &mut Criterion) {
     });
 }
 
+fn bench_resolved_options_get(c: &mut Criterion) {
+    // M.2.1: type-keyed read against a populated
+    // ResolvedOptions cache. The §6.3.2 perf gate is p99 < 50ns.
+    use lattice_config::{ResolvedOptions, Tabstop};
+    let registry = ConfigRegistry::new();
+    registry.init_from_linkme();
+    let mut resolved = ResolvedOptions::new();
+    registry.bootstrap_resolved_with_current_values(&mut resolved);
+    c.bench_function("config::resolved_get_typed", |b| {
+        b.iter(|| {
+            let v = resolved.get::<Tabstop>();
+            black_box(*v.unwrap())
+        })
+    });
+}
+
+fn bench_resolver_recompute(c: &mut Criterion) {
+    // M.2.1: end-to-end recompute. Bootstrap the cache with
+    // current registry values, then resolve a layered chain
+    // representing 10 active minor modes' worth of overrides.
+    // Per §6.3.2 the perf gate is p99 < 10us at 10 minors.
+    use lattice_config::{
+        OptionOverride, OptionOverrideSet, ResolvedOptions, Resolver, Tabstop,
+    };
+    use std::any::TypeId;
+
+    let registry = ConfigRegistry::new();
+    registry.init_from_linkme();
+
+    // Build 10 layers, each contributing one Tabstop override.
+    // Real modes contribute 0-4 overrides each typically; this
+    // is intentionally heavier to stress the merge walk.
+    let layers: Vec<OptionOverrideSet> = (0..10)
+        .map(|i| {
+            let mut set = OptionOverrideSet::new();
+            set.push(OptionOverride::new(
+                TypeId::of::<Tabstop>(),
+                (i + 1) as i64,
+            ));
+            set
+        })
+        .collect();
+
+    let resolver = Resolver::new();
+
+    c.bench_function("config::resolve_into_10_layers", |b| {
+        b.iter(|| {
+            let mut out = ResolvedOptions::new();
+            registry.bootstrap_resolved_with_current_values(&mut out);
+            resolver.resolve_into(layers.iter(), &mut out);
+            black_box(out)
+        })
+    });
+}
+
 fn bench_parse_and_set_command(c: &mut Criterion) {
     // The cmdline path's full cost: parse_set + lookup + parse_and_set
     // + format echo + publish. Hottest write path the user can
@@ -117,5 +172,7 @@ criterion_group!(
     bench_set_with_publisher_noop,
     bench_set_with_publisher,
     bench_parse_and_set_command,
+    bench_resolved_options_get,
+    bench_resolver_recompute,
 );
 criterion_main!(benches);

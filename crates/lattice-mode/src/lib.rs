@@ -33,13 +33,11 @@
 //!   the hook is for side effects (server connection, watcher,
 //!   ...) only.
 //!
-//! ## Stub types replaced in later slices
+//! ## Stub types still pending real impls
 //!
-//! `OptionOverrideSet`, `Keymap`, `Subscription`, and
-//! `DecorationProvider` are placeholders in this slice
-//! (see `contributions.rs`). Real impls land in:
+//! `Keymap`, `Subscription`, and `DecorationProvider` remain
+//! placeholders in `contributions.rs`. Real impls land in:
 //!
-//! - `OptionOverrideSet` -- M.2 (option resolution layer).
 //! - `Keymap` -- when the layered keymap registry from
 //!   `keymap-architecture.md` exposes a public Keymap type for
 //!   modes to contribute. Until then, the placeholder lets the
@@ -47,6 +45,11 @@
 //! - `Subscription` -- when the typed event bus stabilises a
 //!   subscription type (DESIGN.md §5.10).
 //! - `DecorationProvider` -- M.4 / decoration registry.
+//!
+//! As of M.2.1, `OptionOverride` / `OptionOverrideSet` /
+//! `OverridePriority` are real types in `overrides.rs`; the
+//! resolver and `ResolvedOptions` cache live in `lattice-config`
+//! (see `mode-architecture.md` §6.3 / §9.3 for why the split).
 
 pub mod active;
 pub mod capability;
@@ -55,13 +58,15 @@ pub mod contributions;
 pub mod error;
 pub mod event;
 pub mod mode;
+pub mod overrides;
 pub mod registry;
 
 pub use crate::active::ActiveModes;
 pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;
-pub use crate::contributions::{DecorationProvider, Keymap, OptionOverrideSet, Subscription};
+pub use crate::contributions::{DecorationProvider, Keymap, Subscription};
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
 pub use crate::mode::{Mode, ModeId, ModeKind};
+pub use crate::overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
 pub use crate::registry::{ModeRegistry, RegistrationError};

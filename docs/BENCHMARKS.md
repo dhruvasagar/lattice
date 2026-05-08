@@ -475,12 +475,18 @@ these benches measure the underlying registry costs.
 | `config::set_no_publisher`            | **134ns** | ~100ns / <500ns | Validate + `ArcSwap::store`. No event publisher wired -- baseline cost of the typed write.              |
 | `config::set_with_publisher`          | **145ns** | ~120ns / <500ns | Same as above plus the publisher closure -- registry's contribution to the §5.10 `OptionChanged` flow.  |
 | `config::parse_and_set_command_bool`  | **220ns** | ~180ns / <1µs  | Full cmdline path: `parse_set` + lookup + parse_and_set + format echo + publish.                         |
+| `config::resolved_get_typed`          | **13.5ns** | ~12ns / <50ns | M.2.1: type-keyed read against the per-buffer `ResolvedOptions` cache. One `TypeId` HashMap probe + `Arc::clone` + downcast. The hot-path read for mode-aware option access; the `App.option_cache` projection sits on top for sub-ns reads. |
+| `config::resolve_into_10_layers`      | **851ns** | ~800ns / <10µs | M.2.1: full recompute -- bootstrap from registry currents, then layer 10 minor-mode contributions on top. Per `mode-architecture.md` §6.3.2 the gate is p99 < 10µs at 10 minors; we hit ~12× headroom because the bootstrap walk dominates and the layer merge is bounded. |
 
-The `App.option_cache` projection (commit landing this entry)
-turns the per-frame renderer reads into ~1ns field accesses.
-The numbers above gate the *write* path -- which is cold on
-keystroke flame graphs (only `:set` and rare programmatic
-writes hit it). All comfortably under their targets.
+The `App.option_cache` projection turns the per-frame
+renderer reads into ~1ns field accesses; M.2.1's resolved
+cache (per buffer, mode-aware) sits between
+`option_cache` and the registry, used when the renderer needs
+*mode-resolved* values rather than the global default. Writes
+remain cold (cmdline / plugin / customize-buffer triggered);
+mode toggles are roughly an order of magnitude rarer than
+`:set` writes, so the recompute cost is amortised across
+many reads.
 
 ---
 

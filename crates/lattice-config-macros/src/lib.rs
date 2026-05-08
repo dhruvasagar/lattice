@@ -1,8 +1,8 @@
 //! Proc-macro front-end for `lattice-config`'s declarative
-//! option / group declarations (M.2.0b, Design B + D from
-//! `docs/mode-architecture.md` discussion notes).
+//! option / group / overrides declarations (M.2.0+M.2.1, Design
+//! B + D from `docs/mode-architecture.md` discussion notes).
 //!
-//! Two public macros:
+//! Three public macros:
 //!
 //! - `options!` — declares one or more typed options, each
 //!   bound to a registered `OptionGroup`. Supports
@@ -19,6 +19,14 @@
 //!   each group's display name does NOT end in `-mode` (the
 //!   modes-vs-groups disambiguation rule, `mode-architecture.md`
 //!   §6.7.1).
+//!
+//! - `overrides!` — constructs a typed `OptionOverrideSet`
+//!   from a list of `OptionDecl = value` pairs (M.2.1).
+//!   Compile-time-checks that each value matches its
+//!   declaration's `Value` type via a let-ascription
+//!   intermediate. Optional `#[priority(High)]` /
+//!   `#[priority(Low)]` attribute promotes individual entries.
+//!   Used by `Mode::options()` impls.
 //!
 //! Both macros emit code that references absolute paths into
 //! `::lattice_config`; the consumer crate must depend on
@@ -431,6 +439,140 @@ fn expand_one_group(decl: &GroupDecl) -> syn::Result<TokenStream2> {
                 &::lattice_config::OptionGroupMetadata::for_group::<#name_ident>();
         };
     })
+}
+
+// ---------------------------------------------------------
+// `overrides!` proc macro
+// ---------------------------------------------------------
+
+/// Construct a typed `OptionOverrideSet` for a `Mode::options()`
+/// return.
+///
+/// Compile-time-typed: each entry is a path to an
+/// `OptionDecl` followed by `= value`. The macro emits a
+/// let-binding ascribed to `<#decl as OptionDecl>::Value` so
+/// values that don't match the declaration's `Value` type are
+/// compile errors. Optional `#[priority(High)]` /
+/// `#[priority(Low)]` attribute on an entry promotes it.
+///
+/// ```ignore
+/// fn options(&self) -> OptionOverrideSet {
+///     lattice_config::overrides! {
+///         Tabstop = 4,
+///         IndentStyle = IndentStyle::Spaces,
+///         #[priority(High)]
+///         ReadOnly = true,
+///     }
+/// }
+/// ```
+#[proc_macro]
+pub fn overrides(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as OverridesInput);
+    match expand_overrides(&parsed) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+struct OverridesInput {
+    entries: Vec<OverrideEntry>,
+}
+
+struct OverrideEntry {
+    /// Optional `#[priority(...)]` attribute.
+    priority: Option<Ident>,
+    decl: Path,
+    value: Expr,
+}
+
+impl Parse for OverridesInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut entries = Vec::new();
+        while !input.is_empty() {
+            // Optional outer attributes (only `#[priority(...)]`
+            // is currently meaningful; others silently pass).
+            let attrs = input.call(Attribute::parse_outer)?;
+            let priority = parse_priority(&attrs)?;
+            let decl: Path = input.parse()?;
+            let _: Token![=] = input.parse()?;
+            let value: Expr = input.parse()?;
+            // Optional trailing comma.
+            if !input.is_empty() {
+                let _: Token![,] = input.parse()?;
+            }
+            entries.push(OverrideEntry {
+                priority,
+                decl,
+                value,
+            });
+        }
+        Ok(Self { entries })
+    }
+}
+
+fn parse_priority(attrs: &[Attribute]) -> syn::Result<Option<Ident>> {
+    for attr in attrs {
+        if attr.path().is_ident("priority") {
+            let ident: Ident = attr.parse_args()?;
+            // Validate the identifier is one we recognise.
+            if ident != "High" && ident != "Low" && ident != "Normal" {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    "expected `High`, `Low`, or `Normal`",
+                ));
+            }
+            return Ok(Some(ident));
+        }
+    }
+    Ok(None)
+}
+
+fn expand_overrides(input: &OverridesInput) -> syn::Result<TokenStream2> {
+    let pushes: Vec<TokenStream2> = input
+        .entries
+        .iter()
+        .map(|entry| {
+            let decl = &entry.decl;
+            let value = &entry.value;
+            let push_expr = if let Some(priority) = &entry.priority {
+                quote! {
+                    {
+                        // Compile-time type check: the value
+                        // must coerce to the declaration's
+                        // Value type. Mismatches produce a
+                        // legible compile error at this site.
+                        let __value: <#decl as ::lattice_config::OptionDecl>::Value = #value;
+                        __set.push(
+                            ::lattice_config::OptionOverride::with_priority(
+                                ::std::any::TypeId::of::<#decl>(),
+                                __value,
+                                ::lattice_config::OverridePriority::#priority,
+                            )
+                        );
+                    }
+                }
+            } else {
+                quote! {
+                    {
+                        let __value: <#decl as ::lattice_config::OptionDecl>::Value = #value;
+                        __set.push(
+                            ::lattice_config::OptionOverride::new(
+                                ::std::any::TypeId::of::<#decl>(),
+                                __value,
+                            )
+                        );
+                    }
+                }
+            };
+            push_expr
+        })
+        .collect();
+
+    Ok(quote! {{
+        let mut __set = ::lattice_config::OptionOverrideSet::new();
+        #(#pushes)*
+        __set
+    }})
 }
 
 // ---------------------------------------------------------

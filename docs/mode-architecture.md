@@ -1281,62 +1281,83 @@ governed by §6.5.2.
 
 In the code, the per-buffer-state container is
 `lattice_core::Document`; `Buffer` is the thin rope wrapper.
-This doc uses "buffer" colloquially but the field-carrier is
-`Document`.
+This doc uses "buffer" colloquially.
 
 Today: `BufferKind` enum with four variants
 (`Document | Help | FileTree | Oil`) lives in `lattice-ui-tui`.
-M.3 retires it. M.1 already lands `ActiveModes` on `Document`;
-M.2.1 lands `buffer_local_overrides` and `resolved_options`:
+M.3 retires it.
+
+**Where mode-system state actually lives** (M.2.1 implementation
+note that supersedes earlier doc text):
+
+- `Document.modes: ActiveModes` (M.1) -- present on the
+  document, but `Document` lives behind the runtime actor's
+  snapshot path so reads aren't synchronously available to the
+  App. M.4 promotes `ActiveModes` to `DocumentSnapshot` so the
+  fields converge on Document.
+- `App.active_modes: HashMap<BufferId, ActiveModes>` (M.2.1)
+  -- the canonical map the App reads. Populated by
+  `ModeRegistry::activate_*` calls, keyed by the App's
+  `buffers::BufferId`.
+- `App.buffer_local_overrides: HashMap<BufferId, OptionOverrideSet>`
+  (M.2.1) -- buffer-local explicit `:setlocal` overrides.
+- `App.resolved_options: HashMap<BufferId, ResolvedOptions>`
+  (M.2.1) -- the cached snapshot the renderer reads.
+
+The cache lives on App rather than `Document` because
+`lattice-core` cannot depend on `lattice-config`
+(`lattice-config` already depends on `lattice-core` for
+`FoldMethod`). Putting `ResolvedOptions` on Document would
+require either inverting that dep or moving `FoldMethod` to a
+lower layer. M.4 -- when the renderer reads through
+`DocumentSnapshot` -- is the natural point to revisit; until
+then the App is the orchestrator.
+
+`App::recompute_options_for_buffer(buffer)` is the
+orchestrator. After any layer change (mode toggle,
+buffer-local set, modal-state transition for modal-keyed
+options), the caller invokes it. Pseudocode:
 
 ```rust
-pub struct Document {
-	// ... existing fields (id, path, buffer, version, ...) ...
-	modes: ActiveModes,                       // M.1
-	buffer_local_overrides: OptionOverrideSet,// M.2.1 (lattice-config type)
-	resolved_options: ResolvedOptions,        // M.2.1 (lattice-config type)
+fn recompute_options_for_buffer(&mut self, buffer: BufferId) {
+	let mut resolved = ResolvedOptions::new();
+	self.config.bootstrap_resolved_with_current_values(&mut resolved);
+
+	let modes = self.active_modes.get(&buffer).cloned().unwrap_or_default();
+	let mut mode_contributions = Vec::new();
+	if let Some(major) = modes.major().and_then(|id| self.mode_registry.get(id)) {
+		mode_contributions.push(major.options());
+	}
+	for &id in modes.minors() {
+		if let Some(m) = self.mode_registry.get(id) {
+			mode_contributions.push(m.options());
+		}
+	}
+
+	let buffer_local = self.buffer_local_overrides
+		.get(&buffer).cloned().unwrap_or_default();
+	let modal_layer = OptionOverrideSet::new();  // M.7
+
+	let mut layered: Vec<&OptionOverrideSet> = vec![&modal_layer, &buffer_local];
+	for set in mode_contributions.iter().rev() {
+		layered.push(set);  // last-activated minor highest in walk
+	}
+
+	Resolver::new().resolve_into(layered, &mut resolved);
+	self.resolved_options.insert(buffer, resolved);
 }
 ```
 
-`Document` is the orchestrator for option resolution. After
-any layer change (mode toggle, buffer-local set), it calls:
-
-```rust
-fn recompute_options(
-	&mut self,
-	config: &ConfigRegistry,
-	mode_registry: &ModeRegistry,
-	modal: ModalState,
-) {
-	let mode_layers = self.modes.iter().filter_map(|id|
-		mode_registry.get(id).map(|m| m.options())
-	);
-	let layered = chain![
-		modal.overrides(),
-		std::iter::once(&self.buffer_local_overrides),
-		mode_layers,            // active modes in activation order
-	];
-	self.resolved_options = config.resolve(layered);
-}
-```
-
-The resolver walks layers in priority order (§6.1) and writes
-the cached snapshot. Reads are pure O(1) lookups against
-`resolved_options`.
-
-`doc.modes() -> &ActiveModes` and
-`doc.modes_mut() -> &mut ActiveModes` exist (M.1). The mutable
-accessor is what callers pass to `ModeRegistry::activate_*`
-methods; direct field mutation is intentionally not exposed
-so capability / conflict / lifecycle invariants are always
-enforced through the registry. After registry calls return,
-the caller calls `doc.recompute_options(...)` to refresh the
-cache.
+Reads via `App::resolved_option::<D>(buffer)` are O(1)
+TypeId lookups against the cached snapshot, with a fallback to
+`config.get_typed::<D>()` for the transient pre-recompute
+window.
 
 Capability checks (`is_read_only`, `accepts_writes`) become
 queries on the resolved mode set:
-`doc.modes().has_minor(MODE_READ_ONLY)`. Cleaner and --
-crucially -- extensible (any mode can flip a capability).
+`app.active_modes[&buffer].has_minor(MODE_READ_ONLY)`. Cleaner
+and -- crucially -- extensible (any mode can flip a
+capability).
 
 ### 9.5 Renderer
 
@@ -1422,7 +1443,7 @@ it.
 | M.0 | This doc (mode-architecture.md) reviewed + accepted. DESIGN.md §5.6 / §5.8 / §5.9 / §5.10 / §5.12 augmented with links + the §5.8.3 correction. No code.                                       | `docs/`                                           | User reviews + signs off; DESIGN.md links land.                                        |
 | M.1 | New `lattice-mode` crate. `Mode` trait, `ModeRegistry`, `ActiveModes` on `Document` (the actual lattice-core per-buffer-state container; `Buffer` is the rope wrapper), lifecycle event variants. No actual modes registered. Tests for registration, conflict, capability checks. | new `lattice-mode`, `lattice-core`                | `cargo test -p lattice-mode` green; `Document` carries `ActiveModes` (empty by default). |
 | M.2.0 | **`lattice-config` types-as-keys + resolver primitives.** `Option` trait, `options!` / `editor_options!` macros, `OptionGroup` trait + `groups!` macro, `linkme` aggregation, `OptionOverride` / `OptionOverrideSet`, `Resolver`, `ResolvedOptions`. Migrate every existing built-in option from `Option::new()` to the macro form. Remove the public `Option::new()` constructor (keep `register_erased` `pub(crate)` for the M.10 plugin adapter). | `lattice-config` (callers in every crate that registers options) | Macro API is the only public surface; existing options work identically; `resolve(layered)` returns `ResolvedOptions` correctly for any iterator of layers; cross-crate display-name uniqueness panics at startup. |
-| M.2.1 | **Mode-driven layers + Document orchestration.** `mode_options!` macro in `lattice-mode` (delegates), `Mode::options() -> OptionOverrideSet` real shape, `Document` carries `buffer_local_overrides` + `resolved_options`, `Document::recompute_options(...)` stitches layered input. Eager whole-cache invalidation on mode toggle. Bench (`BENCHMARKS.md`) for resolution + invalidation cost. | `lattice-mode`, `lattice-core` | Resolution p99 < 50ns; invalidation p99 < 10us at 10 minors. Mode toggles refresh the cache; reads are O(1). |
+| M.2.1 | **Mode-driven layers + App orchestration.** `Mode::options() -> OptionOverrideSet` real shape (`OptionOverride` / `OptionOverrideSet` / `OverridePriority` moved to `lattice-mode` to break the cycle); `lattice-config::overrides!` proc macro for compile-time-typed override construction; App carries `active_modes` / `buffer_local_overrides` / `resolved_options` keyed by `BufferId`; `App::recompute_options_for_buffer(...)` stitches layered input; `App::resolved_option::<D>(buffer)` for type-keyed reads. Bench in BENCHMARKS.md for resolution + invalidation. | `lattice-mode`, `lattice-config`, `lattice-config-macros`, `lattice-ui-tui` | `resolved_get_typed` p99 < 50ns (measured ~13.5ns); `resolve_into_10_layers` p99 < 10µs (measured ~851ns). Mode toggles refresh the cache; reads are O(1). |
 | M.3 | Land **major modes** for current buffer kinds: `text-mode`, `rust-mode`, `python-mode`, `javascript-mode`, `markdown-mode`, `help-mode`, `file-tree-mode`, `oil-mode`, `lsp-log-mode`, `lsp-trace-log-mode`, `lsp-server-log-mode`, `command-line-mode`, `search-line-mode`. Pure declarations -- no behavior change. Replace `BufferKind` enum with `MajorModeId`. | `lattice-grammar`, `lattice-lsp`, `lattice-core` | Every existing test passes against the mode-keyed buffer model. `BufferKind` retired.  |
 | M.4 | Renderer consumes `ResolvedOptions`. Drop `BufferKind` branches in `draw_panes`. Hover popup unification: floating-geometry view of a `markdown-mode` buffer with a `hover-mode` minor.        | `lattice-ui-tui`                                  | Single render path. K-hover gets markdown highlighting. No `match buffer.kind` in renderer. |
 | M.5 | **`lsp-mode` umbrella**. Refactor: every LSP feature checks the mode gate before doing work. Auto-activate when server attaches; user can `:disable lsp-mode`. Tests: disable ⇒ no LSP work.   | `lattice-lsp`                                     | `:disable lsp-mode` silences all LSP traffic for the buffer; `:enable` resumes.        |

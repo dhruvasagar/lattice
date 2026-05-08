@@ -163,3 +163,59 @@ fn get_typed_returns_none_before_boot() {
     let registry = ConfigRegistry::new();
     assert!(registry.get_typed::<Simple>().is_none());
 }
+
+#[test]
+fn overrides_macro_builds_typed_set() {
+    let set = crate::overrides! {
+        Simple = false,
+        WithAliases = 99,
+    };
+    assert_eq!(set.len(), 2);
+    let entries: Vec<_> = set.iter().collect();
+    // Each entry's TypeId matches its declaration's TypeId.
+    assert_eq!(
+        entries[0].option_type_id,
+        std::any::TypeId::of::<Simple>()
+    );
+    assert_eq!(
+        entries[1].option_type_id,
+        std::any::TypeId::of::<WithAliases>()
+    );
+    // Default priority is Normal.
+    assert_eq!(entries[0].priority, crate::OverridePriority::Normal);
+}
+
+#[test]
+fn overrides_macro_honours_priority_attribute() {
+    let set = crate::overrides! {
+        #[priority(High)]
+        Simple = true,
+        #[priority(Low)]
+        WithAliases = 1,
+        Internal = false,
+    };
+    let entries: Vec<_> = set.iter().collect();
+    assert_eq!(entries[0].priority, crate::OverridePriority::High);
+    assert_eq!(entries[1].priority, crate::OverridePriority::Low);
+    assert_eq!(entries[2].priority, crate::OverridePriority::Normal);
+}
+
+#[test]
+fn overrides_macro_resolver_round_trip() {
+    // The macro-built set goes through the resolver and the
+    // resolved value is reachable via type-keyed read.
+    let set = crate::overrides! {
+        WithAliases = 7,
+    };
+    let resolver = crate::Resolver::new();
+    let mut resolved = crate::ResolvedOptions::new();
+    resolver.resolve_into([&set], &mut resolved);
+    let v = resolved.get::<WithAliases>().unwrap();
+    assert_eq!(*v, 7);
+}
+
+#[test]
+fn overrides_macro_empty_works() {
+    let set: crate::OptionOverrideSet = crate::overrides! {};
+    assert!(set.is_empty());
+}

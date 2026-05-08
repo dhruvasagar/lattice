@@ -36,7 +36,8 @@
 
 use std::any::TypeId;
 
-use crate::overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
+use lattice_mode::{OptionOverride, OptionOverrideSet, OverridePriority};
+
 use crate::resolved::ResolvedOptions;
 
 /// Walks layered overrides and emits a fresh [`ResolvedOptions`].
@@ -155,7 +156,7 @@ struct Candidate<'a> {
 mod tests {
     use super::*;
     use crate::option_decl::{HasGroup, OptionDecl};
-    use crate::overrides::OptionOverride;
+    use std::any::TypeId;
     use std::sync::Arc;
 
     struct Tabstop;
@@ -185,13 +186,13 @@ mod tests {
     }
 
     fn ts(v: i64) -> OptionOverride {
-        OptionOverride::new::<Tabstop, _>(v)
+        OptionOverride::new(TypeId::of::<Tabstop>(), v)
     }
     fn ts_with(v: i64, p: OverridePriority) -> OptionOverride {
-        OptionOverride::with_priority::<Tabstop, _>(v, p)
+        OptionOverride::with_priority(TypeId::of::<Tabstop>(), v, p)
     }
     fn num(v: bool) -> OptionOverride {
-        OptionOverride::new::<Number, _>(v)
+        OptionOverride::new(TypeId::of::<Number>(), v)
     }
 
     fn read_i64(r: &ResolvedOptions, _t: &Tabstop) -> Option<i64> {

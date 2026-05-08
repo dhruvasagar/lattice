@@ -3223,6 +3223,36 @@ impl App {
     /// `:lsp-log-level [server] <level>` -- set the subsystem
     /// default min level (when no server) or a per-server
     /// override.
+    /// Apply editor-side LSP options that the user configured under
+    /// the top-level `[lsp]` TOML table (as distinct from server-
+    /// namespaced subtables like `[lsp.rust-analyzer]`, which are
+    /// served back to servers via `workspace/configuration`).
+    ///
+    /// Today this handles:
+    /// - `lsp.log-level` -- string, one of `error`/`warn`/`info`/
+    ///   `debug`/`trace`. Sets the subsystem-wide default min level
+    ///   (same effect as `:lsp-log-level <level>`).
+    ///
+    /// Unknown / mistyped values surface a warn echo and the option
+    /// is skipped. Missing keys are silent (the default applies).
+    /// Called once from `load_persistent_config` after the raw tree
+    /// is cached.
+    fn apply_persistent_lsp_editor_options(&mut self) {
+        if let Some(toml::Value::String(level)) =
+            lattice_config::lookup_dotted_path(&self.lsp_config_tree, "lsp.log-level")
+        {
+            match lattice_lsp::LogLevel::parse(level) {
+                Some(parsed) => self.lsp_logger.set_default_level(parsed),
+                None => self.set_message(
+                    EchoLevel::Warn,
+                    format!(
+                        "config: lsp.log-level: unknown level {level:?}; expected error/warn/info/debug/trace"
+                    ),
+                ),
+            }
+        }
+    }
+
     pub fn do_set_lsp_log_level(&mut self, server_id: Option<&str>, level: &str) {
         let Some(parsed) = lattice_lsp::LogLevel::parse(level) else {
             self.set_message(
@@ -9850,6 +9880,13 @@ impl App {
         // sibling key in the user config survives a project
         // override of `[lsp.X.Z]`.
         self.lsp_config_tree = outcome.raw_tree;
+        // Apply editor-side LSP options that live in the same
+        // `[lsp]` table as server-namespaced keys. These are scalars
+        // the editor consumes itself (not forwarded via
+        // `workspace/configuration`); the loader buckets the whole
+        // `lsp` subtree as structural so they're reachable here via
+        // `lsp_config_tree`.
+        self.apply_persistent_lsp_editor_options();
         // Surface a single echo summarising loader diagnostics.
         // The renderer's modeline only shows the latest echo,
         // so multi-warn configs collapse into "<count> issues
@@ -26309,6 +26346,57 @@ mod tests {
         app.do_set_lsp_log_level(None, "babble");
         let msg = app.last_message.as_ref().unwrap();
         assert!(msg.text.contains("unknown log level"));
+    }
+
+    #[test]
+    fn persistent_lsp_log_level_applies_from_toml_tree() {
+        let mut app = app_with("hi\n", 5);
+        let toml_text = "[lsp]\nlog-level = \"debug\"\n";
+        app.lsp_config_tree = toml_text.parse().expect("toml parse");
+        app.apply_persistent_lsp_editor_options();
+        // Effect: a Debug-level record on an unattached server lands
+        // in the ring. Default min-level is Info; without the TOML
+        // override the record would be filtered before it reached
+        // the ring.
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Debug,
+            lattice_lsp::LogSource::Client,
+            "after-toml",
+        );
+        let recs = app.lsp_logger.snapshot_server(&id);
+        assert!(
+            recs.iter().any(|r| r.message == "after-toml"),
+            "Debug record should pass through after TOML log-level=debug",
+        );
+    }
+
+    #[test]
+    fn persistent_lsp_log_level_warns_on_unknown_value() {
+        let mut app = app_with("hi\n", 5);
+        let toml_text = "[lsp]\nlog-level = \"babble\"\n";
+        app.lsp_config_tree = toml_text.parse().expect("toml parse");
+        app.apply_persistent_lsp_editor_options();
+        let msg = app.last_message.as_ref().expect("warn echo");
+        assert!(
+            msg.text.contains("lsp.log-level") && msg.text.contains("babble"),
+            "echo should name the key + value, got {}",
+            msg.text
+        );
+    }
+
+    #[test]
+    fn persistent_lsp_log_level_silent_when_missing() {
+        let mut app = app_with("hi\n", 5);
+        app.last_message = None;
+        // Empty tree: nothing under [lsp].
+        app.lsp_config_tree = toml::Table::new();
+        app.apply_persistent_lsp_editor_options();
+        assert!(
+            app.last_message.is_none(),
+            "no echo when key is absent (default applies)",
+        );
     }
 
     #[test]

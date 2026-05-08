@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 lattice-protocol = { path = "../lattice-protocol" }
+lattice-mode = { path = "../lattice-mode" }
 ropey = { workspace = true }
 memchr = { workspace = true }
 fancy-regex = { workspace = true }

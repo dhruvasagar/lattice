@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
 	"crates/lattice-protocol",
+	"crates/lattice-mode",
 	"crates/lattice-core",
 	"crates/lattice-grammar",
 	"crates/lattice-completion",
@@ -75,6 +76,16 @@ dirs = "5"
 # JSON codec on the wire.
 lsp-types = "0.97"
 serde_json = "1.0"
+
+# Mode system (lattice-mode, M.1+). `internment` interns mode names
+# (and later option / group names) so `ModeId` is `Copy + Eq + Hash`
+# at zero allocation cost on the hot path. `bitflags` backs the
+# `CapabilitySet` typed bitfield for capability validation at
+# mode activation. `smallvec` keeps small contribution lists
+# (typically 0-2 entries) inline.
+internment = "0.8"
+bitflags = "2"
+smallvec = "1"
 
 # Logging
 tracing = "0.1"

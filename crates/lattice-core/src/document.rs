@@ -2,13 +2,16 @@
 //!
 //! Phase 0 only wires the editing-relevant fields (buffer, version, undo
 //! stack, selections, optional path). The full §5.1 metadata set --
-//! `language`, `syntax`, `diagnostics`, `major_mode`, `minor_modes`,
-//! `rendering_profile`, `encoding`, `line_ending` -- is added when each
-//! subsystem comes online.
+//! `language`, `syntax`, `diagnostics`, `rendering_profile`, `encoding`,
+//! `line_ending` -- is added when each subsystem comes online. Major /
+//! minor modes (the `mode-architecture.md` mode system) live on `modes`,
+//! starting empty and populated by the [`lattice_mode::ModeRegistry`]
+//! when M.3 lands the per-buffer-kind major modes.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use lattice_mode::ActiveModes;
 use lattice_protocol::edit::{Edit, EditKind};
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::Range;
@@ -37,6 +40,13 @@ pub struct Document {
     /// an `apply_edit` cleared a redo entry that contained the saved state,
     /// so we can no longer undo back to disk parity.
     clean_position: Option<usize>,
+    /// Major + ordered minors active on this document. Starts empty
+    /// (no major, no minors) on construction; populated through the
+    /// [`lattice_mode::ModeRegistry`] when modes are activated. M.1
+    /// just carries the field; M.3 lands the major-mode auto-resolution
+    /// that fills it for each buffer kind. See `mode-architecture.md`
+    /// §9.4 for the buffer-side integration story.
+    modes: ActiveModes,
 }
 
 #[derive(Debug, Default)]
@@ -73,6 +83,7 @@ impl DocumentBuilder {
             // initial buffer (whether empty, from_text, or just-loaded
             // from disk) is by definition the saved state.
             clean_position: Some(0),
+            modes: ActiveModes::new(),
         }
     }
 }
@@ -136,6 +147,23 @@ impl Document {
     pub fn set_selections(&mut self, selections: SelectionSet) {
         self.selections = selections;
         self.version += 1;
+    }
+
+    /// The active modes (major + minors) for this document. Starts
+    /// empty until the [`lattice_mode::ModeRegistry`] activates a
+    /// major (M.3) or a minor (M.5+).
+    pub fn modes(&self) -> &ActiveModes {
+        &self.modes
+    }
+
+    /// Mutable handle for the registry's activation /
+    /// deactivation calls. The registry's `activate_*` /
+    /// `deactivate_*` methods take `&mut ActiveModes`; callers pass
+    /// `doc.modes_mut()`. Direct field mutation is intentionally
+    /// not exposed -- modes go through the registry so capability
+    /// / conflict / lifecycle invariants land.
+    pub fn modes_mut(&mut self) -> &mut ActiveModes {
+        &mut self.modes
     }
 
     pub fn text(&self) -> String {

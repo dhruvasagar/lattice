@@ -1189,25 +1189,36 @@ overriding user at scalar leaves. There is no separate
 Everything lives in the single `lattice.toml` namespace
 governed by §6.5.2.
 
-### 9.4 Buffer model
+### 9.4 Buffer / Document model
+
+In the code, the per-buffer-state container is
+`lattice_core::Document`; `Buffer` is the thin rope wrapper.
+This doc uses "buffer" colloquially but the field-carrier is
+`Document`.
 
 Today: `BufferKind` enum with four variants
-(`Document | Help | FileTree | Oil`). Replace with:
+(`Document | Help | FileTree | Oil`) lives in `lattice-ui-tui`.
+M.3 retires it. M.1 already lands `ActiveModes` on `Document`:
 
 ```rust
-pub struct Buffer {
-	pub content: Rope,
-	pub modes: ActiveModes,           // major + minors
-	pub resolved_options: ResolvedOptions,  // cached snapshot
-	pub uri: Option<Uri>,
-	// ... (unchanged: cursor, selection, version, etc.)
+pub struct Document {
+	// ... existing fields (id, path, buffer, version, ...) ...
+	modes: ActiveModes,                      // M.1
+	// resolved_options: ResolvedOptions,     // M.2 lands this
 }
 ```
 
+with `doc.modes() -> &ActiveModes` and
+`doc.modes_mut() -> &mut ActiveModes` accessors. The mutable
+accessor is what callers pass to `ModeRegistry::activate_*`
+methods; direct field mutation is intentionally not exposed
+so capability / conflict / lifecycle invariants are always
+enforced through the registry.
+
 Capability checks (`is_read_only`, `accepts_writes`) become
 queries on the resolved mode set:
-`buffer.has_minor(MODE_READ_ONLY)`. Cleaner and -- crucially --
-extensible (any mode can flip a capability).
+`buffer.modes().has_minor(MODE_READ_ONLY)`. Cleaner and --
+crucially -- extensible (any mode can flip a capability).
 
 ### 9.5 Renderer
 
@@ -1291,7 +1302,7 @@ it.
 | #   | Slice                                                                                                                                                                                          | Crate(s)                                          | Done when                                                                              |
 |-----|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------|----------------------------------------------------------------------------------------|
 | M.0 | This doc (mode-architecture.md) reviewed + accepted. DESIGN.md §5.6 / §5.8 / §5.9 / §5.10 / §5.12 augmented with links + the §5.8.3 correction. No code.                                       | `docs/`                                           | User reviews + signs off; DESIGN.md links land.                                        |
-| M.1 | New `lattice-mode` crate. `Mode` trait, `ModeRegistry`, `ActiveModes` on `Buffer`, lifecycle event variants. No actual modes registered. Tests for registration, conflict, capability checks.  | new `lattice-mode`, `lattice-core`                | `cargo test -p lattice-mode` green; `Buffer` carries `ActiveModes` (empty by default). |
+| M.1 | New `lattice-mode` crate. `Mode` trait, `ModeRegistry`, `ActiveModes` on `Document` (the actual lattice-core per-buffer-state container; `Buffer` is the rope wrapper), lifecycle event variants. No actual modes registered. Tests for registration, conflict, capability checks. | new `lattice-mode`, `lattice-core`                | `cargo test -p lattice-mode` green; `Document` carries `ActiveModes` (empty by default). |
 | M.2 | Option resolution layer. `ResolvedOptions` cached per buffer; cache invalidated on mode toggle / option write. Bench (`BENCHMARKS.md`) for resolution cost + invalidation cost.                | `lattice-mode`, `lattice-config`                  | Resolution p99 < 50ns; invalidation p99 < 10us at 10 minors.                           |
 | M.3 | Land **major modes** for current buffer kinds: `text-mode`, `rust-mode`, `python-mode`, `javascript-mode`, `markdown-mode`, `help-mode`, `file-tree-mode`, `oil-mode`, `lsp-log-mode`, `lsp-trace-log-mode`, `lsp-server-log-mode`, `command-line-mode`, `search-line-mode`. Pure declarations -- no behavior change. Replace `BufferKind` enum with `MajorModeId`. | `lattice-grammar`, `lattice-lsp`, `lattice-core` | Every existing test passes against the mode-keyed buffer model. `BufferKind` retired.  |
 | M.4 | Renderer consumes `ResolvedOptions`. Drop `BufferKind` branches in `draw_panes`. Hover popup unification: floating-geometry view of a `markdown-mode` buffer with a `hover-mode` minor.        | `lattice-ui-tui`                                  | Single render path. K-hover gets markdown highlighting. No `match buffer.kind` in renderer. |

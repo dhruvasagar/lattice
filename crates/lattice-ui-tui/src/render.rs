@@ -765,6 +765,36 @@ fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
 /// the visible window from the rendered string. Link markup
 /// (`[[…]]`) renders verbatim today; future passes paint the link
 /// ranges with a distinct style and add a follow-link motion.
+/// M.3.2.b.2: read help-mode-owned data via buffer-locals.
+/// Returns the `(highlights, links)` for `buffer_id` from the
+/// App's per-buffer locals map; if the locals haven't been
+/// seeded (test paths constructing a HelpBuffer without going
+/// through `App::open_help_in_pane`), falls through to the
+/// HelpBuffer's own fields. Once M.3.2.c retires those fields
+/// the fallback becomes a fatal error condition.
+fn help_render_data<'a>(
+    app: &'a App,
+    buffer_id: crate::buffers::BufferId,
+    fallback: &'a crate::help::HelpBuffer,
+) -> (
+    &'a [Vec<lattice_syntax::StyledSpan>],
+    &'a [crate::help::HelpLink],
+) {
+    if let Some(locals) = app.buffer_locals.get(&buffer_id) {
+        let highlights = locals
+            .get::<crate::modes::HelpHighlights>()
+            .map(|h| h.0.as_slice())
+            .unwrap_or(&fallback.highlights);
+        let links = locals
+            .get::<crate::modes::HelpLinks>()
+            .map(|h| h.0.as_slice())
+            .unwrap_or(&fallback.links);
+        (highlights, links)
+    } else {
+        (&fallback.highlights, &fallback.links)
+    }
+}
+
 fn draw_help_overlay(
     frame: &mut Frame,
     buffer_area: Rect,
@@ -816,6 +846,10 @@ fn draw_help_overlay(
         help.scroll
     };
     let lines = help.lines();
+    // M.3.2.b.2: read help-mode-owned data via buffer-locals
+    // (canonical) with a fallback to the HelpBuffer's own
+    // fields for the bootstrap window.
+    let (highlights, links) = help_render_data(app, help.id, help);
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -824,13 +858,13 @@ fn draw_help_overlay(
         .map(|(i, l)| {
             let line_idx = scroll + i;
             let mut spans: Vec<lattice_syntax::StyledSpan> =
-                help.highlights.get(line_idx).cloned().unwrap_or_default();
+                highlights.get(line_idx).cloned().unwrap_or_default();
             // Layer Style::Link decoration on every link's label
             // range that touches this line. tree-sitter-md 0.3.x's
             // inline injection is unreliable so we paint link
             // styling from the parsed HelpLinks (same hlsearch-
             // style overlay model the buffer renderer uses).
-            for link in help.links.iter() {
+            for link in links.iter() {
                 if let Some((s, e)) = link_label_range_on_line(link, line_idx as u32) {
                     let line_len = l.len();
                     let s = s.min(line_len);
@@ -1247,6 +1281,8 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
     let scroll = app.scroll as usize;
     let lines = help.lines();
     let cursor_line = app.cursor.line as usize;
+    // M.3.2.b.2: read help-mode-owned data via buffer-locals.
+    let (highlights, links) = help_render_data(app, help.id, help);
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -1255,8 +1291,8 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
         .map(|(i, l)| {
             let line_idx = scroll + i;
             let mut spans: Vec<lattice_syntax::StyledSpan> =
-                help.highlights.get(line_idx).cloned().unwrap_or_default();
-            for link in help.links.iter() {
+                highlights.get(line_idx).cloned().unwrap_or_default();
+            for link in links.iter() {
                 if let Some((s, e)) = link_label_range_on_line(link, line_idx as u32) {
                     let line_len = l.len();
                     let s = s.min(line_len);
@@ -1323,6 +1359,8 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
         return;
     };
     let lines = help.lines();
+    // M.3.2.b.2: read help highlights via buffer-locals.
+    let (highlights, _links) = help_render_data(app, help.id, help);
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -1331,7 +1369,7 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
         .map(|(i, l)| {
             let line_idx = scroll + i;
             let spans: Vec<lattice_syntax::StyledSpan> =
-                help.highlights.get(line_idx).cloned().unwrap_or_default();
+                highlights.get(line_idx).cloned().unwrap_or_default();
             Line::from(render_help_line(l, &spans))
         })
         .collect();

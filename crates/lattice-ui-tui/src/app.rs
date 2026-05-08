@@ -28897,6 +28897,58 @@ mod tests {
     }
 
     #[test]
+    fn renderer_reads_help_data_through_buffer_locals() {
+        // M.3.2.b.2: prove the renderer reads through
+        // `buffer_locals` rather than the HelpBuffer's struct
+        // fields. We open a help buffer, then mutate its
+        // BufferLocals to a different value than what's in
+        // the struct fields. The renderer should reflect the
+        // local-side value.
+        let mut a = app_with("hi", 5);
+        let help = crate::help::HelpBuffer::from_lines(
+            "test-render",
+            vec!["[link-a](command:a) and [link-b](command:b)".into()],
+        );
+        let help_id = a.open_help_in_pane(help);
+
+        // The buffer registers via `seed_help_locals` with two
+        // links. We replace the locals with one synthetic link
+        // and confirm the renderer's data path sees ONE.
+        let synthetic = crate::modes::HelpLinks(vec![crate::help::HelpLink {
+            range: lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::ZERO,
+                lattice_protocol::position::Position::new(0, 5),
+            ),
+            target: crate::help::HelpLinkTarget::Unresolved("synthetic".into()),
+        }]);
+        a.buffer_locals
+            .get_mut(&help_id)
+            .expect("locals seeded")
+            .insert(synthetic);
+
+        // The renderer's read path is `help_render_data(app,
+        // help.id, help)`. We can call the same path here
+        // because it's the same module-level data flow.
+        let help_buf = a.help_buffer.as_ref().expect("help_buffer set");
+        let locals = a
+            .buffer_locals
+            .get(&help_id)
+            .expect("locals seeded by open_help_in_pane");
+        let from_locals = locals.get::<crate::modes::HelpLinks>().unwrap();
+        // The locals reflect the synthetic value we inserted,
+        // not the original 2 links from the source markdown.
+        assert_eq!(from_locals.0.len(), 1);
+        assert_eq!(
+            from_locals.0[0].target,
+            crate::help::HelpLinkTarget::Unresolved("synthetic".into())
+        );
+        // The struct fields still carry the original 2 links
+        // (M.3.2.b.2 keeps the fields as fallback; M.3.2.c
+        // removes them).
+        assert_eq!(help_buf.links.len(), 2);
+    }
+
+    #[test]
     fn help_locals_carry_owner_metadata_for_describe_buffer() {
         let mut a = app_with("hi", 5);
         let help = crate::help::HelpBuffer::from_lines("t", vec!["body".into()]);

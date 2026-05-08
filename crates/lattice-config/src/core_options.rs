@@ -90,6 +90,20 @@ crate::options! {
     #[validate(validate_tabstop)]
     pub Tabstop: i64 = 8;
 
+    /// Whether the buffer is read-only (mutating operators
+    /// reject; `:w` still permits explicit writes if a path
+    /// exists). `customizable = false` because this is
+    /// mode-driven, not a user-typed config: major modes like
+    /// `help-mode`, `file-tree-mode`, and the LSP log modes
+    /// contribute `ReadOnly = true` via `Mode::options()` (per
+    /// `mode-architecture.md` §6.5.3 read-only-mode pattern).
+    /// Users who want to flip it on / off for a particular
+    /// buffer use `:enable read-only-mode` (when that minor
+    /// mode lands in M.7), not `:set read-only=true`.
+    #[customizable(false)]
+    #[name("read-only")]
+    pub ReadOnly: bool = false;
+
     /// When false (`:set nofoldenable`, `zi`), every fold renders
     /// as open regardless of its closed flag. Closed-state is
     /// preserved -- toggling back restores the previous
@@ -200,6 +214,7 @@ crate::options! {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic, unsafe_code)]
     use super::*;
+    use crate::option_decl::OptionDecl;
     use crate::registry::ConfigRegistry;
 
     #[test]
@@ -210,10 +225,19 @@ mod tests {
         assert!(*r.get_typed::<Number>().unwrap());
         assert!(!*r.get_typed::<RelativeNumber>().unwrap());
         assert!(!*r.get_typed::<Wrap>().unwrap());
+        assert!(!*r.get_typed::<ReadOnly>().unwrap());
         assert_eq!(*r.get_typed::<FoldMethodOption>().unwrap(), FoldMethod::Manual);
         assert_eq!(*r.get_typed::<Scrolloff>().unwrap(), 0);
         assert!(*r.get_typed::<CompletionAutoInsertSingle>().unwrap());
         assert_eq!(*r.get_typed::<CompletionSourceLspPriority>().unwrap(), 200);
+    }
+
+    #[test]
+    fn read_only_is_not_customizable() {
+        // ReadOnly is mode-driven, not user-typed config -- it
+        // should be hidden from `:set` autocomplete and the
+        // future `:customize` form.
+        assert!(!ReadOnly::CUSTOMIZABLE);
     }
 
     #[test]

@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-mode = { path = "../lattice-mode" }
+lattice-config = { path = "../lattice-config" }
 lattice-core = { path = "../lattice-core" }
 lattice-runtime = { path = "../lattice-runtime" }
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros", "process", "io-util", "time"] }

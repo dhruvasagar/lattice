@@ -20,8 +20,13 @@
 
 use lattice_mode::{
     CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind, ModeRegistry,
+    OptionOverrideSet,
 };
 
+/// All three LSP log majors are read-only buffers (records
+/// stream in from the LSP subsystem; the user navigates but
+/// doesn't edit). Each contributes `ReadOnly = true` via its
+/// declarative options.
 macro_rules! lsp_log_mode {
     ($struct_name:ident, $mode_name:literal) => {
         pub struct $struct_name;
@@ -38,6 +43,11 @@ macro_rules! lsp_log_mode {
             }
             fn kind(&self) -> ModeKind {
                 ModeKind::Major
+            }
+            fn options(&self) -> OptionOverrideSet {
+                lattice_config::overrides! {
+                    lattice_config::ReadOnly = true,
+                }
             }
             fn required_capabilities(&self) -> CapabilitySet {
                 CapabilitySet::empty()

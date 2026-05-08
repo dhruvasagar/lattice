@@ -1285,7 +1285,100 @@ This doc uses "buffer" colloquially.
 
 Today: `BufferKind` enum with four variants
 (`Document | Help | FileTree | Oil`) lives in `lattice-ui-tui`.
-M.3 retires it.
+The earlier draft committed to "M.3 retires it"; **M.3.1
+revises that commitment** -- the enum stays as a *storage-shape
+discriminator* while major-mode IDs handle the *behavior*
+discriminator role. The two roles were conflated; M.3 separates
+them rather than retiring one.
+
+**Two roles, one decision per role:**
+
+- **Storage-shape discriminator.** `BufferData::Document(_)` /
+  `Help(_)` / `FileTree(_)` / `Oil(_)` carries fundamentally
+  different runtime structs (actor handle + tree-sitter cache
+  vs rendered prose + links vs tree-of-files vs editable
+  directory listing). This information cannot disappear; the
+  variants are typed payloads, not just tags. The enum (likely
+  renamed to `BufferStorage`) continues to serve this role.
+- **Behavior discriminator.** "Is this read-only?", "which
+  default keymap?", "which renderer paints it?", "what
+  options does this kind contribute?" — all answered through
+  the active major mode and resolved options. Per
+  `mode-architecture.md` §6.1 the resolver overlays mode
+  contributions on top of the registry's defaults; per §3.4
+  modes are user-toggleable, so capability flags like
+  `ReadOnly` are real options that any mode can flip rather
+  than enum-baked properties.
+
+**`ReadOnly` as the canonical example (M.3.1).** `ReadOnly:
+bool = false` is a registered editor option with
+`CUSTOMIZABLE = false` (mode-driven, not user-typed). Major
+modes for read-only buffer kinds (`HelpMode`, `FileTreeMode`,
+`LspLogMode`, `LspTraceLogMode`, `LspServerLogMode`) declare
+`Mode::options()` returning `overrides! { ReadOnly = true }`.
+At buffer creation, `App::activate_major_for_buffer_kind`
+resolves the right major (via `resolve_major_mode(kind, lang)`),
+calls `ModeRegistry::activate_major`, and triggers
+`recompute_options_for_buffer`. The user-facing
+`BufferKind::is_read_only()` becomes
+`app.resolved_option::<ReadOnly>(buffer_id)` — same answer,
+sourced through one mechanism.
+
+This pattern generalises: `wrap`, `line-numbers`,
+`current-line-highlight`, etc. all become mode-contributable
+options as the relevant minor modes (`wrap-mode`,
+`line-numbers-mode`, ...) land in M.7.
+
+#### Buffer-local mode-internal data — Shape A direction (M.3.2 target)
+
+A separate question is where mode-specific *runtime data*
+lives — the `SyntaxHandle` for `rust-mode`, the
+`Vec<FileTreeEntry>` for `file-tree-mode`, the `Vec<Link>` for
+`help-mode`, oil's snapshot for diffing. Today these are
+fields on the `BufferData` variants. Long-term they belong on
+a typed-map of **buffer-locals** owned by the modes that
+populate them — a typed Rust analogue of emacs's
+`buffer-local-variables`.
+
+Architecture sketch (M.3.2 lands this):
+
+```rust
+pub struct BufferEntry {
+	pub id: BufferId,
+	pub flags: BufferFlags,
+	pub storage: BufferStorage,    // (rope, cursor, universal state)
+	pub locals: BufferLocals,      // typed-map of mode-owned data
+}
+
+pub trait BufferLocal: Any + Send + Sync + 'static {
+	const NAME: &'static str;        // "file-tree.entries"
+	const DOC: &'static str;
+	const OWNER_MODE: &'static str;  // mode id that owns this local
+	fn describe(&self) -> String;    // for :describe-buffer
+}
+```
+
+Modes contribute locals in `on_activate`, remove in
+`on_deactivate`. The `OWNER_MODE` const enforces "only the
+owning mode can mutate this local" at the registry surface.
+`:describe-buffer` walks the map and groups entries by their
+owner mode, giving inspection of every piece of state a buffer
+carries.
+
+**Why deferred:** the migration from "per-variant fields" to
+"buffer-locals" touches every site that accesses kind-specific
+data (`entry.file_tree().entries` etc.). Substantive but
+mechanical; warrants its own slice (M.3.2.a infrastructure +
+M.3.2.b/c per-kind migrations) rather than mixing with the
+ReadOnly demonstration.
+
+**Where this leaves `BufferStorage`:** after M.3.2 it carries
+only the *universal payload* (typically just rope + cursor
+fields the storage type needs to expose). At that point we
+revisit whether the enum still earns its keep or whether
+every buffer collapses to one struct with all kind-specific
+data living in `BufferLocals`. That decision waits until M.3.2
+is complete and we can see what's left.
 
 **Where mode-system state actually lives** (M.2.1 implementation
 note that supersedes earlier doc text):
@@ -1444,7 +1537,9 @@ it.
 | M.1 | New `lattice-mode` crate. `Mode` trait, `ModeRegistry`, `ActiveModes` on `Document` (the actual lattice-core per-buffer-state container; `Buffer` is the rope wrapper), lifecycle event variants. No actual modes registered. Tests for registration, conflict, capability checks. | new `lattice-mode`, `lattice-core`                | `cargo test -p lattice-mode` green; `Document` carries `ActiveModes` (empty by default). |
 | M.2.0 | **`lattice-config` types-as-keys + resolver primitives.** `Option` trait, `options!` / `editor_options!` macros, `OptionGroup` trait + `groups!` macro, `linkme` aggregation, `OptionOverride` / `OptionOverrideSet`, `Resolver`, `ResolvedOptions`. Migrate every existing built-in option from `Option::new()` to the macro form. Remove the public `Option::new()` constructor (keep `register_erased` `pub(crate)` for the M.10 plugin adapter). | `lattice-config` (callers in every crate that registers options) | Macro API is the only public surface; existing options work identically; `resolve(layered)` returns `ResolvedOptions` correctly for any iterator of layers; cross-crate display-name uniqueness panics at startup. |
 | M.2.1 | **Mode-driven layers + App orchestration.** `Mode::options() -> OptionOverrideSet` real shape (`OptionOverride` / `OptionOverrideSet` / `OverridePriority` moved to `lattice-mode` to break the cycle); `lattice-config::overrides!` proc macro for compile-time-typed override construction; App carries `active_modes` / `buffer_local_overrides` / `resolved_options` keyed by `BufferId`; `App::recompute_options_for_buffer(...)` stitches layered input; `App::resolved_option::<D>(buffer)` for type-keyed reads. Bench in BENCHMARKS.md for resolution + invalidation. | `lattice-mode`, `lattice-config`, `lattice-config-macros`, `lattice-ui-tui` | `resolved_get_typed` p99 < 50ns (measured ~13.5ns); `resolve_into_10_layers` p99 < 10µs (measured ~851ns). Mode toggles refresh the cache; reads are O(1). |
-| M.3 | Land **major modes** for current buffer kinds: `text-mode`, `rust-mode`, `python-mode`, `javascript-mode`, `markdown-mode`, `help-mode`, `file-tree-mode`, `oil-mode`, `lsp-log-mode`, `lsp-trace-log-mode`, `lsp-server-log-mode`, `command-line-mode`, `search-line-mode`. Pure declarations -- no behavior change. Replace `BufferKind` enum with `MajorModeId`. | `lattice-grammar`, `lattice-lsp`, `lattice-core` | Every existing test passes against the mode-keyed buffer model. `BufferKind` retired.  |
+| M.3.0 | Declare every built-in major mode (`text-mode`, `rust-mode`, `python-mode`, `javascript-mode`, `markdown-mode`, `help-mode`, `file-tree-mode`, `oil-mode`, `lsp-log-mode`, `lsp-trace-log-mode`, `lsp-server-log-mode`). Self-register at App boot via per-crate `register_*_modes` helpers. Pure declarations -- empty `options()` etc. | `lattice-mode`, `lattice-syntax`, `lattice-lsp`, `lattice-ui-tui` | Every mode is reachable via `mode_registry.is_registered(...)`; per-mode unit tests (id uniqueness, kind, registry population) green. |
+| M.3.1 | `ReadOnly` core option (Editor group, `customizable = false`); read-only majors (`HelpMode`, `FileTreeMode`, `LspLogMode`, `LspTraceLogMode`, `LspServerLogMode`) contribute `overrides! { ReadOnly = true }` via `Mode::options()`. App activates the resolved major at buffer creation (`activate_major_for_buffer_kind`) and triggers `recompute_options_for_buffer`. `BufferKind::is_read_only` callers shift to `app.resolved_option::<ReadOnly>(buffer_id)`. | `lattice-config`, `lattice-mode`, `lattice-lsp`, `lattice-ui-tui` | Help / FileTree / LSP-log buffers resolve `ReadOnly = true`; Document / Oil resolve `false`. End-to-end mode-driven option pipeline validated on a real piece of buffer state. |
+| M.3.2 | **Buffer-locals** typed-map mechanism (Shape A from §9.4). New `BufferLocal` trait + `BufferLocals` map on `BufferEntry`; `ModeContext` extension for self-owned local mutation (`OWNER_MODE`-checked). Migrate existing per-variant mode-specific data (`SyntaxHandle`, `Vec<Fold>`, `Vec<Link>`, `Vec<FileTreeEntry>`, oil snapshot) into buffer-locals owned by the corresponding modes. `:describe-buffer` walks the map. | `lattice-mode`, `lattice-core`, `lattice-ui-tui` | Every existing kind-specific access goes through `entry.locals.get::<T>()`; `:describe-buffer` lists every local grouped by owner mode. `BufferStorage` retirement decision evaluated at the end of this slice. |
 | M.4 | Renderer consumes `ResolvedOptions`. Drop `BufferKind` branches in `draw_panes`. Hover popup unification: floating-geometry view of a `markdown-mode` buffer with a `hover-mode` minor.        | `lattice-ui-tui`                                  | Single render path. K-hover gets markdown highlighting. No `match buffer.kind` in renderer. |
 | M.5 | **`lsp-mode` umbrella**. Refactor: every LSP feature checks the mode gate before doing work. Auto-activate when server attaches; user can `:disable lsp-mode`. Tests: disable ⇒ no LSP work.   | `lattice-lsp`                                     | `:disable lsp-mode` silences all LSP traffic for the buffer; `:enable` resumes.        |
 | M.6 | **LSP sub-modes**. `lsp-completion-mode`, `lsp-diagnostics-mode`, `lsp-hover-mode`, `lsp-signature-mode`, `lsp-format-mode`, `lsp-rename-mode`, `lsp-symbols-mode`, `lsp-code-action-mode`, `lsp-nav-mode`. Each independently toggleable. | `lattice-lsp`                                     | Each sub-mode independently disable-able; tests cover gating per-feature.              |

@@ -109,7 +109,7 @@ pub use core_options::{
     CompletionSourceBufferWordsPriority, CompletionSourceLspPriority,
     CompletionSourcePathPriority, CompletionSourceSnippetPriority,
     CompletionSourceTreeSitterPriority, FoldEnable, FoldMethodOption, IgnoreCase, Number,
-    RelativeNumber, Scrolloff, Tabstop, Wrap,
+    ReadOnly, RelativeNumber, Scrolloff, Tabstop, Wrap,
 };
 pub use erased::ErasedOption;
 pub use group::{

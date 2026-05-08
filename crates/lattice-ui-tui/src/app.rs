@@ -2753,6 +2753,15 @@ impl App {
         // `Event::OptionChanged` cascade in
         // `apply_option_cascade`.
         app.rebuild_option_cache();
+        // M.3.1: activate the resolved major mode for the
+        // initial document buffer. `resolve_major_mode(kind,
+        // lang)` picks the right major (text-mode for
+        // Lang::Plain, rust-mode/python-mode/... for typed
+        // languages). The activation populates
+        // `active_modes[buffer]` and triggers the option-cache
+        // recompute so `ResolvedOptions` reflects the major's
+        // contributions (e.g. ReadOnly = true for Help).
+        app.activate_major_for_buffer_kind(app.document_buffer_id, BufferKind::Document);
         // Initial-document attach. Path-bearing buffers register
         // their URI eagerly (the URI is a deterministic
         // `uri_from_path`; LSP attach is async and doesn't gate
@@ -2934,6 +2943,85 @@ impl App {
     /// transition for modal-keyed options, or option write
     /// (the cascade in `drain_option_changes` propagates global
     /// `:set` writes to every buffer's cache).
+    /// Activate the resolved major mode for `buffer_id` based
+    /// on its `kind` (and, for Document buffers, the detected
+    /// language) and refresh the resolved-options cache. M.3.1.
+    ///
+    /// Lang detection happens inside
+    /// `lattice_syntax::Lang::detect_from_path`; for buffers
+    /// without a path (scratch documents) the resolver falls
+    /// through to `text-mode` per `mode-architecture.md` §4.1.
+    /// Help / FileTree / Oil are kind-driven (no language
+    /// dimension); the `lang` argument is ignored for those
+    /// kinds.
+    ///
+    /// On activation failure (mode not registered, capability
+    /// missing, conflict with active major), the buffer ends
+    /// up with no active major and the resolved options
+    /// reflect only the registry defaults. Failure is logged;
+    /// it isn't a fatal startup error because the design
+    /// commits to "every buffer has a major mode" but the
+    /// implementation tolerates the bootstrap window where the
+    /// registration hasn't completed.
+    pub fn activate_major_for_buffer_kind(
+        &mut self,
+        buffer_id: crate::buffers::BufferId,
+        kind: crate::buffers::BufferKind,
+    ) {
+        // Only Document buffers consult Lang; the others have
+        // a fixed mode regardless of content.
+        let lang = match kind {
+            crate::buffers::BufferKind::Document => {
+                let snap = self.document.snapshot();
+                let path_owned = snap.path.as_ref().map(|p| (**p).clone());
+                let path_ref = path_owned.as_deref();
+                lattice_syntax::Lang::detect_from_path(path_ref)
+            }
+            _ => lattice_syntax::Lang::Plain,
+        };
+        let major_id = crate::modes::resolve_major_mode(kind, lang);
+        // Convert App-level BufferId to lattice_protocol::BufferId for
+        // the registry's expectation. The registry only uses the
+        // value for event emission; for M.3.1 we synthesise a
+        // dummy value because mode-event subscribers don't use
+        // it yet.
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self
+            .active_modes
+            .remove(&buffer_id)
+            .unwrap_or_default();
+        match self.mode_registry.activate_major(
+            &mut active,
+            proto_id,
+            major_id,
+            // Capability set: M.3.1 doesn't yet plumb per-buffer
+            // capabilities, so pass empty. Modes that require
+            // BUFFER_URI / LSP / etc. (M.5+) will get this from
+            // a real capability lookup.
+            lattice_mode::CapabilitySet::empty(),
+        ) {
+            Ok(_events) => {
+                // Events go to the typed event bus when M.4
+                // wires it; ignore for now.
+            }
+            Err(e) => {
+                // Don't fail startup; surface as an echo and
+                // continue with defaults. The buffer just has
+                // no active major; resolved options reflect
+                // registry defaults.
+                self.set_message(
+                    EchoLevel::Warn,
+                    format!(
+                        "mode: activate_major({}) for buffer {} failed: {}",
+                        major_id, buffer_id.0, e,
+                    ),
+                );
+            }
+        }
+        self.active_modes.insert(buffer_id, active);
+        self.recompute_options_for_buffer(buffer_id);
+    }
+
     pub fn recompute_options_for_buffer(
         &mut self,
         buffer: crate::buffers::BufferId,
@@ -13463,6 +13551,10 @@ impl App {
             flags: BufferFlags::default(),
             data: BufferData::Help(registry_copy),
         });
+        // M.3.1: activate help-mode for this buffer so its
+        // ReadOnly = true contribution lands in the resolved
+        // options cache.
+        self.activate_major_for_buffer_kind(id, BufferKind::Help);
         // Take ownership of the original for the popup hot-path.
         self.help_buffer = Some(buffer);
         self.activate_help_in_pane(id);
@@ -13619,6 +13711,11 @@ impl App {
             flags: BufferFlags::default(),
             data: BufferData::Oil(oil),
         });
+        // M.3.1: activate oil-mode (writable, no ReadOnly
+        // override; activation is mostly a no-op for now but
+        // populates active_modes so M.5+ minor-mode toggles
+        // can find a target).
+        self.activate_major_for_buffer_kind(new_id, BufferKind::Oil);
         self.snapshot_active_pane();
         self.snapshot_active_document();
         self.active_buffer = BufferKind::Oil;
@@ -13680,6 +13777,10 @@ impl App {
             flags: BufferFlags::default(),
             data: BufferData::FileTree(tree),
         });
+        // M.3.1: activate file-tree-mode for this buffer so
+        // its ReadOnly = true contribution lands in the
+        // resolved options cache.
+        self.activate_major_for_buffer_kind(new_id, BufferKind::FileTree);
         // Snapshot whichever buffer was active so its hot-path
         // state lands in the registry, then point the active pane
         // at the new tree.
@@ -28514,6 +28615,72 @@ mod tests {
         assert!(
             a.mode_registry
                 .is_registered(lattice_lsp::modes::LspServerLogMode::mode_id())
+        );
+    }
+
+    // ---- M.3.1: ReadOnly option flows from major modes ----
+
+    #[test]
+    fn document_buffer_resolves_read_only_false() {
+        // Default Document buffer: text-mode (no ReadOnly
+        // override) ⇒ resolved value is the registry default
+        // (false).
+        let a = app_with("hi", 5);
+        let buf = a.document_buffer_id;
+        let read_only: bool = *a.resolved_option::<lattice_config::ReadOnly>(buf);
+        assert!(!read_only, "Document buffer should be writable by default");
+    }
+
+    #[test]
+    fn document_buffer_active_mode_is_text_mode() {
+        // Plain document with no path ⇒ Lang::Plain ⇒ text-mode.
+        let a = app_with("hi", 5);
+        let buf = a.document_buffer_id;
+        let active = a.active_modes.get(&buf).expect("active_modes populated");
+        assert_eq!(active.major(), Some(lattice_mode::TextMode::mode_id()));
+    }
+
+    #[test]
+    fn help_buffer_resolves_read_only_true() {
+        // Help-mode contributes ReadOnly = true; the resolved
+        // cache should reflect it.
+        let mut a = app_with("hi", 5);
+        let help = crate::help::HelpBuffer::from_lines(
+            "test",
+            vec!["line one".to_string()],
+        );
+        let help_id = a.open_help_in_pane(help);
+        let read_only: bool = *a.resolved_option::<lattice_config::ReadOnly>(help_id);
+        assert!(
+            read_only,
+            "Help buffer should resolve ReadOnly = true via help-mode"
+        );
+    }
+
+    #[test]
+    fn help_buffer_active_mode_is_help_mode() {
+        let mut a = app_with("hi", 5);
+        let help = crate::help::HelpBuffer::from_lines(
+            "test",
+            vec!["line one".to_string()],
+        );
+        let help_id = a.open_help_in_pane(help);
+        let active = a
+            .active_modes
+            .get(&help_id)
+            .expect("active_modes populated for help");
+        assert_eq!(active.major(), Some(crate::modes::HelpMode::mode_id()));
+    }
+
+    #[test]
+    fn read_only_option_is_marked_internal() {
+        // Sanity check: ReadOnly is not user-customizable.
+        // M.3.1 makes it mode-driven; users toggle it via
+        // `:enable read-only-mode` (M.7) rather than `:set`.
+        use lattice_config::OptionDecl;
+        assert!(
+            !lattice_config::ReadOnly::CUSTOMIZABLE,
+            "ReadOnly should be non-customizable (mode-driven)"
         );
     }
 }

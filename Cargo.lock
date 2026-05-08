@@ -811,6 +811,7 @@ dependencies = [
  "arc-swap",
  "criterion",
  "futures",
+ "lattice-config",
  "lattice-core",
  "lattice-mode",
  "lattice-protocol",

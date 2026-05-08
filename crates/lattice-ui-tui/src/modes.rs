@@ -25,13 +25,15 @@
 
 use lattice_mode::{
     CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind, ModeRegistry,
-    TextMode,
+    OptionOverrideSet, TextMode,
 };
 use lattice_syntax::Lang;
 
 use crate::buffers::BufferKind;
 
-macro_rules! buffer_kind_mode {
+/// Macro for buffer-kind majors that are read-only (Help,
+/// FileTree). Oil is writable so it gets its own impl.
+macro_rules! read_only_buffer_kind_mode {
     ($struct_name:ident, $mode_name:literal) => {
         pub struct $struct_name;
 
@@ -48,6 +50,11 @@ macro_rules! buffer_kind_mode {
             fn kind(&self) -> ModeKind {
                 ModeKind::Major
             }
+            fn options(&self) -> OptionOverrideSet {
+                lattice_config::overrides! {
+                    lattice_config::ReadOnly = true,
+                }
+            }
             fn required_capabilities(&self) -> CapabilitySet {
                 CapabilitySet::empty()
             }
@@ -61,9 +68,36 @@ macro_rules! buffer_kind_mode {
     };
 }
 
-buffer_kind_mode!(HelpMode, "help-mode");
-buffer_kind_mode!(FileTreeMode, "file-tree-mode");
-buffer_kind_mode!(OilMode, "oil-mode");
+read_only_buffer_kind_mode!(HelpMode, "help-mode");
+read_only_buffer_kind_mode!(FileTreeMode, "file-tree-mode");
+
+/// Oil is the editable directory listing -- writable. No
+/// `ReadOnly = true` override.
+pub struct OilMode;
+
+impl OilMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("oil-mode")
+    }
+}
+
+impl Mode for OilMode {
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Major
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn on_activate(&self, _ctx: &ModeContext) -> Result<(), ModeActivationError> {
+        Ok(())
+    }
+    fn on_deactivate(&self, _ctx: &ModeContext) -> Result<(), ModeActivationError> {
+        Ok(())
+    }
+}
 
 /// Resolve the default major-mode id for a [`BufferKind`].
 /// `Document` returns `None` because the mode is determined

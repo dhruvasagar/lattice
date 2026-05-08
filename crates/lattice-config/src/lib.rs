@@ -60,20 +60,40 @@ pub mod completion;
 mod core_options;
 mod domain;
 mod erased;
+pub mod group;
 pub mod loader;
+pub mod macros;
 mod option;
+mod option_decl;
 mod option_type;
+mod overrides;
 mod parse;
 mod registry;
+mod resolved;
+mod resolver;
+
+// Re-export `linkme` so the `options!` / `groups!` macros can
+// reference `$crate::linkme::distributed_slice` reliably when
+// expanded outside this crate.
+#[doc(hidden)]
+pub use linkme;
 
 pub use completion::OptionsGenerator;
 pub use core_options::{CoreOptions, register_core_options};
 pub use erased::ErasedOption;
+pub use group::{
+    Appearance, Completion, Display, Editing, Editor, Filetree, GROUP_DECLS, Help, Lsp,
+    OptionGroup, OptionGroupMetadata, Oil, Picker, ends_with_mode_suffix,
+};
 pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, default_user_config_path, load_default_paths,
     load_file, lookup_dotted_path, project_config_path,
 };
 pub use option::{Option, OptionBuilder, OptionHandle};
+pub use option_decl::{HasGroup, OPTION_DECLS, OptionDecl, OptionDeclMetadata};
 pub use option_type::OptionType;
+pub use overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
 pub use parse::{ParsedSet, parse_set};
 pub use registry::{ConfigError, ConfigRegistry, EventPublisher};
+pub use resolved::ResolvedOptions;
+pub use resolver::Resolver;

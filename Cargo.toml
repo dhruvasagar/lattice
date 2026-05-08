@@ -87,6 +87,15 @@ internment = "0.8"
 bitflags = "2"
 smallvec = "1"
 
+# Cross-crate distributed slices (lattice-config M.2.0). Aggregates
+# every `options!` / `groups!` declaration across the workspace at
+# link time; the registry's pre-`main` initialiser walks the
+# slice to validate display-name uniqueness and register typed
+# options. Same mechanism `inventory` uses, but `linkme` is the
+# crate the broader Rust ecosystem (axum, dashmap, ...) has
+# converged on -- better long-term support and clearer semantics.
+linkme = "0.3"
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = "0.3"

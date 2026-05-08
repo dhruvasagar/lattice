@@ -1571,7 +1571,15 @@ fn draw_pane_status_line(
             .oil(pane.buffer_id)
             .map(|o| {
                 let dirty = if o.is_dirty() { " [+]" } else { "" };
-                format!("[oil] {}{dirty}", o.dir.display())
+                // M.3.2.c.3: read dir from buffer-locals
+                // (canonical), fall back to struct field.
+                let dir = app
+                    .buffer_locals
+                    .get(&pane.buffer_id)
+                    .and_then(|locals| locals.get::<crate::modes::OilDir>())
+                    .map(|d| d.0.clone())
+                    .unwrap_or_else(|| o.dir.clone());
+                format!("[oil] {}{dirty}", dir.display())
             })
             .unwrap_or_else(|| "[oil]".to_string()),
     };
@@ -1819,6 +1827,13 @@ fn draw_oil_pane(
     let theme = &app.theme;
     let raw_text = oil.content.as_string();
     let snapshot = oil.snapshot_entries();
+    // M.3.2.c.3: prefer dir from buffer-locals.
+    let dir = app
+        .buffer_locals
+        .get(&pane.buffer_id)
+        .and_then(|locals| locals.get::<crate::modes::OilDir>())
+        .map(|d| d.0.clone())
+        .unwrap_or_else(|| oil.dir.clone());
     let lines: Vec<Line> = raw_text
         .split('\n')
         .enumerate()
@@ -1830,7 +1845,7 @@ fn draw_oil_pane(
             let entry = snapshot.get(line_idx);
             let is_dir = entry.map(|e| e.is_dir).unwrap_or(false);
             let entry_name = entry.map(|e| e.name.as_str()).unwrap_or("");
-            let path = oil.dir.join(entry_name);
+            let path = dir.join(entry_name);
             let (icon, entry_style) = crate::icons::icon_for_entry(&path, is_dir, nerd_fonts, theme);
             let cursor_mod = if is_cursor { Modifier::REVERSED } else { Modifier::empty() };
             let icon_span = Span::styled(icon.to_string(), entry_style.add_modifier(cursor_mod));

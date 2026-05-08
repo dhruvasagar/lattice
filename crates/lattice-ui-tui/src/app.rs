@@ -6201,10 +6201,17 @@ impl App {
                     ));
                 }
                 BufferData::Oil(o) => {
+                    // M.3.2.c.3: prefer dir from buffer-locals.
+                    let dir = self
+                        .buffer_locals
+                        .get(&id)
+                        .and_then(|locals| locals.get::<crate::modes::OilDir>())
+                        .map(|d| d.0.clone())
+                        .unwrap_or_else(|| o.dir.clone());
                     lines.push(format!(
                         "  {active_marker}{listed_marker} #{:<3} oil      {}",
                         id.0,
-                        o.dir.display()
+                        dir.display()
                     ));
                 }
             }
@@ -12011,8 +12018,20 @@ impl App {
     fn do_write(&mut self, path: Option<std::path::PathBuf>) {
         if matches!(self.active_buffer, BufferKind::Oil) {
             let oil_id = self.active_pane_buffer_id();
+            // M.3.2.c.3: read dir from buffer-locals for the
+            // status message; fall back to the struct field.
+            let dir_display = self
+                .buffer_locals
+                .get(&oil_id)
+                .and_then(|locals| locals.get::<crate::modes::OilDir>())
+                .map(|d| d.0.display().to_string())
+                .or_else(|| {
+                    self.buffers
+                        .oil(oil_id)
+                        .map(|o| o.dir.display().to_string())
+                })
+                .unwrap_or_default();
             if let Some(oil) = self.buffers.oil_mut(oil_id) {
-                let dir_display = oil.dir.display().to_string();
                 match oil.apply() {
                     Ok(()) => self.set_message(EchoLevel::Info, format!("oil: applied changes in {dir_display}")),
                     Err(e) => self.set_message(EchoLevel::Error, format!("oil apply error: {e}")),
@@ -12164,16 +12183,35 @@ impl App {
         let active_id = self.active_pane_buffer_id();
         let Some(oil) = self.buffers.oil(active_id) else { return; };
         let Some(entry) = oil.entry_at_cursor().cloned() else { return; };
-        let dir = oil.dir.clone();
+        // M.3.2.c.3: read dir from buffer-locals.
+        let dir = self
+            .buffer_locals
+            .get(&active_id)
+            .and_then(|locals| locals.get::<crate::modes::OilDir>())
+            .map(|d| d.0.clone())
+            .unwrap_or_else(|| oil.dir.clone());
         if entry.is_dir {
-            if let Some(oil) = self.buffers.oil_mut(active_id) {
-                let sub = dir.join(&entry.name);
-                if let Err(e) = oil.navigate_into(sub) {
+            let navigate_result = self
+                .buffers
+                .oil_mut(active_id)
+                .map(|oil| oil.navigate_into(dir.join(&entry.name)));
+            match navigate_result {
+                Some(Err(e)) => {
                     self.set_message(EchoLevel::Error, format!("oil navigate: {e}"));
-                } else {
+                }
+                Some(Ok(_)) => {
+                    // Re-mirror dir into buffer-locals so the
+                    // canonical reader sees the new sub-directory.
+                    if let Some(o) = self.buffers.oil(active_id) {
+                        let new_dir = o.dir.clone();
+                        if let Some(locals) = self.buffer_locals.get_mut(&active_id) {
+                            locals.insert(crate::modes::OilDir(new_dir));
+                        }
+                    }
                     self.cursor = Position::ZERO;
                     self.scroll = 0;
                 }
+                None => {}
             }
         } else {
             let path = dir.join(&entry.name);
@@ -13720,6 +13758,23 @@ impl App {
         locals.insert(crate::modes::FileTreeNerdFonts(buffer.nerd_fonts));
     }
 
+    /// Mirror oil-mode-owned data from an `OilBuffer` into
+    /// the buffer-locals map for `buffer_id` (M.3.2.c.3).
+    /// Currently mirrors `dir` only; `snapshot` is private to
+    /// `OilBuffer` and stays internal until the M.3.2.c.5
+    /// `BufferStorage` retirement decision.
+    fn seed_oil_locals(
+        &mut self,
+        buffer_id: crate::buffers::BufferId,
+        buffer: &crate::oil::OilBuffer,
+    ) {
+        let locals = self
+            .buffer_locals
+            .entry(buffer_id)
+            .or_default();
+        locals.insert(crate::modes::OilDir(buffer.dir.clone()));
+    }
+
     /// Switch the active pane to an existing help buffer in the
     /// registry. Snapshots prior pane state so `<C-o>` returns the
     /// user to the document/cursor they came from. The registry's
@@ -13865,6 +13920,9 @@ impl App {
             self.push_position_history(cur, PositionSource::AutoJump);
         }
         let new_id = oil.id;
+        // M.3.2.c.3: mirror oil-mode-owned data
+        // (`dir`) into buffer-locals BEFORE the move.
+        self.seed_oil_locals(new_id, &oil);
         self.buffers.insert(BufferEntry {
             id: new_id,
             flags: BufferFlags::default(),
@@ -29169,6 +29227,41 @@ mod tests {
                 d.name
             );
         }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ---- M.3.2.c.3: oil-mode locals seeded ----
+
+    #[test]
+    fn open_oil_seeds_oil_locals() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-m3-2-c-3-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&tmp);
+
+        let mut a = app_with("hi", 5);
+        a.do_open_oil(Some(tmp.clone()));
+        let oil_id = a.active_pane_buffer_id();
+
+        let locals = a
+            .buffer_locals
+            .get(&oil_id)
+            .expect("oil locals seeded");
+        let dir = locals
+            .get::<crate::modes::OilDir>()
+            .expect("OilDir local present");
+        assert_eq!(dir.0, tmp);
+
+        // Owner-mode metadata.
+        let descriptors: Vec<_> = locals.iter_descriptors().collect();
+        let oil_descriptors: Vec<_> = descriptors
+            .iter()
+            .filter(|d| d.owner_mode == "oil-mode")
+            .collect();
+        assert_eq!(oil_descriptors.len(), 1);
+        assert_eq!(oil_descriptors[0].name, "oil-mode.dir");
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

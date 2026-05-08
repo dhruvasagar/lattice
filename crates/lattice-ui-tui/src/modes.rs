@@ -148,6 +148,30 @@ impl BufferLocal for FileTreeNerdFonts {
     }
 }
 
+// ---- M.3.2.c.3: oil-mode buffer-locals ----
+//
+// `OilBuffer` carries `dir` (the directory the listing
+// represents) as public mode-internal state. `snapshot` (the
+// rope-vs-disk diff baseline) is private and stays internal
+// to the OilBuffer; M.3.2.c.5's BufferStorage retirement
+// decision will revisit whether to expose it.
+
+/// Filesystem path the oil buffer's listing represents.
+#[derive(Debug, Clone)]
+pub struct OilDir(pub std::path::PathBuf);
+
+impl BufferLocal for OilDir {
+    const NAME: &'static str = "oil-mode.dir";
+    const DOC: &'static str =
+        "Directory the oil buffer's editable listing represents. \
+         Diff-on-:write applies filesystem ops relative to this \
+         path; status line shows it.";
+    const OWNER_MODE: &'static str = "oil-mode";
+    fn describe(&self) -> String {
+        self.0.display().to_string()
+    }
+}
+
 /// Macro for buffer-kind majors that are read-only (Help,
 /// FileTree). Oil is writable so it gets its own impl.
 macro_rules! read_only_buffer_kind_mode {

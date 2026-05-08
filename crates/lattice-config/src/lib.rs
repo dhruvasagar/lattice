@@ -56,27 +56,42 @@
 //! Events do NOT fire on `:set foo?` (Query) or on validation /
 //! parse failures.
 
+// Allow this crate to refer to itself by name. The
+// `lattice-config-macros` proc macros emit code that
+// references `::lattice_config::*` -- the absolute path lets
+// expansions work uniformly in consumer crates AND inside
+// `lattice-config` itself. Without this `extern crate`,
+// `::lattice_config` doesn't resolve when the macro is
+// invoked inside this crate.
+extern crate self as lattice_config;
+
 pub mod completion;
 mod core_options;
 mod domain;
 mod erased;
 pub mod group;
 pub mod loader;
-pub mod macros;
 mod option;
 mod option_decl;
 mod option_type;
 mod overrides;
 mod parse;
+#[cfg(test)]
+mod proc_macro_tests;
 mod registry;
 mod resolved;
 mod resolver;
 
-// Re-export `linkme` so the `options!` / `groups!` macros can
-// reference `$crate::linkme::distributed_slice` reliably when
+// Re-export `linkme` so the proc macros can reference
+// `::lattice_config::linkme::distributed_slice` reliably when
 // expanded outside this crate.
 #[doc(hidden)]
 pub use linkme;
+
+// Re-export the proc macros from `lattice-config-macros`.
+// Users write `lattice_config::options! { ... }` / `groups! { ... }`;
+// the proc-macro crate is a private implementation detail.
+pub use lattice_config_macros::{groups, options};
 
 pub use completion::OptionsGenerator;
 pub use core_options::{CoreOptions, register_core_options};

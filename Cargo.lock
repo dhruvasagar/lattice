@@ -757,6 +757,7 @@ dependencies = [
  "criterion",
  "dirs",
  "lattice-completion",
+ "lattice-config-macros",
  "lattice-core",
  "lattice-grammar",
  "lattice-protocol",
@@ -764,6 +765,15 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.18",
  "toml",
+]
+
+[[package]]
+name = "lattice-config-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

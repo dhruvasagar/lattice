@@ -1,23 +1,205 @@
-//! Renderer-agnostic options. Every renderer (TUI today, GUI / web
-//! tomorrow) registers these by calling [`register_core_options`]
-//! at App startup and holds the returned [`CoreOptions`] for typed
-//! reads.
+// `linkme`'s distributed slices use `link_section` to aggregate
+// items at link time. The macro expansions in this file emit
+// such declarations; allow the workspace's `unsafe_code = "deny"`
+// lint locally with the same safety rationale documented in
+// `option_decl.rs` and `group.rs`.
+#![allow(unsafe_code)]
+
+//! Renderer-agnostic options. M.2.0b migrates these from the
+//! pre-typed-keys imperative `Option::builder()` form to the
+//! macro-driven declarative form (Design B + D from the
+//! `mode-architecture.md` discussion).
 //!
-//! What lives here vs. in a renderer crate: an option belongs in
-//! `core_options` if its *semantics* are renderer-independent --
-//! i.e. any sane renderer will respect it (`number`, `tabstop`,
-//! `wrap`, `foldmethod`, ...). Renderer-specific styling
-//! (`ui.separator_color`, `ui.statusline_active_fg`) registers
-//! from the renderer's own `register_*_options` function.
+//! Each option is a unique Rust type emitted by [`crate::options!`].
+//! The macro generates the [`crate::OptionDecl`] / [`crate::HasGroup`]
+//! impls, a `build_spec()` helper that constructs the runtime
+//! `Option<T>` via the existing builder, and a `linkme`
+//! self-registration thunk submitted to [`crate::OPTION_DECLS`].
+//! At App boot the registry's [`crate::ConfigRegistry::init_from_linkme`]
+//! walks the slice and registers every option without a central
+//! `register_core_options` body.
+//!
+//! For backwards compatibility during the transitional M.2.0b/c
+//! window, [`register_core_options`] runs `init_from_linkme` and
+//! returns a [`CoreOptions`] struct populated with the typed
+//! handles. Existing callers (`config.get(core.tabstop)`)
+//! continue to work unchanged. M.2.0c migrates the callers to
+//! `config.get_typed::<Tabstop>()` and retires `CoreOptions`.
 
 use lattice_core::FoldMethod;
 
-use crate::option::{Option, OptionHandle};
+use crate::option::OptionHandle;
+use crate::option_decl::OptionDecl;
 use crate::registry::ConfigRegistry;
 
-/// Typed handles to every core option. Returned by
-/// [`register_core_options`]; the App holds one of these and
-/// reads via `config.get(handles.foo)` on hot paths.
+// Validators referenced by `#[validate(...)]` on the options
+// below. Plain Rust functions; the macro just records the path.
+fn validate_tabstop(i: &i64) -> Result<(), String> {
+    if (1..=32).contains(i) {
+        Ok(())
+    } else {
+        // Migration constraint: error wording matches the
+        // pre-typed-options setter (test
+        // `tabstop_validate_rejects_out_of_range_with_legacy_message`).
+        Err(format!("tabstop out of range [1, 32]: {i}"))
+    }
+}
+
+fn validate_scrolloff(i: &i64) -> Result<(), String> {
+    if (0..=64).contains(i) {
+        Ok(())
+    } else {
+        Err(format!("scrolloff out of range [0, 64]: {i}"))
+    }
+}
+
+fn validate_completion_priority(i: &i64) -> Result<(), String> {
+    if (0..=9999).contains(i) {
+        Ok(())
+    } else {
+        Err(format!("priority out of range [0, 9999]: {i}"))
+    }
+}
+
+// ---- Editor group: bare-named editor options ----
+//
+// Reserved namespace per `mode-architecture.md` §6.5.2 / §6.8.
+// Bare names (no prefix) are the user's first-class options;
+// plugins must use their own `<plugin-id>.` prefix.
+
+crate::options! {
+    group = crate::Editor;
+
+    /// Show absolute line numbers in the gutter.
+    #[aliases("nu")]
+    #[name("number")]
+    pub Number: bool = true;
+
+    /// Gutter shows distance from the cursor; the cursor's line
+    /// shows its absolute number.
+    #[aliases("rnu")]
+    #[name("relativenumber")]
+    pub RelativeNumber: bool = false;
+
+    /// Wrap long lines visually instead of horizontal scrolling.
+    pub Wrap: bool = false;
+
+    /// Ignore case in search patterns.
+    #[aliases("ic")]
+    #[name("ignorecase")]
+    pub IgnoreCase: bool = false;
+
+    /// Number of spaces a hard tab character renders as.
+    #[aliases("ts")]
+    #[validate(validate_tabstop)]
+    pub Tabstop: i64 = 8;
+
+    /// When false (`:set nofoldenable`, `zi`), every fold renders
+    /// as open regardless of its closed flag. Closed-state is
+    /// preserved -- toggling back restores the previous
+    /// distribution.
+    #[aliases("fen")]
+    #[name("foldenable")]
+    pub FoldEnable: bool = true;
+
+    /// How folds are produced: `manual` (zf only), `indent` (auto
+    /// from indentation), `markdown` (ATX heading nesting), or
+    /// `syntax` (tree-sitter cascade -- markdown for `.md`,
+    /// indent otherwise).
+    #[aliases("fdm")]
+    #[name("foldmethod")]
+    pub FoldMethodOption: FoldMethod = FoldMethod::Manual;
+
+    /// Minimum visual lines kept above and below the cursor when
+    /// scrolling.
+    #[aliases("so")]
+    #[validate(validate_scrolloff)]
+    pub Scrolloff: i64 = 0;
+}
+
+// ---- Completion group: insert-completion knobs ----
+
+crate::options! {
+    group = crate::Completion;
+
+    /// When the completion pipeline returns exactly one candidate
+    /// at popup-open time, insert it directly instead of showing a
+    /// one-row popup. Only fires at popup-open; narrowing an
+    /// already-open popup to one candidate while typing does not
+    /// auto-insert. Disable with `:set nocompletion.auto_insert_single`
+    /// to always require an explicit confirm.
+    #[name("completion.auto_insert_single")]
+    pub CompletionAutoInsertSingle: bool = true;
+
+    /// Priority bucket for the `gen:lsp-completion` insert-mode
+    /// completion source. Higher numbers float that source's items
+    /// above ties from lower-priority sources
+    /// (`docs/insert-completion.md` §3.4 / §3.6). Default 200;
+    /// LSP-driven IDE completions usually want to win against
+    /// local buffer words and snippets at tied score.
+    #[name("completion.source.lsp.priority")]
+    #[validate(validate_completion_priority)]
+    pub CompletionSourceLspPriority: i64 = 200;
+
+    /// Priority bucket for the `gen:snippet` insert-mode source.
+    /// Default 150 -- above buffer-words, below LSP. Per-language
+    /// overrides land in 4.2.g.5 (3/3); today the value is global.
+    #[name("completion.source.snippet.priority")]
+    #[validate(validate_completion_priority)]
+    pub CompletionSourceSnippetPriority: i64 = 150;
+
+    /// Priority bucket for the `gen:buffer-words` insert-mode
+    /// source. Default 100 -- baseline; LSP and snippets both
+    /// outrank it at tied matcher score.
+    #[name("completion.source.buffer-words.priority")]
+    #[validate(validate_completion_priority)]
+    pub CompletionSourceBufferWordsPriority: i64 = 100;
+
+    /// Priority bucket for the `gen:tree-sitter-symbol`
+    /// insert-mode source -- definition-position identifiers
+    /// pulled from the buffer's syntax tree. Default 80, below
+    /// buffer-words: when LSP is attached for the language, the
+    /// LSP source has the same names with richer metadata.
+    #[name("completion.source.tree-sitter.priority")]
+    #[validate(validate_completion_priority)]
+    pub CompletionSourceTreeSitterPriority: i64 = 80;
+
+    /// Priority bucket for the `gen:path` insert-mode source --
+    /// filesystem entries surfaced when the cursor sits inside a
+    /// string literal. Default 90 per spec §3.4: below
+    /// buffer-words 100 (which often matches partial paths too)
+    /// and above tree-sitter 80.
+    #[name("completion.source.path.priority")]
+    #[validate(validate_completion_priority)]
+    pub CompletionSourcePathPriority: i64 = 90;
+
+    /// Editor-side commit characters unioned with each LSP
+    /// server's per-item `commitCharacters`. When the
+    /// insert-completion popup is open and the user types one of
+    /// these characters, the focused candidate is accepted before
+    /// the character is inserted. Default empty -- only
+    /// LSP-supplied commit chars fire. Set to e.g. `".,;"` to
+    /// accept on any of those keys globally.
+    #[name("completion.extra_commit_chars")]
+    pub CompletionExtraCommitChars: String = String::new();
+
+    /// Render the top-ranked candidate's suffix as a dimmed
+    /// inline overlay after the cursor while the popup is open
+    /// (Phase 4.2.g.7 polish). Off by default to keep the live
+    /// buffer visually quiet; turn on for a vscode-style preview
+    /// of the most likely completion. Only fires when the cursor
+    /// sits at end-of-line and the top candidate is a
+    /// case-insensitive prefix of the typed query.
+    #[name("completion.ghost_text")]
+    pub CompletionGhostText: bool = false;
+}
+
+/// Typed handles to every core option, populated post-boot. M.2.0b
+/// transitional shim -- existing callers that read via
+/// `config.get(core_options.tabstop)` continue to work; M.2.0c
+/// migrates them to `config.get_typed::<Tabstop>()` and retires
+/// the struct. Field types and names match the pre-migration
+/// API one-for-one.
 pub struct CoreOptions {
     pub number: OptionHandle<bool>,
     pub relativenumber: OptionHandle<bool>,
@@ -41,219 +223,51 @@ pub struct CoreOptions {
     pub completion_ghost_text: OptionHandle<bool>,
 }
 
-/// Register every renderer-agnostic option against `registry` and
-/// hand back the typed handle struct. Idempotent only by
-/// duplication — calling twice panics on the first duplicate name
-/// (registry's invariant).
+/// Boot every renderer-agnostic option against `registry` and
+/// return the typed handle struct for back-compat.
+///
+/// M.2.0b semantics: the registration is driven by the
+/// macro-generated `linkme` slice; this function calls
+/// [`ConfigRegistry::init_from_linkme`] and then looks up each
+/// pre-declared option's handle by [`OptionDecl::NAME`]. Idempotent
+/// only by duplication — calling twice panics on the first
+/// duplicate registration (registry's invariant).
 pub fn register_core_options(registry: &ConfigRegistry) -> CoreOptions {
-    let number = registry.register(
-        Option::<bool>::builder("number", true, "Show absolute line numbers in the gutter.")
-            .aliases(&["nu"])
-            .build(),
-    );
-    let relativenumber = registry.register(
-        Option::<bool>::builder(
-            "relativenumber",
-            false,
-            "Gutter shows distance from the cursor; the cursor's line shows its absolute number.",
-        )
-        .aliases(&["rnu"])
-        .build(),
-    );
-    let wrap = registry.register(Option::<bool>::new(
-        "wrap",
-        false,
-        "Wrap long lines visually instead of horizontal scrolling.",
-    ));
-    let ignorecase = registry.register(
-        Option::<bool>::builder("ignorecase", false, "Ignore case in search patterns.")
-            .aliases(&["ic"])
-            .build(),
-    );
-    let tabstop = registry.register(
-        Option::<i64>::builder(
-            "tabstop",
-            8,
-            "Number of spaces a hard tab character renders as.",
-        )
-        .aliases(&["ts"])
-        .validate(|i| {
-            if (1..=32).contains(i) {
-                Ok(())
-            } else {
-                // Migration constraint: error wording matches the
-                // pre-typed-options setter.
-                Err(format!("tabstop out of range [1, 32]: {i}"))
-            }
-        })
-        .build(),
-    );
-    let foldenable = registry.register(
-        Option::<bool>::builder(
-            "foldenable",
-            true,
-            "When false (`:set nofoldenable`, `zi`), every fold renders as open \
-             regardless of its closed flag. Closed-state is preserved -- toggling \
-             back restores the previous distribution.",
-        )
-        .aliases(&["fen"])
-        .build(),
-    );
-    let foldmethod = registry.register(
-        Option::<FoldMethod>::builder(
-            "foldmethod",
-            FoldMethod::Manual,
-            "How folds are produced: `manual` (zf only), `indent` (auto from \
-             indentation), `markdown` (ATX heading nesting), or `syntax` \
-             (tree-sitter cascade -- markdown for `.md`, indent otherwise).",
-        )
-        .aliases(&["fdm"])
-        .build(),
-    );
-    let scrolloff = registry.register(
-        Option::<i64>::builder(
-            "scrolloff",
-            0,
-            "Minimum visual lines kept above and below the cursor when scrolling.",
-        )
-        .aliases(&["so"])
-        .validate(|i| {
-            if (0..=64).contains(i) {
-                Ok(())
-            } else {
-                Err(format!("scrolloff out of range [0, 64]: {i}"))
-            }
-        })
-        .build(),
-    );
-    let completion_auto_insert_single = registry.register(Option::<bool>::new(
-        "completion.auto_insert_single",
-        true,
-        "When the completion pipeline returns exactly one candidate at \
-         popup-open time, insert it directly instead of showing a one-row \
-         popup. Only fires at popup-open; narrowing an already-open popup \
-         to one candidate while typing does not auto-insert. Disable with \
-         `:set nocompletion.auto_insert_single` to always require an \
-         explicit confirm.",
-    ));
-    let priority_validate = |i: &i64| {
-        if (0..=9999).contains(i) {
-            Ok(())
-        } else {
-            Err(format!("priority out of range [0, 9999]: {i}"))
-        }
-    };
-    let completion_source_lsp_priority = registry.register(
-        Option::<i64>::builder(
-            "completion.source.lsp.priority",
-            200,
-            "Priority bucket for the `gen:lsp-completion` insert-mode \
-             completion source. Higher numbers float that source's \
-             items above ties from lower-priority sources \
-             (`docs/insert-completion.md` §3.4 / §3.6). Default 200; \
-             LSP-driven IDE completions usually want to win against \
-             local buffer words and snippets at tied score.",
-        )
-        .validate(priority_validate)
-        .build(),
-    );
-    let completion_source_snippet_priority = registry.register(
-        Option::<i64>::builder(
-            "completion.source.snippet.priority",
-            150,
-            "Priority bucket for the `gen:snippet` insert-mode source. \
-             Default 150 -- above buffer-words, below LSP. Per-language \
-             overrides land in 4.2.g.5 (3/3); today the value is \
-             global.",
-        )
-        .validate(priority_validate)
-        .build(),
-    );
-    let completion_source_buffer_words_priority = registry.register(
-        Option::<i64>::builder(
-            "completion.source.buffer-words.priority",
-            100,
-            "Priority bucket for the `gen:buffer-words` insert-mode \
-             source. Default 100 -- baseline; LSP and snippets both \
-             outrank it at tied matcher score.",
-        )
-        .validate(priority_validate)
-        .build(),
-    );
-    let completion_source_tree_sitter_priority = registry.register(
-        Option::<i64>::builder(
-            "completion.source.tree-sitter.priority",
-            80,
-            "Priority bucket for the `gen:tree-sitter-symbol` \
-             insert-mode source -- definition-position identifiers \
-             pulled from the buffer's syntax tree. Default 80, \
-             below buffer-words: when LSP is attached for the \
-             language, the LSP source has the same names with \
-             richer metadata.",
-        )
-        .validate(priority_validate)
-        .build(),
-    );
-    let completion_source_path_priority = registry.register(
-        Option::<i64>::builder(
-            "completion.source.path.priority",
-            90,
-            "Priority bucket for the `gen:path` insert-mode \
-             source -- filesystem entries surfaced when the \
-             cursor sits inside a string literal. Default 90 \
-             per spec §3.4: below buffer-words 100 (which often \
-             matches partial paths too) and above tree-sitter 80.",
-        )
-        .validate(priority_validate)
-        .build(),
-    );
-    let completion_extra_commit_chars = registry.register(Option::<String>::new(
-        "completion.extra_commit_chars",
-        String::new(),
-        "Editor-side commit characters unioned with each LSP \
-         server's per-item `commitCharacters`. When the \
-         insert-completion popup is open and the user types \
-         one of these characters, the focused candidate is \
-         accepted before the character is inserted. Default \
-         empty -- only LSP-supplied commit chars fire. Set \
-         to e.g. `\".,;\"` to accept on any of those keys \
-         globally.",
-    ));
-    let completion_ghost_text = registry.register(Option::<bool>::new(
-        "completion.ghost_text",
-        false,
-        "Render the top-ranked candidate's suffix as a dimmed \
-         inline overlay after the cursor while the popup is \
-         open (Phase 4.2.g.7 polish). Off by default to keep \
-         the live buffer visually quiet; turn on for a \
-         vscode-style preview of the most likely completion. \
-         Only fires when the cursor sits at end-of-line and \
-         the top candidate is a case-insensitive prefix of \
-         the typed query.",
-    ));
+    registry.init_from_linkme();
+
+    fn handle_for<D: OptionDecl>(registry: &ConfigRegistry) -> OptionHandle<D::Value> {
+        registry
+            .handle_for_decl::<D>()
+            .unwrap_or_else(|| panic!("config: option `{}` missing after init_from_linkme", D::NAME))
+    }
+
     CoreOptions {
-        number,
-        relativenumber,
-        wrap,
-        ignorecase,
-        tabstop,
-        foldenable,
-        foldmethod,
-        scrolloff,
-        completion_auto_insert_single,
-        completion_source_lsp_priority,
-        completion_source_snippet_priority,
-        completion_source_buffer_words_priority,
-        completion_source_tree_sitter_priority,
-        completion_source_path_priority,
-        completion_extra_commit_chars,
-        completion_ghost_text,
+        number: handle_for::<Number>(registry),
+        relativenumber: handle_for::<RelativeNumber>(registry),
+        wrap: handle_for::<Wrap>(registry),
+        ignorecase: handle_for::<IgnoreCase>(registry),
+        tabstop: handle_for::<Tabstop>(registry),
+        foldenable: handle_for::<FoldEnable>(registry),
+        foldmethod: handle_for::<FoldMethodOption>(registry),
+        scrolloff: handle_for::<Scrolloff>(registry),
+        completion_auto_insert_single: handle_for::<CompletionAutoInsertSingle>(registry),
+        completion_source_lsp_priority: handle_for::<CompletionSourceLspPriority>(registry),
+        completion_source_snippet_priority: handle_for::<CompletionSourceSnippetPriority>(registry),
+        completion_source_buffer_words_priority: handle_for::<CompletionSourceBufferWordsPriority>(
+            registry,
+        ),
+        completion_source_tree_sitter_priority: handle_for::<CompletionSourceTreeSitterPriority>(
+            registry,
+        ),
+        completion_source_path_priority: handle_for::<CompletionSourcePathPriority>(registry),
+        completion_extra_commit_chars: handle_for::<CompletionExtraCommitChars>(registry),
+        completion_ghost_text: handle_for::<CompletionGhostText>(registry),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic)]
+    #![allow(clippy::unwrap_used, clippy::panic, unsafe_code)]
     use super::*;
 
     #[test]
@@ -276,6 +290,15 @@ mod tests {
         assert_eq!(*r.get(h.completion_source_path_priority), 90);
         assert_eq!(r.get(h.completion_extra_commit_chars).as_str(), "");
         assert!(!*r.get(h.completion_ghost_text));
+    }
+
+    #[test]
+    fn type_keyed_reads_work_post_boot() {
+        let r = ConfigRegistry::new();
+        register_core_options(&r);
+        assert_eq!(*r.get_typed::<Tabstop>().unwrap(), 8);
+        assert_eq!(*r.get_typed::<Number>().unwrap(), true);
+        assert_eq!(*r.get_typed::<FoldMethodOption>().unwrap(), FoldMethod::Manual);
     }
 
     #[test]

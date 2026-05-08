@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
 	"crates/lattice-protocol",
+	"crates/lattice-config-macros",
 	"crates/lattice-mode",
 	"crates/lattice-core",
 	"crates/lattice-grammar",
@@ -95,6 +96,16 @@ smallvec = "1"
 # crate the broader Rust ecosystem (axum, dashmap, ...) has
 # converged on -- better long-term support and clearer semantics.
 linkme = "0.3"
+
+# Proc-macro implementation (lattice-config-macros, M.2.0b).
+# `syn` for full Rust syntax tree parsing of `options!` /
+# `groups!` declaration blocks; `quote` for code generation;
+# `proc-macro2` for token-stream interop. These compile only
+# once for the proc-macro crate; runtime crates don't pay the
+# cost.
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
 
 # Logging
 tracing = "0.1"

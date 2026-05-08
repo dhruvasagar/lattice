@@ -24,6 +24,7 @@
 //! pull the `Arc<dyn ErasedOption>` then drops it before reading
 //! the cell, so the lock window is microscopic.
 
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -31,6 +32,7 @@ use lattice_protocol::Event;
 
 use crate::erased::ErasedOption;
 use crate::option::{Option, OptionHandle};
+use crate::option_decl::{OPTION_DECLS, OptionDecl};
 use crate::option_type::OptionType;
 use crate::parse::{ParsedSet, parse_set};
 
@@ -60,6 +62,13 @@ struct Inner {
     /// Name + alias → index. Multiple entries (canonical name +
     /// each alias) all point at the same `by_id` index.
     by_name: HashMap<String, usize>,
+    /// `TypeId` of an [`crate::OptionDecl`] type → index. Populated
+    /// by [`ConfigRegistry::register_with_typeid`] (called from
+    /// the proc-macro's self-registration thunk during
+    /// [`ConfigRegistry::init_from_linkme`]). The hot-path
+    /// type-keyed read [`ConfigRegistry::get_typed`] looks up
+    /// here; absent entries (option not registered) return `None`.
+    by_typeid: HashMap<TypeId, usize>,
     /// Optional sink for [`Event::OptionChanged`] publishing
     /// (DESIGN.md §5.10 / §5.12). `None` means "no event publish",
     /// useful in tests and for embedded uses that don't run an
@@ -192,6 +201,84 @@ impl ConfigRegistry {
             inner.by_name.insert((*a).to_string(), idx);
         }
         Ok(OptionHandle::<T>::new(idx))
+    }
+
+    /// Variant of [`Self::register`] that additionally records a
+    /// `TypeId` ↔ option-index mapping for type-keyed reads via
+    /// [`Self::get_typed`]. Called from the
+    /// [`crate::options!`] macro's `register_fn` thunk during
+    /// [`Self::init_from_linkme`]; not generally called by hand.
+    ///
+    /// `type_id` is `TypeId::of::<D>()` where `D` is the
+    /// [`crate::OptionDecl`] type. Two declarations with the same
+    /// `TypeId` cannot exist (Rust's type system enforces it
+    /// cross-crate), so duplicate-typeid is a programming error
+    /// and panics; the macro never produces it.
+    #[track_caller]
+    pub fn register_with_typeid<T: OptionType>(
+        &self,
+        option: Option<T>,
+        type_id: TypeId,
+    ) -> OptionHandle<T> {
+        let handle = self.register(option);
+        let mut inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        if inner.by_typeid.insert(type_id, handle.idx).is_some() {
+            // Two registrations for the same type id is a build
+            // bug -- shouldn't be reachable from the macro.
+            panic!("config: duplicate TypeId in register_with_typeid");
+        }
+        handle
+    }
+
+    /// Type-keyed read: returns the resolved value for the
+    /// [`OptionDecl`] type `D`. `D::Value` is the value type.
+    /// Returns `None` if the option has not been registered (no
+    /// `register_with_typeid` call seen for this `TypeId`); this
+    /// is legitimate transient state during boot before
+    /// [`Self::init_from_linkme`] runs.
+    pub fn get_typed<D: OptionDecl>(&self) -> std::option::Option<Arc<D::Value>>
+    where
+        D::Value: Clone + Send + Sync + 'static,
+    {
+        let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        let idx = *inner.by_typeid.get(&TypeId::of::<D>())?;
+        let arc = Arc::clone(&inner.by_id[idx]);
+        drop(inner);
+        let opt = arc.as_any().downcast_ref::<Option<D::Value>>()?;
+        Some(opt.get())
+    }
+
+    /// Type-keyed handle lookup: recover the legacy
+    /// [`OptionHandle<D::Value>`] from an [`OptionDecl`] type.
+    /// Used by the M.2.0b backwards-compatibility shim in
+    /// `core_options::register_core_options` to populate the
+    /// `CoreOptions` struct with handles after
+    /// [`Self::init_from_linkme`] has run.
+    ///
+    /// Returns `None` if `D` was not registered. M.2.0c retires
+    /// the `OptionHandle<T>` API and this method along with it.
+    pub fn handle_for_decl<D: OptionDecl>(&self) -> std::option::Option<OptionHandle<D::Value>> {
+        let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        let idx = *inner.by_typeid.get(&TypeId::of::<D>())?;
+        Some(OptionHandle::<D::Value>::new(idx))
+    }
+
+    /// Boot loop: walk the [`OPTION_DECLS`] linkme slice and
+    /// register every option declared anywhere in the workspace.
+    /// Called once at App startup, before any user-facing work.
+    /// Idempotent against the registry's `by_name` invariants
+    /// (duplicate names panic via the existing `register` shim);
+    /// duplicate `TypeId` panics with a config-level error.
+    ///
+    /// After this returns, every `options! { ... }` declaration
+    /// is reachable via [`Self::get_typed`] / [`Self::lookup`] /
+    /// the cmdline `:set` / TOML loader. Boot is the moment when
+    /// "the option exists" goes from "compile-time fact in the
+    /// declaring crate" to "runtime fact in the registry."
+    pub fn init_from_linkme(&self) {
+        for decl in OPTION_DECLS.iter() {
+            (decl.register_fn)(self);
+        }
     }
 
     /// Wait-free typed read.

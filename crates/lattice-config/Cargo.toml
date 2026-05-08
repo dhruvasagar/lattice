@@ -10,6 +10,7 @@ lattice-protocol = { path = "../lattice-protocol" }
 lattice-core = { path = "../lattice-core" }
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-completion = { path = "../lattice-completion" }
+lattice-config-macros = { path = "../lattice-config-macros" }
 arc-swap = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }

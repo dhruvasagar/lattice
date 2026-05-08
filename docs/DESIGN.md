@@ -1,9 +1,51 @@
 # Design Document: A Modal, GPU-Accelerated, Plugin-First Editor
 
-> **Status:** Draft v0.4
+> **Status:** Draft v0.5
 > **Codename:** `lattice` (placeholder -- rename freely)
 > **Author:** TBD
-> **Last updated:** 2026-04-30
+> **Last updated:** 2026-05-08
+
+---
+
+## Changes from v0.4
+
+This revision narrows the §5.8 mode design to a high-level
+anchor and moves the load-bearing detail to the new companion
+doc [`docs/mode-architecture.md`](mode-architecture.md), in
+the same shape as `keymap-architecture.md` for §5.2.
+
+- **§5.8.3 corrected.** The "Major and minor modes are
+  implemented as WASM plugins. No privileged built-in path"
+  paragraph was a maximalist over-commitment. Modes are now
+  framed as a *trait* with three implementation paths:
+  built-in (compiled Rust), bundled plugin (WASM, ships with
+  editor), third-party plugin (WASM, user-installed). The
+  host treats all three identically downstream of registration.
+  See `mode-architecture.md` §2 for rationale.
+- **§5.8 anchored to the companion doc.** Replaces the
+  former three subsections with one §5.8.1 listing the
+  high-level commitments DESIGN.md depends on. Trait surface,
+  lifecycle events, typed option registry, group resolution,
+  customize surface, migration plan all live in
+  `mode-architecture.md`.
+- **Options and groups are typed identities, not strings.**
+  Cross-crate uniqueness enforced by Rust's type system;
+  display-name uniqueness by `linkme` aggregation. Strings
+  appear only at boundaries (`:set`, TOML, plugin manifests).
+  See §5.12 augmentation and `mode-architecture.md` §6.4 / §6.8.
+- **`:customize` shipped in v1.** Group-oriented (a mode's
+  options or an `OptionGroup` like `Lsp` or `Picker`),
+  buffer-backed (`customize-mode` major), TUI-first. Same
+  store as `:set`. TOML write-through deferred to v1.x. See
+  `mode-architecture.md` §6.7.
+- **Hover popup is a markdown-mode buffer in floating
+  geometry.** §5.9 reframed: popups carry buffer content with
+  a popup-shape view rather than being non-buffer primitives
+  whose rendering bypasses the standard pipeline. Resolves
+  the K-hover regression (no syntax highlighting, no consistent
+  rendering with `:help` panes) by routing hover content
+  through the same `compose_visible_lines` pipeline as any
+  other buffer.
 
 ---
 
@@ -935,6 +977,8 @@ The TUI accepts the limits its substrate imposes:
 
 Beyond those, the TUI is held to the same input-latency invariants as the GPU UI: no plugin or background task may stall its event loop; rendering is damage-tracked, not full-redraw-per-frame.
 
+The renderer reads **mode-resolved options** for every per-frame decision (wrap, line numbers, gutter width, foldcolumn, statusline contributors, decoration providers). There is no `BufferKind` branch in the render path: every buffer flows through one pipeline, parameterised by its `ResolvedOptions` snapshot. The hover popup is a floating-geometry view of a `markdown-mode` buffer with a `hover-mode` minor contributing `wrap=true, line-numbers=false, anchor=cursor` -- not a separate render code path. See [`docs/mode-architecture.md`](mode-architecture.md) §6.1 (resolution layers), §6.3 (caching, with O(1) hot-path reads), and §9.5 (renderer integration).
+
 #### 5.6.2 EditorRenderer -- Layered fast paths
 
 | Path | Latency | Applies to |
@@ -1183,27 +1227,19 @@ This is the load-bearing async invariant of the editor. Every other piece of the
 
 ### 5.8 Major Modes and Minor Modes
 
-#### 5.8.1 Major modes
+The major / minor mode system is the primary customization mechanism. The full design -- trait surface, lifecycle events, typed option registry, `OptionGroup` registry, customize surface, plugin path, migration plan -- is documented in [`docs/mode-architecture.md`](mode-architecture.md). This section anchors the high-level commitments DESIGN.md depends on; consult the companion doc for the load-bearing detail.
 
-A buffer has exactly one major mode. The major mode declares: file/shebang/content patterns, tree-sitter grammar, indent/locals/injection queries, LSP servers, keymap, comment syntax, indent style, formatter, rendering profile, style mappings, default minor modes, commands.
+#### 5.8.1 Commitments
 
-**Built-in major modes:** rust, python, javascript, typescript, go, c, cpp, java, ruby, markdown, asciidoc, json, yaml, toml, xml, html, text. Org-mode post-v1.0.
+- A buffer has exactly one **major mode** -- content-type identity (rust, markdown, help, file-tree, lsp-log, ...). The major mode declares parser, default LSP attachment, default keymap layer, default minor modes, rendering profile (§5.6), and mode-scoped option overrides.
+- A buffer can have any number of **minor modes** active simultaneously. Minor modes are composable, additive, and *declaratively* contribute keymap layers, option overrides, event subscriptions, decoration providers, statusline segments, and lifecycle hooks. Conflicts are declared, not implicit.
+- **Modal state** (Normal / Insert / Visual / Op-pending / Command / Search) is orthogonal to major / minor modes; the two axes do not collapse.
+- **Modes are an interface, not a distribution unit.** Same `Mode` trait, three implementation paths: built-in (compiled Rust against the trait), bundled plugin (WASM Component Model, ships with the editor), third-party plugin (WASM Component Model, user-installed). The host treats all three identically downstream of registration; built-ins do not pay per-call WIT overhead. (See `mode-architecture.md` §2 for the rationale and the v0.4-to-v0.5 correction.)
+- **Options and `OptionGroup`s are typed identities, not strings.** Each is a unique Rust type; cross-crate uniqueness is enforced by Rust's type system, display-name uniqueness by `linkme` aggregation, and naming-rule constraints (mode names end in `-mode`; group names do not) by `const fn` assertions emitted at macro expansion. Strings appear only at boundaries (`:set`, TOML, plugin manifests). The bare namespace is reserved for built-ins by macro-API construction; plugin options are mechanically prefixed by plugin ID at registration. (`mode-architecture.md` §6.4 / §6.7.1.1 / §6.8.)
+- **`:set` and `:customize` are two front-ends on the same store.** `:set <opt>=<val>` is the cmdline parser, single-option, immediate. `:customize <name>` is the form-buffer front-end, group-oriented, buffer-backed (`customize-mode` major), TUI-first. `<name>` resolves to a mode (when ending in `-mode`) for a focused view, or to an `OptionGroup` (`Editor`, `Lsp`, `Picker`, `Filetree`, ...) for a cross-mode collection. Both ship in v1; TOML write-through is deferred to v1.x.
+- **Mode toggle and reload.** Every registered mode is user-toggleable via `:enable` / `:disable` / `:toggle` plus an auto-generated ex-command per mode (`:rust-mode`, `:lsp-diagnostics-mode`). Major modes additionally support reload (call the ex-command on a buffer already in that mode ⇒ deactivate then re-activate; the trait contract is idempotent setup). Minor mode deactivation removes every contributed override (options, keymap, subscriptions, decorations) by construction because the registry, not the mode, owns the layer stack.
 
-**Mode resolution:** explicit override -> file pattern -> shebang -> content detector -> fallback (`text`).
-
-#### 5.8.2 Minor modes
-
-A buffer can have any number active. Composable, additive features.
-
-A minor mode declares: auto-activation rules, keymap additions, event subscriptions, decoration provider flag, statusline/gutter segments, commands.
-
-**Examples:** `auto-pair`, `rainbow-delimiters`, `git-blame-line`, `git-gutter`, `whitespace-show`, `relative-line-numbers`, `flymake`, `markdown-live-preview`, `outline`.
-
-Activation: auto-activate per major mode, user toggle (`:enable`/`:disable`), programmatic from plugins.
-
-#### 5.8.3 Implementation as plugins
-
-Major and minor modes are implemented as WASM plugins. No privileged built-in path. Built-in modes ship as bundled plugins (§9.7).
+The detailed taxonomy of which lattice features are major modes, minor modes, or neither -- plus the migration plan to land the `lattice-mode` foundation crate, retire `BufferKind`, unify the renderer, gate LSP behind `lsp-mode`, and ship the `:customize` form view -- is in `mode-architecture.md` §4 (inventory) and §10 (migration).
 
 ### 5.9 UI Components
 
@@ -1211,15 +1247,18 @@ The UI layer's structure determines how the user actually experiences the editor
 
 **Foundational principle: everything is a buffer.** File tree, outline, symbol list, diagnostics list, search results, terminal, REPL -- all are buffers, distinguished only by mutability flags, content provider, and major mode. Users place them in panes via the same split / window operations as code buffers. The editor enforces no fixed sidebar or bottom-panel layout; the user composes their workspace from panes containing buffers of their choice.
 
+**Popups carry buffer content with a popup-shape view.** Hover, signature help, and `:describe-*` content is real buffer content (typically `markdown-mode`) rendered in a floating-anchored geometry rather than a pane-shaped one. The same `compose_visible_lines` pipeline paints both -- a hover popup gets tree-sitter syntax highlighting, link nav, position history, and every other buffer affordance "for free", because it *is* a buffer. The popup-shape view contributes its own minor mode (`hover-mode`) that overrides options like `wrap`, `line-numbers`, and `anchor=cursor`. See [`docs/mode-architecture.md`](mode-architecture.md) §6.7 / §9.5.
+
 What is *not* a buffer:
 
-- **Popups** (completion, hover, signature help, code action) -- anchored transient overlays.
 - **Pickers** -- modal fuzzy-search overlays (file, symbol, command palette).
 - **Notifications** -- corner-anchored transients.
 - **Mode line / header line** -- per-pane status surfaces, contributed via segment registry.
-- **Command line / echo area** -- per-window single-line input/echo.
+- **Command line / echo area** -- per-window single-line input/echo (though every interactive prompt within them is a buffer per §5.9.10's rich minibuffer).
+- **Completion candidate list** -- list of typed `CompletionItem`s, distinct from the *content* of any single completion (which renders as buffer content when expanded).
+- **Code action menu** -- list of typed actions.
 
-These are transient or per-pane attachments, not docked layout.
+The lists / overlays above are not buffer content; they're typed-data UI primitives. Anything *editable* or *prose-shaped* is a buffer regardless of where on screen it appears.
 
 #### 5.9.1 Window structure
 
@@ -1720,7 +1759,7 @@ Every meaningful editor state transition publishes a typed event. The catalog gr
 
 - **Document lifecycle:** `DocumentOpened` (live; carries `{ id, path, version, text }`; published by `App::new` for the initial buffer and `App::do_edit` for subsequent opens; the LSP attach driver in `lattice_lsp::attach_driver` is the canonical subscriber, and §5.4.3 describes the event-driven LSP attach in full), `BeforeSave`, `AfterSave`, `BeforeClose`, `DocumentClosed`, `BufferChanged`, `LanguageDetected`.
 - **Modal state:** `ModalModeChanged { from, to }`, `OperatorPendingEntered`, `OperatorPendingResolved`.
-- **Mode lifecycle:** `MajorModeActivated`, `MajorModeDeactivated`, `MinorModeActivated`, `MinorModeDeactivated`.
+- **Mode lifecycle:** `MajorEntered { buffer, mode }`, `MajorExiting { buffer, mode }`, `MinorActivated { buffer, mode }`, `MinorDeactivated { buffer, mode }`, `OptionConflict { buffer, option, modes }`. `MajorEntered` runs *after* the trait's `on_activate` hook (subscribers see a consistent state); `MajorExiting` runs *before* the trait's `on_deactivate` (subscribers can inspect what's about to be torn down). Deactivation is synchronous from the user's perspective; resource teardown can continue async post-event. See [`docs/mode-architecture.md`](mode-architecture.md) §7.
 - **Selection / cursor:** `SelectionsChanged`, `CursorMoved`, `JumpPushed { source }`.
 - **LSP:** `LspServerStarted`, `LspResponseReceived`, `DiagnosticsUpdated`, `CompletionAvailable`, `LspLogPushed { server_id, level, source, message }` (every `LspLogger::log` append; powers live-tail of `*lsp:<server>*` / `*lsp:<server>:trace*` buffers).
 - **UI:** `PaneFocused`, `PaneClosed`, `WindowFocused`, `BufferViewOpened`.
@@ -1961,6 +2000,12 @@ pub enum OptionType {
 ```
 
 The registry is the single source of truth: every option's name, type, default, doc, group, validator, scope, and on-change event live here. `:set`, `:describe-option`, the customize buffer, the TOML deserializer, and any plugin / `init.rs` call all read from and write to the same `OptionSpec`.
+
+> **v0.5 update:** the v1 implementation evolves the `OptionSpec` shape so that **the option's *type* is the canonical identity, not its string name**. Each built-in option is a unique Rust type implementing an `Option` trait that carries `Value`, `DEFAULT`, `DOC`, and `CUSTOMIZABLE`. Hot-path access is type-driven (`config.get::<Tabstop>()`); strings appear only at boundaries (`:set`, TOML, plugin manifests). Cross-crate uniqueness is enforced by Rust's type system; display-name uniqueness by `linkme` aggregation; naming-rule constraints by `const fn` assertions in the declaration macros. The same model is mirrored for `OptionGroup` (the customize-organization unit, distinct from a mode). See [`docs/mode-architecture.md`](mode-architecture.md) §6.4 (option identity), §6.7.1.1 (groups), §6.8 (constraint enforcement table).
+>
+> Layered resolution: modal-state override → buffer-local explicit `setlocal` → active minor modes (in activation order, with explicit priority for tie-breaks) → major mode → global `:set` → built-in default. Cached per buffer as `ResolvedOptions`, invalidated on mode toggle / option write. O(1) hot-path reads. (`mode-architecture.md` §6.1 / §6.3.)
+>
+> Two front-ends on this single registry: `:set` (cmdline, single-option, immediate) and `:customize` (form-buffer, group-oriented, buffer-backed `customize-mode` major, TUI-first). Same store, same metadata, same validation -- different rendering. v1 ships both; TOML write-through deferred to v1.x. (`mode-architecture.md` §6.7.)
 
 #### 5.12.2 Two layers, both optional
 

@@ -30,6 +30,7 @@ use lattice_mode::{
 use lattice_syntax::Lang;
 
 use crate::buffers::BufferKind;
+use crate::file_tree::FileTreeEntry;
 use crate::help::{HelpAnchor, HelpLink};
 
 // ---- M.3.2.b.1: help-mode buffer-locals ----
@@ -88,6 +89,62 @@ impl BufferLocal for HelpHighlights {
     const OWNER_MODE: &'static str = "help-mode";
     fn describe(&self) -> String {
         format!("{} line(s) of highlights", self.0.len())
+    }
+}
+
+// ---- M.3.2.c.2: file-tree-mode buffer-locals ----
+//
+// `FileTreeBuffer` carries three pieces of mode-specific
+// runtime state: the directory the tree is rooted at, the
+// flat tree-of-entries data structure, and the
+// nerd-fonts-rendering flag. The struct's `id` / `cursor` /
+// `scroll` / `content` (rope) remain universal payload.
+
+/// Filesystem path the file-tree buffer is rooted at.
+#[derive(Debug, Clone)]
+pub struct FileTreeRoot(pub std::path::PathBuf);
+
+impl BufferLocal for FileTreeRoot {
+    const NAME: &'static str = "file-tree-mode.root";
+    const DOC: &'static str =
+        "Directory the file-tree buffer is rooted at -- the path \
+         the user passed to `:Tree` (or the workspace root for \
+         the default tree).";
+    const OWNER_MODE: &'static str = "file-tree-mode";
+    fn describe(&self) -> String {
+        self.0.display().to_string()
+    }
+}
+
+/// Flat tree-of-entries backing the file-tree buffer.
+#[derive(Debug, Clone)]
+pub struct FileTreeEntries(pub Vec<FileTreeEntry>);
+
+impl BufferLocal for FileTreeEntries {
+    const NAME: &'static str = "file-tree-mode.entries";
+    const DOC: &'static str =
+        "Flat list of tree entries (directories + files), each \
+         carrying its depth + expansion state. The file-tree \
+         renderer iterates this in order; the rope content is \
+         derived from it.";
+    const OWNER_MODE: &'static str = "file-tree-mode";
+    fn describe(&self) -> String {
+        format!("{} entries", self.0.len())
+    }
+}
+
+/// Whether the file-tree renders nerd-font icon glyphs inline.
+#[derive(Debug, Clone, Copy)]
+pub struct FileTreeNerdFonts(pub bool);
+
+impl BufferLocal for FileTreeNerdFonts {
+    const NAME: &'static str = "file-tree-mode.nerd-fonts";
+    const DOC: &'static str =
+        "Whether the file-tree buffer's rendered rope embeds \
+         nerd-font icon glyphs alongside file names.";
+    const OWNER_MODE: &'static str = "file-tree-mode";
+    fn describe(&self) -> String {
+        if self.0 { "enabled" } else { "disabled" }.to_string()
     }
 }
 

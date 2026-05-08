@@ -6181,10 +6181,17 @@ impl App {
                     ));
                 }
                 BufferData::FileTree(t) => {
+                    // M.3.2.c.2: prefer root from buffer-locals.
+                    let root = self
+                        .buffer_locals
+                        .get(&id)
+                        .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
+                        .map(|r| r.0.clone())
+                        .unwrap_or_else(|| t.root.clone());
                     lines.push(format!(
                         "  {active_marker}{listed_marker} #{:<3} tree     {}",
                         id.0,
-                        t.root.display()
+                        root.display()
                     ));
                 }
                 BufferData::Help(h) => {
@@ -13694,6 +13701,25 @@ impl App {
         locals.insert(crate::modes::HelpHighlights(buffer.highlights.clone()));
     }
 
+    /// Mirror file-tree-mode-owned data from a `FileTreeBuffer`
+    /// into the buffer-locals map for `buffer_id` (M.3.2.c.2).
+    /// Same shape as `seed_help_locals`. Called at file-tree-
+    /// buffer creation time before the buffer moves into the
+    /// registry.
+    fn seed_file_tree_locals(
+        &mut self,
+        buffer_id: crate::buffers::BufferId,
+        buffer: &crate::file_tree::FileTreeBuffer,
+    ) {
+        let locals = self
+            .buffer_locals
+            .entry(buffer_id)
+            .or_default();
+        locals.insert(crate::modes::FileTreeRoot(buffer.root.clone()));
+        locals.insert(crate::modes::FileTreeEntries(buffer.entries.clone()));
+        locals.insert(crate::modes::FileTreeNerdFonts(buffer.nerd_fonts));
+    }
+
     /// Switch the active pane to an existing help buffer in the
     /// registry. Snapshots prior pane state so `<C-o>` returns the
     /// user to the document/cursor they came from. The registry's
@@ -13905,6 +13931,13 @@ impl App {
             self.push_position_history(cur, PositionSource::AutoJump);
         }
         let new_id = tree.id;
+        // M.3.2.c.2: mirror file-tree-mode-owned data
+        // (`root` / `entries` / `nerd_fonts`) into the
+        // buffer-locals map BEFORE moving `tree` into the
+        // registry. The struct fields stay populated as a
+        // construction artifact / fallback (M.3.2.c.5
+        // retires them).
+        self.seed_file_tree_locals(new_id, &tree);
         self.buffers.insert(BufferEntry {
             id: new_id,
             flags: BufferFlags::default(),
@@ -13967,16 +14000,48 @@ impl App {
         // buffer kinds); the tree's own `cursor` field is
         // archival save-state.
         let idx = self.cursor.line as usize;
-        let Some(tree) = self.buffers.file_tree_mut(active_id) else {
-            return;
+        // M.3.2.c.2: prefer entries from buffer-locals; fall
+        // back to the tree's struct field. The toggle below
+        // mutates the struct field in place; we re-mirror
+        // afterwards to keep the locals in sync.
+        let entry = {
+            let from_locals = self
+                .buffer_locals
+                .get(&active_id)
+                .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>())
+                .and_then(|e| e.0.get(idx).cloned());
+            from_locals.or_else(|| {
+                self.buffers
+                    .file_tree(active_id)
+                    .and_then(|t| t.entries.get(idx).cloned())
+            })
         };
-        let Some(entry) = tree.entries.get(idx).cloned() else {
+        let Some(entry) = entry else {
             return;
         };
         match entry.kind {
             FileTreeEntryKind::Directory { .. } => {
-                if let Err(e) = tree.toggle_at(idx) {
-                    self.set_message(EchoLevel::Error, format!("toggle error: {e}"));
+                let toggle_result = self
+                    .buffers
+                    .file_tree_mut(active_id)
+                    .map(|t| t.toggle_at(idx));
+                match toggle_result {
+                    Some(Err(e)) => {
+                        self.set_message(EchoLevel::Error, format!("toggle error: {e}"));
+                    }
+                    Some(Ok(_)) => {
+                        // Re-mirror entries so locals stay in
+                        // sync with the now-mutated struct
+                        // field. The toggle changes the entry
+                        // count and per-entry expansion state.
+                        if let Some(t) = self.buffers.file_tree(active_id) {
+                            let entries = t.entries.clone();
+                            if let Some(locals) = self.buffer_locals.get_mut(&active_id) {
+                                locals.insert(crate::modes::FileTreeEntries(entries));
+                            }
+                        }
+                    }
+                    None => {}
                 }
             }
             FileTreeEntryKind::File => {
@@ -15852,6 +15917,12 @@ pub(crate) fn raw_buffer_candidates(
                 )
             }
             BufferData::FileTree(t) => (
+                // M.3.2.c.2 note: this is a free-function
+                // buffer-picker site without App access.
+                // Reads the struct field directly; M.3.2.c.5
+                // can route through a parameterised
+                // `buffer_locals: &HashMap<...>` once free
+                // functions are reworked.
                 format!("#{:<3} {}", id.0, t.root.display()),
                 format!("tree{active_marker}"),
             ),
@@ -29031,6 +29102,74 @@ mod tests {
         // (M.3.2.b.2 keeps the fields as fallback; M.3.2.c
         // removes them).
         assert_eq!(help_buf.links.len(), 2);
+    }
+
+    // ---- M.3.2.c.2: file-tree-mode locals seeded + readers ----
+
+    #[test]
+    fn open_file_tree_seeds_file_tree_locals() {
+        // Construct a temp dir + file, open as a tree, confirm
+        // the locals are populated.
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-m3-2-c-2-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&tmp);
+        let f = tmp.join("file.txt");
+        let _ = std::fs::write(&f, "hi");
+
+        let mut a = app_with("hi", 5);
+        // Drive via the production path. `do_open_file_tree`
+        // constructs the FileTreeBuffer, calls
+        // `seed_file_tree_locals`, inserts into the registry,
+        // and activates the pane on it.
+        a.do_open_file_tree(Some(tmp.clone()));
+        let tree_id = a.active_pane_buffer_id();
+
+        let locals = a
+            .buffer_locals
+            .get(&tree_id)
+            .expect("file-tree locals seeded");
+        let root = locals
+            .get::<crate::modes::FileTreeRoot>()
+            .expect("FileTreeRoot local present");
+        assert_eq!(root.0, tmp);
+        let entries = locals
+            .get::<crate::modes::FileTreeEntries>()
+            .expect("FileTreeEntries local present");
+        // At minimum the root row + the file row.
+        assert!(entries.0.len() >= 2);
+        // FileTreeNerdFonts seeded; concrete value matches
+        // App's `theme.nerd_fonts` (we don't assert a specific
+        // boolean since the theme default may evolve -- the
+        // important contract is "the local exists post-seed").
+        assert!(locals.get::<crate::modes::FileTreeNerdFonts>().is_some());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn file_tree_locals_carry_owner_metadata() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-m3-2-c-2-meta-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&tmp);
+        let mut a = app_with("hi", 5);
+        a.do_open_file_tree(Some(tmp.clone()));
+        let tree_id = a.active_pane_buffer_id();
+        let locals = a.buffer_locals.get(&tree_id).unwrap();
+        let descriptors: Vec<_> = locals.iter_descriptors().collect();
+        assert!(descriptors.len() >= 3);
+        for d in &descriptors {
+            assert_eq!(d.owner_mode, "file-tree-mode");
+            assert!(
+                d.name.starts_with("file-tree-mode."),
+                "name {:?} should be namespaced under file-tree-mode",
+                d.name
+            );
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

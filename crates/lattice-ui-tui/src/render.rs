@@ -1549,11 +1549,23 @@ fn draw_pane_status_line(
             .as_ref()
             .map(|h| format!("[help] {}", h.title))
             .unwrap_or_else(|| "[help]".to_string()),
-        crate::buffers::BufferKind::FileTree => app
-            .buffers
-            .file_tree(pane.buffer_id)
-            .map(|t| format!("[tree] {}", t.root.display()))
-            .unwrap_or_else(|| "[tree]".to_string()),
+        crate::buffers::BufferKind::FileTree => {
+            // M.3.2.c.2: read root via buffer-locals (canonical),
+            // fall back to the struct field for the bootstrap
+            // window.
+            let root_from_locals = app
+                .buffer_locals
+                .get(&pane.buffer_id)
+                .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
+                .map(|r| r.0.clone());
+            let root = root_from_locals.or_else(|| {
+                app.buffers
+                    .file_tree(pane.buffer_id)
+                    .map(|t| t.root.clone())
+            });
+            root.map(|p| format!("[tree] {}", p.display()))
+                .unwrap_or_else(|| "[tree]".to_string())
+        }
         crate::buffers::BufferKind::Oil => app
             .buffers
             .oil(pane.buffer_id)
@@ -1745,10 +1757,21 @@ fn draw_file_tree_pane(
     let nerd_fonts = app.theme.nerd_fonts;
     let theme = &app.theme;
     let raw_text = tree.content.as_string();
+    // M.3.2.c.2: read entries via buffer-locals (canonical),
+    // fall back to the struct field. The renderer needs an
+    // owned copy because the iter borrows the entries' slice;
+    // the locals path returns `&Vec` which is fine.
+    let entries_from_locals = app
+        .buffer_locals
+        .get(&pane.buffer_id)
+        .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>());
+    let entries: &[crate::file_tree::FileTreeEntry] = entries_from_locals
+        .map(|e| e.0.as_slice())
+        .unwrap_or(&tree.entries);
     let lines: Vec<Line> = raw_text
         .split('\n')
         .enumerate()
-        .zip(tree.entries.iter())
+        .zip(entries.iter())
         .skip(scroll)
         .take(viewport)
         .map(|((i, raw_line), entry)| {

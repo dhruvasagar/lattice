@@ -52,10 +52,10 @@ macro_rules! lsp_log_mode {
             fn required_capabilities(&self) -> CapabilitySet {
                 CapabilitySet::empty()
             }
-            fn on_activate(&self, _ctx: &ModeContext) -> Result<(), ModeActivationError> {
+            fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
                 Ok(())
             }
-            fn on_deactivate(&self, _ctx: &ModeContext) -> Result<(), ModeActivationError> {
+            fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
                 Ok(())
             }
         }

@@ -44,12 +44,12 @@ impl Mode for TextMode {
         CapabilitySet::empty()
     }
 
-    fn on_activate(&self, _ctx: &ModeContext) -> Result<(), ModeActivationError> {
+    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
         // No setup work; text-mode is content-free.
         Ok(())
     }
 
-    fn on_deactivate(&self, _ctx: &ModeContext) -> Result<(), ModeActivationError> {
+    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
         Ok(())
     }
 }

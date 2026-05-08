@@ -56,4 +56,23 @@ pub enum ModeActivationError {
     /// can construct this variant themselves).
     #[error("mode `{mode}` lifecycle hook failed: {reason}")]
     LifecycleFailed { mode: ModeId, reason: String },
+
+    /// A mode tried to write a buffer-local owned by a
+    /// different mode (M.3.2.a). The
+    /// [`crate::ModeContext::set_local`] /
+    /// [`crate::ModeContext::remove_local`] paths check
+    /// `T::OWNER_MODE` against the currently activating
+    /// mode's id; mismatch produces this error.
+    #[error(
+        "mode `{current}` cannot write buffer-local `{local}` (owner is `{owner}`)"
+    )]
+    WrongOwnerMode {
+        /// The currently-activating mode that attempted the
+        /// write.
+        current: ModeId,
+        /// The local's display name (`T::NAME`).
+        local: &'static str,
+        /// The local's declared owner mode (`T::OWNER_MODE`).
+        owner: &'static str,
+    },
 }

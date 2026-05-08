@@ -1287,6 +1287,20 @@ pub struct App {
         crate::buffers::BufferId,
         lattice_mode::ActiveModes,
     >,
+    /// Per-buffer mode-owned local state (M.3.2.a). Modes
+    /// populate locals via the `BufferLocal` typed-map during
+    /// `on_activate`; the App routes
+    /// `&mut BufferLocals` into the registry's activation
+    /// methods. M.3.2.b/c migrates existing per-variant data
+    /// (`SyntaxHandle`, `Vec<Fold>`, etc.) into locals owned
+    /// by their respective modes; until then this map exists
+    /// to thread through the new activation API and to back
+    /// `:describe-buffer`'s inspection (no entries until
+    /// M.3.2.b).
+    pub buffer_locals: std::collections::HashMap<
+        crate::buffers::BufferId,
+        lattice_mode::BufferLocals,
+    >,
     /// Per-buffer mode-resolved options cache (M.2.1, see
     /// `mode-architecture.md` §6.3 / §9.4 — note: the doc shows
     /// this on `Document`, but lattice-core cannot depend on
@@ -2703,6 +2717,7 @@ impl App {
                 std::sync::Arc::new(registry)
             },
             active_modes: std::collections::HashMap::new(),
+            buffer_locals: std::collections::HashMap::new(),
             resolved_options: std::collections::HashMap::new(),
             buffer_local_overrides: std::collections::HashMap::new(),
             help_topics,
@@ -2990,8 +3005,13 @@ impl App {
             .active_modes
             .remove(&buffer_id)
             .unwrap_or_default();
+        let mut locals = self
+            .buffer_locals
+            .remove(&buffer_id)
+            .unwrap_or_default();
         match self.mode_registry.activate_major(
             &mut active,
+            &mut locals,
             proto_id,
             major_id,
             // Capability set: M.3.1 doesn't yet plumb per-buffer
@@ -3019,6 +3039,7 @@ impl App {
             }
         }
         self.active_modes.insert(buffer_id, active);
+        self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
     }
 
@@ -28489,9 +28510,11 @@ mod tests {
             .register(OptionContributingMode::new())
             .expect("register");
         let mut active = lattice_mode::ActiveModes::new();
+        let mut locs = lattice_mode::BufferLocals::new();
         a.mode_registry
             .activate_minor(
                 &mut active,
+                &mut locs,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -28521,9 +28544,11 @@ mod tests {
             .register(OptionContributingMode::new())
             .expect("register");
         let mut active = lattice_mode::ActiveModes::new();
+        let mut locs = lattice_mode::BufferLocals::new();
         a.mode_registry
             .activate_minor(
                 &mut active,
+                &mut locs,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -28682,5 +28707,160 @@ mod tests {
             !lattice_config::ReadOnly::CUSTOMIZABLE,
             "ReadOnly should be non-customizable (mode-driven)"
         );
+    }
+
+    // ---- M.3.2.a: BufferLocal end-to-end integration ----
+
+    /// Test fixture: a buffer-local owned by a fictional
+    /// `test-locals-mode`. Exercises the full pipeline:
+    /// mode's `on_activate` writes the local via the
+    /// ModeContext; subsequent reads see it; deactivation
+    /// removes it.
+    #[derive(Debug)]
+    struct TestLocalCounter(i64);
+
+    impl lattice_mode::BufferLocal for TestLocalCounter {
+        const NAME: &'static str = "test-locals.counter";
+        const DOC: &'static str = "Counter local for the test-locals fixture mode.";
+        const OWNER_MODE: &'static str = "test-locals-mode";
+        fn describe(&self) -> String {
+            format!("counter={}", self.0)
+        }
+    }
+
+    struct TestLocalsMode {
+        id: lattice_mode::ModeId,
+    }
+
+    impl TestLocalsMode {
+        fn new() -> Self {
+            Self {
+                id: lattice_mode::ModeId::new("test-locals-mode"),
+            }
+        }
+    }
+
+    impl lattice_mode::Mode for TestLocalsMode {
+        fn id(&self) -> lattice_mode::ModeId {
+            self.id
+        }
+        fn kind(&self) -> lattice_mode::ModeKind {
+            lattice_mode::ModeKind::Minor
+        }
+        fn on_activate(
+            &self,
+            ctx: &mut lattice_mode::ModeContext<'_>,
+        ) -> Result<(), lattice_mode::ModeActivationError> {
+            ctx.set_local(TestLocalCounter(42))
+        }
+        fn on_deactivate(
+            &self,
+            ctx: &mut lattice_mode::ModeContext<'_>,
+        ) -> Result<(), lattice_mode::ModeActivationError> {
+            let _ = ctx.remove_local::<TestLocalCounter>()?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn mode_on_activate_can_write_buffer_local() {
+        let mut a = app_with("hi", 5);
+        let _buf = a.document_buffer_id;
+
+        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
+            .expect("mode_registry uniquely held");
+        let mode_id = registry
+            .register(TestLocalsMode::new())
+            .expect("register");
+
+        let mut active = lattice_mode::ActiveModes::new();
+        let mut locs = lattice_mode::BufferLocals::new();
+        a.mode_registry
+            .activate_minor(
+                &mut active,
+                &mut locs,
+                lattice_protocol::ids::BufferId::new(0),
+                mode_id,
+                lattice_mode::CapabilitySet::empty(),
+            )
+            .expect("activate");
+
+        // After activation the local should be present in the
+        // map with the value the mode set.
+        let counter = locs
+            .get::<TestLocalCounter>()
+            .expect("local should be present after activation");
+        assert_eq!(counter.0, 42);
+    }
+
+    #[test]
+    fn mode_on_deactivate_removes_buffer_local() {
+        let mut a = app_with("hi", 5);
+
+        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
+            .expect("mode_registry uniquely held");
+        let mode_id = registry
+            .register(TestLocalsMode::new())
+            .expect("register");
+
+        let mut active = lattice_mode::ActiveModes::new();
+        let mut locs = lattice_mode::BufferLocals::new();
+        a.mode_registry
+            .activate_minor(
+                &mut active,
+                &mut locs,
+                lattice_protocol::ids::BufferId::new(0),
+                mode_id,
+                lattice_mode::CapabilitySet::empty(),
+            )
+            .expect("activate");
+        assert!(locs.contains::<TestLocalCounter>());
+
+        a.mode_registry
+            .deactivate_minor(
+                &mut active,
+                &mut locs,
+                lattice_protocol::ids::BufferId::new(0),
+                mode_id,
+            )
+            .expect("deactivate");
+        assert!(
+            !locs.contains::<TestLocalCounter>(),
+            "deactivate should remove the mode's local"
+        );
+    }
+
+    #[test]
+    fn buffer_locals_iter_descriptors_for_describe_buffer() {
+        // The descriptor surface backs `:describe-buffer` --
+        // every local exposes name / doc / owner_mode / a
+        // single-line `describe` string for inspection.
+        let mut locs = lattice_mode::BufferLocals::new();
+        // Direct insert via the test mode's lifecycle is the
+        // production path; we exercise the descriptor view
+        // here independently.
+        let mut active = lattice_mode::ActiveModes::new();
+        let mut a = app_with("hi", 5);
+        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
+            .expect("mode_registry uniquely held");
+        let mode_id = registry
+            .register(TestLocalsMode::new())
+            .expect("register");
+        a.mode_registry
+            .activate_minor(
+                &mut active,
+                &mut locs,
+                lattice_protocol::ids::BufferId::new(0),
+                mode_id,
+                lattice_mode::CapabilitySet::empty(),
+            )
+            .expect("activate");
+
+        let descriptors: Vec<_> = locs.iter_descriptors().collect();
+        assert_eq!(descriptors.len(), 1);
+        let d = &descriptors[0];
+        assert_eq!(d.name, "test-locals.counter");
+        assert_eq!(d.owner_mode, "test-locals-mode");
+        assert_eq!(d.describe, "counter=42");
     }
 }

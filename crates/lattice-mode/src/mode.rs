@@ -140,16 +140,16 @@ pub trait Mode: Send + Sync + 'static {
     /// Lifecycle. Called once per (buffer, activation) cycle
     /// after the registry has applied the declarative contributions.
     /// May start side effects (spawn a server connection, register
-    /// a watcher); may NOT mutate the config registry, keymap
-    /// registry, or another mode's state -- those are owned by
-    /// the registry through the declarative methods. Errors
-    /// propagated as [`ModeActivationError`]; do not panic.
+    /// a watcher) and may write its own buffer-locals via
+    /// [`ModeContext::set_local`]; may NOT mutate the config
+    /// registry, keymap registry, or another mode's locals.
+    /// Errors propagated as [`ModeActivationError`]; do not panic.
     ///
     /// Idempotent setup contract: `on_activate` may run more
     /// than once in a buffer's lifetime (each preceded by
     /// `on_deactivate` if previously active). Implementations
     /// must check existing state before allocating.
-    fn on_activate(&self, _ctx: &ModeContext) -> Result<(), ModeActivationError> {
+    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
         Ok(())
     }
 
@@ -158,7 +158,10 @@ pub trait Mode: Send + Sync + 'static {
     /// post-event (`mode-architecture.md` §7.1). Subscribers to
     /// `MinorDeactivated` / `MajorExiting` must handle "the
     /// resource the mode managed may still be in mid-shutdown".
-    fn on_deactivate(&self, _ctx: &ModeContext) -> Result<(), ModeActivationError> {
+    /// Implementations should remove any buffer-locals they
+    /// installed during `on_activate` via
+    /// [`ModeContext::remove_local`].
+    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
         Ok(())
     }
 }

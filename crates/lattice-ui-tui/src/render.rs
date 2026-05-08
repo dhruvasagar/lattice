@@ -849,7 +849,12 @@ fn draw_help_overlay(
     // M.3.2.b.2: read help-mode-owned data via buffer-locals
     // (canonical) with a fallback to the HelpBuffer's own
     // fields for the bootstrap window.
-    let (highlights, links) = help_render_data(app, help.id, help);
+    // `app.help_buffer.id` (construction-time) and the
+    // registered id (= active pane's `buffer_id`) intentionally
+    // differ; locals are keyed by the registered id. See the
+    // comment in `App::open_help_in_pane`.
+    let render_id = app.pane_tree.active().buffer_id;
+    let (highlights, links) = help_render_data(app, render_id, help);
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -1282,7 +1287,12 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
     let lines = help.lines();
     let cursor_line = app.cursor.line as usize;
     // M.3.2.b.2: read help-mode-owned data via buffer-locals.
-    let (highlights, links) = help_render_data(app, help.id, help);
+    // `app.help_buffer.id` (construction-time) and the
+    // registered id (= active pane's `buffer_id`) intentionally
+    // differ; locals are keyed by the registered id. See the
+    // comment in `App::open_help_in_pane`.
+    let render_id = app.pane_tree.active().buffer_id;
+    let (highlights, links) = help_render_data(app, render_id, help);
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -1360,7 +1370,8 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
     };
     let lines = help.lines();
     // M.3.2.b.2: read help highlights via buffer-locals.
-    let (highlights, _links) = help_render_data(app, help.id, help);
+    // `pane.buffer_id` is the registered id (the locals key).
+    let (highlights, _links) = help_render_data(app, pane.buffer_id, help);
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)

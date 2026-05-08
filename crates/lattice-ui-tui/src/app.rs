@@ -12988,11 +12988,71 @@ impl App {
     /// on the link target's variant. Source links echo the
     /// `path:line` for now -- full file-open lands with multi-buffer.
     fn do_help_follow_link(&mut self) {
+        // Local helper: same range-containment logic as
+        // `HelpBuffer::link_at` (covers same-line + multi-line
+        // labels). M.3.2.c.5 retires the method on HelpBuffer
+        // and shares this logic via a free function in
+        // `crate::help`; for now the inline shape keeps the
+        // diff narrow.
+        fn range_contains_position(
+            r: &lattice_protocol::position::Range,
+            pos: lattice_protocol::position::Position,
+        ) -> bool {
+            if pos.line == r.start.line && pos.line == r.end.line {
+                return pos.byte >= r.start.byte && pos.byte < r.end.byte;
+            }
+            if pos.line < r.start.line || pos.line > r.end.line {
+                return false;
+            }
+            if pos.line == r.start.line {
+                return pos.byte >= r.start.byte;
+            }
+            if pos.line == r.end.line {
+                return pos.byte < r.end.byte;
+            }
+            true
+        }
+
         let cursor = self.cursor;
         let Some(help) = self.help_buffer.as_ref() else {
             return;
         };
-        let Some(link) = help.link_at(cursor) else {
+        // M.3.2.c.1: prefer help-mode-owned link data from
+        // `buffer_locals`; fall back to the HelpBuffer's
+        // struct field if the locals don't contain the link.
+        // The fallback handles two cases:
+        // (a) tests that synthesize a `HelpLink` and push it
+        //     directly into `h.links` without going through the
+        //     constructor's parsing path -- the link never
+        //     reaches `seed_help_locals`.
+        // (b) the bootstrap window after construction but
+        //     before `seed_help_locals` runs.
+        // M.3.2.c.5 retires the struct field; tests will
+        // construct a `BufferLocals` directly at that point.
+        //
+        // Note: `app.help_buffer.id` (the construction-time
+        // id) and the registered id (= `pane.buffer_id`) are
+        // intentionally different (see comment in
+        // `open_help_in_pane`); locals are keyed by the
+        // registered id, so we look up via the active pane's
+        // buffer id, not the popup-mode buffer's struct
+        // field.
+        let active_help_id = self.pane_tree.active().buffer_id;
+        let link_from_locals = self
+            .buffer_locals
+            .get(&active_help_id)
+            .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
+            .and_then(|hl| {
+                hl.0.iter()
+                    .find(|link| range_contains_position(&link.range, cursor))
+                    .cloned()
+            });
+        let Some(link) = link_from_locals.or_else(|| {
+            help.links
+                .iter()
+                .find(|link| range_contains_position(&link.range, cursor))
+                .cloned()
+        }) else {
             self.set_message(EchoLevel::Info, "no link under cursor".to_string());
             return;
         };
@@ -13037,8 +13097,24 @@ impl App {
                 // Anchor lookup runs against the help buffer's
                 // anchor list; the cursor + scroll updates land
                 // on the App's unified hot path.
+                // M.3.2.c.1: read help-mode-owned anchors
+                // through `buffer_locals` (keyed by the
+                // registered id from `pane.buffer_id`, not
+                // `help.id` -- see open_help_in_pane comment)
+                // with a fallback to the struct field for
+                // the bootstrap window / synthetic-test paths.
+                let active_help_id = self.pane_tree.active().buffer_id;
                 let target_line = self.help_buffer.as_ref().and_then(|h| {
-                    h.anchors.iter().find(|a| a.name == slug).map(|a| a.line)
+                    let from_locals = self
+                        .buffer_locals
+                        .get(&active_help_id)
+                        .and_then(|locals| locals.get::<crate::modes::HelpAnchors>())
+                        .and_then(|anchors| {
+                            anchors.0.iter().find(|a| a.name == slug).map(|a| a.line)
+                        });
+                    from_locals.or_else(|| {
+                        h.anchors.iter().find(|a| a.name == slug).map(|a| a.line)
+                    })
                 });
                 if let Some(line) = target_line {
                     let buffer = self.active_text();
@@ -13566,6 +13642,13 @@ impl App {
         // lands on `self.help_buffer` via `activate_help_in_pane`.
         // HelpBuffer's heavy field is the rope (O(1) clone); the
         // markdown highlight Vec is the only allocation cost.
+        // Note: `buffer.id` from `from_lines` and the registered
+        // `id` here are intentionally different. The mismatch is
+        // load-bearing for `activate_help_in_pane`'s
+        // refresh-from-registry logic which fires when
+        // `pane.buffer_id != help_buffer.id`. Production reader
+        // sites that look up `buffer_locals` use
+        // `pane.buffer_id` (the registered id), not `help.id`.
         let registry_copy = buffer.clone();
         self.buffers.insert(BufferEntry {
             id,
@@ -28926,9 +29009,11 @@ mod tests {
             .expect("locals seeded")
             .insert(synthetic);
 
-        // The renderer's read path is `help_render_data(app,
-        // help.id, help)`. We can call the same path here
-        // because it's the same module-level data flow.
+        // Lookup via the registered id (= `help_id` returned
+        // by `open_help_in_pane`). Note: `app.help_buffer.id`
+        // is the construction-time id and intentionally
+        // differs from `help_id`; locals are keyed by the
+        // registered id (see comment in `open_help_in_pane`).
         let help_buf = a.help_buffer.as_ref().expect("help_buffer set");
         let locals = a
             .buffer_locals
@@ -28946,6 +29031,64 @@ mod tests {
         // (M.3.2.b.2 keeps the fields as fallback; M.3.2.c
         // removes them).
         assert_eq!(help_buf.links.len(), 2);
+    }
+
+    #[test]
+    fn follow_link_reads_link_from_buffer_locals() {
+        // M.3.2.c.1: prove `do_help_follow_link` reads the
+        // link data from `buffer_locals` (canonical), not the
+        // HelpBuffer's struct field. We open a help buffer,
+        // overwrite its locals with a synthetic link pointing
+        // somewhere different than the buffer's actual links,
+        // and verify FollowLink dispatches based on the
+        // locals-side link.
+        let mut a = app_with("xx", 10);
+        let help = crate::help::HelpBuffer::from_lines(
+            "test-locals-link",
+            vec!["plain text -- no markdown link".into()],
+        );
+        let help_id = a.open_help_in_pane(help);
+
+        // Replace the locals-side links with a synthetic
+        // Topic link that the production reader should pick
+        // up -- the HelpBuffer's own `links` is empty (no
+        // markdown link in the source), so without the
+        // locals-first read, FollowLink would say "no link
+        // under cursor".
+        let synthetic = crate::modes::HelpLinks(vec![crate::help::HelpLink {
+            range: lattice_protocol::Range::new(
+                lattice_protocol::Position::ZERO,
+                lattice_protocol::Position::new(0, 5),
+            ),
+            target: crate::help::HelpLinkTarget::Topic("synthetic-topic".into()),
+        }]);
+        a.buffer_locals
+            .get_mut(&help_id)
+            .expect("locals seeded")
+            .insert(synthetic);
+
+        a.cursor = lattice_protocol::Position::new(0, 0);
+        // `open_help_in_pane` already activates the pane on
+        // the registered help buffer; FollowLink reads
+        // `pane_tree.active().buffer_id` to look up locals.
+        a.apply(Action::FollowLink);
+
+        // The link target was `help:synthetic-topic`; the
+        // FollowLink path routes Topic targets to
+        // `:help <topic>`. The topic doesn't exist so we
+        // expect an info echo about the topic; the key
+        // assertion is "the link was found and dispatched"
+        // which we observe via the message kind. If the
+        // production path had read from the (empty) struct
+        // field, the message would have been "no link under
+        // cursor".
+        let msg = a.last_message.as_ref().expect("echo set by FollowLink");
+        assert!(
+            !msg.text.contains("no link under cursor"),
+            "production reader should have found the link via buffer_locals, \
+             got message: {}",
+            msg.text
+        );
     }
 
     #[test]

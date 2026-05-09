@@ -19,12 +19,113 @@
 //! in `lattice-config`), or the `OptionCache` struct (lives
 //! in `app.rs` next to the App field).
 
+use lattice_core::FoldMethod;
 use lattice_protocol::Event;
 
 use super::{App, EchoLevel, OptionCache};
 use crate::help::HelpBuffer;
 
 impl App {
+    // ---- Typed-options accessors (DESIGN.md §5.12) ----
+    //
+    // The current value of each option lives in `self.config`
+    // behind an `ArcSwap` (single source of truth). These
+    // accessors read from `self.option_cache` -- a derived
+    // projection refreshed via the §5.10 cascade hook on every
+    // `Event::OptionChanged` -- so the renderer's per-line option
+    // checks stay at field-access speed (~1ns) instead of the
+    // ~33ns mutex+ArcSwap+downcast dance per call.
+
+    /// `:set number`. Default `true`.
+    pub fn show_line_numbers(&self) -> bool {
+        self.option_cache.show_line_numbers
+    }
+
+    /// `:set relativenumber`. Default `false`. When true the
+    /// gutter shows distance from the cursor; the cursor's line
+    /// shows its absolute number. Implies `number` (vim's
+    /// behaviour) -- the cascade hook in [`Self::apply_option_cascade`]
+    /// mirrors that cascade.
+    pub fn relative_line_numbers(&self) -> bool {
+        self.option_cache.relative_line_numbers
+    }
+
+    /// `:set wrap`. Default `false`. (v1 renderer always
+    /// horizontal-scrolls; this flag is read by future B.3 polish.)
+    pub fn wrap_lines(&self) -> bool {
+        self.option_cache.wrap_lines
+    }
+
+    /// `:set ignorecase`. Default `false`.
+    pub fn ignorecase(&self) -> bool {
+        self.option_cache.ignorecase
+    }
+
+    /// `:set tabstop=N`. Default `8`. Stored as `i64` in config
+    /// (the typed system's integer type) and cast back to `u32`
+    /// at cache-rebuild time -- the validate closure on the option
+    /// caps the range to `1..=32` so the cast can never lose bits.
+    pub fn tabstop(&self) -> u32 {
+        self.option_cache.tabstop
+    }
+
+    /// `:set scrolloff=N`. Default `0`. Same `i64`→`u32` shape
+    /// as [`Self::tabstop`]; range `0..=64`.
+    pub fn scrolloff(&self) -> u32 {
+        self.option_cache.scrolloff
+    }
+
+    /// `:set foldmethod=...`. Default [`FoldMethod::Manual`].
+    pub fn foldmethod(&self) -> FoldMethod {
+        self.option_cache.foldmethod
+    }
+
+    /// `:set foldenable` / `:set nofoldenable` (`zi`). Default `true`.
+    pub fn foldenable(&self) -> bool {
+        self.option_cache.foldenable
+    }
+
+    /// `:set completion.auto_insert_single`. Default `true`.
+    pub fn completion_auto_insert_single(&self) -> bool {
+        self.option_cache.completion_auto_insert_single
+    }
+
+    // ---- Test-only typed setters (kept on the public surface
+    //      because integration tests in render.rs reach for them).
+    //      Production code uses `do_set` which goes through the
+    //      cmdline path. These mirror what `do_set` does sans the
+    //      cmdline parse, calling `apply_post_set` so side effects
+    //      (foldmethod ⇒ recompute, ui.* ⇒ theme refresh, ...) match
+    //      the user-driven path. ----
+
+    /// Set `foldmethod` directly. Drains the cascade afterwards
+    /// so the option cache + recompute_folds run synchronously
+    /// for the caller -- mirrors what production's `do_set` does
+    /// after the cmdline path.
+    pub fn set_foldmethod_for_test(&mut self, fm: FoldMethod) {
+        self.config
+            .set_typed::<lattice_config::FoldMethodOption>(fm)
+            .expect("set foldmethod");
+        self.drain_option_changes();
+    }
+
+    /// Set `foldenable` directly. Drains the cascade so the cache
+    /// reflects the new value before the caller observes it.
+    pub fn set_foldenable_for_test(&mut self, on: bool) {
+        let _ = self.config.set_typed::<lattice_config::FoldEnable>(on);
+        self.drain_option_changes();
+    }
+
+    /// Set `completion.auto_insert_single` directly. Drains the
+    /// cascade so the cache reflects the new value before the
+    /// caller observes it.
+    pub fn set_completion_auto_insert_single_for_test(&mut self, on: bool) {
+        let _ = self
+            .config
+            .set_typed::<lattice_config::CompletionAutoInsertSingle>(on);
+        self.drain_option_changes();
+    }
+
     /// Repopulate [`Self::option_cache`] from the canonical values
     /// in [`Self::config`]. Called at App-init time and from the
     /// `Event::OptionChanged` cascade so any write source (cmdline,

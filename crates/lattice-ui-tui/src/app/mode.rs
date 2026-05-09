@@ -34,9 +34,94 @@
 use lattice_grammar::ModalState;
 use lattice_protocol::Event;
 
-use super::App;
+use super::{App, BufferId, BufferKind, EchoLevel};
 
 impl App {
+    /// Activate the resolved major mode for `buffer_id` based
+    /// on its `kind` (and, for Document buffers, the detected
+    /// language) and refresh the resolved-options cache. M.3.1.
+    ///
+    /// Lang detection happens inside
+    /// `lattice_syntax::Lang::detect_from_path`; for buffers
+    /// without a path (scratch documents) the resolver falls
+    /// through to `text-mode` per `mode-architecture.md` §4.1.
+    /// Help / FileTree / Oil are kind-driven (no language
+    /// dimension); the `lang` argument is ignored for those
+    /// kinds.
+    ///
+    /// On activation failure (mode not registered, capability
+    /// missing, conflict with active major), the buffer ends
+    /// up with no active major and the resolved options
+    /// reflect only the registry defaults. Failure is logged;
+    /// it isn't a fatal startup error because the design
+    /// commits to "every buffer has a major mode" but the
+    /// implementation tolerates the bootstrap window where the
+    /// registration hasn't completed.
+    pub fn activate_major_for_buffer_kind(
+        &mut self,
+        buffer_id: BufferId,
+        kind: BufferKind,
+    ) {
+        // Only Document buffers consult Lang; the others have
+        // a fixed mode regardless of content.
+        let lang = match kind {
+            BufferKind::Document => {
+                let snap = self.document.snapshot();
+                let path_owned = snap.path.as_ref().map(|p| (**p).clone());
+                let path_ref = path_owned.as_deref();
+                lattice_syntax::Lang::detect_from_path(path_ref)
+            }
+            _ => lattice_syntax::Lang::Plain,
+        };
+        let major_id = crate::modes::resolve_major_mode(kind, lang);
+        // Convert App-level BufferId to lattice_protocol::BufferId for
+        // the registry's expectation. The registry only uses the
+        // value for event emission; for M.3.1 we synthesise a
+        // dummy value because mode-event subscribers don't use
+        // it yet.
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self
+            .active_modes
+            .remove(&buffer_id)
+            .unwrap_or_default();
+        let mut locals = self
+            .buffer_locals
+            .remove(&buffer_id)
+            .unwrap_or_default();
+        match self.mode_registry.activate_major(
+            &mut active,
+            &mut locals,
+            proto_id,
+            major_id,
+            // Capability set: M.3.1 doesn't yet plumb per-buffer
+            // capabilities, so pass empty. Modes that require
+            // BUFFER_URI / LSP / etc. (M.5+) will get this from
+            // a real capability lookup.
+            lattice_mode::CapabilitySet::empty(),
+        ) {
+            Ok(_events) => {
+                // Events go to the typed event bus when M.4
+                // wires it; ignore for now.
+            }
+            Err(e) => {
+                // Don't fail startup; surface as an echo and
+                // continue with defaults. The buffer just has
+                // no active major; resolved options reflect
+                // registry defaults.
+                self.set_message(
+                    EchoLevel::Warn,
+                    format!(
+                        "mode: activate_major({}) for buffer {} failed: {}",
+                        major_id, buffer_id.0, e,
+                    ),
+                );
+            }
+        }
+        self.active_modes.insert(buffer_id, active);
+        self.buffer_locals.insert(buffer_id, locals);
+        self.recompute_options_for_buffer(buffer_id);
+    }
+
     pub fn modal_label(&self) -> &'static str {
         match self.modal {
             ModalState::Normal => "NORMAL",

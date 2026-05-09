@@ -24,12 +24,12 @@
 //!   describe-command, do_open_help_topic, execute_ex_line,
 //!   do_edit, etc.).
 //!
-//! Stays in app.rs (deferred):
-//! - `open_help_in_pane`, `activate_help_in_pane`,
-//!   `seed_help_locals` -- lifecycle/registry path; will
-//!   migrate with the help-lifecycle slice.
-//! - `do_describe_option`, `do_list_options` -- those
-//!   already moved with options.rs.
+//! Sibling homes:
+//! - `open_help`, `open_help_in_pane`,
+//!   `activate_help_in_pane`, `seed_help_locals` --
+//!   lifecycle / registry adoption; in `app/lifecycle.rs`.
+//! - `do_describe_option`, `do_list_options` --
+//!   in `app/options.rs`.
 //!
 //! What does NOT live here: `HelpBuffer` itself
 //! (`crate::help::HelpBuffer`), the markdown parser, link

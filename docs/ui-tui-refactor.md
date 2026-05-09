@@ -73,11 +73,11 @@ New slices match these unless there's a documented reason.
   `PositionEntry` / `EffectiveCompletionConfig` / etc.
   data types, and `impl Debug for App`.
 
-## 3. Submodule layout (after R.1.64)
+## 3. Submodule layout (after R.1.65)
 
 | File                   | Lines | Theme                                                              |
 |------------------------|-------|--------------------------------------------------------------------|
-| `app.rs`               | 17413 | App struct + remaining methods + types + free helpers + tests      |
+| `app.rs`               | 17143 | App struct + remaining methods + types + free helpers + tests      |
 | `app/lsp.rs`           |  3296 | every `lattice-lsp` consumer (requests, drains, log buffers)       |
 | `app/folds.rs`         |  1344 | fold compute / open / close / auto-open                            |
 | `app/completion.rs`    |  1250 | popup state machine, ranker, ghost text, snippets, refilter        |
@@ -87,8 +87,8 @@ New slices match these unless there's a documented reason.
 | `app/options.rs`       |   690 | `:set`, typed options, customize machinery                         |
 | `app/picker.rs`        |   665 | picker state machine + buffer/LSP-instance candidate builders      |
 | `app/motions.rs`       |   598 | bracket match, history walkers + writer, mark jump, viewport / scroll, cursor clamp, viewport sizing |
+| `app/cmdline.rs`       |   581 | `:` minibuffer + missing-arg prompt + chord-capture gate + cmdline completion |
 | `app/help.rs`          |   389 | `:help`, `:describe-*`, `:apropos`, `:keymap`                       |
-| `app/cmdline.rs`       |   296 | `:` minibuffer + missing-arg prompt + chord-capture gate            |
 | `app/visual.rs`        |   295 | charwise / linewise / blockwise selection state                    |
 | `app/file_tree.rs`     |   203 | file-tree buffer ops                                               |
 | `app/macros.rs`        |   194 | `q` recording / `@` replay                                          |
@@ -99,7 +99,7 @@ New slices match these unless there's a documented reason.
 | `app/state.rs`         |    23 | small state accessors                                               |
 | `app/operators.rs`     |    22 | operator-pending plumbing                                           |
 
-## 4. Slices done (R.1.0 -- R.1.64)
+## 4. Slices done (R.1.0 -- R.1.65)
 
 | #      | Slice                                                                 |
 |--------|-----------------------------------------------------------------------|
@@ -168,12 +168,13 @@ New slices match these unless there's a documented reason.
 | R.1.62 | viewport-sizing accessors (`set_viewport_height` + `active_pane_content_height` + `help_popup_inner_height`) → `app/motions.rs` |
 | R.1.63 | `modal_label` → `app/mode.rs`                                         |
 | R.1.64 | `do_redraw_screen` (`<C-l>`) → `app/lifecycle.rs`                     |
+| R.1.65 | cmdline-completion engine (`compute_completion_state` + `refresh_completion_popup` + `CompletionComputeError` + `prefer_aliases_for_command_candidates` + `subsequence_match_ranges`) → `app/cmdline.rs` |
 
 ## 5. Pending candidates
 
-No formal slice plan exists past R.1.64; each slice is picked
+No formal slice plan exists past R.1.65; each slice is picked
 when picked. The clusters below are the visible candidates
-from a survey of `app.rs` after R.1.64. Numbers are
+from a survey of `app.rs` after R.1.65. Numbers are
 heuristic -- some clusters fragment into 2--3 sub-slices
 (the way M.3.2 did in `mode-architecture.md`); some collapse
 into one. Rough envelope: **15--25 slices** to fully drain
@@ -237,13 +238,6 @@ which slice to pick first.
 - `execute_ex_line` (parser + dispatcher entry for the `:`
   line). Big and entangled with every command surface;
   worth a careful look but not a small slice.
-
-### → `app/completion.rs`
-
-- `refresh_completion_popup`, `compute_completion_state`.
-  Already feels like it belongs there; defer because the
-  callers are spread across `apply` (R.1 dispatch) and the
-  ex-line. Easier after the dispatch split.
 
 ### → `app/motions.rs`
 

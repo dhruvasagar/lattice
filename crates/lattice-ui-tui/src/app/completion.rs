@@ -34,7 +34,8 @@
 //! in `crate::completion` / `crate::snippet`.
 
 use lattice_grammar::ModalState;
-use lattice_protocol::position::Position;
+use lattice_protocol::edit::Edit;
+use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use super::{App, EchoLevel, is_path_byte, is_word_char_byte};
 
@@ -350,6 +351,208 @@ impl App {
                 self.insert_completion = None;
             }
         }
+    }
+
+    /// Insert-mode character key while the popup is open
+    /// (Phase 4.2.g.7 commit-char polish). Accepts the focused
+    /// candidate THEN inserts `ch` when `ch` is in the
+    /// effective commit-char set; otherwise inserts `ch`
+    /// plainly so the popup refilters as usual.
+    pub fn do_completion_accept_then_insert(&mut self, ch: char) {
+        let is_commit = self
+            .insert_completion
+            .as_ref()
+            .and_then(|s| s.selected_candidate())
+            .map(|cand| {
+                self.effective_commit_chars_for(cand)
+                    .iter()
+                    .any(|c| *c == ch)
+            })
+            .unwrap_or(false);
+        if is_commit {
+            self.do_completion_accept();
+        }
+        self.do_insert_text(&ch.to_string());
+    }
+
+    /// Suffix of the top-ranked completion candidate that would
+    /// extend the user's current query, or `None` when the
+    /// renderer should paint nothing (Phase 4.2.g.7 ghost-text
+    /// polish). Returned suffix is the part of the candidate
+    /// `text` BEYOND the case-insensitive prefix-match against
+    /// `state.query`.
+    ///
+    /// Returns `None` when:
+    /// - `completion.ghost_text` option is off (default).
+    /// - The popup is closed.
+    /// - The top-ranked candidate doesn't case-insensitively
+    ///   prefix-match the query.
+    /// - The popup is in path-completion mode (filenames are
+    ///   already shown in full inside the string literal --
+    ///   ghost would double up).
+    /// - The query is empty (an empty popup just lists
+    ///   everything; ghosting the first arbitrary candidate
+    ///   would surprise the user).
+    pub fn completion_ghost_text_suffix(&self) -> Option<String> {
+        if !*self
+            .config
+            .get_typed::<lattice_config::CompletionGhostText>()
+            .expect("CompletionGhostText")
+        {
+            return None;
+        }
+        if self.completion_in_path_context {
+            return None;
+        }
+        let state = self.insert_completion.as_ref()?;
+        if state.query.is_empty() {
+            return None;
+        }
+        let top = state.rendered.first()?;
+        let text = top.raw.text.as_str();
+        let prefix = state.query.as_str();
+        if text.len() < prefix.len() {
+            return None;
+        }
+        let (head, tail) = text.split_at(prefix.len());
+        if !head.eq_ignore_ascii_case(prefix) {
+            return None;
+        }
+        if tail.is_empty() {
+            return None;
+        }
+        Some(tail.to_string())
+    }
+
+    /// Effective commit characters for `candidate` -- per-item
+    /// list (LSP-supplied via `LspCompletionMeta.commit_characters`)
+    /// unioned with the global `completion.extra_commit_chars`
+    /// option. Sync sources (buffer-words, snippet,
+    /// tree-sitter) carry no per-item list, so they only honour
+    /// the global extras.
+    fn effective_commit_chars_for(
+        &self,
+        candidate: &lattice_completion::RenderedCandidate,
+    ) -> Vec<char> {
+        let mut chars: Vec<char> = self
+            .lsp_completion_meta_for(candidate)
+            .map(|meta| meta.commit_characters.clone())
+            .unwrap_or_default();
+        let extra = self
+            .config
+            .get_typed::<lattice_config::CompletionExtraCommitChars>()
+            .expect("CompletionExtraCommitChars");
+        for c in extra.chars() {
+            if !chars.contains(&c) {
+                chars.push(c);
+            }
+        }
+        chars
+    }
+
+    /// Accept the focused candidate. Three routing paths:
+    /// 1. **Snippet candidate** (sync source `gen:snippet` or
+    ///    LSP item with `insertTextFormat == Snippet`):
+    ///    expand the body via `lattice-snippet`, splice the
+    ///    rendered text, start an `ActiveSnippet`.
+    /// 2. **LSP candidate**: apply the LSP-shaped insert
+    ///    (`textEdit` range when present) plus any
+    ///    `additionalTextEdits` as one undo unit.
+    /// 3. **Sync-source candidate**: simple replace-`[anchor,
+    ///    cursor]` splice.
+    pub fn do_completion_accept(&mut self) {
+        let Some(state) = self.insert_completion.take() else {
+            self.completion_in_path_context = false;
+            return;
+        };
+        let Some(item) = state.selected_candidate().cloned() else {
+            self.completion_in_path_context = false;
+            return;
+        };
+        // Clear the path-context flag now that the popup has
+        // closed; the next trigger re-evaluates from scratch.
+        self.completion_in_path_context = false;
+        // Bump the accept-frequency counter for this item. Per
+        // `docs/insert-completion.md` §3.6, the ranker rereads
+        // this map and adds a bounded bonus so the user's
+        // recently-accepted picks float above tied peers next
+        // time the popup opens. We bump unconditionally here:
+        // if the apply path below fails, the user still
+        // *intended* to accept this item -- recording that
+        // intent matches expected behaviour.
+        let freq_key = (item.raw.text.clone(), item.raw.kind);
+        *self.completion_accept_freq.entry(freq_key).or_insert(0) += 1;
+        // Snippet (sync source) path -- snippet meta sidecar
+        // points at a fully-parsed body.
+        if let Some(meta) = self.snippet_meta_for(&item).cloned() {
+            self.expand_snippet(&meta.body, state.anchor);
+            self.insert_completion_snippet_meta.clear();
+            self.insert_completion_lsp_meta.clear();
+            return;
+        }
+        // LSP path: typed metadata + additionalTextEdits
+        // coalesce with the main edit. When the LSP item is
+        // snippet-flavoured, route through the engine.
+        if let Some(meta) = self.lsp_completion_meta_for(&item).cloned() {
+            if matches!(
+                meta.insert_text_format,
+                lsp_types::InsertTextFormat::SNIPPET
+            ) {
+                // Coalesce additionalTextEdits + the snippet
+                // body's main splice into ONE undo unit (Phase
+                // 4.2.g.7 polish). Pre-4.2.g.7 this path
+                // applied the additionals first, then a
+                // separate `expand_snippet`, leaving the user
+                // with two `<C-z>` steps to revert one logical
+                // accept.
+                match lattice_snippet::parse(&meta.insert_text) {
+                    Ok(body) => {
+                        if let Err(e) = self.expand_snippet_with_lsp_edits(
+                            &body,
+                            state.anchor,
+                            meta.additional_text_edits.clone(),
+                        ) {
+                            self.set_message(
+                                EchoLevel::Error,
+                                format!("completion: apply failed: {e}"),
+                            );
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        // Body didn't parse -- splice as plain.
+                        // `apply_lsp_completion_accept` already
+                        // coalesces additionals + main into one
+                        // batch internally.
+                        self.apply_lsp_completion_accept(meta, state.anchor);
+                    }
+                }
+                self.insert_completion_snippet_meta.clear();
+                self.insert_completion_lsp_meta.clear();
+                return;
+            }
+            self.apply_lsp_completion_accept(meta, state.anchor);
+            self.insert_completion_snippet_meta.clear();
+            self.insert_completion_lsp_meta.clear();
+            return;
+        }
+        // Sync-source path: simple replace.
+        let insert_text = item.raw.text.clone();
+        let range = ProtoRange::new(state.anchor, self.cursor);
+        let edit = Edit::replace(range, insert_text);
+        match self.apply_edit_blocking(edit) {
+            Ok(applied) => {
+                self.cursor = applied.inserted_range.end;
+            }
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("completion: apply failed: {e:?}"),
+                );
+            }
+        }
+        self.insert_completion_snippet_meta.clear();
+        self.insert_completion_lsp_meta.clear();
     }
 
     pub fn do_completion_cancel(&mut self) {

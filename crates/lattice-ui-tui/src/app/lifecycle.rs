@@ -28,10 +28,15 @@
 //! - `set_viewport_height`, `pending_redraw` handling,
 //!   per-loop-iteration state hooks.
 
+use lattice_core::{CoreError, Document};
+use lattice_protocol::Event;
 use lattice_protocol::position::Position;
+use lattice_runtime::{RuntimeError, spawn_document};
+use lattice_syntax::{Lang, Syntax};
 
 use super::{App, BufferId, EchoLevel, PositionSource, PrevPaneState};
-use crate::buffers::BufferKind;
+use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
+use crate::buffers::{BufferFlags, BufferKind};
 use crate::pane::{PaneDirection, SplitOrientation};
 
 impl App {
@@ -341,6 +346,227 @@ impl App {
         let cur = self.active_pane_buffer_id();
         let pos = ids.iter().position(|id| *id == cur)?;
         Some(ids[if pos == 0 { ids.len() - 1 } else { pos - 1 }])
+    }
+
+    /// `:e[dit] FILE` (DESIGN.md §5.9 multi-buffer). If a buffer
+    /// for `path` is already open, switch to it; otherwise spawn
+    /// a fresh document actor, register it, and switch the active
+    /// pane to the new buffer. With no path, re-edit the current
+    /// buffer's path (force-reload from disk; `!` required when
+    /// dirty).
+    pub(super) fn do_edit(&mut self, path: Option<std::path::PathBuf>, force: bool) {
+        let target = match path {
+            Some(p) => p,
+            None => match self.document.path() {
+                Some(p) => p,
+                None => {
+                    self.set_message(EchoLevel::Error, "no file name".to_string());
+                    return;
+                }
+            },
+        };
+        // Directories defer to `:Tree path` so `:e folder` opens
+        // the file-tree buffer.
+        if let Ok(meta) = std::fs::metadata(&target)
+            && meta.is_dir()
+        {
+            self.do_open_oil(Some(target));
+            return;
+        }
+        // If `target` is already open, switch to it. The dirty
+        // check only applies when we'd discard the current buffer.
+        if let Some(existing_id) = self.find_document_by_path(&target) {
+            if existing_id == self.document_buffer_id {
+                // Re-edit current: reload from disk (vim's `:e`).
+                if !force && self.document.dirty() {
+                    self.set_message(
+                        EchoLevel::Error,
+                        "no write since last change (add ! to override)".to_string(),
+                    );
+                    return;
+                }
+                let new_doc = match Document::open(&target) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        self.set_message(EchoLevel::Error, format!("open error: {e}"));
+                        return;
+                    }
+                };
+                let lang = Lang::detect_from_path(new_doc.path());
+                let initial_text = new_doc.text();
+                let initial_text_version = new_doc.text_version();
+                let syntax: Option<lattice_syntax::SyntaxHandle> =
+                    match Syntax::for_language_with_registry(lang, self.lang_registry.clone()) {
+                        Ok(Some(mut s)) => {
+                            s.parse_at(&initial_text, initial_text_version);
+                            Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+                                s,
+                                crate::runtime::lsp_runtime().handle(),
+                            ))
+                        }
+                        _ => None,
+                    };
+                self.last_parsed_text_version = initial_text_version;
+                self.syntax = syntax;
+                self.replace_document_blocking(new_doc);
+                self.cursor = Position::ZERO;
+                self.scroll = 0;
+                self.current_match = None;
+                self.all_matches.clear();
+                self.search_line = None;
+                self.last_search = None;
+                self.last_find = None;
+                self.last_change = None;
+                self.last_visual = None;
+                self.visual_anchor = None;
+                self.replace_history.clear();
+                self.position_history.clear();
+                self.position_history_cursor = 0;
+                self.folds.clear();
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("\"{}\" reloaded", target.display()),
+                );
+            } else {
+                // Different already-open buffer: switch to it.
+                self.activate_document(existing_id);
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("\"{}\" (already open)", target.display()),
+                );
+            }
+            return;
+        }
+        // Brand-new file: open a fresh actor and register it.
+        let new_doc = match Document::open(&target) {
+            Ok(d) => d,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("open error: {e}"));
+                return;
+            }
+        };
+        let lang = Lang::detect_from_path(new_doc.path());
+        let initial_text = new_doc.text();
+        let initial_text_version = new_doc.text_version();
+        let syntax: Option<lattice_syntax::SyntaxHandle> =
+            match Syntax::for_language_with_registry(lang, self.lang_registry.clone()) {
+                Ok(Some(mut s)) => {
+                    s.parse_at(&initial_text, initial_text_version);
+                    Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+                        s,
+                        crate::runtime::lsp_runtime().handle(),
+                    ))
+                }
+                _ => None,
+            };
+        let new_handle = spawn_document(new_doc, self.registry.clone());
+        let new_id = BufferId::next();
+        self.buffers.insert(BufferEntry {
+            id: new_id,
+            flags: BufferFlags::default(),
+            data: BufferData::Document(DocumentEntry {
+                id: new_id,
+                handle: new_handle.clone(),
+                syntax: None,
+                last_parsed_text_version: 0,
+                last_synced_syntax_version: 0,
+                folds: Vec::new(),
+            }),
+        });
+        // Save the currently-active buffer's hot-path state into
+        // its registry entry, then load the new buffer's into the
+        // hot path.
+        self.snapshot_active_pane();
+        self.snapshot_active_document();
+        self.active_buffer = BufferKind::Document;
+        self.document_buffer_id = new_id;
+        self.document = new_handle;
+        self.snapshot_cache = self.document.snapshot_cache();
+        self.syntax = syntax;
+        self.last_parsed_text_version = self.document.text_version();
+        self.cursor = Position::ZERO;
+        self.scroll = 0;
+        self.current_match = None;
+        self.all_matches.clear();
+        self.search_line = None;
+        self.last_search = None;
+        self.last_find = None;
+        self.last_change = None;
+        self.last_visual = None;
+        self.visual_anchor = None;
+        self.replace_history.clear();
+        self.folds.clear();
+        // Position history follows the active buffer.
+        self.position_history.clear();
+        self.position_history_cursor = 0;
+        self.pane_tree.active_mut().buffer = BufferKind::Document;
+        self.pane_tree.active_mut().buffer_id = new_id;
+        self.activate_buffer_state();
+        // Event-driven LSP attach.
+        self.publish_document_opened_for_active();
+        self.set_message(EchoLevel::Info, format!("\"{}\" opened", target.display()));
+    }
+
+    /// `:w[rite] [path]` -- save the active buffer to disk. Oil
+    /// buffers route through OilBuffer::apply (diff-and-apply
+    /// filesystem ops); document buffers route through
+    /// save_blocking / save_as_blocking against the document
+    /// actor.
+    pub(super) fn do_write(&mut self, path: Option<std::path::PathBuf>) {
+        if matches!(self.active_buffer, BufferKind::Oil) {
+            let oil_id = self.active_pane_buffer_id();
+            // M.3.2.c.3: read dir from buffer-locals for the
+            // status message; fall back to the struct field.
+            let dir_display = self
+                .buffer_locals
+                .get(&oil_id)
+                .and_then(|locals| locals.get::<crate::modes::OilDir>())
+                .map(|d| d.0.display().to_string())
+                .or_else(|| {
+                    self.buffers
+                        .oil(oil_id)
+                        .map(|o| o.dir.display().to_string())
+                })
+                .unwrap_or_default();
+            if let Some(oil) = self.buffers.oil_mut(oil_id) {
+                match oil.apply() {
+                    Ok(()) => self.set_message(EchoLevel::Info, format!("oil: applied changes in {dir_display}")),
+                    Err(e) => self.set_message(EchoLevel::Error, format!("oil apply error: {e}")),
+                }
+            }
+            return;
+        }
+        let result: Result<String, RuntimeError> = match path {
+            Some(p) => self
+                .save_as_blocking(p.clone())
+                .map(|()| p.display().to_string()),
+            None => self.save_blocking().map(|p| p.display().to_string()),
+        };
+        match result {
+            Ok(displayed) => self.set_message(EchoLevel::Info, format!("\"{displayed}\" written")),
+            Err(RuntimeError::Core(CoreError::NoPath)) => {
+                self.set_message(EchoLevel::Error, "no file name (use :w <path>)".to_string());
+            }
+            Err(e) => self.set_message(EchoLevel::Error, format!("write error: {e}")),
+        }
+    }
+
+    /// `:q[uit]` -- request editor shutdown. Honors the dirty
+    /// guard unless `force` (a trailing `!`). Publishes
+    /// `Event::BeforeQuit` for observability; subscribers see it
+    /// but cannot veto in v1.
+    pub(super) fn do_quit(&mut self, force: bool) {
+        if !force && self.document.dirty() {
+            self.set_message(
+                EchoLevel::Error,
+                "no write since last change (add ! to override)".to_string(),
+            );
+            return;
+        }
+        // BeforeQuit is observation-only in v1 (no veto seam yet).
+        // Subscribers see it; the quit proceeds regardless.
+        self.event_bus.publish(Event::BeforeQuit);
+        self.should_quit = true;
     }
 
     /// Split the active pane along `orientation`. The new sibling

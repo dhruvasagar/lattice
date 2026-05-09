@@ -37,12 +37,15 @@
 
 use lattice_protocol::position::Position;
 
+use lattice_grammar::ModalState;
+
 use super::{
-    App, BufferKind, EchoLevel, HoverOutcome, LspNavKind, ReferencesOutcome, SignatureHelpOutcome,
-    SymbolsOutcome, SymbolRow, TagStackEntry, app_to_lsp_position,
+    App, BufferKind, EchoLevel, FormatOutcome, HoverOutcome, LspNavKind, ReferencesOutcome,
+    SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
     definition_response_to_locations, flatten_document_symbol_response,
-    hover_contents_to_markdown, signature_help_to_markdown, symbol_information_to_row,
-    word_under_cursor, workspace_symbol_to_row,
+    hover_contents_to_markdown, last_addressable_line, line_byte_len,
+    signature_help_to_markdown, symbol_information_to_row, word_under_cursor,
+    workspace_symbol_to_row,
 };
 use crate::help::HelpBuffer;
 
@@ -243,6 +246,181 @@ impl App {
             self.pending_hover_token = None;
         }
         self.pending_hover_rx = Some(rx);
+    }
+
+    /// `:format` / `:format-range` (Phase 4.3). Picks the
+    /// highest-priority server with `documentFormattingProvider`
+    /// (or `documentRangeFormattingProvider` when `is_range`),
+    /// fires the request, applies the returned edits as one
+    /// undo unit.
+    ///
+    /// Single-server strategy per docs/lsp-architecture.md §7b:
+    /// "Two formatters can't agree on whitespace." -- so unlike
+    /// nav we don't fan out / merge.
+    ///
+    /// Range source for `is_range`: active Visual selection (if
+    /// in Visual mode), else the whole buffer.
+    pub(super) fn do_lsp_format_request(&mut self, is_range: bool) {
+        if let Some(token) = self.pending_format_token.take() {
+            token.cancel();
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let last_line = last_addressable_line(&snapshot.buffer);
+        // Range resolution.
+        let range_lines: Option<(u32, u32)> = if is_range {
+            // Use the active Visual selection if any, else the whole buffer.
+            if let ModalState::Visual(_) = self.modal {
+                let anchor = self.visual_anchor.unwrap_or(self.cursor);
+                let head = self.cursor;
+                let (s, e): (u32, u32) = if anchor.line <= head.line {
+                    (anchor.line, head.line)
+                } else {
+                    (head.line, anchor.line)
+                };
+                Some((s, e.min(last_line)))
+            } else {
+                Some((0u32, last_line))
+            }
+        } else {
+            None
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FormatOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_format_rx = Some(rx);
+        self.pending_format_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        // Compute the LSP range parameters when needed.
+        let lsp_range = range_lines.map(|(s, e)| {
+            let end_line_text_len = line_byte_len(&snapshot.buffer, e);
+            let line_text = snapshot.buffer.line(e).unwrap_or_default();
+            let end_char =
+                lattice_lsp::position::utf8_byte_to_utf16_column(&line_text, end_line_text_len);
+            lsp_types::Range {
+                start: lsp_types::Position {
+                    line: s,
+                    character: 0,
+                },
+                end: lsp_types::Position {
+                    line: e,
+                    character: end_char,
+                },
+            }
+        });
+        // Conservative formatting options.
+        let options = lsp_types::FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            properties: Default::default(),
+            trim_trailing_whitespace: Some(true),
+            insert_final_newline: Some(true),
+            trim_final_newlines: Some(true),
+        };
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.servers_for(&uri) };
+            // Pick the first server advertising the right provider.
+            let chosen: Option<lattice_lsp::ServerHandle> = handles
+                .into_iter()
+                .find(|h| {
+                    let caps = h.capabilities();
+                    if lsp_range.is_some() {
+                        caps.supports_range_formatting()
+                    } else {
+                        caps.supports_formatting()
+                    }
+                });
+            let Some(handle) = chosen else {
+                let _ = tx.send(FormatOutcome::NoProvider {
+                    is_range: lsp_range.is_some(),
+                });
+                return;
+            };
+            let edits: Option<Vec<lsp_types::TextEdit>> = if let Some(range) = lsp_range {
+                let params = lsp_types::DocumentRangeFormattingParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    range,
+                    options: options.clone(),
+                    work_done_progress_params: Default::default(),
+                };
+                handle
+                    .range_formatting(params, token.clone())
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                let params = lsp_types::DocumentFormattingParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    options,
+                    work_done_progress_params: Default::default(),
+                };
+                handle
+                    .formatting(params, token.clone())
+                    .await
+                    .ok()
+                    .flatten()
+            };
+            let edits = edits.unwrap_or_default();
+            let _ = tx.send(FormatOutcome::Edits(edits));
+        });
+    }
+
+    /// Drain the format response channel and apply the returned
+    /// edits as one undo unit. Echoes when the server returned no
+    /// edits ("already formatted") or no provider was available.
+    pub fn drain_pending_format(&mut self) {
+        let Some(mut rx) = self.pending_format_rx.take() else {
+            return;
+        };
+        let mut latest: Option<FormatOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_format_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_format_token = None;
+        match outcome {
+            FormatOutcome::NoProvider { is_range } => {
+                let kind = if is_range { "range " } else { "" };
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("no server with {kind}formatting provider"),
+                );
+            }
+            FormatOutcome::Edits(edits) => {
+                if edits.is_empty() {
+                    self.set_message(
+                        EchoLevel::Info,
+                        "format: no changes (already formatted)".to_string(),
+                    );
+                    return;
+                }
+                let n = edits.len();
+                match self.apply_lsp_text_edits(edits) {
+                    Ok(()) => self.set_message(
+                        EchoLevel::Info,
+                        format!("format: applied {n} edit{}", if n == 1 { "" } else { "s" }),
+                    ),
+                    Err(e) => self.set_message(
+                        EchoLevel::Error,
+                        format!("format: apply failed: {e}"),
+                    ),
+                }
+            }
+        }
     }
 
     /// `:lsp-symbols` (Phase 4.2.e). Send

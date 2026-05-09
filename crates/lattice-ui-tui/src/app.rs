@@ -113,8 +113,7 @@ fn build_lsp_subsystem(
     (handle, diagnostics, logger, apply_edit_rx, configuration_rx)
 }
 use crate::excommand;
-use crate::file_tree::{FileTreeBuffer, FileTreeEntryKind};
-use crate::help::{HelpBuffer, HelpDisplayMode, command_link, key_link};
+use crate::help::{HelpBuffer, HelpDisplayMode};
 use crate::pane::{PaneDirection, PaneState, PaneTree, SplitOrientation};
 
 // R.1.0 -- app/ submodule skeleton. Each submodule is a
@@ -10808,45 +10807,6 @@ impl App {
         }
     }
 
-    fn do_oil_follow(&mut self) {
-        let active_id = self.active_pane_buffer_id();
-        let Some(oil) = self.buffers.oil(active_id) else { return; };
-        let Some(entry) = oil.entry_at_cursor().cloned() else { return; };
-        // M.3.2.c.3: read dir from buffer-locals.
-        let dir = self
-            .buffer_locals
-            .get(&active_id)
-            .and_then(|locals| locals.get::<crate::modes::OilDir>())
-            .map(|d| d.0.clone())
-            .unwrap_or_else(|| oil.dir.clone());
-        if entry.is_dir {
-            let navigate_result = self
-                .buffers
-                .oil_mut(active_id)
-                .map(|oil| oil.navigate_into(dir.join(&entry.name)));
-            match navigate_result {
-                Some(Err(e)) => {
-                    self.set_message(EchoLevel::Error, format!("oil navigate: {e}"));
-                }
-                Some(Ok(_)) => {
-                    // Re-mirror dir into buffer-locals so the
-                    // canonical reader sees the new sub-directory.
-                    if let Some(o) = self.buffers.oil(active_id) {
-                        let new_dir = o.dir.clone();
-                        if let Some(locals) = self.buffer_locals.get_mut(&active_id) {
-                            locals.insert(crate::modes::OilDir(new_dir));
-                        }
-                    }
-                    self.cursor = Position::ZERO;
-                    self.scroll = 0;
-                }
-                None => {}
-            }
-        } else {
-            let path = dir.join(&entry.name);
-            self.do_edit(Some(path), false);
-        }
-    }
 
     /// Resolve a motion against the active file tree's content.
     /// Same shape as [`Self::run_help_invocation`] but mutates
@@ -12134,24 +12094,6 @@ impl App {
         locals.insert(crate::modes::HelpHighlights(buffer.highlights.clone()));
     }
 
-
-    /// Mirror oil-mode-owned data from an `OilBuffer` into
-    /// the buffer-locals map for `buffer_id` (M.3.2.c.3).
-    /// Currently mirrors `dir` only; `snapshot` is private to
-    /// `OilBuffer` and stays internal until the M.3.2.c.5
-    /// `BufferStorage` retirement decision.
-    fn seed_oil_locals(
-        &mut self,
-        buffer_id: crate::buffers::BufferId,
-        buffer: &crate::oil::OilBuffer,
-    ) {
-        let locals = self
-            .buffer_locals
-            .entry(buffer_id)
-            .or_default();
-        locals.insert(crate::modes::OilDir(buffer.dir.clone()));
-    }
-
     /// Switch the active pane to an existing help buffer in the
     /// registry. Snapshots prior pane state so `<C-o>` returns the
     /// user to the document/cursor they came from. The registry's
@@ -12256,69 +12198,6 @@ impl App {
         // Help mode reuses Pending::AfterG for the gg chord; clear
         // it on dismiss so a stranded `g` doesn't leak into Normal
         // mode.
-    }
-
-    /// `:Tree [path]` (DESIGN.md §5.9 buffer-as-content). Opens a
-    /// [`FileTreeBuffer`] rooted at `path` (or the current
-    /// document's parent dir / cwd if absent) and inserts it into
-    /// the unified buffer registry. If a tree at the same root is
-    /// already open, the active pane switches to it instead of
-    /// spawning a duplicate -- matching `:e FILE`'s "already open"
-    /// semantics. The active pane flips to the new (or existing)
-    /// tree buffer.
-    fn do_open_oil(&mut self, dir: Option<std::path::PathBuf>) {
-        let dir = match dir {
-            Some(p) => p,
-            None => match self.document.path().and_then(|p| p.parent().map(Into::into)) {
-                Some(parent) => parent,
-                None => match std::env::current_dir() {
-                    Ok(p) => p,
-                    Err(e) => {
-                        self.set_message(EchoLevel::Error, format!("cwd error: {e}"));
-                        return;
-                    }
-                },
-            },
-        };
-        if let Some(existing_id) = self.buffers.oil_with_dir(&dir) {
-            self.activate_oil(existing_id);
-            self.set_message(EchoLevel::Info, format!("oil: {} (already open)", dir.display()));
-            return;
-        }
-        let oil = match crate::oil::OilBuffer::open(&dir) {
-            Ok(o) => o,
-            Err(e) => {
-                self.set_message(EchoLevel::Error, format!("oil open error: {}: {e}", dir.display()));
-                return;
-            }
-        };
-        if matches!(self.active_buffer, BufferKind::Document) {
-            let cur = self.cursor;
-            self.push_position_history(cur, PositionSource::AutoJump);
-        }
-        let new_id = oil.id;
-        // M.3.2.c.3: mirror oil-mode-owned data
-        // (`dir`) into buffer-locals BEFORE the move.
-        self.seed_oil_locals(new_id, &oil);
-        self.buffers.insert(BufferEntry {
-            id: new_id,
-            flags: BufferFlags::default(),
-            data: BufferData::Oil(oil),
-        });
-        // M.3.1: activate oil-mode (writable, no ReadOnly
-        // override; activation is mostly a no-op for now but
-        // populates active_modes so M.5+ minor-mode toggles
-        // can find a target).
-        self.activate_major_for_buffer_kind(new_id, BufferKind::Oil);
-        self.snapshot_active_pane();
-        self.snapshot_active_document();
-        self.active_buffer = BufferKind::Oil;
-        let pane = self.pane_tree.active_mut();
-        pane.buffer = BufferKind::Oil;
-        pane.buffer_id = new_id;
-        pane.cursor = Position::ZERO;
-        pane.scroll = 0;
-        self.set_message(EchoLevel::Info, format!("oil: {}", dir.display()));
     }
 
 

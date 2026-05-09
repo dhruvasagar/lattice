@@ -1,7 +1,8 @@
 //! LSP feature surface -- App methods for the various
 //! `:lsp-*` ex commands (admin / log / trace / status /
 //! restart) plus the request-driven LSP feature methods
-//! (hover, definition, references, completion, etc.).
+//! (hover, definition, references, completion, format,
+//! rename, code action, document / workspace symbols).
 //!
 //! Methods that live here:
 //! - LSP admin / log / trace ex-commands:
@@ -14,22 +15,25 @@
 //!   - do_set_lsp_log_level
 //!     (`:lsp-log-level [server] <level>`),
 //!   - do_lsp_log_clear (`:lsp-log-clear [server]`).
-//!
-//! Stays in app.rs (deferred to follow-up LSP slices):
-//! - LSP request handlers: do_lsp_hover_request,
-//!   do_lsp_nav_request, do_lsp_references_request,
-//!   do_lsp_signature_help_request,
-//!   do_lsp_completion_request,
-//!   do_lsp_insert_completion_request,
-//!   do_lsp_document_symbol_request,
-//!   do_lsp_workspace_symbol_request, do_lsp_format,
-//!   do_lsp_format_range, do_lsp_rename_request,
-//!   do_lsp_code_action_request.
-//! - Event-bus drains and apply-edit handlers.
-//! - LSP completion meta + completion-result helpers.
-//! - apply_persistent_lsp_editor_options (lifecycle path).
-//! - resolve_server_id / running_server_ids (already
-//!   pub(super); used by both lsp.rs and picker.rs).
+//! - LSP request handlers + their drain pumps:
+//!   - hover, nav (`gd` / `gD` / `gy` / `gI`),
+//!     references, signature help, completion (palette +
+//!     Insert-mode popup), document / workspace symbols,
+//!     format / format-range, rename, code action.
+//!   - drain_pending_lsp_*, drain_pending_completion_resolve,
+//!     drain_pending_insert_completion_lsp, etc.
+//! - apply_lsp_text_edits / apply_lsp_workspace_edit and
+//!   the per-feature outcome appliers
+//!   (apply_lsp_completion_accept, apply_lsp_format_outcome,
+//!   apply_lsp_rename_outcome, apply_code_action_outcome,
+//!   ...).
+//! - LSP completion meta sidecar + helpers
+//!   (lsp_completion_meta_for, dedup_rendered_by_text,
+//!   docs_body_for_selected, selected_needs_resolve).
+//! - apply_persistent_lsp_editor_options (lifecycle bridge)
+//!   and execute_lsp_command.
+//! - resolve_server_id / running_server_ids (pub(super);
+//!   shared with picker.rs).
 //!
 //! What does NOT live here: the LSP wire layer / actor /
 //! supervisor (those live in `lattice-lsp`). This module is

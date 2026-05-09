@@ -11634,29 +11634,6 @@ impl App {
     /// actually drop a tree buffer.
     fn gc_unreferenced_panel_buffers(&mut self) {}
 
-    /// Step cardinally to the spatial neighbour of the active pane.
-    /// Geometry comes from [`PaneTree::compute_rects`] so the walk
-    /// matches what the renderer drew.
-    fn do_navigate_pane(&mut self, direction: PaneDirection) {
-        let area = self.buffer_area_rect();
-        let Some(target) = self.pane_tree.navigate(direction, area) else {
-            return;
-        };
-        self.activate_pane(target);
-    }
-
-    /// Make pane `idx` the active one, swapping the App's hot-path
-    /// cursor / scroll with the target pane's stash.
-    fn activate_pane(&mut self, idx: usize) {
-        if idx == self.pane_tree.active_index() {
-            return;
-        }
-        self.snapshot_active_pane();
-        if !self.pane_tree.set_active(idx) {
-            return;
-        }
-        self.load_active_pane();
-    }
 
     /// Copy the App's hot-path cursor / scroll into the active
     /// pane's stash. Called before any operation that flips which
@@ -11705,33 +11682,6 @@ impl App {
         active.scroll = scroll;
     }
 
-    /// Inverse of [`Self::snapshot_active_pane`]: pull the freshly
-    /// activated pane's stashed cursor / scroll back into the
-    /// App's hot-path fields. `active_buffer` is denormalized from
-    /// the pane's `buffer` kind.
-    ///
-    /// **Unified hot-path**: `self.cursor` and `self.scroll` are
-    /// the active buffer's, regardless of kind. Help / file-tree
-    /// keep their own cursor / scroll fields as **save state** --
-    /// updated at the snapshot boundary so the registry record is
-    /// archival-correct, but the *live* cursor is `self.cursor`
-    /// for every motion / scroll / search / render path.
-    fn load_active_pane(&mut self) {
-        let pane = *self.pane_tree.active();
-        self.active_buffer = pane.buffer;
-        self.cursor = pane.cursor;
-        self.scroll = pane.scroll;
-        // Help: restore the registry copy into the hot-path slot
-        // if the active pane points at a different help buffer
-        // than the one currently mirrored.
-        if matches!(pane.buffer, BufferKind::Help)
-            && self.help_buffer.as_ref().map(|h| h.id) != Some(pane.buffer_id)
-            && let Some(reg) = self.buffers.help(pane.buffer_id)
-        {
-            self.help_buffer = Some(reg.clone());
-        }
-    }
-
     /// Total area available to pane content in screen-cell units.
     /// Currently the buffer area = full terminal minus the mode
     /// line (1 row) and the echo / cmdline area (1 row). Width is
@@ -11740,7 +11690,7 @@ impl App {
     /// width that the renderer overrides with the real terminal
     /// width before navigation. Good enough until B.1.c has the
     /// per-frame terminal size cached on App.
-    fn buffer_area_rect(&self) -> crate::pane::PaneRect {
+    pub(super) fn buffer_area_rect(&self) -> crate::pane::PaneRect {
         crate::pane::PaneRect {
             x: 0,
             y: 0,

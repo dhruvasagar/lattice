@@ -2571,24 +2571,10 @@ mod tests {
     /// the full translate + apply path. If this fails, the
     /// harness itself is broken; every other `press_*` test
     /// is suspect.
-    #[test]
-    fn key_harness_j_advances_cursor_one_line() {
-        let mut a = app_with("one\ntwo\nthree", 10);
-        press_chars(&mut a, "j");
-        assert_eq!(a.cursor.line, 1);
-    }
-
     /// Sanity check: an operator + motion deletes the right
     /// span end-to-end. Exercises the `[d]` action-kind
     /// short-circuit (pushes `d` into `partial_chord`) plus
     /// the `[d, w]` resolution under the prefix.
-    #[test]
-    fn key_harness_dw_deletes_first_word() {
-        let mut a = app_with("one two three", 10);
-        press_chars(&mut a, "dw");
-        assert_eq!(a.document.text(), "two three");
-    }
-
     // -- count flow seam ----------------------------------------
     //
     // These pin the path translate -> attach_count -> dispatcher
@@ -2601,13 +2587,6 @@ mod tests {
 
     /// `3j` moves down 3 lines: pending_count fed straight to a
     /// motion (no operator latch path).
-    #[test]
-    fn key_harness_count_before_motion_advances_n_lines() {
-        let mut a = app_with("a\nb\nc\nd\ne", 10);
-        press_chars(&mut a, "3j");
-        assert_eq!(a.cursor.line, 3);
-    }
-
     /// `3dd` deletes 3 lines: count latches into op_count via
     /// the `d` action-kind dispatch; the second `d` resolves
     /// linewise with the count baked in by `attach_count`. Pins
@@ -2615,46 +2594,16 @@ mod tests {
     /// multiplication, AND slice 8.i.4.g's `dd`-consumes-newline
     /// fix (line count drops by 3 -- the buffer goes from 5
     /// lines to 2, with no leading empty line).
-    #[test]
-    fn key_harness_count_before_operator_dd_deletes_n_lines() {
-        let mut a = app_with("a\nb\nc\nd\ne", 10);
-        press_chars(&mut a, "3dd");
-        assert_eq!(a.document.text(), "d\ne");
-    }
-
     /// `d2w` deletes 2 words: the `2` between operator and motion
     /// must reach the digit accumulator, not get eaten by the
     /// partial_chord lookup. Pins slice 8.i.4.f's hoist of digit
     /// handling above the partial_chord short-circuit.
-    #[test]
-    fn key_harness_count_after_operator_d2w_deletes_two_words() {
-        let mut a = app_with("one two three four", 10);
-        press_chars(&mut a, "d2w");
-        assert_eq!(a.document.text(), "three four");
-    }
-
     /// `2d2w` deletes 4 words: op_count=2 multiplies with
     /// motion_count=2. Pins both 8.i.4.f fixes end-to-end --
     /// digit-after-operator survives, and the dispatcher honours
     /// the input-side baked count without re-multiplying.
-    #[test]
-    fn key_harness_counts_multiply_on_both_sides() {
-        let mut a = app_with("a b c d e f g", 10);
-        press_chars(&mut a, "2d2w");
-        assert_eq!(a.document.text(), "e f g");
-    }
-
     /// After `3j`, a bare `j` moves only one line: pending_count
     /// must reset after the motion fires.
-    #[test]
-    fn key_harness_count_clears_after_motion_fires() {
-        let mut a = app_with("a\nb\nc\nd\ne\nf", 10);
-        press_chars(&mut a, "3j");
-        assert_eq!(a.cursor.line, 3);
-        press_chars(&mut a, "j");
-        assert_eq!(a.cursor.line, 4);
-    }
-
     // -- partial_chord state machine ----------------------------
     //
     // Pins the multi-keystroke prefix walk. `gg` is a Normal-mode
@@ -2664,68 +2613,21 @@ mod tests {
 
     /// `gg` jumps to the first line: prefix `g` parks in
     /// partial_chord, second `g` resolves the terminal.
-    #[test]
-    fn key_harness_gg_jumps_to_first_line() {
-        let mut a = app_with("one\ntwo\nthree\nfour", 10);
-        press_chars(&mut a, "G");
-        assert_eq!(a.cursor.line, 3);
-        press_chars(&mut a, "gg");
-        assert_eq!(a.cursor.line, 0);
-    }
-
     /// `df,` deletes up to (exclusive of) the comma: 3-keystroke
     /// chord across the operator + find-char captured-delimiter
     /// sub-tree (slice 8.i.4.c). Lattice's `f`-motion is exclusive
     /// (see `df_deletes_through_target_char` near the dispatch
     /// tests), so the comma stays.
-    #[test]
-    fn key_harness_df_delim_deletes_up_to_match() {
-        let mut a = app_with("alpha, beta, gamma", 10);
-        press_chars(&mut a, "df,");
-        assert_eq!(a.document.text(), ", beta, gamma");
-    }
-
     // -- <C-w> sub-tree (action-kind short-circuit, 8.i.4.d) ----
 
     /// `<C-w>v` splits the active pane vertically. Exercises the
     /// `<C-w>` action-kind short-circuit + the AfterCtrlW layer.
-    #[test]
-    fn key_harness_ctrl_w_v_creates_second_pane() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let mut a = app_with("xx", 10);
-        press(
-            &mut a,
-            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
-        );
-        press_chars(&mut a, "v");
-        assert_eq!(a.pane_tree.len(), 2);
-    }
-
     // -- mode transition seam -----------------------------------
 
     /// `i` enters Insert, typed chars land in the buffer, `<Esc>`
     /// returns to Normal. Pins the modal state machine across a
     /// mode round-trip in a single keystroke stream.
-    #[test]
-    fn key_harness_insert_round_trip_inserts_text_and_returns_normal() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let mut a = app_with("", 10);
-        press_chars(&mut a, "ihi");
-        press(&mut a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(a.document.text(), "hi");
-        assert_eq!(a.modal, ModalState::Normal);
-    }
-
     /// Subscribe a channel sink to the App's event bus. Returns
-
-    #[test]
-    fn event_bus_publishes_document_changed_on_apply_edit() {
-        let mut a = app_with("hello", 5);
-        let mut rx = subscribe_all_events(&a);
-        a.apply_edit_blocking(Edit::insert(Position::new(0, 5), " world"))
-            .unwrap();
-        assert!(matches!(rx.try_recv(), Ok(Event::DocumentChanged { .. })));
-    }
 
     // ---- Slice B.2 part 2: edit-delta accumulation -------------
     //
@@ -2735,118 +2637,7 @@ mod tests {
     // reparse correctness is covered by lattice-syntax's parity
     // tests; these App-level tests pin the plumbing.
 
-    #[test]
-    fn apply_edit_accumulates_delta_when_syntax_attached() {
-        let mut a = app_with("hello", 5);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        assert_eq!(a.pending_syntax_edits.len(), 0);
-        a.apply_edit_blocking(Edit::insert(Position::new(0, 5), " world"))
-            .unwrap();
-        assert_eq!(a.pending_syntax_edits.len(), 1);
-        let delta = a.pending_syntax_edits[0];
-        assert_eq!(delta.start_byte, 5);
-        assert_eq!(delta.old_end_byte, 5);
-        assert_eq!(delta.new_end_byte, 11);
-    }
 
-    #[test]
-    fn apply_edit_skips_delta_accumulation_when_no_syntax() {
-        // No syntax attached -> publish_document_changed
-        // short-circuits the delta push to keep the vec bounded.
-        let mut a = app_with("hello", 5);
-        assert!(a.syntax.is_none());
-        a.apply_edit_blocking(Edit::insert(Position::new(0, 5), " world"))
-            .unwrap();
-        assert_eq!(a.pending_syntax_edits.len(), 0);
-    }
-
-    #[test]
-    fn apply_edit_batch_accumulates_one_delta_per_edit() {
-        let mut a = app_with("abc", 5);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        let edits = vec![
-            Edit::insert(Position::new(0, 0), "1"),
-            Edit::insert(Position::new(0, 2), "2"),
-        ];
-        a.apply_edit_batch_blocking(edits).unwrap();
-        assert_eq!(a.pending_syntax_edits.len(), 2);
-    }
-
-
-
-    #[test]
-    fn event_bus_publishes_document_changed_on_undo_redo() {
-        let mut a = app_with("a", 5);
-        a.apply_edit_blocking(Edit::insert(Position::new(0, 1), "b"))
-            .unwrap();
-        let mut rx = subscribe_all_events(&a);
-        a.undo_blocking().unwrap();
-        a.redo_blocking().unwrap();
-        let mut count = 0;
-        while let Ok(Event::DocumentChanged { .. }) = rx.try_recv() {
-            count += 1;
-        }
-        assert_eq!(count, 2, "expected DocumentChanged for undo + redo");
-    }
-
-    #[test]
-    fn event_bus_publishes_modal_mode_changed_on_actual_transition() {
-        let mut a = app_with("", 5);
-        let mut rx = subscribe_all_events(&a);
-        a.apply(Action::EnterMode(ModalState::Insert));
-        let evt = rx.try_recv().unwrap();
-        match evt {
-            Event::ModalModeChanged { from, to } => {
-                assert_eq!(from, "Normal");
-                assert_eq!(to, "Insert");
-            }
-            other => panic!("expected ModalModeChanged, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn event_bus_skips_modal_mode_changed_when_state_unchanged() {
-        // enter_mode is sometimes called for the side-effect of
-        // recording / replay accounting without actually moving
-        // the modal axis. Those re-entries shouldn't fire events.
-        let mut a = app_with("", 5);
-        let mut rx = subscribe_all_events(&a);
-        a.apply(Action::EnterMode(ModalState::Normal)); // Normal -> Normal
-        assert!(rx.try_recv().is_err(), "no event for same-state re-entry");
-    }
-
-    #[test]
-    fn event_bus_publishes_before_quit_on_action_quit() {
-        let mut a = app_with("", 5);
-        let mut rx = subscribe_all_events(&a);
-        a.apply(Action::Quit);
-        // Drain until BeforeQuit (other events may precede).
-        let mut found = false;
-        while let Ok(evt) = rx.try_recv() {
-            if matches!(evt, Event::BeforeQuit) {
-                found = true;
-                break;
-            }
-        }
-        assert!(found, "BeforeQuit should be published on Action::Quit");
-        assert!(a.should_quit);
-    }
-
-    #[test]
-    fn event_bus_publishes_selections_changed_on_set_selections() {
-        let a = app_with("hello world", 5);
-        let mut rx = subscribe_all_events(&a);
-        let sel = Selection::cursor(Position::new(0, 5));
-        a.set_selections_blocking(SelectionSet::single(sel));
-        let mut found = false;
-        while let Ok(evt) = rx.try_recv() {
-            if matches!(evt, Event::SelectionsChanged { .. }) {
-                found = true;
-                break;
-            }
-        }
-        assert!(found);
-    }
 
 
     // ---- Initial state ----
@@ -2878,28 +2669,7 @@ mod tests {
 
     // ---- Motion via grammar engine ----
 
-    #[test]
-    fn invocation_resets_partial_chord() {
-        // Slice 8.i.4: AbsorbPartialChord pushes onto
-        // partial_chord; any other action clears it.
-        let mut a = app_with("abc", 10);
-        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('g')));
-        assert_eq!(a.partial_chord.len(), 1);
-        let id = a.builtins.char_right;
-        a.apply(invoke_motion(id));
-        assert!(a.partial_chord.is_empty());
-    }
-
     // ---- Insert mode ----
-
-    #[test]
-    fn entering_insert_mode_does_not_move_cursor() {
-        let mut a = app_with("abc", 10);
-        let before = a.cursor;
-        a.apply(Action::EnterMode(ModalState::Insert));
-        assert_eq!(a.modal, ModalState::Insert);
-        assert_eq!(a.cursor, before);
-    }
 
     // ---- Operator + motion composition ----
 
@@ -3089,18 +2859,6 @@ mod tests {
         assert!(a.partial_chord.is_empty());
     }
 
-    #[test]
-    fn ctrl_o_then_ctrl_i_round_trips() {
-        let mut a = app_with("a\nb\nc\nd\ne", 10);
-        a.cursor = Position::new(2, 0);
-        a.apply(invoke_motion(a.builtins.goto_first_line));
-        // Now at line 0; jump list has [(2,0)] cursor at end.
-        a.apply(Action::JumpHistoryBack);
-        assert_eq!(a.cursor, Position::new(2, 0));
-        a.apply(Action::JumpHistoryForward);
-        assert_eq!(a.cursor, Position::ZERO);
-    }
-
 
     // ---- §5.1.1 unified position history ----
 
@@ -3173,21 +2931,6 @@ mod tests {
     }
 
     #[test]
-    fn invocation_with_no_pending_register_uses_unnamed() {
-        let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
-        a.apply(Action::Invoke(inv));
-        // Unnamed populated; "0 also populated by vim's auto-fill on yank.
-        // Named map's only entry is the numbered "0 register.
-        assert!(a.unnamed_register.is_some());
-        assert!(a.registers.contains_key(&Register::Numbered(0)));
-        // No alphabetic named slots populated.
-        assert!(!a.registers.keys().any(|r| matches!(r, Register::Named(_))));
-    }
-
-    #[test]
     fn yank_auto_populates_zero_register() {
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
@@ -3213,24 +2956,6 @@ mod tests {
     // ---- Viewport motions ----
 
     // ---- Replace mode ----
-
-    #[test]
-    fn enter_replace_sets_modal() {
-        let mut a = app_with("hello", 10);
-        a.apply(Action::EnterMode(ModalState::Replace));
-        assert_eq!(a.modal, ModalState::Replace);
-    }
-
-    #[test]
-    fn enter_replace_clears_replace_history() {
-        let mut a = app_with("hello", 10);
-        a.apply(Action::EnterMode(ModalState::Replace));
-        a.apply(Action::OverwriteChar('H'));
-        assert_eq!(a.replace_history.len(), 1);
-        a.apply(Action::EnterMode(ModalState::Normal));
-        a.apply(Action::EnterMode(ModalState::Replace));
-        assert!(a.replace_history.is_empty());
-    }
 
     #[test]
     fn esc_exits_replace_to_normal_and_pulls_cursor_back() {
@@ -3292,15 +3017,6 @@ mod tests {
     // ---- Dot-repeat ----
 
     #[test]
-    fn dot_with_no_prior_change_emits_error() {
-        let mut a = app_with("hello", 10);
-        assert!(a.last_change.is_none());
-        a.apply(Action::RepeatLastChange);
-        let msg = a.last_message.as_ref().unwrap();
-        assert_eq!(msg.level, EchoLevel::Error);
-    }
-
-    #[test]
     fn yank_does_not_record_last_change() {
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
@@ -3316,61 +3032,6 @@ mod tests {
         let mut a = app_with("hello world", 10);
         a.apply(invoke_motion(a.builtins.word_forward));
         assert!(a.last_change.is_none());
-    }
-
-    #[test]
-    fn dd_records_last_change_and_dot_replays_it() {
-        let mut a = app_with("aaa\nBBB\nccc\nddd", 10);
-        a.cursor = Position::new(1, 0);
-        let inv = CommandInvocation::of(a.builtins.delete.0)
-            .with_range(lattice_grammar::Range::CurrentLine);
-        a.apply(Action::Invoke(inv));
-        // Slice 8.i.4.g: `dd` consumes BBB + its trailing newline.
-        assert_eq!(a.document.text(), "aaa\nccc\nddd");
-        // Cursor is now on what used to be `ccc` (line 1). `.`
-        // repeats the linewise delete -- removes that line + its
-        // trailing newline.
-        a.apply(Action::RepeatLastChange);
-        assert_eq!(a.document.text(), "aaa\nddd");
-    }
-
-    #[test]
-    fn dot_repeats_change_with_insert_replay() {
-        // Classic vim test: cw foo<Esc> followed by . on another word
-        // replaces that word with "foo" too.
-        let mut a = app_with("alpha beta gamma", 10);
-        // cw on first word.
-        let inv = CommandInvocation::of(a.builtins.change.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
-        a.apply(Action::Invoke(inv));
-        a.apply(Action::Insert("X".into()));
-        a.apply(Action::EnterMode(ModalState::Normal));
-        assert_eq!(a.document.text(), "Xbeta gamma");
-        // Move to "beta" (cursor is now on 'X' / position 0; let's go to 'b'
-        // at byte 1).
-        a.cursor = Position::new(0, 1);
-        // Repeat.
-        a.apply(Action::RepeatLastChange);
-        // cw replays: deletes "beta " and inserts "X" -> "XXgamma".
-        // (Note: our cw includes the trailing space; vim's cw is implicitly
-        // ce, a deferred refinement.)
-        assert_eq!(a.document.text(), "XXgamma");
-        assert_eq!(a.modal, ModalState::Normal);
-    }
-
-    #[test]
-    fn dot_without_insert_replay_when_no_text_was_typed() {
-        // dw (no insert phase) -> . repeats just the delete.
-        let mut a = app_with("alpha beta gamma", 10);
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
-        a.apply(Action::Invoke(inv));
-        // dw deletes "alpha "; then `.` deletes another word (no insert).
-        a.apply(Action::RepeatLastChange);
-        // Two dws: "alpha " then "beta " -> "gamma".
-        assert_eq!(a.document.text(), "gamma");
     }
 
     #[test]
@@ -3395,25 +3056,6 @@ mod tests {
         assert_eq!(a.pending_count, 123);
     }
 
-    #[test]
-    fn dispatcher_runs_counted_motion() {
-        // Slice 8.i.4.f: count multiplication is input-side. The
-        // dispatcher consumes the baked `inv.count` -- App still
-        // resets `pending_count` at end-of-dispatch (drained by
-        // attach_count earlier in the pipeline). Press-harness
-        // tests cover the full keystroke flow.
-        let mut a = app_with("one two three four five", 10);
-        a.pending_count = 3;
-        a.apply(Action::Invoke(
-            CommandInvocation::of(a.builtins.word_forward.0)
-                .with_count(lattice_grammar::command::Count(3)),
-        ));
-        // 3w from origin: "one two three FOUR five" -> 'f' of "four" at byte 14.
-        assert_eq!(a.cursor, Position::new(0, 14));
-        // pending_count is reset after dispatch.
-        assert_eq!(a.pending_count, 0);
-    }
-
     // Slice 8.i.4.f: the next batch of tests bake `Count(N)`
     // directly into the operator invocation -- mirroring what the
     // input-side `attach_count` produces when the keystroke
@@ -3421,39 +3063,6 @@ mod tests {
     // baked count and drain `pending_count` / `op_count` from
     // App state. The full keystroke -> count pipeline lives in
     // the `key_harness_*` press-harness tests.
-
-    #[test]
-    fn dispatcher_runs_counted_operator_on_motion_2dw() {
-        let mut a = app_with("one two three four five", 10);
-        // Mirror translate-time state: `2d` already absorbed.
-        a.op_count = 2;
-        let inv = CommandInvocation::of(a.builtins.delete.0)
-            .with_target(lattice_grammar::Target::Motion(
-                a.builtins.word_forward,
-                lattice_grammar::Args::None,
-            ))
-            .with_count(lattice_grammar::command::Count(2));
-        a.apply(Action::Invoke(inv));
-        // 2dw: deletes "one two " leaving "three four five".
-        assert_eq!(a.document.text(), "three four five");
-        assert_eq!(a.op_count, 0);
-    }
-
-    #[test]
-    fn dispatcher_runs_counted_operator_on_motion_2d3w_equals_count_6() {
-        let mut a = app_with("a b c d e f g h i j", 10);
-        a.op_count = 2;
-        a.pending_count = 3;
-        let inv = CommandInvocation::of(a.builtins.delete.0)
-            .with_target(lattice_grammar::Target::Motion(
-                a.builtins.word_forward,
-                lattice_grammar::Args::None,
-            ))
-            .with_count(lattice_grammar::command::Count(6));
-        a.apply(Action::Invoke(inv));
-        // 6 words deleted from "a b c d e f g h i j" leaves "g h i j".
-        assert_eq!(a.document.text(), "g h i j");
-    }
 
     // ---- find / till motions end-to-end ----
 
@@ -3540,115 +3149,6 @@ mod tests {
         assert_eq!(reg.kind, YankKind::Charwise);
         // Buffer untouched by yank.
         assert_eq!(a.document.text(), "hello world");
-    }
-
-    #[test]
-    fn yy_populates_register_linewise() {
-        let mut a = app_with("aaa\nBBB\nccc", 10);
-        a.cursor = Position::new(1, 0);
-        let inv = CommandInvocation::of(a.builtins.yank.0)
-            .with_range(lattice_grammar::Range::CurrentLine);
-        a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
-        assert_eq!(reg.content, "BBB\n");
-        assert_eq!(reg.kind, YankKind::Linewise);
-        assert_eq!(a.document.text(), "aaa\nBBB\nccc");
-    }
-
-    #[test]
-    fn dd_populates_register_linewise_via_delete() {
-        // delete also yanks; register kind is linewise for dd.
-        let mut a = app_with("aaa\nBBB\nccc", 10);
-        a.cursor = Position::new(1, 0);
-        let inv = CommandInvocation::of(a.builtins.delete.0)
-            .with_range(lattice_grammar::Range::CurrentLine);
-        a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
-        assert_eq!(reg.kind, YankKind::Linewise);
-        assert_eq!(reg.content, "BBB\n");
-    }
-
-    #[test]
-    fn dd_on_closed_fold_heading_deletes_whole_fold() {
-        // `docs/help/folding.md`: dd on a closed fold deletes the
-        // entire fold range as a single undo unit. Use a sibling
-        // # H2 heading so the # H1 fold has a bounded end.
-        let initial = "# H1\nbody one\nbody two\n# H2\nafter\n";
-        let mut a = app_with(initial, 10);
-        a.set_foldmethod_for_test(FoldMethod::Markdown);
-        a.recompute_folds();
-        // Close the H1 fold (lines 0..=2).
-        let idx = a
-            .folds
-            .iter()
-            .position(|f| f.start_line == 0)
-            .expect("H1 fold");
-        a.folds[idx].closed = true;
-        a.cursor = Position::new(0, 0);
-        let inv = CommandInvocation::of(a.builtins.delete.0)
-            .with_range(lattice_grammar::Range::CurrentLine);
-        a.apply(Action::Invoke(inv));
-        let text = a.document.text();
-        assert!(!text.contains("# H1"), "H1 not deleted: {text:?}");
-        assert!(!text.contains("body one"), "body one not deleted: {text:?}");
-        assert!(!text.contains("body two"), "body two not deleted: {text:?}");
-        assert!(text.contains("# H2"), "H2 lost: {text:?}");
-        assert!(text.contains("after"), "after lost: {text:?}");
-    }
-
-    #[test]
-    fn yy_on_closed_fold_heading_yanks_whole_fold() {
-        let initial = "# H1\nbody one\nbody two\n# H2\nafter\n";
-        let mut a = app_with(initial, 10);
-        a.set_foldmethod_for_test(FoldMethod::Markdown);
-        a.recompute_folds();
-        let idx = a
-            .folds
-            .iter()
-            .position(|f| f.start_line == 0)
-            .expect("H1 fold");
-        a.folds[idx].closed = true;
-        a.cursor = Position::new(0, 0);
-        let inv = CommandInvocation::of(a.builtins.yank.0)
-            .with_range(lattice_grammar::Range::CurrentLine);
-        a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
-        assert_eq!(reg.kind, YankKind::Linewise);
-        assert!(reg.content.contains("# H1"), "register content: {:?}", reg.content);
-        assert!(
-            reg.content.contains("body one"),
-            "register content: {:?}",
-            reg.content
-        );
-        assert!(
-            reg.content.contains("body two"),
-            "register content: {:?}",
-            reg.content
-        );
-        assert!(
-            !reg.content.contains("# H2"),
-            "yank should not include sibling heading: {:?}",
-            reg.content
-        );
-    }
-
-    #[test]
-    fn dd_on_open_fold_heading_deletes_only_one_line() {
-        // Operator expansion only applies when the fold is *closed*;
-        // an open fold leaves the heading visible to be edited like
-        // any other line.
-        let initial = "# H1\nbody one\nbody two\n# H2\nafter\n";
-        let mut a = app_with(initial, 10);
-        a.set_foldmethod_for_test(FoldMethod::Markdown);
-        a.recompute_folds();
-        // Leave open (default).
-        a.cursor = Position::new(0, 0);
-        let inv = CommandInvocation::of(a.builtins.delete.0)
-            .with_range(lattice_grammar::Range::CurrentLine);
-        a.apply(Action::Invoke(inv));
-        let text = a.document.text();
-        assert!(!text.contains("# H1"), "heading should be gone: {text:?}");
-        assert!(text.contains("body one"), "body one should remain: {text:?}");
     }
 
 
@@ -3756,26 +3256,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dd_on_non_fold_line_uses_count_one() {
-        // Sanity: the fold-expansion only kicks in when the cursor
-        // is on a closed-fold heading. A normal `dd` outside any
-        // fold operates on just one line. Slice 8.i.4.g: `dd`
-        // consumes BBB and its trailing newline (vim semantics);
-        // the linewise register content carries the `\n` so paste
-        // splices cleanly.
-        let mut a = app_with("aaa\nBBB\nccc", 10);
-        a.set_foldmethod_for_test(FoldMethod::Indent);
-        a.recompute_folds();
-        a.cursor = Position::new(1, 0);
-        let inv = CommandInvocation::of(a.builtins.delete.0)
-            .with_range(lattice_grammar::Range::CurrentLine);
-        a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
-        assert_eq!(reg.kind, YankKind::Linewise);
-        assert_eq!(reg.content, "BBB\n");
-    }
-
     // ---- Bracketed-paste burst (Action::PasteText) ----
 
     // ---- Blockwise visual operators (DESIGN.md §15:18) ----
@@ -3792,17 +3272,6 @@ mod tests {
         a.modal = ModalState::Command;
         a.command_line = line.into();
         a
-    }
-
-    #[test]
-    fn second_tab_advances_selected_candidate() {
-        let mut a = app_in_command_mode("descri");
-        a.apply(Action::CommandLineCompleteOrAdvance);
-        let first = a.completion_state.as_ref().unwrap().selected;
-        a.apply(Action::CommandLineCompleteOrAdvance);
-        let second = a.completion_state.as_ref().unwrap().selected;
-        assert_eq!(first, 0);
-        assert_eq!(second, 1);
     }
 
     #[test]
@@ -3920,22 +3389,6 @@ mod tests {
     // ---- Missing-arg chord prompt (DESIGN.md §B.1) ----
 
     #[test]
-    fn first_chord_after_arming_auto_submits() {
-        let mut a = app_in_command_mode("describe-key");
-        a.apply(Action::CommandLineSubmit);
-        assert!(a.auto_submit_after_chord);
-        // The first chord token captured should auto-fire submit;
-        // the cmdline should clear and we land back in Normal.
-        a.apply(Action::CommandLineAppendChord("j".into()));
-        assert!(!a.auto_submit_after_chord);
-        assert!(matches!(a.modal, ModalState::Normal));
-        // The submitted line was `describe-key j` -- which opens
-        // a help buffer for chord `j`. Smoke check that some
-        // help got produced.
-        assert!(a.help_buffer.is_some());
-    }
-
-    #[test]
     fn cancel_clears_armed_chord_prompt() {
         let mut a = app_in_command_mode("describe-key");
         a.apply(Action::CommandLineSubmit);
@@ -3976,63 +3429,7 @@ mod tests {
         assert!(a.command_line.starts_with("describe-command motion:"));
     }
 
-    #[test]
-    fn ctrl_u_clears_command_line_and_dismisses_popup() {
-        let mut a = app_in_command_mode("foo bar baz");
-        a.apply(Action::CommandLineCompleteOrAdvance);
-        a.apply(Action::CommandLineClear);
-        assert_eq!(a.command_line, "");
-        assert!(a.completion_state.is_none());
-    }
-
-    #[test]
-    fn ctrl_w_deletes_trailing_word() {
-        let mut a = app_in_command_mode("foo bar baz");
-        a.apply(Action::CommandLineDeleteWordBackward);
-        assert_eq!(a.command_line, "foo bar ");
-    }
-
-    #[test]
-    fn ctrl_w_with_trailing_whitespace_strips_word() {
-        let mut a = app_in_command_mode("foo bar  ");
-        a.apply(Action::CommandLineDeleteWordBackward);
-        assert_eq!(a.command_line, "foo ");
-    }
-
-    #[test]
-    fn ctrl_w_on_single_word_clears() {
-        let mut a = app_in_command_mode("foo");
-        a.apply(Action::CommandLineDeleteWordBackward);
-        assert_eq!(a.command_line, "");
-    }
-
     // ---- Hybrid <C-h> (DESIGN.md §5.11.3 Q11) ----
-
-    #[test]
-    fn entering_command_line_dismisses_open_help() {
-        // Q16: opening `:` dismisses help. The user can only focus
-        // on one thing.
-        let mut a = app_with("xx", 10);
-        a.help_buffer = Some(crate::help::HelpBuffer::from_lines(
-            "preexisting",
-            vec!["x".into()],
-        ));
-        a.apply(Action::EnterCommandLine);
-        assert!(a.help_buffer.is_none());
-    }
-
-    #[test]
-    fn entering_command_line_dismisses_open_completion() {
-        let mut a = app_with("xx", 10);
-        a.completion_state = Some(CompletionState {
-            candidates: Vec::new(),
-            selected: 0,
-            replace_start: 0,
-            original_line: String::new(),
-        });
-        a.apply(Action::EnterCommandLine);
-        assert!(a.completion_state.is_none());
-    }
 
     // ---- delete_trailing_word helper ----
 
@@ -4104,60 +3501,6 @@ mod tests {
         assert_eq!(a.pane_tree.len(), 1);
         let msg = a.last_message.as_ref().expect("warn echo");
         assert!(msg.text.contains("only one pane"));
-    }
-
-    #[test]
-    fn ctrl_l_redraws_screen_and_invalidates_caches() {
-        // `<C-l>` is the user-visible escape hatch for visual
-        // glitches. The action must:
-        // - clear the visible-highlight + pane-highlight caches so
-        //   the next frame repopulates from scratch;
-        // - flag the runtime to clear the terminal on next frame;
-        // - force a fresh parser run inside this same `apply` (the
-        //   end-of-apply `maybe_reparse_syntax` re-syncs against
-        //   the bumped version mirror, so by the time the user
-        //   sees the next frame the tree matches the document).
-        let mut a = app_with("fn main() {}\n", 10);
-        a.pane_highlights.insert(0, vec![Vec::new(); 1]);
-        a.pending_redraw = false;
-        a.apply(Action::RedrawScreen);
-        assert!(a.pending_redraw, "runtime should clear terminal next frame");
-        assert!(
-            a.pane_highlights.is_empty(),
-            "pane highlights cache must reset (so next frame repopulates from scratch)"
-        );
-        // Post-apply, the version mirror equals the document's
-        // version because the end-of-apply reparse already ran.
-        // The intermediate `u64::MAX` value is gone; that's the
-        // desired flow -- a single keystroke produces an
-        // already-fresh tree.
-        assert_eq!(
-            a.last_parsed_text_version,
-            a.document.text_version(),
-            "post-apply reparse must have synced the version mirror"
-        );
-        let msg = a.last_message.as_ref().expect("info echo");
-        assert!(msg.text.contains("redraw"), "user-visible echo: {msg:?}");
-    }
-
-    #[test]
-    fn second_hover_request_focuses_into_popup() {
-        // First K opens the popup (State A: cursor in doc); second
-        // K transfers focus into the popup (State B: cursor in
-        // help). The buffer content is the same; only `active_buffer`
-        // and the cursor position change. `prev_pane_for_help`
-        // captures pre-State-B state so dismiss restores cleanly.
-        let mut a = app_with("fn main() {}\n", 5);
-        a.do_open_hover("hover body line 1\nhover body line 2");
-        assert!(a.help_buffer.is_some());
-        assert!(matches!(a.active_buffer, BufferKind::Document));
-        assert!(a.prev_pane_for_help.is_none());
-        // Second K -> focus into popup.
-        a.do_lsp_hover_request();
-        assert!(a.help_buffer.is_some(), "popup stays up after focus");
-        assert!(matches!(a.active_buffer, BufferKind::Help));
-        let stash = a.prev_pane_for_help.expect("State B captures stash");
-        assert_eq!(stash.buffer, BufferKind::Document);
     }
 
     #[test]
@@ -4419,79 +3762,6 @@ mod tests {
     }
 
     #[test]
-    fn switching_back_to_buffer_preserves_closed_fold_state() {
-        // Open two buffers with foldmethod=indent. Close a fold in
-        // the first, switch to the second, switch back -- the fold
-        // should still be closed.
-        let path = write_temp_file("activate-fold-roundtrip", "a:\n    x\n    y\n");
-        let mut a = app_with("first:\n    p\n    q\nsecond:\n    r\n    s\n", 10);
-        a.set_foldmethod_for_test(FoldMethod::Indent);
-        a.recompute_folds();
-        let initial_id = a.document_buffer_id;
-        // Close the first fold (line 0) on the initial buffer.
-        let first_idx = a
-            .folds
-            .iter()
-            .position(|f| f.start_line == 0)
-            .expect("fold");
-        a.folds[first_idx].closed = true;
-        // Open + activate the new buffer.
-        a.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        // Switch back via :bn.
-        a.command_line = "bn".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.document_buffer_id, initial_id);
-        // Closed state survived the round-trip.
-        assert!(
-            a.folds.iter().any(|f| f.start_line == 0 && f.closed),
-            "expected fold@0 to remain closed after switch-away-and-back: {:?}",
-            a.folds
-        );
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn switching_to_unvisited_buffer_first_time_seeds_folds() {
-        // Open a second file with foldmethod=manual so its initial
-        // entry has no folds, switch foldmethod to indent, then
-        // activate -- the activation hook should seed the folds on
-        // first visit (entry's `folds` was empty).
-        let path = write_temp_file("activate-unvisited", "section:\n    a\n    b\n    c\n");
-        let mut a = app_with("xx", 10);
-        // Open the second file under foldmethod=manual so no folds
-        // get seeded into its entry.
-        a.set_foldmethod_for_test(FoldMethod::Manual);
-        a.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        let id_target = a.document_buffer_id;
-        assert!(a.folds.is_empty(), "manual leaves folds empty");
-        // Switch back to the original buffer.
-        let original_id = a
-            .buffers
-            .document_ids_sorted()
-            .into_iter()
-            .find(|id| *id != id_target)
-            .expect("original buffer");
-        a.activate_document(original_id);
-        // Now flip foldmethod to indent and activate the target;
-        // the hook should seed folds for the unvisited-under-indent
-        // buffer on first visit.
-        a.set_foldmethod_for_test(FoldMethod::Indent);
-        a.activate_document(id_target);
-        assert_eq!(a.document_buffer_id, id_target);
-        assert!(
-            !a.folds.is_empty(),
-            "expected activation hook to seed folds on first visit under indent: {:?}",
-            a.folds
-        );
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
     fn activation_skips_fold_seed_for_manual_foldmethod() {
         // Manual foldmethod => activation must NOT auto-create folds
         // (the user's `zf` ranges are authoritative; auto-seeding
@@ -4541,22 +3811,6 @@ mod tests {
     // ---- LSP goto-definition (Phase 4.2.c) ----
 
     #[test]
-    fn word_under_cursor_returns_alphanumeric_run() {
-        let mut a = app_with("hello world", 10);
-        a.cursor = Position::new(0, 0);
-        let snap = a.document.snapshot();
-        assert_eq!(
-            super::word_under_cursor(&snap.buffer, a.cursor),
-            Some("hello".to_string())
-        );
-        a.cursor = Position::new(0, 6);
-        assert_eq!(
-            super::word_under_cursor(&snap.buffer, a.cursor),
-            Some("world".to_string())
-        );
-    }
-
-    #[test]
     fn symbol_kind_glyph_distinct_for_common_kinds() {
         // We don't assert the *exact* glyph (those may evolve);
         // we just want the common kinds to map to *distinct*
@@ -4569,15 +3823,6 @@ mod tests {
         assert_ne!(f, s);
         assert_ne!(f, m);
         assert_ne!(f, v);
-    }
-
-    #[test]
-    fn word_under_cursor_returns_none_off_word() {
-        let a = app_with("foo bar", 10);
-        let snap = a.document.snapshot();
-        // Cursor on the space.
-        let p = Position::new(0, 3);
-        assert_eq!(super::word_under_cursor(&snap.buffer, p), None);
     }
 
     #[test]
@@ -4895,22 +4140,6 @@ mod tests {
 
 
     #[test]
-    fn ctrl_o_walks_back_to_document_from_help() {
-        // `<C-o>` from inside a help buffer should land back on the
-        // document spot the user opened the help from. That's the
-        // first user-visible win of active-buffer routing.
-        let mut a = app_with("first\nsecond\nthird\nfourth", 10);
-        a.cursor = Position::new(2, 0);
-        // Open help via the same path the App uses internally so
-        // the position-history entry is recorded.
-        a.open_help(HelpBuffer::from_lines("h", vec!["help body".into()]));
-        assert_eq!(a.active_buffer, BufferKind::Help);
-        a.apply(Action::JumpHistoryBack);
-        assert_eq!(a.active_buffer, BufferKind::Document);
-        assert_eq!(a.cursor.line, 2);
-    }
-
-    #[test]
     fn yank_then_paste_round_trips_word() {
         let mut a = app_with("hello world", 10);
         let yank = CommandInvocation::of(a.builtins.yank.0).with_target(
@@ -5066,50 +4295,6 @@ mod tests {
 
     // ---- Edit-dispatch wiring tests (Phase 4.1.i.2) ----------
 
-    #[test]
-    fn apply_edit_blocking_records_lsp_edit_when_attached() {
-        let mut app = app_with("abc\n", 5);
-        // Attach a fake URI mapping so lsp_record_edit
-        // reaches the supervisor.
-        use std::str::FromStr;
-        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.document_buffer_id, uri.clone());
-        // Test-only: register the URI directly with the
-        // supervisor under a mock actor. Without a real
-        // ServerHandle attach_handle requires one, so instead
-        // we verify the wiring fires by checking that the
-        // record-edit path doesn't panic and the buffer_uri
-        // mapping survives.
-        let edit = Edit::insert(Position::new(0, 0), "x");
-        let _ = app.apply_edit_blocking(edit.clone());
-        // Buffer mapping unchanged; record_edit is best-effort
-        // (skips if no actor attached for the URI).
-        assert_eq!(app.buffer_uris.get(&app.document_buffer_id), Some(&uri));
-    }
-
-    #[test]
-    fn apply_edit_blocking_with_no_lsp_attachment_is_safe() {
-        // Without a buffer_uri mapping, lsp_record_edit
-        // short-circuits. No panic, no crash, edit still
-        // commits.
-        let mut app = app_with("hi\n", 5);
-        let r = app.apply_edit_blocking(Edit::insert(Position::new(0, 0), "x"));
-        assert!(r.is_ok());
-    }
-
-    #[test]
-    fn apply_edit_batch_blocking_records_each_edit_in_order() {
-        let mut app = app_with("abc\n", 5);
-        let edits = vec![
-            Edit::insert(Position::new(0, 0), "1"),
-            Edit::insert(Position::new(0, 1), "2"),
-        ];
-        // No LSP attachment seeded -> records short-circuit;
-        // we only check the path is reachable (no panic).
-        let r = app.apply_edit_batch_blocking(edits);
-        assert!(r.is_ok());
-    }
-
     /// Path-bearing initial documents publish
     /// `Event::DocumentOpened` from `App::new` and register the
     /// URI eagerly. The attach driver picks the event up off
@@ -5175,79 +4360,6 @@ mod tests {
         let any_id = lattice_completion::SourceId::new("plugin:custom");
         assert!(eff.source_enabled(&any_id));
         assert!(eff.sources.is_none());
-    }
-
-    #[test]
-    fn apply_per_language_toml_overrides_merges_with_spec_defaults() {
-        // User flips markdown's `auto_trigger = true`; the
-        // spec default `sources` (no LSP) should still apply.
-        let ws = fresh_workspace("merge-with-defaults");
-        write_workspace_config(
-            &ws,
-            "[completion.per-language.markdown]\n\
-             auto_trigger = true\n",
-        );
-        let mut a = app_with("", 5);
-        a.load_persistent_config(Some(&ws));
-        a.apply_per_language_toml_overrides();
-        let eff = a.effective_completion_for("markdown");
-        assert_eq!(eff.auto_trigger, true, "TOML wins for auto_trigger");
-        let lsp_id = lattice_completion::SourceId::new(
-            lattice_completion::LSP_COMPLETION_SOURCE_ID,
-        );
-        assert!(
-            !eff.source_enabled(&lsp_id),
-            "default `sources` (no LSP) preserved when TOML didn't set it",
-        );
-    }
-
-    #[test]
-    fn apply_per_language_toml_overrides_seeds_new_language() {
-        // `python` isn't in the spec defaults; a TOML entry
-        // creates the slot.
-        let ws = fresh_workspace("new-language");
-        write_workspace_config(
-            &ws,
-            "[completion.per-language.python]\n\
-             sources = [\"lsp\"]\n\
-             auto_insert_single = true\n",
-        );
-        let mut a = app_with("", 5);
-        a.load_persistent_config(Some(&ws));
-        a.apply_per_language_toml_overrides();
-        let eff = a.effective_completion_for("python");
-        let lsp_id = lattice_completion::SourceId::new(
-            lattice_completion::LSP_COMPLETION_SOURCE_ID,
-        );
-        assert!(eff.source_enabled(&lsp_id));
-        let buffer_words_id = lattice_completion::SourceId::new(
-            lattice_completion::BufferWordsSource::ID,
-        );
-        assert!(
-            !eff.source_enabled(&buffer_words_id),
-            "`sources = [\"lsp\"]` excludes buffer-words",
-        );
-        assert_eq!(eff.auto_insert_single, true);
-    }
-
-    #[test]
-    fn apply_per_language_toml_overrides_warns_on_unknown_key() {
-        let ws = fresh_workspace("unknown-perlang-key");
-        write_workspace_config(
-            &ws,
-            "[completion.per-language.markdown]\n\
-             bogus_field = 5\n",
-        );
-        let mut a = app_with("", 5);
-        a.load_persistent_config(Some(&ws));
-        // Loader echo handles structural sections silently
-        // until `apply_per_language_toml_overrides` runs.
-        let pre = a.last_message.clone();
-        a.apply_per_language_toml_overrides();
-        let msg = a.last_message.as_ref().expect("warning echoed");
-        assert_ne!(Some(msg.clone()), pre, "new echo posted");
-        assert_eq!(msg.level, EchoLevel::Warn);
-        assert!(msg.text.contains("bogus_field"), "got `{}`", msg.text);
     }
 
     fn set_rust_syntax(a: &mut App, source: &str) {
@@ -5613,127 +4725,6 @@ mod tests {
 
 
 
-    // ---- M.3.2.a: BufferLocal end-to-end integration ----
-
-    /// Test fixture: a buffer-local owned by a fictional
-    /// `test-locals-mode`. Exercises the full pipeline:
-    /// mode's `on_activate` writes the local via the
-    /// ModeContext; subsequent reads see it; deactivation
-    /// removes it.
-    #[derive(Debug)]
-    struct TestLocalCounter(i64);
-
-    impl lattice_mode::BufferLocal for TestLocalCounter {
-        const NAME: &'static str = "test-locals.counter";
-        const DOC: &'static str = "Counter local for the test-locals fixture mode.";
-        const OWNER_MODE: &'static str = "test-locals-mode";
-        fn describe(&self) -> String {
-            format!("counter={}", self.0)
-        }
-    }
-
-    struct TestLocalsMode {
-        id: lattice_mode::ModeId,
-    }
-
-    impl TestLocalsMode {
-        fn new() -> Self {
-            Self {
-                id: lattice_mode::ModeId::new("test-locals-mode"),
-            }
-        }
-    }
-
-    impl lattice_mode::Mode for TestLocalsMode {
-        fn id(&self) -> lattice_mode::ModeId {
-            self.id
-        }
-        fn kind(&self) -> lattice_mode::ModeKind {
-            lattice_mode::ModeKind::Minor
-        }
-        fn on_activate(
-            &self,
-            ctx: &mut lattice_mode::ModeContext<'_>,
-        ) -> Result<(), lattice_mode::ModeActivationError> {
-            ctx.set_local(TestLocalCounter(42))
-        }
-        fn on_deactivate(
-            &self,
-            ctx: &mut lattice_mode::ModeContext<'_>,
-        ) -> Result<(), lattice_mode::ModeActivationError> {
-            let _ = ctx.remove_local::<TestLocalCounter>()?;
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn mode_on_activate_can_write_buffer_local() {
-        let mut a = app_with("hi", 5);
-        let _buf = a.document_buffer_id;
-
-        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
-            .expect("mode_registry uniquely held");
-        let mode_id = registry
-            .register(TestLocalsMode::new())
-            .expect("register");
-
-        let mut active = lattice_mode::ActiveModes::new();
-        let mut locs = lattice_mode::BufferLocals::new();
-        a.mode_registry
-            .activate_minor(
-                &mut active,
-                &mut locs,
-                lattice_protocol::ids::BufferId::new(0),
-                mode_id,
-                lattice_mode::CapabilitySet::empty(),
-            )
-            .expect("activate");
-
-        // After activation the local should be present in the
-        // map with the value the mode set.
-        let counter = locs
-            .get::<TestLocalCounter>()
-            .expect("local should be present after activation");
-        assert_eq!(counter.0, 42);
-    }
-
-    #[test]
-    fn mode_on_deactivate_removes_buffer_local() {
-        let mut a = app_with("hi", 5);
-
-        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
-            .expect("mode_registry uniquely held");
-        let mode_id = registry
-            .register(TestLocalsMode::new())
-            .expect("register");
-
-        let mut active = lattice_mode::ActiveModes::new();
-        let mut locs = lattice_mode::BufferLocals::new();
-        a.mode_registry
-            .activate_minor(
-                &mut active,
-                &mut locs,
-                lattice_protocol::ids::BufferId::new(0),
-                mode_id,
-                lattice_mode::CapabilitySet::empty(),
-            )
-            .expect("activate");
-        assert!(locs.contains::<TestLocalCounter>());
-
-        a.mode_registry
-            .deactivate_minor(
-                &mut active,
-                &mut locs,
-                lattice_protocol::ids::BufferId::new(0),
-                mode_id,
-            )
-            .expect("deactivate");
-        assert!(
-            !locs.contains::<TestLocalCounter>(),
-            "deactivate should remove the mode's local"
-        );
-    }
-
     // ---- M.3.2.b.1: help-mode locals seeded at construction ----
 
     #[test]
@@ -5894,37 +4885,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn buffer_locals_iter_descriptors_for_describe_buffer() {
-        // The descriptor surface backs `:describe-buffer` --
-        // every local exposes name / doc / owner_mode / a
-        // single-line `describe` string for inspection.
-        let mut locs = lattice_mode::BufferLocals::new();
-        // Direct insert via the test mode's lifecycle is the
-        // production path; we exercise the descriptor view
-        // here independently.
-        let mut active = lattice_mode::ActiveModes::new();
-        let mut a = app_with("hi", 5);
-        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
-            .expect("mode_registry uniquely held");
-        let mode_id = registry
-            .register(TestLocalsMode::new())
-            .expect("register");
-        a.mode_registry
-            .activate_minor(
-                &mut active,
-                &mut locs,
-                lattice_protocol::ids::BufferId::new(0),
-                mode_id,
-                lattice_mode::CapabilitySet::empty(),
-            )
-            .expect("activate");
-
-        let descriptors: Vec<_> = locs.iter_descriptors().collect();
-        assert_eq!(descriptors.len(), 1);
-        let d = &descriptors[0];
-        assert_eq!(d.name, "test-locals.counter");
-        assert_eq!(d.owner_mode, "test-locals-mode");
-        assert_eq!(d.describe, "counter=42");
-    }
 }

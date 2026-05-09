@@ -255,6 +255,397 @@ impl App {
         self.pending_hover_rx = Some(rx);
     }
 
+    /// Apply an accepted LSP completion item. Routes the main
+    /// insert (with `textEdit.range` honoured when present) plus
+    /// `additionalTextEdits` through `apply_lsp_text_edits` so
+    /// the whole set lands as one undo unit. Snippet-flavoured
+    /// items currently splice the literal body -- placeholder
+    /// navigation is in 4.2.g.4 with `lattice-snippet`.
+    pub(super) fn apply_lsp_completion_accept(
+        &mut self,
+        meta: LspCompletionMeta,
+        anchor: lattice_protocol::position::Position,
+    ) {
+        // Main edit: prefer the server-supplied range when
+        // present; else replace `[anchor, cursor]`.
+        let main_range = match meta.replace_range {
+            Some(r) => r,
+            None => {
+                let start = lsp_types::Position {
+                    line: anchor.line,
+                    character: lattice_lsp::position::utf8_byte_to_utf16_column(
+                        &self
+                            .document
+                            .snapshot()
+                            .buffer
+                            .line(anchor.line)
+                            .unwrap_or_default(),
+                        anchor.byte,
+                    ),
+                };
+                let end = lsp_types::Position {
+                    line: self.cursor.line,
+                    character: lattice_lsp::position::utf8_byte_to_utf16_column(
+                        &self
+                            .document
+                            .snapshot()
+                            .buffer
+                            .line(self.cursor.line)
+                            .unwrap_or_default(),
+                        self.cursor.byte,
+                    ),
+                };
+                lsp_types::Range { start, end }
+            }
+        };
+        // Apply additionalTextEdits + main as one batch via the
+        // existing path. Sort + reverse-apply is handled there;
+        // pass everything together so undo is atomic.
+        let mut edits: Vec<lsp_types::TextEdit> = meta
+            .additional_text_edits
+            .clone();
+        edits.push(lsp_types::TextEdit {
+            range: main_range,
+            new_text: meta.insert_text.clone(),
+        });
+        if let Err(e) = self.apply_lsp_text_edits(edits) {
+            self.set_message(
+                EchoLevel::Error,
+                format!("completion: apply failed: {e}"),
+            );
+            return;
+        }
+        // Position the cursor at the end of the just-inserted
+        // text. Compute it from the inserted text length.
+        let inserted_lines: Vec<&str> = meta.insert_text.split('\n').collect();
+        if inserted_lines.len() == 1 {
+            self.cursor = lattice_protocol::position::Position::new(
+                main_range.start.line,
+                lattice_lsp::position::utf16_column_to_utf8_byte(
+                    &self
+                        .document
+                        .snapshot()
+                        .buffer
+                        .line(main_range.start.line)
+                        .unwrap_or_default(),
+                    main_range.start.character + inserted_lines[0].len() as u32,
+                ),
+            );
+        } else {
+            // Multi-line insert (rare for plain completions;
+            // common for snippets once 4.2.g.4 lands).
+            let last_line_idx =
+                main_range.start.line + (inserted_lines.len() as u32 - 1);
+            let last_line_text = inserted_lines.last().unwrap_or(&"");
+            self.cursor = lattice_protocol::position::Position::new(
+                last_line_idx,
+                last_line_text.len() as u32,
+            );
+        }
+        // Optional: fire the LSP `command` payload (e.g. server-
+        // side post-accept hooks).
+        if let Some(cmd) = meta.command.clone() {
+            let uri = self
+                .buffer_uris
+                .get(&self.document_buffer_id)
+                .cloned();
+            if let Some(uri) = uri {
+                let handle = self
+                    .lsp
+                    .servers_for(&uri)
+                    .into_iter()
+                    .find(|h| h.capabilities().supports_execute_command());
+                self.execute_lsp_command(handle, cmd);
+            }
+        }
+    }
+
+    /// Fire `completionItem/resolve` for the focused candidate
+    /// (Phase 4.2.g.3). The original CompletionItem is round-
+    /// tripped to the originating server; the response fills in
+    /// `documentation` / `additionalTextEdits` / `detail` per
+    /// the LSP spec. Drain updates the meta + the docs popup
+    /// body in place.
+    pub(super) fn do_completion_resolve_focused(&mut self) {
+        // Cancel any prior in-flight resolve -- the focus moved
+        // to a different candidate.
+        if let Some(token) = self.pending_completion_resolve_token.take() {
+            token.cancel();
+        }
+        let Some(state) = self.insert_completion.as_ref() else {
+            return;
+        };
+        let Some(cand) = state.rendered.get(state.selected) else {
+            return;
+        };
+        let Some(meta) = self.lsp_completion_meta_for(cand) else {
+            return;
+        };
+        if meta.resolved {
+            return;
+        }
+        let original = meta.original_item.clone();
+        let server_id = meta.server_id.clone();
+        // Index of this meta entry, computed by walking the
+        // sidecar.
+        let lattice_completion::CandidateData::Extension { payload, .. } =
+            &cand.raw.data
+        else {
+            return;
+        };
+        if payload.len() != 4 {
+            return;
+        }
+        let meta_index = u32::from_le_bytes([
+            payload[0],
+            payload[1],
+            payload[2],
+            payload[3],
+        ]) as usize;
+        // Resolve URI to find the originating server handle.
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<CompletionResolveOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_completion_resolve_rx = Some(rx);
+        self.pending_completion_resolve_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handle = lsp
+                .servers_for(&uri)
+                .into_iter()
+                .find(|h| h.server_id() == &*server_id);
+            let Some(handle) = handle else {
+                return;
+            };
+            if !handle.capabilities().completion_resolve_provider() {
+                return;
+            }
+            if token.is_cancelled() {
+                return;
+            }
+            // `request_with_cancel` takes `&str` method name and
+            // a serializable param; the resolved item comes back
+            // as `CompletionItem`.
+            let pending = handle.request_with_cancel::<
+                lsp_types::CompletionItem,
+                lsp_types::CompletionItem,
+            >(
+                "completionItem/resolve",
+                original,
+                token.clone(),
+            );
+            let Ok(resolved) = pending.await else {
+                return;
+            };
+            let _ = tx.send(CompletionResolveOutcome {
+                meta_index,
+                resolved,
+            });
+        });
+    }
+
+    /// Fire `textDocument/completion` for the active Insert-
+    /// mode popup (Phase 4.2.g.2). The response merges into
+    /// `state.raw` via the per-frame drain. Cancellation token
+    /// rides on every keystroke that mutates the query when
+    /// `isIncomplete: true`; manual re-triggers always re-fire
+    /// fresh.
+    ///
+    /// Multi-server fan-out + dedup (label + kind) is the
+    /// architecture-doc strategy. Items beyond `MAX_LSP_ITEMS`
+    /// are dropped.
+    pub(super) fn do_lsp_insert_completion_request(&mut self) {
+        const MAX_LSP_ITEMS: usize = 500;
+        if let Some(token) = self.pending_insert_completion_lsp_token.take() {
+            token.cancel();
+        }
+        // Path-completion mode (4.2.g.6 (2/2)) suppresses LSP
+        // completion -- the popup is showing filesystem entries.
+        if self.completion_in_path_context {
+            return;
+        }
+        // Per-language sources filter (Phase 4.2.g.5 (3b/3)).
+        let language = self.active_language_id();
+        let effective = self.effective_completion_for(&language);
+        let lsp_id = lattice_completion::SourceId::new(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID,
+        );
+        if !effective.source_enabled(&lsp_id) {
+            return;
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            // No URI -- no LSP. Sync sources still populate the
+            // popup; just skip the LSP request silently.
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => return,
+        };
+        // Pull the trigger context out of the popup state so the
+        // LSP request faithfully reports `triggerKind`.
+        let (lsp_trigger_kind, lsp_trigger_char) = match self
+            .insert_completion
+            .as_ref()
+            .map(|s| s.trigger.clone())
+        {
+            Some(lattice_completion::CompletionTrigger::TriggerChar(c)) => (
+                lsp_types::CompletionTriggerKind::TRIGGER_CHARACTER,
+                Some(c.to_string()),
+            ),
+            Some(lattice_completion::CompletionTrigger::IncompleteRefresh) => (
+                lsp_types::CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS,
+                None,
+            ),
+            _ => (lsp_types::CompletionTriggerKind::INVOKED, None),
+        };
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<InsertCompletionLspOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_insert_completion_lsp_rx = Some(rx);
+        self.pending_insert_completion_lsp_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.servers_for(&uri) };
+            if handles.is_empty() {
+                let _ = tx.send(InsertCompletionLspOutcome::NoServers);
+                return;
+            }
+            let mut all: Vec<LspCompletionMeta> = Vec::new();
+            let mut any_incomplete = false;
+            let mut seen_keys: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                if !handle.capabilities().supports_completion() {
+                    continue;
+                }
+                let params = lsp_types::CompletionParams {
+                    text_document_position: lsp_types::TextDocumentPositionParams {
+                        text_document: lsp_types::TextDocumentIdentifier {
+                            uri: uri.clone(),
+                        },
+                        position: lsp_position,
+                    },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    context: Some(lsp_types::CompletionContext {
+                        trigger_kind: lsp_trigger_kind,
+                        trigger_character: lsp_trigger_char.clone(),
+                    }),
+                };
+                let Ok(Some(resp)) = handle.completion(params, token.clone()).await
+                else {
+                    continue;
+                };
+                let (items, is_incomplete) = match resp {
+                    lsp_types::CompletionResponse::Array(items) => (items, false),
+                    lsp_types::CompletionResponse::List(list) => {
+                        (list.items, list.is_incomplete)
+                    }
+                };
+                if is_incomplete {
+                    any_incomplete = true;
+                }
+                for ci in items {
+                    let kind = ci.kind;
+                    let label = ci.label.clone();
+                    let kind_tag = kind
+                        .map(|k| format!("{k:?}"))
+                        .unwrap_or_else(|| "none".to_string());
+                    let key = (label.clone(), kind_tag);
+                    if !seen_keys.insert(key) {
+                        continue;
+                    }
+                    let deprecated = ci
+                        .tags
+                        .as_ref()
+                        .map(|t| t.contains(&lsp_types::CompletionItemTag::DEPRECATED))
+                        .unwrap_or(false)
+                        || ci.deprecated.unwrap_or(false);
+                    // Insert text resolution: textEdit.newText >
+                    // insertText > label.
+                    let (insert_text, replace_range) = match ci.text_edit.as_ref() {
+                        Some(lsp_types::CompletionTextEdit::Edit(te)) => {
+                            (te.new_text.clone(), Some(te.range))
+                        }
+                        Some(lsp_types::CompletionTextEdit::InsertAndReplace(ir)) => {
+                            (ir.new_text.clone(), Some(ir.replace))
+                        }
+                        None => {
+                            (ci.insert_text.clone().unwrap_or_else(|| label.clone()), None)
+                        }
+                    };
+                    let documentation = ci.documentation.as_ref().map(|d| match d {
+                        lsp_types::Documentation::String(s) => s.clone(),
+                        lsp_types::Documentation::MarkupContent(mc) => {
+                            mc.value.clone()
+                        }
+                    });
+                    let commit_characters = ci
+                        .commit_characters
+                        .as_ref()
+                        .map(|chars| {
+                            chars
+                                .iter()
+                                .filter_map(|s| s.chars().next())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    all.push(LspCompletionMeta {
+                        label,
+                        insert_text,
+                        filter_text: ci.filter_text.clone(),
+                        sort_text: ci.sort_text.clone(),
+                        detail: ci.detail.clone(),
+                        documentation,
+                        kind,
+                        deprecated,
+                        preselect: ci.preselect.unwrap_or(false),
+                        commit_characters,
+                        additional_text_edits: ci
+                            .additional_text_edits
+                            .clone()
+                            .unwrap_or_default(),
+                        command: ci.command.clone(),
+                        insert_text_format: ci
+                            .insert_text_format
+                            .unwrap_or(lsp_types::InsertTextFormat::PLAIN_TEXT),
+                        replace_range,
+                        server_id: std::sync::Arc::from(handle.server_id()),
+                        original_item: ci,
+                        resolved: false,
+                    });
+                    if all.len() >= MAX_LSP_ITEMS {
+                        break;
+                    }
+                }
+                if all.len() >= MAX_LSP_ITEMS {
+                    break;
+                }
+            }
+            let _ = tx.send(InsertCompletionLspOutcome::Items {
+                items: all,
+                is_incomplete: any_incomplete,
+            });
+        });
+    }
+
     /// Drain queued `completionItem/resolve` responses -- fill
     /// in the meta entry, update the docs-popup body when the
     /// resolved item is the popup's currently-focused one.

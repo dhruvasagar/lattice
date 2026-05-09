@@ -73,15 +73,15 @@ New slices match these unless there's a documented reason.
   `PositionEntry` / `EffectiveCompletionConfig` / etc.
   data types, and `impl Debug for App`.
 
-## 3. Submodule layout (after R.1.78)
+## 3. Submodule layout (after R.1.80)
 
 | File                   | Lines | Theme                                                              |
 |------------------------|-------|--------------------------------------------------------------------|
-| `app.rs`               | 16041 | App struct + remaining methods + types + free helpers + tests      |
+| `app.rs`               | 15914 | App struct + remaining methods + types + free helpers + tests      |
 | `app/lsp.rs`           |  3317 | every `lattice-lsp` consumer (requests, drains, log buffers)       |
 | `app/completion.rs`    |  1521 | popup state machine, ranker, ghost text, snippets (incl. expansion), refilter, `EffectiveCompletionConfig`, `active_language_id` |
 | `app/folds.rs`         |  1344 | fold compute / open / close / auto-open                            |
-| `app/lifecycle.rs`     |  1289 | activate-buffer, pane tree, `:e` / `:w` / `:q` / `:bn` / `:ls`, `<C-l>`, document swap, save family, help adoption, buffer-state hooks |
+| `app/lifecycle.rs`     |  1353 | activate-buffer, pane tree, `:e` / `:w` / `:q` / `:bn` / `:ls`, `<C-l>`, document swap, save family, help adoption, buffer-state + pane snapshot |
 | `app/search.rs`        |  1125 | `/`, `?`, `:s`, `:%s`, find / find-next / find-reverse             |
 | `app/options.rs`       |   821 | `:set`, typed options, customize machinery, per-language overrides + pending-section drainers |
 | `app/edit.rs`          |   729 | actor-bridge mutation wrappers, yank / paste / register store / Insert+Replace primitives / `:d` / block-insert |
@@ -90,16 +90,16 @@ New slices match these unless there's a documented reason.
 | `app/motions.rs`       |   598 | bracket match, history walkers + writer, mark jump, viewport / scroll, cursor clamp, viewport sizing |
 | `app/help.rs`          |   575 | `:help`, `:describe-*`, `:apropos`, `:keymap`, `do_help_follow_link` |
 | `app/visual.rs`        |   303 | charwise / linewise / blockwise selection state, `set_selections_blocking` |
+| `app/mode.rs`          |   110 | `modal_label` + `enter_mode` (modal-state transitions)             |
 | `app/file_tree.rs`     |   203 | file-tree buffer ops                                               |
 | `app/macros.rs`        |   194 | `q` recording / `@` replay                                          |
 | `app/oil.rs`           |   185 | oil buffer ops (incl. navigate-up)                                  |
 | `app/test_helpers.rs`  |   129 | shared test fixtures                                                |
 | `app/syntax.rs`        |    75 | `maybe_reparse_syntax`                                              |
-| `app/mode.rs`          |    50 | `modal_label`; remaining mode-transition entries deferred           |
 | `app/state.rs`         |    23 | small state accessors                                               |
 | `app/operators.rs`     |    22 | operator-pending plumbing                                           |
 
-## 4. Slices done (R.1.0 -- R.1.78)
+## 4. Slices done (R.1.0 -- R.1.80)
 
 | #      | Slice                                                                 |
 |--------|-----------------------------------------------------------------------|
@@ -182,12 +182,14 @@ New slices match these unless there's a documented reason.
 | R.1.76 | `open_completion_popup` → `app/cmdline.rs`                            |
 | R.1.77 | `active_language_id` → `app/completion.rs`                            |
 | R.1.78 | buffer-state lifecycle accessors (`find_document_by_path` + `snapshot_active_document` + `activate_buffer_state` + `active_pane_buffer_id`) → `app/lifecycle.rs` |
+| R.1.79 | pane-snapshot + buffer-area-rect (`snapshot_active_pane` + `buffer_area_rect`) → `app/lifecycle.rs` |
+| R.1.80 | `enter_mode` → `app/mode.rs`                                          |
 
 ## 5. Pending candidates
 
-No formal slice plan exists past R.1.78; each slice is picked
+No formal slice plan exists past R.1.80; each slice is picked
 when picked. The clusters below are the visible candidates
-from a survey of `app.rs` after R.1.78. Numbers are
+from a survey of `app.rs` after R.1.80. Numbers are
 heuristic -- some clusters fragment into 2--3 sub-slices
 (the way M.3.2 did in `mode-architecture.md`); some collapse
 into one. Rough envelope: **15--25 slices** to fully drain

@@ -4783,120 +4783,13 @@ impl App {
     }
 
 
-    // ---- Insert-mode completion (Phase 4.2.g.1) ----
-
-    /// Manual trigger / refresh. Opens the popup if it's
-    /// closed; refreshes raw + rendered candidates if it's
-    /// already open. Sources contributing today: buffer-words.
-    /// LSP / snippets / path / tree-sitter follow in 4.2.g.2+.
-    pub fn do_completion_trigger(&mut self) {
-        if !matches!(self.modal, ModalState::Insert) {
-            // Manual trigger from any other mode is a no-op
-            // (completion is an Insert-mode surface). The
-            // explicit echo-free no-op is intentional -- no
-            // EchoLevel::Info clutter.
-            return;
-        }
-        let snap = self.document.snapshot();
-        let buffer = &snap.buffer;
-        let line_text = buffer.line(self.cursor.line).unwrap_or_default();
-        let bytes = line_text.as_bytes();
-        let cursor_byte = self.cursor.byte as usize;
-        // Detect path-completion context (Phase 4.2.g.6 (2/2)):
-        // cursor sits inside a string literal AND the active
-        // language enables `gen:path`. In that case the anchor
-        // walks back over path-shaped bytes and stops at `/` so
-        // the popup-supplied filename replaces just the current
-        // path segment; non-path sources skip emit so the popup
-        // doesn't show buffer words intermixed with filenames.
-        let path_id = lattice_completion::SourceId::new(
-            lattice_completion::PATH_SOURCE_ID,
-        );
-        let language = self.active_language_id();
-        let path_source_enabled = self
-            .effective_completion_for(&language)
-            .source_enabled(&path_id);
-        let path_context = path_source_enabled
-            && match buffer.position_to_byte(self.cursor) {
-                Ok(abs) => self
-                    .syntax
-                    .as_ref()
-                    .map(|s| s.snapshot().cursor_in_string_scope(abs))
-                    .unwrap_or(false),
-                Err(_) => false,
-            };
-        self.completion_in_path_context = path_context;
-        // Anchor: walk back from the cursor. In path context we
-        // stop at `/` (dir/file boundary) or any non-path byte;
-        // outside path context we stop at any non-word byte.
-        // The query is the prefix `[anchor, cursor]`.
-        let mut start = cursor_byte;
-        while start > 0 && start <= bytes.len() {
-            let b = bytes[start - 1];
-            let is_boundary = if path_context {
-                b == b'/' || !is_path_byte(b)
-            } else {
-                !is_word_char_byte(b)
-            };
-            if is_boundary {
-                break;
-            }
-            start -= 1;
-        }
-        let anchor = Position::new(self.cursor.line, start as u32);
-        let query: String = line_text
-            .get(start..cursor_byte.min(line_text.len()))
-            .unwrap_or("")
-            .to_string();
-        let trigger = if self.insert_completion.is_some() {
-            // Refresh path: keep the original trigger so LSP's
-            // `triggerKind` doesn't flip mid-popup.
-            self.insert_completion
-                .as_ref()
-                .map(|s| s.trigger.clone())
-                .unwrap_or(lattice_completion::CompletionTrigger::Manual)
-        } else {
-            lattice_completion::CompletionTrigger::Manual
-        };
-        let mut state = lattice_completion::InsertCompletionState::open(
-            trigger.clone(),
-            anchor,
-            self.cursor,
-            query.clone(),
-        );
-        self.populate_insert_completion_sync(&mut state, buffer, &trigger);
-        self.insert_completion = Some(state);
-        // Fire the async LSP source in parallel. It pushes
-        // results back via `pending_insert_completion_lsp_rx`;
-        // the runtime drains them per frame and merges into
-        // `state.raw`. The popup stays open even when sync
-        // sources produce nothing -- the LSP response may
-        // still arrive with candidates.
-        self.do_lsp_insert_completion_request();
-        // If sync produced nothing AND no LSP server is
-        // attached, close the popup with the standard echo.
-        // We can detect "no LSP attached" without waiting on
-        // the request: the URI lookup either succeeded (LSP is
-        // attached and a response is in flight) or didn't
-        // (in which case `do_lsp_insert_completion_request`
-        // returned early without spawning).
-        let lsp_pending = self.pending_insert_completion_lsp_token.is_some();
-        if !lsp_pending {
-            if let Some(state) = self.insert_completion.as_ref()
-                && state.rendered.is_empty()
-            {
-                self.set_message(EchoLevel::Info, "no completions");
-                self.insert_completion = None;
-            }
-        }
-    }
 
     /// Run sync sources against the supplied state, populating
     /// `state.raw` and re-running matcher + ranker so
     /// `state.rendered` reflects the current `query`. Async
     /// sources (LSP) hook into `state.raw` directly via
     /// host-side channels in 4.2.g.2.
-    fn populate_insert_completion_sync(
+    pub(super) fn populate_insert_completion_sync(
         &mut self,
         state: &mut lattice_completion::InsertCompletionState,
         buffer: &Buffer,
@@ -8651,7 +8544,7 @@ pub(super) fn dedup_rendered_by_text(rendered: &mut Vec<lattice_completion::Rend
 /// so common filename characters (`.`, `-`, `~`) ride the same
 /// segment; the trigger anchor breaks at `/` (dir boundary)
 /// rather than at these characters.
-fn is_path_byte(b: u8) -> bool {
+pub(super) fn is_path_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric()
         || matches!(b, b'_' | b'-' | b'.' | b'~' | b'+' | b'@')
 }

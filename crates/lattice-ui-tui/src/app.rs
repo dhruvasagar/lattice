@@ -12587,64 +12587,6 @@ impl App {
     }
 
 
-    /// Vim's `%`: jump to the matching `()[]{}`. Behavior: scan the
-    /// current line from `cursor.byte` for the first bracket char; that
-    /// bracket and its match define the jump. If the cursor is past
-    /// every bracket on the line, do nothing.
-    fn do_match_bracket(&mut self) {
-        let text = self.document.text();
-        let bytes = text.as_bytes();
-        let cursor_byte = match self
-            .document
-            .snapshot()
-            .buffer
-            .position_to_byte(self.cursor)
-        {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        // Scan from cursor to end-of-line for a bracket char.
-        let mut idx = cursor_byte;
-        let mut bracket = None;
-        while idx < bytes.len() && bytes[idx] != b'\n' {
-            if matches!(bytes[idx], b'(' | b')' | b'[' | b']' | b'{' | b'}') {
-                bracket = Some((idx, bytes[idx]));
-                break;
-            }
-            idx += 1;
-        }
-        let Some((start, b)) = bracket else {
-            self.set_message(EchoLevel::Error, "no bracket on this line".to_string());
-            return;
-        };
-        let (open, close, forward) = match b {
-            b'(' => (b'(', b')', true),
-            b')' => (b'(', b')', false),
-            b'[' => (b'[', b']', true),
-            b']' => (b'[', b']', false),
-            b'{' => (b'{', b'}', true),
-            b'}' => (b'{', b'}', false),
-            _ => return,
-        };
-        let pre_jump = self.cursor;
-        let target = if forward {
-            scan_forward_for_match(bytes, start, open, close)
-        } else {
-            scan_backward_for_match(bytes, start, open, close)
-        };
-        match target {
-            Some(t) => {
-                if let Ok(pos) = self.document.snapshot().buffer.byte_to_position(t) {
-                    self.push_position_history(pre_jump, PositionSource::AutoJump);
-                    self.cursor = pos;
-                    self.auto_open_folds_at_cursor();
-                }
-            }
-            None => {
-                self.set_message(EchoLevel::Error, "unmatched bracket".to_string());
-            }
-        }
-    }
 
     /// Jump to a recorded mark. `exact = true` puts the cursor at the
     /// stored byte; `exact = false` jumps to the line and column = first
@@ -13061,45 +13003,7 @@ fn is_path_byte(b: u8) -> bool {
         || matches!(b, b'_' | b'-' | b'.' | b'~' | b'+' | b'@')
 }
 
-fn scan_forward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
-    let mut depth = 0i32;
-    let mut i = from;
-    loop {
-        if i >= bytes.len() {
-            return None;
-        }
-        let b = bytes[i];
-        if b == open {
-            depth += 1;
-        } else if b == close {
-            depth -= 1;
-            if depth == 0 {
-                return Some(i);
-            }
-        }
-        i += 1;
-    }
-}
 
-fn scan_backward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
-    let mut depth = 0i32;
-    let mut i = from;
-    loop {
-        let b = bytes[i];
-        if b == close {
-            depth += 1;
-        } else if b == open {
-            depth -= 1;
-            if depth == 0 {
-                return Some(i);
-            }
-        }
-        if i == 0 {
-            return None;
-        }
-        i -= 1;
-    }
-}
 
 /// True if `line_idx` is empty or whitespace-only. Used by the
 /// fold-aware j/k snap to swallow trailing blanks between sibling

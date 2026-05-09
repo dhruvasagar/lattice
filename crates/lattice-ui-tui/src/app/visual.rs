@@ -300,4 +300,20 @@ mod tests {
         assert_eq!(sel.head, Position::new(0, 8));
     }
 
+
+    #[test]
+    fn select_register_clears_partial_chord() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('"')));
+        a.apply(Action::SelectRegister(Register::Named('a')));
+        assert!(a.partial_chord.is_empty());
+    }
+
+    #[test]
+    fn select_register_stashes_pending_register() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::SelectRegister(Register::Named('a')));
+        assert_eq!(a.pending_register, Some(Register::Named('a')));
+    }
+
 }

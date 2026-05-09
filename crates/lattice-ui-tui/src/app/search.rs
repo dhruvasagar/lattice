@@ -1122,4 +1122,15 @@ mod tests {
         a.apply(Action::SearchNext);
         assert_eq!(a.cursor, Position::new(2, 0));
     }
+
+    #[test]
+    fn find_no_match_keeps_cursor() {
+        let mut a = app_with("hello", 10);
+        a.cursor = Position::new(0, 1);
+        let inv = CommandInvocation::of(a.builtins.find_char_forward.0)
+            .with_args(lattice_grammar::Args::Char('z'));
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.cursor, Position::new(0, 1));
+    }
+
 }

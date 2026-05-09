@@ -561,7 +561,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use crate::app::*;
-    use crate::app::test_helpers::{app_with, subscribe_all_events, submit_ex};
+    use crate::app::test_helpers::{app_in_command_mode, app_with, fresh_workspace, subscribe_all_events, submit_ex, write_workspace_config};
     use lattice_grammar::ModalState;
     use lattice_protocol::Event;
 
@@ -920,5 +920,204 @@ mod tests {
         );
     }
 
+
+
+    #[test]
+    fn set_number_and_nonumber_toggle_show_line_numbers() {
+        let mut a = app_with("hello", 10);
+        assert!(a.show_line_numbers());
+        submit_ex(&mut a, "set nonumber");
+        assert!(!a.show_line_numbers());
+        submit_ex(&mut a, "set number");
+        assert!(a.show_line_numbers());
+    }
+
+    #[test]
+    fn set_relativenumber_toggles_flag() {
+        let mut a = app_with("hello\nworld", 10);
+        assert!(!a.relative_line_numbers());
+        submit_ex(&mut a, "set relativenumber");
+        assert!(a.relative_line_numbers());
+        assert!(a.show_line_numbers());
+        submit_ex(&mut a, "set norelativenumber");
+        assert!(!a.relative_line_numbers());
+    }
+
+    #[test]
+    fn typing_after_popup_open_live_refilters_candidates() {
+        // Vertico-style: typing while the popup is open keeps it
+        // open and re-runs the pipeline against the longer prefix.
+        let mut a = app_in_command_mode("descr");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        assert!(a.completion_state.is_some());
+        let initial_count = a.completion_state.as_ref().unwrap().candidates.len();
+
+        a.apply(Action::CommandLineAppend('i'));
+        assert!(
+            a.completion_state.is_some(),
+            "popup must stay open while filtering"
+        );
+        assert_eq!(a.command_line, "descri");
+        // Typing narrows the prefix -> candidate set should shrink
+        // or stay equal, never grow.
+        let narrowed = a.completion_state.as_ref().unwrap().candidates.len();
+        assert!(narrowed <= initial_count);
+        // Selection resets to first match (the candidate set
+        // changed; previous index would be meaningless).
+        assert_eq!(a.completion_state.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn typing_no_match_keeps_popup_open_with_empty_candidates() {
+        // Vertico-style: typing past the matchable region leaves the
+        // popup alive (just empty), so a single backspace can recover.
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        for c in "zxqzxqzxq".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        let state = a
+            .completion_state
+            .as_ref()
+            .expect("popup must stay open on no-match");
+        assert!(state.candidates.is_empty());
+        // Backspacing the noise restores matches.
+        for _ in 0.."zxqzxqzxq".len() {
+            a.apply(Action::CommandLineBackspace);
+        }
+        assert!(a.completion_state.is_some());
+        assert!(!a.completion_state.as_ref().unwrap().candidates.is_empty());
+    }
+
+    #[test]
+    fn typing_with_no_popup_open_does_not_open_one() {
+        // Refresh only fires when a popup is already open; bare
+        // typing without a prior <Tab> stays as it was.
+        let mut a = app_in_command_mode("desc");
+        a.apply(Action::CommandLineAppend('r'));
+        assert!(a.completion_state.is_none());
+        assert_eq!(a.command_line, "descr");
+    }
+
+    #[test]
+    fn fresh_app_has_one_document_pane() {
+        let a = app_with("xx", 10);
+        assert_eq!(a.pane_tree.len(), 1);
+        assert_eq!(a.active_buffer, BufferKind::Document);
+        let active = a.pane_tree.active();
+        assert_eq!(active.buffer, BufferKind::Document);
+        assert_eq!(active.buffer_id, a.document_buffer_id);
+    }
+
+    #[test]
+    fn fresh_app_registers_initial_document() {
+        let a = app_with("xx", 10);
+        assert_eq!(a.buffers.document_ids_sorted().len(), 1);
+        assert!(a.buffers.document(a.document_buffer_id).is_some());
+    }
+
+    #[test]
+    fn set_tabstop_assignment_updates_field() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "set tabstop=4".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.tabstop(), 4);
+    }
+
+    #[test]
+    fn set_tabstop_via_alias() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "set ts=2".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.tabstop(), 2);
+    }
+
+    #[test]
+    fn effective_completion_for_markdown_default_excludes_lsp() {
+        // Spec default: markdown drops LSP for prose. The
+        // App's seeded map should reflect this without any
+        // TOML being loaded.
+        let a = app_with("", 5);
+        let eff = a.effective_completion_for("markdown");
+        let lsp_id = lattice_completion::SourceId::new(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID,
+        );
+        assert!(!eff.source_enabled(&lsp_id), "markdown default drops LSP");
+        let snippet_id = lattice_completion::SourceId::new(
+            lattice_completion::SNIPPET_SOURCE_ID,
+        );
+        assert!(eff.source_enabled(&snippet_id), "markdown keeps snippet");
+        assert_eq!(eff.auto_trigger, false);
+    }
+
+    #[test]
+    fn effective_completion_for_language_with_no_override_allows_all_sources() {
+        // A language without any per-language entry returns
+        // `sources = None` -> every source contributes
+        // (`source_enabled` is unconditionally true).
+        let a = app_with("", 5);
+        let eff = a.effective_completion_for("zigzig-not-a-language");
+        let any_id = lattice_completion::SourceId::new("plugin:custom");
+        assert!(eff.source_enabled(&any_id));
+        assert!(eff.sources.is_none());
+    }
+
+    fn set_rust_syntax(a: &mut App, source: &str) {
+        let mut syntax = lattice_syntax::Syntax::for_language_with_registry(
+            lattice_syntax::Lang::Rust,
+            a.lang_registry.clone(),
+        )
+        .expect("rust syntax")
+        .expect("rust registered");
+        syntax.parse(source);
+        a.syntax = Some(lattice_syntax::SyntaxHandle::seeded(syntax));
+    }
+
+    #[test]
+    fn reload_snippets_with_no_dirs_reports_empty() {
+        let mut a = app_with("", 10);
+        a.do_reload_snippets();
+        // Idle; registry stays empty. Message echoed at Info.
+        assert_eq!(a.snippet_registry.len(), 0);
+    }
+
+    #[test]
+    fn reload_snippets_walks_configured_dirs_and_keys_by_filename() {
+        // Build a tempdir with `_global.json` (any-language)
+        // and `rust.json` (language-specific). Reload should
+        // route them into the right per-language slots.
+        let dir = std::env::temp_dir().join(format!(
+            "lattice-snippet-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("_global.json"),
+            r#"{ "anywhere": { "prefix": "any", "body": "anywhere" } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("rust.json"),
+            r#"{ "rust-for": { "prefix": "for", "body": "for $1 {}" } }"#,
+        )
+        .unwrap();
+        let mut a = app_with("", 10);
+        a.snippet_dirs.push(dir.clone());
+        a.do_reload_snippets();
+        // 2 snippets registered total (one per language).
+        assert_eq!(a.snippet_registry.len(), 2);
+        assert!(!a.snippet_registry.lookup("rust", "for").is_empty());
+        assert!(!a.snippet_registry.lookup("*", "any").is_empty());
+        // Global snippets are visible from any language --
+        // `lookup` walks the per-language slot then `*`.
+        assert!(!a.snippet_registry.lookup("rust", "any").is_empty());
+        // A rust-only snippet should NOT be visible from a
+        // different language slot.
+        assert!(a.snippet_registry.lookup("python", "for").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
 }

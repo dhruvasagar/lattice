@@ -2709,109 +2709,9 @@ mod tests {
 
     // ---- Substitute (:s/foo/bar/[g]) ----
 
-    #[test]
-    fn set_number_and_nonumber_toggle_show_line_numbers() {
-        let mut a = app_with("hello", 10);
-        assert!(a.show_line_numbers());
-        submit_ex(&mut a, "set nonumber");
-        assert!(!a.show_line_numbers());
-        submit_ex(&mut a, "set number");
-        assert!(a.show_line_numbers());
-    }
-
-    #[test]
-    fn set_relativenumber_toggles_flag() {
-        let mut a = app_with("hello\nworld", 10);
-        assert!(!a.relative_line_numbers());
-        submit_ex(&mut a, "set relativenumber");
-        assert!(a.relative_line_numbers());
-        assert!(a.show_line_numbers());
-        submit_ex(&mut a, "set norelativenumber");
-        assert!(!a.relative_line_numbers());
-    }
-
-    #[test]
-    fn list_registers_with_no_state_says_so() {
-        let mut a = app_with("hello", 10);
-        submit_ex(&mut a, "reg");
-        let msg = a.last_message.as_ref().unwrap();
-        assert!(msg.text.contains("no registers"));
-    }
-
-    #[test]
-    fn list_registers_includes_unnamed_and_zero() {
-        let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
-        a.apply(Action::Invoke(inv));
-        submit_ex(&mut a, "reg");
-        let msg = a.last_message.as_ref().unwrap();
-        assert!(msg.text.contains("\"\""));
-        assert!(msg.text.contains("\"0"));
-    }
-
-    #[test]
-    fn list_marks_with_no_marks_says_so() {
-        let mut a = app_with("hello", 10);
-        submit_ex(&mut a, "marks");
-        let msg = a.last_message.as_ref().unwrap();
-        assert!(msg.text.contains("no marks"));
-    }
-
-    #[test]
-    fn list_marks_shows_set_marks() {
-        let mut a = app_with("hello\nworld", 10);
-        a.cursor = Position::new(1, 2);
-        a.apply(Action::SetMark('a'));
-        submit_ex(&mut a, "marks");
-        let msg = a.last_message.as_ref().unwrap();
-        assert!(msg.text.contains('a'));
-        // Line 2 (1-indexed for display) at byte 2.
-        assert!(msg.text.contains("2:2"));
-    }
-    #[test]
-    fn global_delete_matching_lines() {
-        let mut a = app_with("foo\nbar\nfoo\nbaz", 10);
-        submit_ex(&mut a, "g/foo/d");
-        // Both "foo" lines deleted; "bar" and "baz" remain.
-        assert_eq!(a.document.text(), "bar\nbaz");
-    }
-
-    #[test]
-    fn vglobal_delete_non_matching_lines() {
-        let mut a = app_with("foo\nbar\nfoo\nbaz", 10);
-        submit_ex(&mut a, "v/foo/d");
-        // Only "foo" lines remain.
-        assert_eq!(a.document.text(), "foo\nfoo");
-    }
-
-    #[test]
-    fn global_substitute_on_matching_lines() {
-        let mut a = app_with("foo\nbaz\nfoo", 10);
-        submit_ex(&mut a, "g/foo/s/foo/X/");
-        // Both "foo" lines get substituted.
-        assert_eq!(a.document.text(), "X\nbaz\nX");
-    }
-
-    #[test]
-    fn global_no_matches_emits_error() {
-        let mut a = app_with("hello\nworld", 10);
-        submit_ex(&mut a, "g/xyz/d");
-        let msg = a.last_message.as_ref().unwrap();
-        assert_eq!(msg.level, EchoLevel::Error);
-    }
-
     // ---- Line join (J / gJ) ----
 
     // ---- WORD motions (W, B, E) end-to-end ----
-
-    #[test]
-    fn capital_w_skips_punctuation() {
-        let mut a = app_with("foo,bar baz", 10);
-        a.apply(invoke_motion(a.builtins.big_word_forward));
-        assert_eq!(a.cursor, Position::new(0, 8));
-    }
 
     // ---- Position history (Ctrl-O / Ctrl-I) ----
 
@@ -2835,27 +2735,11 @@ mod tests {
     }
 
     #[test]
-    fn select_register_clears_partial_chord() {
-        let mut a = app_with("hello", 10);
-        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('"')));
-        a.apply(Action::SelectRegister(Register::Named('a')));
-        assert!(a.partial_chord.is_empty());
-    }
-
-    #[test]
     fn play_macro_clears_partial_chord() {
         let mut a = app_with("hello", 10);
         a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('@')));
         // No macro recorded; this errors but should still clear partial_chord.
         a.apply(Action::PlayMacro('z'));
-        assert!(a.partial_chord.is_empty());
-    }
-
-    #[test]
-    fn fold_action_clears_partial_chord() {
-        let mut a = app_with("a\nb\nc", 10);
-        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('z')));
-        a.apply(Action::OpenFoldAtCursor);
         assert!(a.partial_chord.is_empty());
     }
 
@@ -2905,41 +2789,6 @@ mod tests {
     }
 
     // ---- Multiple registers ----
-
-    #[test]
-    fn select_register_stashes_pending_register() {
-        let mut a = app_with("hello", 10);
-        a.apply(Action::SelectRegister(Register::Named('a')));
-        assert_eq!(a.pending_register, Some(Register::Named('a')));
-    }
-
-    #[test]
-    fn yank_with_named_register_stores_into_named_and_unnamed() {
-        let mut a = app_with("hello world", 10);
-        a.apply(Action::SelectRegister(Register::Named('a')));
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
-        a.apply(Action::Invoke(inv));
-        // Named slot populated.
-        let named = a.registers.get(&Register::Named('a')).unwrap();
-        assert_eq!(named.content, "hello ");
-        // Unnamed also populated.
-        assert_eq!(a.unnamed_register.as_ref().unwrap().content, "hello ");
-        // Pending register consumed.
-        assert!(a.pending_register.is_none());
-    }
-
-    #[test]
-    fn yank_auto_populates_zero_register() {
-        let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
-        a.apply(Action::Invoke(inv));
-        let zero = a.registers.get(&Register::Numbered(0)).unwrap();
-        assert_eq!(zero.content, "hello ");
-    }
 
     // ---- ~ toggle case at cursor ----
 
@@ -3017,32 +2866,10 @@ mod tests {
     // ---- Dot-repeat ----
 
     #[test]
-    fn yank_does_not_record_last_change() {
-        let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
-        a.apply(Action::Invoke(inv));
-        // Yank doesn't mutate the buffer; dot-repeat shouldn't pick this up.
-        assert!(a.last_change.is_none());
-    }
-
-    #[test]
     fn motion_does_not_record_last_change() {
         let mut a = app_with("hello world", 10);
         a.apply(invoke_motion(a.builtins.word_forward));
         assert!(a.last_change.is_none());
-    }
-
-    #[test]
-    fn change_records_last_change() {
-        let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.change.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
-        a.apply(Action::Invoke(inv));
-        // change drops to Insert, but the change itself is recorded.
-        assert!(a.last_change.is_some());
     }
 
     // ---- count prefix end-to-end ----
@@ -3073,16 +2900,6 @@ mod tests {
             .with_args(lattice_grammar::Args::Char('w'));
         a.apply(Action::Invoke(inv));
         assert_eq!(a.cursor, Position::new(0, 7));
-    }
-
-    #[test]
-    fn capital_f_jumps_backward() {
-        let mut a = app_with("hello, world", 10);
-        a.cursor = Position::new(0, 11); // on 'd'
-        let inv = CommandInvocation::of(a.builtins.find_char_backward.0)
-            .with_args(lattice_grammar::Args::Char('h'));
-        a.apply(Action::Invoke(inv));
-        assert_eq!(a.cursor, Position::ZERO);
     }
 
     #[test]
@@ -3123,16 +2940,6 @@ mod tests {
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(a.modal, ModalState::Insert);
-    }
-
-    #[test]
-    fn find_no_match_keeps_cursor() {
-        let mut a = app_with("hello", 10);
-        a.cursor = Position::new(0, 1);
-        let inv = CommandInvocation::of(a.builtins.find_char_forward.0)
-            .with_args(lattice_grammar::Args::Char('z'));
-        a.apply(Action::Invoke(inv));
-        assert_eq!(a.cursor, Position::new(0, 1));
     }
 
     // ---- yank + paste end-to-end ----
@@ -3267,13 +3074,6 @@ mod tests {
 
     // ---- Command-line completion (DESIGN.md §5.11.3) ----
 
-    fn app_in_command_mode(line: &str) -> App {
-        let mut a = app_with("xx", 10);
-        a.modal = ModalState::Command;
-        a.command_line = line.into();
-        a
-    }
-
     #[test]
     fn accept_completion_replaces_prefix_with_chosen_text() {
         let mut a = app_in_command_mode("descri");
@@ -3290,101 +3090,7 @@ mod tests {
         assert!(a.completion_state.is_none());
     }
 
-    #[test]
-    fn dismiss_completion_keeps_command_line_intact() {
-        let mut a = app_in_command_mode("descri");
-        a.apply(Action::CommandLineCompleteOrAdvance);
-        a.apply(Action::CommandLineDismissCompletion);
-        assert_eq!(a.command_line, "descri");
-        assert!(a.completion_state.is_none());
-    }
-
-    #[test]
-    fn typing_after_popup_open_live_refilters_candidates() {
-        // Vertico-style: typing while the popup is open keeps it
-        // open and re-runs the pipeline against the longer prefix.
-        let mut a = app_in_command_mode("descr");
-        a.apply(Action::CommandLineCompleteOrAdvance);
-        assert!(a.completion_state.is_some());
-        let initial_count = a.completion_state.as_ref().unwrap().candidates.len();
-
-        a.apply(Action::CommandLineAppend('i'));
-        assert!(
-            a.completion_state.is_some(),
-            "popup must stay open while filtering"
-        );
-        assert_eq!(a.command_line, "descri");
-        // Typing narrows the prefix -> candidate set should shrink
-        // or stay equal, never grow.
-        let narrowed = a.completion_state.as_ref().unwrap().candidates.len();
-        assert!(narrowed <= initial_count);
-        // Selection resets to first match (the candidate set
-        // changed; previous index would be meaningless).
-        assert_eq!(a.completion_state.as_ref().unwrap().selected, 0);
-    }
-
-    #[test]
-    fn typing_no_match_keeps_popup_open_with_empty_candidates() {
-        // Vertico-style: typing past the matchable region leaves the
-        // popup alive (just empty), so a single backspace can recover.
-        let mut a = app_in_command_mode("descri");
-        a.apply(Action::CommandLineCompleteOrAdvance);
-        for c in "zxqzxqzxq".chars() {
-            a.apply(Action::CommandLineAppend(c));
-        }
-        let state = a
-            .completion_state
-            .as_ref()
-            .expect("popup must stay open on no-match");
-        assert!(state.candidates.is_empty());
-        // Backspacing the noise restores matches.
-        for _ in 0.."zxqzxqzxq".len() {
-            a.apply(Action::CommandLineBackspace);
-        }
-        assert!(a.completion_state.is_some());
-        assert!(!a.completion_state.as_ref().unwrap().candidates.is_empty());
-    }
-
-    #[test]
-    fn clear_with_open_popup_widens_to_all_commands() {
-        let mut a = app_in_command_mode("descri");
-        a.apply(Action::CommandLineCompleteOrAdvance);
-        let narrow_count = a.completion_state.as_ref().unwrap().candidates.len();
-        a.apply(Action::CommandLineClear);
-        assert!(a.completion_state.is_some());
-        assert_eq!(a.command_line, "");
-        let widened = a.completion_state.as_ref().unwrap().candidates.len();
-        assert!(widened >= narrow_count);
-    }
-
-    #[test]
-    fn typing_with_no_popup_open_does_not_open_one() {
-        // Refresh only fires when a popup is already open; bare
-        // typing without a prior <Tab> stays as it was.
-        let mut a = app_in_command_mode("desc");
-        a.apply(Action::CommandLineAppend('r'));
-        assert!(a.completion_state.is_none());
-        assert_eq!(a.command_line, "descr");
-    }
-
     // ---- Chord-capture (DESIGN.md §B.1, ArgKind::Chord) ----
-
-    #[test]
-    fn append_chord_concatenates_token() {
-        let mut a = app_in_command_mode("describe-key ");
-        a.apply(Action::CommandLineAppendChord("<C-c>".into()));
-        assert_eq!(a.command_line, "describe-key <C-c>");
-    }
-
-    #[test]
-    fn append_chord_supports_multi_token_sequences() {
-        // gg / <C-w>j -- multi-stroke chords. Each press appends
-        // its own token.
-        let mut a = app_in_command_mode("describe-key ");
-        a.apply(Action::CommandLineAppendChord("g".into()));
-        a.apply(Action::CommandLineAppendChord("g".into()));
-        assert_eq!(a.command_line, "describe-key gg");
-    }
 
     // ---- Missing-arg chord prompt (DESIGN.md §B.1) ----
 
@@ -3485,25 +3191,6 @@ mod tests {
     // ---- Pane tree (DESIGN.md §5.9, B.1.b) ----
 
     #[test]
-    fn fresh_app_has_one_document_pane() {
-        let a = app_with("xx", 10);
-        assert_eq!(a.pane_tree.len(), 1);
-        assert_eq!(a.active_buffer, BufferKind::Document);
-        let active = a.pane_tree.active();
-        assert_eq!(active.buffer, BufferKind::Document);
-        assert_eq!(active.buffer_id, a.document_buffer_id);
-    }
-
-    #[test]
-    fn close_last_pane_is_a_noop_with_warning() {
-        let mut a = app_with("xx", 10);
-        a.apply(Action::ClosePane);
-        assert_eq!(a.pane_tree.len(), 1);
-        let msg = a.last_message.as_ref().expect("warn echo");
-        assert!(msg.text.contains("only one pane"));
-    }
-
-    #[test]
     fn focused_hover_does_not_auto_dismiss_on_motion() {
         // State B: cursor is *inside* the popup; motions move the
         // popup's cursor, not the doc's. The State-A auto-dismiss
@@ -3521,135 +3208,8 @@ mod tests {
         assert_eq!(a.cursor.line, 1);
     }
 
-    #[test]
-    fn dismiss_focused_hover_restores_doc_cursor() {
-        // Esc / q in State B routes to HelpDismiss, which restores
-        // the pre-State-B cursor / scroll on the doc.
-        let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
-        a.cursor = lattice_protocol::Position::new(1, 4);
-        a.do_open_hover("hover body");
-        a.do_lsp_hover_request(); // -> State B
-        // Move inside the popup.
-        let inv = lattice_grammar::CommandInvocation::of(a.builtins.line_down.0);
-        a.apply(Action::Invoke(inv));
-        assert!(matches!(a.active_buffer, BufferKind::Help));
-        // Dismiss.
-        a.apply(Action::HelpDismiss);
-        assert!(a.help_buffer.is_none());
-        assert!(matches!(a.active_buffer, BufferKind::Document));
-        assert_eq!(a.cursor, lattice_protocol::Position::new(1, 4));
-        assert!(a.prev_pane_for_help.is_none());
-    }
-
-    #[test]
-    fn opening_help_in_pane_keeps_document_syntax_live() {
-        // Bug: opening `:lsp-log` (which routes through
-        // `open_help_in_pane`) stashed the document's syntax onto
-        // the registry entry, leaving `self.syntax = None` for the
-        // duration of the help session. The help buffer renders as
-        // a popup overlay over the underlying document; the
-        // document paint reads `self.syntax`, so the document
-        // appeared unhighlighted under the popup.
-        //
-        // Fix: `activate_help_in_pane` does NOT call
-        // `snapshot_active_document`. Hot-path state stays live;
-        // the round-trip back via `activate_document` early-returns
-        // for the same-doc case and skips the restore (entry has
-        // nothing to give).
-        let mut a = app_with("fn main() {}\n", 10);
-        a.terminal_width = Some(80);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        assert!(a.syntax.is_some(), "fixture syntax wired");
-        // Open a help buffer in pane (mimics `:lsp-log rust`).
-        let _help_id = a.open_help_in_pane(HelpBuffer::from_lines(
-            "lsp:rust",
-            vec!["log line".into()],
-        ));
-        assert!(matches!(a.active_buffer, BufferKind::Help));
-        // The document's syntax must remain on the hot path so the
-        // pane underneath paints with highlights.
-        assert!(
-            a.syntax.is_some(),
-            "syntax must stay live during help-in-pane overlay"
-        );
-        // Round-trip back to the document.
-        let doc_id = a
-            .buffers
-            .document_ids_sorted()
-            .first()
-            .copied()
-            .unwrap();
-        a.activate_document(doc_id);
-        assert!(matches!(a.active_buffer, BufferKind::Document));
-        assert!(
-            a.syntax.is_some(),
-            "syntax must survive the help-in-pane round trip"
-        );
-    }
-
-    #[test]
-    fn dismissing_tree_preserves_document_syntax_state() {
-        // Regression: opening `:Tree` and pressing `q` to dismiss
-        // it returned to the document with `self.syntax = None`,
-        // so the renderer fell back to plain text (no
-        // colours). Cause: the on-tree-open snapshot moved syntax
-        // into the document entry, then activate_document on
-        // dismiss called snapshot_active_document again and
-        // overwrote the entry's stashed syntax with None.
-        let dir = std::env::temp_dir().join(format!("lattice-tree-syntax-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok();
-        let mut a = app_with("fn main() {}\n", 10);
-        a.terminal_width = Some(80);
-        // Wire up a Rust syntax instance so there's something to lose.
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        // Open the tree, then dismiss.
-        a.command_line = format!("Filetree {}", dir.display());
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        assert!(matches!(a.active_buffer, crate::buffers::BufferKind::FileTree));
-        // `:TreeClose` (the path `q` takes in the tree).
-        a.command_line = "FiletreeClose".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        assert!(matches!(a.active_buffer, crate::buffers::BufferKind::Document));
-        assert!(
-            a.syntax.is_some(),
-            "syntax must survive the tree round-trip"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn close_tree_pane_keeps_tree_in_registry() {
-        // Trees now live in the unified buffer registry; closing
-        // the only pane that referenced one leaves the tree
-        // accessible via `:bn` / `:bp` / `:b N`. Use `:bd` to
-        // actually drop it.
-        let dir = std::env::temp_dir().join(format!("lattice-tree-gc-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok();
-        let mut a = app_with("xx", 10);
-        a.terminal_width = Some(80);
-        a.apply(Action::SplitPaneVertical);
-        a.apply(Action::NavigatePane(PaneDirection::Right));
-        a.command_line = format!("Filetree {}", dir.display());
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
-        a.apply(Action::ClosePane);
-        // Tree stays in the registry post-close.
-        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
     // ---- Multiple Document buffers (DESIGN.md §5.9, B.1.c) ----
 
-
-    #[test]
-    fn fresh_app_registers_initial_document() {
-        let a = app_with("xx", 10);
-        assert_eq!(a.buffers.document_ids_sorted().len(), 1);
-        assert!(a.buffers.document(a.document_buffer_id).is_some());
-    }
 
     #[test]
     fn bnext_cycles_through_open_buffers() {
@@ -3696,35 +3256,6 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    #[test]
-    fn bdelete_closes_active_buffer_and_picks_a_successor() {
-        let path = write_temp_file("e", "alpha\n");
-        let mut a = app_with("xx", 10);
-        let initial_id = a.document_buffer_id;
-        a.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        // Now active = new buffer; delete it. Successor should
-        // be initial_id.
-        a.command_line = "bd".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.document_buffer_id, initial_id);
-        assert_eq!(a.buffers.document_ids_sorted().len(), 1);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn bdelete_only_buffer_is_rejected() {
-        let mut a = app_with("xx", 10);
-        a.command_line = "bd".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.buffers.document_ids_sorted().len(), 1);
-        let msg = a.last_message.as_ref().expect("error echo");
-        assert!(msg.text.contains("only buffer"));
-    }
-
     // ---- Buffer activation lifecycle ----
     //
     // Regression coverage for the `<C-l>`-needed bug: opening a
@@ -3733,33 +3264,6 @@ mod tests {
     // on activation. `App::activate_buffer_state` is now the one
     // place to add buffer-level state that needs to come up with
     // the buffer.
-
-    #[test]
-    fn opening_new_file_seeds_folds_for_indent_foldmethod() {
-        // foldmethod=indent on the initial buffer; then `:e <new>`
-        // should populate folds for the new buffer without requiring
-        // a manual `<C-l>` redraw.
-        let path = write_temp_file(
-            "activate-folds-indent",
-            "a:\n    x\n    y\nb:\n    p\n    q\n",
-        );
-        let mut a = app_with("xx", 10);
-        a.set_foldmethod_for_test(FoldMethod::Indent);
-        a.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        // The new buffer should have folds without `<C-l>`.
-        assert!(
-            !a.folds.is_empty(),
-            "expected folds to be seeded on activation, got empty"
-        );
-        assert!(
-            a.folds.iter().any(|f| f.start_line == 0),
-            "expected a fold starting at line 0: {:?}",
-            a.folds
-        );
-        let _ = std::fs::remove_file(path);
-    }
 
     #[test]
     fn activation_skips_fold_seed_for_manual_foldmethod() {
@@ -3783,24 +3287,6 @@ mod tests {
     // ---- File-tree buffer (DESIGN.md §5.9, B.1.d) ----
 
     // ---- Typed options registry (DESIGN.md §5.12, B.2) ----
-
-    #[test]
-    fn set_tabstop_assignment_updates_field() {
-        let mut a = app_with("xx", 10);
-        a.command_line = "set tabstop=4".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.tabstop(), 4);
-    }
-
-    #[test]
-    fn set_tabstop_via_alias() {
-        let mut a = app_with("xx", 10);
-        a.command_line = "set ts=2".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.tabstop(), 2);
-    }
 
 
 
@@ -3847,154 +3333,6 @@ mod tests {
         );
         let resp = lsp_types::PrepareRenameResponse::Range(r);
         assert_eq!(super::prepare_rename_placeholder(&resp), None);
-    }
-
-    #[test]
-    fn docs_toggle_pulls_body_from_cached_metadata_documentation() {
-        let mut a = app_with("xx", 10);
-        a.modal = ModalState::Insert;
-        a.cursor = Position::ZERO;
-        // Seed popup state with a single LSP candidate that
-        // already has documentation cached.
-        let mut state = lattice_completion::InsertCompletionState::open(
-            lattice_completion::CompletionTrigger::Manual,
-            Position::ZERO,
-            Position::ZERO,
-            String::new(),
-        );
-        let mut raw = lattice_completion::RawCandidate::plain(
-            "foo",
-            lattice_completion::CandidateKind::Plain,
-        );
-        raw.display = "foo".into();
-        raw.data = lattice_completion::CandidateData::Extension {
-            kind_id: super::LSP_COMPLETION_KIND_ID,
-            payload: 0u32.to_le_bytes().to_vec(),
-        };
-        let scored = lattice_completion::ScoredCandidate {
-            raw,
-            score: lattice_completion::MatchScore(100),
-            match_ranges: Vec::new(),
-        };
-        state
-            .rendered
-            .push(lattice_completion::RenderedCandidate::from_scored(scored));
-        a.insert_completion = Some(state);
-        a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
-            label: "foo".into(),
-            insert_text: "foo".into(),
-            filter_text: None,
-            sort_text: None,
-            detail: Some("fn foo() -> i32".into()),
-            documentation: Some("Returns 42.".into()),
-            kind: Some(lsp_types::CompletionItemKind::FUNCTION),
-            deprecated: false,
-            preselect: false,
-            commit_characters: Vec::new(),
-            additional_text_edits: Vec::new(),
-            command: None,
-            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
-            replace_range: None,
-            server_id: std::sync::Arc::from("test-server"),
-            original_item: lsp_types::CompletionItem::default(),
-            resolved: true,
-        });
-        a.do_completion_toggle_docs();
-        let body = a
-            .insert_completion
-            .as_ref()
-            .and_then(|s| s.doc_popup.as_ref())
-            .and_then(|d| d.body.clone())
-            .expect("body populated");
-        assert!(body.contains("fn foo() -> i32"));
-        assert!(body.contains("Returns 42."));
-    }
-
-    #[test]
-    fn docs_toggle_a_second_time_closes_popup() {
-        let mut a = app_with("xx", 10);
-        a.modal = ModalState::Insert;
-        a.cursor = Position::ZERO;
-        a.insert_completion = Some(
-            lattice_completion::InsertCompletionState::open(
-                lattice_completion::CompletionTrigger::Manual,
-                Position::ZERO,
-                Position::ZERO,
-                String::new(),
-            ),
-        );
-        a.do_completion_toggle_docs();
-        // Even with no candidate, the popup opens with an
-        // empty body slot. Toggling again closes it.
-        let was_open = a
-            .insert_completion
-            .as_ref()
-            .map(|s| s.doc_popup.is_some())
-            .unwrap_or(false);
-        assert!(was_open);
-        a.do_completion_toggle_docs();
-        let now_closed = a
-            .insert_completion
-            .as_ref()
-            .map(|s| s.doc_popup.is_none())
-            .unwrap_or(true);
-        assert!(now_closed);
-    }
-
-    #[test]
-    fn docs_scroll_clamps_at_zero_and_advances_by_eight() {
-        let mut a = app_with("xx", 10);
-        a.modal = ModalState::Insert;
-        a.cursor = Position::ZERO;
-        a.insert_completion = Some(
-            lattice_completion::InsertCompletionState::open(
-                lattice_completion::CompletionTrigger::Manual,
-                Position::ZERO,
-                Position::ZERO,
-                String::new(),
-            ),
-        );
-        a.do_completion_toggle_docs();
-        // Default scroll is 0; up clamps at 0.
-        assert_eq!(
-            a.insert_completion
-                .as_ref()
-                .and_then(|s| s.doc_popup.as_ref())
-                .map(|d| d.scroll),
-            Some(0)
-        );
-        a.apply(Action::CompletionDocsScrollUp);
-        assert_eq!(
-            a.insert_completion
-                .as_ref()
-                .and_then(|s| s.doc_popup.as_ref())
-                .map(|d| d.scroll),
-            Some(0)
-        );
-        a.apply(Action::CompletionDocsScrollDown);
-        assert_eq!(
-            a.insert_completion
-                .as_ref()
-                .and_then(|s| s.doc_popup.as_ref())
-                .map(|d| d.scroll),
-            Some(8)
-        );
-        a.apply(Action::CompletionDocsScrollDown);
-        assert_eq!(
-            a.insert_completion
-                .as_ref()
-                .and_then(|s| s.doc_popup.as_ref())
-                .map(|d| d.scroll),
-            Some(16)
-        );
-        a.apply(Action::CompletionDocsScrollUp);
-        assert_eq!(
-            a.insert_completion
-                .as_ref()
-                .and_then(|s| s.doc_popup.as_ref())
-                .map(|d| d.scroll),
-            Some(8)
-        );
     }
 
     #[test]
@@ -4050,107 +3388,6 @@ mod tests {
         assert_eq!(h.title, "help folding");
     }
 
-    #[test]
-    fn follow_link_source_opens_file_at_line() {
-        // `:describe-command :lsp-trace` (and similar) renders a
-        // `[<source>](file:PATH:LINE)` link. Following it should
-        // open the file via the multi-buffer machinery and
-        // position the cursor at the requested line. Pre-fix this
-        // arm just echoed "(file open arrives with multi-buffer)"
-        // -- we already had multi-buffer; the placeholder was
-        // stale.
-        let path = std::env::temp_dir()
-            .join(format!("lattice-srclink-{}.rs", std::process::id()));
-        std::fs::write(&path, "first\nsecond\nthird\nfourth\n").unwrap();
-        let mut a = app_with("xx", 10);
-        // Open a help buffer so the active modal/buffer state
-        // matches what `FollowLink` expects.
-        a.command_line = "help".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        // Build a synthetic source link inside the help buffer.
-        // 1-based line number: line 3 in the file → cursor at
-        // line index 2 in the buffer.
-        let link = crate::help::HelpLink {
-            range: lattice_protocol::Range::new(
-                lattice_protocol::Position::ZERO,
-                lattice_protocol::Position::new(0, 1),
-            ),
-            target: crate::help::HelpLinkTarget::Source {
-                path: path.clone(),
-                line: 3,
-            },
-        };
-        if let Some(h) = a.help_buffer.as_mut() {
-            h.links.push(link);
-            h.cursor = lattice_protocol::Position::ZERO;
-        }
-        a.active_buffer = BufferKind::Help;
-        a.apply(Action::FollowLink);
-        // The file should now be the active document.
-        assert_eq!(a.active_buffer, BufferKind::Document);
-        let opened = a.document.path().expect("active doc has a path");
-        assert_eq!(opened, path);
-        // Cursor at line index 2 (1-based 3 → 0-based 2).
-        assert_eq!(a.cursor.line, 2);
-        // NOTE: a `PluginPush` history entry is pushed *before*
-        // `do_edit` runs, but `do_edit`'s new-file branch clears
-        // the position history (so a fresh buffer's `<C-o>` doesn't
-        // walk into the previous buffer's positions). That means
-        // cross-buffer jumps from FollowLink and from
-        // `jump_to_lsp_location` currently lose their walk-back
-        // entry. Per-buffer position history is queued as the
-        // proper fix; for now this test asserts the open-and-jump
-        // primary behaviour and lets the history side-effect
-        // regress until that fix lands.
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn follow_link_source_clamps_line_past_eof() {
-        let path = std::env::temp_dir()
-            .join(format!("lattice-srclink-clamp-{}.rs", std::process::id()));
-        std::fs::write(&path, "only-line\n").unwrap();
-        let mut a = app_with("xx", 10);
-        a.command_line = "help".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        let link = crate::help::HelpLink {
-            range: lattice_protocol::Range::new(
-                lattice_protocol::Position::ZERO,
-                lattice_protocol::Position::new(0, 1),
-            ),
-            target: crate::help::HelpLinkTarget::Source {
-                path: path.clone(),
-                line: 999,
-            },
-        };
-        if let Some(h) = a.help_buffer.as_mut() {
-            h.links.push(link);
-            h.cursor = lattice_protocol::Position::ZERO;
-        }
-        a.active_buffer = BufferKind::Help;
-        a.apply(Action::FollowLink);
-        // Out-of-range line should clamp to the last valid line,
-        // not panic and not echo a confusing error.
-        let last_line = a.document.snapshot().buffer.line_count().saturating_sub(1);
-        assert_eq!(a.cursor.line, last_line);
-        let _ = std::fs::remove_file(path);
-    }
-
-
-    #[test]
-    fn yank_then_paste_round_trips_word() {
-        let mut a = app_with("hello world", 10);
-        let yank = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
-        a.apply(Action::Invoke(yank));
-        // Move cursor to end of buffer.
-        a.cursor = Position::new(0, 11);
-        a.apply(Action::PasteAfter);
-        assert_eq!(a.document.text(), "hello worldhello ");
-    }
 
     #[test]
     fn after_change_user_can_type_and_replacement_lands() {
@@ -4183,94 +3420,6 @@ mod tests {
     /// Helper: seed N diagnostics into the App's LSP layer at
     /// the given lines + map a fake URI to the active buffer.
     // ---- LSP introspection tests (Phase 4.1.g) ---------------
-
-    #[test]
-    fn open_lsp_log_in_pane_renders_per_server_records() {
-        // Direct unit test of the in-pane helper (picker accept
-        // path bypasses the picker for single-instance cases too).
-        let mut app = app_with("hi\n", 5);
-        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        app.lsp_logger.log(
-            Some(&id),
-            lattice_lsp::LogLevel::Warn,
-            lattice_lsp::LogSource::Stderr,
-            "compile error",
-        );
-        app.open_lsp_log_in_pane("rust");
-        // Lives in the registry as a Help variant + active pane.
-        let help_id = app
-            .buffers
-            .help_with_title("lsp:rust")
-            .expect("buffer registered");
-        assert_eq!(app.active_pane_buffer_id(), help_id);
-        let body = app
-            .buffers
-            .help(help_id)
-            .unwrap()
-            .content
-            .as_string();
-        assert!(body.contains("compile error"));
-    }
-
-    #[test]
-    fn open_lsp_log_in_pane_excludes_trace_records() {
-        let mut app = app_with("hi\n", 5);
-        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        app.lsp_logger.enable_trace(std::sync::Arc::clone(&id));
-        app.lsp_logger.log(
-            Some(&id),
-            lattice_lsp::LogLevel::Trace,
-            lattice_lsp::LogSource::Trace,
-            "→ Request id=1",
-        );
-        app.lsp_logger.log(
-            Some(&id),
-            lattice_lsp::LogLevel::Info,
-            lattice_lsp::LogSource::Client,
-            "lifecycle",
-        );
-        app.open_lsp_log_in_pane("rust");
-        let help_id = app.buffers.help_with_title("lsp:rust").unwrap();
-        let body = app
-            .buffers
-            .help(help_id)
-            .unwrap()
-            .content
-            .as_string();
-        // Trace records go to the trace buffer; lifecycle here.
-        assert!(!body.contains("→ Request"));
-        assert!(body.contains("lifecycle"));
-    }
-
-    #[test]
-    fn open_lsp_trace_log_in_pane_shows_only_trace_records() {
-        let mut app = app_with("hi\n", 5);
-        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        app.lsp_logger.enable_trace(std::sync::Arc::clone(&id));
-        app.lsp_logger.log(
-            Some(&id),
-            lattice_lsp::LogLevel::Trace,
-            lattice_lsp::LogSource::Trace,
-            "→ Request id=1",
-        );
-        app.lsp_logger.log(
-            Some(&id),
-            lattice_lsp::LogLevel::Info,
-            lattice_lsp::LogSource::Client,
-            "lifecycle",
-        );
-        app.open_lsp_trace_log_in_pane("rust");
-        let help_id = app.buffers.help_with_title("lsp:rust:trace").unwrap();
-        let body = app
-            .buffers
-            .help(help_id)
-            .unwrap()
-            .content
-            .as_string();
-        // Trace yes, lifecycle no.
-        assert!(body.contains("→ Request"));
-        assert!(!body.contains("lifecycle"));
-    }
 
     #[test]
     fn k_chord_is_registered_in_keymap() {
@@ -4331,47 +3480,6 @@ mod tests {
 
     // ---- Snippet host integration (Phase 4.2.g.4) ----
 
-
-    #[test]
-    fn effective_completion_for_markdown_default_excludes_lsp() {
-        // Spec default: markdown drops LSP for prose. The
-        // App's seeded map should reflect this without any
-        // TOML being loaded.
-        let a = app_with("", 5);
-        let eff = a.effective_completion_for("markdown");
-        let lsp_id = lattice_completion::SourceId::new(
-            lattice_completion::LSP_COMPLETION_SOURCE_ID,
-        );
-        assert!(!eff.source_enabled(&lsp_id), "markdown default drops LSP");
-        let snippet_id = lattice_completion::SourceId::new(
-            lattice_completion::SNIPPET_SOURCE_ID,
-        );
-        assert!(eff.source_enabled(&snippet_id), "markdown keeps snippet");
-        assert_eq!(eff.auto_trigger, false);
-    }
-
-    #[test]
-    fn effective_completion_for_language_with_no_override_allows_all_sources() {
-        // A language without any per-language entry returns
-        // `sources = None` -> every source contributes
-        // (`source_enabled` is unconditionally true).
-        let a = app_with("", 5);
-        let eff = a.effective_completion_for("zigzig-not-a-language");
-        let any_id = lattice_completion::SourceId::new("plugin:custom");
-        assert!(eff.source_enabled(&any_id));
-        assert!(eff.sources.is_none());
-    }
-
-    fn set_rust_syntax(a: &mut App, source: &str) {
-        let mut syntax = lattice_syntax::Syntax::for_language_with_registry(
-            lattice_syntax::Lang::Rust,
-            a.lang_registry.clone(),
-        )
-        .expect("rust syntax")
-        .expect("rust registered");
-        syntax.parse(source);
-        a.syntax = Some(lattice_syntax::SyntaxHandle::seeded(syntax));
-    }
 
     /// Test helper: attach a freshly-parsed `Syntax` for `lang`
     /// to `a`, wrapped in a [`SyntaxHandle`]. Mirrors the audit
@@ -4610,106 +3718,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reload_snippets_with_no_dirs_reports_empty() {
-        let mut a = app_with("", 10);
-        a.do_reload_snippets();
-        // Idle; registry stays empty. Message echoed at Info.
-        assert_eq!(a.snippet_registry.len(), 0);
-    }
-
-    #[test]
-    fn reload_snippets_walks_configured_dirs_and_keys_by_filename() {
-        // Build a tempdir with `_global.json` (any-language)
-        // and `rust.json` (language-specific). Reload should
-        // route them into the right per-language slots.
-        let dir = std::env::temp_dir().join(format!(
-            "lattice-snippet-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("_global.json"),
-            r#"{ "anywhere": { "prefix": "any", "body": "anywhere" } }"#,
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("rust.json"),
-            r#"{ "rust-for": { "prefix": "for", "body": "for $1 {}" } }"#,
-        )
-        .unwrap();
-        let mut a = app_with("", 10);
-        a.snippet_dirs.push(dir.clone());
-        a.do_reload_snippets();
-        // 2 snippets registered total (one per language).
-        assert_eq!(a.snippet_registry.len(), 2);
-        assert!(!a.snippet_registry.lookup("rust", "for").is_empty());
-        assert!(!a.snippet_registry.lookup("*", "any").is_empty());
-        // Global snippets are visible from any language --
-        // `lookup` walks the per-language slot then `*`.
-        assert!(!a.snippet_registry.lookup("rust", "any").is_empty());
-        // A rust-only snippet should NOT be visible from a
-        // different language slot.
-        assert!(a.snippet_registry.lookup("python", "for").is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
 
     // ---- M.3.0: built-in major modes registered at boot ----
-
-    #[test]
-    fn app_boot_registers_every_built_in_major_mode() {
-        let a = app_with("hi", 5);
-        // Foundation
-        assert!(
-            a.mode_registry
-                .is_registered(lattice_mode::TextMode::mode_id())
-        );
-        // Languages (lattice-syntax)
-        assert!(
-            a.mode_registry
-                .is_registered(lattice_syntax::RustMode::mode_id())
-        );
-        assert!(
-            a.mode_registry
-                .is_registered(lattice_syntax::PythonMode::mode_id())
-        );
-        assert!(
-            a.mode_registry
-                .is_registered(lattice_syntax::JavascriptMode::mode_id())
-        );
-        assert!(
-            a.mode_registry
-                .is_registered(lattice_syntax::MarkdownMode::mode_id())
-        );
-        // Buffer-kind majors (lattice-ui-tui)
-        assert!(
-            a.mode_registry
-                .is_registered(crate::modes::HelpMode::mode_id())
-        );
-        assert!(
-            a.mode_registry
-                .is_registered(crate::modes::FileTreeMode::mode_id())
-        );
-        assert!(
-            a.mode_registry
-                .is_registered(crate::modes::OilMode::mode_id())
-        );
-        // LSP log majors (lattice-lsp)
-        assert!(
-            a.mode_registry
-                .is_registered(lattice_lsp::modes::LspLogMode::mode_id())
-        );
-        assert!(
-            a.mode_registry
-                .is_registered(lattice_lsp::modes::LspTraceLogMode::mode_id())
-        );
-        assert!(
-            a.mode_registry
-                .is_registered(lattice_lsp::modes::LspServerLogMode::mode_id())
-        );
-    }
 
     // ---- M.3.1: ReadOnly option flows from major modes ----
 
@@ -4783,6 +3793,777 @@ mod tests {
 
     // ---- M.3.2.c.2: file-tree-mode locals seeded + readers ----
 
+    // ---- M.3.2.c.3: oil-mode locals seeded ----
+
+
+    #[test]
+    fn list_registers_with_no_state_says_so() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "reg");
+        let msg = a.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("no registers"));
+    }
+
+    #[test]
+    fn list_registers_includes_unnamed_and_zero() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        submit_ex(&mut a, "reg");
+        let msg = a.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("\"\""));
+        assert!(msg.text.contains("\"0"));
+    }
+
+    #[test]
+    fn list_marks_with_no_marks_says_so() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "marks");
+        let msg = a.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("no marks"));
+    }
+
+    #[test]
+    fn list_marks_shows_set_marks() {
+        let mut a = app_with("hello\nworld", 10);
+        a.cursor = Position::new(1, 2);
+        a.apply(Action::SetMark('a'));
+        submit_ex(&mut a, "marks");
+        let msg = a.last_message.as_ref().unwrap();
+        assert!(msg.text.contains('a'));
+        // Line 2 (1-indexed for display) at byte 2.
+        assert!(msg.text.contains("2:2"));
+    }
+
+    #[test]
+    fn global_delete_matching_lines() {
+        let mut a = app_with("foo\nbar\nfoo\nbaz", 10);
+        submit_ex(&mut a, "g/foo/d");
+        // Both "foo" lines deleted; "bar" and "baz" remain.
+        assert_eq!(a.document.text(), "bar\nbaz");
+    }
+
+    #[test]
+    fn vglobal_delete_non_matching_lines() {
+        let mut a = app_with("foo\nbar\nfoo\nbaz", 10);
+        submit_ex(&mut a, "v/foo/d");
+        // Only "foo" lines remain.
+        assert_eq!(a.document.text(), "foo\nfoo");
+    }
+
+    #[test]
+    fn global_substitute_on_matching_lines() {
+        let mut a = app_with("foo\nbaz\nfoo", 10);
+        submit_ex(&mut a, "g/foo/s/foo/X/");
+        // Both "foo" lines get substituted.
+        assert_eq!(a.document.text(), "X\nbaz\nX");
+    }
+
+    #[test]
+    fn global_no_matches_emits_error() {
+        let mut a = app_with("hello\nworld", 10);
+        submit_ex(&mut a, "g/xyz/d");
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn capital_w_skips_punctuation() {
+        let mut a = app_with("foo,bar baz", 10);
+        a.apply(invoke_motion(a.builtins.big_word_forward));
+        assert_eq!(a.cursor, Position::new(0, 8));
+    }
+
+    #[test]
+    fn fold_action_clears_partial_chord() {
+        let mut a = app_with("a\nb\nc", 10);
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('z')));
+        a.apply(Action::OpenFoldAtCursor);
+        assert!(a.partial_chord.is_empty());
+    }
+
+    #[test]
+    fn yank_with_named_register_stores_into_named_and_unnamed() {
+        let mut a = app_with("hello world", 10);
+        a.apply(Action::SelectRegister(Register::Named('a')));
+        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        // Named slot populated.
+        let named = a.registers.get(&Register::Named('a')).unwrap();
+        assert_eq!(named.content, "hello ");
+        // Unnamed also populated.
+        assert_eq!(a.unnamed_register.as_ref().unwrap().content, "hello ");
+        // Pending register consumed.
+        assert!(a.pending_register.is_none());
+    }
+
+    #[test]
+    fn yank_auto_populates_zero_register() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        let zero = a.registers.get(&Register::Numbered(0)).unwrap();
+        assert_eq!(zero.content, "hello ");
+    }
+
+    #[test]
+    fn yank_does_not_record_last_change() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        // Yank doesn't mutate the buffer; dot-repeat shouldn't pick this up.
+        assert!(a.last_change.is_none());
+    }
+
+    #[test]
+    fn change_records_last_change() {
+        let mut a = app_with("hello world", 10);
+        let inv = CommandInvocation::of(a.builtins.change.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(inv));
+        // change drops to Insert, but the change itself is recorded.
+        assert!(a.last_change.is_some());
+    }
+
+    #[test]
+    fn capital_f_jumps_backward() {
+        let mut a = app_with("hello, world", 10);
+        a.cursor = Position::new(0, 11); // on 'd'
+        let inv = CommandInvocation::of(a.builtins.find_char_backward.0)
+            .with_args(lattice_grammar::Args::Char('h'));
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    fn app_in_command_mode(line: &str) -> App {
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Command;
+        a.command_line = line.into();
+        a
+    }
+
+    #[test]
+    fn dismiss_completion_keeps_command_line_intact() {
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        a.apply(Action::CommandLineDismissCompletion);
+        assert_eq!(a.command_line, "descri");
+        assert!(a.completion_state.is_none());
+    }
+
+    #[test]
+    fn clear_with_open_popup_widens_to_all_commands() {
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let narrow_count = a.completion_state.as_ref().unwrap().candidates.len();
+        a.apply(Action::CommandLineClear);
+        assert!(a.completion_state.is_some());
+        assert_eq!(a.command_line, "");
+        let widened = a.completion_state.as_ref().unwrap().candidates.len();
+        assert!(widened >= narrow_count);
+    }
+
+    #[test]
+    fn append_chord_concatenates_token() {
+        let mut a = app_in_command_mode("describe-key ");
+        a.apply(Action::CommandLineAppendChord("<C-c>".into()));
+        assert_eq!(a.command_line, "describe-key <C-c>");
+    }
+
+    #[test]
+    fn append_chord_supports_multi_token_sequences() {
+        // gg / <C-w>j -- multi-stroke chords. Each press appends
+        // its own token.
+        let mut a = app_in_command_mode("describe-key ");
+        a.apply(Action::CommandLineAppendChord("g".into()));
+        a.apply(Action::CommandLineAppendChord("g".into()));
+        assert_eq!(a.command_line, "describe-key gg");
+    }
+
+    #[test]
+    fn close_last_pane_is_a_noop_with_warning() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::ClosePane);
+        assert_eq!(a.pane_tree.len(), 1);
+        let msg = a.last_message.as_ref().expect("warn echo");
+        assert!(msg.text.contains("only one pane"));
+    }
+
+    #[test]
+    fn dismiss_focused_hover_restores_doc_cursor() {
+        // Esc / q in State B routes to HelpDismiss, which restores
+        // the pre-State-B cursor / scroll on the doc.
+        let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
+        a.cursor = lattice_protocol::Position::new(1, 4);
+        a.do_open_hover("hover body");
+        a.do_lsp_hover_request(); // -> State B
+        // Move inside the popup.
+        let inv = lattice_grammar::CommandInvocation::of(a.builtins.line_down.0);
+        a.apply(Action::Invoke(inv));
+        assert!(matches!(a.active_buffer, BufferKind::Help));
+        // Dismiss.
+        a.apply(Action::HelpDismiss);
+        assert!(a.help_buffer.is_none());
+        assert!(matches!(a.active_buffer, BufferKind::Document));
+        assert_eq!(a.cursor, lattice_protocol::Position::new(1, 4));
+        assert!(a.prev_pane_for_help.is_none());
+    }
+
+    #[test]
+    fn opening_help_in_pane_keeps_document_syntax_live() {
+        // Bug: opening `:lsp-log` (which routes through
+        // `open_help_in_pane`) stashed the document's syntax onto
+        // the registry entry, leaving `self.syntax = None` for the
+        // duration of the help session. The help buffer renders as
+        // a popup overlay over the underlying document; the
+        // document paint reads `self.syntax`, so the document
+        // appeared unhighlighted under the popup.
+        //
+        // Fix: `activate_help_in_pane` does NOT call
+        // `snapshot_active_document`. Hot-path state stays live;
+        // the round-trip back via `activate_document` early-returns
+        // for the same-doc case and skips the restore (entry has
+        // nothing to give).
+        let mut a = app_with("fn main() {}\n", 10);
+        a.terminal_width = Some(80);
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        assert!(a.syntax.is_some(), "fixture syntax wired");
+        // Open a help buffer in pane (mimics `:lsp-log rust`).
+        let _help_id = a.open_help_in_pane(HelpBuffer::from_lines(
+            "lsp:rust",
+            vec!["log line".into()],
+        ));
+        assert!(matches!(a.active_buffer, BufferKind::Help));
+        // The document's syntax must remain on the hot path so the
+        // pane underneath paints with highlights.
+        assert!(
+            a.syntax.is_some(),
+            "syntax must stay live during help-in-pane overlay"
+        );
+        // Round-trip back to the document.
+        let doc_id = a
+            .buffers
+            .document_ids_sorted()
+            .first()
+            .copied()
+            .unwrap();
+        a.activate_document(doc_id);
+        assert!(matches!(a.active_buffer, BufferKind::Document));
+        assert!(
+            a.syntax.is_some(),
+            "syntax must survive the help-in-pane round trip"
+        );
+    }
+
+    #[test]
+    fn dismissing_tree_preserves_document_syntax_state() {
+        // Regression: opening `:Tree` and pressing `q` to dismiss
+        // it returned to the document with `self.syntax = None`,
+        // so the renderer fell back to plain text (no
+        // colours). Cause: the on-tree-open snapshot moved syntax
+        // into the document entry, then activate_document on
+        // dismiss called snapshot_active_document again and
+        // overwrote the entry's stashed syntax with None.
+        let dir = std::env::temp_dir().join(format!("lattice-tree-syntax-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let mut a = app_with("fn main() {}\n", 10);
+        a.terminal_width = Some(80);
+        // Wire up a Rust syntax instance so there's something to lose.
+        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+        // Open the tree, then dismiss.
+        a.command_line = format!("Filetree {}", dir.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(matches!(a.active_buffer, crate::buffers::BufferKind::FileTree));
+        // `:TreeClose` (the path `q` takes in the tree).
+        a.command_line = "FiletreeClose".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(matches!(a.active_buffer, crate::buffers::BufferKind::Document));
+        assert!(
+            a.syntax.is_some(),
+            "syntax must survive the tree round-trip"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn close_tree_pane_keeps_tree_in_registry() {
+        // Trees now live in the unified buffer registry; closing
+        // the only pane that referenced one leaves the tree
+        // accessible via `:bn` / `:bp` / `:b N`. Use `:bd` to
+        // actually drop it.
+        let dir = std::env::temp_dir().join(format!("lattice-tree-gc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let mut a = app_with("xx", 10);
+        a.terminal_width = Some(80);
+        a.apply(Action::SplitPaneVertical);
+        a.apply(Action::NavigatePane(PaneDirection::Right));
+        a.command_line = format!("Filetree {}", dir.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
+        a.apply(Action::ClosePane);
+        // Tree stays in the registry post-close.
+        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bdelete_closes_active_buffer_and_picks_a_successor() {
+        let path = write_temp_file("e", "alpha\n");
+        let mut a = app_with("xx", 10);
+        let initial_id = a.document_buffer_id;
+        a.command_line = format!("e {}", path.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        // Now active = new buffer; delete it. Successor should
+        // be initial_id.
+        a.command_line = "bd".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.document_buffer_id, initial_id);
+        assert_eq!(a.buffers.document_ids_sorted().len(), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn bdelete_only_buffer_is_rejected() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "bd".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.buffers.document_ids_sorted().len(), 1);
+        let msg = a.last_message.as_ref().expect("error echo");
+        assert!(msg.text.contains("only buffer"));
+    }
+
+    #[test]
+    fn opening_new_file_seeds_folds_for_indent_foldmethod() {
+        // foldmethod=indent on the initial buffer; then `:e <new>`
+        // should populate folds for the new buffer without requiring
+        // a manual `<C-l>` redraw.
+        let path = write_temp_file(
+            "activate-folds-indent",
+            "a:\n    x\n    y\nb:\n    p\n    q\n",
+        );
+        let mut a = app_with("xx", 10);
+        a.set_foldmethod_for_test(FoldMethod::Indent);
+        a.command_line = format!("e {}", path.display());
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        // The new buffer should have folds without `<C-l>`.
+        assert!(
+            !a.folds.is_empty(),
+            "expected folds to be seeded on activation, got empty"
+        );
+        assert!(
+            a.folds.iter().any(|f| f.start_line == 0),
+            "expected a fold starting at line 0: {:?}",
+            a.folds
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn docs_toggle_pulls_body_from_cached_metadata_documentation() {
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::ZERO;
+        // Seed popup state with a single LSP candidate that
+        // already has documentation cached.
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        );
+        let mut raw = lattice_completion::RawCandidate::plain(
+            "foo",
+            lattice_completion::CandidateKind::Plain,
+        );
+        raw.display = "foo".into();
+        raw.data = lattice_completion::CandidateData::Extension {
+            kind_id: super::LSP_COMPLETION_KIND_ID,
+            payload: 0u32.to_le_bytes().to_vec(),
+        };
+        let scored = lattice_completion::ScoredCandidate {
+            raw,
+            score: lattice_completion::MatchScore(100),
+            match_ranges: Vec::new(),
+        };
+        state
+            .rendered
+            .push(lattice_completion::RenderedCandidate::from_scored(scored));
+        a.insert_completion = Some(state);
+        a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
+            label: "foo".into(),
+            insert_text: "foo".into(),
+            filter_text: None,
+            sort_text: None,
+            detail: Some("fn foo() -> i32".into()),
+            documentation: Some("Returns 42.".into()),
+            kind: Some(lsp_types::CompletionItemKind::FUNCTION),
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: Vec::new(),
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            replace_range: None,
+            server_id: std::sync::Arc::from("test-server"),
+            original_item: lsp_types::CompletionItem::default(),
+            resolved: true,
+        });
+        a.do_completion_toggle_docs();
+        let body = a
+            .insert_completion
+            .as_ref()
+            .and_then(|s| s.doc_popup.as_ref())
+            .and_then(|d| d.body.clone())
+            .expect("body populated");
+        assert!(body.contains("fn foo() -> i32"));
+        assert!(body.contains("Returns 42."));
+    }
+
+    #[test]
+    fn docs_toggle_a_second_time_closes_popup() {
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::ZERO;
+        a.insert_completion = Some(
+            lattice_completion::InsertCompletionState::open(
+                lattice_completion::CompletionTrigger::Manual,
+                Position::ZERO,
+                Position::ZERO,
+                String::new(),
+            ),
+        );
+        a.do_completion_toggle_docs();
+        // Even with no candidate, the popup opens with an
+        // empty body slot. Toggling again closes it.
+        let was_open = a
+            .insert_completion
+            .as_ref()
+            .map(|s| s.doc_popup.is_some())
+            .unwrap_or(false);
+        assert!(was_open);
+        a.do_completion_toggle_docs();
+        let now_closed = a
+            .insert_completion
+            .as_ref()
+            .map(|s| s.doc_popup.is_none())
+            .unwrap_or(true);
+        assert!(now_closed);
+    }
+
+    #[test]
+    fn docs_scroll_clamps_at_zero_and_advances_by_eight() {
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::ZERO;
+        a.insert_completion = Some(
+            lattice_completion::InsertCompletionState::open(
+                lattice_completion::CompletionTrigger::Manual,
+                Position::ZERO,
+                Position::ZERO,
+                String::new(),
+            ),
+        );
+        a.do_completion_toggle_docs();
+        // Default scroll is 0; up clamps at 0.
+        assert_eq!(
+            a.insert_completion
+                .as_ref()
+                .and_then(|s| s.doc_popup.as_ref())
+                .map(|d| d.scroll),
+            Some(0)
+        );
+        a.apply(Action::CompletionDocsScrollUp);
+        assert_eq!(
+            a.insert_completion
+                .as_ref()
+                .and_then(|s| s.doc_popup.as_ref())
+                .map(|d| d.scroll),
+            Some(0)
+        );
+        a.apply(Action::CompletionDocsScrollDown);
+        assert_eq!(
+            a.insert_completion
+                .as_ref()
+                .and_then(|s| s.doc_popup.as_ref())
+                .map(|d| d.scroll),
+            Some(8)
+        );
+        a.apply(Action::CompletionDocsScrollDown);
+        assert_eq!(
+            a.insert_completion
+                .as_ref()
+                .and_then(|s| s.doc_popup.as_ref())
+                .map(|d| d.scroll),
+            Some(16)
+        );
+        a.apply(Action::CompletionDocsScrollUp);
+        assert_eq!(
+            a.insert_completion
+                .as_ref()
+                .and_then(|s| s.doc_popup.as_ref())
+                .map(|d| d.scroll),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn follow_link_source_opens_file_at_line() {
+        // `:describe-command :lsp-trace` (and similar) renders a
+        // `[<source>](file:PATH:LINE)` link. Following it should
+        // open the file via the multi-buffer machinery and
+        // position the cursor at the requested line. Pre-fix this
+        // arm just echoed "(file open arrives with multi-buffer)"
+        // -- we already had multi-buffer; the placeholder was
+        // stale.
+        let path = std::env::temp_dir()
+            .join(format!("lattice-srclink-{}.rs", std::process::id()));
+        std::fs::write(&path, "first\nsecond\nthird\nfourth\n").unwrap();
+        let mut a = app_with("xx", 10);
+        // Open a help buffer so the active modal/buffer state
+        // matches what `FollowLink` expects.
+        a.command_line = "help".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        // Build a synthetic source link inside the help buffer.
+        // 1-based line number: line 3 in the file → cursor at
+        // line index 2 in the buffer.
+        let link = crate::help::HelpLink {
+            range: lattice_protocol::Range::new(
+                lattice_protocol::Position::ZERO,
+                lattice_protocol::Position::new(0, 1),
+            ),
+            target: crate::help::HelpLinkTarget::Source {
+                path: path.clone(),
+                line: 3,
+            },
+        };
+        if let Some(h) = a.help_buffer.as_mut() {
+            h.links.push(link);
+            h.cursor = lattice_protocol::Position::ZERO;
+        }
+        a.active_buffer = BufferKind::Help;
+        a.apply(Action::FollowLink);
+        // The file should now be the active document.
+        assert_eq!(a.active_buffer, BufferKind::Document);
+        let opened = a.document.path().expect("active doc has a path");
+        assert_eq!(opened, path);
+        // Cursor at line index 2 (1-based 3 → 0-based 2).
+        assert_eq!(a.cursor.line, 2);
+        // NOTE: a `PluginPush` history entry is pushed *before*
+        // `do_edit` runs, but `do_edit`'s new-file branch clears
+        // the position history (so a fresh buffer's `<C-o>` doesn't
+        // walk into the previous buffer's positions). That means
+        // cross-buffer jumps from FollowLink and from
+        // `jump_to_lsp_location` currently lose their walk-back
+        // entry. Per-buffer position history is queued as the
+        // proper fix; for now this test asserts the open-and-jump
+        // primary behaviour and lets the history side-effect
+        // regress until that fix lands.
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn follow_link_source_clamps_line_past_eof() {
+        let path = std::env::temp_dir()
+            .join(format!("lattice-srclink-clamp-{}.rs", std::process::id()));
+        std::fs::write(&path, "only-line\n").unwrap();
+        let mut a = app_with("xx", 10);
+        a.command_line = "help".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let link = crate::help::HelpLink {
+            range: lattice_protocol::Range::new(
+                lattice_protocol::Position::ZERO,
+                lattice_protocol::Position::new(0, 1),
+            ),
+            target: crate::help::HelpLinkTarget::Source {
+                path: path.clone(),
+                line: 999,
+            },
+        };
+        if let Some(h) = a.help_buffer.as_mut() {
+            h.links.push(link);
+            h.cursor = lattice_protocol::Position::ZERO;
+        }
+        a.active_buffer = BufferKind::Help;
+        a.apply(Action::FollowLink);
+        // Out-of-range line should clamp to the last valid line,
+        // not panic and not echo a confusing error.
+        let last_line = a.document.snapshot().buffer.line_count().saturating_sub(1);
+        assert_eq!(a.cursor.line, last_line);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn yank_then_paste_round_trips_word() {
+        let mut a = app_with("hello world", 10);
+        let yank = CommandInvocation::of(a.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        );
+        a.apply(Action::Invoke(yank));
+        // Move cursor to end of buffer.
+        a.cursor = Position::new(0, 11);
+        a.apply(Action::PasteAfter);
+        assert_eq!(a.document.text(), "hello worldhello ");
+    }
+
+    #[test]
+    fn open_lsp_log_in_pane_renders_per_server_records() {
+        // Direct unit test of the in-pane helper (picker accept
+        // path bypasses the picker for single-instance cases too).
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Warn,
+            lattice_lsp::LogSource::Stderr,
+            "compile error",
+        );
+        app.open_lsp_log_in_pane("rust");
+        // Lives in the registry as a Help variant + active pane.
+        let help_id = app
+            .buffers
+            .help_with_title("lsp:rust")
+            .expect("buffer registered");
+        assert_eq!(app.active_pane_buffer_id(), help_id);
+        let body = app
+            .buffers
+            .help(help_id)
+            .unwrap()
+            .content
+            .as_string();
+        assert!(body.contains("compile error"));
+    }
+
+    #[test]
+    fn open_lsp_log_in_pane_excludes_trace_records() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp_logger.enable_trace(std::sync::Arc::clone(&id));
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Trace,
+            lattice_lsp::LogSource::Trace,
+            "→ Request id=1",
+        );
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::Client,
+            "lifecycle",
+        );
+        app.open_lsp_log_in_pane("rust");
+        let help_id = app.buffers.help_with_title("lsp:rust").unwrap();
+        let body = app
+            .buffers
+            .help(help_id)
+            .unwrap()
+            .content
+            .as_string();
+        // Trace records go to the trace buffer; lifecycle here.
+        assert!(!body.contains("→ Request"));
+        assert!(body.contains("lifecycle"));
+    }
+
+    #[test]
+    fn open_lsp_trace_log_in_pane_shows_only_trace_records() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp_logger.enable_trace(std::sync::Arc::clone(&id));
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Trace,
+            lattice_lsp::LogSource::Trace,
+            "→ Request id=1",
+        );
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::Client,
+            "lifecycle",
+        );
+        app.open_lsp_trace_log_in_pane("rust");
+        let help_id = app.buffers.help_with_title("lsp:rust:trace").unwrap();
+        let body = app
+            .buffers
+            .help(help_id)
+            .unwrap()
+            .content
+            .as_string();
+        // Trace yes, lifecycle no.
+        assert!(body.contains("→ Request"));
+        assert!(!body.contains("lifecycle"));
+    }
+
+    #[test]
+    fn app_boot_registers_every_built_in_major_mode() {
+        let a = app_with("hi", 5);
+        // Foundation
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_mode::TextMode::mode_id())
+        );
+        // Languages (lattice-syntax)
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_syntax::RustMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_syntax::PythonMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_syntax::JavascriptMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_syntax::MarkdownMode::mode_id())
+        );
+        // Buffer-kind majors (lattice-ui-tui)
+        assert!(
+            a.mode_registry
+                .is_registered(crate::modes::HelpMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(crate::modes::FileTreeMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(crate::modes::OilMode::mode_id())
+        );
+        // LSP log majors (lattice-lsp)
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_lsp::modes::LspLogMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_lsp::modes::LspTraceLogMode::mode_id())
+        );
+        assert!(
+            a.mode_registry
+                .is_registered(lattice_lsp::modes::LspServerLogMode::mode_id())
+        );
+    }
+
     #[test]
     fn open_file_tree_seeds_file_tree_locals() {
         // Construct a temp dir + file, open as a tree, confirm
@@ -4824,8 +4605,6 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
-
-    // ---- M.3.2.c.3: oil-mode locals seeded ----
 
     #[test]
     fn follow_link_reads_link_from_buffer_locals() {

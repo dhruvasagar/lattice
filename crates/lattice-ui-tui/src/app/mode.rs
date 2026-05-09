@@ -32,6 +32,7 @@
 //! `crate::modes`.
 
 use lattice_grammar::ModalState;
+use lattice_protocol::Event;
 
 use super::App;
 
@@ -45,6 +46,65 @@ impl App {
             ModalState::Command => "CMD",
             ModalState::Search(_) => "SEARCH",
             ModalState::Replace => "REPLACE",
+        }
+    }
+
+    pub(super) fn enter_mode(&mut self, state: ModalState) {
+        let prior = self.modal;
+        // Reset Replace's history every time we enter (or re-enter) Replace
+        // so backspace-restore is bounded to the current `R` session.
+        if matches!(state, ModalState::Replace) {
+            self.replace_history.clear();
+        }
+        let was_insert_like = matches!(self.modal, ModalState::Insert | ModalState::Replace);
+        let entering_insert_like = matches!(state, ModalState::Insert | ModalState::Replace);
+        // Insert-replay capture:
+        //   - Entering Insert/Replace from anything else: start recording.
+        //   - Leaving Insert/Replace to anything else: promote into last_insert.
+        if entering_insert_like && !was_insert_like {
+            self.recording_insert = Some(String::new());
+        }
+        if was_insert_like
+            && !entering_insert_like
+            && let Some(rec) = self.recording_insert.take()
+        {
+            // Snapshot the recording before consuming the block-
+            // insert spec; we need both to replicate.
+            let block_spec = self.pending_block_insert.take();
+            if !rec.is_empty() {
+                self.last_insert = Some(rec.clone());
+            }
+            if let Some(spec) = block_spec
+                && !rec.is_empty()
+            {
+                self.replicate_block_insert(spec, &rec);
+            }
+        } else if was_insert_like && !entering_insert_like {
+            // Insert exited but recording_insert was already None
+            // (shouldn't happen given enter_mode pairs them, but
+            // belt-and-braces -- still clear any spec so a future
+            // I/A starts clean).
+            self.pending_block_insert = None;
+        }
+        self.modal = state;
+        if matches!(state, ModalState::Normal) {
+            // Vim's behavior: leaving Insert mode pulls the cursor back one
+            // byte if it's not already at the start of the line, so the
+            // cursor sits on the last inserted char rather than past it.
+            if self.cursor.byte > 0 {
+                self.cursor.byte -= 1;
+            }
+        }
+        // Publish ModalModeChanged whenever the modal axis actually
+        // moves. (DESIGN.md §5.10 catalog.) Re-entering the same
+        // mode -- e.g. the dot-repeat path that calls enter_mode
+        // for the side-effect of recording/replay accounting --
+        // doesn't fire the event.
+        if prior != state {
+            self.event_bus.publish(Event::ModalModeChanged {
+                from: format!("{prior:?}"),
+                to: format!("{state:?}"),
+            });
         }
     }
 }

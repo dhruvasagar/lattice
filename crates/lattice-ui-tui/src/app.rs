@@ -5088,32 +5088,8 @@ impl App {
         );
     }
 
-    /// `:bnext` / `:bn` -- cycle to the next listed buffer in id
-    /// order, regardless of kind. Skips unlisted buffers; if every
-    /// other buffer is unlisted, no-op.
-    fn do_buffer_next(&mut self) {
-        let Some(target) = self.next_listed_buffer_id() else {
-            self.set_message(EchoLevel::Info, "only one listed buffer".to_string());
-            return;
-        };
-        self.activate_buffer(target);
-    }
 
-    /// `:bprev` / `:bp` -- cycle to the previous listed buffer.
-    fn do_buffer_prev(&mut self) {
-        let Some(target) = self.prev_listed_buffer_id() else {
-            self.set_message(EchoLevel::Info, "only one listed buffer".to_string());
-            return;
-        };
-        self.activate_buffer(target);
-    }
 
-    /// Listed buffer ids in ascending order across kinds. `:bn` /
-    /// `:bp` cycle through this; unlisted buffers (vim
-    /// `nobuflisted`) are filtered out.
-    fn listed_buffer_ids_sorted(&self) -> Vec<BufferId> {
-        self.buffers.listed_ids_sorted()
-    }
 
     /// What `:bn` / `:bp` consider the "current" buffer for
     /// stepping. The active pane's buffer_id is the source of
@@ -5122,25 +5098,7 @@ impl App {
         self.pane_tree.active().buffer_id
     }
 
-    fn next_listed_buffer_id(&self) -> Option<BufferId> {
-        let ids = self.listed_buffer_ids_sorted();
-        if ids.len() <= 1 {
-            return None;
-        }
-        let cur = self.active_pane_buffer_id();
-        let pos = ids.iter().position(|id| *id == cur)?;
-        Some(ids[(pos + 1) % ids.len()])
-    }
 
-    fn prev_listed_buffer_id(&self) -> Option<BufferId> {
-        let ids = self.listed_buffer_ids_sorted();
-        if ids.len() <= 1 {
-            return None;
-        }
-        let cur = self.active_pane_buffer_id();
-        let pos = ids.iter().position(|id| *id == cur)?;
-        Some(ids[if pos == 0 { ids.len() - 1 } else { pos - 1 }])
-    }
 
     /// `:ls` / `:buffers` -- render every open buffer (regardless
     /// of kind) in a help-style view. The `%` marker points at
@@ -8591,54 +8549,6 @@ impl App {
         {
             self.help_buffer = Some(reg.clone());
         }
-    }
-
-    /// `:bd[elete]` -- close the active buffer (whichever the
-    /// active pane shows). v1 picks any other buffer to activate;
-    /// if no others remain, the close is rejected. For document
-    /// buffers `!` bypasses the dirty check; tree buffers are
-    /// always read-only and skip the dirty guard.
-    fn do_buffer_delete(&mut self, force: bool) {
-        if self.buffers.len() <= 1 {
-            self.set_message(
-                EchoLevel::Error,
-                "Cannot delete the only buffer".to_string(),
-            );
-            return;
-        }
-        let to_remove = self.active_pane_buffer_id();
-        // Dirty check applies to documents only.
-        if let Some(d) = self.buffers.document(to_remove)
-            && !force
-            && d.handle.dirty()
-        {
-            self.set_message(
-                EchoLevel::Error,
-                "no write since last change (add ! to override)".to_string(),
-            );
-            return;
-        }
-        // Pick a successor (any other buffer in id order).
-        let ids = self.buffers.sorted_ids();
-        let Some(successor) = ids.iter().copied().find(|id| *id != to_remove) else {
-            return;
-        };
-        self.activate_buffer(successor);
-        // Detach from LSP before dropping the buffer registry
-        // entry so the supervisor sees the URI go away while the
-        // BufferId is still mapped.
-        self.lsp_close_buffer(to_remove);
-        self.buffers.remove(to_remove);
-        // Re-point any pane still referencing the removed buffer.
-        let new_id = self.active_pane_buffer_id();
-        let new_kind = self.active_buffer;
-        for pane in self.pane_tree.leaves_mut() {
-            if pane.buffer_id == to_remove {
-                pane.buffer_id = new_id;
-                pane.buffer = new_kind;
-            }
-        }
-        self.set_message(EchoLevel::Info, format!("buffer #{} deleted", to_remove.0));
     }
 
     /// Switch the active pane to whatever buffer `id` references,

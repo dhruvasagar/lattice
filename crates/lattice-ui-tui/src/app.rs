@@ -2337,23 +2337,6 @@ pub struct SubstitutePreview {
     pub global: bool,
 }
 
-/// Result of resolving a missing-arg prompt (DESIGN.md §B.1).
-/// Returned by [`App::try_resolve_missing_arg_prompt`] when the
-/// user submits a bare command with a required first arg empty.
-struct MissingArgPrompt {
-    /// New value for `command_line`. Already contains the command
-    /// word + bang + a trailing space; the cursor lands at end-of-
-    /// line, in the first arg slot.
-    prefill: String,
-    /// Kind of the first arg. Drives whether the App arms the
-    /// chord-capture overlay (kind == Chord) or just leaves the
-    /// cmdline open for typed input.
-    kind: lattice_grammar::ArgKind,
-    /// Prompt text for the echo area, taken from the schema's
-    /// `prompt` field (or `"<name>:"` when empty).
-    prompt: String,
-}
-
 /// In-flight blockwise-visual insert (`I` or `A`).
 ///
 /// Vim's semantics: when the user enters `I` from blockwise visual,
@@ -4359,106 +4342,6 @@ impl App {
     }
 
 
-
-    /// On `Action::CommandLineSubmit`, decide whether the line is
-    /// an empty-arg invocation of a command whose first required
-    /// arg is `Chord`. If so, return the prefill string for the
-    /// cmdline (`<command-word> ` -- with trailing space) so the
-    /// caller can transition into a chord-capture prompt.
-    /// `None` means submit normally.
-    /// Generalized missing-arg detection (DESIGN.md §B.1).
-    ///
-    /// When the user submits a bare command with a required first
-    /// arg empty -- e.g. `:write<CR>` (path required), `:edit<CR>`
-    /// (path required), `:describe-command<CR>` (name required) --
-    /// resolve the spec, look up the schema's first required arg,
-    /// and return enough info for the App to prefill the cmdline
-    /// + show a prompt.
-    ///
-    /// Returns `None` when:
-    /// - The cmdline is empty.
-    /// - The user already supplied an arg (parser handles it).
-    /// - The command is unknown (parser errors anyway).
-    /// - There's no first arg or it's not Required.
-    /// - The command's args use the delimiter form (`:s/.../.../`).
-    fn try_resolve_missing_arg_prompt(&self) -> Option<MissingArgPrompt> {
-        let line = self.command_line.trim();
-        if line.is_empty() {
-            return None;
-        }
-        // Split off the command word + bang the same way
-        // `excommand::parse_invocation` does. We don't go through
-        // the full parser because we explicitly want the
-        // `args == empty` case here (the parser would error).
-        let (raw_cmd, rest) = match line.find(char::is_whitespace) {
-            Some(i) => (&line[..i], line[i..].trim()),
-            None => (line, ""),
-        };
-        if !rest.is_empty() {
-            // User supplied an arg -- normal submit handles it.
-            return None;
-        }
-        let cmd = raw_cmd.strip_suffix('!').unwrap_or(raw_cmd);
-        let canonical = self.registry.id_by_name(cmd).or_else(|| {
-            crate::excommand::aliases()
-                .get(cmd)
-                .copied()
-                .and_then(|c| self.registry.id_by_name(c))
-        })?;
-        let spec = self.registry.ex_command_spec(canonical)?;
-        // Delimiter-form commands (`:s`, `:g`, `:v`) don't go
-        // through the keyword arg-prompt path -- their syntax is
-        // its own UX.
-        if matches!(
-            spec.surface_form,
-            lattice_grammar::SurfaceForm::Delimiter { .. }
-        ) {
-            return None;
-        }
-        let first = spec.args_schema.first()?;
-        if !matches!(first.default, lattice_grammar::ArgDefault::Required) {
-            // Non-required arg has a fallback; let the parser take
-            // the default path.
-            return None;
-        }
-        let prompt = if first.prompt.is_empty() {
-            format!("{}:", first.name)
-        } else {
-            first.prompt.to_string()
-        };
-        Some(MissingArgPrompt {
-            // Preserve the user's spelling (alias vs canonical) plus
-            // any bang they typed; append a trailing space so the
-            // cursor lands in the arg slot.
-            prefill: format!("{raw_cmd} "),
-            kind: first.kind,
-            prompt,
-        })
-    }
-
-    /// True when the cmdline cursor is on an `ArgKind::Chord` arg
-    /// slot. Drives the input layer's chord-capture overlay
-    /// (`translate_command_chord_capture`). v1: `:describe-key`'s
-    /// `chord` arg is the only `Chord`-kinded arg in the registry;
-    /// when `:map` / `:nnoremap` land they reuse this gate.
-    pub fn chord_capture_active(&self) -> bool {
-        if !matches!(self.modal, ModalState::Command) {
-            return false;
-        }
-        let line = &self.command_line;
-        let alias_resolver = |short: &str| {
-            crate::excommand::aliases()
-                .get(short)
-                .map(|s| (*s).to_string())
-        };
-        let slot =
-            lattice_completion::current_slot(line, line.len(), &self.registry, &alias_resolver);
-        matches!(
-            &slot,
-            lattice_completion::CommandLineSlot::Arg { arg_spec, .. }
-                if arg_spec.kind == lattice_grammar::ArgKind::Chord
-        )
-    }
 
     /// Build the pipeline for the current slot and run it. Caches
     /// results into `completion_state`.

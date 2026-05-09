@@ -171,6 +171,25 @@ pub(super) fn set_rust_syntax(a: &mut App, source: &str) {
 /// returned path is created on disk; the caller can
 /// populate it with files / subdirs before constructing an
 /// App against it.
+/// Build a unique temp directory for tests that touch the
+/// filesystem. The path is created on disk; the caller can
+/// drop files into it. Caller is responsible for cleanup
+/// (or lets the OS reap the temp dir on shutdown -- v1
+/// tests don't bother).
+pub(super) fn unique_tempdir() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let base = std::env::temp_dir();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = base.join(format!("lattice-tui-test-{nanos}-{n}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 pub(super) fn fresh_path_workspace(name: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);

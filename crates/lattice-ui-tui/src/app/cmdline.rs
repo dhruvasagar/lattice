@@ -553,6 +553,10 @@ fn subsequence_match_ranges(needle_lower: &str, haystack: &str) -> Vec<std::ops:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::*;
+    use crate::app::test_helpers::{
+        app_in_command_mode, app_with, invoke_motion, submit_ex, unique_tempdir,
+    };
 
     #[test]
     fn prefer_aliases_rewrites_canonical_to_alias() {
@@ -610,4 +614,474 @@ mod tests {
         // File candidate untouched.
         assert_eq!(candidates[0].raw.text, "/tmp/foo.rs");
     }
+
+    #[test]
+    fn enter_command_line_clears_buffer_and_sets_modal() {
+        let mut a = app_with("abc", 10);
+        a.command_line = "stale".into();
+        a.last_message = Some(EchoMessage {
+            text: "stale".into(),
+            level: EchoLevel::Info,
+        });
+        a.apply(Action::EnterCommandLine);
+        assert_eq!(a.modal, ModalState::Command);
+        assert_eq!(a.command_line, "");
+        assert!(a.last_message.is_none());
+    }
+
+    #[test]
+    fn command_line_append_pushes_chars() {
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineAppend('w'));
+        a.apply(Action::CommandLineAppend('q'));
+        assert_eq!(a.command_line, "wq");
+    }
+
+    #[test]
+    fn command_line_backspace_pops_chars() {
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineAppend('w'));
+        a.apply(Action::CommandLineAppend('q'));
+        a.apply(Action::CommandLineBackspace);
+        assert_eq!(a.command_line, "w");
+    }
+
+    #[test]
+    fn command_line_backspace_on_empty_exits_command_modal() {
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineBackspace);
+        assert_eq!(a.modal, ModalState::Normal);
+    }
+
+    #[test]
+    fn command_line_cancel_clears_and_returns_to_normal() {
+        let mut a = app_with("", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineAppend('w'));
+        a.apply(Action::CommandLineCancel);
+        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.command_line, "");
+    }
+
+    #[test]
+    fn submit_q_on_clean_buffer_quits() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterCommandLine);
+        for c in "q".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.should_quit);
+        assert_eq!(a.modal, ModalState::Normal);
+    }
+
+    #[test]
+    fn submit_q_on_dirty_buffer_refuses() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert!(a.document.dirty());
+
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineAppend('q'));
+        a.apply(Action::CommandLineSubmit);
+        assert!(!a.should_quit);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("no write since last change"));
+    }
+
+    #[test]
+    fn submit_q_bang_quits_even_when_dirty() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        a.apply(Action::EnterCommandLine);
+        for c in "q!".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.should_quit);
+    }
+
+    #[test]
+    fn submit_w_without_path_errors() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineAppend('w'));
+        a.apply(Action::CommandLineSubmit);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("no file name"));
+    }
+
+    #[test]
+    fn submit_w_with_path_writes_and_clears_dirty() {
+        let dir = unique_tempdir();
+        let path = dir.join("out.txt");
+        let mut a = App::new(Document::from_text("hello"));
+        a.set_viewport_height(10);
+        // Move to end of line, then enter insert and append "!".
+        a.apply(invoke_motion(a.builtins.line_end));
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("!".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert!(a.document.dirty());
+
+        a.apply(Action::EnterCommandLine);
+        for c in format!("w {}", path.display()).chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        a.apply(Action::CommandLineSubmit);
+
+        assert!(!a.document.dirty());
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(msg.text.contains("written"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello!");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn submit_wq_writes_then_quits() {
+        let dir = unique_tempdir();
+        let path = dir.join("out.txt");
+        std::fs::write(&path, "first").unwrap();
+
+        let mut a = App::new(Document::open(&path).unwrap());
+        a.set_viewport_height(10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("X".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+
+        a.apply(Action::EnterCommandLine);
+        for c in "wq".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        a.apply(Action::CommandLineSubmit);
+
+        assert!(a.should_quit);
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(on_disk.starts_with("X"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn submit_unknown_command_surfaces_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterCommandLine);
+        for c in "frobnicate".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        a.apply(Action::CommandLineSubmit);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("frobnicate"));
+    }
+
+    #[test]
+    fn submit_pushes_command_into_history() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "set number");
+        assert_eq!(a.command_history, vec!["set number".to_string()]);
+    }
+
+    #[test]
+    fn submit_dedupes_consecutive_identical_history() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "set number");
+        submit_ex(&mut a, "set number");
+        assert_eq!(a.command_history.len(), 1);
+    }
+
+    #[test]
+    fn empty_submit_does_not_push_history() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.command_history.is_empty());
+    }
+
+    #[test]
+    fn up_in_command_walks_to_most_recent_history() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "set number");
+        submit_ex(&mut a, "set nonumber");
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineHistoryPrev);
+        assert_eq!(a.command_line, "set nonumber");
+    }
+
+    #[test]
+    fn up_then_up_walks_to_older() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "set number");
+        submit_ex(&mut a, "set nonumber");
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineHistoryPrev);
+        a.apply(Action::CommandLineHistoryPrev);
+        assert_eq!(a.command_line, "set number");
+    }
+
+    #[test]
+    fn down_returns_to_in_progress_typed_text() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "set number");
+        a.apply(Action::EnterCommandLine);
+        for c in "se".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        // User starts typing "se", presses Up -> walks to "set number".
+        a.apply(Action::CommandLineHistoryPrev);
+        assert_eq!(a.command_line, "set number");
+        // Down returns to "se".
+        a.apply(Action::CommandLineHistoryNext);
+        assert_eq!(a.command_line, "se");
+    }
+
+    #[test]
+    fn history_navigation_with_no_history_is_no_op() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineAppend('w'));
+        a.apply(Action::CommandLineHistoryPrev);
+        assert_eq!(a.command_line, "w");
+    }
+
+    #[test]
+    fn history_persists_across_command_sessions() {
+        let mut a = app_with("hello", 10);
+        submit_ex(&mut a, "set number");
+        // Reopen command line; Up should still recall.
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineHistoryPrev);
+        assert_eq!(a.command_line, "set number");
+    }
+
+    #[test]
+    fn tab_in_command_mode_opens_completion_popup() {
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let state = a.completion_state.as_ref().expect("popup should open");
+        // Candidates use the user-facing alias form, not the
+        // canonical `ex:*` registry name. Both `:describe-command`
+        // and `:ex:describe-command` parse correctly via the
+        // dispatcher's two-stage resolution; the popup shows the
+        // form a user actually types.
+        assert!(
+            state
+                .candidates
+                .iter()
+                .any(|c| c.raw.text == "describe-command")
+        );
+        assert!(
+            state
+                .candidates
+                .iter()
+                .any(|c| c.raw.text == "describe-buffer")
+        );
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn shift_tab_walks_back_through_candidates() {
+        let mut a = app_in_command_mode("descri");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        a.apply(Action::CommandLineCompletePrev);
+        assert_eq!(a.completion_state.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn chord_capture_active_only_when_in_chord_arg_slot() {
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Command;
+        // Empty cmdline -> CommandName slot, not chord-capture.
+        a.command_line = String::new();
+        assert!(!a.chord_capture_active());
+        // Mid command-name slot.
+        a.command_line = "describe-key".into();
+        assert!(!a.chord_capture_active());
+        // Now the cursor is past the space; arg slot is `chord`
+        // with kind=Chord -> capture is active.
+        a.command_line = "describe-key ".into();
+        assert!(a.chord_capture_active());
+        // describe-command's first arg is String, NOT Chord ->
+        // no capture even though we're in an arg slot.
+        a.command_line = "describe-command ".into();
+        assert!(!a.chord_capture_active());
+        // Outside Command modal, never active.
+        a.modal = ModalState::Normal;
+        a.command_line = "describe-key ".into();
+        assert!(!a.chord_capture_active());
+    }
+
+    #[test]
+    fn chord_capture_active_for_canonical_command_name() {
+        // `:ex:describe-key ` (canonical, not the alias). The slot
+        // detector tries `id_by_name` first and only falls back
+        // to alias-expand, so both forms switch into chord-capture.
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Command;
+        a.command_line = "ex:describe-key ".into();
+        assert!(a.chord_capture_active());
+    }
+
+    #[test]
+    fn empty_submit_of_describe_key_arms_chord_prompt() {
+        // User typed `:describe-key<CR>` with no arg. The required
+        // Chord arg is missing -- we shouldn't error; we should
+        // prefill the cmdline and arm auto-submit.
+        let mut a = app_in_command_mode("describe-key");
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.command_line, "describe-key ");
+        assert!(a.auto_submit_after_chord);
+        assert!(matches!(a.modal, ModalState::Command));
+    }
+
+    #[test]
+    fn empty_submit_of_canonical_describe_key_arms_chord_prompt() {
+        // Same prompt path through the canonical name, not just
+        // the alias.
+        let mut a = app_in_command_mode("ex:describe-key");
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.command_line, "ex:describe-key ");
+        assert!(a.auto_submit_after_chord);
+    }
+
+    #[test]
+    fn empty_submit_of_describe_command_arms_prompt_without_chord_capture() {
+        // describe-command's first arg is String (Required) -- the
+        // generalized missing-arg path arms a prompt, prefills the
+        // cmdline, and leaves the user in Command mode to type the
+        // arg. Auto-submit is OFF (only Chord-kind args auto-submit
+        // on the next keystroke).
+        let mut a = app_in_command_mode("describe-command");
+        a.apply(Action::CommandLineSubmit);
+        assert!(matches!(a.modal, ModalState::Command));
+        assert!(!a.auto_submit_after_chord);
+        // Prefilled with the command word + space; cursor in arg slot.
+        assert_eq!(a.command_line, "describe-command ");
+        // Echo area carries the arg's prompt.
+        assert!(a.last_message.is_some());
+    }
+
+    #[test]
+    fn empty_submit_of_optional_arg_command_does_not_arm_prompt() {
+        // `:write` (alias for `ex:write`) has an OPTIONAL path arg
+        // (default = `None` -- absent means "use current path").
+        // Submitting bare runs the command normally; no prompt arm.
+        let mut a = app_in_command_mode("w");
+        a.apply(Action::CommandLineSubmit);
+        // Cmdline closed -- the missing-arg prompt path skipped this
+        // command because its schema's first arg is Optional.
+        assert!(matches!(a.modal, ModalState::Normal));
+        assert!(!a.auto_submit_after_chord);
+    }
+
+    #[test]
+    fn missing_arg_prompt_preserves_user_alias() {
+        // User typed the alias `apropos`; prefill must preserve the
+        // alias rather than normalising to the canonical
+        // `ex:apropos`. (Apropos's `pattern` arg is Required.)
+        let mut a = app_in_command_mode("apropos");
+        a.apply(Action::CommandLineSubmit);
+        assert_eq!(a.command_line, "apropos ");
+        assert!(matches!(a.modal, ModalState::Command));
+    }
+
+    #[test]
+    fn submit_with_arg_supplied_takes_normal_path() {
+        // `describe-key j` with explicit arg should NOT enter
+        // prompt mode -- it should just dispatch.
+        let mut a = app_in_command_mode("describe-key j");
+        a.apply(Action::CommandLineSubmit);
+        assert!(!a.auto_submit_after_chord);
+        assert!(matches!(a.modal, ModalState::Normal));
+        assert!(a.help_buffer.is_some());
+    }
+
+    #[test]
+    fn ctrl_h_on_known_command_describes_it_directly() {
+        // `:describe-command` on the cmdline; <C-h> describes that
+        // command itself (smart-resolve).
+        let mut a = app_in_command_mode("describe-command");
+        a.apply(Action::CommandLineDescribeUnderCursor);
+        let h = a.help_buffer.as_ref().expect("help should open");
+        assert!(h.title.contains("ex:describe-command"));
+    }
+
+    #[test]
+    fn ctrl_h_on_arg_describes_parent_command_at_arg_anchor() {
+        // `:describe-command moti` -- the cursor's word `moti`
+        // doesn't resolve to a command; fall back to describing
+        // the parent (`ex:describe-command`) scrolled to the
+        // `arg:name` anchor.
+        let mut a = app_in_command_mode("describe-command moti");
+        a.apply(Action::CommandLineDescribeUnderCursor);
+        let h = a.help_buffer.as_ref().expect("help should open");
+        assert!(h.title.contains("ex:describe-command"));
+        // scroll should be set to the arg:name anchor's line.
+        let arg_anchor = h.anchors.iter().find(|a| a.name == "arg:name").unwrap();
+        assert_eq!(h.scroll, arg_anchor.line as usize);
+    }
+
+    #[test]
+    fn ctrl_h_on_arg_value_that_is_a_known_command_describes_it() {
+        // `:describe-command motion:line-down` -- the arg VALUE
+        // resolves to a known command. Hybrid: describe THAT.
+        let mut a = app_in_command_mode("describe-command motion:line-down");
+        a.apply(Action::CommandLineDescribeUnderCursor);
+        let h = a.help_buffer.as_ref().expect("help should open");
+        assert!(h.title.contains("motion:line-down"));
+    }
+
+    #[test]
+    fn ctrl_h_on_unknown_word_emits_error_message() {
+        let mut a = app_in_command_mode("no-such-command");
+        a.apply(Action::CommandLineDescribeUnderCursor);
+        assert!(a.help_buffer.is_none());
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn cmdline_completion_includes_lsp_subcommand_aliases() {
+        // Diagnostic: typing `:lsp-` and tabbing should surface
+        // `lsp-trace`, `lsp-restart`, `lsp-status`, etc. -- the
+        // user-facing aliases for `ex:lsp-trace` etc. The
+        // CommandsGenerator returns canonical names (`ex:lsp-trace`);
+        // `prefer_aliases_for_command_candidates` rewrites them
+        // to the longest alias (`lsp-trace`). User reported these
+        // not appearing; pin the wiring with a regression test.
+        let mut a = app_in_command_mode("lsp-");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let state = a.completion_state.as_ref().expect("popup should open");
+        let texts: Vec<&str> = state
+            .candidates
+            .iter()
+            .map(|c| c.raw.text.as_str())
+            .collect();
+        for needle in [
+            "lsp-trace",
+            "lsp-status",
+            "lsp-restart",
+            "lsp-log",
+            "lsp-log-level",
+            "lsp-log-clear",
+        ] {
+            assert!(
+                texts.contains(&needle),
+                "completion should include `{needle}` -- got {:?}",
+                texts
+            );
+        }
+    }
+
 }

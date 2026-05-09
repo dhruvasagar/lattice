@@ -33,11 +33,15 @@
 //! registry, source plugins, snippet parser -- those live
 //! in `crate::completion` / `crate::snippet`.
 
+use lattice_core::Buffer;
 use lattice_grammar::ModalState;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
-use super::{App, EchoLevel, dedup_rendered_by_text, is_path_byte, is_word_char_byte};
+use super::{
+    App, EchoLevel, PathCompletionCache, SNIPPET_COMPLETION_KIND_ID,
+    SnippetCandidateMeta, dedup_rendered_by_text, is_path_byte, is_word_char_byte,
+};
 
 impl App {
     /// `<C-x><C-s>` -- direct snippet expansion (Phase 4.2.g.4).
@@ -245,6 +249,403 @@ impl App {
                 doc.scroll = doc.scroll.saturating_sub(8);
             }
         }
+    }
+
+    /// Run sync sources against the supplied state, populating
+    /// `state.raw` and re-running matcher + ranker so
+    /// `state.rendered` reflects the current `query`. Async
+    /// sources (LSP) hook into `state.raw` directly via
+    /// host-side channels in 4.2.g.2.
+    pub(super) fn populate_insert_completion_sync(
+        &mut self,
+        state: &mut lattice_completion::InsertCompletionState,
+        buffer: &Buffer,
+        trigger: &lattice_completion::CompletionTrigger,
+    ) {
+        // Path-completion mode: when the cursor sits inside a
+        // string literal AND the language enables `gen:path`,
+        // the popup is path-only -- buffer-words / snippet /
+        // tree-sitter would emit non-filename candidates that
+        // confuse the experience (e.g., a buffer word matching
+        // partway through a filename). Spec §3.4 has
+        // `suppress_in = ["string", "comment"]` covering this
+        // for the other sources; until that knob is enforced,
+        // the path-context branch enforces the same effect.
+        if self.completion_in_path_context {
+            self.populate_path_completion(state);
+            self.refilter_insert_completion(state);
+            return;
+        }
+        let ctx = lattice_completion::InsertContext {
+            buffer,
+            cursor: state.cursor,
+            anchor: state.anchor,
+            query: &state.query,
+            trigger,
+            case_sensitive: false,
+        };
+        // Resolve the active language's effective config once;
+        // both sync sources (buffer-words, snippet) gate emit on
+        // it. The global default (no override) returns
+        // `sources = None` -> every source contributes.
+        let language = self.active_language_id();
+        let effective = self.effective_completion_for(&language);
+        let mut raw: Vec<lattice_completion::RawCandidate> = Vec::new();
+        // Source 1: buffer-words.
+        let buffer_words_id = lattice_completion::SourceId::new(
+            lattice_completion::BufferWordsSource::ID,
+        );
+        if effective.source_enabled(&buffer_words_id) {
+            let buffer_words = lattice_completion::BufferWordsSource::new();
+            raw.extend(lattice_completion::InsertSource::produce(&buffer_words, &ctx));
+        }
+        // Source 2: snippets (Phase 4.2.g.4). Resolve the
+        // active language so per-language snippets surface
+        // ahead of any-language `*` packs. Snippet meta lives
+        // in a sidecar; the candidate's Extension payload
+        // points at the meta-vec index.
+        self.insert_completion_snippet_meta.clear();
+        let snippet_id = lattice_completion::SourceId::new(
+            lattice_completion::SNIPPET_SOURCE_ID,
+        );
+        let snippet_matches: Vec<&lattice_snippet::Snippet> =
+            if effective.source_enabled(&snippet_id) {
+                self.snippet_registry.matching_prefix(&language, &state.query)
+            } else {
+                Vec::new()
+            };
+        for snip in snippet_matches {
+            let idx = self.insert_completion_snippet_meta.len() as u32;
+            let prefix = snip
+                .prefixes
+                .first()
+                .cloned()
+                .unwrap_or_else(|| snip.name.clone());
+            let display = match snip.description.as_deref() {
+                Some(d) if !d.is_empty() => format!("{prefix}  {d}"),
+                _ => prefix.clone(),
+            };
+            let mut cand = lattice_completion::RawCandidate::plain(
+                prefix.clone(),
+                lattice_completion::CandidateKind::Plain,
+            )
+            .with_source(lattice_completion::SourceId::new(
+                lattice_completion::SNIPPET_SOURCE_ID,
+            ));
+            cand.display = display;
+            cand.data = lattice_completion::CandidateData::Extension {
+                kind_id: SNIPPET_COMPLETION_KIND_ID,
+                payload: idx.to_le_bytes().to_vec(),
+            };
+            raw.push(cand);
+            self.insert_completion_snippet_meta.push(SnippetCandidateMeta {
+                name: snip.name.clone(),
+                prefix,
+                description: snip.description.clone(),
+                body: snip.body.clone(),
+            });
+        }
+        // Source 3: tree-sitter local symbols (Phase 4.2.g.6
+        // (1/2)). Walks the buffer's syntax tree per popup-
+        // trigger; emits definition-position identifiers
+        // (functions, structs, let bindings, parameters) as
+        // candidates. Skipped when:
+        //   - the per-language source filter excludes
+        //     `gen:tree-sitter-symbol`
+        //   - no `Syntax` is attached (e.g. plain-text buffer)
+        //   - the language ships no `symbols.scm` query
+        //     (`collect_symbols` returns empty)
+        // Duplicates against buffer-words are deduped by text;
+        // the tree-sitter-tagged copy wins so the ranker's
+        // per-source priority applies.
+        let tree_sitter_id = lattice_completion::SourceId::new(
+            lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID,
+        );
+        if effective.source_enabled(&tree_sitter_id)
+            && let Some(syntax) = self.syntax.as_ref()
+        {
+            // Each source emits independently. tree-sitter
+            // names overlap heavily with buffer-words (which
+            // walks every word in the rope), so cross-source
+            // dedup at the producer level would always erase
+            // tree-sitter -- buffer-words is a superset by
+            // construction. Per spec §3.4 the per-source
+            // priority handles ranking (buffer-words 100 vs
+            // tree-sitter 80) so the user-typed prefix surfaces
+            // the buffer-words copy ahead of the tree-sitter
+            // copy on ties; visual deduping of identical text
+            // in the popup is a 4.2.g.7 polish item that needs
+            // the renderer to merge same-text rows by source
+            // label.
+            for sym in syntax.snapshot().collect_symbols() {
+                if sym == state.query {
+                    continue;
+                }
+                let cand = lattice_completion::RawCandidate::plain(
+                    sym,
+                    lattice_completion::CandidateKind::Plain,
+                )
+                .with_source(tree_sitter_id.clone());
+                raw.push(cand);
+            }
+        }
+        state.raw = raw;
+        self.refilter_insert_completion(state);
+    }
+
+    /// Path-completion sync producer (Phase 4.2.g.6 (2/2)).
+    /// Walks the directory referenced by the partial path
+    /// the user has typed inside the active string literal and
+    /// emits one candidate per filesystem entry (capped at 200,
+    /// hidden / ignored entries skipped, directories carry a
+    /// trailing `/`). Resolves relative paths against the
+    /// active document's parent directory; falls back to
+    /// `std::env::current_dir()` for unsaved buffers.
+    fn populate_path_completion(
+        &mut self,
+        state: &mut lattice_completion::InsertCompletionState,
+    ) {
+        const MAX_ENTRIES: usize = 200;
+        // Hardcoded ignore set for v1; `.gitignore` integration
+        // queues for a follow-up (needs the `ignore` crate +
+        // the workspace-root resolution we already do for the
+        // config loader).
+        const IGNORE_NAMES: &[&str] = &[".git", "node_modules", "target", "dist"];
+
+        let snap = self.document.snapshot();
+        let line_text = snap.buffer.line(state.cursor.line).unwrap_or_default();
+        let line_bytes = line_text.as_bytes();
+        let cursor_in_line = (state.cursor.byte as usize).min(line_bytes.len());
+        // Walk back over path bytes (NOT stopping at `/`) to
+        // recover the full partial path the user has typed
+        // inside the string literal. The trigger anchor stops
+        // at `/` so the popup-supplied filename only replaces
+        // the tail; here we want the full thing so we know
+        // *which* directory to walk.
+        let mut path_start = cursor_in_line;
+        while path_start > 0 {
+            let b = line_bytes[path_start - 1];
+            if b == b'/' || is_path_byte(b) {
+                path_start -= 1;
+            } else {
+                break;
+            }
+        }
+        let partial: &str = &line_text[path_start..cursor_in_line];
+        // Split partial at the last `/` (boundary between dir
+        // and the filename prefix).
+        let dir_part = match partial.rfind('/') {
+            Some(i) => &partial[..=i], // keep trailing slash
+            None => "",
+        };
+        let base_dir: std::path::PathBuf = if dir_part.starts_with('/') {
+            std::path::PathBuf::from(dir_part)
+        } else {
+            let buffer_dir = snap
+                .path
+                .as_ref()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+            let base = buffer_dir
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            if dir_part.is_empty() {
+                base
+            } else {
+                base.join(dir_part)
+            }
+        };
+
+        // Cache check: re-use the previous read_dir if the
+        // directory's mtime hasn't changed. The popup re-fires on
+        // every Insert keystroke; without this cache the
+        // consecutive keystrokes for the same dir each pay a
+        // full read_dir + per-entry file_type() walk. With it,
+        // each keystroke past the first pays one metadata()
+        // call. Audit slice 5 / H5.
+        let current_mtime = std::fs::metadata(&base_dir)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        let cache_hit = self
+            .path_completion_cache
+            .as_ref()
+            .filter(|c| c.dir == base_dir && c.mtime == current_mtime);
+        let entries: Vec<(String, bool)> = match cache_hit {
+            Some(c) => c.entries.clone(),
+            None => {
+                let read = match std::fs::read_dir(&base_dir) {
+                    Ok(it) => it,
+                    Err(_) => {
+                        // Directory unreadable / missing; popup
+                        // stays empty + the cache is invalidated
+                        // so a later mtime-bump triggers a fresh
+                        // read.
+                        self.path_completion_cache = None;
+                        return;
+                    }
+                };
+                let mut entries: Vec<(String, bool)> = read
+                    .flatten()
+                    .filter_map(|entry| {
+                        entry
+                            .file_name()
+                            .to_str()
+                            .map(|name| {
+                                let is_dir = entry
+                                    .file_type()
+                                    .map(|t| t.is_dir())
+                                    .unwrap_or(false);
+                                (name.to_string(), is_dir)
+                            })
+                    })
+                    .collect();
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                self.path_completion_cache = Some(PathCompletionCache {
+                    dir: base_dir.clone(),
+                    mtime: current_mtime,
+                    entries: entries.clone(),
+                });
+                entries
+            }
+        };
+        let path_id = lattice_completion::SourceId::new(
+            lattice_completion::PATH_SOURCE_ID,
+        );
+        let mut emitted = 0;
+        for (name, is_dir) in entries {
+            if emitted >= MAX_ENTRIES {
+                break;
+            }
+            if name.starts_with('.') {
+                // Skip hidden entries by default. The user can
+                // type `.` and the popup will re-trigger to
+                // show them once `auto_trigger` lands.
+                continue;
+            }
+            if IGNORE_NAMES.contains(&name.as_str()) {
+                continue;
+            }
+            let (text, kind) = if is_dir {
+                (
+                    format!("{name}/"),
+                    lattice_completion::CandidateKind::Directory,
+                )
+            } else {
+                (name, lattice_completion::CandidateKind::File)
+            };
+            let cand = lattice_completion::RawCandidate::plain(text, kind)
+                .with_source(path_id.clone());
+            state.raw.push(cand);
+            emitted += 1;
+        }
+    }
+
+    /// Re-run matcher + ranker over `state.raw` against the
+    /// current `state.query`. Called every time the query
+    /// mutates (each Insert-mode keystroke while the popup is
+    /// open).
+    pub(super) fn refilter_insert_completion(
+        &self,
+        state: &mut lattice_completion::InsertCompletionState,
+    ) {
+        let matcher = lattice_completion::FuzzyInsertMatcher::new();
+        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
+            .raw
+            .iter()
+            .filter_map(|raw| {
+                lattice_completion::CandidateMatcher::matches(
+                    &matcher,
+                    &state.query,
+                    raw,
+                )
+                .map(|(score, ranges)| lattice_completion::ScoredCandidate {
+                    raw: raw.clone(),
+                    score,
+                    match_ranges: ranges,
+                })
+            })
+            .collect();
+        let ranker = lattice_completion::InsertRanker::new();
+        ranker.rank_with_bonus(&mut scored, |raw| self.completion_total_bonus(raw));
+        state.rendered = scored
+            .into_iter()
+            .map(lattice_completion::RenderedCandidate::from_scored)
+            .collect();
+        dedup_rendered_by_text(&mut state.rendered);
+        if !state.rendered.is_empty() && state.selected >= state.rendered.len() {
+            state.selected = state.rendered.len() - 1;
+        }
+    }
+
+    /// Total ranker bonus for a candidate -- per-source priority
+    /// (`docs/insert-completion.md` §3.4 / §3.6) plus the capped
+    /// frequency lift. Future bonus terms (preselect,
+    /// deprecated penalty) compose into this same closure as
+    /// 4.2.g.5 / 4.2.g.6 land them.
+    fn completion_total_bonus(
+        &self,
+        raw: &lattice_completion::RawCandidate,
+    ) -> u32 {
+        let priority = raw
+            .source
+            .as_ref()
+            .map(|s| self.priority_for_source(s))
+            .unwrap_or(0);
+        let freq = self
+            .completion_accept_freq
+            .get(&(raw.text.clone(), raw.kind))
+            .copied()
+            .unwrap_or(0)
+            .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
+        priority.saturating_add(freq)
+    }
+
+    /// Effective per-source priority for the insert-completion
+    /// ranker. Reads the typed `completion.source.<id>.priority`
+    /// option for known v1 sources (LSP / snippet /
+    /// buffer-words). Unknown source ids -- plugin sources or
+    /// future built-ins not yet wired into config -- get 0;
+    /// the ranker still sorts them by their matcher score so
+    /// they're not discarded, just not boosted.
+    fn priority_for_source(
+        &self,
+        source: &lattice_completion::SourceId,
+    ) -> u32 {
+        use lattice_config::{
+            CompletionSourceBufferWordsPriority, CompletionSourceLspPriority,
+            CompletionSourcePathPriority, CompletionSourceSnippetPriority,
+            CompletionSourceTreeSitterPriority,
+        };
+        // Type-keyed read per source. Five distinct option types
+        // ⇒ the type can't be variable, so the dispatch is a
+        // match on source.as_str() returning the read value
+        // directly.
+        let raw: i64 = match source.as_str() {
+            "gen:lsp-completion" => *self
+                .config
+                .get_typed::<CompletionSourceLspPriority>()
+                .expect("CompletionSourceLspPriority"),
+            "gen:snippet" => *self
+                .config
+                .get_typed::<CompletionSourceSnippetPriority>()
+                .expect("CompletionSourceSnippetPriority"),
+            "gen:buffer-words" => *self
+                .config
+                .get_typed::<CompletionSourceBufferWordsPriority>()
+                .expect("CompletionSourceBufferWordsPriority"),
+            "gen:tree-sitter-symbol" => *self
+                .config
+                .get_typed::<CompletionSourceTreeSitterPriority>()
+                .expect("CompletionSourceTreeSitterPriority"),
+            "gen:path" => *self
+                .config
+                .get_typed::<CompletionSourcePathPriority>()
+                .expect("CompletionSourcePathPriority"),
+            _ => return 0,
+        };
+        // Validator clamps to [0, 9999] so this saturating cast
+        // is a no-op in practice; defend against config writes
+        // that bypass the validator (none today, but cheap).
+        raw.clamp(0, u32::MAX as i64) as u32
     }
 
     /// Manual trigger / refresh. Opens the popup if it's

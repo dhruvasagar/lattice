@@ -146,6 +146,9 @@ mod state;
 mod syntax;
 mod visual;
 
+#[cfg(test)]
+mod test_helpers;
+
 // Slice 8.i.4.d: the `Pending` enum and `Action::SetPending`
 // variant retired here. All multi-key Normal-mode chord state
 // flows through `App::partial_chord` driven by
@@ -14392,62 +14395,6 @@ impl App {
         self.set_selections_blocking(SelectionSet::single(Selection::cursor(self.cursor)));
     }
 
-    fn do_start_macro_record(&mut self, register: char) {
-        if !is_valid_mark_name(register) {
-            self.set_message(
-                EchoLevel::Error,
-                format!("invalid macro register: {register}"),
-            );
-            return;
-        }
-        if self.macro_recording.is_some() {
-            // Already recording -- ignore (vim treats this as a no-op).
-            return;
-        }
-        self.macro_recording = Some(MacroRecording {
-            register,
-            actions: Vec::new(),
-        });
-        self.set_message(EchoLevel::Info, format!("recording @{register}"));
-    }
-
-    fn do_stop_macro_record(&mut self) {
-        let Some(rec) = self.macro_recording.take() else {
-            return;
-        };
-        let label = rec.register;
-        self.macros.insert(rec.register, rec.actions);
-        self.set_message(EchoLevel::Info, format!("recorded @{label}"));
-    }
-
-    fn do_play_macro(&mut self, register: char) {
-        if !is_valid_mark_name(register) {
-            self.set_message(
-                EchoLevel::Error,
-                format!("invalid macro register: {register}"),
-            );
-            return;
-        }
-        let Some(actions) = self.macros.get(&register).cloned() else {
-            self.set_message(EchoLevel::Error, format!("no macro in register {register}"));
-            return;
-        };
-        // Suppress recording-into-current-macro while replaying. (We don't
-        // want a `q` started before play to capture the playback's actions
-        // -- vim explicitly drops play actions from the recording.)
-        let mut paused = self.macro_recording.take();
-        for action in actions {
-            self.apply(action);
-            if self.should_quit {
-                break;
-            }
-        }
-        if let Some(rec) = paused.take() {
-            self.macro_recording = Some(rec);
-        }
-        self.last_played_macro = Some(register);
-    }
-
     /// Push a tagged entry onto the history ring. If the history-cursor
     /// is not at the end (the user has been walking back), truncate
     /// forward entries before pushing -- standard "modify-from-middle"
@@ -15655,7 +15602,7 @@ pub(crate) fn last_addressable_line(buf: &Buffer) -> u32 {
     }
 }
 
-fn is_valid_mark_name(c: char) -> bool {
+pub(super) fn is_valid_mark_name(c: char) -> bool {
     c.is_ascii_alphabetic() || c.is_ascii_digit()
 }
 
@@ -16525,56 +16472,7 @@ fn step_byte(buf: &Buffer, p: Position, dir: SearchDirection) -> Position {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-
-    fn app_with(text: &str, viewport: u32) -> App {
-        let mut a = App::new(Document::from_text(text));
-        a.set_viewport_height(viewport);
-        a
-    }
-
-    /// End-to-end key-event harness. Drives a single
-    /// [`crossterm::event::KeyEvent`] through
-    /// [`crate::input::translate`] + [`App::apply`] -- the same
-    /// path the real input loop in `runtime.rs` walks. Catches
-    /// bugs that live in the seam between translate and apply
-    /// (count flow through `attach_count` plus dispatcher
-    /// multiplication, partial_chord state machine across multiple
-    /// keystrokes, etc.). The translate-layer tests in
-    /// `input::tests` only check the returned `Action`, and the
-    /// App-layer tests above hand-construct `Action::Invoke(...)`;
-    /// neither exercises this seam.
-    fn press(app: &mut App, event: crossterm::event::KeyEvent) {
-        let ctx = crate::input::TranslateContext {
-            modal: app.modal,
-            builtins: &app.builtins,
-            pending_count: app.pending_count,
-            op_count: app.op_count,
-            recording_macro: app.macro_recording.is_some(),
-            active_buffer: app.active_buffer,
-            completion_open: app.completion_state.is_some(),
-            chord_capture: app.chord_capture_active(),
-            picker_open: app.picker.is_some(),
-            insert_completion_open: app.insert_completion.is_some(),
-            snippet_active: app.active_snippet.is_some(),
-            keymap: &app.keymap,
-            partial_chord: &app.partial_chord,
-        };
-        let action = crate::input::translate(ctx, event);
-        app.apply(action);
-    }
-
-    /// Convenience: drive a sequence of bare-char keystrokes
-    /// through [`press`]. Each char becomes a
-    /// `KeyCode::Char(c)` event with no modifiers -- handy for
-    /// vim-style chord sequences (`"2dd"`, `"d2w"`, `">>"`).
-    /// For modifiers or special keys, build a `KeyEvent` and
-    /// call [`press`] directly.
-    fn press_chars(app: &mut App, keys: &str) {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        for c in keys.chars() {
-            press(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
-        }
-    }
+    use super::test_helpers::{app_with, press, press_chars};
 
     /// Sanity check: a bare motion drives the cursor through
     /// the full translate + apply path. If this fails, the
@@ -19381,122 +19279,6 @@ mod tests {
         let mut a = app_with("foo,bar baz", 10);
         a.apply(invoke_motion(a.builtins.big_word_forward));
         assert_eq!(a.cursor, Position::new(0, 8));
-    }
-
-    // ---- Macros (q, @) ----
-
-    #[test]
-    fn start_macro_record_seeds_recording_state() {
-        let mut a = app_with("hello", 10);
-        a.apply(Action::StartMacroRecord('a'));
-        assert!(a.macro_recording.is_some());
-        assert_eq!(a.macro_recording.as_ref().unwrap().register, 'a');
-    }
-
-    #[test]
-    fn invalid_macro_register_emits_error() {
-        let mut a = app_with("hello", 10);
-        a.apply(Action::StartMacroRecord(' '));
-        let msg = a.last_message.as_ref().unwrap();
-        assert_eq!(msg.level, EchoLevel::Error);
-        assert!(a.macro_recording.is_none());
-    }
-
-    #[test]
-    fn second_q_during_recording_does_not_double_start() {
-        let mut a = app_with("hello", 10);
-        a.apply(Action::StartMacroRecord('a'));
-        a.apply(Action::StartMacroRecord('b'));
-        // Still recording into 'a'.
-        assert_eq!(a.macro_recording.as_ref().unwrap().register, 'a');
-    }
-
-    #[test]
-    fn stop_macro_record_persists_actions_and_clears_recording() {
-        let mut a = app_with("hello", 10);
-        a.apply(Action::StartMacroRecord('a'));
-        a.apply(Action::EnterMode(ModalState::Insert));
-        a.apply(Action::Insert("X".into()));
-        a.apply(Action::EnterMode(ModalState::Normal));
-        a.apply(Action::StopMacroRecord);
-        assert!(a.macro_recording.is_none());
-        let actions = a.macros.get(&'a').unwrap();
-        assert!(!actions.is_empty());
-    }
-
-    #[test]
-    fn play_macro_replays_recorded_actions() {
-        let mut a = app_with("foo bar", 10);
-        a.apply(Action::StartMacroRecord('a'));
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
-        a.apply(Action::Invoke(inv));
-        a.apply(Action::StopMacroRecord);
-        // After dw: "bar".
-        assert_eq!(a.document.text(), "bar");
-        // Replay -> deletes another word.
-        a.apply(Action::PlayMacro('a'));
-        assert_eq!(a.document.text(), "");
-    }
-
-    #[test]
-    fn play_unrecorded_macro_emits_error() {
-        let mut a = app_with("hello", 10);
-        a.apply(Action::PlayMacro('z'));
-        let msg = a.last_message.as_ref().unwrap();
-        assert_eq!(msg.level, EchoLevel::Error);
-    }
-
-    #[test]
-    fn at_at_replays_last_macro() {
-        let mut a = app_with("foo bar baz qux", 10);
-        a.apply(Action::StartMacroRecord('a'));
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
-        a.apply(Action::Invoke(inv));
-        a.apply(Action::StopMacroRecord);
-        // First play.
-        a.apply(Action::PlayMacro('a'));
-        // @@ now repeats.
-        a.apply(Action::PlayLastMacro);
-        // After three dws total: "qux".
-        assert_eq!(a.document.text(), "qux");
-    }
-
-    #[test]
-    fn play_last_macro_with_no_history_emits_error() {
-        let mut a = app_with("hello", 10);
-        a.apply(Action::PlayLastMacro);
-        let msg = a.last_message.as_ref().unwrap();
-        assert_eq!(msg.level, EchoLevel::Error);
-    }
-
-    #[test]
-    fn macro_does_not_record_management_actions() {
-        // StartMacroRecord, StopMacroRecord, PlayMacro, PlayLastMacro
-        // must NOT appear inside the recorded action stream (otherwise
-        // playback would recurse / break).
-        let mut a = app_with("hello", 10);
-        a.apply(Action::StartMacroRecord('a'));
-        // Replay another (unrecorded) macro -- the play action must not
-        // be captured.
-        a.apply(Action::PlayLastMacro); // errors but is not recorded
-        a.apply(Action::EnterMode(ModalState::Insert));
-        a.apply(Action::Insert("z".into()));
-        a.apply(Action::EnterMode(ModalState::Normal));
-        a.apply(Action::StopMacroRecord);
-        let actions = a.macros.get(&'a').unwrap();
-        for action in actions {
-            assert!(!matches!(
-                action,
-                Action::StartMacroRecord(_)
-                    | Action::StopMacroRecord
-                    | Action::PlayMacro(_)
-                    | Action::PlayLastMacro
-            ));
-        }
     }
 
     // ---- Position history (Ctrl-O / Ctrl-I) ----

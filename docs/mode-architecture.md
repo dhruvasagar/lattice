@@ -1238,7 +1238,7 @@ mode operation. Why this dependency direction:
   `ResolvedOptions` ownership.
 
 The registry's existing `Event::OptionChanged` cascade
-(`app.rs:10044` `drain_option_changes`) extends to invalidate
+(`app/options.rs` `drain_option_changes`) extends to invalidate
 the `ResolvedOptions` cache on writes. Mode-toggle invalidation
 is driven by callers when they invoke `ModeRegistry::activate_*`
 (see §9.4 -- `Document::recompute_options` after activation
@@ -1572,7 +1572,7 @@ umbrella) is the right first feature subsystem to migrate:
 - **Its features are already independently dispatched.**
   `do_lsp_hover_request`, `do_lsp_completion_request`,
   `do_lsp_signature_help_request`, etc. are already separate
-  methods (`app.rs:4088-4125`). Wrapping each in
+  methods (`app/lsp.rs`). Wrapping each in
   `if !mode_active { return; }` is mechanical; the mode system
   gets exercised end-to-end without inventing new feature
   surface.

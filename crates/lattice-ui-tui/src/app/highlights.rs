@@ -488,7 +488,6 @@ impl App {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
-    use super::*;
     use crate::app::Action;
     use crate::app::test_helpers::{app_with, attach_test_syntax};
     use lattice_protocol::edit::Edit;

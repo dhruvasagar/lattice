@@ -1367,8 +1367,8 @@ mod tests {
     use super::*;
     use crate::app::*;
     use crate::app::test_helpers::{
-        app_in_command_mode, app_with, attach_test_syntax, install_help, invoke_motion,
-        press, press_chars, submit_ex, subscribe_all_events, write_temp_file,
+        app_in_command_mode, app_with, attach_test_syntax, invoke_motion,
+        press, press_chars, subscribe_all_events, write_temp_file,
     };
     use lattice_protocol::edit::Edit;
     use crate::app::word_under_cursor;

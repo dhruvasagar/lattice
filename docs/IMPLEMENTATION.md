@@ -208,15 +208,17 @@ The story across five slices:
   into `try_apply_intermediate` (fast, no parse) +
   `reparse_with_cached_tree` (slow, parse). The convenience
   method runs both back-to-back.
-- `lattice-ui-tui/src/app.rs`:
+- `lattice-ui-tui/src/app/highlights.rs`:
   - `App.visible_highlights_key`: cache key holds `syntax_text_version`
     only (not `document_text_version`) so edits don't trigger
     recomputation against stale snapshots.
   - `refresh_highlights` stale-snapshot HOLD path.
   - `shift_highlights_for_edit` — line-shift on edit.
   - `shift_spans_within_line` — byte-shift on in-line edit.
+- `lattice-ui-tui/src/app/dispatch.rs`:
   - `handle_edits` — routes grammar-driven edits through
-    `publish_document_changed`.
+    `publish_document_changed` (the latter lives in
+    `app/lifecycle.rs`).
 
 Three follow-ups deliberately deferred (open):
 
@@ -1448,7 +1450,7 @@ Workspace tests as of the last commit. Coverage by crate:
 | lattice-syntax                   | 13    |
 | lattice-runtime                  | 35    |
 | lattice-lsp                      | 32    |
-| lattice-ui-tui                   | 906   |
+| lattice-ui-tui                   | 1394  |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators,
 runtime actor) — see `docs/BENCHMARKS.md` for the latest numbers.

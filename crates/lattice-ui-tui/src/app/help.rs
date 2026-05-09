@@ -578,7 +578,6 @@ impl App {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
-    use super::*;
     use crate::app::*;
     use crate::app::test_helpers::{app_in_command_mode, app_with, install_help};
 

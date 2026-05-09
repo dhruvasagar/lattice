@@ -561,7 +561,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use crate::app::*;
-    use crate::app::test_helpers::{app_in_command_mode, app_with, fresh_workspace, subscribe_all_events, submit_ex, write_workspace_config};
+    use crate::app::test_helpers::{app_in_command_mode, app_with, subscribe_all_events, submit_ex};
     use lattice_grammar::ModalState;
     use lattice_protocol::Event;
 

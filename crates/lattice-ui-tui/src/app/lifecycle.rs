@@ -1426,7 +1426,7 @@ mod tests {
 
     use super::*;
     use crate::app::*;
-    use crate::app::test_helpers::{app_with, app_with_path, attach_test_syntax, fresh_path_workspace, install_help, invoke_motion, press, press_chars, fresh_workspace, seed_diags_at_lines, set_rust_syntax, submit_ex, subscribe_all_events, unique_tempdir, write_temp_file, write_workspace_config};
+    use crate::app::test_helpers::{app_with, attach_test_syntax, fresh_workspace, invoke_motion, set_rust_syntax, submit_ex, unique_tempdir, write_temp_file, write_workspace_config};
     use lattice_protocol::edit::Edit;
 
     #[test]

@@ -5,10 +5,63 @@
 //! an `Action`; `App::apply` consumes the action, dispatching motion / edit
 //! work through `lattice_grammar::execute()` where appropriate.
 //!
-//! Phase 2 wiring: motions and the `delete` operator flow through the
-//! grammar engine; the modal-mode primitives (`i`, `a`, `o`, `<Esc>`) live
-//! locally on `App` because they're inherently a state-machine concern, not
-//! a buffer command. Phase 3+ migrates more of these to the grammar layer.
+//! ## Module layout
+//!
+//! This file holds the `App` struct definition, the cross-feature data
+//! types it carries (`Action`, the LSP outcome enums + structs,
+//! `OptionCache`, `PositionEntry`, `LspNavKind`, `CompletionState`,
+//! `Fold`, `EchoMessage`, `EchoLevel`, `SearchLine`, ...), the
+//! cross-module free helpers (`line_byte_len`, `is_word_char_byte`,
+//! `word_under_cursor`, etc.), and a `mod tests` block of cross-
+//! feature integration tests. Per-feature App methods live in
+//! `app/<feature>.rs` submodules -- see `docs/ui-tui-refactor.md`
+//! for the full per-module catalog. The R.1.x slice sequence
+//! (R.1.0 -- R.1.98) split the App's monolithic impl block apart.
+//!
+//! ## Where to look for App methods
+//!
+//! - `app/dispatch.rs` -- `apply` / `apply_effect` /
+//!   `apply_app_effect` / `handle_edits` / `dispatch_blocking` /
+//!   `run_*_invocation` / `execute_ex_line` / Effect classifiers.
+//! - `app/lsp.rs` -- every `lattice-lsp` consumer (requests,
+//!   drains, log buffers, hover, navigation, references,
+//!   signature help, completion, rename, code action, format,
+//!   symbols, trace, on-type formatting, trigger chars,
+//!   workspace/applyEdit + workspace/configuration drains).
+//! - `app/lifecycle.rs` -- `:e` / `:w` / `:q` / `:bn` / `:ls` /
+//!   `<C-l>`, save family, help-buffer adoption, document swap,
+//!   buffer-state hooks, pane snapshot, event publishers.
+//! - `app/completion.rs` -- popup state machine, ranker, ghost
+//!   text, snippet expansion, refilter, `EffectiveCompletionConfig`.
+//! - `app/edit.rs` -- actor-bridge mutation wrappers,
+//!   yank / paste / register store, Insert+Replace primitives,
+//!   `:d`, block-insert.
+//! - `app/motions.rs` -- bracket match, history walkers,
+//!   mark jump, viewport / scroll, cursor clamp, viewport
+//!   sizing, active-buffer accessors.
+//! - `app/folds.rs` -- fold compute / open / close / auto-open.
+//! - `app/search.rs` -- `/`, `?`, `:s`, `:%s`, find family.
+//! - `app/options.rs` -- `:set`, typed options, customize,
+//!   per-language overrides, typed-option getters.
+//! - `app/cmdline.rs` -- `:` minibuffer + completion.
+//! - `app/help.rs` -- `:help`, `:describe-*`, `:apropos`,
+//!   `:keymap`, `do_help_follow_link`.
+//! - `app/highlights.rs` -- tree-sitter highlight cache +
+//!   per-frame refresh + post-edit shift.
+//! - `app/visual.rs` -- charwise / linewise / blockwise
+//!   selection state, `set_selections_blocking`.
+//! - `app/picker.rs` -- picker state machine + candidate
+//!   builders.
+//! - `app/boot.rs` -- `App::new`, `build_lsp_subsystem`,
+//!   `load_persistent_config`, `sync_keymap_overlays`,
+//!   `sync_theme_from_config`.
+//! - `app/file_tree.rs` -- file-tree buffer ops.
+//! - `app/oil.rs` -- oil buffer ops.
+//! - `app/macros.rs` -- `q` recording / `@` replay.
+//! - `app/mode.rs` -- `modal_label` + `enter_mode` +
+//!   `activate_major_for_buffer_kind`.
+//! - `app/syntax.rs` -- `maybe_reparse_syntax`.
+//! - `app/test_helpers.rs` -- shared test fixtures.
 
 use lattice_core::Buffer;
 #[cfg(test)]
@@ -2561,11 +2614,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use super::test_helpers::{
-        app_with, app_with_path, attach_test_syntax, fresh_workspace, invoke_motion,
-        press, press_chars, subscribe_all_events, submit_ex, unique_tempdir,
-        write_temp_file, write_workspace_config,
+        app_with, attach_test_syntax, invoke_motion, submit_ex, write_temp_file,
     };
-    use lattice_protocol::edit::Edit;
 
     /// Sanity check: a bare motion drives the cursor through
     /// the full translate + apply path. If this fails, the

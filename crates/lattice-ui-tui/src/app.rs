@@ -4963,7 +4963,7 @@ impl App {
     /// New buffer-level state plugs in here: keep the path
     /// principled instead of sprinkling per-option fixups across
     /// every entry point that changes the active buffer.
-    fn activate_buffer_state(&mut self) {
+    pub(super) fn activate_buffer_state(&mut self) {
         // Make sure the syntax tree matches the current text. If
         // the entry stashed a parse for the document's current
         // version this no-ops; otherwise it parses + recomputes
@@ -4986,107 +4986,6 @@ impl App {
         self.pane_highlights.clear();
     }
 
-    /// Switch the active document to `id`. Snapshots the current
-    /// active state into its entry, then loads from the
-    /// destination's entry. No-op if `id` is already active or
-    /// not registered.
-    pub fn activate_document(&mut self, id: BufferId) {
-        if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
-            return;
-        }
-        if self.buffers.document(id).is_none() {
-            self.set_message(EchoLevel::Error, format!("buffer #{} not a document", id.0));
-            return;
-        }
-        // Save active pane's cursor/scroll first; the active pane
-        // is the one whose buffer changed.
-        self.snapshot_active_pane();
-        // Same-document fast path: returning to the document
-        // buffer that `self.document` still points at (e.g. from
-        // a help-in-pane overlay or a file-tree pane). Two cases
-        // converge here, distinguished by whether the prior
-        // transition stashed hot-path state into the entry:
-        //
-        // 1. **Help-in-pane** (overlay): `activate_help_in_pane`
-        //    deliberately does NOT stash, so `self.syntax` /
-        //    `self.folds` stay live for the underlying document
-        //    paint. `entry.syntax` is `None`. Skip the restore;
-        //    just flip flags + pane state.
-        //
-        // 2. **File tree** (replaces buffer area): `activate_file_tree`
-        //    routes through `snapshot_active_document` which moves
-        //    `self.syntax` into `entry.syntax`. On the way back
-        //    `entry.syntax` is `Some` and we restore it.
-        //
-        // The "is the entry stashed?" check is `entry.syntax.is_some()`;
-        // folds piggyback on the same condition so partial-empty
-        // fold lists don't trip the take-from-entry branch.
-        if id == self.document_buffer_id {
-            self.active_buffer = BufferKind::Document;
-            let pane = self.pane_tree.active_mut();
-            pane.buffer = BufferKind::Document;
-            pane.buffer_id = id;
-            if let Some(entry) = self.buffers.document_mut(id)
-                && entry.syntax.is_some()
-            {
-                self.syntax = entry.syntax.take();
-                self.last_parsed_text_version = entry.last_parsed_text_version;
-                self.folds = std::mem::take(&mut entry.folds);
-            }
-            return;
-        }
-        self.snapshot_active_document();
-        // Load destination.
-        let entry = self
-            .buffers
-            .document_mut(id)
-            .expect("document() lookup above succeeded");
-        self.document = entry.handle.clone();
-        // Rebuild the cache against the activated document's
-        // published-cell; the previous cache pointed at the old
-        // document.
-        self.snapshot_cache = self.document.snapshot_cache();
-        self.syntax = entry.syntax.take();
-        self.last_parsed_text_version = entry.last_parsed_text_version;
-        // Folds round-trip with the buffer (see DocumentEntry
-        // doc-comment). On first activation the entry is empty
-        // and `activate_buffer_state` seeds from foldmethod;
-        // subsequent re-activations restore the user's
-        // open/closed state.
-        self.folds = std::mem::take(&mut entry.folds);
-        self.document_buffer_id = id;
-        // The active pane now references this document.
-        let pane = self.pane_tree.active_mut();
-        pane.buffer = BufferKind::Document;
-        pane.buffer_id = id;
-        // Per-document transient state resets that should NOT
-        // persist across buffer switches.
-        self.current_match = None;
-        self.all_matches.clear();
-        self.search_line = None;
-        // Note: `last_search` / `last_find` / `last_change` /
-        // `last_visual` / marks / registers / macros /
-        // replace_history / position_history all persist
-        // intentionally. Folds are buffer-local and snapshotted
-        // into `DocumentEntry` above.
-        self.cursor = Position::ZERO;
-        self.scroll = 0;
-        self.load_active_pane();
-        // Single principled hook for everything that needs to
-        // come up with the buffer (parse, folds, highlight cache).
-        self.activate_buffer_state();
-        self.set_message(
-            EchoLevel::Info,
-            format!(
-                "switched to buffer #{} {}",
-                id.0,
-                self.document
-                    .path()
-                    .map(|p| format!("\"{}\"", p.display()))
-                    .unwrap_or_else(|| "(no file)".into())
-            ),
-        );
-    }
 
 
 
@@ -8385,77 +8284,8 @@ impl App {
         }
     }
 
-    /// Switch the active pane to whatever buffer `id` references,
-    /// regardless of kind. Document buffers route through
-    /// [`Self::activate_document`]; tree buffers update the active
-    /// pane + load the tree's stash; help buffers go through
-    /// [`Self::activate_help_in_pane`] (Phase 1 wiring).
-    pub fn activate_buffer(&mut self, id: BufferId) {
-        let kind = match self.buffers.get(id) {
-            Some(entry) => entry.kind(),
-            None => {
-                self.set_message(EchoLevel::Error, format!("buffer #{} not found", id.0));
-                return;
-            }
-        };
-        match kind {
-            BufferKind::Document => self.activate_document(id),
-            BufferKind::FileTree => self.activate_file_tree(id),
-            BufferKind::Help => self.activate_help_in_pane(id),
-            BufferKind::Oil => self.activate_oil(id),
-        }
-    }
 
-    /// Switch the active pane to the file-tree buffer with `id`.
-    /// Snapshots the current active state first; the pane's
-    /// stashed cursor / scroll load into the tree's hot fields
-    /// via [`Self::load_active_pane`].
-    pub fn activate_file_tree(&mut self, id: BufferId) {
-        if self.buffers.file_tree(id).is_none() {
-            self.set_message(EchoLevel::Error, format!("buffer #{} not a tree", id.0));
-            return;
-        }
-        if id == self.active_pane_buffer_id() && matches!(self.active_buffer, BufferKind::FileTree)
-        {
-            return;
-        }
-        self.snapshot_active_pane();
-        self.snapshot_active_document();
-        // Load the tree's stash into the App's hot-path cursor /
-        // scroll. After this, `self.cursor` / `self.scroll` are
-        // the tree's -- motion / scroll / search code reads /
-        // writes them uniformly, no per-kind branches needed.
-        let (stash_cursor, stash_scroll) = self
-            .buffers
-            .file_tree(id)
-            .map(|t| (t.cursor, t.scroll as u32))
-            .unwrap_or((Position::ZERO, 0));
-        self.cursor = stash_cursor;
-        self.scroll = stash_scroll;
-        self.active_buffer = BufferKind::FileTree;
-        let pane = self.pane_tree.active_mut();
-        pane.buffer = BufferKind::FileTree;
-        pane.buffer_id = id;
-        pane.cursor = stash_cursor;
-        pane.scroll = stash_scroll;
-    }
 
-    /// Switch the active pane to the oil buffer with `id`.
-    pub fn activate_oil(&mut self, id: BufferId) {
-        if self.buffers.oil(id).is_none() {
-            return;
-        }
-        let oil_cursor = self.buffers.oil(id).map(|o| o.cursor).unwrap_or(Position::ZERO);
-        let oil_scroll = self.buffers.oil(id).map(|o| o.scroll).unwrap_or(0);
-        self.active_buffer = BufferKind::Oil;
-        let pane = self.pane_tree.active_mut();
-        pane.buffer = BufferKind::Oil;
-        pane.buffer_id = id;
-        pane.cursor = oil_cursor;
-        pane.scroll = oil_scroll as u32;
-        self.cursor = oil_cursor;
-        self.scroll = oil_scroll as u32;
-    }
 
     /// `:set [option | option=value | nooption | option?]`.
     /// Parses against the shared typed-options
@@ -11403,81 +11233,6 @@ impl App {
         locals.insert(crate::modes::HelpHighlights(buffer.highlights.clone()));
     }
 
-    /// Switch the active pane to an existing help buffer in the
-    /// registry. Snapshots prior pane state so `<C-o>` returns the
-    /// user to the document/cursor they came from. The registry's
-    /// HelpBuffer is mirrored into `self.help_buffer` so the
-    /// existing keymap + render paths transparently target it.
-    fn activate_help_in_pane(&mut self, id: BufferId) {
-        if self.buffers.help(id).is_none() {
-            self.set_message(EchoLevel::Error, format!("buffer #{} not a help buffer", id.0));
-            return;
-        }
-        // Skip the auto-jump push during picker-preview hovers --
-        // the user hasn't committed to this buffer yet, so we
-        // don't want every cursor over a candidate to bloat the
-        // jump list. The real push happens on `PickerAccept` if
-        // the user commits.
-        if !self.previewing && matches!(self.active_buffer, BufferKind::Document) {
-            let cur = self.cursor;
-            self.push_position_history(cur, PositionSource::AutoJump);
-        }
-        // Capture pre-activation pane + active state so dismiss
-        // can restore the user to whatever buffer they came from.
-        // Only set when transitioning into help from a non-help
-        // buffer; help-to-help transitions (link follows etc.)
-        // preserve the original origin.
-        if !matches!(self.active_buffer, BufferKind::Help) {
-            let active = self.pane_tree.active();
-            self.prev_pane_for_help = Some(PrevPaneState {
-                buffer: active.buffer,
-                buffer_id: active.buffer_id,
-                cursor: self.cursor,
-                scroll: self.scroll,
-            });
-        }
-        self.snapshot_active_pane();
-        // Note: do NOT call `snapshot_active_document` here. Help
-        // is rendered as a popup overlay over the underlying
-        // document; the pane's per-frame paint draws the active
-        // document via `draw_buffer(snap)` which reads from
-        // `self.syntax` / `self.folds` for highlights + fold
-        // overlays. Stashing those onto the document entry would
-        // leave `self.syntax = None` for the duration of the help
-        // session, so the document underneath the popup paints
-        // unhighlighted (the user's #5 bug report). The hot-path
-        // state stays live; the round-trip back to the same
-        // document via `activate_document` early-returns on
-        // matching `document_buffer_id` (see that fn for the
-        // same-doc fast path).
-        // Mirror the registry copy into the hot-path slot. If
-        // open_help_in_pane just placed it there, this is a no-op;
-        // for re-entries via :bn / picker we restore the saved
-        // content.
-        if self.help_buffer.as_ref().map(|h| h.id) != Some(id)
-            && let Some(reg_help) = self.buffers.help(id)
-        {
-            self.help_buffer = Some(reg_help.clone());
-        }
-        // Load the help buffer's stash into the App's hot-path
-        // cursor / scroll. After this, `self.cursor` /
-        // `self.scroll` are the help's -- motion / scroll /
-        // search code reads / writes them uniformly, no per-kind
-        // branches needed. Fresh help buffers default to (0, 0).
-        let (stash_cursor, stash_scroll) = self
-            .help_buffer
-            .as_ref()
-            .map(|h| (h.cursor, h.scroll as u32))
-            .unwrap_or((Position::ZERO, 0));
-        self.cursor = stash_cursor;
-        self.scroll = stash_scroll;
-        self.active_buffer = BufferKind::Help;
-        let pane = self.pane_tree.active_mut();
-        pane.buffer = BufferKind::Help;
-        pane.buffer_id = id;
-        pane.cursor = stash_cursor;
-        pane.scroll = stash_scroll;
-    }
 
 
 

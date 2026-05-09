@@ -1989,87 +1989,14 @@ impl std::fmt::Debug for App {
 }
 
 impl App {
-    // ---- Typed-options accessors (DESIGN.md §5.12) ----
-    //
-    // The current value of each option lives in `self.config`
-    // behind an `ArcSwap` (single source of truth). These
-    // accessors read from `self.option_cache` -- a derived
-    // projection refreshed via the §5.10 cascade hook on every
-    // `Event::OptionChanged` -- so the renderer's per-line option
-    // checks stay at field-access speed (~1ns) instead of the
-    // ~33ns mutex+ArcSwap+downcast dance per call.
-    // ---- LSP integration helpers ----
-    //
-    // Buffer-open attach is event-driven: `App::new` and
-    // `App::do_edit` publish `Event::DocumentOpened`; the LSP
-    // attach driver wired in `build_lsp_subsystem` consumes
-    // events on the LSP runtime and submits opens to the
-    // supervisor's mailbox. Nothing on the UI thread parks on
-    // the LSP `initialize` round-trip.
-    //
-    // The hot edit path is similar: `Event::DocumentChanged`
-    // flows through the editor event bus into a per-actor
-    // fan-in (lattice_lsp::fan_in) that sends straight to the
-    // actor's mailbox. The App publishes the event from
-    // `publish_document_changed`; nothing here takes the
-    // supervisor mutex on each keystroke.
-
-
-
-
-
-
-
-    /// `:lsp-log-level [server] <level>` -- set the subsystem
-
-
-
-
-
+    /// Set the echo / status-line message. The renderer reads the
+    /// most recent value into the bottom row each frame.
     pub fn set_message(&mut self, level: EchoLevel, text: impl Into<String>) {
         self.last_message = Some(EchoMessage {
             text: text.into(),
             level,
         });
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    // `:wq` / `:x` are now Effect::Many([SaveBuffer, QuitEditor{force}])
-    // composed in `lattice_grammar::ex_commands::apply_write_quit`. The
-    // do_write + do_quit pair runs in sequence via apply_effect; the
-    // quit's force-bit comes from the trailing `!` (DESIGN.md §5.2.1).
 }
 
 pub(crate) fn line_byte_len(buf: &Buffer, line: u32) -> u32 {

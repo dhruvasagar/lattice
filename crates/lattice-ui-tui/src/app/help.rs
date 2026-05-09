@@ -573,3 +573,757 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+    use crate::app::*;
+    use crate::app::test_helpers::{app_in_command_mode, app_with, install_help};
+
+    #[test]
+    fn describe_command_opens_help_buffer_with_metadata() {
+        let mut a = app_with("xx", 10);
+        // `:describe-command ex:write` -- the registry knows about this.
+        a.command_line = "describe-command ex:write".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("help view should open");
+        assert!(h.title.contains("ex:write"));
+        // First two lines: "ex:write  (ex-command)" + blank.
+        let lines = h.lines();
+        assert!(lines[0].contains("ex:write"));
+        assert!(lines[0].contains("ex-command"));
+    }
+
+    #[test]
+    fn describe_command_shows_source_link_to_registration_site() {
+        // §5.11: every :describe-* must surface a file link to the
+        // registration site. The buffer text is the rendered label
+        // (`ex_commands.rs:LINE`) only -- the URL lives on the
+        // parsed HelpLink target. Built-in commands record their
+        // source via #[track_caller] when populate() runs.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:write".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        let body = h.content.as_string();
+        assert!(
+            body.contains("Defined at:"),
+            "body should label the source: {body}"
+        );
+        assert!(
+            body.contains("ex_commands.rs"),
+            "body should contain the file path label: {body}"
+        );
+        // The HelpLink target carries the URL's resolved type.
+        let has_source = h.links.iter().any(|l| {
+            matches!(&l.target, crate::help::HelpLinkTarget::Source { path, .. }
+                if path.to_string_lossy().contains("ex_commands.rs"))
+        });
+        assert!(has_source, "expected a Source HelpLink to ex_commands.rs");
+        assert!(
+            body.contains("(built-in)"),
+            "body should label the source layer: {body}"
+        );
+    }
+
+    #[test]
+    fn describe_command_link_is_extracted_by_help_link_parser() {
+        // The HelpBuffer constructor runs parse_help_links over the
+        // body so the `[label](file:...)` markdown link becomes a
+        // HelpLink with a Source target -- ready for the styled-link
+        // renderer + follow-link motion (post-1.0).
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:quit".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        let source_link = h
+            .links
+            .iter()
+            .find(|l| matches!(l.target, crate::help::HelpLinkTarget::Source { .. }));
+        assert!(
+            source_link.is_some(),
+            "expected at least one HelpLink with Source target; got {:?}",
+            h.links
+        );
+    }
+
+    #[test]
+    fn describe_command_emits_per_arg_anchors() {
+        // §5.11 anchor system: every arg produces an `arg:<name>`
+        // anchor, plus a parent `args` anchor for the section.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:apropos".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        // ex:apropos has one arg "pattern" -- expect "args" plus "arg:pattern".
+        assert!(
+            h.anchors.iter().any(|a| a.name == "args"),
+            "expected 'args' anchor, got {:?}",
+            h.anchors
+        );
+        assert!(
+            h.anchors.iter().any(|a| a.name == "arg:pattern"),
+            "expected 'arg:pattern' anchor, got {:?}",
+            h.anchors
+        );
+    }
+
+    #[test]
+    fn describe_command_with_no_args_emits_no_arg_anchors() {
+        // ex:quit has no args, so no `arg:*` or `args` anchors. The
+        // `latency` anchor is always present (latency-class
+        // declaration is mandatory metadata, DESIGN.md §5.2.5).
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:quit".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        assert!(
+            h.anchors.iter().all(|a| a.name == "latency"),
+            "ex:quit has no args; only the latency anchor is expected: {:?}",
+            h.anchors,
+        );
+    }
+
+    #[test]
+    fn describe_command_anchor_lines_match_actual_section_headings() {
+        // Verify the recorded line index actually points at the
+        // section's heading row in the rendered content.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:apropos".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        let lines = h.lines();
+        let args_anchor = h.anchors.iter().find(|a| a.name == "args").unwrap();
+        let arg_anchor = h.anchors.iter().find(|a| a.name == "arg:pattern").unwrap();
+        assert_eq!(lines[args_anchor.line as usize], "Arguments:");
+        assert!(lines[arg_anchor.line as usize].contains("pattern"));
+    }
+
+    #[test]
+    fn describe_command_arguments_section_renders_args_schema() {
+        // ex:apropos has a schema with one required arg "pattern".
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:apropos".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        assert!(
+            body.contains("Arguments:"),
+            "expected Arguments section: {body}"
+        );
+        assert!(
+            body.contains("pattern"),
+            "expected arg name `pattern`: {body}"
+        );
+    }
+
+    #[test]
+    fn describe_key_shows_source_link_to_keymap_row() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-key j".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        let body = h.content.as_string();
+        assert!(
+            body.contains("Bound at:"),
+            "describe-key output missing `Bound at:`: {body}"
+        );
+        assert!(
+            body.contains("keymap.rs"),
+            "describe-key output missing source label: {body}"
+        );
+        let has_source = h.links.iter().any(|l| {
+            matches!(&l.target, crate::help::HelpLinkTarget::Source { path, .. }
+                if path.to_string_lossy().contains("keymap.rs"))
+        });
+        assert!(has_source, "expected a Source HelpLink to keymap.rs");
+        assert!(
+            body.contains("(built-in)"),
+            "describe-key output missing source-layer label: {body}"
+        );
+    }
+
+    #[test]
+    fn describe_key_renders_command_cross_reference_links() {
+        // For `j`, three Normal/Visual/Help bindings -- the first
+        // two have a `command`. The buffer text shows the LABEL
+        // (`motion:line-down`); the URL is on the HelpLink target.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-key j".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        let body = h.content.as_string();
+        assert!(
+            body.contains("motion:line-down"),
+            "expected `motion:line-down` label: {body}"
+        );
+        // The Command target carries the canonical command name.
+        let has_cmd_link = h.links.iter().any(|l| {
+            matches!(&l.target, crate::help::HelpLinkTarget::Command(c) if c == "motion:line-down")
+        });
+        assert!(has_cmd_link, "expected Command(motion:line-down) link");
+    }
+
+    #[test]
+    fn describe_key_each_binding_has_its_own_source_link() {
+        // `j` has 2 bindings -- Normal (line down) and Visual
+        // (extend down). Help inherits Normal's `j` via active-
+        // buffer routing (DESIGN.md §5.9), so it doesn't surface as
+        // a separate descriptor. Each remaining binding should
+        // surface its own `(file:...)` link because every
+        // KeymapEntry's source is captured at its own row.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-key j".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        let source_links: Vec<_> = h
+            .links
+            .iter()
+            .filter(|l| matches!(l.target, crate::help::HelpLinkTarget::Source { .. }))
+            .collect();
+        assert_eq!(
+            source_links.len(),
+            2,
+            "expected 2 source links (one per binding); got {}: {:?}",
+            source_links.len(),
+            h.links
+        );
+        // Each link should point at a distinct line in keymap.rs.
+        let mut lines: Vec<u32> = source_links
+            .iter()
+            .filter_map(|l| match &l.target {
+                crate::help::HelpLinkTarget::Source { line, .. } => Some(*line),
+                _ => None,
+            })
+            .collect();
+        lines.sort();
+        lines.dedup();
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected 2 distinct source line numbers; got {lines:?}",
+        );
+    }
+
+    #[test]
+    fn describe_key_unknown_chord_renders_not_bound_message() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-key xyzzy".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        assert!(body.contains("not bound"), "body: {body}");
+    }
+
+    #[test]
+    fn describe_command_resolves_alias_arg() {
+        // `:describe-command apropos` -- the arg is an alias.
+        // The handler must do two-stage resolution: alias `apropos`
+        // -> canonical `ex:apropos` -> CommandSpec lookup.
+        // Regression for the bug where the handler did a single
+        // direct id_by_name(name) and failed for every alias.
+        let mut a = app_in_command_mode("describe-command apropos");
+        a.apply(Action::CommandLineSubmit);
+        let h = a
+            .help_buffer
+            .as_ref()
+            .expect("describe-command apropos should open help");
+        assert!(
+            h.title.contains("apropos"),
+            "title should reference apropos, got `{}`",
+            h.title
+        );
+        // Should NOT be the error path.
+        assert!(
+            a.last_message
+                .as_ref()
+                .map(|m| m.level != EchoLevel::Error)
+                .unwrap_or(true)
+        );
+    }
+
+    #[test]
+    fn describe_command_resolves_short_alias_arg() {
+        // Same shape but with a short alias (`w` -> `ex:write`).
+        let mut a = app_in_command_mode("describe-command w");
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("describe-command w");
+        // Title shows whatever the user typed; the resolved spec
+        // is `ex:write`. Body must mention the canonical name to
+        // confirm we resolved correctly.
+        let body = h.content.as_string();
+        assert!(
+            body.contains("ex:write"),
+            "body should reference ex:write: {body}"
+        );
+    }
+
+    #[test]
+    fn describe_command_unknown_alias_emits_error() {
+        let mut a = app_in_command_mode("describe-command xyzzy-not-a-thing");
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.help_buffer.is_none());
+        let m = a.last_message.as_ref().unwrap();
+        assert_eq!(m.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn describe_command_with_no_args_omits_arguments_section() {
+        // ex:quit has args_schema: vec![] -- no Arguments section.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:quit".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        assert!(
+            !body.contains("Arguments:"),
+            "Arguments section should be omitted: {body}"
+        );
+    }
+
+    #[test]
+    fn describe_command_unknown_emits_error_no_overlay() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:nope".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.help_buffer.is_none());
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn describe_buffer_renders_state_summary() {
+        let mut a = app_with("hello\nworld", 10);
+        a.command_line = "describe-buffer".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("help view should open");
+        // Some predictable content lines.
+        let body = h.content.as_string();
+        assert!(body.contains("modal state"));
+        assert!(body.contains("cursor:"));
+        assert!(body.contains("dirty:"));
+        assert!(body.contains("line count:"));
+    }
+
+    #[test]
+    fn apropos_lists_matching_commands() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "apropos write".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("help view should open");
+        let body = h.content.as_string();
+        // Both ex:write and ex:write-quit match the substring.
+        assert!(body.contains("ex:write"));
+        assert!(body.contains("ex:write-quit"));
+    }
+
+    #[test]
+    fn apropos_no_matches_renders_empty_view() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "apropos zxqzxqzxq".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().unwrap();
+        let body = h.content.as_string();
+        assert!(body.contains("no matches"));
+    }
+
+    #[test]
+    fn help_with_no_arg_opens_index() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "help".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("help open");
+        assert_eq!(h.title, "help");
+        let body = h.content.as_string();
+        // Index page advertises the topic table.
+        assert!(body.contains("Topic"), "got: {body}");
+    }
+
+    #[test]
+    fn help_with_topic_opens_that_topic() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "help folding".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("help open");
+        assert_eq!(h.title, "help folding");
+        let body = h.content.as_string();
+        assert!(
+            body.to_lowercase().contains("fold"),
+            "expected fold-related content"
+        );
+    }
+
+    #[test]
+    fn help_unknown_topic_errors() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "help nonexistent".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.help_buffer.is_none());
+        let msg = a.last_message.as_ref().expect("error");
+        assert!(msg.text.contains("no help topic"), "got: {}", msg.text);
+    }
+
+    #[test]
+    fn describe_buffer_command_emits_topic_cross_link() {
+        // `:buffers` (registered as `ex:buffers`) matches the
+        // buffers topic's `buffer` pattern, so the describe view
+        // should append a `[buffers](help:buffers)` cross-link.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:buffers".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("describe-command open");
+        assert!(
+            h.links
+                .iter()
+                .any(|l| matches!(&l.target, crate::help::HelpLinkTarget::Topic(name) if name == "buffers")),
+            "expected `Topic(buffers)` link"
+        );
+    }
+
+    #[test]
+    fn help_topic_link_follow_dispatches_to_help() {
+        // Open describe-command for a buffers cmd (which appends a
+        // topic link), then follow that link via FollowLink.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-command ex:buffers".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("describe open");
+        let link = h
+            .links
+            .iter()
+            .find(|l| matches!(&l.target, crate::help::HelpLinkTarget::Topic(_)))
+            .expect("topic link present")
+            .clone();
+        let target_pos = link.range.start;
+        a.cursor = target_pos;
+        a.apply(Action::FollowLink);
+        let h = a.help_buffer.as_ref().expect("help reopen");
+        assert_eq!(h.title, "help buffers");
+    }
+
+    #[test]
+    fn help_anchor_link_scrolls_within_current_topic() {
+        // `:help languages` ships intra-doc anchor links of the form
+        // `[Section 1](#1-tree-sitter-core)`. Following one should
+        // scroll the *current* help buffer to the matching heading,
+        // not raise "no handler" / not switch topics.
+        let mut a = app_with("xx", 10);
+        a.command_line = "help languages".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("languages help open");
+        // Find the anchor link to "#1-tree-sitter-core" (which the
+        // languages topic ships in its quick-reference table).
+        let link = h
+            .links
+            .iter()
+            .find(|l| {
+                matches!(
+                    &l.target,
+                    crate::help::HelpLinkTarget::Anchor(s) if s == "1-tree-sitter-core"
+                )
+            })
+            .expect("anchor link to #1-tree-sitter-core present")
+            .clone();
+        let target_anchor_line = h
+            .anchors
+            .iter()
+            .find(|a| a.name == "1-tree-sitter-core")
+            .expect("anchor generated for `## 1. Tree-sitter, core`")
+            .line;
+        // Position the cursor on the link, then follow.
+        // After unification, the active cursor lives on `app.cursor`
+        // (regardless of buffer kind); we set it there.
+        a.cursor = link.range.start;
+        a.apply(Action::FollowLink);
+        let h = a.help_buffer.as_ref().expect("help still open");
+        assert_eq!(
+            h.title, "help languages",
+            "follow-link must NOT swap topics for an anchor jump"
+        );
+        assert_eq!(
+            a.cursor.line, target_anchor_line,
+            "cursor should land on the heading line"
+        );
+        assert_eq!(
+            a.scroll, target_anchor_line,
+            "scroll should follow the anchor"
+        );
+    }
+
+    #[test]
+    fn help_dismiss_clears_overlay_and_routes_back_to_document() {
+        let mut a = app_with("xx", 10);
+        install_help(
+            &mut a,
+            HelpBuffer::from_lines("test", vec!["a".into(), "b".into()]),
+        );
+        a.apply(Action::HelpDismiss);
+        assert!(a.help_buffer.is_none());
+        assert_eq!(a.active_buffer, BufferKind::Document);
+    }
+
+    #[test]
+    fn help_motion_routes_through_active_buffer() {
+        // `j` in help mode should resolve via the same chord grammar
+        // as a code buffer, but the apply layer routes the resulting
+        // motion to the help cursor (DESIGN.md §5.9 active-buffer
+        // routing). 3 line_down invocations -> help cursor line 3,
+        // scroll still 0 (viewport math is 10*7/10 - 2 = 5 rows).
+        let mut a = app_with("xx", 10);
+        let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
+        install_help(&mut a, HelpBuffer::from_lines("scroll-test", lines));
+        let line_down = a.builtins.line_down;
+        for _ in 0..3 {
+            a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
+        }
+        // After unification, `self.cursor` / `self.scroll` are
+        // the active buffer's. The help_buffer's cursor field is
+        // archival save-state synced at activation transitions.
+        assert_eq!(a.cursor.line, 3);
+        assert_eq!(a.scroll, 0);
+    }
+
+    #[test]
+    fn help_motion_clamps_to_last_line() {
+        let mut a = app_with("xx", 10);
+        let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
+        install_help(&mut a, HelpBuffer::from_lines("scroll-test", lines));
+        let line_down = a.builtins.line_down;
+        for _ in 0..1000 {
+            a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
+        }
+        assert_eq!(a.cursor.line, 49);
+        // Scroll keeps cursor on screen: viewport 10, cursor 49,
+        // so scroll = 49 + 1 - 10 = 40. Production runtime sets
+        // viewport per-frame via active_pane_content_height (which
+        // shrinks for help popups); the test fixture sets a fixed
+        // viewport of 10 and the assertion follows from that.
+        assert_eq!(a.scroll, 40);
+    }
+
+    #[test]
+    fn help_popup_inner_height_caps_at_twenty() {
+        // 50-line help in a 60-row buffer: popup height clamps at
+        // 20, inner = 18. Motion uses this as the viewport so
+        // ensure_cursor_visible scrolls the popup -- not the full
+        // pane -- when the cursor reaches the bottom row.
+        let mut a = app_with("xx", 60);
+        let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
+        install_help(&mut a, HelpBuffer::from_lines("size", lines));
+        assert_eq!(a.help_popup_inner_height(60), Some(18));
+        // Confirm `active_pane_content_height` routes through the
+        // popup-inner branch in State B, so the runtime feeds 18
+        // into `set_viewport_height` (not the full 60-row pane).
+        assert_eq!(a.active_pane_content_height(60), 18);
+    }
+
+    #[test]
+    fn help_popup_inner_height_fits_short_content() {
+        // 4-line help: popup auto-fits to height 6 (4 + 2 borders),
+        // inner = 4. Cursor can never go off-popup-viewport
+        // because the popup shows every line of the help buffer.
+        let mut a = app_with("xx", 60);
+        install_help(
+            &mut a,
+            HelpBuffer::from_lines("tiny", vec!["a".into(); 4]),
+        );
+        assert_eq!(a.help_popup_inner_height(60), Some(4));
+    }
+
+    #[test]
+    fn help_popup_inner_height_none_when_pane_holds_help() {
+        // In-pane help (e.g. `:lsp-log`) -- pane.buffer is Help, so
+        // the help fills the pane and the regular pane-content-
+        // height path applies. No overlay sizing.
+        let mut a = app_with("xx", 60);
+        let id = a.open_help_in_pane(HelpBuffer::from_lines("log", vec!["a".into(); 8]));
+        assert_eq!(a.pane_tree.active().buffer_id, id);
+        assert_eq!(a.help_popup_inner_height(60), None);
+    }
+
+    #[test]
+    fn help_popup_j_past_last_line_does_not_advance_cursor() {
+        // Regression for "j past last line in popup advanced
+        // cursor.line internally" -- the pane viewport (60 rows)
+        // hid the overshoot from `ensure_cursor_visible`, so
+        // cursor.line crept past the last visible popup row and
+        // every k afterwards had to walk back through the phantom
+        // gap before any visible motion. Now `viewport_height`
+        // matches the popup's inner height (18 here) AND the
+        // motion path clamps `cursor.line` to last_addressable.
+        let mut a = app_with("xx", 60);
+        let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
+        install_help(&mut a, HelpBuffer::from_lines("scroll", lines));
+        a.set_viewport_height(a.active_pane_content_height(60));
+        let line_down = a.builtins.line_down;
+        let line_up = a.builtins.line_up;
+        // `G` to the last line first so we're at the clamp.
+        let goto_last = a.builtins.goto_last_line;
+        a.apply(Action::Invoke(CommandInvocation::of(goto_last.0)));
+        assert_eq!(a.cursor.line, 49);
+        // Press j five times past the last line. cursor.line must
+        // stay pinned at 49 -- no phantom overshoot.
+        for _ in 0..5 {
+            a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
+        }
+        assert_eq!(a.cursor.line, 49);
+        // First k must move up immediately, not "unwind" any
+        // overshoot.
+        a.apply(Action::Invoke(CommandInvocation::of(line_up.0)));
+        assert_eq!(a.cursor.line, 48);
+    }
+
+    #[test]
+    fn help_motion_up_clamps_at_zero() {
+        let mut a = app_with("xx", 10);
+        install_help(
+            &mut a,
+            HelpBuffer::from_lines("scroll-test", vec!["a".into(); 30]),
+        );
+        let line_up = a.builtins.line_up;
+        for _ in 0..1000 {
+            a.apply(Action::Invoke(CommandInvocation::of(line_up.0)));
+        }
+        assert_eq!(a.cursor.line, 0);
+        assert_eq!(a.scroll, 0);
+    }
+
+    #[test]
+    fn help_horizontal_motion_runs_through_grammar() {
+        let mut a = app_with("xx", 10);
+        install_help(
+            &mut a,
+            HelpBuffer::from_lines("hl-test", vec!["hello world".into()]),
+        );
+        let char_right = a.builtins.char_right;
+        let char_left = a.builtins.char_left;
+        let line_end = a.builtins.line_end;
+        let line_start = a.builtins.line_start;
+        for _ in 0..3 {
+            a.apply(Action::Invoke(CommandInvocation::of(char_right.0)));
+        }
+        assert_eq!(a.cursor.byte, 3);
+        a.apply(Action::Invoke(CommandInvocation::of(char_left.0)));
+        assert_eq!(a.cursor.byte, 2);
+        a.apply(Action::Invoke(CommandInvocation::of(line_end.0)));
+        // `motion:line-end` lands at `byte == line_len` (one past
+        // the last byte) -- the same convention as the document
+        // path. The grammar uses this position so operator targets
+        // (d$, c$, y$) take an exclusive end.
+        assert_eq!(a.cursor.byte, 11);
+        a.apply(Action::Invoke(CommandInvocation::of(line_start.0)));
+        assert_eq!(a.cursor.byte, 0);
+    }
+
+    #[test]
+    fn help_gg_and_capital_g_route_through_grammar() {
+        let mut a = app_with("xx", 10);
+        install_help(&mut a, HelpBuffer::from_lines("jt", vec!["x".into(); 30]));
+        let goto_first = a.builtins.goto_first_line;
+        let goto_last = a.builtins.goto_last_line;
+        a.apply(Action::Invoke(CommandInvocation::of(goto_last.0)));
+        assert_eq!(a.cursor.line, 29);
+        assert!(a.scroll > 0);
+        a.apply(Action::Invoke(CommandInvocation::of(goto_first.0)));
+        assert_eq!(a.cursor.line, 0);
+        assert_eq!(a.scroll, 0);
+    }
+
+    #[test]
+    fn help_count_motions_compose() {
+        // `5j` -- the same count semantics as Normal mode.
+        let mut a = app_with("xx", 10);
+        let lines: Vec<String> = (0..50).map(|i| format!("l{i}")).collect();
+        install_help(&mut a, HelpBuffer::from_lines("count", lines));
+        let line_down = a.builtins.line_down;
+        a.apply(Action::Invoke(
+            CommandInvocation::of(line_down.0).with_count(lattice_grammar::command::Count(5)),
+        ));
+        assert_eq!(a.cursor.line, 5);
+    }
+
+    #[test]
+    fn help_invoke_operator_echoes_read_only() {
+        // Operators on a help buffer are rejected with a "read-only"
+        // echo -- v1 doesn't model yank-against-help yet.
+        let mut a = app_with("xx", 10);
+        install_help(&mut a, HelpBuffer::from_lines("ro", vec!["abc".into(); 5]));
+        let yank = a.builtins.yank;
+        a.apply(Action::Invoke(
+            CommandInvocation::of(yank.0).with_range(lattice_grammar::Range::CurrentLine),
+        ));
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("read-only"), "got: {msg:?}");
+        assert!(a.unnamed_register.is_none());
+    }
+
+    #[test]
+    fn help_action_insert_blocked_with_echo() {
+        // The read-only guard short-circuits direct mutation
+        // actions so a stray Action::Insert while help is active
+        // doesn't fall through onto the document.
+        let mut a = app_with("xx", 10);
+        let original = a.document.text();
+        install_help(&mut a, HelpBuffer::from_lines("ro", vec!["abc".into()]));
+        a.apply(Action::Insert("PWNED".into()));
+        assert_eq!(a.document.text(), original);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("read-only"), "got: {msg:?}");
+    }
+
+    #[test]
+    fn help_buffer_active_mode_is_help_mode() {
+        let mut a = app_with("hi", 5);
+        let help = crate::help::HelpBuffer::from_lines(
+            "test",
+            vec!["line one".to_string()],
+        );
+        let help_id = a.open_help_in_pane(help);
+        let active = a
+            .active_modes
+            .get(&help_id)
+            .expect("active_modes populated for help");
+        assert_eq!(active.major(), Some(crate::modes::HelpMode::mode_id()));
+    }
+
+    #[test]
+    fn help_locals_carry_owner_metadata_for_describe_buffer() {
+        let mut a = app_with("hi", 5);
+        let help = crate::help::HelpBuffer::from_lines("t", vec!["body".into()]);
+        let help_id = a.open_help_in_pane(help);
+        let locals = a.buffer_locals.get(&help_id).unwrap();
+        // Every seeded local should claim help-mode as its owner.
+        let descriptors: Vec<_> = locals.iter_descriptors().collect();
+        assert!(!descriptors.is_empty());
+        for d in &descriptors {
+            assert_eq!(d.owner_mode, "help-mode");
+            assert!(
+                d.name.starts_with("help-mode."),
+                "name {:?} should be namespaced under help-mode",
+                d.name
+            );
+        }
+    }
+
+}

@@ -7,7 +7,7 @@
 //! these in via `use crate::app::test_helpers::*;`.
 
 use lattice_core::Document;
-use lattice_grammar::CommandInvocation;
+use lattice_grammar::{CommandInvocation, ModalState};
 use lattice_grammar::registry::MotionId;
 use lattice_protocol::Event;
 
@@ -126,4 +126,61 @@ pub(super) fn press_chars(app: &mut App, keys: &str) {
     for c in keys.chars() {
         press(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
+}
+
+/// Build an `App` over a path-bearing document. Used by
+/// path-completion + LSP-attach tests that need a real
+/// path to drive the language detection / attach flow.
+pub(super) fn app_with_path(
+    text: &str,
+    viewport: u32,
+    path: std::path::PathBuf,
+) -> App {
+    let doc = lattice_core::DocumentBuilder::default()
+        .with_text(text)
+        .with_path(path)
+        .build();
+    let mut a = App::new(doc);
+    a.set_viewport_height(viewport);
+    a
+}
+
+/// Construct an App pre-staged into Command modal with
+/// `line` already in the cmdline buffer. Used by every
+/// `:`-line completion / dispatch test that needs the
+/// cmdline pre-populated.
+pub(super) fn app_in_command_mode(line: &str) -> App {
+    let mut a = app_with("xx", 10);
+    a.modal = ModalState::Command;
+    a.command_line = line.into();
+    a
+}
+
+/// Attach a freshly-built tree-sitter Rust syntax handle
+/// over `source`. Convenience for tree-sitter-driven tests
+/// that don't care about the language detection path.
+pub(super) fn set_rust_syntax(a: &mut App, source: &str) {
+    let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+        .unwrap()
+        .expect("rust syntax");
+    s.parse_at(source, 0);
+    a.syntax = Some(lattice_syntax::SyntaxHandle::seeded(s));
+}
+
+/// Build a fresh per-test temp workspace directory. The
+/// returned path is created on disk; the caller can
+/// populate it with files / subdirs before constructing an
+/// App against it.
+pub(super) fn fresh_path_workspace(name: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "lattice-{}-{}-{}",
+        name,
+        std::process::id(),
+        n,
+    ));
+    std::fs::create_dir_all(&path).unwrap();
+    path
 }

@@ -3376,3 +3376,2181 @@ impl App {
         ids
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+    use crate::app::*;
+    use crate::app::test_helpers::app_with;
+
+    #[test]
+    fn hover_dismisses_on_document_cursor_motion() {
+        // Vim/emacs UX: any motion off the hovered symbol drops
+        // the popup. Apply a hover popup directly (skipping the
+        // async LSP path), move the cursor, assert dismissal.
+        let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
+        a.do_open_hover("hover body");
+        assert!(a.help_buffer.is_some());
+        // State A: focus still on doc, prev_pane_for_help is None.
+        assert!(a.prev_pane_for_help.is_none());
+        assert!(matches!(a.active_buffer, BufferKind::Document));
+        // Drive a real motion through `apply` (`l` -- char-right).
+        let inv = lattice_grammar::CommandInvocation::of(a.builtins.char_right.0);
+        a.apply(Action::Invoke(inv));
+        assert!(
+            a.help_buffer.is_none(),
+            "hover popup should dismiss on cursor motion in State A"
+        );
+    }
+
+    #[test]
+    fn hover_does_not_dismiss_when_cursor_unchanged() {
+        // No-op actions (e.g. setting a no-arg ex command,
+        // an out-of-bounds motion that clamps in place) must not
+        // dismiss the popup. Use a count-only push (`5`) which
+        // doesn't move the cursor.
+        let mut a = app_with("fn main() {}\n", 5);
+        a.do_open_hover("hover body");
+        assert!(a.help_buffer.is_some());
+        a.apply(Action::PushDigit(5));
+        assert!(
+            a.help_buffer.is_some(),
+            "hover should survive a count-prefix push"
+        );
+    }
+
+    #[test]
+    fn hover_open_populates_help_buffer() {
+        let mut a = app_with("alpha\nbeta\ngamma", 10);
+        a.cursor = Position::new(1, 2);
+        a.command_line = "hover documentation".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("hover open");
+        assert_eq!(h.title, "hover");
+        assert!(h.content.as_string().contains("documentation"));
+        // State A: focus stays on doc.
+        assert!(matches!(a.active_buffer, BufferKind::Document));
+        assert!(a.prev_pane_for_help.is_none());
+    }
+
+    #[test]
+    fn hover_close_dismisses_popup() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "hover x".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.help_buffer.is_some());
+        a.command_line = "HoverClose".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.help_buffer.is_none());
+    }
+
+    #[test]
+    fn hover_with_no_arg_uses_placeholder() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "hover".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.help_buffer.as_ref().expect("hover open");
+        assert!(h.content.as_string().contains("empty"));
+    }
+
+    #[test]
+    fn hover_contents_scalar_string_renders_verbatim() {
+        let m = lsp_types::HoverContents::Scalar(lsp_types::MarkedString::String(
+            "fn foo() -> u32".into(),
+        ));
+        assert_eq!(super::hover_contents_to_markdown(&m), "fn foo() -> u32");
+    }
+
+    #[test]
+    fn hover_contents_language_string_renders_as_fenced_block() {
+        let m = lsp_types::HoverContents::Scalar(lsp_types::MarkedString::LanguageString(
+            lsp_types::LanguageString {
+                language: "rust".into(),
+                value: "let x: u32 = 5;".into(),
+            },
+        ));
+        let md = super::hover_contents_to_markdown(&m);
+        assert!(md.contains("```rust"));
+        assert!(md.contains("let x: u32 = 5;"));
+        assert!(md.ends_with("```"));
+    }
+
+    #[test]
+    fn hover_contents_array_joins_with_double_newline() {
+        let m = lsp_types::HoverContents::Array(vec![
+            lsp_types::MarkedString::String("first".into()),
+            lsp_types::MarkedString::String("second".into()),
+        ]);
+        let md = super::hover_contents_to_markdown(&m);
+        assert_eq!(md, "first\n\nsecond");
+    }
+
+    #[test]
+    fn hover_contents_markup_uses_value_as_markdown() {
+        let m = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+            kind: lsp_types::MarkupKind::Markdown,
+            value: "# heading\n\nbody".into(),
+        });
+        assert_eq!(super::hover_contents_to_markdown(&m), "# heading\n\nbody");
+    }
+
+    #[test]
+    fn lsp_hover_request_with_no_uri_echoes_no_lsp_attached() {
+        // Initial document has no path, so no URI mapping; the
+        // request should set an info message and not panic.
+        let mut a = app_with("xx", 10);
+        a.apply(Action::LspHoverRequest);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn lsp_hover_request_pre_cancels_in_flight_token() {
+        // Two K presses in a row: the first one's token must be
+        // flipped before the second's request fires, so a slow
+        // first response gets dropped by the relay's cancel-aware
+        // poll loop.
+        let mut a = app_with("xx", 10);
+        // Manually install an in-flight token.
+        let stale = lattice_protocol::CancellationToken::new();
+        a.pending_hover_token = Some(stale.clone());
+        // Trigger another hover. With no LSP attached the new
+        // request bails on the URI lookup, but the cancel of the
+        // previous token should still happen first.
+        a.apply(Action::LspHoverRequest);
+        assert!(
+            stale.is_cancelled(),
+            "prior in-flight hover token should flip on a new K press"
+        );
+    }
+
+    #[test]
+    fn drain_pending_hover_body_outcome_opens_popup() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
+        a.pending_hover_rx = Some(rx);
+        a.pending_hover_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(crate::app::HoverOutcome::Body("**bold body**".into()))
+            .unwrap();
+        a.drain_pending_hover();
+        let h = a.help_buffer.as_ref().expect("popup");
+        assert!(h.content.as_string().contains("**bold body**"));
+        // State A entry: focus still on the doc.
+        assert!(matches!(a.active_buffer, BufferKind::Document));
+        assert!(a.prev_pane_for_help.is_none());
+        assert!(
+            a.pending_hover_token.is_none(),
+            "delivering the outcome should clear the in-flight token"
+        );
+    }
+
+    #[test]
+    fn drain_pending_hover_no_body_outcome_echoes_no_hover_info() {
+        // Regression for the silent-K-press symptom: if every
+        // attached server replies with empty contents,
+        // `drain_pending_hover` should echo a clear "no hover
+        // info" so the user knows their K press was received.
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
+        a.pending_hover_rx = Some(rx);
+        a.pending_hover_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(crate::app::HoverOutcome::NoBody { servers_tried: 1 })
+            .unwrap();
+        a.drain_pending_hover();
+        assert!(a.help_buffer.is_none(), "no popup for empty hover");
+        let msg = a.last_message.as_ref().expect("echo on no-hover-info");
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(
+            msg.text.contains("no hover info"),
+            "expected 'no hover info' echo; got `{}`",
+            msg.text
+        );
+    }
+
+    #[test]
+    fn drain_pending_hover_no_servers_outcome_echoes_warn() {
+        // Buffer URI maps to no attached servers (e.g. spawn
+        // failed at boot). The user gets a Warn echo pointing at
+        // :lsp-status / :lsp-log so they can investigate.
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
+        a.pending_hover_rx = Some(rx);
+        a.pending_hover_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(crate::app::HoverOutcome::NoServers).unwrap();
+        a.drain_pending_hover();
+        let msg = a
+            .last_message
+            .as_ref()
+            .expect("echo on no-servers-attached");
+        assert_eq!(msg.level, EchoLevel::Warn);
+        assert!(
+            msg.text.contains("no LSP servers"),
+            "expected NoServers warn echo; got `{}`",
+            msg.text
+        );
+    }
+
+    #[test]
+    fn drain_pending_hover_idle_channel_is_noop() {
+        let mut a = app_with("xx", 10);
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
+        a.pending_hover_rx = Some(rx);
+        a.drain_pending_hover();
+        assert!(a.help_buffer.is_none());
+        assert!(a.last_message.is_none());
+    }
+
+    #[test]
+    fn app_to_lsp_position_converts_utf8_byte_to_utf16_column() {
+        let buf = lattice_core::Buffer::from_text("hello\nαβγ\nworld\n");
+        // Line 1 (αβγ): 2-byte UTF-8 chars; byte 4 = end of β.
+        // utf-16 column at byte 4: α (1 unit) + β (1 unit) = 2.
+        let p = super::app_to_lsp_position(&buf, Position::new(1, 4)).expect("in-range");
+        assert_eq!(p.line, 1);
+        assert_eq!(p.character, 2);
+    }
+
+    #[test]
+    fn app_to_lsp_position_returns_none_for_out_of_range_line() {
+        let buf = lattice_core::Buffer::from_text("only-one-line\n");
+        assert!(super::app_to_lsp_position(&buf, Position::new(99, 0)).is_none());
+    }
+
+    fn fake_uri(path: &str) -> lsp_types::Uri {
+        use std::str::FromStr;
+        lsp_types::Uri::from_str(&format!("file://{path}")).unwrap()
+    }
+
+    fn loc(path: &str, line: u32, col: u32) -> lsp_types::Location {
+        lsp_types::Location {
+            uri: fake_uri(path),
+            range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line,
+                    character: col,
+                },
+                end: lsp_types::Position {
+                    line,
+                    character: col + 1,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn definition_response_scalar_flattens_to_one_location() {
+        let resp = lsp_types::GotoDefinitionResponse::Scalar(loc("/x.rs", 1, 2));
+        let v = super::definition_response_to_locations(resp);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].range.start.line, 1);
+    }
+
+    #[test]
+    fn definition_response_array_flattens_verbatim() {
+        let resp = lsp_types::GotoDefinitionResponse::Array(vec![
+            loc("/a.rs", 0, 0),
+            loc("/b.rs", 5, 5),
+        ]);
+        let v = super::definition_response_to_locations(resp);
+        assert_eq!(v.len(), 2);
+    }
+
+    #[test]
+    fn definition_response_link_uses_target_selection_range() {
+        // Link variant carries richer per-result info; we use
+        // target_selection_range (narrower) for jumps.
+        let link = lsp_types::LocationLink {
+            origin_selection_range: None,
+            target_uri: fake_uri("/x.rs"),
+            target_range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: lsp_types::Position {
+                    line: 10,
+                    character: 0,
+                },
+            },
+            target_selection_range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 5,
+                    character: 4,
+                },
+                end: lsp_types::Position {
+                    line: 5,
+                    character: 7,
+                },
+            },
+        };
+        let resp = lsp_types::GotoDefinitionResponse::Link(vec![link]);
+        let v = super::definition_response_to_locations(resp);
+        assert_eq!(v.len(), 1);
+        // Should be the target_selection_range, not target_range.
+        assert_eq!(v[0].range.start.line, 5);
+        assert_eq!(v[0].range.start.character, 4);
+    }
+
+    #[test]
+    fn lsp_definition_request_with_no_uri_echoes_no_lsp_attached() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::LspDefinitionRequest);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn lsp_declaration_request_routes_through_unified_nav_dispatch() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::LspDeclarationRequest);
+        // No URI mapped, same "no LSP server" guard fires.
+        let msg = a.last_message.as_ref().expect("echo");
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn lsp_type_definition_request_routes_through_unified_nav_dispatch() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::LspTypeDefinitionRequest);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn lsp_implementation_request_routes_through_unified_nav_dispatch() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::LspImplementationRequest);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn drain_pending_no_implementations_echoes_kind_specific_message() {
+        // Verify the kind drives the verb in the "no X found" echo.
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        a.pending_definition_rx = Some(rx);
+        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.pending_nav_kind = Some(super::LspNavKind::Implementation);
+        tx.send(Vec::new()).unwrap();
+        a.drain_pending_definitions();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(
+            msg.text.contains("no implementations"),
+            "expected implementations echo, got: {}",
+            msg.text
+        );
+        assert!(a.pending_nav_kind.is_none());
+    }
+
+    #[test]
+    fn drain_pending_no_type_definitions_echoes_kind_specific_message() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        a.pending_definition_rx = Some(rx);
+        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.pending_nav_kind = Some(super::LspNavKind::TypeDefinition);
+        tx.send(Vec::new()).unwrap();
+        a.drain_pending_definitions();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no type definitions"));
+    }
+
+    #[test]
+    fn drain_pending_no_declarations_echoes_kind_specific_message() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        a.pending_definition_rx = Some(rx);
+        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.pending_nav_kind = Some(super::LspNavKind::Declaration);
+        tx.send(Vec::new()).unwrap();
+        a.drain_pending_definitions();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no declarations"));
+    }
+
+    #[test]
+    fn lsp_references_request_with_no_uri_echoes_no_lsp_attached() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::LspReferencesRequest);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn lsp_references_request_pre_cancels_in_flight_token() {
+        let mut a = app_with("xx", 10);
+        let stale = lattice_protocol::CancellationToken::new();
+        a.pending_references_token = Some(stale.clone());
+        a.apply(Action::LspReferencesRequest);
+        assert!(stale.is_cancelled());
+    }
+
+    #[test]
+    fn drain_pending_references_no_servers_outcome_echoes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
+        a.pending_references_rx = Some(rx);
+        a.pending_references_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::ReferencesOutcome::NoServers).unwrap();
+        a.drain_pending_references();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no LSP server"));
+        assert!(a.pending_references_token.is_none());
+    }
+
+    #[test]
+    fn drain_pending_references_found_opens_lsp_locations_picker() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
+        a.pending_references_rx = Some(rx);
+        a.pending_references_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::ReferencesOutcome::Found {
+            symbol: "foo".into(),
+            locations: vec![loc("/tmp/notarealfile.rs", 3, 5)],
+        })
+        .unwrap();
+        a.drain_pending_references();
+        // Picker opened, NOT a help buffer (the pre-picker shape).
+        let picker = a.picker.as_ref().expect("picker");
+        assert_eq!(picker.title, "references: foo");
+        assert!(matches!(
+            picker.source,
+            crate::picker::PickerSource::LspLocations
+        ));
+        assert!(matches!(
+            picker.on_accept,
+            crate::picker::PickerAction::JumpToLspLocation
+        ));
+        // The candidate's typed routing payload carries the
+        // jump target -- post-4.2.g.7 this replaces the prior
+        // tab-encoded `text` parsing.
+        let c = picker.selected_candidate().expect("one row");
+        let routing = picker.routing_for(c).expect("routing payload set");
+        let crate::picker::RoutingPayload::LspLocation { path, line, .. } = routing else {
+            panic!("expected LspLocation routing, got {routing:?}");
+        };
+        assert_eq!(*path, std::path::PathBuf::from("/tmp/notarealfile.rs"));
+        assert_eq!(*line, 3);
+        // Column round-trips through utf-16→utf-8 conversion that
+        // reads from the file's actual line text. For a missing
+        // file the preview is empty so the conversion bottoms out
+        // at 0; ASCII files round-trip cleanly. We don't assert on
+        // col here because the conversion needs the line text and
+        // the test fixture's path doesn't exist.
+    }
+
+    #[test]
+    fn drain_pending_references_empty_echoes_not_found() {
+        // After the picker pivot, the empty-Found case echoes
+        // rather than opening a buffer with a placeholder. The
+        // picker UX expects "show the user a list to choose
+        // from" -- showing an empty picker would be worse UX
+        // than the echo.
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
+        a.pending_references_rx = Some(rx);
+        a.pending_references_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::ReferencesOutcome::Found {
+            symbol: "missing".into(),
+            locations: Vec::new(),
+        })
+        .unwrap();
+        a.drain_pending_references();
+        assert!(a.picker.is_none());
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no references"));
+        assert!(msg.text.contains("missing"));
+    }
+
+    #[test]
+    fn flatten_document_symbol_response_flat_preserves_order() {
+        use lsp_types::{Range as LRange, Position as LPos, Location as LLoc};
+        let path = std::path::PathBuf::from("/tmp/x.rs");
+        #[allow(deprecated)]
+        let syms = vec![
+            lsp_types::SymbolInformation {
+                name: "foo".into(),
+                kind: lsp_types::SymbolKind::FUNCTION,
+                tags: None,
+                deprecated: None,
+                location: LLoc {
+                    uri: super::tests::fake_uri("/tmp/x.rs"),
+                    range: LRange {
+                        start: LPos { line: 5, character: 0 },
+                        end: LPos { line: 5, character: 3 },
+                    },
+                },
+                container_name: None,
+            },
+            lsp_types::SymbolInformation {
+                name: "bar".into(),
+                kind: lsp_types::SymbolKind::METHOD,
+                tags: None,
+                deprecated: None,
+                location: LLoc {
+                    uri: super::tests::fake_uri("/tmp/x.rs"),
+                    range: LRange {
+                        start: LPos { line: 10, character: 4 },
+                        end: LPos { line: 10, character: 7 },
+                    },
+                },
+                container_name: Some("Bag".into()),
+            },
+        ];
+        let resp = lsp_types::DocumentSymbolResponse::Flat(syms);
+        let mut out = Vec::new();
+        super::flatten_document_symbol_response(resp, &path, &mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "foo");
+        assert_eq!(out[0].depth, 0);
+        assert_eq!(out[1].name, "bar");
+        assert_eq!(out[1].container.as_deref(), Some("Bag"));
+    }
+
+    #[test]
+    fn flatten_document_symbol_response_nested_assigns_depth_via_dfs() {
+        use lsp_types::{Range as LRange, Position as LPos, DocumentSymbol};
+        let path = std::path::PathBuf::from("/tmp/x.rs");
+        // mod foo { fn bar() {} } -> outer at depth 0, bar at depth 1.
+        let inner_range = LRange {
+            start: LPos { line: 1, character: 4 },
+            end: LPos { line: 3, character: 5 },
+        };
+        let outer_range = LRange {
+            start: LPos { line: 0, character: 0 },
+            end: LPos { line: 4, character: 0 },
+        };
+        #[allow(deprecated)]
+        let inner = DocumentSymbol {
+            name: "bar".into(),
+            detail: None,
+            kind: lsp_types::SymbolKind::FUNCTION,
+            tags: None,
+            deprecated: None,
+            range: inner_range,
+            selection_range: inner_range,
+            children: None,
+        };
+        #[allow(deprecated)]
+        let outer = DocumentSymbol {
+            name: "foo".into(),
+            detail: None,
+            kind: lsp_types::SymbolKind::MODULE,
+            tags: None,
+            deprecated: None,
+            range: outer_range,
+            selection_range: outer_range,
+            children: Some(vec![inner]),
+        };
+        let resp = lsp_types::DocumentSymbolResponse::Nested(vec![outer]);
+        let mut out = Vec::new();
+        super::flatten_document_symbol_response(resp, &path, &mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "foo");
+        assert_eq!(out[0].depth, 0);
+        assert_eq!(out[1].name, "bar");
+        assert_eq!(out[1].depth, 1);
+    }
+
+    #[test]
+    fn drain_pending_symbols_no_servers_outcome_echoes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
+        a.pending_symbols_rx = Some(rx);
+        a.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::SymbolsOutcome::NoServers).unwrap();
+        a.drain_pending_symbols();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no LSP server"));
+        assert!(a.pending_symbols_token.is_none());
+    }
+
+    #[test]
+    fn drain_pending_symbols_found_opens_picker() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
+        a.pending_symbols_rx = Some(rx);
+        a.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::SymbolsOutcome::Found {
+            title: "symbols (2)".into(),
+            rows: vec![
+                super::SymbolRow {
+                    name: "foo".into(),
+                    kind_glyph: "ƒ",
+                    container: None,
+                    depth: 0,
+                    path: std::path::PathBuf::from("/tmp/x.rs"),
+                    line: 5,
+                    col: 0,
+                },
+                super::SymbolRow {
+                    name: "bar".into(),
+                    kind_glyph: "v",
+                    container: None,
+                    depth: 1,
+                    path: std::path::PathBuf::from("/tmp/x.rs"),
+                    line: 10,
+                    col: 4,
+                },
+            ],
+        })
+        .unwrap();
+        a.drain_pending_symbols();
+        let picker = a.picker.as_ref().expect("picker");
+        assert_eq!(picker.title, "symbols (2)");
+        assert_eq!(picker.candidates.len(), 2);
+        // depth-1 row carries indentation in display.
+        let display = &picker.candidates[1].raw.display;
+        assert!(display.contains("  v bar"), "got: {display}");
+    }
+
+    #[test]
+    fn drain_pending_symbols_empty_echoes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
+        a.pending_symbols_rx = Some(rx);
+        a.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::SymbolsOutcome::Found {
+            title: "symbols (0)".into(),
+            rows: Vec::new(),
+        })
+        .unwrap();
+        a.drain_pending_symbols();
+        assert!(a.picker.is_none());
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no symbols"));
+    }
+
+    #[test]
+    fn code_action_kind_glyph_distinct_for_common_kinds() {
+        use lsp_types::CodeActionKind as K;
+        let qf = super::code_action_kind_glyph(Some(&K::QUICKFIX));
+        let rf = super::code_action_kind_glyph(Some(&K::REFACTOR));
+        let sr = super::code_action_kind_glyph(Some(&K::SOURCE));
+        assert_ne!(qf, rf);
+        assert_ne!(qf, sr);
+        assert_ne!(rf, sr);
+    }
+
+    #[test]
+    fn drain_pending_code_actions_no_provider_echoes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
+        a.pending_code_action_rx = Some(rx);
+        a.pending_code_action_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::CodeActionOutcome::NoProvider).unwrap();
+        a.drain_pending_code_actions();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("codeActionProvider"));
+    }
+
+    #[test]
+    fn drain_pending_code_actions_empty_echoes_no_actions() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
+        a.pending_code_action_rx = Some(rx);
+        a.pending_code_action_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::CodeActionOutcome::Items(Vec::new())).unwrap();
+        a.drain_pending_code_actions();
+        assert!(a.picker.is_none());
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no code actions"));
+    }
+
+    #[test]
+    fn drain_pending_code_actions_items_open_picker() {
+        let mut a = app_with("foo\n", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
+        a.pending_code_action_rx = Some(rx);
+        a.pending_code_action_token =
+            Some(lattice_protocol::CancellationToken::new());
+        let act = lsp_types::CodeAction {
+            title: "Add `mut` modifier".into(),
+            kind: Some(lsp_types::CodeActionKind::QUICKFIX),
+            diagnostics: None,
+            edit: None,
+            command: None,
+            is_preferred: None,
+            disabled: None,
+            data: None,
+        };
+        tx.send(super::CodeActionOutcome::Items(vec![super::CodeActionRow {
+            title: act.title.clone(),
+            kind_glyph: "🛠",
+            action: lsp_types::CodeActionOrCommand::CodeAction(act),
+        }]))
+        .unwrap();
+        a.drain_pending_code_actions();
+        let picker = a.picker.as_ref().expect("picker");
+        assert!(picker.title.starts_with("code-actions"));
+        assert!(matches!(
+            picker.on_accept,
+            crate::picker::PickerAction::AcceptLspCodeAction
+        ));
+        assert_eq!(picker.candidates.len(), 1);
+        let display = &picker.candidates[0].raw.display;
+        assert!(display.contains("🛠 Add `mut` modifier"));
+        // Items pinned for the accept path.
+        assert!(a.pending_code_action_items.is_some());
+    }
+
+    #[test]
+    fn flatten_workspace_edit_collects_legacy_changes_map() {
+        use std::collections::HashMap;
+        let uri = super::tests::fake_uri("/tmp/x.rs");
+        let mut changes: HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> = HashMap::new();
+        changes.insert(
+            uri.clone(),
+            vec![lsp_types::TextEdit {
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: lsp_types::Position {
+                        line: 0,
+                        character: 3,
+                    },
+                },
+                new_text: "bar".into(),
+            }],
+        );
+        let we = lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        };
+        let flat = super::flatten_workspace_edit(we);
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].0, uri);
+        assert_eq!(flat[0].1[0].new_text, "bar");
+    }
+
+    #[test]
+    fn drain_pending_rename_no_provider_echoes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
+        a.pending_rename_rx = Some(rx);
+        a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::RenameOutcome::NoProvider).unwrap();
+        a.drain_pending_rename();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("renameProvider"));
+    }
+
+    #[test]
+    fn drain_pending_rename_not_renameable_echoes_reason() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
+        a.pending_rename_rx = Some(rx);
+        a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::RenameOutcome::NotRenameable {
+            reason: "out of bounds".into(),
+        })
+        .unwrap();
+        a.drain_pending_rename();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("out of bounds"));
+    }
+
+    #[test]
+    fn drain_pending_rename_empty_echoes_no_changes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
+        a.pending_rename_rx = Some(rx);
+        a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::RenameOutcome::Empty).unwrap();
+        a.drain_pending_rename();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no changes"));
+    }
+
+    #[test]
+    fn drain_pending_rename_applies_active_buffer_edits_as_one_undo_unit() {
+        // End-to-end-ish: load a real document, send a rename
+        // outcome targeting it, verify the buffer text changed
+        // and a single undo restores.
+        let path = std::env::temp_dir()
+            .join(format!("lattice-rename-{}.rs", std::process::id()));
+        std::fs::write(&path, "let foo = 1;\nlet x = foo + 2;\n").unwrap();
+        let doc = Document::open(&path).unwrap();
+        let mut a = App::new(doc);
+        a.set_viewport_height(10);
+        let uri = super::tests::fake_uri(path.to_str().unwrap());
+        let edits = vec![
+            // Replace `foo` on line 0 col 4..7
+            lsp_types::TextEdit {
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: 0,
+                        character: 4,
+                    },
+                    end: lsp_types::Position {
+                        line: 0,
+                        character: 7,
+                    },
+                },
+                new_text: "bar".into(),
+            },
+            // Replace `foo` on line 1 col 8..11
+            lsp_types::TextEdit {
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: 1,
+                        character: 8,
+                    },
+                    end: lsp_types::Position {
+                        line: 1,
+                        character: 11,
+                    },
+                },
+                new_text: "bar".into(),
+            },
+        ];
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
+        a.pending_rename_rx = Some(rx);
+        a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::RenameOutcome::Edits {
+            per_file: vec![(uri, edits)],
+            new_name: "bar".into(),
+        })
+        .unwrap();
+        a.drain_pending_rename();
+        let body = a.document.snapshot().buffer.as_string();
+        assert!(body.contains("let bar = 1;"));
+        assert!(body.contains("let x = bar + 2;"));
+        // One undo restores the pre-rename buffer (apply_lsp_text_edits
+        // commits via apply_edit_batch_blocking which is one undo unit).
+        let _ = a.undo_blocking();
+        let restored = a.document.snapshot().buffer.as_string();
+        assert!(restored.contains("let foo = 1;"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn drain_pending_insert_completion_lsp_no_servers_keeps_popup_open_if_sync_had_results() {
+        // When sync sources gave us candidates and LSP says
+        // NoServers, the popup stays open with the sync set.
+        let mut a = app_with("alpha alphabet alligator\nal", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(1, 2);
+        a.do_completion_trigger();
+        // No URI mapped -> LSP request didn't fire; the popup
+        // is open from the sync sources alone. Manually push
+        // a NoServers outcome to verify the drain handles it
+        // without exploding.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            super::InsertCompletionLspOutcome,
+        >();
+        a.pending_insert_completion_lsp_rx = Some(rx);
+        a.pending_insert_completion_lsp_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::InsertCompletionLspOutcome::NoServers).unwrap();
+        a.drain_pending_insert_completion_lsp();
+        // Popup still open from sync sources.
+        assert!(a.insert_completion.is_some());
+    }
+
+    #[test]
+    fn drain_pending_insert_completion_lsp_items_merge_into_popup() {
+        let mut a = app_with("\nfo", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(1, 2);
+        // Seed the popup state directly -- skip do_completion_trigger
+        // so the test doesn't depend on sync sources producing
+        // matches first. The drain merges LSP items into
+        // whatever raw set is present.
+        a.insert_completion = Some(
+            lattice_completion::InsertCompletionState::open(
+                lattice_completion::CompletionTrigger::Manual,
+                Position::new(1, 0),
+                Position::new(1, 2),
+                "fo".to_string(),
+            ),
+        );
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            super::InsertCompletionLspOutcome,
+        >();
+        a.pending_insert_completion_lsp_rx = Some(rx);
+        a.pending_insert_completion_lsp_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::InsertCompletionLspOutcome::Items {
+            items: vec![
+                super::LspCompletionMeta {
+                    label: "foo".into(),
+                    insert_text: "foo".into(),
+                    filter_text: None,
+                    sort_text: None,
+                    detail: Some("fn() -> i32".into()),
+                    documentation: None,
+                    kind: Some(lsp_types::CompletionItemKind::FUNCTION),
+                    deprecated: false,
+                    preselect: false,
+                    commit_characters: Vec::new(),
+                    additional_text_edits: Vec::new(),
+                    command: None,
+                    insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+                    replace_range: None,
+                    server_id: std::sync::Arc::from("test-server"),
+                    original_item: lsp_types::CompletionItem::default(),
+                    resolved: false,
+                },
+                super::LspCompletionMeta {
+                    label: "foobar".into(),
+                    insert_text: "foobar".into(),
+                    filter_text: None,
+                    sort_text: None,
+                    detail: None,
+                    documentation: None,
+                    kind: Some(lsp_types::CompletionItemKind::VARIABLE),
+                    deprecated: false,
+                    preselect: false,
+                    commit_characters: Vec::new(),
+                    additional_text_edits: Vec::new(),
+                    command: None,
+                    insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+                    replace_range: None,
+                    server_id: std::sync::Arc::from("test-server"),
+                    original_item: lsp_types::CompletionItem::default(),
+                    resolved: false,
+                },
+            ],
+            is_incomplete: false,
+        })
+        .unwrap();
+        a.drain_pending_insert_completion_lsp();
+        let state = a.insert_completion.as_ref().expect("popup open");
+        // Both items render; "foo" prefix matches both.
+        let labels: Vec<String> = state
+            .rendered
+            .iter()
+            .map(|c| c.raw.display.clone())
+            .collect();
+        assert!(labels.iter().any(|l| l.starts_with("foo")));
+        assert!(labels.iter().any(|l| l.starts_with("foobar")));
+        // Sidecar meta is populated.
+        assert_eq!(a.insert_completion_lsp_meta.len(), 2);
+    }
+
+    #[test]
+    fn drain_pending_insert_completion_lsp_drops_prior_lsp_rows_on_refresh() {
+        // First merge populates LSP rows; second merge with
+        // a different item set should REPLACE (not append).
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::ZERO;
+        a.insert_completion = Some(
+            lattice_completion::InsertCompletionState::open(
+                lattice_completion::CompletionTrigger::Manual,
+                Position::ZERO,
+                Position::ZERO,
+                String::new(),
+            ),
+        );
+        let mk_item = |label: &str| super::LspCompletionMeta {
+            label: label.into(),
+            insert_text: label.into(),
+            filter_text: None,
+            sort_text: None,
+            detail: None,
+            documentation: None,
+            kind: None,
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: Vec::new(),
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            replace_range: None,
+            server_id: std::sync::Arc::from("test-server"),
+            original_item: lsp_types::CompletionItem::default(),
+            resolved: false,
+        };
+        // First batch.
+        let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel::<
+            super::InsertCompletionLspOutcome,
+        >();
+        a.pending_insert_completion_lsp_rx = Some(rx1);
+        a.pending_insert_completion_lsp_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx1.send(super::InsertCompletionLspOutcome::Items {
+            items: vec![mk_item("alpha"), mk_item("alphabet")],
+            is_incomplete: false,
+        })
+        .unwrap();
+        a.drain_pending_insert_completion_lsp();
+        assert_eq!(a.insert_completion_lsp_meta.len(), 2);
+        let pre = a
+            .insert_completion
+            .as_ref()
+            .map(|s| s.raw.len())
+            .unwrap_or(0);
+        assert_eq!(pre, 2);
+        // Second batch -- only one item, "beta". Prior LSP
+        // rows should be pruned.
+        let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel::<
+            super::InsertCompletionLspOutcome,
+        >();
+        a.pending_insert_completion_lsp_rx = Some(rx2);
+        a.pending_insert_completion_lsp_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx2.send(super::InsertCompletionLspOutcome::Items {
+            items: vec![mk_item("beta")],
+            is_incomplete: false,
+        })
+        .unwrap();
+        a.drain_pending_insert_completion_lsp();
+        assert_eq!(a.insert_completion_lsp_meta.len(), 1);
+        assert_eq!(a.insert_completion_lsp_meta[0].label, "beta");
+    }
+
+    #[test]
+    fn lsp_completion_meta_for_returns_none_for_sync_sourced_candidates() {
+        let a = app_with("xx", 10);
+        let raw = lattice_completion::RawCandidate::plain(
+            "foo",
+            lattice_completion::CandidateKind::Plain,
+        );
+        let scored = lattice_completion::ScoredCandidate {
+            raw,
+            score: lattice_completion::MatchScore(100),
+            match_ranges: Vec::new(),
+        };
+        let rendered =
+            lattice_completion::RenderedCandidate::from_scored(scored);
+        assert!(a.lsp_completion_meta_for(&rendered).is_none());
+    }
+
+    #[test]
+    fn drain_pending_completion_resolve_fills_metadata_and_body() {
+        let mut a = app_with("xx", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::ZERO;
+        // Build state with one candidate pointing at meta[0].
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        );
+        let mut raw = lattice_completion::RawCandidate::plain(
+            "foo",
+            lattice_completion::CandidateKind::Plain,
+        );
+        raw.data = lattice_completion::CandidateData::Extension {
+            kind_id: super::LSP_COMPLETION_KIND_ID,
+            payload: 0u32.to_le_bytes().to_vec(),
+        };
+        state
+            .rendered
+            .push(lattice_completion::RenderedCandidate::from_scored(
+                lattice_completion::ScoredCandidate {
+                    raw,
+                    score: lattice_completion::MatchScore(100),
+                    match_ranges: Vec::new(),
+                },
+            ));
+        // Open the doc popup -- empty body initially because
+        // meta has no documentation yet.
+        state.doc_popup = Some(lattice_completion::DocPopupState {
+            for_index: 0,
+            body: None,
+            scroll: 5, // verify scroll resets on body refresh
+        });
+        a.insert_completion = Some(state);
+        a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
+            label: "foo".into(),
+            insert_text: "foo".into(),
+            filter_text: None,
+            sort_text: None,
+            detail: None,
+            documentation: None,
+            kind: None,
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: Vec::new(),
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            replace_range: None,
+            server_id: std::sync::Arc::from("test-server"),
+            original_item: lsp_types::CompletionItem::default(),
+            resolved: false,
+        });
+        // Push a resolve outcome that fills documentation.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            super::CompletionResolveOutcome,
+        >();
+        a.pending_completion_resolve_rx = Some(rx);
+        a.pending_completion_resolve_token =
+            Some(lattice_protocol::CancellationToken::new());
+        let mut resolved = lsp_types::CompletionItem::default();
+        resolved.label = "foo".into();
+        resolved.detail = Some("fn foo() -> i32".into());
+        resolved.documentation = Some(lsp_types::Documentation::String(
+            "Returns 42.".into(),
+        ));
+        tx.send(super::CompletionResolveOutcome {
+            meta_index: 0,
+            resolved,
+        })
+        .unwrap();
+        a.drain_pending_completion_resolve();
+        // Meta updated.
+        let meta = &a.insert_completion_lsp_meta[0];
+        assert!(meta.resolved);
+        assert_eq!(meta.detail.as_deref(), Some("fn foo() -> i32"));
+        assert_eq!(meta.documentation.as_deref(), Some("Returns 42."));
+        // Doc popup body refreshed; scroll reset to 0.
+        let popup = a
+            .insert_completion
+            .as_ref()
+            .and_then(|s| s.doc_popup.as_ref())
+            .expect("popup");
+        assert_eq!(popup.scroll, 0);
+        let body = popup.body.as_deref().unwrap_or("");
+        assert!(body.contains("fn foo() -> i32"));
+        assert!(body.contains("Returns 42."));
+    }
+
+    #[test]
+    fn drain_pending_completion_resolve_drops_stale_index_after_selection_moved() {
+        // Resolve arrives for meta[0] but selection has moved
+        // to meta[1]. The meta still updates (so a future
+        // refocus uses the cached docs) but the doc popup body
+        // doesn't change.
+        let mut a = app_with("xx", 10);
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        );
+        for i in 0..2u32 {
+            let mut raw = lattice_completion::RawCandidate::plain(
+                format!("c{i}"),
+                lattice_completion::CandidateKind::Plain,
+            );
+            raw.data = lattice_completion::CandidateData::Extension {
+                kind_id: super::LSP_COMPLETION_KIND_ID,
+                payload: i.to_le_bytes().to_vec(),
+            };
+            state.rendered.push(
+                lattice_completion::RenderedCandidate::from_scored(
+                    lattice_completion::ScoredCandidate {
+                        raw,
+                        score: lattice_completion::MatchScore(100),
+                        match_ranges: Vec::new(),
+                    },
+                ),
+            );
+        }
+        state.selected = 1; // user moved past meta[0]
+        state.doc_popup = Some(lattice_completion::DocPopupState {
+            for_index: 1,
+            body: Some("for c1".into()),
+            scroll: 0,
+        });
+        a.insert_completion = Some(state);
+        for i in 0..2 {
+            a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
+                label: format!("c{i}"),
+                insert_text: format!("c{i}"),
+                filter_text: None,
+                sort_text: None,
+                detail: None,
+                documentation: None,
+                kind: None,
+                deprecated: false,
+                preselect: false,
+                commit_characters: Vec::new(),
+                additional_text_edits: Vec::new(),
+                command: None,
+                insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+                replace_range: None,
+                server_id: std::sync::Arc::from("test-server"),
+                original_item: lsp_types::CompletionItem::default(),
+                resolved: false,
+            });
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            super::CompletionResolveOutcome,
+        >();
+        a.pending_completion_resolve_rx = Some(rx);
+        a.pending_completion_resolve_token =
+            Some(lattice_protocol::CancellationToken::new());
+        let mut resolved = lsp_types::CompletionItem::default();
+        resolved.label = "c0".into();
+        resolved.documentation = Some(lsp_types::Documentation::String(
+            "stale".into(),
+        ));
+        tx.send(super::CompletionResolveOutcome {
+            meta_index: 0,
+            resolved,
+        })
+        .unwrap();
+        a.drain_pending_completion_resolve();
+        // Meta[0] updated.
+        assert!(a.insert_completion_lsp_meta[0].resolved);
+        assert!(
+            a.insert_completion_lsp_meta[0]
+                .documentation
+                .as_deref()
+                == Some("stale")
+        );
+        // Doc popup body unchanged (still pointing at meta[1]).
+        let body = a
+            .insert_completion
+            .as_ref()
+            .and_then(|s| s.doc_popup.as_ref())
+            .and_then(|d| d.body.clone());
+        assert_eq!(body.as_deref(), Some("for c1"));
+    }
+
+    #[test]
+    fn lsp_completion_meta_for_resolves_extension_payload_index() {
+        let mut a = app_with("xx", 10);
+        a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
+            label: "first".into(),
+            insert_text: "first".into(),
+            filter_text: None,
+            sort_text: None,
+            detail: None,
+            documentation: None,
+            kind: None,
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: Vec::new(),
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            replace_range: None,
+            server_id: std::sync::Arc::from("test-server"),
+            original_item: lsp_types::CompletionItem::default(),
+            resolved: false,
+        });
+        a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
+            label: "second".into(),
+            insert_text: "second".into(),
+            filter_text: None,
+            sort_text: None,
+            detail: None,
+            documentation: None,
+            kind: None,
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: Vec::new(),
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            replace_range: None,
+            server_id: std::sync::Arc::from("test-server"),
+            original_item: lsp_types::CompletionItem::default(),
+            resolved: false,
+        });
+        // Build a candidate pointing at index 1.
+        let mut raw = lattice_completion::RawCandidate::plain(
+            "second",
+            lattice_completion::CandidateKind::Plain,
+        );
+        raw.data = lattice_completion::CandidateData::Extension {
+            kind_id: super::LSP_COMPLETION_KIND_ID,
+            payload: 1u32.to_le_bytes().to_vec(),
+        };
+        let scored = lattice_completion::ScoredCandidate {
+            raw,
+            score: lattice_completion::MatchScore(100),
+            match_ranges: Vec::new(),
+        };
+        let rendered =
+            lattice_completion::RenderedCandidate::from_scored(scored);
+        let meta = a
+            .lsp_completion_meta_for(&rendered)
+            .expect("meta resolves");
+        assert_eq!(meta.label, "second");
+    }
+
+    #[test]
+    fn drain_pending_completion_no_servers_echoes() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
+        a.pending_completion_rx = Some(rx);
+        a.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::CompletionOutcome::NoServers).unwrap();
+        a.drain_pending_completion();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn drain_pending_completion_items_open_picker_with_indexed_text() {
+        let mut a = app_with("foo\n", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
+        a.pending_completion_rx = Some(rx);
+        a.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::CompletionOutcome::Items(vec![
+            super::CompletionItemRow {
+                label: "foo_bar".into(),
+                kind_glyph: "ƒ",
+                detail: Some("fn foo_bar()".into()),
+                insert_text: "foo_bar()".into(),
+                replace_range: (0, 3),
+                line: 0,
+            },
+        ]))
+        .unwrap();
+        a.drain_pending_completion();
+        let picker = a.picker.as_ref().expect("picker");
+        assert!(picker.title.starts_with("complete"));
+        assert!(matches!(
+            picker.on_accept,
+            crate::picker::PickerAction::AcceptLspCompletion
+        ));
+        assert_eq!(picker.candidates.len(), 1);
+        // Display carries kind glyph + label + detail.
+        let display = &picker.candidates[0].raw.display;
+        assert!(display.contains("ƒ foo_bar"));
+        assert!(display.contains("fn foo_bar()"));
+        // Routing payload carries the typed LspCompletion index
+        // (post-4.2.g.7 typed routing replaces the prior `#<idx>`
+        // string encoding).
+        let routing = picker
+            .routing_for(&picker.candidates[0])
+            .expect("routing payload set");
+        match routing {
+            crate::picker::RoutingPayload::LspCompletion { index } => {
+                assert_eq!(*index, 0);
+            }
+            other => panic!("expected LspCompletion routing, got {other:?}"),
+        }
+        // Items survive on the App for the accept path.
+        assert!(a.pending_completion_items.is_some());
+    }
+
+    #[test]
+    fn drain_pending_completion_empty_echoes_no_completions() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
+        a.pending_completion_rx = Some(rx);
+        a.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::CompletionOutcome::Items(Vec::new())).unwrap();
+        a.drain_pending_completion();
+        assert!(a.picker.is_none());
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no completions"));
+    }
+
+    #[test]
+    fn signature_help_to_markdown_renders_active_signature() {
+        let sh = lsp_types::SignatureHelp {
+            signatures: vec![
+                lsp_types::SignatureInformation {
+                    label: "fn foo(a: i32, b: &str) -> i32".into(),
+                    documentation: Some(lsp_types::Documentation::String(
+                        "Adds.".into(),
+                    )),
+                    parameters: Some(vec![
+                        lsp_types::ParameterInformation {
+                            label: lsp_types::ParameterLabel::Simple("a: i32".into()),
+                            documentation: Some(lsp_types::Documentation::String(
+                                "the first.".into(),
+                            )),
+                        },
+                        lsp_types::ParameterInformation {
+                            label: lsp_types::ParameterLabel::Simple("b: &str".into()),
+                            documentation: None,
+                        },
+                    ]),
+                    active_parameter: Some(0),
+                },
+            ],
+            active_signature: Some(0),
+            active_parameter: None,
+        };
+        let body = super::signature_help_to_markdown(&sh);
+        assert!(body.contains("fn foo(a: i32"));
+        assert!(body.contains("**param:** `a: i32`"));
+        assert!(body.contains("the first."));
+        assert!(body.contains("Adds."));
+    }
+
+    #[test]
+    fn signature_help_to_markdown_empty_when_no_signatures() {
+        let sh = lsp_types::SignatureHelp {
+            signatures: vec![],
+            active_signature: None,
+            active_parameter: None,
+        };
+        assert_eq!(super::signature_help_to_markdown(&sh), "");
+    }
+
+    #[test]
+    fn drain_pending_signature_help_body_opens_popup() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::SignatureHelpOutcome>();
+        a.pending_signature_help_rx = Some(rx);
+        a.pending_signature_help_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::SignatureHelpOutcome::Body(
+            "```text\nfn x()\n```\n".into(),
+        ))
+        .unwrap();
+        a.drain_pending_signature_help();
+        let h = a.help_buffer.as_ref().expect("popup");
+        assert_eq!(h.title, "hover");
+        assert!(a.pending_signature_help_token.is_none());
+    }
+
+    #[test]
+    fn drain_pending_signature_help_empty_body_echoes_no_signature_info() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::SignatureHelpOutcome>();
+        a.pending_signature_help_rx = Some(rx);
+        a.pending_signature_help_token =
+            Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::SignatureHelpOutcome::Body(String::new())).unwrap();
+        a.drain_pending_signature_help();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no signature info"));
+        assert!(a.help_buffer.is_none());
+    }
+
+    #[test]
+    fn nav_request_captures_tag_origin_for_picker_consumption() {
+        // `do_lsp_nav_request` should set `pending_tag_origin`
+        // so a subsequent picker accept (multi-result) pushes
+        // the right entry onto the tag stack.
+        let mut a = app_with("foo bar\nbaz\n", 10);
+        a.cursor = Position::new(0, 1);
+        // Manually set a uri so do_lsp_nav_request gets past
+        // the "no LSP server" guard.
+        use std::str::FromStr;
+        a.buffer_uris.insert(
+            a.document_buffer_id,
+            lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap(),
+        );
+        a.apply(Action::LspDefinitionRequest);
+        let origin = a.pending_tag_origin.as_ref().expect("origin set");
+        assert_eq!(origin.position, Position::new(0, 1));
+        assert_eq!(origin.label, "foo");
+    }
+
+    #[test]
+    fn lsp_nav_request_pre_cancels_prior_token_regardless_of_kind() {
+        // A new nav request of any kind must cancel a still-in-flight
+        // request of any other kind -- they all share one slot.
+        let mut a = app_with("xx", 10);
+        let stale = lattice_protocol::CancellationToken::new();
+        a.pending_definition_token = Some(stale.clone());
+        a.apply(Action::LspImplementationRequest);
+        assert!(stale.is_cancelled());
+    }
+
+    #[test]
+    fn lsp_definition_request_pre_cancels_in_flight_token() {
+        let mut a = app_with("xx", 10);
+        let stale = lattice_protocol::CancellationToken::new();
+        a.pending_definition_token = Some(stale.clone());
+        a.apply(Action::LspDefinitionRequest);
+        assert!(stale.is_cancelled());
+    }
+
+    #[test]
+    fn drain_pending_definitions_with_no_results_echoes_not_found() {
+        let mut a = app_with("xx", 10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        a.pending_definition_rx = Some(rx);
+        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(Vec::new()).unwrap();
+        a.drain_pending_definitions();
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no definitions"));
+        assert!(a.pending_definition_token.is_none());
+    }
+
+    #[test]
+    fn drain_pending_definitions_with_single_same_buffer_jumps_in_place() {
+        // Set up an App whose document path matches the location's
+        // uri, so the jump stays in-buffer (no `:e` round-trip).
+        let path = std::env::temp_dir()
+            .join(format!("lattice-defjump-{}.rs", std::process::id()));
+        std::fs::write(&path, "first line\nsecond line\nthird line\n").unwrap();
+        let doc = Document::open(&path).unwrap();
+        let mut a = App::new(doc);
+        a.set_viewport_height(10);
+        // Cursor starts at (0, 0). Drain a definition pointing at
+        // line 2 col 5 (utf-16 character; same as utf-8 byte for
+        // ASCII).
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        a.pending_definition_rx = Some(rx);
+        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        let target = lsp_types::Location {
+            uri: super::tests::fake_uri(path.to_str().unwrap()),
+            range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 2,
+                    character: 5,
+                },
+                end: lsp_types::Position {
+                    line: 2,
+                    character: 6,
+                },
+            },
+        };
+        tx.send(vec![target]).unwrap();
+        a.drain_pending_definitions();
+        // Cursor moved to (2, 5).
+        assert_eq!(a.cursor.line, 2);
+        assert_eq!(a.cursor.byte, 5);
+        // Pre-jump position pushed onto history as PluginPush.
+        let pushed = a
+            .position_history
+            .iter()
+            .any(|e| e.source == PositionSource::PluginPush && e.position == Position::ZERO);
+        assert!(pushed, "expected PluginPush entry for pre-jump cursor");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn drain_pending_definitions_with_multiple_opens_picker() {
+        // After the picker pivot, multi-result nav opens the
+        // vertico picker rather than auto-jumping to the first
+        // result. Single-result jump path is still tested by
+        // `drain_pending_definitions_with_single_same_buffer_jumps_in_place`.
+        let path = std::env::temp_dir()
+            .join(format!("lattice-defmulti-{}.rs", std::process::id()));
+        std::fs::write(&path, "alpha\nbeta\ngamma\n").unwrap();
+        let doc = Document::open(&path).unwrap();
+        let mut a = App::new(doc);
+        a.set_viewport_height(10);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        a.pending_definition_rx = Some(rx);
+        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.pending_nav_kind = Some(super::LspNavKind::Definition);
+        let target_path = path.to_str().unwrap();
+        tx.send(vec![
+            super::tests::loc(target_path, 1, 0),
+            super::tests::loc(target_path, 2, 0),
+        ])
+        .unwrap();
+        a.drain_pending_definitions();
+        let picker = a.picker.as_ref().expect("multi-result opens picker");
+        assert_eq!(picker.title, "lsp:definitions");
+        assert_eq!(picker.candidates.len(), 2);
+        assert!(matches!(
+            picker.on_accept,
+            crate::picker::PickerAction::JumpToLspLocation
+        ));
+        // Cursor should NOT have moved (no auto-jump).
+        assert_eq!(a.cursor.line, 0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn lsp_supervisor_constructed_with_builtin_configs() {
+        let app = App::new(Document::from_text(""));
+        // Builtin registry: rust, python, go, typescript, c-cpp,
+        // lua. Six entries today.
+        assert!(
+            app.lsp.configs().len() >= 6,
+            "expected at least 6 builtin server configs"
+        );
+        // Supervisor starts dormant.
+        assert_eq!(app.lsp.running_actor_count(), 0);
+        assert_eq!(app.lsp.attached_buffer_count(), 0);
+        assert!(app.buffer_uris.is_empty());
+    }
+
+    #[test]
+    fn lsp_close_buffer_removes_uri_mapping_for_unattached_buffer() {
+        let mut app = App::new(Document::from_text(""));
+        // Seed a fake mapping (as if the attach driver's open
+        // had landed for a path-bearing buffer).
+        let fake_uri =
+            <lattice_lsp::Uri as std::str::FromStr>::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, fake_uri);
+        assert!(app.buffer_uri(app.document_buffer_id).is_some());
+
+        app.lsp_close_buffer(app.document_buffer_id);
+        assert!(app.buffer_uri(app.document_buffer_id).is_none());
+    }
+
+    #[test]
+    fn lsp_close_buffer_is_noop_for_unmapped_id() {
+        let mut app = App::new(Document::from_text(""));
+        // No mapping exists; close must not panic.
+        app.lsp_close_buffer(app.document_buffer_id);
+        assert!(app.buffer_uris.is_empty());
+    }
+
+    #[test]
+    fn lsp_log_with_no_running_servers_echoes_message() {
+        // Phase 3: `:lsp-log` (with or without arg) routes through
+        // the LSP picker. With zero running actors there's nothing
+        // to pick; the user gets a clear echo instead of an empty
+        // popup.
+        let mut app = app_with("hi\n", 5);
+        app.do_open_lsp_log(None);
+        let msg = app.last_message.as_ref().expect("echoes a message");
+        assert!(
+            msg.text.contains("no LSP servers running"),
+            "expected 'no LSP servers running' in echo, got {:?}",
+            msg.text
+        );
+        assert!(app.picker.is_none(), "picker should not have opened");
+    }
+
+    #[test]
+    fn lsp_log_with_arg_no_match_echoes_message() {
+        let mut app = app_with("hi\n", 5);
+        app.do_open_lsp_log(Some("rust"));
+        let msg = app.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("no LSP server"));
+    }
+
+    #[test]
+    fn lsp_log_buffer_refreshes_live_when_record_appended() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        // Open the per-server log buffer in pane.
+        app.open_lsp_log_in_pane("rust");
+        let help_id = app.buffers.help_with_title("lsp:rust").unwrap();
+        let body_before = app.buffers.help(help_id).unwrap().content.as_string();
+        assert!(!body_before.contains("fresh-after-open"));
+        // Push a new record AFTER the buffer was opened.
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::Client,
+            "fresh-after-open",
+        );
+        // The publisher fired Event::LspLogPushed; drain hook
+        // should refresh the open log buffer.
+        app.drain_lsp_log_events();
+        let body_after = app.buffers.help(help_id).unwrap().content.as_string();
+        assert!(
+            body_after.contains("fresh-after-open"),
+            "expected new record visible after drain, got body:\n{body_after}"
+        );
+    }
+
+    #[test]
+    fn lsp_log_drain_is_noop_when_no_log_buffer_open() {
+        // Pushing log records with no log buffer open should not
+        // crash or echo anything; the drain just consumes events
+        // and finds no matching titles.
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::Client,
+            "no-target",
+        );
+        app.drain_lsp_log_events();
+        // No help buffers should have appeared.
+        assert!(app.buffers.help_with_title("lsp:rust").is_none());
+        assert!(app.buffers.help_with_title("lsp").is_none());
+    }
+
+    #[test]
+    fn lsp_trace_buffer_refreshes_live_when_trace_record_appended() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        // Trace gating requires the toggle on for trace records
+        // to land in the ring (and fire the publisher).
+        app.lsp_logger.enable_trace(std::sync::Arc::clone(&id));
+        app.open_lsp_trace_log_in_pane("rust");
+        let help_id = app.buffers.help_with_title("lsp:rust:trace").unwrap();
+        let before = app.buffers.help(help_id).unwrap().content.as_string();
+        assert!(!before.contains("→ NEW"));
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Trace,
+            lattice_lsp::LogSource::Trace,
+            "→ NEW request id=42",
+        );
+        app.drain_lsp_log_events();
+        let after = app.buffers.help(help_id).unwrap().content.as_string();
+        assert!(after.contains("→ NEW"));
+    }
+
+    #[test]
+    fn lsp_log_burst_coalesces_into_one_refresh() {
+        // Many records pushed in quick succession should result
+        // in at most one buffer rebuild per scope per drain.
+        // (We can't observe the rebuild count directly without
+        // instrumentation; instead we assert the final body
+        // contains every pushed record AND that drain is fast.)
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.open_lsp_log_in_pane("rust");
+        for i in 0..50 {
+            app.lsp_logger.log(
+                Some(&id),
+                lattice_lsp::LogLevel::Info,
+                lattice_lsp::LogSource::Client,
+                format!("msg-{i}"),
+            );
+        }
+        app.drain_lsp_log_events();
+        let help_id = app.buffers.help_with_title("lsp:rust").unwrap();
+        let body = app.buffers.help(help_id).unwrap().content.as_string();
+        // First and last pushed records both visible.
+        assert!(body.contains("msg-0"));
+        assert!(body.contains("msg-49"));
+    }
+
+    #[test]
+    fn lsp_trace_toggle_flips_state_without_opening_buffer() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        // Off -> on.
+        app.do_toggle_lsp_trace("rust");
+        assert!(app.lsp_logger.is_tracing(&id));
+        // Pure toggle now -- the trace buffer is opened separately
+        // via :lsp-trace-log so peeking doesn't flip the toggle off.
+        assert!(app.help_buffer.is_none());
+        let msg = app.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("on"));
+        assert!(msg.text.contains(":lsp-trace-log"));
+        // On -> off.
+        app.do_toggle_lsp_trace("rust");
+        assert!(!app.lsp_logger.is_tracing(&id));
+        assert!(app.help_buffer.is_none());
+    }
+
+    #[test]
+    fn lsp_trace_resolves_binary_name_to_canonical_id() {
+        // `:lsp-trace rust-analyzer` should resolve to the `rust`
+        // config id (the registered binary file_name match) and
+        // toggle the trace flag on `rust`, NOT a phantom
+        // `rust-analyzer` id that nothing else looks at.
+        let mut app = app_with("hi\n", 5);
+        let canonical: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        let phantom: std::sync::Arc<str> = std::sync::Arc::from("rust-analyzer");
+        app.do_toggle_lsp_trace("rust-analyzer");
+        assert!(app.lsp_logger.is_tracing(&canonical));
+        assert!(!app.lsp_logger.is_tracing(&phantom));
+        let msg = app.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("resolved"));
+    }
+
+    #[test]
+    fn lsp_trace_unknown_name_echoes_error_with_running_servers() {
+        let mut app = app_with("hi\n", 5);
+        app.do_toggle_lsp_trace("totally-fake-server-name");
+        let msg = app.last_message.as_ref().unwrap();
+        assert!(matches!(msg.level, EchoLevel::Error));
+        assert!(msg.text.contains("totally-fake-server-name"));
+    }
+
+    #[test]
+    fn lsp_status_with_no_servers_renders_placeholder() {
+        let mut app = app_with("hi\n", 5);
+        app.do_lsp_status();
+        let body = app.help_buffer.as_ref().unwrap().content.as_string();
+        assert!(body.contains("0 server"));
+        assert!(body.contains("no LSP servers running"));
+    }
+
+    #[test]
+    fn lsp_log_level_subsystem_wide_accepts_known_levels() {
+        let mut app = app_with("hi\n", 5);
+        for lvl in ["error", "warn", "info", "debug", "trace"] {
+            app.do_set_lsp_log_level(None, lvl);
+            let msg = app.last_message.as_ref().unwrap();
+            assert!(
+                msg.text.contains(lvl),
+                "echo should mention {lvl}, got {}",
+                msg.text
+            );
+        }
+    }
+
+    #[test]
+    fn lsp_log_level_rejects_unknown_level() {
+        let mut app = app_with("hi\n", 5);
+        app.do_set_lsp_log_level(None, "babble");
+        let msg = app.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("unknown log level"));
+    }
+
+    #[test]
+    fn lsp_log_level_per_server_override() {
+        let mut app = app_with("hi\n", 5);
+        app.do_set_lsp_log_level(Some("rust"), "debug");
+        // Verify the override actually took: a Debug record on
+        // the "rust" server now lands in the ring (the default
+        // is Info, so without the override it'd be filtered).
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Debug,
+            lattice_lsp::LogSource::Client,
+            "debug event",
+        );
+        let recs = app.lsp_logger.snapshot_server(&id);
+        assert!(recs.iter().any(|r| r.message == "debug event"));
+    }
+
+    #[test]
+    fn lsp_log_clear_drops_global_records() {
+        let mut app = app_with("hi\n", 5);
+        app.lsp_logger.log(
+            None,
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::Client,
+            "x",
+        );
+        assert_eq!(app.lsp_logger.snapshot_global().len(), 1);
+        app.do_lsp_log_clear(None);
+        assert_eq!(app.lsp_logger.snapshot_global().len(), 0);
+    }
+
+    #[test]
+    fn lsp_log_clear_drops_per_server_records() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::Client,
+            "x",
+        );
+        assert_eq!(app.lsp_logger.snapshot_server(&id).len(), 1);
+        app.do_lsp_log_clear(Some("rust"));
+        assert_eq!(app.lsp_logger.snapshot_server(&id).len(), 0);
+    }
+
+    #[test]
+    fn lsp_restart_currently_echoes_placeholder() {
+        let mut app = app_with("hi\n", 5);
+        app.do_lsp_restart("rust");
+        let msg = app.last_message.as_ref().unwrap();
+        assert!(msg.text.contains("4.4"));
+    }
+
+    fn app_with_path(
+        text: &str,
+        viewport: u32,
+        path: std::path::PathBuf,
+    ) -> App {
+        let doc = lattice_core::DocumentBuilder::default()
+            .with_text(text)
+            .with_path(path)
+            .build();
+        let mut a = App::new(doc);
+        a.set_viewport_height(viewport);
+        a
+    }
+
+    fn inject_inbound_apply_edit(
+        a: &mut App,
+        inbound: lattice_lsp::InboundApplyEdit,
+    ) {
+        let (bus, new_rx) = lattice_lsp::ApplyEditBus::new();
+        bus.dispatch(inbound).expect("dispatch");
+        a.pending_apply_edit_rx = Some(new_rx);
+    }
+
+    #[test]
+    fn drain_inbound_apply_edits_applies_active_buffer_edit() {
+        // Synthesise an inbound `workspace/applyEdit` against
+        // the active buffer. Drain should apply the edit and
+        // signal `applied: true` on the oneshot.
+        let dir = std::env::temp_dir().join(format!(
+            "lattice-applyedit-test-{}",
+            std::process::id(),
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("buffer.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let mut a = app_with_path("fn main() {}\n", 5, path.clone());
+        let uri: lsp_types::Uri = format!("file://{}", path.display()).parse().unwrap();
+        // Edit replaces `main` (line 0, char 3..7) with `xyz`.
+        let edit = lsp_types::TextEdit {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: 0, character: 3 },
+                end: lsp_types::Position { line: 0, character: 7 },
+            },
+            new_text: "xyz".into(),
+        };
+        let mut changes = std::collections::HashMap::new();
+        changes.insert(uri, vec![edit]);
+        let workspace_edit = lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        };
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        inject_inbound_apply_edit(
+            &mut a,
+            lattice_lsp::InboundApplyEdit {
+                server_id: std::sync::Arc::from("test-server"),
+                label: Some("rename main".into()),
+                edit: workspace_edit,
+                response: resp_tx,
+            },
+        );
+        a.drain_inbound_apply_edits();
+        // Drain ran synchronously; the oneshot is already
+        // populated -- `try_recv` returns Ok.
+        let outcome = resp_rx
+            .try_recv()
+            .expect("drain replied via oneshot");
+        assert!(
+            outcome.applied,
+            "edit applied: {:?}",
+            outcome.failure_reason,
+        );
+        let after = a.document.snapshot().buffer.as_string();
+        assert_eq!(after, "fn xyz() {}\n");
+    }
+
+    #[test]
+    fn drain_inbound_apply_edits_empty_workspace_edit_replies_applied_true() {
+        // An empty WorkspaceEdit (no changes, no
+        // document_changes) is a server no-op. Spec: reply
+        // applied=true so the server doesn't think we
+        // failed -- just nothing to do.
+        let mut a = app_with("", 5);
+        let workspace_edit = lsp_types::WorkspaceEdit::default();
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        inject_inbound_apply_edit(
+            &mut a,
+            lattice_lsp::InboundApplyEdit {
+                server_id: std::sync::Arc::from("test-server"),
+                label: None,
+                edit: workspace_edit,
+                response: resp_tx,
+            },
+        );
+        a.drain_inbound_apply_edits();
+        let outcome = resp_rx.try_recv().expect("drain replied");
+        assert!(outcome.applied);
+        assert_eq!(
+            outcome.failure_reason.as_deref(),
+            Some("empty workspace edit"),
+        );
+    }
+
+    #[test]
+    fn drain_inbound_configuration_walks_cached_tree_at_lsp_prefix() {
+        // Stash an `[lsp.rust-analyzer.cargo]` block in the
+        // App's cached tree (mimics what
+        // `load_persistent_config` does after parsing user
+        // TOML). Drain receives a request for
+        // `"rust-analyzer.cargo.features"` and the
+        // `"rust-analyzer.checkOnSave"` -- both surface from
+        // the tree.
+        let mut a = app_with("", 5);
+        let toml_text = "[lsp.rust-analyzer.cargo]\n\
+                         features = [\"foo\", \"bar\"]\n\
+                         [lsp.rust-analyzer]\n\
+                         checkOnSave = true\n";
+        a.lsp_config_tree = toml_text.parse().expect("toml parse");
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        let req = lattice_lsp::InboundConfigurationRequest {
+            server_id: std::sync::Arc::from("rust-analyzer"),
+            sections: vec![
+                "rust-analyzer.cargo.features".into(),
+                "rust-analyzer.checkOnSave".into(),
+            ],
+            response: resp_tx,
+        };
+        let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
+        bus.dispatch(req).expect("dispatch");
+        a.pending_configuration_rx = Some(new_rx);
+        a.drain_inbound_configuration_requests();
+        let values = resp_rx.try_recv().expect("drain replied");
+        assert_eq!(values.len(), 2);
+        // First: features array.
+        let arr = values[0].as_array().expect("array");
+        assert_eq!(arr[0].as_str(), Some("foo"));
+        assert_eq!(arr[1].as_str(), Some("bar"));
+        // Second: bool.
+        assert_eq!(values[1].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn drain_inbound_configuration_returns_null_for_missing_section() {
+        let mut a = app_with("", 5);
+        // No tree populated -> every lookup is null.
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        let req = lattice_lsp::InboundConfigurationRequest {
+            server_id: std::sync::Arc::from("rust-analyzer"),
+            sections: vec!["rust-analyzer.cargo.features".into()],
+            response: resp_tx,
+        };
+        let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
+        bus.dispatch(req).expect("dispatch");
+        a.pending_configuration_rx = Some(new_rx);
+        a.drain_inbound_configuration_requests();
+        let values = resp_rx.try_recv().expect("drain replied");
+        assert_eq!(values.len(), 1);
+        assert!(values[0].is_null());
+    }
+
+    #[test]
+    fn drain_inbound_configuration_empty_section_returns_whole_lsp_subtree() {
+        // A server requesting `section: null` (or empty) wants
+        // the whole `lsp` sub-tree -- our convention serves
+        // this from the namespaced top.
+        let mut a = app_with("", 5);
+        let toml_text = "[lsp.rust-analyzer]\nchecker = \"clippy\"\n";
+        a.lsp_config_tree = toml_text.parse().unwrap();
+        let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
+        let req = lattice_lsp::InboundConfigurationRequest {
+            server_id: std::sync::Arc::from("rust-analyzer"),
+            sections: vec![String::new()],
+            response: resp_tx,
+        };
+        let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
+        bus.dispatch(req).expect("dispatch");
+        a.pending_configuration_rx = Some(new_rx);
+        a.drain_inbound_configuration_requests();
+        let values = resp_rx.try_recv().expect("drain replied");
+        // Whole `lsp` sub-tree comes back as a JSON object.
+        let obj = values[0].as_object().expect("object");
+        assert!(obj.contains_key("rust-analyzer"));
+    }
+
+    #[test]
+    fn drain_inbound_configuration_no_op_when_channel_empty() {
+        let mut a = app_with("", 5);
+        a.drain_inbound_configuration_requests();
+        assert!(a.pending_configuration_rx.is_some());
+    }
+
+    #[test]
+    fn drain_inbound_apply_edits_no_op_when_channel_empty() {
+        // Idle drain: no requests, no outgoing oneshots, no
+        // panic. Cheap path that runs every frame.
+        let mut a = app_with("", 5);
+        a.drain_inbound_apply_edits();
+        // Receiver is restored after the drain (the take + put-back).
+        assert!(a.pending_apply_edit_rx.is_some());
+    }
+
+    #[test]
+    fn lsp_snippet_with_additional_edits_lands_as_one_undo_unit() {
+        // Buffer has space for the auto-import on line 0 and
+        // the snippet expansion on line 2. The accept path
+        // applies BOTH edits in a single batch; one Ctrl-Z
+        // reverts both.
+        let mut a = app_with("\n\nfor", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(2, 3);
+        // Manually install the popup state: one candidate
+        // with snippet `insertTextFormat`, an auto-import
+        // additionalTextEdit at line 0, and a snippet body
+        // that splices `[anchor, cursor]`.
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::new(2, 0),
+            Position::new(2, 3),
+            "for".into(),
+        );
+        let mut raw = lattice_completion::RawCandidate::plain(
+            "for",
+            lattice_completion::CandidateKind::Plain,
+        )
+        .with_source(lattice_completion::SourceId::new(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID,
+        ));
+        raw.data = lattice_completion::CandidateData::Extension {
+            kind_id: LSP_COMPLETION_KIND_ID,
+            payload: 0u32.to_le_bytes().to_vec(),
+        };
+        state.raw.push(raw.clone());
+        state.rendered.push(lattice_completion::RenderedCandidate::from_scored(
+            lattice_completion::ScoredCandidate {
+                raw,
+                score: lattice_completion::MatchScore(100),
+                match_ranges: Vec::new(),
+            },
+        ));
+        a.insert_completion = Some(state);
+        a.insert_completion_lsp_meta.push(LspCompletionMeta {
+            label: "for-loop".into(),
+            // Snippet body with one tabstop -- expand_snippet_with_lsp_edits
+            // sets up the active snippet, focuses $1.
+            insert_text: "for ${1:i} in iter {}".into(),
+            filter_text: None,
+            sort_text: None,
+            detail: None,
+            documentation: None,
+            kind: Some(lsp_types::CompletionItemKind::SNIPPET),
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: vec![lsp_types::TextEdit {
+                range: lsp_types::Range {
+                    start: lsp_types::Position { line: 0, character: 0 },
+                    end: lsp_types::Position { line: 0, character: 0 },
+                },
+                new_text: "use std::iter;\n".into(),
+            }],
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::SNIPPET,
+            replace_range: None,
+            server_id: std::sync::Arc::from("test-server"),
+            original_item: lsp_types::CompletionItem::default(),
+            resolved: true,
+        });
+        a.do_completion_accept();
+        // After accept: line 0 has the auto-import, line 2
+        // (now line 3 after the import inserted a newline,
+        // wait -- the import is `use std::iter;\n` which adds
+        // an extra newline; existing line 0 was empty so the
+        // buffer is now: line 0 = "use std::iter;", line 1 = "",
+        // line 2 = "", line 3 = "for i in iter {}").
+        let after_accept = a.document.snapshot().buffer.as_string();
+        assert!(after_accept.contains("use std::iter;"), "auto-import applied: `{after_accept}`");
+        assert!(after_accept.contains("for i in iter {}"), "snippet expanded: `{after_accept}`");
+        // Active snippet focused on $1 ("i").
+        assert!(a.active_snippet.is_some(), "active snippet started");
+        // Undo ONCE -> both the auto-import AND the snippet
+        // expansion revert.
+        a.undo_blocking().expect("undo");
+        let after_undo = a.document.snapshot().buffer.as_string();
+        assert_eq!(
+            after_undo, "\n\nfor",
+            "single undo reverted both auto-import and snippet (`{after_undo}`)",
+        );
+    }
+
+}

@@ -6773,73 +6773,7 @@ impl App {
         raw.clamp(0, u32::MAX as i64) as u32
     }
 
-    pub fn do_completion_next(&mut self) {
-        if let Some(s) = self.insert_completion.as_mut() {
-            s.select_next();
-        }
-        self.refresh_docs_popup_for_selection();
-    }
 
-    pub fn do_completion_prev(&mut self) {
-        if let Some(s) = self.insert_completion.as_mut() {
-            s.select_prev();
-        }
-        self.refresh_docs_popup_for_selection();
-    }
-
-    /// Page the docs popup body forward (`<C-f>` inside the
-    /// completion-popup minor mode). Half-popup-height jump
-    /// per press; clamps at the body's last visible line.
-    pub fn do_completion_docs_scroll_down(&mut self) {
-        if let Some(state) = self.insert_completion.as_mut() {
-            if let Some(doc) = state.doc_popup.as_mut() {
-                doc.scroll = doc.scroll.saturating_add(8);
-            }
-        }
-    }
-
-    /// Page the docs popup body backward (`<C-b>` inside the
-    /// completion-popup minor mode).
-    pub fn do_completion_docs_scroll_up(&mut self) {
-        if let Some(state) = self.insert_completion.as_mut() {
-            if let Some(doc) = state.doc_popup.as_mut() {
-                doc.scroll = doc.scroll.saturating_sub(8);
-            }
-        }
-    }
-
-    /// When the focused candidate changes (next / prev /
-    /// refilter pinning), re-target the docs popup. If the
-    /// popup is open AND `for_index` no longer matches
-    /// `selected`, re-derive the body and (when needed) fire
-    /// a fresh `completionItem/resolve`.
-    fn refresh_docs_popup_for_selection(&mut self) {
-        let docs_open = self
-            .insert_completion
-            .as_ref()
-            .map(|s| s.doc_popup.is_some())
-            .unwrap_or(false);
-        if !docs_open {
-            return;
-        }
-        let new_index = self
-            .insert_completion
-            .as_ref()
-            .map(|s| s.selected)
-            .unwrap_or(0);
-        let body = self.docs_body_for_selected();
-        let needs_resolve = body.is_none() && self.selected_needs_resolve();
-        if let Some(state) = self.insert_completion.as_mut() {
-            if let Some(doc) = state.doc_popup.as_mut() {
-                doc.for_index = new_index;
-                doc.scroll = 0;
-                doc.body = body;
-            }
-        }
-        if needs_resolve {
-            self.do_completion_resolve_focused();
-        }
-    }
 
     /// Accept the focused candidate. Three routing paths:
     /// 1. **Snippet candidate** (sync source `gen:snippet` or
@@ -7513,10 +7447,6 @@ impl App {
         }
     }
 
-    pub fn do_completion_cancel(&mut self) {
-        self.insert_completion = None;
-        self.completion_in_path_context = false;
-    }
 
     /// `<C-d>` inside the completion-popup minor mode.
     /// Toggles the side documentation popup. When opening,
@@ -7557,7 +7487,7 @@ impl App {
     /// the candidate is sync-source (no docs) or LSP without
     /// pre-resolved documentation. The caller decides whether
     /// to fire resolve.
-    fn docs_body_for_selected(&self) -> Option<String> {
+    pub(super) fn docs_body_for_selected(&self) -> Option<String> {
         let state = self.insert_completion.as_ref()?;
         let cand = state.rendered.get(state.selected)?;
         let meta = self.lsp_completion_meta_for(cand)?;
@@ -7590,7 +7520,7 @@ impl App {
     /// True when the focused candidate is LSP-sourced, has no
     /// documentation, and the originating server advertises
     /// the resolve provider.
-    fn selected_needs_resolve(&self) -> bool {
+    pub(super) fn selected_needs_resolve(&self) -> bool {
         let Some(state) = self.insert_completion.as_ref() else {
             return false;
         };
@@ -7955,7 +7885,7 @@ impl App {
     /// response fills in `documentation` /
     /// `additionalTextEdits` / `detail` per the LSP spec.
     /// Drain updates the meta + the docs popup body in place.
-    fn do_completion_resolve_focused(&mut self) {
+    pub(super) fn do_completion_resolve_focused(&mut self) {
         // Cancel any prior in-flight resolve -- the focus
         // moved to a different candidate.
         if let Some(token) = self.pending_completion_resolve_token.take() {

@@ -29,14 +29,16 @@
 //!   per-loop-iteration state hooks.
 
 use lattice_core::{CoreError, Document};
+use lattice_grammar::register::Register;
 use lattice_protocol::Event;
 use lattice_protocol::position::Position;
 use lattice_runtime::{RuntimeError, spawn_document};
 use lattice_syntax::{Lang, Syntax};
 
-use super::{App, BufferId, EchoLevel, PositionSource, PrevPaneState};
+use super::{App, BufferId, EchoLevel, PositionSource, PrevPaneState, preview_register};
 use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
 use crate::buffers::{BufferFlags, BufferKind};
+use crate::help::HelpBuffer;
 use crate::pane::{PaneDirection, SplitOrientation};
 
 impl App {
@@ -657,5 +659,135 @@ impl App {
         {
             self.help_buffer = Some(reg.clone());
         }
+    }
+
+    /// `:ls` / `:buffers` -- render every open buffer (regardless
+    /// of kind) in a help-style view. The `%` marker points at
+    /// whichever buffer the active pane is currently showing.
+    pub(super) fn do_list_buffers(&mut self) {
+        let ids = self.buffers.sorted_ids();
+        let active_id = self.active_pane_buffer_id();
+        let doc_count = self.buffers.document_ids_sorted().len();
+        let tree_count = self.buffers.file_tree_ids_sorted().len();
+        let help_count = self.buffers.help_ids_sorted().len();
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!(
+            "{} open buffer(s) ({} document, {} tree, {} help):",
+            ids.len(),
+            doc_count,
+            tree_count,
+            help_count,
+        ));
+        lines.push(String::new());
+        for id in ids {
+            let Some(entry) = self.buffers.get(id) else {
+                continue;
+            };
+            let active_marker = if id == active_id { "%" } else { " " };
+            let listed_marker = if entry.flags.listed { " " } else { "u" };
+            match &entry.data {
+                BufferData::Document(d) => {
+                    let path = d
+                        .handle
+                        .path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "(no file)".to_string());
+                    let dirty = if d.handle.dirty() { "[+]" } else { "   " };
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} doc  {dirty} {path}",
+                        id.0
+                    ));
+                }
+                BufferData::FileTree(t) => {
+                    // M.3.2.c.2: prefer root from buffer-locals.
+                    let root = self
+                        .buffer_locals
+                        .get(&id)
+                        .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
+                        .map(|r| r.0.clone())
+                        .unwrap_or_else(|| t.root.clone());
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} tree     {}",
+                        id.0,
+                        root.display()
+                    ));
+                }
+                BufferData::Help(h) => {
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} help     {}",
+                        id.0, h.title,
+                    ));
+                }
+                BufferData::Oil(o) => {
+                    // M.3.2.c.3: prefer dir from buffer-locals.
+                    let dir = self
+                        .buffer_locals
+                        .get(&id)
+                        .and_then(|locals| locals.get::<crate::modes::OilDir>())
+                        .map(|d| d.0.clone())
+                        .unwrap_or_else(|| o.dir.clone());
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} oil      {}",
+                        id.0,
+                        dir.display()
+                    ));
+                }
+            }
+        }
+        self.open_help(
+            HelpBuffer::from_lines("buffers", lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        );
+    }
+
+    /// Vim's `:reg` -- list every register's contents in the echo area.
+    /// v1 shows the unnamed `""`, the numbered `"0`, and the named
+    /// alphabetic registers in alphabetical order.
+    pub(super) fn do_list_registers(&mut self) {
+        let mut lines: Vec<String> = Vec::new();
+        if let Some(reg) = &self.unnamed_register {
+            lines.push(format!("\"\"  {}", preview_register(&reg.content)));
+        }
+        let mut keys: Vec<Register> = self.registers.keys().copied().collect();
+        keys.sort_by_key(|k| match k {
+            Register::Named(c) => format!("a{c}"),
+            Register::Numbered(n) => format!("b{n}"),
+            Register::System => "z+".into(),
+            _ => "z".into(),
+        });
+        for k in keys {
+            // The keys came from `self.registers.keys()`, so the lookup
+            // can't fail unless someone races us -- which we don't.
+            let Some(entry) = self.registers.get(&k) else {
+                continue;
+            };
+            let label = match k {
+                Register::Named(c) => format!("\"{c}"),
+                Register::Numbered(n) => format!("\"{n}"),
+                Register::System => "\"+".into(),
+                _ => "?".into(),
+            };
+            lines.push(format!("{label}  {}", preview_register(&entry.content)));
+        }
+        if lines.is_empty() {
+            self.set_message(EchoLevel::Info, "no registers set".to_string());
+        } else {
+            self.set_message(EchoLevel::Info, lines.join("  |  "));
+        }
+    }
+
+    /// Vim's `:marks` -- list every set mark's name + position.
+    pub(super) fn do_list_marks(&mut self) {
+        let mut entries: Vec<(char, Position)> = self.marks.iter().map(|(c, p)| (*c, *p)).collect();
+        entries.sort_by_key(|(c, _)| *c);
+        if entries.is_empty() {
+            self.set_message(EchoLevel::Info, "no marks set".to_string());
+            return;
+        }
+        let parts: Vec<String> = entries
+            .into_iter()
+            .map(|(c, p)| format!("{c}={}:{}", p.line + 1, p.byte))
+            .collect();
+        self.set_message(EchoLevel::Info, parts.join("  "));
     }
 }

@@ -3044,35 +3044,6 @@ impl App {
     // `publish_document_changed`; nothing here takes the
     // supervisor mutex on each keystroke.
 
-    /// Look up the current URI of a buffer. None for buffers
-    /// that have no on-disk path yet (new unsaved scratch
-    /// buffers).
-    pub fn buffer_uri(&self, id: BufferId) -> Option<&lattice_lsp::Uri> {
-        self.buffer_uris.get(&id)
-    }
-
-    /// Flush queued didChange events for a buffer immediately.
-    /// Used by will-save hooks (4.3) so the server's view is
-    /// caught up before pre-save requests fire. Fire-and-forget
-    /// against the supervisor mailbox; the supervisor task
-    /// processes the flush asynchronously.
-    pub fn lsp_flush(&self, buffer_id: BufferId) {
-        let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
-            return;
-        };
-        self.lsp.flush(uri);
-    }
-
-    /// Detach a buffer from every attached LSP server. Called
-    /// from the bdelete path. Sends `didClose` per server +
-    /// clears the URI's diagnostics. Fire-and-forget against
-    /// the supervisor mailbox.
-    pub fn lsp_close_buffer(&mut self, buffer_id: BufferId) {
-        let Some(uri) = self.buffer_uris.remove(&buffer_id) else {
-            return;
-        };
-        self.lsp.close_buffer(uri);
-    }
 
 
 
@@ -3146,37 +3117,6 @@ impl App {
 
 
     /// `:lsp-log-level [server] <level>` -- set the subsystem
-    /// default min level (when no server) or a per-server
-    /// override.
-    /// Apply editor-side LSP options that the user configured under
-    /// the top-level `[lsp]` TOML table (as distinct from server-
-    /// namespaced subtables like `[lsp.rust-analyzer]`, which are
-    /// served back to servers via `workspace/configuration`).
-    ///
-    /// Today this handles:
-    /// - `lsp.log-level` -- string, one of `error`/`warn`/`info`/
-    ///   `debug`/`trace`. Sets the subsystem-wide default min level
-    ///   (same effect as `:lsp-log-level <level>`).
-    ///
-    /// Unknown / mistyped values surface a warn echo and the option
-    /// is skipped. Missing keys are silent (the default applies).
-    /// Called once from `load_persistent_config` after the raw tree
-    /// is cached.
-    fn apply_persistent_lsp_editor_options(&mut self) {
-        if let Some(toml::Value::String(level)) =
-            lattice_config::lookup_dotted_path(&self.lsp_config_tree, "lsp.log-level")
-        {
-            match lattice_lsp::LogLevel::parse(level) {
-                Some(parsed) => self.lsp_logger.set_default_level(parsed),
-                None => self.set_message(
-                    EchoLevel::Warn,
-                    format!(
-                        "config: lsp.log-level: unknown level {level:?}; expected error/warn/info/debug/trace"
-                    ),
-                ),
-            }
-        }
-    }
 
 
 
@@ -7483,44 +7423,6 @@ impl App {
 
 
 
-    /// Apply a `Vec<TextEdit>` (LSP utf-16 ranges) to the active
-    /// buffer as one undo unit. TextEdits are sorted in reverse
-    /// by start position so each application doesn't shift the
-    /// positions of the later ones (LSP convention: edits are
-    /// non-overlapping and reference the original document).
-    pub(super) fn apply_lsp_text_edits(
-        &mut self,
-        mut edits: Vec<lsp_types::TextEdit>,
-    ) -> Result<(), String> {
-        edits.sort_by(|a, b| {
-            b.range
-                .start
-                .line
-                .cmp(&a.range.start.line)
-                .then_with(|| b.range.start.character.cmp(&a.range.start.character))
-        });
-        let snap = self.document.snapshot();
-        let mut lattice_edits: Vec<Edit> = Vec::with_capacity(edits.len());
-        for te in edits {
-            let start_line = te.range.start.line;
-            let end_line = te.range.end.line;
-            let start_byte = lsp_position_to_app_byte(
-                &snap.buffer,
-                start_line,
-                te.range.start.character,
-            );
-            let end_byte =
-                lsp_position_to_app_byte(&snap.buffer, end_line, te.range.end.character);
-            let range = lattice_protocol::position::Range::new(
-                Position::new(start_line, start_byte),
-                Position::new(end_line, end_byte),
-            );
-            lattice_edits.push(Edit::replace(range, te.new_text));
-        }
-        self.apply_edit_batch_blocking(lattice_edits)
-            .map(|_| ())
-            .map_err(|e| format!("{e:?}"))
-    }
 
 
 

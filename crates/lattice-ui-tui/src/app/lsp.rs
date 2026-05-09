@@ -45,10 +45,11 @@ use super::{
     SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
     code_action_kind_glyph, completion_kind_glyph, definition_response_to_locations,
     flatten_document_symbol_response, flatten_workspace_edit, hover_contents_to_markdown,
-    is_word_char_byte, last_addressable_line, line_byte_len, prepare_rename_placeholder,
-    signature_help_to_markdown, symbol_information_to_row, word_under_cursor,
-    workspace_symbol_to_row,
+    is_word_char_byte, last_addressable_line, line_byte_len, lsp_position_to_app_byte,
+    prepare_rename_placeholder, signature_help_to_markdown, symbol_information_to_row,
+    word_under_cursor, workspace_symbol_to_row,
 };
+use crate::buffers::BufferId;
 use crate::help::HelpBuffer;
 use lattice_protocol::edit::Edit;
 
@@ -249,6 +250,104 @@ impl App {
             self.pending_hover_token = None;
         }
         self.pending_hover_rx = Some(rx);
+    }
+
+    /// Look up the current URI of a buffer. None for buffers
+    /// that have no on-disk path yet (new unsaved scratch
+    /// buffers).
+    pub fn buffer_uri(&self, id: BufferId) -> Option<&lattice_lsp::Uri> {
+        self.buffer_uris.get(&id)
+    }
+
+    /// Flush queued didChange events for a buffer immediately.
+    /// Used by will-save hooks (4.3) so the server's view is
+    /// caught up before pre-save requests fire. Fire-and-forget
+    /// against the supervisor mailbox.
+    pub fn lsp_flush(&self, buffer_id: BufferId) {
+        let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
+            return;
+        };
+        self.lsp.flush(uri);
+    }
+
+    /// Detach a buffer from every attached LSP server. Called
+    /// from the bdelete path. Sends `didClose` per server +
+    /// clears the URI's diagnostics. Fire-and-forget against
+    /// the supervisor mailbox.
+    pub fn lsp_close_buffer(&mut self, buffer_id: BufferId) {
+        let Some(uri) = self.buffer_uris.remove(&buffer_id) else {
+            return;
+        };
+        self.lsp.close_buffer(uri);
+    }
+
+    /// Apply editor-side LSP options that the user configured
+    /// under the top-level `[lsp]` TOML table (as distinct from
+    /// server-namespaced subtables like `[lsp.rust-analyzer]`,
+    /// which are served back to servers via
+    /// `workspace/configuration`).
+    ///
+    /// Today this handles:
+    /// - `lsp.log-level` -- string, one of
+    ///   `error`/`warn`/`info`/`debug`/`trace`. Sets the
+    ///   subsystem-wide default min level (same effect as
+    ///   `:lsp-log-level <level>`).
+    ///
+    /// Unknown / mistyped values surface a warn echo and the
+    /// option is skipped. Missing keys are silent.
+    pub(super) fn apply_persistent_lsp_editor_options(&mut self) {
+        if let Some(toml::Value::String(level)) =
+            lattice_config::lookup_dotted_path(&self.lsp_config_tree, "lsp.log-level")
+        {
+            match lattice_lsp::LogLevel::parse(level) {
+                Some(parsed) => self.lsp_logger.set_default_level(parsed),
+                None => self.set_message(
+                    EchoLevel::Warn,
+                    format!(
+                        "config: lsp.log-level: unknown level {level:?}; expected error/warn/info/debug/trace"
+                    ),
+                ),
+            }
+        }
+    }
+
+    /// Apply a `Vec<TextEdit>` (LSP utf-16 ranges) to the active
+    /// buffer as one undo unit. TextEdits are sorted in reverse
+    /// by start position so each application doesn't shift the
+    /// positions of the later ones (LSP convention: edits are
+    /// non-overlapping and reference the original document).
+    pub(super) fn apply_lsp_text_edits(
+        &mut self,
+        mut edits: Vec<lsp_types::TextEdit>,
+    ) -> Result<(), String> {
+        edits.sort_by(|a, b| {
+            b.range
+                .start
+                .line
+                .cmp(&a.range.start.line)
+                .then_with(|| b.range.start.character.cmp(&a.range.start.character))
+        });
+        let snap = self.document.snapshot();
+        let mut lattice_edits: Vec<Edit> = Vec::with_capacity(edits.len());
+        for te in edits {
+            let start_line = te.range.start.line;
+            let end_line = te.range.end.line;
+            let start_byte = lsp_position_to_app_byte(
+                &snap.buffer,
+                start_line,
+                te.range.start.character,
+            );
+            let end_byte =
+                lsp_position_to_app_byte(&snap.buffer, end_line, te.range.end.character);
+            let range = lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(start_line, start_byte),
+                lattice_protocol::position::Position::new(end_line, end_byte),
+            );
+            lattice_edits.push(Edit::replace(range, te.new_text));
+        }
+        self.apply_edit_batch_blocking(lattice_edits)
+            .map(|_| ())
+            .map_err(|e| format!("{e:?}"))
     }
 
     /// `:rename <new-name>` (Phase 4.3). Fires

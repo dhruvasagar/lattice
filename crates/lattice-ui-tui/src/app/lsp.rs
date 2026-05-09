@@ -43,14 +43,14 @@ use lattice_protocol::Event;
 
 use super::{
     App, BufferKind, CodeActionOutcome, CodeActionRow, CompletionItemRow, CompletionOutcome,
-    EchoLevel, FormatOutcome, HoverOutcome, LSP_COMPLETION_KIND_ID, LspCompletionMeta,
-    LspNavKind, ReferencesOutcome, RenameOutcome, SignatureHelpOutcome, SymbolRow,
-    SymbolsOutcome, TagStackEntry, app_to_lsp_position, code_action_kind_glyph,
-    completion_kind_glyph, definition_response_to_locations,
-    flatten_document_symbol_response, flatten_workspace_edit, hover_contents_to_markdown,
-    is_word_char_byte, last_addressable_line, line_byte_len, lsp_position_to_app_byte,
-    prepare_rename_placeholder, signature_help_to_markdown, symbol_information_to_row,
-    word_under_cursor, workspace_symbol_to_row,
+    CompletionResolveOutcome, EchoLevel, FormatOutcome, HoverOutcome, InsertCompletionLspOutcome,
+    LSP_COMPLETION_KIND_ID, LspCompletionMeta, LspNavKind, ReferencesOutcome, RenameOutcome,
+    SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
+    code_action_kind_glyph, completion_kind_glyph, dedup_rendered_by_text,
+    definition_response_to_locations, flatten_document_symbol_response, flatten_workspace_edit,
+    hover_contents_to_markdown, is_word_char_byte, last_addressable_line, line_byte_len,
+    lsp_position_to_app_byte, prepare_rename_placeholder, signature_help_to_markdown,
+    symbol_information_to_row, word_under_cursor, workspace_symbol_to_row,
 };
 use crate::buffers::BufferId;
 use crate::help::HelpBuffer;
@@ -253,6 +253,225 @@ impl App {
             self.pending_hover_token = None;
         }
         self.pending_hover_rx = Some(rx);
+    }
+
+    /// Drain queued `completionItem/resolve` responses -- fill
+    /// in the meta entry, update the docs-popup body when the
+    /// resolved item is the popup's currently-focused one.
+    pub fn drain_pending_completion_resolve(&mut self) {
+        let Some(mut rx) = self.pending_completion_resolve_rx.take() else {
+            return;
+        };
+        let mut latest: Option<CompletionResolveOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_completion_resolve_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        self.pending_completion_resolve_token = None;
+        // Fill the meta entry with the resolved fields.
+        let Some(meta) = self
+            .insert_completion_lsp_meta
+            .get_mut(outcome.meta_index)
+        else {
+            return;
+        };
+        let resolved = outcome.resolved;
+        if let Some(d) = resolved.documentation.as_ref() {
+            let body = match d {
+                lsp_types::Documentation::String(s) => s.clone(),
+                lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
+            };
+            meta.documentation = Some(body);
+        }
+        if let Some(detail) = resolved.detail.clone() {
+            meta.detail = Some(detail);
+        }
+        if let Some(adds) = resolved.additional_text_edits.clone() {
+            meta.additional_text_edits = adds;
+        }
+        if let Some(cmd) = resolved.command.clone() {
+            meta.command = Some(cmd);
+        }
+        meta.resolved = true;
+        // Refresh the docs popup body when this resolve was for
+        // the currently-focused candidate.
+        let Some(state) = self.insert_completion.as_mut() else {
+            return;
+        };
+        let Some(doc_popup) = state.doc_popup.as_mut() else {
+            return;
+        };
+        let Some(cand) = state.rendered.get(state.selected) else {
+            return;
+        };
+        let payload = match &cand.raw.data {
+            lattice_completion::CandidateData::Extension { payload, .. } => payload,
+            _ => return,
+        };
+        if payload.len() != 4 {
+            return;
+        }
+        let active_idx = u32::from_le_bytes([
+            payload[0],
+            payload[1],
+            payload[2],
+            payload[3],
+        ]) as usize;
+        if active_idx != outcome.meta_index {
+            return;
+        }
+        // Build the body from the freshly-resolved meta.
+        let detail = self
+            .insert_completion_lsp_meta
+            .get(outcome.meta_index)
+            .and_then(|m| m.detail.clone())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("```\n{s}\n```"));
+        let docs = self
+            .insert_completion_lsp_meta
+            .get(outcome.meta_index)
+            .and_then(|m| m.documentation.clone())
+            .filter(|s| !s.is_empty());
+        doc_popup.body = match (detail, docs) {
+            (Some(d), Some(b)) => Some(format!("{d}\n\n{b}")),
+            (Some(d), None) => Some(d),
+            (None, Some(b)) => Some(b),
+            (None, None) => Some("(no documentation)".to_string()),
+        };
+        doc_popup.scroll = 0;
+    }
+
+    /// Per-frame drain hook -- merge any LSP completion response
+    /// into the active popup's `raw` set, refilter, and update
+    /// the `lsp_incomplete` flag.
+    pub fn drain_pending_insert_completion_lsp(&mut self) {
+        let Some(mut rx) = self.pending_insert_completion_lsp_rx.take() else {
+            return;
+        };
+        let mut latest: Option<InsertCompletionLspOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_insert_completion_lsp_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_insert_completion_lsp_token = None;
+        let Some(state) = self.insert_completion.as_mut() else {
+            // Popup closed before the response arrived; drop it.
+            self.insert_completion_lsp_meta.clear();
+            return;
+        };
+        match outcome {
+            InsertCompletionLspOutcome::NoServers => {
+                // Nothing to merge; sync sources stand alone.
+            }
+            InsertCompletionLspOutcome::Items {
+                items,
+                is_incomplete,
+            } => {
+                // Drop any prior LSP rows from raw + meta.
+                state.raw.retain(|c| {
+                    !matches!(
+                        c.data,
+                        lattice_completion::CandidateData::Extension {
+                            kind_id: LSP_COMPLETION_KIND_ID,
+                            ..
+                        }
+                    )
+                });
+                self.insert_completion_lsp_meta.clear();
+                // Append fresh items.
+                for (i, meta) in items.into_iter().enumerate() {
+                    let display = match meta.detail.as_ref() {
+                        Some(d) => format!("{}  {}", meta.label, d),
+                        None => meta.label.clone(),
+                    };
+                    let match_text = meta
+                        .filter_text
+                        .clone()
+                        .unwrap_or_else(|| meta.label.clone());
+                    let payload = (i as u32).to_le_bytes().to_vec();
+                    let mut raw = lattice_completion::RawCandidate::plain(
+                        match_text,
+                        lattice_completion::CandidateKind::Plain,
+                    )
+                    .with_source(lattice_completion::SourceId::new(
+                        lattice_completion::LSP_COMPLETION_SOURCE_ID,
+                    ));
+                    raw.display = display;
+                    raw.data = lattice_completion::CandidateData::Extension {
+                        kind_id: LSP_COMPLETION_KIND_ID,
+                        payload,
+                    };
+                    state.raw.push(raw);
+                    self.insert_completion_lsp_meta.push(meta);
+                }
+                state.lsp_incomplete = is_incomplete;
+            }
+        }
+        // Refilter against the (now-merged) raw set. Inline
+        // mirror of refilter_insert_completion's body (we have
+        // a mutable borrow on `state` here so calling the
+        // helper would re-borrow).
+        let matcher = lattice_completion::FuzzyInsertMatcher::new();
+        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
+            .raw
+            .iter()
+            .filter_map(|raw| {
+                lattice_completion::CandidateMatcher::matches(
+                    &matcher,
+                    &state.query,
+                    raw,
+                )
+                .map(|(score, ranges)| lattice_completion::ScoredCandidate {
+                    raw: raw.clone(),
+                    score,
+                    match_ranges: ranges,
+                })
+            })
+            .collect();
+        let ranker = lattice_completion::InsertRanker::new();
+        let freq = &self.completion_accept_freq;
+        let config = &self.config;
+        ranker.rank_with_bonus(&mut scored, |raw| {
+            let priority = match raw.source.as_ref().map(|s| s.as_str()) {
+                Some("gen:lsp-completion") => *config
+                    .get_typed::<lattice_config::CompletionSourceLspPriority>()
+                    .expect("CompletionSourceLspPriority"),
+                Some("gen:snippet") => *config
+                    .get_typed::<lattice_config::CompletionSourceSnippetPriority>()
+                    .expect("CompletionSourceSnippetPriority"),
+                Some("gen:buffer-words") => *config
+                    .get_typed::<lattice_config::CompletionSourceBufferWordsPriority>()
+                    .expect("CompletionSourceBufferWordsPriority"),
+                _ => 0,
+            }
+            .clamp(0, u32::MAX as i64) as u32;
+            let freq_bonus = freq
+                .get(&(raw.text.clone(), raw.kind))
+                .copied()
+                .unwrap_or(0)
+                .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
+            priority.saturating_add(freq_bonus)
+        });
+        state.rendered = scored
+            .into_iter()
+            .map(lattice_completion::RenderedCandidate::from_scored)
+            .collect();
+        dedup_rendered_by_text(&mut state.rendered);
+        if !state.rendered.is_empty() && state.selected >= state.rendered.len() {
+            state.selected = state.rendered.len() - 1;
+        }
+        if state.rendered.is_empty() {
+            // No matches after merge -- close the popup.
+            self.insert_completion = None;
+            self.insert_completion_lsp_meta.clear();
+        }
     }
 
     /// Drain queued `lattice_protocol::Event::LspLogPushed`

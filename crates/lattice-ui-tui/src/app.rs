@@ -10985,45 +10985,7 @@ impl App {
     }
 
 
-    /// Split the active pane along `orientation`. The new sibling
-    /// inherits the active pane's content + cursor + scroll (so a
-    /// fresh `<C-w>s` shows the same view in both panes, vim's
-    /// default). Active stays on the original pane.
-    fn do_split_pane(&mut self, orientation: SplitOrientation) {
-        // Save the App's hot-path cursor/scroll into the active
-        // pane's stash so the new sibling clones a fresh snapshot.
-        self.snapshot_active_pane();
-        let _new_idx = self.pane_tree.split_active(orientation);
-    }
 
-    /// Close the active pane. The first surviving pane becomes
-    /// active. No-op when only one pane is open (vim leaves the
-    /// last window alone; closing it would mean closing the editor).
-    /// Singleton transient buffers (file tree) get garbage-collected
-    /// if no surviving pane references them.
-    fn do_close_pane(&mut self) {
-        if self.pane_tree.len() <= 1 {
-            self.set_message(EchoLevel::Warn, "Already only one pane".to_string());
-            return;
-        }
-        // Save the active pane's state, then drop it.
-        self.snapshot_active_pane();
-        if !self.pane_tree.close_active() {
-            return;
-        }
-        self.load_active_pane();
-        self.gc_unreferenced_panel_buffers();
-    }
-
-    /// Drop singleton non-document buffers (currently: file tree)
-    /// when no pane still references them. Document buffers are
-    /// no-op stub left in for backwards compatibility with the
-    /// pre-registry refactor. Trees now live in the unified buffer
-    /// registry alongside documents (DESIGN.md §5.9), so closing
-    /// the only pane that referenced a tree leaves the tree in the
-    /// registry where `:bn` / `:bp` can reach it. Use `:bd` to
-    /// actually drop a tree buffer.
-    fn gc_unreferenced_panel_buffers(&mut self) {}
 
 
     /// Copy the App's hot-path cursor / scroll into the active

@@ -32,7 +32,7 @@ use lattice_protocol::position::Position;
 
 use super::{App, BufferId, EchoLevel, PositionSource, PrevPaneState};
 use crate::buffers::BufferKind;
-use crate::pane::PaneDirection;
+use crate::pane::{PaneDirection, SplitOrientation};
 
 impl App {
     /// Switch the active document to `id`. Snapshots the current
@@ -342,6 +342,45 @@ impl App {
         let pos = ids.iter().position(|id| *id == cur)?;
         Some(ids[if pos == 0 { ids.len() - 1 } else { pos - 1 }])
     }
+
+    /// Split the active pane along `orientation`. The new sibling
+    /// inherits the active pane's content + cursor + scroll (so a
+    /// fresh `<C-w>s` shows the same view in both panes, vim's
+    /// default). Active stays on the original pane.
+    pub(super) fn do_split_pane(&mut self, orientation: SplitOrientation) {
+        // Save the App's hot-path cursor/scroll into the active
+        // pane's stash so the new sibling clones a fresh snapshot.
+        self.snapshot_active_pane();
+        let _new_idx = self.pane_tree.split_active(orientation);
+    }
+
+    /// Close the active pane. The first surviving pane becomes
+    /// active. No-op when only one pane is open (vim leaves the
+    /// last window alone; closing it would mean closing the editor).
+    /// Singleton transient buffers (file tree) get garbage-collected
+    /// if no surviving pane references them.
+    pub(super) fn do_close_pane(&mut self) {
+        if self.pane_tree.len() <= 1 {
+            self.set_message(EchoLevel::Warn, "Already only one pane".to_string());
+            return;
+        }
+        self.snapshot_active_pane();
+        if !self.pane_tree.close_active() {
+            return;
+        }
+        self.load_active_pane();
+        self.gc_unreferenced_panel_buffers();
+    }
+
+    /// Drop singleton non-document buffers (currently: file tree)
+    /// when no pane still references them. Document buffers are
+    /// no-op stub left in for backwards compatibility with the
+    /// pre-registry refactor. Trees now live in the unified buffer
+    /// registry alongside documents (DESIGN.md §5.9), so closing
+    /// the only pane that referenced a tree leaves the tree in the
+    /// registry where `:bn` / `:bp` can reach it. Use `:bd` to
+    /// actually drop a tree buffer.
+    pub(super) fn gc_unreferenced_panel_buffers(&mut self) {}
 
     /// Step cardinally to the spatial neighbour of the active pane.
     /// Geometry comes from `PaneTree::compute_rects` so the walk

@@ -1778,35 +1778,6 @@ pub struct SnippetCandidateMeta {
     pub body: lattice_snippet::SnippetBody,
 }
 
-/// Effective insert-completion config for a given language.
-/// Materialised by [`App::effective_completion_for`] from the
-/// per-language overrides + global typed options + spec
-/// fallbacks. Carried as a value type so the producer / fan-out
-/// paths read it without re-resolving for every candidate.
-#[derive(Debug, Clone)]
-pub struct EffectiveCompletionConfig {
-    /// `Some(list)` -> only sources whose id appears in the list
-    /// contribute. `None` -> every enabled source contributes
-    /// (the "no per-language override" case).
-    pub sources: Option<Vec<lattice_completion::SourceId>>,
-    pub auto_trigger: bool,
-    pub auto_insert_single: bool,
-    /// Tree-sitter scopes where the popup should not fire.
-    /// Plumbed today; enforcement awaits the scope-detect slice.
-    pub suppress_in: Vec<String>,
-}
-
-impl EffectiveCompletionConfig {
-    /// True if `source` contributes for this language. `None`
-    /// effective `sources` means "every source contributes."
-    pub fn source_enabled(&self, source: &lattice_completion::SourceId) -> bool {
-        match &self.sources {
-            Some(list) => list.contains(source),
-            None => true,
-        }
-    }
-}
-
 /// Drain payload for `completionItem/resolve` (Phase
 /// 4.2.g.3). Carries the meta-vec index alongside the
 /// resolved item so the drain can update the right entry
@@ -4220,31 +4191,6 @@ impl App {
             )
         };
         self.set_message(echo_level, body);
-    }
-
-    /// Effective completion config for `language` -- per-language
-    /// override lays over the global typed option which lays
-    /// over the spec fallback. Used at every producer-side
-    /// enforcement seam (sync source filter, LSP fan-out, the
-    /// `auto_insert_single` check at popup-open).
-    pub fn effective_completion_for(
-        &self,
-        language: &str,
-    ) -> EffectiveCompletionConfig {
-        let overrides = self.per_language_completion.get(language);
-        EffectiveCompletionConfig {
-            sources: overrides.and_then(|o| o.sources.clone()),
-            // No global `completion.auto_trigger` typed option
-            // yet (auto-trigger firing itself lands in a future
-            // slice); fall back to false per spec.
-            auto_trigger: overrides.and_then(|o| o.auto_trigger).unwrap_or(false),
-            auto_insert_single: overrides
-                .and_then(|o| o.auto_insert_single)
-                .unwrap_or_else(|| self.completion_auto_insert_single()),
-            suppress_in: overrides
-                .and_then(|o| o.suppress_in.clone())
-                .unwrap_or_default(),
-        }
     }
 
     /// Re-stack the Insert-mode minor-mode overlays

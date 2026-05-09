@@ -45,6 +45,39 @@ use super::{
     lsp_position_to_app_byte, word_under_cursor,
 };
 
+/// Effective insert-completion config for a given language.
+/// Materialised by [`App::effective_completion_for`] from the
+/// per-language overrides + global typed options + spec
+/// fallbacks. Carried as a value type so the producer / fan-out
+/// paths read it without re-resolving for every candidate.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // `auto_trigger` / `auto_insert_single` /
+// `suppress_in` are plumbing the loader populates; production
+// readers come with the scope-detect slice. Tests already read
+// them, so the assertion shape is locked in.
+pub(crate) struct EffectiveCompletionConfig {
+    /// `Some(list)` -> only sources whose id appears in the list
+    /// contribute. `None` -> every enabled source contributes
+    /// (the "no per-language override" case).
+    pub(crate) sources: Option<Vec<lattice_completion::SourceId>>,
+    pub(crate) auto_trigger: bool,
+    pub(crate) auto_insert_single: bool,
+    /// Tree-sitter scopes where the popup should not fire.
+    /// Plumbed today; enforcement awaits the scope-detect slice.
+    pub(crate) suppress_in: Vec<String>,
+}
+
+impl EffectiveCompletionConfig {
+    /// True if `source` contributes for this language. `None`
+    /// effective `sources` means "every source contributes."
+    pub(crate) fn source_enabled(&self, source: &lattice_completion::SourceId) -> bool {
+        match &self.sources {
+            Some(list) => list.contains(source),
+            None => true,
+        }
+    }
+}
+
 impl App {
     /// `<C-x><C-s>` -- direct snippet expansion (Phase 4.2.g.4).
     /// Looks up the word at the cursor in the per-language
@@ -1425,6 +1458,31 @@ impl App {
             self.modal = ModalState::Insert;
         } else {
             self.cursor = applied.inserted_range.end;
+        }
+    }
+
+    /// Effective completion config for `language` -- per-language
+    /// override lays over the global typed option which lays
+    /// over the spec fallback. Used at every producer-side
+    /// enforcement seam (sync source filter, LSP fan-out, the
+    /// `auto_insert_single` check at popup-open).
+    pub(crate) fn effective_completion_for(
+        &self,
+        language: &str,
+    ) -> EffectiveCompletionConfig {
+        let overrides = self.per_language_completion.get(language);
+        EffectiveCompletionConfig {
+            sources: overrides.and_then(|o| o.sources.clone()),
+            // No global `completion.auto_trigger` typed option
+            // yet (auto-trigger firing itself lands in a future
+            // slice); fall back to false per spec.
+            auto_trigger: overrides.and_then(|o| o.auto_trigger).unwrap_or(false),
+            auto_insert_single: overrides
+                .and_then(|o| o.auto_insert_single)
+                .unwrap_or_else(|| self.completion_auto_insert_single()),
+            suppress_in: overrides
+                .and_then(|o| o.suppress_in.clone())
+                .unwrap_or_default(),
         }
     }
 }

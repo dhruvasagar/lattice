@@ -23,6 +23,7 @@
 //! store -- those are owned by `crate::document` /
 //! `crate::registers`.
 
+use lattice_grammar::CommandInvocation;
 use lattice_grammar::ModalState;
 use lattice_grammar::VisualKind;
 use lattice_grammar::YankKind;
@@ -324,5 +325,88 @@ impl App {
             self.cursor = bol;
         }
         self.modal = ModalState::Insert;
+    }
+
+    /// Delete the cursor's whole line including its trailing newline
+    /// (vim's `:d`). The standard delete operator's CurrentLine range
+    /// preserves the newline, which leaves an empty line behind -- that's
+    /// fine for `dd` (cursor stays put on a now-empty line) but wrong
+    /// for `:d` and `:g/.../d`. Here we explicitly include the newline.
+    pub(super) fn do_delete_line(&mut self) {
+        let line = self.cursor.line;
+        let last = last_addressable_line(&self.document.snapshot().buffer);
+        let len = line_byte_len(&self.document.snapshot().buffer, line);
+        let r = if line < last {
+            // Include the trailing newline by extending into the next line.
+            ProtoRange::new(Position::new(line, 0), Position::new(line + 1, 0))
+        } else if line > 0 {
+            // Last line: include the previous line's newline by reaching
+            // back to the end of `line - 1`.
+            let prev = line - 1;
+            let prev_len = line_byte_len(&self.document.snapshot().buffer, prev);
+            ProtoRange::new(Position::new(prev, prev_len), Position::new(line, len))
+        } else {
+            // Single-line buffer: just delete the content.
+            ProtoRange::new(Position::new(line, 0), Position::new(line, len))
+        };
+        if self.apply_edit_blocking(Edit::delete(r)).is_ok() {
+            self.cursor = Position::new(
+                line.min(last_addressable_line(&self.document.snapshot().buffer)),
+                0,
+            );
+        }
+    }
+
+    /// Vim's :g / :v -- execute `body` on every line matching (or NOT
+    /// matching, when inverted) the literal pattern. Operates bottom-up
+    /// so deletions don't shift the upcoming target lines. v1: `body`
+    /// is parsed as a single ex-command.
+    pub(super) fn do_global(&mut self, pattern: &str, inverted: bool, body: &CommandInvocation) {
+        if pattern.is_empty() {
+            self.set_message(EchoLevel::Error, "empty pattern".to_string());
+            return;
+        }
+        let last = last_addressable_line(&self.document.snapshot().buffer);
+        // Build the list of target line numbers from the current snapshot
+        // (so subsequent edits don't shift our intent).
+        let mut targets = Vec::new();
+        {
+            let text = self.document.text();
+            for (i, line) in text.split_inclusive('\n').enumerate() {
+                if i as u32 > last {
+                    break;
+                }
+                let stripped = line.trim_end_matches('\n');
+                let matches = stripped.contains(pattern);
+                if matches != inverted {
+                    targets.push(i as u32);
+                }
+            }
+        }
+        if targets.is_empty() {
+            self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "no lines {} pattern: {pattern}",
+                    if inverted { "lacking" } else { "matching" }
+                ),
+            );
+            return;
+        }
+        // Run bottom-up so deletions and edits on later lines don't
+        // shift the line numbers we plan to operate on. The body is
+        // already parsed -- the cmdline's `:g/pat/body` parser
+        // compiled it once at submit time, so we just clone the
+        // invocation per match.
+        for &line in targets.iter().rev() {
+            self.cursor = Position::new(line, 0);
+            match self.dispatch_blocking(body.clone()) {
+                Ok(eff) => self.apply_effect(eff),
+                Err(e) => {
+                    self.set_message(EchoLevel::Error, format!("g: {e}"));
+                    return;
+                }
+            }
+        }
     }
 }

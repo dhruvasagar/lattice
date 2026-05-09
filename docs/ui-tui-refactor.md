@@ -73,33 +73,36 @@ New slices match these unless there's a documented reason.
   `PositionEntry` / `EffectiveCompletionConfig` / etc.
   data types, and `impl Debug for App`.
 
-## 3. Submodule layout (after R.1.80)
+## 3. Submodule layout (after R.1.88)
 
 | File                   | Lines | Theme                                                              |
 |------------------------|-------|--------------------------------------------------------------------|
-| `app.rs`               | 15914 | App struct + remaining methods + types + free helpers + tests      |
-| `app/lsp.rs`           |  3317 | every `lattice-lsp` consumer (requests, drains, log buffers)       |
-| `app/completion.rs`    |  1521 | popup state machine, ranker, ghost text, snippets (incl. expansion), refilter, `EffectiveCompletionConfig`, `active_language_id` |
+| `app.rs`               | 12957 | App struct + types + free helpers + tests (~10k tests)             |
+| `app/lsp.rs`           |  3378 | every `lattice-lsp` consumer + intro helpers + log openers         |
+| `app/completion.rs`    |  1521 | popup state machine, ranker, ghost text, snippets, refilter, `EffectiveCompletionConfig`, `active_language_id` |
+| `app/lifecycle.rs`     |  1421 | activate-buffer, pane tree, `:e` / `:w` / `:q` / `:bn` / `:ls`, `<C-l>`, document swap, save family, help adoption, buffer-state, jump_to_file_line_col, publish_*_changed |
+| `app/dispatch.rs`      |  1389 | the dispatch core: `apply` / `apply_effect` / `apply_app_effect` / `handle_edits` / `dispatch_blocking` / `run_*_invocation` / `execute_ex_line` / Effect classifiers |
 | `app/folds.rs`         |  1344 | fold compute / open / close / auto-open                            |
-| `app/lifecycle.rs`     |  1353 | activate-buffer, pane tree, `:e` / `:w` / `:q` / `:bn` / `:ls`, `<C-l>`, document swap, save family, help adoption, buffer-state + pane snapshot |
 | `app/search.rs`        |  1125 | `/`, `?`, `:s`, `:%s`, find / find-next / find-reverse             |
-| `app/options.rs`       |   821 | `:set`, typed options, customize machinery, per-language overrides + pending-section drainers |
+| `app/options.rs`       |   922 | `:set`, typed options, customize machinery, per-language overrides + pending-section drainers + 9 typed-option getters + 3 test setters |
 | `app/edit.rs`          |   729 | actor-bridge mutation wrappers, yank / paste / register store / Insert+Replace primitives / `:d` / block-insert |
+| `app/boot.rs`          |   698 | `App::new`, `build_lsp_subsystem`, `load_persistent_config`, `sync_keymap_overlays`, `sync_theme_from_config` |
+| `app/motions.rs`       |   671 | bracket match, history walkers + writer, mark jump, viewport / scroll, cursor clamp, viewport sizing, active-buffer accessors |
 | `app/picker.rs`        |   665 | picker state machine + buffer/LSP-instance candidate builders      |
 | `app/cmdline.rs`       |   613 | `:` minibuffer + missing-arg prompt + chord-capture gate + cmdline completion (incl. open-popup) |
-| `app/motions.rs`       |   598 | bracket match, history walkers + writer, mark jump, viewport / scroll, cursor clamp, viewport sizing |
 | `app/help.rs`          |   575 | `:help`, `:describe-*`, `:apropos`, `:keymap`, `do_help_follow_link` |
+| `app/highlights.rs`    |   485 | tree-sitter highlight cache + per-frame refresh + post-edit shift  |
 | `app/visual.rs`        |   303 | charwise / linewise / blockwise selection state, `set_selections_blocking` |
-| `app/mode.rs`          |   110 | `modal_label` + `enter_mode` (modal-state transitions)             |
 | `app/file_tree.rs`     |   203 | file-tree buffer ops                                               |
+| `app/mode.rs`          |   195 | `modal_label` + `enter_mode` + `activate_major_for_buffer_kind`    |
 | `app/macros.rs`        |   194 | `q` recording / `@` replay                                          |
 | `app/oil.rs`           |   185 | oil buffer ops (incl. navigate-up)                                  |
 | `app/test_helpers.rs`  |   129 | shared test fixtures                                                |
 | `app/syntax.rs`        |    75 | `maybe_reparse_syntax`                                              |
-| `app/state.rs`         |    23 | small state accessors                                               |
+| `app/state.rs`         |    23 | type-only stub (per its header)                                    |
 | `app/operators.rs`     |    22 | operator-pending plumbing                                           |
 
-## 4. Slices done (R.1.0 -- R.1.80)
+## 4. Slices done (R.1.0 -- R.1.88)
 
 | #      | Slice                                                                 |
 |--------|-----------------------------------------------------------------------|
@@ -184,101 +187,105 @@ New slices match these unless there's a documented reason.
 | R.1.78 | buffer-state lifecycle accessors (`find_document_by_path` + `snapshot_active_document` + `activate_buffer_state` + `active_pane_buffer_id`) → `app/lifecycle.rs` |
 | R.1.79 | pane-snapshot + buffer-area-rect (`snapshot_active_pane` + `buffer_area_rect`) → `app/lifecycle.rs` |
 | R.1.80 | `enter_mode` → `app/mode.rs`                                          |
+| R.1.81 | highlights pipeline (`refresh_highlights` family + `VisibleHighlightsKey` + `shift_*` cache shifters + `visible_buffer_line_extent` + accessors) → new `app/highlights.rs` |
+| R.1.82 | boot/sync methods (`sync_keymap_overlays` + `sync_theme_from_config` + `load_persistent_config`) → new `app/boot.rs` |
+| R.1.83 | `App::new` + `build_lsp_subsystem` → `app/boot.rs`                    |
+| R.1.84 | typed-option getters (9 accessors + 3 test setters) → `app/options.rs`; `activate_major_for_buffer_kind` → `app/mode.rs` |
+| R.1.85 | LSP intro helpers (`publish_position_change` + `resolve_server_id` + `running_server_ids`) → `app/lsp.rs`; event publishers (`publish_document_changed` + `publish_selections_changed`) → `app/lifecycle.rs` |
+| R.1.86 | dispatch core (`apply` + `apply_effect` + `apply_app_effect` + `handle_edits` + `dispatch_blocking` + 6 `run_*` routers + `execute_ex_line` + 5 helpers) → new `app/dispatch.rs` |
+| R.1.87 | active-buffer accessors (`active_buffer_id` + `active_cursor` + `active_text`) → `app/motions.rs` |
+| R.1.88 | shrink the App-impl block to `set_message` only (cleanup; no method moves) |
 
 ## 5. Pending candidates
 
-No formal slice plan exists past R.1.80; each slice is picked
-when picked. The clusters below are the visible candidates
-from a survey of `app.rs` after R.1.80. Numbers are
-heuristic -- some clusters fragment into 2--3 sub-slices
-(the way M.3.2 did in `mode-architecture.md`); some collapse
-into one. Rough envelope: **15--25 slices** to fully drain
-App-impl methods from `app.rs`.
+All App-impl methods are out. What's left in `app.rs` is
+about **2,555 lines of production code** (down from 17,849
+at R.1.0 -- 85.7% drained) plus **~10,400 lines of tests**.
+The production residue is:
 
-Listed by destination, not priority. Within each destination,
-cohesion to existing residents is the strongest signal for
-which slice to pick first.
+- The `App` struct definition itself (~770 lines of fields).
+- A `tiny impl App { pub fn set_message }` block.
+- Public type definitions used as message-bus payloads
+  (`HoverOutcome`, `ReferencesOutcome`, `CompletionOutcome`,
+  `RenameOutcome`, `SignatureHelpOutcome`, `FormatOutcome`,
+  `CodeActionOutcome`, `SymbolsOutcome`, `LspNavKind`,
+  `LspCompletionMeta`, `CompletionItemRow`,
+  `CompletionResolveOutcome`, `InsertCompletionLspOutcome`,
+  `CodeActionRow`, `SymbolRow`, `SnippetCandidateMeta`,
+  `LSP_COMPLETION_KIND_ID`, `SNIPPET_COMPLETION_KIND_ID`,
+  `CompletionState`, `PathCompletionCache`, `Fold`, ...).
+- Cross-feature data types (`Action`, `FindKind`,
+  `EchoMessage`, `EchoLevel`, `SearchLine`, `LastSearch`,
+  `UnnamedRegister`, `PrevPaneState`, `MacroRecording`,
+  `TagStackEntry`, `LastFind`, `ReplaceEntry`,
+  `PendingBlockInsert`, `OptionCache`, `PositionEntry`,
+  `PositionSource`, ...).
+- `impl Default for App` and `impl Debug for App`.
+- Cross-module free helpers (`line_byte_len`,
+  `last_addressable_line`, `is_word_char_byte`,
+  `is_path_byte`, `is_blank_line`, `preview_register`,
+  `is_valid_mark_name`, `dedup_rendered_by_text`,
+  `word_under_cursor`, `lsp_position_to_app_byte`,
+  `resolve_command_name_or_alias`).
 
-### → `app/lifecycle.rs`
+### Optional follow-up slices
 
-- **Boot / config.** `new`, `build_lsp_subsystem`,
-  `load_persistent_config`, `sync_keymap_overlays`,
-  `sync_theme_from_config`. Largest remaining cluster;
-  needs its own naming -- maybe `app/boot.rs` rather than
-  overloading lifecycle.
+The R.1.x sequence's primary goal -- breaking the
+monolithic `impl App` block apart -- is complete. The
+remaining churn is more of a polish:
 
-### → `app/highlights.rs` (new)
+- **Type relocation.** LSP outcome types could move to
+  `app/lsp.rs`; completion types to `app/completion.rs`.
+  This would drain another ~500 lines but the types are
+  used as App field types, so the `app.rs` struct
+  definition still imports them. Net visibility win is
+  modest.
+- **Test relocation.** ~10,400 lines of tests in
+  `app.rs`'s `mod tests` block. Each test exercises a
+  feature that has moved to a per-feature module; the
+  tests can migrate next to their target. High churn
+  but mechanical. Best done in 5--10 batches grouped by
+  feature.
 
-- `refresh_highlights`, `refresh_pane_highlights`,
-  `highlights_for_viewport_row`,
-  `highlights_for_buffer_line`, `shift_highlights_for_edit`,
-  `shift_spans_within_line`, `visible_buffer_line_extent`.
-  Cluster is large; introducing the file is itself the
-  first slice, with the actual moves as follow-ups.
 
-### → `app/dispatch.rs` (new) or split across existing files
-
-- The big router family: `apply` (the Action dispatcher),
-  `apply_app_effect`, `dispatch_blocking`, `handle_edits`,
-  `run_oil_invocation`, `run_file_tree_invocation`,
-  `run_help_invocation`, `run_read_only_motion`,
-  `run_document_invocation`. Open question: is this one
-  module or do `run_*_invocation` migrate to their
-  respective feature files? Most likely split: routers go
-  to their kind, central `apply` stays in `app.rs` as the
-  one place all kinds meet.
-
-### → `app/cmdline.rs`
-
-- `execute_ex_line` (parser + dispatcher entry for the `:`
-  line). Big and entangled with every command surface;
-  worth a careful look but not a small slice.
-
-### → `app/motions.rs`
-
-- `active_cursor`, `active_text`, `active_buffer_id`,
-  `active_pane_buffer_id` (the buffer-kind-aware
-  accessors). Small slice; could also live in
-  `app/state.rs`.
-
-### → `app/state.rs` or `app/mode.rs`
-
-- `modal_label`, `set_message`, `set_viewport_height`,
-  `active_pane_content_height`, `help_popup_inner_height`,
-  `do_redraw_screen`. Small accessors / commands; some
   belong with `mode.rs`, some with `state.rs`. Will land
   as one or two cleanup slices near the end.
 
 ### Documentation / tests pass (R.1.x.final)
 
-- One slice that walks the test module in `app.rs` and
-  relocates each `#[test]` to the file whose method it
-  exercises. Pure motion; high churn; do it last.
-- One slice that updates `docs/IMPLEMENTATION.md` to point at
-  the new module homes.
+## 6. End-state achieved (R.1.88)
 
-## 6. End-state target
-
-When R.1.x finishes, `app.rs` should hold:
+`app.rs` now holds:
 
 - The `App` struct definition + `impl Default` /
   `impl Debug for App`.
-- The `OptionCache`, `PositionEntry`, `EffectiveCompletionConfig`,
-  `LspNavKind`, `CompletionComputeError` data types.
+- A single `impl App { pub fn set_message }` block.
+- Type definitions used as App field types or message-bus
+  payloads (`Action`, the LSP outcome enums + structs,
+  `OptionCache`, `PositionEntry`, `LspNavKind`,
+  `SnippetCandidateMeta`, `LspCompletionMeta`,
+  `CompletionState`, `PathCompletionCache`, `Fold`,
+  `EchoMessage`, `EchoLevel`, `SearchLine`, ...).
+- The inherent impl methods on those types (`LspNavKind`'s
+  `noun_plural` / `noun_singular`, `PositionEntry`'s
+  `is_jump` / `is_named_mark`).
 - Cross-module free helpers (`line_byte_len`,
   `last_addressable_line`, `is_word_char_byte`,
   `is_path_byte`, `is_blank_line`, `preview_register`,
-  `is_valid_mark_name`).
-- `effect_mutates`, `effect_mutates_or_yanks` -- effect
-  classifiers used by both the dispatcher and visual mode.
-- The central `App::apply` dispatcher (one place all
-  feature kinds meet).
-- A `mod tests` block that contains only the cross-feature
-  integration tests; per-feature tests live next to their
-  feature module.
+  `is_valid_mark_name`, `dedup_rendered_by_text`,
+  `word_under_cursor`, `lsp_position_to_app_byte`,
+  `resolve_command_name_or_alias`).
+- A `mod tests` block (~10,400 lines) -- the dominant
+  remaining mass; per-feature relocation is the obvious
+  follow-up.
 
-Everything else moves out. A reasonable end-state target
-is **`app.rs` under 2000 lines**.
+Production code line count: **2,555 lines** (down from
+17,849 -- a 14.3% residue, **85.7% drained**). The
+end-state target of "under 2000 lines" was set at R.1.0
+when only data types were expected to remain; the actual
+data-type mass is larger than expected (LSP outcome
+enums are ~280 lines on their own) and the App struct
+field list is ~770 lines.
 
 ## 7. After R.1.x
 

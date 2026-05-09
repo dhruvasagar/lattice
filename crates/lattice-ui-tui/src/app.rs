@@ -3501,13 +3501,6 @@ impl App {
         });
     }
 
-    /// Replace the actor's document outright. Used by `:edit
-    /// path`. The actor swaps state in place and republishes the
-    /// snapshot.
-    pub fn replace_document_blocking(&self, document: Document) {
-        let _ = block_on(self.document.replace(document));
-    }
-
     /// Block_on a grammar dispatch through the actor (DESIGN.md
     /// §5.2.1). Replaces direct `lattice_grammar::execute(&self.registry,
     /// &mut self.document, ...)` calls; the actor holds the only

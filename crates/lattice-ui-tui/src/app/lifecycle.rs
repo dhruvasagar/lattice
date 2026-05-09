@@ -32,7 +32,7 @@ use lattice_core::{CoreError, Document};
 use lattice_grammar::register::Register;
 use lattice_protocol::Event;
 use lattice_protocol::position::Position;
-use lattice_runtime::{RuntimeError, spawn_document};
+use lattice_runtime::{RuntimeError, block_on, spawn_document};
 use lattice_syntax::{Lang, Syntax};
 
 use super::{App, BufferId, EchoLevel, PositionSource, PrevPaneState, preview_register};
@@ -789,5 +789,12 @@ impl App {
             .map(|(c, p)| format!("{c}={}:{}", p.line + 1, p.byte))
             .collect();
         self.set_message(EchoLevel::Info, parts.join("  "));
+    }
+
+    /// Replace the actor's document outright. Used by `:edit
+    /// path`. The actor swaps state in place and republishes the
+    /// snapshot.
+    pub(super) fn replace_document_blocking(&self, document: Document) {
+        let _ = block_on(self.document.replace(document));
     }
 }

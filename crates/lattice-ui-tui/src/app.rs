@@ -23,7 +23,6 @@ use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::effect::Effect;
 use lattice_grammar::register::Register;
 use lattice_protocol::Event;
-use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 use lattice_protocol::selection::{Selection, SelectionSet};
 use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisor, LspSupervisorHandle};
@@ -4081,192 +4080,6 @@ impl App {
         }
     }
 
-    /// Look up the snippet meta sidecar entry for a candidate,
-    /// when it's a snippet-sourced one. Returns `None` for
-    /// non-snippet candidates.
-    pub(crate) fn snippet_meta_for(
-        &self,
-        candidate: &lattice_completion::RenderedCandidate,
-    ) -> Option<&SnippetCandidateMeta> {
-        let lattice_completion::CandidateData::Extension { kind_id, payload } =
-            &candidate.raw.data
-        else {
-            return None;
-        };
-        if *kind_id != SNIPPET_COMPLETION_KIND_ID {
-            return None;
-        }
-        if payload.len() != 4 {
-            return None;
-        }
-        let idx = u32::from_le_bytes([
-            payload[0],
-            payload[1],
-            payload[2],
-            payload[3],
-        ]) as usize;
-        self.insert_completion_snippet_meta.get(idx)
-    }
-
-
-
-
-    /// Expand a parsed snippet body at the popup's anchor.
-    /// Renders the body (variables resolved against the
-    /// active buffer's context), splices the resulting text
-    /// over `[anchor, cursor]`, sets up an `ActiveSnippet`,
-    /// and moves the cursor to the first tabstop's range.
-    /// Pure-literal snippets (no tabstops) skip the active-
-    /// snippet step and just leave the cursor at end-of-insert.
-    /// Expand a snippet body alongside LSP `additionalTextEdits`
-    /// as one undo unit (Phase 4.2.g.7 polish).
-    ///
-    /// Coalesces the auto-import edits the server sent back
-    /// with the snippet body's main splice into a single
-    /// `apply_edit_batch_blocking` call -- one `<C-z>` reverts
-    /// both. The main edit's position is recovered from the
-    /// `Vec<AppliedEdit>` (its index in the reverse-sorted
-    /// batch) so the active-snippet origin tracks the
-    /// post-batch buffer state correctly.
-    ///
-    /// Returns `Err(message)` when the batch apply fails; the
-    /// caller surfaces it via `set_message`. On success the
-    /// active-snippet bookkeeping mirrors `expand_snippet` --
-    /// focus the first tabstop, set `active_snippet`, etc.
-    pub(super) fn expand_snippet_with_lsp_edits(
-        &mut self,
-        body: &lattice_snippet::SnippetBody,
-        anchor: Position,
-        additional: Vec<lsp_types::TextEdit>,
-    ) -> Result<(), String> {
-        let vars = self.snippet_variable_context();
-        let rendered = lattice_snippet::render::render(body, &vars);
-        // Build the main edit -- snippet body splices over
-        // `[anchor, cursor]`.
-        let main_range = lattice_protocol::position::Range::new(anchor, self.cursor);
-        let main_edit = Edit::replace(main_range, rendered.text.clone());
-        // Convert `additionalTextEdits` to lattice Edits.
-        let snap = self.document.snapshot();
-        let mut all_edits: Vec<Edit> = Vec::with_capacity(additional.len() + 1);
-        for te in &additional {
-            let start_byte = lsp_position_to_app_byte(
-                &snap.buffer,
-                te.range.start.line,
-                te.range.start.character,
-            );
-            let end_byte = lsp_position_to_app_byte(
-                &snap.buffer,
-                te.range.end.line,
-                te.range.end.character,
-            );
-            let r = lattice_protocol::position::Range::new(
-                Position::new(te.range.start.line, start_byte),
-                Position::new(te.range.end.line, end_byte),
-            );
-            all_edits.push(Edit::replace(r, te.new_text.clone()));
-        }
-        all_edits.push(main_edit.clone());
-        // Reverse-sort by start position so each edit's
-        // original-document positions stay valid as we apply
-        // sequentially. Same convention as `apply_lsp_text_edits`.
-        all_edits.sort_by(|a, b| {
-            b.range
-                .start
-                .line
-                .cmp(&a.range.start.line)
-                .then_with(|| b.range.start.byte.cmp(&a.range.start.byte))
-        });
-        // Track main's index post-sort so we can read its
-        // post-batch range out of the applied vec.
-        let main_idx = all_edits
-            .iter()
-            .position(|e| *e == main_edit)
-            .ok_or_else(|| "main edit lost during sort".to_string())?;
-        drop(snap);
-        let applied = self
-            .apply_edit_batch_blocking(all_edits)
-            .map_err(|e| format!("{e:?}"))?;
-        let main_applied = applied
-            .get(main_idx)
-            .ok_or_else(|| "main edit missing from applied batch".to_string())?;
-        let origin = self
-            .document
-            .snapshot()
-            .buffer
-            .position_to_byte(main_applied.inserted_range.start)
-            .unwrap_or(0);
-        if !rendered.tabstops.is_empty() {
-            let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
-            if let Some(group) = active.focus_first()
-                && let Some(first) = group.ranges.first()
-                && let Ok(pos) =
-                    self.document.snapshot().buffer.byte_to_position(first.start)
-            {
-                self.cursor = pos;
-            }
-            self.active_snippet = Some(active);
-            self.modal = ModalState::Insert;
-        } else {
-            self.cursor = main_applied.inserted_range.end;
-        }
-        Ok(())
-    }
-
-    pub(super) fn expand_snippet(
-        &mut self,
-        body: &lattice_snippet::SnippetBody,
-        anchor: Position,
-    ) {
-        let vars = self.snippet_variable_context();
-        let rendered = lattice_snippet::render::render(body, &vars);
-        // Splice the rendered text over `[anchor, cursor]`.
-        let range = lattice_protocol::position::Range::new(anchor, self.cursor);
-        let edit = Edit::replace(range, rendered.text.clone());
-        let applied = match self.apply_edit_blocking(edit) {
-            Ok(a) => a,
-            Err(e) => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("snippet: apply failed: {e:?}"),
-                );
-                return;
-            }
-        };
-        // The host's offset of the snippet origin = anchor
-        // converted to a buffer byte offset. ActiveSnippet
-        // tracks ranges in buffer bytes; since our rope edit
-        // returned the inserted_range, we recompute the
-        // origin from the buffer's positional API.
-        let origin = match self
-            .document
-            .snapshot()
-            .buffer
-            .position_to_byte(applied.inserted_range.start)
-        {
-            Ok(b) => b,
-            Err(_) => 0,
-        };
-        if !rendered.tabstops.is_empty() {
-            let mut active =
-                lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
-            // Focus the first tabstop and move the cursor.
-            if let Some(group) = active.focus_first()
-                && let Some(first) = group.ranges.first()
-                && let Ok(pos) =
-                    self.document.snapshot().buffer.byte_to_position(first.start)
-            {
-                self.cursor = pos;
-            }
-            self.active_snippet = Some(active);
-            self.modal = ModalState::Insert;
-        } else {
-            self.cursor = applied.inserted_range.end;
-        }
-    }
-
-
-
-
 
 
 
@@ -6433,6 +6246,7 @@ mod tests {
         app_with, attach_test_syntax, install_help, invoke_motion, press, press_chars,
         subscribe_all_events, submit_ex,
     };
+    use lattice_protocol::edit::Edit;
     use lattice_protocol::selection::VisualMode;
 
     /// Sanity check: a bare motion drives the cursor through

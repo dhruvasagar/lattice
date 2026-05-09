@@ -73,23 +73,23 @@ New slices match these unless there's a documented reason.
   `PositionEntry` / `EffectiveCompletionConfig` / etc.
   data types, and `impl Debug for App`.
 
-## 3. Submodule layout (after R.1.71)
+## 3. Submodule layout (after R.1.74)
 
 | File                   | Lines | Theme                                                              |
 |------------------------|-------|--------------------------------------------------------------------|
-| `app.rs`               | 16547 | App struct + remaining methods + types + free helpers + tests      |
+| `app.rs`               | 16213 | App struct + remaining methods + types + free helpers + tests      |
 | `app/lsp.rs`           |  3317 | every `lattice-lsp` consumer (requests, drains, log buffers)       |
 | `app/completion.rs`    |  1488 | popup state machine, ranker, ghost text, snippets (incl. expansion), refilter, `EffectiveCompletionConfig` |
 | `app/folds.rs`         |  1344 | fold compute / open / close / auto-open                            |
+| `app/lifecycle.rs`     |  1181 | activate-buffer, pane tree, `:e` / `:w` / `:q` / `:bn` / `:ls`, `<C-l>`, document swap, save family, help-buffer adoption |
 | `app/search.rs`        |  1125 | `/`, `?`, `:s`, `:%s`, find / find-next / find-reverse             |
-| `app/lifecycle.rs`     |  1038 | activate-buffer, pane tree, `:e` / `:w` / `:q` / `:bn` / `:ls`, `<C-l>`, document swap, save family |
 | `app/options.rs`       |   821 | `:set`, typed options, customize machinery, per-language overrides + pending-section drainers |
 | `app/edit.rs`          |   729 | actor-bridge mutation wrappers, yank / paste / register store / Insert+Replace primitives / `:d` / block-insert |
 | `app/picker.rs`        |   665 | picker state machine + buffer/LSP-instance candidate builders      |
 | `app/motions.rs`       |   598 | bracket match, history walkers + writer, mark jump, viewport / scroll, cursor clamp, viewport sizing |
 | `app/cmdline.rs`       |   581 | `:` minibuffer + missing-arg prompt + chord-capture gate + cmdline completion |
-| `app/help.rs`          |   389 | `:help`, `:describe-*`, `:apropos`, `:keymap`                       |
-| `app/visual.rs`        |   295 | charwise / linewise / blockwise selection state                    |
+| `app/help.rs`          |   575 | `:help`, `:describe-*`, `:apropos`, `:keymap`, `do_help_follow_link` |
+| `app/visual.rs`        |   303 | charwise / linewise / blockwise selection state, `set_selections_blocking` |
 | `app/file_tree.rs`     |   203 | file-tree buffer ops                                               |
 | `app/macros.rs`        |   194 | `q` recording / `@` replay                                          |
 | `app/oil.rs`           |   185 | oil buffer ops (incl. navigate-up)                                  |
@@ -99,7 +99,7 @@ New slices match these unless there's a documented reason.
 | `app/state.rs`         |    23 | small state accessors                                               |
 | `app/operators.rs`     |    22 | operator-pending plumbing                                           |
 
-## 4. Slices done (R.1.0 -- R.1.71)
+## 4. Slices done (R.1.0 -- R.1.74)
 
 | #      | Slice                                                                 |
 |--------|-----------------------------------------------------------------------|
@@ -175,12 +175,15 @@ New slices match these unless there's a documented reason.
 | R.1.69 | LSP-log-in-pane openers (`open_lsp_log_in_pane` + `open_lsp_trace_log_in_pane`) → `app/lsp.rs` |
 | R.1.70 | pending-structural-section drainers (`take_pending_structural_section` + `pending_structural_section_paths`) → `app/options.rs` |
 | R.1.71 | effective completion config (`EffectiveCompletionConfig` + `source_enabled` + `effective_completion_for`) → `app/completion.rs` |
+| R.1.72 | `do_help_follow_link` → `app/help.rs`                                 |
+| R.1.73 | help-buffer adoption (`open_help` + `open_help_in_pane` + `seed_help_locals`) → `app/lifecycle.rs` |
+| R.1.74 | `set_selections_blocking` → `app/visual.rs`                           |
 
 ## 5. Pending candidates
 
-No formal slice plan exists past R.1.71; each slice is picked
+No formal slice plan exists past R.1.74; each slice is picked
 when picked. The clusters below are the visible candidates
-from a survey of `app.rs` after R.1.71. Numbers are
+from a survey of `app.rs` after R.1.74. Numbers are
 heuristic -- some clusters fragment into 2--3 sub-slices
 (the way M.3.2 did in `mode-architecture.md`); some collapse
 into one. Rough envelope: **15--25 slices** to fully drain
@@ -197,14 +200,6 @@ which slice to pick first.
   `sync_theme_from_config`. Largest remaining cluster;
   needs its own naming -- maybe `app/boot.rs` rather than
   overloading lifecycle.
-
-### → no obvious home (single primitive)
-
-- `set_selections_blocking` -- the only remaining
-  `*_blocking` actor-bridge in `app.rs`. Used everywhere a
-  selection commits; `render.rs` is the outside caller (so
-  it stays `pub`). Visual.rs (heaviest user) or stay as a
-  primitive. Pick when its placement is clear.
 
 ### → `app/highlights.rs` (new)
 
@@ -226,14 +221,6 @@ which slice to pick first.
   respective feature files? Most likely split: routers go
   to their kind, central `apply` stays in `app.rs` as the
   one place all kinds meet.
-
-### → `app/help.rs`
-
-- **Help-flow finishers** (deferred per `app/help.rs` header):
-  `do_help_follow_link`, `open_help_in_pane`,
-  `seed_help_locals`. Entangled with lifecycle and the help-
-  popup overlay; pick when the State A / State B split
-  stabilises.
 
 ### → `app/cmdline.rs`
 

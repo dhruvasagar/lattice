@@ -1,22 +1,36 @@
-//! Insert-mode edits, undo/redo, register paste, and the
-//! low-level rope-mutation helpers App calls. R.1.15 lands a
-//! small focused subset; the bulk migrates with follow-up
-//! slices.
+//! Insert / Replace edits, paste, register store + read,
+//! ex-command edit bodies (`:d` / `:g` / `:v`), and the
+//! block-visual replicator. The cohesive home for any App
+//! method that mutates rope state through `apply_edit_*` or
+//! that reads / writes the register store.
 //!
 //! Methods that live here:
-//! - `do_join_lines` (`J` / `gJ` -- join current line with
-//!   next; `J` collapses joining newline to a single space
-//!   and trims leading whitespace, `gJ` is pure concat).
-//! - `do_toggle_case_at_cursor` (`~` -- toggle the case of
-//!   the char at cursor and advance; non-letters pass
-//!   through, EOL stops the cursor).
+//! - `do_join_lines` (`J` / `gJ`).
+//! - `do_toggle_case_at_cursor` (`~`).
+//! - `do_paste_text`, `do_paste`, `do_paste_blockwise`
+//!   (vim's `p` / `P` family + blockwise paste).
+//! - `do_enter_append`, `do_enter_block_visual_insert`,
+//!   `do_open_line_below`, `do_open_line_above` (Insert-
+//!   mode entries that adjust cursor before mode change).
+//! - `do_delete_line` (`:d`), `do_global` (`:g` / `:v`).
+//! - `do_overwrite_char`, `do_replace_undo_last`,
+//!   `do_insert_text`, `do_delete_char_backward` (Insert /
+//!   Replace primitives).
+//! - `store_yank`, `read_register` (register store
+//!   read/write; the register map itself lives on `App`).
+//! - `replicate_block_insert` (commit a block-visual
+//!   `I` / `A` session as one undo unit).
 //!
-//! Stays in app.rs (deferred to follow-up slices):
-//! - Insert-mode commit path (`do_insert_*`), undo / redo,
-//!   register paste (`do_paste`, `do_paste_blockwise`,
-//!   `do_paste_text`), `do_repeat_last_change` (`.`).
-//! - apply_text_edit (the LSP-edit applier reused by
+//! Stays in app.rs (deferred):
+//! - `do_repeat_last_change` (`.`) -- entangled with the
+//!   dispatch / dot-record path.
+//! - `apply_text_edit` (the LSP-edit applier reused by
 //!   substitute, formatting, code actions).
+//! - `apply_edit_blocking` / `apply_edit_batch_blocking` /
+//!   `undo_blocking` / `redo_blocking` -- synchronous
+//!   wrappers over `Document` that pair with the App
+//!   Action dispatch path; will move with the document-
+//!   mutation slice.
 //!
 //! What does NOT live here: the rope itself (ropey,
 //! wrapped by `Document`), the undo tree, the register
@@ -597,5 +611,58 @@ impl App {
                 .cloned()
                 .or_else(|| self.unnamed_register.clone()),
         }
+    }
+
+    /// Commit a block-visual `I` / `A` session as a single undo unit.
+    ///
+    /// Vim's behavior: the typed prefix on the top row plus the
+    /// replicated text on the other rows land as one atomic
+    /// change. To honour that without restructuring Insert mode
+    /// to defer edits, we:
+    ///
+    /// 1. Roll back the live-typed edits via `undo_blocking` --
+    ///    `spec.live_edits` counts how many `apply_edit` calls
+    ///    happened on the top row during the Insert session.
+    /// 2. Build a batch: top-row insert at `insert_col` plus an
+    ///    insert at the same column on every line in
+    ///    `start_line+1..=end_line` whose length is at least
+    ///    `insert_col` (lines too short to hold the column are
+    ///    skipped, matching vim's behavior).
+    /// 3. Apply the batch via `apply_edit_batch_blocking` so the
+    ///    whole session is one undo / redo unit.
+    pub(super) fn replicate_block_insert(&mut self, spec: PendingBlockInsert, text: &str) {
+        // Rewind the live-typed edits. Each call decrements the
+        // top-row state by one; after `live_edits` calls the
+        // buffer is back to the pre-Insert state and we can
+        // build the batched edit list against it.
+        for _ in 0..spec.live_edits {
+            let _ = self.undo_blocking();
+        }
+
+        let buffer = self.document.snapshot().buffer.clone();
+        let mut edits = Vec::with_capacity((spec.end_line - spec.start_line + 1) as usize);
+
+        // Top row first. Note: we don't skip the top row even if
+        // its length is below insert_col (the user did type there
+        // live, so the buffer already has at least one valid
+        // insertion point at the line-end position they reached).
+        let top_len = line_byte_len(&buffer, spec.start_line);
+        let top_col = spec.insert_col.min(top_len);
+        edits.push(Edit::insert(Position::new(spec.start_line, top_col), text));
+
+        for line in (spec.start_line + 1)..=spec.end_line {
+            let line_len = line_byte_len(&buffer, line);
+            if line_len < spec.insert_col {
+                continue;
+            }
+            edits.push(Edit::insert(Position::new(line, spec.insert_col), text));
+        }
+
+        let _ = self.apply_edit_batch_blocking(edits);
+        // Cursor settles on the start of the inserted prefix on
+        // the top row -- vim's behavior. The previous cursor pos
+        // (one past the typed text on top row) is no longer
+        // accurate after the rewind.
+        self.cursor = Position::new(spec.start_line, top_col);
     }
 }

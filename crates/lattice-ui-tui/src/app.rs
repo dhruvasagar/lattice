@@ -6373,59 +6373,6 @@ impl App {
         }
     }
 
-    /// Commit a block-visual `I` / `A` session as a single undo unit.
-    ///
-    /// Vim's behavior: the typed prefix on the top row plus the
-    /// replicated text on the other rows land as one atomic
-    /// change. To honour that without restructuring Insert mode
-    /// to defer edits, we:
-    ///
-    /// 1. Roll back the live-typed edits via `undo_blocking` --
-    ///    `spec.live_edits` counts how many `apply_edit` calls
-    ///    happened on the top row during the Insert session.
-    /// 2. Build a batch: top-row insert at `insert_col` plus an
-    ///    insert at the same column on every line in
-    ///    `start_line+1..=end_line` whose length is at least
-    ///    `insert_col` (lines too short to hold the column are
-    ///    skipped, matching vim's behavior).
-    /// 3. Apply the batch via `apply_edit_batch_blocking` so the
-    ///    whole session is one undo / redo unit.
-    fn replicate_block_insert(&mut self, spec: PendingBlockInsert, text: &str) {
-        // Rewind the live-typed edits. Each call decrements the
-        // top-row state by one; after `live_edits` calls the
-        // buffer is back to the pre-Insert state and we can
-        // build the batched edit list against it.
-        for _ in 0..spec.live_edits {
-            let _ = self.undo_blocking();
-        }
-
-        let buffer = self.document.snapshot().buffer.clone();
-        let mut edits = Vec::with_capacity((spec.end_line - spec.start_line + 1) as usize);
-
-        // Top row first. Note: we don't skip the top row even if
-        // its length is below insert_col (the user did type there
-        // live, so the buffer already has at least one valid
-        // insertion point at the line-end position they reached).
-        let top_len = line_byte_len(&buffer, spec.start_line);
-        let top_col = spec.insert_col.min(top_len);
-        edits.push(Edit::insert(Position::new(spec.start_line, top_col), text));
-
-        for line in (spec.start_line + 1)..=spec.end_line {
-            let line_len = line_byte_len(&buffer, line);
-            if line_len < spec.insert_col {
-                continue;
-            }
-            edits.push(Edit::insert(Position::new(line, spec.insert_col), text));
-        }
-
-        let _ = self.apply_edit_batch_blocking(edits);
-        // Cursor settles on the start of the inserted prefix on
-        // the top row -- vim's behavior. The previous cursor pos
-        // (one past the typed text on top row) is no longer
-        // accurate after the rewind.
-        self.cursor = Position::new(spec.start_line, top_col);
-    }
-
 
     /// Id of whichever buffer is currently active. The active
     /// pane's `buffer_id` is the source of truth -- documents and

@@ -33,7 +33,182 @@
 //! registry, source plugins, snippet parser -- those live
 //! in `crate::completion` / `crate::snippet`.
 
-use super::App;
+use lattice_grammar::ModalState;
+use lattice_protocol::position::Position;
+
+use super::{App, EchoLevel, is_word_char_byte};
+
+impl App {
+    /// `<C-x><C-s>` -- direct snippet expansion (Phase 4.2.g.4).
+    /// Looks up the word at the cursor in the per-language
+    /// snippet registry; expands the matching snippet directly
+    /// without surfacing the popup.
+    pub fn do_snippet_expand_at_cursor(&mut self) {
+        if !matches!(self.modal, ModalState::Insert) {
+            return;
+        }
+        let snap = self.document.snapshot();
+        // Walk back from cursor over word chars to compute the
+        // prefix. Same heuristic as `do_completion_trigger`.
+        let line_text = snap.buffer.line(self.cursor.line).unwrap_or_default();
+        let bytes = line_text.as_bytes();
+        let cursor_byte = self.cursor.byte as usize;
+        let mut start = cursor_byte;
+        while start > 0
+            && start <= bytes.len()
+            && is_word_char_byte(bytes[start - 1])
+        {
+            start -= 1;
+        }
+        let anchor = Position::new(self.cursor.line, start as u32);
+        let prefix: String = line_text
+            .get(start..cursor_byte.min(line_text.len()))
+            .unwrap_or("")
+            .to_string();
+        if prefix.is_empty() {
+            self.set_message(EchoLevel::Info, "no snippet prefix at cursor");
+            return;
+        }
+        let language = self.active_language_id();
+        let snippet = self
+            .snippet_registry
+            .lookup(&language, &prefix)
+            .first()
+            .cloned()
+            .or_else(|| self.snippet_registry.lookup("*", &prefix).first().cloned())
+            .cloned();
+        let Some(snippet) = snippet else {
+            self.set_message(
+                EchoLevel::Info,
+                format!("no snippet for prefix `{prefix}`"),
+            );
+            return;
+        };
+        self.expand_snippet(&snippet.body, anchor);
+    }
+
+    /// `<Tab>` while a snippet is active -- jump to the next
+    /// placeholder. Exits the snippet on `$0`.
+    pub fn do_snippet_next_placeholder(&mut self) {
+        let Some(active) = self.active_snippet.as_mut() else {
+            return;
+        };
+        let next = active.next().cloned();
+        match next {
+            Some(group) => {
+                self.move_cursor_to_snippet_group(&group);
+            }
+            None => {
+                self.active_snippet = None;
+            }
+        }
+    }
+
+    /// `<S-Tab>` -- jump to the previous placeholder.
+    pub fn do_snippet_prev_placeholder(&mut self) {
+        let Some(active) = self.active_snippet.as_mut() else {
+            return;
+        };
+        if let Some(group) = active.prev().cloned() {
+            self.move_cursor_to_snippet_group(&group);
+        }
+    }
+
+    /// `:reload-snippets` (Phase 4.2.g.4) -- re-read every
+    /// configured snippet directory and rebuild the per-language
+    /// registry. The previous registry is replaced atomically; if
+    /// no directories are configured the user gets a clear "no
+    /// snippet sources configured" echo so the no-op doesn't look
+    /// like a silent failure.
+    pub fn do_reload_snippets(&mut self) {
+        if self.snippet_dirs.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                "no snippet sources configured (set App::snippet_dirs)",
+            );
+            return;
+        }
+        let mut next = lattice_snippet::SnippetRegistry::new();
+        let mut total = 0usize;
+        let mut errors: Vec<String> = Vec::new();
+        let dirs = self.snippet_dirs.clone();
+        for dir in &dirs {
+            let entries = match std::fs::read_dir(dir) {
+                Ok(e) => e,
+                Err(e) => {
+                    errors.push(format!("{}: {e}", dir.display()));
+                    continue;
+                }
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                    continue;
+                }
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                // `_global.json` -> all-language slot.
+                let language = if stem == "_global" {
+                    "*".to_string()
+                } else {
+                    stem
+                };
+                let json = match std::fs::read_to_string(&path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        errors.push(format!("{}: {e}", path.display()));
+                        continue;
+                    }
+                };
+                match lattice_snippet::load::load_pack_from_str(&json) {
+                    Ok(snips) => {
+                        for s in snips {
+                            next.insert(&language, s);
+                            total += 1;
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(format!("{}: {e}", path.display()));
+                    }
+                }
+            }
+        }
+        self.snippet_registry = next;
+        if errors.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                format!("reloaded {total} snippets"),
+            );
+        } else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "reloaded {total} snippets ({} error(s); first: {})",
+                    errors.len(),
+                    errors[0]
+                ),
+            );
+        }
+    }
+
+    /// Helper: move the cursor to the start of the first range in
+    /// a tabstop group.
+    fn move_cursor_to_snippet_group(
+        &mut self,
+        group: &lattice_snippet::TabstopGroup,
+    ) {
+        let Some(first) = group.ranges.first() else {
+            return;
+        };
+        let snap = self.document.snapshot();
+        if let Ok(pos) = snap.buffer.byte_to_position(first.start) {
+            self.cursor = pos;
+        }
+    }
+}
 
 impl App {
     pub fn do_completion_next(&mut self) {

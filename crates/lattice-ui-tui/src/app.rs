@@ -4918,39 +4918,6 @@ impl App {
         }
     }
 
-    /// Build a `VariableContext` for snippet expansion from
-    /// the active buffer / cursor / clipboard / etc. Powers
-    /// `$TM_FILENAME`, `$TM_CURRENT_LINE`, etc.
-    fn snippet_variable_context(&self) -> lattice_snippet::VariableContext {
-        let mut ctx = lattice_snippet::VariableContext::default();
-        let snap = self.document.snapshot();
-        if let Some(path) = snap.path.as_ref() {
-            ctx.filepath = Some(path.display().to_string());
-            ctx.filename = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string());
-            ctx.directory = path
-                .parent()
-                .map(|p| p.display().to_string());
-        }
-        ctx.line_index = Some(self.cursor.line);
-        if let Some(line) = snap.buffer.line(self.cursor.line) {
-            ctx.current_line = Some(line);
-        }
-        if let Some(word) = word_under_cursor(&snap.buffer, self.cursor) {
-            ctx.current_word = Some(word);
-        }
-        // CLIPBOARD via the system register.
-        if let Some(reg) = self.registers.get(&Register::System) {
-            ctx.clipboard = Some(reg.content.clone());
-        }
-        ctx
-    }
-
-
-
-
 
 
 

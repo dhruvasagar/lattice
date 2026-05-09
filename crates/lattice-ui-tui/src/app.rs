@@ -3214,85 +3214,8 @@ impl App {
 
     // ---- LSP introspection (Phase 4.1.g) --------------------
 
-    /// `:lsp-log [server]` -- open a per-server log buffer in the
-    /// active pane.
-    ///
-    /// - **No arg**: open the vertico-style picker over every
-    ///   running `(workspace, server_id)` instance. `<CR>` opens
-    ///   `*lsp:<server>*` for the chosen row.
-    /// - **`server` arg**: pre-filter the picker. If exactly one
-    ///   instance matches (the common case -- one rust-analyzer
-    ///   per workspace), short-circuit and open directly. If
-    ///   multiple instances match (same server id across multiple
-    ///   workspaces), the picker still appears so the user
-    ///   disambiguates by workspace path.
-    ///
-    /// Buffer goes through [`Self::open_help_in_pane`] -- it lives
-    /// in `BufferRegistry` and is reachable via `:bn` / `:b N` /
-    /// the buffer picker (Phase 1 / Phase 2 wiring).
-    pub fn do_open_lsp_log(&mut self, server_id: Option<&str>) {
-        self.open_lsp_picker(
-            "lsp-log",
-            server_id.map(|s| s.to_string()),
-            crate::picker::PickerAction::OpenLspLog,
-        );
-    }
 
-    /// `:lsp-trace-log [server]` -- open the JSON-RPC trace ring
-    /// in the active pane. Same dispatch shape as `:lsp-log`:
-    /// picker on no-arg or multi-match, direct open on single
-    /// match. **Does not toggle tracing** -- pair with
-    /// `:lsp-trace <server>` to start / stop the wire trace; this
-    /// command only views the records.
-    pub fn do_open_lsp_trace_log(&mut self, server_id: Option<&str>) {
-        self.open_lsp_picker(
-            "lsp-trace-log",
-            server_id.map(|s| s.to_string()),
-            crate::picker::PickerAction::OpenLspTraceLog,
-        );
-    }
 
-    /// `:lsp-trace <name>` -- toggle JSON-RPC trace for the
-    /// server. Pure toggle: the trace buffer is opened by the
-    /// separate `:lsp-trace-log [server]` command so peeking
-    /// mid-stream doesn't flip the toggle off.
-    ///
-    /// `name` is resolved against running actors first (exact id
-    /// match), then against configured binary names so `:lsp-trace
-    /// rust-analyzer` resolves to the `rust` actor id when the
-    /// user types the binary name they recognise. On miss the echo
-    /// lists running actor ids so the user sees what's available
-    /// instead of a phantom-toggle that goes nowhere.
-    pub fn do_toggle_lsp_trace(&mut self, name: &str) {
-        let resolved = self.resolve_server_id(name);
-        let Some(server_id) = resolved else {
-            let running = self.running_server_ids();
-            let listing = if running.is_empty() {
-                "no LSP servers running".to_string()
-            } else {
-                format!("running: {}", running.join(", "))
-            };
-            self.set_message(
-                EchoLevel::Error,
-                format!("lsp-trace: no server matches {name:?} ({listing})"),
-            );
-            return;
-        };
-        let id: std::sync::Arc<str> = std::sync::Arc::from(server_id.as_str());
-        let now_on = self.lsp_logger.toggle_trace(id);
-        let label = if now_on { "on" } else { "off" };
-        let alias_note = if server_id != name {
-            format!(" (resolved {name:?} -> {server_id:?})")
-        } else {
-            String::new()
-        };
-        self.set_message(
-            EchoLevel::Info,
-            format!(
-                "lsp-trace {server_id}: {label}{alias_note} (use :lsp-trace-log {server_id} to view)"
-            ),
-        );
-    }
 
     /// Resolve a user-supplied server name to a canonical server
     /// id. Tries, in order:
@@ -3344,40 +3267,8 @@ impl App {
         ids
     }
 
-    /// `:lsp-status` -- render every running server in a
-    /// help-style buffer.
-    pub fn do_lsp_status(&mut self) {
-        // Reads are wait-free against the supervisor snapshot;
-        // no fallback path needed.
-        let buffer = crate::help::HelpBuffer::lsp_status(&self.lsp);
-        self.open_help(buffer.with_markdown_syntax(self.lang_registry.clone()));
-    }
 
-    /// `:lsp-server-log` -- vertico picker over every running
-    /// `(workspace, server_id)` LSP actor. `<CR>` opens the
-    /// per-server log (`*lsp:<server>*`) for the chosen row. Use
-    /// `:lsp-trace-log` for the trace-ring view; `:lsp-status` for
-    /// the read-only static overview.
-    pub fn do_lsp_server_log_listing(&mut self) {
-        self.open_lsp_picker(
-            "lsp-server-log",
-            None,
-            crate::picker::PickerAction::OpenLspLog,
-        );
-    }
 
-    /// `:lsp-restart <server>` -- supervisor restart hook.
-    /// Currently emits an info message; full restart-with-
-    /// backoff lands in 4.4.
-    pub fn do_lsp_restart(&mut self, server_id: &str) {
-        self.set_message(
-            EchoLevel::Info,
-            format!(
-                "lsp-restart {}: supervisor restart wiring lands in 4.4",
-                server_id
-            ),
-        );
-    }
 
     /// `:lsp-log-level [server] <level>` -- set the subsystem
     /// default min level (when no server) or a per-server
@@ -3412,52 +3303,7 @@ impl App {
         }
     }
 
-    pub fn do_set_lsp_log_level(&mut self, server_id: Option<&str>, level: &str) {
-        let Some(parsed) = lattice_lsp::LogLevel::parse(level) else {
-            self.set_message(
-                EchoLevel::Error,
-                format!(
-                    "unknown log level {level:?}; expected error/warn/info/debug/trace"
-                ),
-            );
-            return;
-        };
-        match server_id {
-            None => {
-                self.lsp_logger.set_default_level(parsed);
-                self.set_message(
-                    EchoLevel::Info,
-                    format!("lsp default log level: {level}"),
-                );
-            }
-            Some(id) => {
-                let arc: std::sync::Arc<str> = std::sync::Arc::from(id);
-                self.lsp_logger.set_server_level(arc, Some(parsed));
-                self.set_message(
-                    EchoLevel::Info,
-                    format!("lsp log level for {id}: {level}"),
-                );
-            }
-        }
-    }
 
-    /// `:lsp-log-clear [server]` -- drop ring contents.
-    pub fn do_lsp_log_clear(&mut self, server_id: Option<&str>) {
-        match server_id {
-            None => {
-                self.lsp_logger.clear_global();
-                self.set_message(EchoLevel::Info, "*lsp* cleared".to_string());
-            }
-            Some(id) => {
-                let arc: std::sync::Arc<str> = std::sync::Arc::from(id);
-                self.lsp_logger.clear_server(&arc);
-                self.set_message(
-                    EchoLevel::Info,
-                    format!("*lsp:{id}* cleared"),
-                );
-            }
-        }
-    }
 
     // ---- Blocking bridges to the document actor ----
     //

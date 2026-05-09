@@ -73,20 +73,20 @@ New slices match these unless there's a documented reason.
   `PositionEntry` / `EffectiveCompletionConfig` / etc.
   data types, and `impl Debug for App`.
 
-## 3. Submodule layout (after R.1.60)
+## 3. Submodule layout (after R.1.64)
 
 | File                   | Lines | Theme                                                              |
 |------------------------|-------|--------------------------------------------------------------------|
-| `app.rs`               | 17555 | App struct + remaining methods + types + free helpers + tests      |
+| `app.rs`               | 17413 | App struct + remaining methods + types + free helpers + tests      |
 | `app/lsp.rs`           |  3296 | every `lattice-lsp` consumer (requests, drains, log buffers)       |
 | `app/folds.rs`         |  1344 | fold compute / open / close / auto-open                            |
 | `app/completion.rs`    |  1250 | popup state machine, ranker, ghost text, snippets, refilter        |
 | `app/search.rs`        |  1125 | `/`, `?`, `:s`, `:%s`, find / find-next / find-reverse             |
-| `app/lifecycle.rs`     |   793 | activate-buffer, pane tree, `:e` / `:w` / `:q` / `:bn` / `:ls`     |
+| `app/lifecycle.rs`     |   839 | activate-buffer, pane tree, `:e` / `:w` / `:q` / `:bn` / `:ls`, `<C-l>`, document swap |
 | `app/edit.rs`          |   729 | actor-bridge mutation wrappers, yank / paste / register store / Insert+Replace primitives / `:d` / block-insert |
 | `app/options.rs`       |   690 | `:set`, typed options, customize machinery                         |
 | `app/picker.rs`        |   665 | picker state machine + buffer/LSP-instance candidate builders      |
-| `app/motions.rs`       |   514 | bracket match, history walkers + writer, mark jump, viewport / scroll, cursor clamp |
+| `app/motions.rs`       |   598 | bracket match, history walkers + writer, mark jump, viewport / scroll, cursor clamp, viewport sizing |
 | `app/help.rs`          |   389 | `:help`, `:describe-*`, `:apropos`, `:keymap`                       |
 | `app/cmdline.rs`       |   296 | `:` minibuffer + missing-arg prompt + chord-capture gate            |
 | `app/visual.rs`        |   295 | charwise / linewise / blockwise selection state                    |
@@ -95,11 +95,11 @@ New slices match these unless there's a documented reason.
 | `app/oil.rs`           |   185 | oil buffer ops (incl. navigate-up)                                  |
 | `app/test_helpers.rs`  |   129 | shared test fixtures                                                |
 | `app/syntax.rs`        |    75 | `maybe_reparse_syntax`                                              |
-| `app/mode.rs`          |    25 | mode label / state accessors                                        |
+| `app/mode.rs`          |    50 | `modal_label`; remaining mode-transition entries deferred           |
 | `app/state.rs`         |    23 | small state accessors                                               |
 | `app/operators.rs`     |    22 | operator-pending plumbing                                           |
 
-## 4. Slices done (R.1.0 -- R.1.60)
+## 4. Slices done (R.1.0 -- R.1.64)
 
 | #      | Slice                                                                 |
 |--------|-----------------------------------------------------------------------|
@@ -164,12 +164,16 @@ New slices match these unless there's a documented reason.
 | R.1.58 | `snippet_variable_context` → `app/completion.rs`                      |
 | R.1.59 | cmdline-submit helpers (`try_resolve_missing_arg_prompt` + `chord_capture_active` + `MissingArgPrompt`) → `app/cmdline.rs` |
 | R.1.60 | actor-bridge edit wrappers (`apply_edit_blocking` + `apply_edit_batch_blocking` + `undo_blocking` + `redo_blocking`) → `app/edit.rs` |
+| R.1.61 | `replace_document_blocking` → `app/lifecycle.rs`                      |
+| R.1.62 | viewport-sizing accessors (`set_viewport_height` + `active_pane_content_height` + `help_popup_inner_height`) → `app/motions.rs` |
+| R.1.63 | `modal_label` → `app/mode.rs`                                         |
+| R.1.64 | `do_redraw_screen` (`<C-l>`) → `app/lifecycle.rs`                     |
 
 ## 5. Pending candidates
 
-No formal slice plan exists past R.1.60; each slice is picked
+No formal slice plan exists past R.1.64; each slice is picked
 when picked. The clusters below are the visible candidates
-from a survey of `app.rs` after R.1.60. Numbers are
+from a survey of `app.rs` after R.1.64. Numbers are
 heuristic -- some clusters fragment into 2--3 sub-slices
 (the way M.3.2 did in `mode-architecture.md`); some collapse
 into one. Rough envelope: **15--25 slices** to fully drain
@@ -192,12 +196,12 @@ which slice to pick first.
   `sync_keymap_overlays`, `sync_theme_from_config`. Largest
   remaining cluster; needs its own naming -- maybe
   `app/boot.rs` rather than overloading lifecycle.
-- **Document-mutation tail.** `replace_document_blocking`
-  (used by `:edit path` document swap; lifecycle fit) and
-  `set_selections_blocking` (the selection-only wrapper;
-  callers in `render.rs` keep it `pub`). The four edit-
-  mutation wrappers landed in R.1.60; these two stayed
-  back because they don't fit `app/edit.rs`.
+- **Selection-set wrapper.** `set_selections_blocking` --
+  the only remaining `*_blocking` actor-bridge in `app.rs`.
+  Used everywhere a selection commits; `render.rs` is the
+  outside caller (so it stays `pub`). No obvious feature
+  home -- candidates are visual.rs (heaviest user) or stay
+  as a primitive. Pick when its placement is clear.
 
 ### → `app/highlights.rs` (new)
 

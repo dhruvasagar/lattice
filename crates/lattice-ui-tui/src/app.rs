@@ -4247,41 +4247,6 @@ impl App {
         }
     }
 
-    /// Drain the structural section at `prefix` (an entry
-    /// matching one of the loader's structural prefixes,
-    /// e.g. `"completion.per-language.markdown"`). Removes it
-    /// from `pending_config_structural_sections`; subsequent
-    /// drains return `None`. Used by the per-language /
-    /// plugin-host layers to consume their TOML config without
-    /// leaving stale entries behind.
-    pub fn take_pending_structural_section(
-        &mut self,
-        full_path: &str,
-    ) -> Option<toml::Table> {
-        self.pending_config_structural_sections.remove(full_path)
-    }
-
-    /// Iterate the dotted paths of every pending structural
-    /// section whose path starts with `namespace.` (e.g.
-    /// `"completion.per-language"` returns the language ids).
-    /// Returned as owned `String`s to keep the borrow short --
-    /// callers typically follow up with
-    /// `take_pending_structural_section(full)` mutating the map.
-    pub fn pending_structural_section_paths(
-        &self,
-        namespace: &str,
-    ) -> Vec<String> {
-        let prefix = format!("{namespace}.");
-        self.pending_config_structural_sections
-            .keys()
-            .filter(|k| k.starts_with(&prefix))
-            .cloned()
-            .collect()
-    }
-
-
-
-
     /// Re-stack the Insert-mode minor-mode overlays
     /// (completion popup + active snippet) so the layered
     /// keymap registry mirrors the App's overlay state. Called

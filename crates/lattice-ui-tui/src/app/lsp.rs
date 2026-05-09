@@ -1011,6 +1011,105 @@ impl App {
         });
     }
 
+    /// Drain queued references results. The merged list is
+    /// rendered as a `*lsp:references*` help buffer and opened
+    /// in-pane via the LSP-locations picker; existing follow-
+    /// link machinery (`<CR>` on a Source link) handles jumps.
+    /// `NoServers` echoes "no LSP server attached"; an empty
+    /// `Found(_, [])` echoes "no references for X".
+    pub fn drain_pending_references(&mut self) {
+        let Some(mut rx) = self.pending_references_rx.take() else {
+            return;
+        };
+        let mut latest: Option<ReferencesOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_references_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        // Delivered; clear the in-flight token regardless of
+        // shape so a follow-up gr fires fresh.
+        self.pending_references_token = None;
+        match outcome {
+            ReferencesOutcome::NoServers => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no LSP server attached to current buffer".to_string(),
+                );
+            }
+            ReferencesOutcome::Found { symbol, locations } => {
+                if locations.is_empty() {
+                    let label = if symbol.is_empty() {
+                        "(symbol)".to_string()
+                    } else {
+                        format!("\"{symbol}\"")
+                    };
+                    self.set_message(
+                        EchoLevel::Info,
+                        format!("no references for {label}"),
+                    );
+                    return;
+                }
+                let title = if symbol.is_empty() {
+                    "lsp:references".to_string()
+                } else {
+                    format!("references: {symbol}")
+                };
+                self.open_lsp_locations_picker(title, &locations);
+            }
+        }
+    }
+
+    /// Jump to an LSP `Location`. If the target is the current
+    /// buffer, just move the cursor + push history. If
+    /// cross-file, route through `do_edit` so the `:e` machinery
+    /// (LSP attach, buffer registry) handles the open; then move
+    /// cursor.
+    ///
+    /// Pushes the *pre-jump* cursor onto position history with
+    /// source `PositionSource::PluginPush` so `<C-o>` walks back.
+    /// Tagging it as PluginPush (not AutoJump) reflects that the
+    /// jump came from an external dispatch (LSP) rather than a
+    /// vim-style motion.
+    pub(super) fn jump_to_lsp_location(&mut self, loc: &lsp_types::Location) {
+        let target_path = match lattice_lsp::actor::uri_to_path(&loc.uri) {
+            Some(p) => p,
+            None => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("definition target uri is not a file: {}", loc.uri.as_str()),
+                );
+                return;
+            }
+        };
+        // Push pre-jump cursor before doing anything else so a
+        // subsequent <C-o> walks back to where we started, not
+        // to the target.
+        self.push_position_history(self.cursor, super::PositionSource::PluginPush);
+
+        // Same buffer? Just update the cursor.
+        let same_buffer = self
+            .document
+            .path()
+            .map(|p| p == target_path)
+            .unwrap_or(false);
+        if !same_buffer {
+            self.do_edit(Some(target_path), false);
+        }
+        // Convert LSP target position back to App (line, byte).
+        let snap = self.document.snapshot();
+        let line_text = snap.buffer.line(loc.range.start.line).unwrap_or_default();
+        // utf-16 -> utf-8 byte.
+        let byte = lattice_lsp::position::utf16_column_to_utf8_byte(
+            &line_text,
+            loc.range.start.character,
+        );
+        self.cursor = lattice_protocol::position::Position::new(loc.range.start.line, byte);
+    }
+
     /// `:diagnostics` -- open every published diagnostic across
     /// every attached server in a vertico-style picker. Severity
     /// glyph in the marginalia (`[E]` / `[W]` / `[I]` / `[H]`)

@@ -3314,4 +3314,65 @@ impl App {
             .with_markdown_syntax(self.lang_registry.clone());
         self.open_help_in_pane(buffer);
     }
+
+    /// Helper: publish a position-only change event. Cheap
+    /// stand-in for whatever the rest of the App uses to
+    /// signal cursor moves. Currently a no-op since the
+    /// renderer reads cursor directly; reserved for future
+    /// position-history pushes.
+    pub(super) fn publish_position_change(&self) {
+        // 4.1.d.iv: position history hook reserved -- a real
+        // PluginPush entry lands here when the position-history
+        // wiring catches up.
+    }
+
+    /// Resolve a user-supplied server name to a canonical server
+    /// id. Tries, in order:
+    ///
+    /// 1. Exact id match against running actors (the common case
+    ///    once a buffer has attached).
+    /// 2. Exact id match against registered configs (so
+    ///    `:lsp-trace rust` works pre-spawn -- e.g. enable trace
+    ///    before opening the first .rs file).
+    /// 3. Binary file-name (or stem) match against configs (so
+    ///    `:lsp-trace rust-analyzer` resolves to the `rust` actor
+    ///    id when the user types the binary they recognise).
+    ///
+    /// Returns `None` when none matches.
+    pub(super) fn resolve_server_id(&self, name: &str) -> Option<String> {
+        for ((_, sid), _) in self.lsp.running_actors() {
+            if sid == name {
+                return Some(sid);
+            }
+        }
+        for cfg in self.lsp.configs() {
+            if cfg.id == name {
+                return Some(cfg.id.clone());
+            }
+            let file = cfg
+                .binary
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let stem = file.trim_end_matches(".exe");
+            if file == name || stem == name {
+                return Some(cfg.id.clone());
+            }
+        }
+        None
+    }
+
+    /// Distinct server ids of every running actor. Used in echo
+    /// messages so the user sees what's available.
+    pub(super) fn running_server_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .lsp
+            .running_actors()
+            .into_iter()
+            .map(|((_, sid), _)| sid)
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
 }

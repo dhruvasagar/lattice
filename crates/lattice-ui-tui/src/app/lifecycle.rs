@@ -28,6 +28,7 @@
 //! - `set_viewport_height`, `pending_redraw` handling,
 //!   per-loop-iteration state hooks.
 
+use lattice_core::buffer::AppliedEdit;
 use lattice_core::{CoreError, Document, FoldMethod};
 use lattice_grammar::register::Register;
 use lattice_protocol::Event;
@@ -918,6 +919,73 @@ impl App {
         let active = self.pane_tree.active_mut();
         active.cursor = cursor;
         active.scroll = scroll;
+    }
+
+    /// Build + publish [`Event::DocumentChanged`] from the current
+    /// snapshot and the edits that were just applied. Called from
+    /// every path that mutates the buffer (apply_edit / batch /
+    /// undo / redo). The applied edits ride on the event so
+    /// downstream subscribers (notably the per-server LSP fan-in)
+    /// can sync without re-walking the buffer or holding the
+    /// supervisor lock.
+    pub(super) fn publish_document_changed(&mut self, applied: &[AppliedEdit]) {
+        let snap = self.document.snapshot();
+        let path = snap.path().map(|p| p.to_path_buf());
+        let edits: Vec<lattice_protocol::event::AppliedEdit> = applied
+            .iter()
+            .map(|a| lattice_protocol::event::AppliedEdit {
+                original_range: a.original_range,
+                inserted_range: a.inserted_range,
+                replaced_text: a.replaced_text.clone(),
+                inserted_text: a.inserted_text.clone(),
+            })
+            .collect();
+        self.event_bus.publish(Event::DocumentChanged {
+            id: snap.id,
+            path,
+            version: snap.version,
+            edits,
+        });
+        // Slice B.2 part 2: accumulate tree-sitter-shaped edit
+        // deltas for the next syntax reparse request.
+        // `maybe_reparse_syntax` drains this and ships them to
+        // the worker, which applies them via tree.edit() before
+        // running an incremental Parser::parse. If no syntax
+        // handle is attached, skip the push to keep the vec
+        // bounded.
+        if self.syntax.is_some() {
+            self.pending_syntax_edits
+                .extend(applied.iter().map(|a| a.delta));
+            // Slice C.3: shift `visible_highlights` synchronously
+            // so line indices track the post-edit content even
+            // before the worker publishes a fresh snapshot. For
+            // line-deletes, this drains the deleted lines'
+            // entries from the cached spans; for line-inserts,
+            // it inserts empty placeholders. The result is that
+            // unchanged-content lines below an edit keep their
+            // (still-correct) spans at their NEW indices --
+            // eliminating the "lines below the delete flicker"
+            // user-visible symptom. Combined with the stale-
+            // snapshot hold in `refresh_highlights`, the cached
+            // spans never go through an empty/wrong intermediate
+            // state during the worker window.
+            for a in applied {
+                self.shift_highlights_for_edit(&a.delta);
+            }
+        }
+    }
+
+    /// Build + publish [`Event::SelectionsChanged`] from the current
+    /// snapshot. Called whenever the App's view of selections
+    /// rotates (visual extension, dispatcher SelectionChange effect,
+    /// `gv` reselect, etc.).
+    pub(super) fn publish_selections_changed(&self) {
+        let snap = self.document.snapshot();
+        self.event_bus.publish(Event::SelectionsChanged {
+            id: snap.id,
+            version: snap.version,
+            selections: (*snap.selections).clone(),
+        });
     }
 
     /// Total area available to pane content in screen-cell units.

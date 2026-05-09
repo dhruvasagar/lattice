@@ -10,6 +10,9 @@ use lattice_core::Document;
 use lattice_grammar::CommandInvocation;
 use lattice_grammar::registry::MotionId;
 
+use crate::buffers::BufferKind;
+use crate::help::HelpBuffer;
+
 use super::{Action, App};
 
 /// Build an `App` over a fresh in-memory document with the
@@ -57,6 +60,26 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
 /// motion tests.
 pub(super) fn invoke_motion(id: MotionId) -> Action {
     Action::Invoke(CommandInvocation::of(id.0))
+}
+
+/// Wrap a freshly-built [`HelpBuffer`] as the active buffer
+/// the way the App's `:describe-*` paths do. Shared across
+/// every test that wants help-mode setup.
+pub(super) fn install_help(a: &mut App, h: HelpBuffer) {
+    a.help_buffer = Some(h);
+    a.active_buffer = BufferKind::Help;
+}
+
+/// Drive a complete ex-command line: enter cmdline, type
+/// the contents, submit. The 95%-case shorthand for tests
+/// that exercise an ex command end-to-end (substitute,
+/// `:noh`, `:g/v`, `:reg`, `:marks`, etc.).
+pub(super) fn submit_ex(a: &mut App, line: &str) {
+    a.apply(Action::EnterCommandLine);
+    for c in line.chars() {
+        a.apply(Action::CommandLineAppend(c));
+    }
+    a.apply(Action::CommandLineSubmit);
 }
 
 /// Convenience: drive a sequence of bare-char keystrokes

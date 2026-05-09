@@ -797,4 +797,43 @@ impl App {
     pub(super) fn replace_document_blocking(&self, document: Document) {
         let _ = block_on(self.document.replace(document));
     }
+
+    /// Vim's `<C-l>` -- force a fresh redraw to recover from any
+    /// visual glitch. Concretely:
+    ///
+    /// - bumps the parsed-version mirror so the next
+    ///   `maybe_reparse_syntax` actually re-runs the parser even if
+    ///   the document version hasn't changed (covers the rare case
+    ///   where a fold or syntax cache went stale);
+    /// - clears the cached `visible_highlights` and pane highlights
+    ///   so the next frame's `refresh_highlights` repopulates from
+    ///   scratch;
+    /// - sets `pending_redraw` so the runtime clears the terminal
+    ///   on the next frame, scrubbing leftover ANSI sequences from
+    ///   crashed external programs / partial repaints.
+    pub(super) fn do_redraw_screen(&mut self) {
+        // Force a syntax reparse on the next frame.
+        self.last_parsed_text_version = u64::MAX;
+        // Drop cached spans AND the cache key so
+        // refresh_highlights's B.3 cache check sees a miss and
+        // recomputes. Without clearing the key, the next
+        // refresh_highlights computes the same key as the
+        // previous frame (snapshot didn't change), hits the
+        // cache, and returns the (now empty) `visible_highlights`
+        // -- which manifests as syntax highlighting visibly
+        // disappearing after `<C-l>` until the user scrolls (or
+        // anything else invalidates the key). Regression test
+        // pinned in `redraw_screen_repopulates_visible_highlights`.
+        self.visible_highlights.clear();
+        self.visible_highlights_key = None;
+        self.pane_highlights.clear();
+        // Recompute folds in case the fold set drifted from the
+        // current document state (paranoia; the seam already runs
+        // on every reparse, but `<C-l>` is the explicit "reset"
+        // hook so we err on the side of re-running it).
+        self.recompute_folds();
+        // Tell the runtime to clear the terminal on next frame.
+        self.pending_redraw = true;
+        self.set_message(EchoLevel::Info, "redraw".to_string());
+    }
 }

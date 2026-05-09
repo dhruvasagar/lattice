@@ -18,6 +18,13 @@
 //! - `chord_capture_active` (the input-layer gate that
 //!   tells `translate_command_chord_capture` whether the
 //!   current cmdline cursor is on an `ArgKind::Chord` slot).
+//! - `compute_completion_state` (slot-detect + run the
+//!   completion pipeline + alias-rewrite command
+//!   candidates) and `refresh_completion_popup` (re-run
+//!   on `CommandLine{Append,Backspace,DeleteWordBackward}`
+//!   while the popup is open). Plus the `CompletionComputeError`
+//!   error enum and the `prefer_aliases_for_command_candidates`
+//!   / `subsequence_match_ranges` helpers used only here.
 //!
 //! What does NOT live here yet: the ex-command bodies
 //! themselves (`do_edit`, `do_write`, `do_quit`,
@@ -32,7 +39,7 @@
 
 use lattice_grammar::ModalState;
 
-use super::{App, EchoLevel};
+use super::{App, CompletionState, EchoLevel};
 
 /// Result of resolving a missing-arg prompt (DESIGN.md §B.1).
 /// Returned by [`App::try_resolve_missing_arg_prompt`] when the
@@ -292,5 +299,283 @@ impl App {
             lattice_completion::CommandLineSlot::Arg { arg_spec, .. }
                 if arg_spec.kind == lattice_grammar::ArgKind::Chord
         )
+    }
+
+    /// Re-run the completion pipeline against the current command line
+    /// and update the popup in place. Called from `CommandLineAppend` /
+    /// `CommandLineBackspace` / `CommandLineDeleteWordBackward` while
+    /// the popup is open -- this is the vertico "filter as you type"
+    /// behaviour. No echo: refresh is silent. Empty results keep the
+    /// popup alive (so further edits can repopulate it); a slot
+    /// transition that has no completion source closes it.
+    pub(super) fn refresh_completion_popup(&mut self) {
+        if self.completion_state.is_none() {
+            return;
+        }
+        match self.compute_completion_state() {
+            Ok(state) => {
+                self.completion_state = Some(state);
+            }
+            Err(CompletionComputeError::NoMatches { .. }) => {
+                // Keep the popup open with zero candidates so the user
+                // can backspace and re-match without re-tabbing.
+                if let Some(state) = self.completion_state.as_mut() {
+                    state.candidates.clear();
+                    state.selected = 0;
+                    state.original_line = self.command_line.clone();
+                }
+            }
+            Err(_) => {
+                // Slot moved to a region with no completion source
+                // (UnknownCommand, BeyondSchema, arg without
+                // `completion`). Drop the popup; the user can re-Tab
+                // to re-arm it later.
+                self.completion_state = None;
+            }
+        }
+    }
+
+    /// Slot-detect, build the pipeline, run it, and host-rewrite
+    /// command candidates to user-facing aliases. Pure -- no
+    /// `set_message` side effects, so both the open and the refresh
+    /// path can share it. Errors carry enough info for the open path
+    /// to surface them via echo.
+    pub(super) fn compute_completion_state(
+        &self,
+    ) -> Result<CompletionState, CompletionComputeError> {
+        let line = self.command_line.clone();
+        let cursor = line.len();
+        let alias_resolver = |short: &str| {
+            crate::excommand::aliases()
+                .get(short)
+                .map(|s| (*s).to_string())
+        };
+        let slot = lattice_completion::current_slot(&line, cursor, &self.registry, &alias_resolver);
+        let (source_name, prefix, replace_start) = match &slot {
+            lattice_completion::CommandLineSlot::CommandName {
+                prefix,
+                replace_start,
+            } => ("gen:commands", prefix.clone(), *replace_start),
+            lattice_completion::CommandLineSlot::Arg {
+                arg_spec,
+                prefix,
+                replace_start,
+                ..
+            } => match arg_spec.completion {
+                Some(name) => (name, prefix.clone(), *replace_start),
+                None => {
+                    return Err(CompletionComputeError::NoCompletionForArg(
+                        arg_spec.name.to_string(),
+                    ));
+                }
+            },
+            lattice_completion::CommandLineSlot::Empty => ("gen:commands", String::new(), 0),
+            _ => {
+                return Err(CompletionComputeError::NoCompletionAtCursor);
+            }
+        };
+
+        let Some(generator) = self.completion_registry.generator_by_name(source_name) else {
+            return Err(CompletionComputeError::MissingSource(
+                source_name.to_string(),
+            ));
+        };
+        let generator_id = generator.id;
+        let Some(pipeline) = lattice_completion::CompletionPipeline::for_generator(
+            &self.completion_registry,
+            generator_id,
+        ) else {
+            return Err(CompletionComputeError::PipelineUnconfigured);
+        };
+        let snap = self.document.snapshot();
+        let ctx = lattice_completion::GenerateContext {
+            prefix: &prefix,
+            buffer: &snap.buffer,
+            registry: &self.registry,
+            case_sensitive: false,
+        };
+        let mut candidates = pipeline.run(&ctx, &prefix, &self.completion_registry.cache);
+
+        // Host-side post-process: command candidates from
+        // `gen:commands` come back as canonical names
+        // (`ex:describe-command`). Rewrite to the user-facing alias
+        // (`describe-command`) so the popup shows -- and accepts --
+        // what the user would actually type. The parser accepts
+        // both forms (see excommand::parse_invocation), so this is
+        // purely a UX rewrite.
+        prefer_aliases_for_command_candidates(&mut candidates, &prefix);
+
+        if candidates.is_empty() {
+            return Err(CompletionComputeError::NoMatches { prefix });
+        }
+        Ok(CompletionState {
+            candidates,
+            selected: 0,
+            replace_start,
+            original_line: line,
+        })
+    }
+}
+
+/// Reasons `compute_completion_state` can fail. Kept narrow so the
+/// open and refresh paths can pick different recovery strategies --
+/// the open path turns these into echoed messages, the refresh path
+/// usually closes the popup but keeps it alive on `NoMatches` so
+/// vertico-style "type-to-filter, then back-out-to-recover" works.
+#[derive(Debug, Clone)]
+pub(super) enum CompletionComputeError {
+    NoCompletionForArg(String),
+    NoCompletionAtCursor,
+    MissingSource(String),
+    PipelineUnconfigured,
+    NoMatches { prefix: String },
+}
+
+impl CompletionComputeError {
+    pub(super) fn echo(&self) -> (EchoLevel, String) {
+        match self {
+            Self::NoCompletionForArg(name) => {
+                (EchoLevel::Info, format!("no completion for arg `{name}`"))
+            }
+            Self::NoCompletionAtCursor => (EchoLevel::Info, "no completion at cursor".to_string()),
+            Self::MissingSource(name) => (
+                EchoLevel::Error,
+                format!("completion source `{name}` not registered"),
+            ),
+            Self::PipelineUnconfigured => (
+                EchoLevel::Error,
+                "completion pipeline not configured (missing default matcher / ranker)".to_string(),
+            ),
+            Self::NoMatches { prefix } => {
+                (EchoLevel::Info, format!("no completions for `{prefix}`"))
+            }
+        }
+    }
+}
+
+/// Rewrite `gen:commands` candidates from canonical
+/// (`ex:describe-command`) to their user-facing alias
+/// (`describe-command`) so the popup shows -- and accepts --
+/// what the user would actually type. The parser accepts
+/// both forms; this is purely a UX rewrite.
+///
+/// We re-derive match ranges instead of clearing them so the
+/// popup's match-face highlighting still shows where the query
+/// matched.
+fn prefer_aliases_for_command_candidates(
+    candidates: &mut Vec<lattice_completion::RenderedCandidate>,
+    query: &str,
+) {
+    let needle = query.to_ascii_lowercase();
+    candidates.retain_mut(|c| {
+        if !matches!(c.raw.kind, lattice_completion::CandidateKind::Command) {
+            return true;
+        }
+        let canonical = c.raw.text.clone();
+        let alias = crate::excommand::preferred_alias_for(&canonical);
+        let new_text = alias.map(|a| a.to_string()).unwrap_or(canonical);
+        c.raw.text = new_text.clone();
+        c.raw.display = new_text.clone();
+        // Recompute match ranges: subsequence-match the lowercase
+        // query against the lowercase text; emit one range per
+        // matched byte. Mirrors the fuzzy matcher's range output
+        // so the popup highlights work consistently.
+        c.match_ranges = subsequence_match_ranges(&needle, &new_text);
+        // Keep the candidate even if the rewrite no longer
+        // visibly contains the query -- the matcher already
+        // accepted it against the canonical form. Filtering here
+        // would surprise users (typing `ex:` then accepting an
+        // alias-rewritten candidate would unexpectedly drop the
+        // candidate). Empty match_ranges just means no
+        // highlights.
+        true
+    });
+}
+
+fn subsequence_match_ranges(needle_lower: &str, haystack: &str) -> Vec<std::ops::Range<usize>> {
+    if needle_lower.is_empty() {
+        return Vec::new();
+    }
+    let n = needle_lower.as_bytes();
+    let h = haystack.as_bytes();
+    let mut ranges = Vec::with_capacity(n.len());
+    let mut ni = 0;
+    for (i, b) in h.iter().enumerate() {
+        if ni >= n.len() {
+            break;
+        }
+        if b.eq_ignore_ascii_case(&n[ni]) {
+            ranges.push(i..i + 1);
+            ni += 1;
+        }
+    }
+    if ni < n.len() {
+        // Couldn't match every needle char -- abandon the highlights;
+        // the candidate stays (host kept the framework's verdict).
+        Vec::new()
+    } else {
+        ranges
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefer_aliases_rewrites_canonical_to_alias() {
+        use lattice_completion::{
+            CandidateData, CandidateKind, MatchScore, RawCandidate, RenderedCandidate,
+        };
+        use lattice_grammar::source::SourceLocation;
+        let mut candidates = vec![RenderedCandidate {
+            raw: RawCandidate {
+                text: "ex:describe-command".into(),
+                display: "ex:describe-command".into(),
+                kind: CandidateKind::Command,
+                data: CandidateData::Command {
+                    name: "ex:describe-command".into(),
+                    doc: "doc".into(),
+                    kind_label: "ex-command".into(),
+                    source: SourceLocation::synthetic("test"),
+                },
+                source: None,
+            },
+            score: MatchScore::PERFECT,
+            match_ranges: vec![],
+            annotations: vec![],
+        }];
+        prefer_aliases_for_command_candidates(&mut candidates, "descri");
+        assert_eq!(candidates[0].raw.text, "describe-command");
+        assert_eq!(candidates[0].raw.display, "describe-command");
+        // Match ranges recomputed against the new text.
+        assert!(!candidates[0].match_ranges.is_empty());
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn prefer_aliases_leaves_non_command_candidates_alone() {
+        use lattice_completion::{
+            CandidateData, CandidateKind, MatchScore, RawCandidate, RenderedCandidate,
+        };
+        let mut candidates = vec![RenderedCandidate {
+            raw: RawCandidate {
+                text: "/tmp/foo.rs".into(),
+                display: "foo.rs".into(),
+                kind: CandidateKind::File,
+                data: CandidateData::File {
+                    path: "/tmp/foo.rs".into(),
+                    is_dir: false,
+                    size: None,
+                },
+                source: None,
+            },
+            score: MatchScore::PERFECT,
+            match_ranges: vec![0..3],
+            annotations: vec![],
+        }];
+        prefer_aliases_for_command_candidates(&mut candidates, "tmp");
+        // File candidate untouched.
+        assert_eq!(candidates[0].raw.text, "/tmp/foo.rs");
     }
 }

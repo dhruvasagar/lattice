@@ -350,6 +350,108 @@ impl App {
             .map_err(|e| format!("{e:?}"))
     }
 
+    /// Union of onTypeFormatting trigger characters across LSP
+    /// servers attached to the active document.
+    pub(super) fn on_type_formatting_trigger_chars(&self) -> Vec<char> {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return Vec::new();
+        };
+        let handles = self.lsp.servers_for(uri);
+        let mut chars: Vec<char> = Vec::new();
+        for h in handles {
+            for c in h.capabilities().on_type_formatting_trigger_chars() {
+                if !chars.contains(&c) {
+                    chars.push(c);
+                }
+            }
+        }
+        chars
+    }
+
+    /// Union of signature-help trigger characters across every
+    /// LSP server attached to the active document. Empty when
+    /// no server advertises the provider.
+    pub(super) fn signature_help_trigger_chars(&self) -> Vec<char> {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return Vec::new();
+        };
+        let handles = self.lsp.servers_for(uri);
+        let mut chars: Vec<char> = Vec::new();
+        for h in handles {
+            for c in h.capabilities().signature_help_trigger_chars() {
+                if !chars.contains(&c) {
+                    chars.push(c);
+                }
+            }
+        }
+        chars
+    }
+
+    /// Fire `textDocument/onTypeFormatting` to the highest-
+    /// priority server advertising the trigger; apply the returned
+    /// edits as one undo unit.
+    pub(super) fn do_lsp_on_type_formatting_request(&mut self, trigger: char) {
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let pos = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => return,
+        };
+        let lsp = self.lsp.clone();
+        let trigger_str = trigger.to_string();
+        let options = lsp_types::FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            properties: Default::default(),
+            trim_trailing_whitespace: Some(true),
+            insert_final_newline: Some(true),
+            trim_final_newlines: Some(true),
+        };
+        // OnTypeFormatting fires per-character; apply the result
+        // via the same async drain path the format request uses.
+        // Reuse `pending_format_*` since onType and `:format` are
+        // mutually exclusive in time.
+        if let Some(token) = self.pending_format_token.take() {
+            token.cancel();
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FormatOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_format_rx = Some(rx);
+        self.pending_format_token = Some(token.clone());
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.servers_for(&uri) };
+            let chosen = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_on_type_formatting());
+            let Some(handle) = chosen else {
+                let _ = tx.send(FormatOutcome::NoProvider { is_range: false });
+                return;
+            };
+            let params = lsp_types::DocumentOnTypeFormattingParams {
+                text_document_position: lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri },
+                    position: pos,
+                },
+                ch: trigger_str,
+                options,
+            };
+            let edits = handle
+                .on_type_formatting(params, token)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let _ = tx.send(FormatOutcome::Edits(edits));
+        });
+    }
+
     /// `:rename <new-name>` (Phase 4.3). Fires
     /// `textDocument/prepareRename` (when the server advertises
     /// the prepare provider) to validate the cursor and pick up

@@ -41,12 +41,13 @@ use lattice_grammar::ModalState;
 
 use super::{
     App, BufferKind, CodeActionOutcome, CodeActionRow, CompletionItemRow, CompletionOutcome,
-    EchoLevel, FormatOutcome, HoverOutcome, LspNavKind, ReferencesOutcome, SignatureHelpOutcome,
-    SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position, code_action_kind_glyph,
-    completion_kind_glyph, definition_response_to_locations, flatten_document_symbol_response,
-    flatten_workspace_edit, hover_contents_to_markdown, is_word_char_byte,
-    last_addressable_line, line_byte_len, signature_help_to_markdown, symbol_information_to_row,
-    word_under_cursor, workspace_symbol_to_row,
+    EchoLevel, FormatOutcome, HoverOutcome, LspNavKind, ReferencesOutcome, RenameOutcome,
+    SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
+    code_action_kind_glyph, completion_kind_glyph, definition_response_to_locations,
+    flatten_document_symbol_response, flatten_workspace_edit, hover_contents_to_markdown,
+    is_word_char_byte, last_addressable_line, line_byte_len, prepare_rename_placeholder,
+    signature_help_to_markdown, symbol_information_to_row, word_under_cursor,
+    workspace_symbol_to_row,
 };
 use crate::help::HelpBuffer;
 use lattice_protocol::edit::Edit;
@@ -248,6 +249,225 @@ impl App {
             self.pending_hover_token = None;
         }
         self.pending_hover_rx = Some(rx);
+    }
+
+    /// `:rename <new-name>` (Phase 4.3). Fires
+    /// `textDocument/prepareRename` (when the server advertises
+    /// the prepare provider) to validate the cursor and pick up
+    /// the placeholder; then `textDocument/rename` to compute
+    /// the WorkspaceEdit; the App applies the edits per-file as
+    /// one undo unit per affected buffer (cross-file atomic
+    /// rollback is a follow-up).
+    ///
+    /// `new_name` empty falls back to `prepareRename`'s
+    /// placeholder (when available). When prepareRename returns
+    /// nothing AND `new_name` is empty, we error.
+    pub(super) fn do_lsp_rename_request(&mut self, new_name: &str) {
+        if let Some(token) = self.pending_rename_token.take() {
+            token.cancel();
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => {
+                self.set_message(EchoLevel::Error, "rename: cursor out of buffer");
+                return;
+            }
+        };
+        let new_name = new_name.to_string();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<RenameOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_rename_rx = Some(rx);
+        self.pending_rename_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.servers_for(&uri) };
+            let chosen = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_rename());
+            let Some(handle) = chosen else {
+                let _ = tx.send(RenameOutcome::NoProvider);
+                return;
+            };
+            // Optional prepareRename. If the server advertises
+            // prepare and refuses, surface the reason; if it
+            // accepts, also use the placeholder when the user
+            // didn't supply a name.
+            let mut effective_name = new_name.clone();
+            if handle.capabilities().supports_prepare_rename() {
+                if token.is_cancelled() {
+                    return;
+                }
+                let pos = lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    position: lsp_position,
+                };
+                match handle.prepare_rename(pos, token.clone()).await {
+                    Ok(Some(prep)) => {
+                        if effective_name.is_empty() {
+                            effective_name = prepare_rename_placeholder(&prep)
+                                .unwrap_or_default();
+                        }
+                    }
+                    Ok(None) => {
+                        let _ = tx.send(RenameOutcome::NotRenameable {
+                            reason: "server refused rename at this position".into(),
+                        });
+                        return;
+                    }
+                    Err(_) => {
+                        // Fall through to rename.
+                    }
+                }
+            }
+            if effective_name.is_empty() {
+                let _ = tx.send(RenameOutcome::NotRenameable {
+                    reason: "rename requires a new name".into(),
+                });
+                return;
+            }
+            let params = lsp_types::RenameParams {
+                text_document_position: lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    position: lsp_position,
+                },
+                new_name: effective_name.clone(),
+                work_done_progress_params: Default::default(),
+            };
+            match handle.rename(params, token.clone()).await {
+                Ok(Some(workspace_edit)) => {
+                    let per_file = flatten_workspace_edit(workspace_edit);
+                    if per_file.is_empty() {
+                        let _ = tx.send(RenameOutcome::Empty);
+                    } else {
+                        let _ = tx.send(RenameOutcome::Edits {
+                            per_file,
+                            new_name: effective_name,
+                        });
+                    }
+                }
+                _ => {
+                    let _ = tx.send(RenameOutcome::Empty);
+                }
+            }
+        });
+    }
+
+    /// Drain queued `:rename` responses; apply the WorkspaceEdit.
+    /// v1: per-file edits land as one undo unit in each affected
+    /// buffer.
+    pub fn drain_pending_rename(&mut self) {
+        let Some(mut rx) = self.pending_rename_rx.take() else {
+            return;
+        };
+        let mut latest: Option<RenameOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_rename_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_rename_token = None;
+        match outcome {
+            RenameOutcome::NoProvider => self.set_message(
+                EchoLevel::Info,
+                "no server with renameProvider",
+            ),
+            RenameOutcome::NotRenameable { reason } => {
+                self.set_message(EchoLevel::Error, format!("rename: {reason}"))
+            }
+            RenameOutcome::Empty => self.set_message(
+                EchoLevel::Info,
+                "rename: no changes",
+            ),
+            RenameOutcome::Edits { per_file, new_name } => {
+                self.apply_rename_workspace_edit(per_file, new_name);
+            }
+        }
+    }
+
+    /// Apply a per-file WorkspaceEdit returned by `:rename`. The
+    /// active buffer's edits land directly via apply_lsp_text_edits;
+    /// cross-file edits open the file via `:e` and apply.
+    pub(super) fn apply_rename_workspace_edit(
+        &mut self,
+        per_file: Vec<(lsp_types::Uri, Vec<lsp_types::TextEdit>)>,
+        new_name: String,
+    ) {
+        let mut applied_files = 0usize;
+        let mut total_edits = 0usize;
+        let mut deferred_files: Vec<String> = Vec::new();
+        for (uri, edits) in per_file {
+            let target_path = match lattice_lsp::actor::uri_to_path(&uri) {
+                Some(p) => p,
+                None => continue,
+            };
+            let edit_count = edits.len();
+            if self
+                .document
+                .path()
+                .map(|p| p == target_path)
+                .unwrap_or(false)
+            {
+                if let Err(e) = self.apply_lsp_text_edits(edits) {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("rename: apply failed for active buffer: {e}"),
+                    );
+                    return;
+                }
+                applied_files += 1;
+                total_edits += edit_count;
+            } else {
+                // Cross-file edits: open the file via :e and apply.
+                self.do_edit(Some(target_path.clone()), false);
+                if matches!(
+                    self.last_message.as_ref().map(|m| m.level),
+                    Some(EchoLevel::Error)
+                ) {
+                    deferred_files.push(target_path.display().to_string());
+                    continue;
+                }
+                if let Err(e) = self.apply_lsp_text_edits(edits) {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!(
+                            "rename: apply failed for {}: {e}",
+                            target_path.display()
+                        ),
+                    );
+                    return;
+                }
+                applied_files += 1;
+                total_edits += edit_count;
+            }
+        }
+        let mut summary = format!(
+            "rename -> {new_name}: {total_edits} edit{} across {applied_files} file{}",
+            if total_edits == 1 { "" } else { "s" },
+            if applied_files == 1 { "" } else { "s" },
+        );
+        if !deferred_files.is_empty() {
+            summary.push_str(&format!(
+                " (skipped {}: open the file then re-run)",
+                deferred_files.join(", ")
+            ));
+        }
+        self.set_message(EchoLevel::Info, summary);
     }
 
     /// Apply a chosen code-action. The action may carry an

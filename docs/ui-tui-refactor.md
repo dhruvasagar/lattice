@@ -73,17 +73,17 @@ New slices match these unless there's a documented reason.
   `PositionEntry` / `EffectiveCompletionConfig` / etc.
   data types, and `impl Debug for App`.
 
-## 3. Submodule layout (after R.1.68)
+## 3. Submodule layout (after R.1.70)
 
 | File                   | Lines | Theme                                                              |
 |------------------------|-------|--------------------------------------------------------------------|
-| `app.rs`               | 16660 | App struct + remaining methods + types + free helpers + tests      |
-| `app/lsp.rs`           |  3296 | every `lattice-lsp` consumer (requests, drains, log buffers)       |
+| `app.rs`               | 16601 | App struct + remaining methods + types + free helpers + tests      |
+| `app/lsp.rs`           |  3317 | every `lattice-lsp` consumer (requests, drains, log buffers)       |
 | `app/completion.rs`    |  1430 | popup state machine, ranker, ghost text, snippets (incl. expansion), refilter |
 | `app/folds.rs`         |  1344 | fold compute / open / close / auto-open                            |
 | `app/search.rs`        |  1125 | `/`, `?`, `:s`, `:%s`, find / find-next / find-reverse             |
 | `app/lifecycle.rs`     |  1038 | activate-buffer, pane tree, `:e` / `:w` / `:q` / `:bn` / `:ls`, `<C-l>`, document swap, save family |
-| `app/options.rs`       |   789 | `:set`, typed options, customize machinery, per-language overrides |
+| `app/options.rs`       |   821 | `:set`, typed options, customize machinery, per-language overrides + pending-section drainers |
 | `app/edit.rs`          |   729 | actor-bridge mutation wrappers, yank / paste / register store / Insert+Replace primitives / `:d` / block-insert |
 | `app/picker.rs`        |   665 | picker state machine + buffer/LSP-instance candidate builders      |
 | `app/motions.rs`       |   598 | bracket match, history walkers + writer, mark jump, viewport / scroll, cursor clamp, viewport sizing |
@@ -99,7 +99,7 @@ New slices match these unless there's a documented reason.
 | `app/state.rs`         |    23 | small state accessors                                               |
 | `app/operators.rs`     |    22 | operator-pending plumbing                                           |
 
-## 4. Slices done (R.1.0 -- R.1.68)
+## 4. Slices done (R.1.0 -- R.1.70)
 
 | #      | Slice                                                                 |
 |--------|-----------------------------------------------------------------------|
@@ -172,12 +172,14 @@ New slices match these unless there's a documented reason.
 | R.1.66 | per-language overrides loader (`apply_per_language_toml_overrides` + `parse_per_language_overrides_table`) → `app/options.rs` |
 | R.1.67 | save family (`save_blocking` + `save_as_blocking` + `fire_will_save_notifications` + `run_will_save_wait_until_blocking` + `fire_did_save_notifications`) → `app/lifecycle.rs` |
 | R.1.68 | snippet expansion (`snippet_meta_for` + `expand_snippet_with_lsp_edits` + `expand_snippet`) → `app/completion.rs` |
+| R.1.69 | LSP-log-in-pane openers (`open_lsp_log_in_pane` + `open_lsp_trace_log_in_pane`) → `app/lsp.rs` |
+| R.1.70 | pending-structural-section drainers (`take_pending_structural_section` + `pending_structural_section_paths`) → `app/options.rs` |
 
 ## 5. Pending candidates
 
-No formal slice plan exists past R.1.68; each slice is picked
+No formal slice plan exists past R.1.70; each slice is picked
 when picked. The clusters below are the visible candidates
-from a survey of `app.rs` after R.1.68. Numbers are
+from a survey of `app.rs` after R.1.70. Numbers are
 heuristic -- some clusters fragment into 2--3 sub-slices
 (the way M.3.2 did in `mode-architecture.md`); some collapse
 into one. Rough envelope: **15--25 slices** to fully drain

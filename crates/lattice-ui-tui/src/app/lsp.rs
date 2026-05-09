@@ -38,9 +38,9 @@
 use lattice_protocol::position::Position;
 
 use super::{
-    App, BufferKind, EchoLevel, HoverOutcome, LspNavKind, ReferencesOutcome, TagStackEntry,
-    app_to_lsp_position, definition_response_to_locations, hover_contents_to_markdown,
-    word_under_cursor,
+    App, BufferKind, EchoLevel, HoverOutcome, LspNavKind, ReferencesOutcome, SignatureHelpOutcome,
+    TagStackEntry, app_to_lsp_position, definition_response_to_locations,
+    hover_contents_to_markdown, signature_help_to_markdown, word_under_cursor,
 };
 use crate::help::HelpBuffer;
 
@@ -241,6 +241,103 @@ impl App {
             self.pending_hover_token = None;
         }
         self.pending_hover_rx = Some(rx);
+    }
+
+    /// `:lsp-signature-help` (Phase 4.3). Fan-out across attached
+    /// servers; first non-empty `SignatureHelp` response wins
+    /// (per docs/lsp-architecture.md §7b "First non-empty wins.
+    /// Signatures are usually language-specific; merging rarely
+    /// useful.").
+    pub(super) fn do_lsp_signature_help_request(&mut self) {
+        if let Some(token) = self.pending_signature_help_token.take() {
+            token.cancel();
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => return,
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SignatureHelpOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_signature_help_rx = Some(rx);
+        self.pending_signature_help_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.servers_for(&uri) };
+            if handles.is_empty() {
+                let _ = tx.send(SignatureHelpOutcome::NoServers);
+                return;
+            }
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                if !handle.capabilities().supports_signature_help() {
+                    continue;
+                }
+                let params = lsp_types::SignatureHelpParams {
+                    text_document_position_params: lsp_types::TextDocumentPositionParams {
+                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                        position: lsp_position,
+                    },
+                    work_done_progress_params: Default::default(),
+                    context: None,
+                };
+                if let Ok(Some(sh)) = handle.signature_help(params, token.clone()).await {
+                    let body = signature_help_to_markdown(&sh);
+                    if !body.is_empty() {
+                        let _ = tx.send(SignatureHelpOutcome::Body(body));
+                        return;
+                    }
+                }
+            }
+            let _ = tx.send(SignatureHelpOutcome::Body(String::new()));
+        });
+    }
+
+    /// Drain queued signature-help responses. A non-empty body
+    /// renders into the popup; empty echoes "no signature info";
+    /// `NoServers` echoes the standard "no LSP server" message.
+    pub fn drain_pending_signature_help(&mut self) {
+        let Some(mut rx) = self.pending_signature_help_rx.take() else {
+            return;
+        };
+        let mut latest: Option<SignatureHelpOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_signature_help_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_signature_help_token = None;
+        match outcome {
+            SignatureHelpOutcome::NoServers => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no LSP server attached to current buffer".to_string(),
+                );
+            }
+            SignatureHelpOutcome::Body(body) if body.is_empty() => {
+                self.set_message(EchoLevel::Info, "no signature info".to_string());
+            }
+            SignatureHelpOutcome::Body(body) => {
+                self.do_open_hover(&body);
+            }
+        }
     }
 
     /// Generic dispatch for the four navigation flavours

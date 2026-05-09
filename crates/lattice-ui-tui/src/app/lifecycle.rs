@@ -799,6 +799,40 @@ impl App {
         let _ = block_on(self.document.replace(document));
     }
 
+    /// Jump to `path:line:col` (LSP 0-based line, utf-8 byte
+    /// column). Single entrypoint shared by the picker accept
+    /// path (`JumpToLspLocation`) and the `do_help_follow_link`
+    /// Source-link dispatch. Pushes the pre-jump cursor onto
+    /// position history with `PluginPush` so `<C-o>` walks back.
+    pub(super) fn jump_to_file_line_col(
+        &mut self,
+        path: &std::path::Path,
+        line: u32,
+        col: u32,
+    ) {
+        // Push pre-jump cursor before any state mutates.
+        self.push_position_history(self.cursor, PositionSource::PluginPush);
+
+        let same_buffer = self
+            .document
+            .path()
+            .map(|p| p == path)
+            .unwrap_or(false);
+        if !same_buffer {
+            self.do_edit(Some(path.to_path_buf()), false);
+        }
+        // Clamp the target line to the buffer's line count so a
+        // stale picker entry doesn't crash with an out-of-range
+        // cursor (e.g. user edited the file after the picker
+        // populated). `last_addressable_line` accounts for
+        // ropey's trailing-newline pseudo-line.
+        let snap = self.document.snapshot();
+        let line = line.min(super::last_addressable_line(&snap.buffer));
+        let line_len = super::line_byte_len(&snap.buffer, line);
+        let col = col.min(line_len);
+        self.cursor = Position::new(line, col);
+    }
+
     /// Adopt a freshly-built help buffer as the active view. Records
     /// the current document cursor on the position-history ring as
     /// an `AutoJump` (so `<C-o>` from inside the help buffer returns

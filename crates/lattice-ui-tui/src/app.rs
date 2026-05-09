@@ -15,7 +15,7 @@ use lattice_core::Buffer;
 use lattice_core::CoreError;
 use lattice_core::Document;
 use lattice_core::buffer::AppliedEdit;
-use lattice_core::search::{self, SearchHit};
+use lattice_core::search::SearchHit;
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::ModalState;
 use lattice_grammar::SearchDirection;
@@ -118,6 +118,33 @@ use crate::excommand;
 use crate::file_tree::{FileTreeBuffer, FileTreeEntryKind};
 use crate::help::{HelpBuffer, HelpDisplayMode, command_link, key_link};
 use crate::pane::{PaneDirection, PaneState, PaneTree, SplitOrientation};
+
+// R.1.0 -- app/ submodule skeleton. Each submodule is a
+// per-feature destination for the App's methods. R.1.0 only
+// creates the empty modules with scoping doc comments;
+// subsequent R.1.x slices move method blocks across without
+// rethinking the structure. See docs/keymap-architecture.md
+// (or the dedicated R.1 doc) for the full feature -> module
+// mapping.
+mod cmdline;
+mod completion;
+mod edit;
+mod file_tree;
+mod folds;
+mod help;
+mod lifecycle;
+mod lsp;
+mod macros;
+mod mode;
+mod motions;
+mod oil;
+mod operators;
+mod options;
+mod picker;
+mod search;
+mod state;
+mod syntax;
+mod visual;
 
 // Slice 8.i.4.d: the `Pending` enum and `Action::SetPending`
 // variant retired here. All multi-key Normal-mode chord state
@@ -5038,11 +5065,11 @@ impl App {
             return;
         };
         let dir = match line.direction {
-            SearchDirection::Forward => search::Direction::Forward,
-            SearchDirection::Backward => search::Direction::Backward,
+            SearchDirection::Forward => lattice_core::search::Direction::Forward,
+            SearchDirection::Backward => lattice_core::search::Direction::Backward,
         };
         let buffer = self.active_text();
-        match search::find(
+        match lattice_core::search::find(
             &buffer,
             &regex,
             line.origin,
@@ -5054,7 +5081,8 @@ impl App {
         }
         // Live hlsearch: highlight every occurrence as the user types.
         self.all_matches =
-            search::find_all(&buffer, &regex, &CancellationToken::never()).unwrap_or_default();
+            lattice_core::search::find_all(&buffer, &regex, &CancellationToken::never())
+                .unwrap_or_default();
     }
 
     fn submit_search(&mut self) {
@@ -5085,11 +5113,11 @@ impl App {
             }
         };
         let dir = match line.direction {
-            SearchDirection::Forward => search::Direction::Forward,
-            SearchDirection::Backward => search::Direction::Backward,
+            SearchDirection::Forward => lattice_core::search::Direction::Forward,
+            SearchDirection::Backward => lattice_core::search::Direction::Backward,
         };
         let buffer = self.active_text();
-        match search::find(
+        match lattice_core::search::find(
             &buffer,
             &regex,
             line.origin,
@@ -5100,7 +5128,7 @@ impl App {
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
                 self.all_matches =
-                    search::find_all(&buffer, &regex, &CancellationToken::never())
+                    lattice_core::search::find_all(&buffer, &regex, &CancellationToken::never())
                         .unwrap_or_default();
                 if hit.wrapped {
                     let level = EchoLevel::Warn;
@@ -5171,8 +5199,8 @@ impl App {
             }
         };
         let dir = match direction {
-            SearchDirection::Forward => search::Direction::Forward,
-            SearchDirection::Backward => search::Direction::Backward,
+            SearchDirection::Forward => lattice_core::search::Direction::Forward,
+            SearchDirection::Backward => lattice_core::search::Direction::Backward,
         };
         let buffer = self.active_text();
         // Skip current match: advance one byte in the chosen direction.
@@ -5185,7 +5213,7 @@ impl App {
                 return;
             }
         };
-        match search::find(&buffer, &regex, from, dir, &CancellationToken::never()) {
+        match lattice_core::search::find(&buffer, &regex, from, dir, &CancellationToken::never()) {
             Ok(Some(hit)) => {
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);

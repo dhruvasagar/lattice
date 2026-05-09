@@ -6807,7 +6807,7 @@ impl App {
         }
     }
 
-    fn enter_mode(&mut self, state: ModalState) {
+    pub(super) fn enter_mode(&mut self, state: ModalState) {
         let prior = self.modal;
         // Reset Replace's history every time we enter (or re-enter) Replace
         // so backspace-restore is bounded to the current `R` session.
@@ -6919,63 +6919,6 @@ impl App {
         self.cursor = Position::new(spec.start_line, top_col);
     }
 
-    fn do_enter_append(&mut self) {
-        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
-        if self.cursor.byte < len {
-            self.cursor.byte += 1;
-        }
-        self.modal = ModalState::Insert;
-    }
-
-    /// Vim's blockwise-visual `I` (`append=false`) and `A`
-    /// (`append=true`). Captures the block extents from the active
-    /// selection, parks them in `pending_block_insert`, moves the
-    /// cursor to the top-row insert column, and switches to Insert.
-    /// The replication onto rows 2..N happens when Insert exits.
-    ///
-    /// No-op if the modal is not blockwise visual; called only
-    /// from translate_visual which guards on the mode.
-    fn do_enter_block_visual_insert(&mut self, append: bool) {
-        if !matches!(self.modal, ModalState::Visual(VisualKind::Blockwise)) {
-            return;
-        }
-        let sels = self.document.selections();
-        let sel = sels.primary();
-        let start_line = sel.anchor.line.min(sel.head.line);
-        let end_line = sel.anchor.line.max(sel.head.line);
-        let left_col = sel.anchor.byte.min(sel.head.byte);
-        let right_col = sel.anchor.byte.max(sel.head.byte);
-        let insert_col = if append { right_col + 1 } else { left_col };
-
-        self.pending_block_insert = Some(PendingBlockInsert {
-            start_line,
-            end_line,
-            insert_col,
-            live_edits: 0,
-        });
-
-        // Move cursor to the top row's insert column. If the line
-        // is shorter than insert_col (e.g. `A` on a short line),
-        // clamp -- the user's edits land at end-of-line and the
-        // replay handles short lines per-row.
-        let line_len = line_byte_len(&self.document.snapshot().buffer, start_line);
-        let cursor_col = insert_col.min(line_len);
-        self.cursor = Position::new(start_line, cursor_col);
-
-        // Drop visual mode and enter Insert. enter_mode handles
-        // recording_insert so the typed prefix is captured.
-        self.visual_anchor = None;
-        self.enter_mode(ModalState::Insert);
-    }
-
-    fn do_open_line_below(&mut self) {
-        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
-        let eol = Position::new(self.cursor.line, len);
-        if self.apply_edit_blocking(Edit::insert(eol, "\n")).is_ok() {
-            self.cursor = Position::new(self.cursor.line + 1, 0);
-        }
-        self.modal = ModalState::Insert;
-    }
 
     /// Push a tagged entry onto the history ring. If the history-cursor
     /// is not at the end (the user has been walking back), truncate
@@ -7170,13 +7113,6 @@ impl App {
 
 
 
-    fn do_open_line_above(&mut self) {
-        let bol = Position::new(self.cursor.line, 0);
-        if self.apply_edit_blocking(Edit::insert(bol, "\n")).is_ok() {
-            self.cursor = bol;
-        }
-        self.modal = ModalState::Insert;
-    }
 
     /// Cursor of the currently active buffer. Reads `App::cursor`
     /// when the document is active or `help_buffer.cursor` when a

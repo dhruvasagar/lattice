@@ -24,11 +24,12 @@
 //! `crate::registers`.
 
 use lattice_grammar::ModalState;
+use lattice_grammar::VisualKind;
 use lattice_grammar::YankKind;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
-use super::{App, EchoLevel, last_addressable_line, line_byte_len};
+use super::{App, EchoLevel, PendingBlockInsert, last_addressable_line, line_byte_len};
 
 impl App {
     /// Vim's `J` / `gJ`: join the current line with the next. With
@@ -249,5 +250,79 @@ impl App {
             let _ = self.apply_edit_blocking(Edit::insert(pos, *row));
         }
         self.cursor = Position::new(start_line, start_col);
+    }
+
+    /// Vim's `a` -- step the cursor one byte forward (clamped to
+    /// EOL) and switch to Insert.
+    pub(super) fn do_enter_append(&mut self) {
+        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
+        if self.cursor.byte < len {
+            self.cursor.byte += 1;
+        }
+        self.modal = ModalState::Insert;
+    }
+
+    /// Vim's blockwise-visual `I` (`append=false`) and `A`
+    /// (`append=true`). Captures the block extents from the active
+    /// selection, parks them in `pending_block_insert`, moves the
+    /// cursor to the top-row insert column, and switches to Insert.
+    /// The replication onto rows 2..N happens when Insert exits.
+    ///
+    /// No-op if the modal is not blockwise visual; called only
+    /// from translate_visual which guards on the mode.
+    pub(super) fn do_enter_block_visual_insert(&mut self, append: bool) {
+        if !matches!(self.modal, ModalState::Visual(VisualKind::Blockwise)) {
+            return;
+        }
+        let sels = self.document.selections();
+        let sel = sels.primary();
+        let start_line = sel.anchor.line.min(sel.head.line);
+        let end_line = sel.anchor.line.max(sel.head.line);
+        let left_col = sel.anchor.byte.min(sel.head.byte);
+        let right_col = sel.anchor.byte.max(sel.head.byte);
+        let insert_col = if append { right_col + 1 } else { left_col };
+
+        self.pending_block_insert = Some(PendingBlockInsert {
+            start_line,
+            end_line,
+            insert_col,
+            live_edits: 0,
+        });
+
+        // Move cursor to the top row's insert column. If the line
+        // is shorter than insert_col (e.g. `A` on a short line),
+        // clamp -- the user's edits land at end-of-line and the
+        // replay handles short lines per-row.
+        let line_len = line_byte_len(&self.document.snapshot().buffer, start_line);
+        let cursor_col = insert_col.min(line_len);
+        self.cursor = Position::new(start_line, cursor_col);
+
+        // Drop visual mode and enter Insert. enter_mode handles
+        // recording_insert so the typed prefix is captured.
+        self.visual_anchor = None;
+        self.enter_mode(ModalState::Insert);
+    }
+
+    /// Vim's `o` -- open a new line below the cursor, splice a
+    /// newline at end-of-line, drop the cursor on the new empty
+    /// line, switch to Insert.
+    pub(super) fn do_open_line_below(&mut self) {
+        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
+        let eol = Position::new(self.cursor.line, len);
+        if self.apply_edit_blocking(Edit::insert(eol, "\n")).is_ok() {
+            self.cursor = Position::new(self.cursor.line + 1, 0);
+        }
+        self.modal = ModalState::Insert;
+    }
+
+    /// Vim's `O` -- open a new line above the cursor; mirror of
+    /// `do_open_line_below` but inserts at start-of-line and
+    /// keeps the cursor on the inserted (now upper) row.
+    pub(super) fn do_open_line_above(&mut self) {
+        let bol = Position::new(self.cursor.line, 0);
+        if self.apply_edit_blocking(Edit::insert(bol, "\n")).is_ok() {
+            self.cursor = bol;
+        }
+        self.modal = ModalState::Insert;
     }
 }

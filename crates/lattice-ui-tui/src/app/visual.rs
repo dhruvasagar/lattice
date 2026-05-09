@@ -19,6 +19,7 @@
 
 use lattice_grammar::{ModalState, VisualKind};
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+use lattice_runtime::block_on;
 
 use super::{App, EchoLevel, LastVisual};
 
@@ -71,6 +72,13 @@ impl App {
             visual: Some(visual_kind_to_mode(last.kind)),
         };
         self.set_selections_blocking(SelectionSet::single(sel));
+    }
+
+    pub fn set_selections_blocking(&self, selections: SelectionSet) {
+        // SetSelections only fails on actor-gone; ignore the
+        // Result (post-shutdown nothing meaningful to do).
+        let _ = block_on(self.document.set_selections(selections));
+        self.publish_selections_changed();
     }
 }
 

@@ -2873,13 +2873,6 @@ impl App {
 
 
 
-    pub fn set_selections_blocking(&self, selections: SelectionSet) {
-        // SetSelections only fails on actor-gone; ignore the
-        // Result (post-shutdown nothing meaningful to do).
-        let _ = block_on(self.document.set_selections(selections));
-        self.publish_selections_changed();
-    }
-
     /// Build + publish [`Event::DocumentChanged`] from the current
     /// snapshot and the edits that were just applied. Called from
     /// every path that mutates the buffer (apply_edit / batch /

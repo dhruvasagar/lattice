@@ -7,8 +7,10 @@
 //! these in via `use crate::app::test_helpers::*;`.
 
 use lattice_core::Document;
+use lattice_grammar::CommandInvocation;
+use lattice_grammar::registry::MotionId;
 
-use super::App;
+use super::{Action, App};
 
 /// Build an `App` over a fresh in-memory document with the
 /// requested visible viewport height. The 95%-case factory
@@ -48,6 +50,13 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
     };
     let action = crate::input::translate(ctx, event);
     app.apply(action);
+}
+
+/// Construct an `Action::Invoke` carrying a bare motion
+/// (no operator, no count). The 95%-case shorthand for
+/// motion tests.
+pub(super) fn invoke_motion(id: MotionId) -> Action {
+    Action::Invoke(CommandInvocation::of(id.0))
 }
 
 /// Convenience: drive a sequence of bare-char keystrokes

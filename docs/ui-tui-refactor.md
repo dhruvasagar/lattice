@@ -73,33 +73,33 @@ New slices match these unless there's a documented reason.
   `PositionEntry` / `EffectiveCompletionConfig` / etc.
   data types, and `impl Debug for App`.
 
-## 3. Submodule layout (after R.1.55)
+## 3. Submodule layout (after R.1.59)
 
 | File                   | Lines | Theme                                                              |
 |------------------------|-------|--------------------------------------------------------------------|
-| `app.rs`               | 17849 | App struct + remaining methods + types + free helpers + tests      |
+| `app.rs`               | 17614 | App struct + remaining methods + types + free helpers + tests      |
 | `app/lsp.rs`           |  3296 | every `lattice-lsp` consumer (requests, drains, log buffers)       |
 | `app/folds.rs`         |  1344 | fold compute / open / close / auto-open                            |
-| `app/completion.rs`    |  1218 | popup state machine, ranker, ghost text, snippets, refilter        |
+| `app/completion.rs`    |  1250 | popup state machine, ranker, ghost text, snippets, refilter        |
 | `app/search.rs`        |  1125 | `/`, `?`, `:s`, `:%s`, find / find-next / find-reverse             |
 | `app/lifecycle.rs`     |   793 | activate-buffer, pane tree, `:e` / `:w` / `:q` / `:bn` / `:ls`     |
 | `app/options.rs`       |   690 | `:set`, typed options, customize machinery                         |
 | `app/picker.rs`        |   665 | picker state machine + buffer/LSP-instance candidate builders      |
-| `app/edit.rs`          |   601 | yank / paste / register store / Insert+Replace primitives / `:d`  |
-| `app/motions.rs`       |   478 | bracket match, history walkers, mark jump, viewport / scroll, write side |
+| `app/edit.rs`          |   668 | yank / paste / register store / Insert+Replace primitives / `:d` / block-insert |
+| `app/motions.rs`       |   514 | bracket match, history walkers + writer, mark jump, viewport / scroll, cursor clamp |
 | `app/help.rs`          |   389 | `:help`, `:describe-*`, `:apropos`, `:keymap`                       |
+| `app/cmdline.rs`       |   296 | `:` minibuffer + missing-arg prompt + chord-capture gate            |
 | `app/visual.rs`        |   295 | charwise / linewise / blockwise selection state                    |
 | `app/file_tree.rs`     |   203 | file-tree buffer ops                                               |
 | `app/macros.rs`        |   194 | `q` recording / `@` replay                                          |
 | `app/oil.rs`           |   185 | oil buffer ops (incl. navigate-up)                                  |
-| `app/cmdline.rs`       |   174 | `:` minibuffer state machine                                        |
 | `app/test_helpers.rs`  |   129 | shared test fixtures                                                |
 | `app/syntax.rs`        |    75 | `maybe_reparse_syntax`                                              |
 | `app/mode.rs`          |    25 | mode label / state accessors                                        |
 | `app/state.rs`         |    23 | small state accessors                                               |
 | `app/operators.rs`     |    22 | operator-pending plumbing                                           |
 
-## 4. Slices done (R.1.0 -- R.1.55)
+## 4. Slices done (R.1.0 -- R.1.59)
 
 | #      | Slice                                                                 |
 |--------|-----------------------------------------------------------------------|
@@ -159,12 +159,16 @@ New slices match these unless there's a documented reason.
 | R.1.53 | `do_oil_navigate_up` → `app/oil.rs`                                   |
 | R.1.54 | `store_yank` + `read_register` → `app/edit.rs`                        |
 | R.1.55 | `push_position_history` → `app/motions.rs`                            |
+| R.1.56 | cursor-clamp + `ensure_cursor_visible` → `app/motions.rs`             |
+| R.1.57 | `replicate_block_insert` → `app/edit.rs`                              |
+| R.1.58 | `snippet_variable_context` → `app/completion.rs`                      |
+| R.1.59 | cmdline-submit helpers (`try_resolve_missing_arg_prompt` + `chord_capture_active` + `MissingArgPrompt`) → `app/cmdline.rs` |
 
 ## 5. Pending candidates
 
-No formal slice plan exists past R.1.55; each slice is picked
+No formal slice plan exists past R.1.59; each slice is picked
 when picked. The clusters below are the visible candidates
-from a survey of `app.rs` after R.1.55. Numbers are
+from a survey of `app.rs` after R.1.59. Numbers are
 heuristic -- some clusters fragment into 2--3 sub-slices
 (the way M.3.2 did in `mode-architecture.md`); some collapse
 into one. Rough envelope: **15--25 slices** to fully drain
@@ -222,20 +226,11 @@ which slice to pick first.
   popup overlay; pick when the State A / State B split
   stabilises.
 
-### → `app/edit.rs`
-
-- `replicate_block_insert` (block-insert tail of `I` / `A`).
-- `snippet_variable_context` (used by both completion and
-  edit; could go either side).
-
 ### → `app/cmdline.rs`
 
 - `execute_ex_line` (parser + dispatcher entry for the `:`
   line). Big and entangled with every command surface;
   worth a careful look but not a small slice.
-- `try_resolve_missing_arg_prompt` (cmdline-side prompt
-  resolution). Small companion slice.
-- `chord_capture_active`.
 
 ### → `app/completion.rs`
 
@@ -246,9 +241,6 @@ which slice to pick first.
 
 ### → `app/motions.rs`
 
-- `clamp_cursor_to_buffer`, `clamp_cursor_to_active_buffer`,
-  `ensure_cursor_visible`. Already pub(super) at the bottom
-  of the App impl; small slice.
 - `active_cursor`, `active_text`, `active_buffer_id`,
   `active_pane_buffer_id` (the buffer-kind-aware
   accessors). Small slice; could also live in

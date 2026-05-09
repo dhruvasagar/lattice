@@ -30,7 +30,10 @@ use lattice_grammar::YankKind;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
-use super::{App, EchoLevel, PendingBlockInsert, last_addressable_line, line_byte_len};
+use super::{
+    App, EchoLevel, PendingBlockInsert, ReplaceEntry, last_addressable_line, line_byte_len,
+    previous_position,
+};
 
 impl App {
     /// Vim's `J` / `gJ`: join the current line with the next. With
@@ -406,6 +409,141 @@ impl App {
                     self.set_message(EchoLevel::Error, format!("g: {e}"));
                     return;
                 }
+            }
+        }
+    }
+
+    /// Overstrike one char at the cursor: if the cursor is mid-line,
+    /// replace `[cursor, cursor+1)` with `c`; if past EOL, just insert
+    /// (vim's R extends the line). Either way the cursor advances by
+    /// one byte. The original byte (or `None` if past EOL) is pushed
+    /// onto `replace_history` so backspace can restore it.
+    pub(super) fn do_overwrite_char(&mut self, c: char) {
+        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
+        let s = c.to_string();
+        let entry_pos = self.cursor;
+        if self.cursor.byte < len {
+            let r = ProtoRange::new(
+                self.cursor,
+                Position::new(self.cursor.line, self.cursor.byte + 1),
+            );
+            // Capture the original byte before the replace lands.
+            let original = self.document.snapshot().buffer.slice(r).ok();
+            if let Ok(applied) = self.apply_edit_blocking(Edit::replace(r, &s)) {
+                self.cursor = applied.inserted_range.end;
+                self.replace_history.push(ReplaceEntry {
+                    at: entry_pos,
+                    original,
+                });
+            }
+        } else {
+            // Past end of line: extend. Original is None.
+            if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.cursor, &s)) {
+                self.cursor = applied.inserted_range.end;
+                self.replace_history.push(ReplaceEntry {
+                    at: entry_pos,
+                    original: None,
+                });
+            }
+        }
+    }
+
+    /// Pop the latest replace_history entry and restore. If the entry
+    /// recorded an original byte, replace the byte at the entry's
+    /// position with it. If it didn't (line-extension case), delete
+    /// the byte. Either way the cursor moves back to the entry's
+    /// position.
+    pub(super) fn do_replace_undo_last(&mut self) {
+        let Some(entry) = self.replace_history.pop() else {
+            return;
+        };
+        let after = Position::new(entry.at.line, entry.at.byte + 1);
+        let r = ProtoRange::new(entry.at, after);
+        match entry.original {
+            Some(orig) => {
+                let _ = self.apply_edit_blocking(Edit::replace(r, &orig));
+            }
+            None => {
+                let _ = self.apply_edit_blocking(Edit::delete(r));
+            }
+        }
+        self.cursor = entry.at;
+    }
+
+    /// Splice `s` at the cursor as the canonical Insert-mode insertion
+    /// path: applies the edit, advances the cursor, captures the text
+    /// for dot-repeat (when an Insert recording is in flight), bumps
+    /// the block-visual `I` / `A` live-edit counter, refilters any
+    /// open completion popup, and fires the LSP signature-help /
+    /// on-type-formatting trigger autopilot when a single-char insert
+    /// matches a server-advertised trigger char.
+    pub(super) fn do_insert_text(&mut self, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.cursor, s)) {
+            self.cursor = applied.inserted_range.end;
+            // Capture into the in-flight Insert recording for dot-repeat.
+            if let Some(rec) = self.recording_insert.as_mut() {
+                rec.push_str(s);
+            }
+            // Block-visual I/A: count this edit so the Esc handler
+            // can rewind the whole session and re-emit it as a
+            // single batched undo unit.
+            if let Some(spec) = self.pending_block_insert.as_mut() {
+                spec.live_edits = spec.live_edits.saturating_add(1);
+            }
+            // Insert-mode completion live-refresh (Phase 4.2.g.1).
+            // While the popup is open, every keystroke either
+            // refilters the candidate set against the new query
+            // or dismisses the popup (if the user moved past the
+            // word boundary).
+            if self.insert_completion.is_some() {
+                self.maybe_refresh_insert_completion_after_edit();
+            }
+            // SignatureHelp trigger autopilot (Phase 4.3). When
+            // the user types a server-advertised trigger char in
+            // Insert mode, fire `textDocument/signatureHelp`
+            // automatically. Common triggers: `(` (call site),
+            // `,` (next argument). Skipped silently when no
+            // attached server advertises any triggers, and when
+            // the inserted text is multi-character (paste, snippet
+            // expansion -- those land via different paths).
+            if matches!(self.modal, ModalState::Insert) && s.chars().count() == 1 {
+                let inserted_char = s.chars().next().unwrap_or('\0');
+                if self.signature_help_trigger_chars().contains(&inserted_char) {
+                    self.do_lsp_signature_help_request();
+                }
+                // OnTypeFormatting trigger autopilot (Phase
+                // 4.3). C-family servers commonly advertise
+                // `;` / `}` / `\n`; the server returns small
+                // text edits adjusting the surrounding
+                // indentation. Skipped when no server
+                // advertises any triggers.
+                if self
+                    .on_type_formatting_trigger_chars()
+                    .contains(&inserted_char)
+                {
+                    self.do_lsp_on_type_formatting_request(inserted_char);
+                }
+            }
+        }
+    }
+
+    /// Vim's `<BS>` in Insert / Replace -- delete the byte before the
+    /// cursor (Unicode-aware step via previous_position). No-op at the
+    /// start of the buffer. Bumps the block-visual `I` / `A`
+    /// live-edit counter so the Esc replay accounts for the deletion.
+    pub(super) fn do_delete_char_backward(&mut self) {
+        let prev = previous_position(&self.document.snapshot().buffer, self.cursor);
+        if prev == self.cursor {
+            return;
+        }
+        let range = ProtoRange::new(prev, self.cursor);
+        if self.apply_edit_blocking(Edit::delete(range)).is_ok() {
+            self.cursor = prev;
+            if let Some(spec) = self.pending_block_insert.as_mut() {
+                spec.live_edits = spec.live_edits.saturating_add(1);
             }
         }
     }

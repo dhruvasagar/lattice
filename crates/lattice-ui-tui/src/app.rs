@@ -6289,17 +6289,6 @@ impl App {
         }
     }
 
-    pub fn modal_label(&self) -> &'static str {
-        match self.modal {
-            ModalState::Normal => "NORMAL",
-            ModalState::Insert => "INSERT",
-            ModalState::Visual(_) => "VISUAL",
-            ModalState::OperatorPending => "O-PEND",
-            ModalState::Command => "CMD",
-            ModalState::Search(_) => "SEARCH",
-            ModalState::Replace => "REPLACE",
-        }
-    }
 }
 
 pub(crate) fn line_byte_len(buf: &Buffer, line: u32) -> u32 {

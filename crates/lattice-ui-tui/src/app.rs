@@ -2922,70 +2922,7 @@ impl App {
         self.option_cache.completion_auto_insert_single
     }
 
-    /// Repopulate [`Self::option_cache`] from the canonical values
-    /// in [`Self::config`]. Called at App-init time and from the
-    /// `Event::OptionChanged` cascade so any write source (cmdline,
-    /// plugin, customize buffer) refreshes the renderer-visible
-    /// projection. Cheap: 9 typed reads (~30ns each).
-    fn rebuild_option_cache(&mut self) {
-        use lattice_config::{
-            CompletionAutoInsertSingle, FoldEnable, FoldMethodOption, IgnoreCase, Number,
-            RelativeNumber, Scrolloff, Tabstop, Wrap,
-        };
-        // Type-keyed reads against the post-boot registry.
-        // `expect` is fine here -- registration happens in
-        // `App::new` before this function is reachable, and a
-        // missing option is a build-config bug, not a runtime
-        // condition we recover from.
-        self.option_cache = OptionCache {
-            show_line_numbers: *self.config.get_typed::<Number>().expect("Number"),
-            relative_line_numbers: *self
-                .config
-                .get_typed::<RelativeNumber>()
-                .expect("RelativeNumber"),
-            wrap_lines: *self.config.get_typed::<Wrap>().expect("Wrap"),
-            ignorecase: *self.config.get_typed::<IgnoreCase>().expect("IgnoreCase"),
-            tabstop: *self.config.get_typed::<Tabstop>().expect("Tabstop") as u32,
-            foldenable: *self.config.get_typed::<FoldEnable>().expect("FoldEnable"),
-            foldmethod: *self
-                .config
-                .get_typed::<FoldMethodOption>()
-                .expect("FoldMethodOption"),
-            scrolloff: *self.config.get_typed::<Scrolloff>().expect("Scrolloff") as u32,
-            completion_auto_insert_single: *self
-                .config
-                .get_typed::<CompletionAutoInsertSingle>()
-                .expect("CompletionAutoInsertSingle"),
-        };
-    }
 
-    /// Recompute the resolved-options cache for `buffer` by
-    /// stitching every layer of the resolution stack
-    /// (`mode-architecture.md` §6.1) and writing the result
-    /// into [`Self::resolved_options`].
-    ///
-    /// Layer ordering (highest priority first):
-    /// 1. Modal-state override -- M.7+ when modal-state-keyed
-    ///    options exist; today the layer is empty.
-    /// 2. Buffer-local explicit set
-    ///    ([`Self::buffer_local_overrides`] for this buffer).
-    /// 3. Active minor modes' contributions, in activation order.
-    /// 4. Active major mode's contributions.
-    /// 5. Global registry value (the canonical
-    ///    [`Self::config`] current value -- bootstrap layer).
-    /// 6. Built-in default (implicitly the registry's initial
-    ///    value before any `:set`).
-    ///
-    /// Eager whole-cache recompute (§6.3.1). For a buffer with
-    /// 10 active minor modes and ~30 options, the call is
-    /// ~3µs end-to-end. Within the §6.3.2 perf gate.
-    ///
-    /// Called whenever any resolution layer for `buffer`
-    /// changes: mode toggle (via `activate_*` /
-    /// `deactivate_*`), buffer-local set, modal-state
-    /// transition for modal-keyed options, or option write
-    /// (the cascade in `drain_option_changes` propagates global
-    /// `:set` writes to every buffer's cache).
     /// Activate the resolved major mode for `buffer_id` based
     /// on its `kind` (and, for Document buffers, the detected
     /// language) and refresh the resolved-options cache. M.3.1.
@@ -3071,96 +3008,7 @@ impl App {
         self.recompute_options_for_buffer(buffer_id);
     }
 
-    pub fn recompute_options_for_buffer(
-        &mut self,
-        buffer: crate::buffers::BufferId,
-    ) {
-        let mut resolved = lattice_config::ResolvedOptions::new();
-        // Layer 5/6: bootstrap with current registry values.
-        self.config
-            .bootstrap_resolved_with_current_values(&mut resolved);
 
-        // Active modes (layers 4 + 3): walk in activation order
-        // for minors, prepend major. Pulled from
-        // `self.active_modes[buffer]`; absent ⇒ empty (no major,
-        // no minors). M.3 lands the per-kind majors that
-        // populate this map at buffer creation.
-        let modes_snapshot = self
-            .active_modes
-            .get(&buffer)
-            .cloned()
-            .unwrap_or_default();
-
-        let mut mode_contributions: Vec<lattice_config::OptionOverrideSet> =
-            Vec::with_capacity(modes_snapshot.minors().len() + 1);
-        // Major first (lower priority than minors per §6.1).
-        if let Some(major_id) = modes_snapshot.major()
-            && let Some(major) = self.mode_registry.get(major_id)
-        {
-            mode_contributions.push(major.options());
-        }
-        // Minors in activation order.
-        for &minor_id in modes_snapshot.minors() {
-            if let Some(minor) = self.mode_registry.get(minor_id) {
-                mode_contributions.push(minor.options());
-            }
-        }
-
-        // Buffer-local overrides (layer 2).
-        let buffer_local = self
-            .buffer_local_overrides
-            .get(&buffer)
-            .cloned()
-            .unwrap_or_default();
-
-        // Layer order for the resolver: highest priority first.
-        // Modal-state layer (1) is empty for now; M.7 wires it.
-        let modal_layer = lattice_config::OptionOverrideSet::new();
-
-        // Build the layer iter. The resolver pulls in
-        // declaration order (highest first); we put modal
-        // first, then buffer-local, then the *reversed* mode
-        // contributions so the last-activated minor is highest
-        // in the layered walk (per §6.2 last-activated-wins
-        // for ties).
-        let mut layered: Vec<&lattice_config::OptionOverrideSet> = Vec::new();
-        layered.push(&modal_layer);
-        layered.push(&buffer_local);
-        for set in mode_contributions.iter().rev() {
-            layered.push(set);
-        }
-
-        let resolver = lattice_config::Resolver::new();
-        resolver.resolve_into(layered, &mut resolved);
-
-        self.resolved_options.insert(buffer, resolved);
-    }
-
-    /// Read a resolved option's value for `buffer`. Returns the
-    /// option's bootstrap default if the cache for `buffer`
-    /// hasn't been recomputed yet (transient state during boot
-    /// before the first `recompute_options_for_buffer`).
-    ///
-    /// Hot-path read; O(1) `TypeId` lookup on the cached
-    /// `ResolvedOptions`. The fallback to the registry's
-    /// current value covers the buffer-creation race window
-    /// before mode activation has triggered a recompute.
-    pub fn resolved_option<D: lattice_config::OptionDecl>(
-        &self,
-        buffer: crate::buffers::BufferId,
-    ) -> std::sync::Arc<D::Value>
-    where
-        D::Value: Clone + Send + Sync + 'static,
-    {
-        if let Some(cache) = self.resolved_options.get(&buffer)
-            && let Some(v) = cache.get::<D>()
-        {
-            return v;
-        }
-        self.config
-            .get_typed::<D>()
-            .expect("option not registered")
-    }
 
     // ---- Test-only typed setters (kept on the public surface
     //      because integration tests in render.rs reach for them).
@@ -9726,104 +9574,8 @@ impl App {
             .collect()
     }
 
-    fn do_set(&mut self, option: &str) {
-        let echo = match self.config.parse_and_set_command(option) {
-            Ok(echo) => echo,
-            Err(err) => {
-                self.set_message(EchoLevel::Error, err.to_string());
-                return;
-            }
-        };
-        // Drain any cascade events the set just enqueued so the
-        // user sees the side effects (recompute folds, theme
-        // refresh, ...) before the next frame draws. The runtime's
-        // main_loop also drains once per iteration as a backstop
-        // for writes that originate outside the keystroke path
-        // (plugin tasks, future LSP-driven config writes).
-        self.drain_option_changes();
-        self.set_message(EchoLevel::Info, echo);
-    }
 
-    /// Drain queued [`Event::OptionChanged`] events from the App's
-    /// own bus subscription and apply per-option cascades on the
-    /// App's main thread.
-    ///
-    /// Why a channel and not a callback: typed-option writes can
-    /// originate from anywhere -- the cmdline, plugin tasks
-    /// (Phase 7), the customize buffer view (post-1.0), or future
-    /// LSP-driven config writes. The publisher closure on the
-    /// registry runs *on the calling thread*, which may not be
-    /// the App's. Routing every cascade through this channel
-    /// gives us:
-    ///
-    /// - **No re-entrancy on the registry mutex**: the cascade
-    ///   runs after the publish path drops every lock. A cascade
-    ///   that itself calls `config.set` (e.g. `relativenumber=true`
-    ///   ⇒ `number=true`) just queues another event -- the
-    ///   `while let Ok` loop picks it up on the next iteration.
-    /// - **No render-thread blocking**: drains happen at known
-    ///   points (top of main_loop iteration, end of `do_set`).
-    ///   Plugins doing heavy work in their own subscriptions
-    ///   never delay a keystroke.
-    /// - **One source of truth for the cascade logic**: any
-    ///   typed-option write goes through this hook regardless of
-    ///   how the write was triggered. Pre-bus the cascade lived
-    ///   on the cmdline path only and direct `config.set` calls
-    ///   silently skipped it.
-    ///
-    /// `Manual` foldmethod, no-op cascades, and unmatched options
-    /// all return early so the drain is cheap when nothing
-    /// substantive needs to happen.
-    pub fn drain_option_changes(&mut self) {
-        // Take the receiver to dodge the borrow checker (we want
-        // to mutate `self` for cascades while reading from the rx).
-        // Always restored after the loop; the `Option` is purely a
-        // borrow gymnastic, never observed in any other state.
-        let mut rx = match self.option_change_rx.take() {
-            Some(rx) => rx,
-            None => return,
-        };
-        while let Ok(event) = rx.try_recv() {
-            if let Event::OptionChanged { name, .. } = event {
-                self.apply_option_cascade(&name);
-            }
-        }
-        self.option_change_rx = Some(rx);
-    }
 
-    /// Run the per-option cascade for `canonical_name` (already
-    /// resolved by `Event::OptionChanged.name`, which is always
-    /// the canonical name regardless of which alias the user
-    /// typed).
-    fn apply_option_cascade(&mut self, canonical_name: &str) {
-        // Refresh the hot-path cache so subsequent reads from
-        // `app.show_line_numbers()` etc. see the new value.
-        // Cheap (~300ns total for all 9 options); only runs when
-        // an option actually changed, never on every frame.
-        self.rebuild_option_cache();
-        match canonical_name {
-            "relativenumber" => {
-                // Vim cascade: `:set rnu` implies `:set nu` so the
-                // gutter renders at all. The reverse (`:set nornu`)
-                // does NOT clear `nu` -- preserves user intent.
-                // Conditional on the new value being `true`, which
-                // we re-read through the typed handle (cheap).
-                if self.relative_line_numbers() {
-                    let _ = self.config.set_typed::<lattice_config::Number>(true);
-                }
-            }
-            "foldmethod" => {
-                // Recompute folds against the new method. Idempotent
-                // and cheap when method is `Manual` (the recompute
-                // returns immediately).
-                self.recompute_folds();
-            }
-            n if n.starts_with("ui.") => {
-                self.sync_theme_from_config();
-            }
-            _ => {}
-        }
-    }
 
     /// Re-stack the Insert-mode minor-mode overlays
     /// (completion popup + active snippet) so the layered
@@ -9922,31 +9674,6 @@ impl App {
         }
     }
 
-    /// `:describe-option <name>` (DESIGN.md §5.11). Renders the
-    /// option's metadata + current value into a help buffer.
-    fn do_describe_option(&mut self, name: &str) {
-        let Some(spec) = self.config.lookup(name) else {
-            self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
-            return;
-        };
-        let mut lines: Vec<String> = Vec::new();
-        lines.push(format!("# {}", spec.name()));
-        if !spec.aliases().is_empty() {
-            lines.push(format!("aliases: {}", spec.aliases().join(", ")));
-        }
-        lines.push(format!("type:    {}", spec.type_label()));
-        lines.push(format!("default: {}", spec.default_formatted()));
-        lines.push(format!("current: {}", spec.get_formatted()));
-        if let Some(values) = spec.enumerate_values() {
-            lines.push(format!("values:  {}", values.join(", ")));
-        }
-        lines.push(String::new());
-        lines.push(spec.doc().to_string());
-        self.open_help(
-            HelpBuffer::from_lines(format!("describe-option {name}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
-        );
-    }
 
     /// `K` (LSP hover) response handler / `:hover [markdown]`.
     /// Enters **State A**: popup overlay shown, focus stays on
@@ -11141,26 +10868,6 @@ impl App {
         );
     }
 
-    /// `:options` -- list every registered option in a help view.
-    fn do_list_options(&mut self) {
-        let mut lines: Vec<String> = Vec::new();
-        let mut specs = self.config.iter();
-        specs.sort_by_key(|s| s.name());
-        lines.push(format!("{} registered option(s):", specs.len()));
-        lines.push(String::new());
-        for spec in specs {
-            lines.push(format!(
-                "  {:<32} {:<10} = {}",
-                spec.name(),
-                spec.type_label(),
-                spec.get_formatted()
-            ));
-        }
-        self.open_help(
-            HelpBuffer::from_lines("options", lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
-        );
-    }
 
     /// Vim's `:reg` -- list every register's contents in the echo area.
     /// v1 shows the unnamed `""`, the numbered `"0`, and the named
@@ -12892,7 +12599,7 @@ impl App {
     /// [`BufferRegistry`] and swaps the active pane to it; that's
     /// what `:lsp-log` / `:lsp-server-log` / `:lsp-trace-log` (Phase
     /// 3) and future persistent help views route through.
-    fn open_help(&mut self, buffer: HelpBuffer) {
+    pub(super) fn open_help(&mut self, buffer: HelpBuffer) {
         // Record the *document* cursor (we're still active=Document
         // here, since open_help precedes the active_buffer flip).
         // Skip the push if we're already in Help (a help->help
@@ -15416,7 +15123,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use super::test_helpers::{
-        app_with, install_help, invoke_motion, press, press_chars, submit_ex,
+        app_with, install_help, invoke_motion, press, press_chars, subscribe_all_events,
+        submit_ex,
     };
     use lattice_protocol::selection::VisualMode;
 
@@ -15570,16 +15278,6 @@ mod tests {
     }
 
     /// Subscribe a channel sink to the App's event bus. Returns
-    /// the receiver so tests can drain published events. The
-    /// subscription stays alive for the rx's lifetime.
-    fn subscribe_all_events(a: &App) -> tokio::sync::mpsc::UnboundedReceiver<Event> {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        a.event_bus.subscribe(
-            lattice_runtime::EventFilter::any(),
-            lattice_runtime::SubscriptionTarget::Channel(tx),
-        );
-        rx
-    }
 
     #[test]
     fn event_bus_publishes_document_changed_on_apply_edit() {
@@ -16283,149 +15981,6 @@ mod tests {
         assert!(found);
     }
 
-    // ---- Event::OptionChanged (DESIGN.md §5.10 + §5.12) ----
-
-    #[test]
-    fn event_bus_publishes_option_changed_on_set_assign() {
-        let mut a = app_with("xx", 10);
-        let mut rx = subscribe_all_events(&a);
-        a.command_line = "set tabstop=4".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        let mut found_opt = None;
-        while let Ok(evt) = rx.try_recv() {
-            if let Event::OptionChanged { name, old, new } = evt {
-                found_opt = Some((name, old, new));
-                break;
-            }
-        }
-        let (name, old, new) = found_opt.expect("OptionChanged should fire on :set tabstop=4");
-        assert_eq!(name, "tabstop");
-        assert_eq!(old.as_deref(), Some("8"));
-        assert_eq!(new, "4");
-    }
-
-    #[test]
-    fn event_bus_publishes_option_changed_on_set_negate() {
-        let mut a = app_with("xx", 10);
-        let mut rx = subscribe_all_events(&a);
-        a.command_line = "set nonumber".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        let mut found = false;
-        while let Ok(evt) = rx.try_recv() {
-            if let Event::OptionChanged { name, new, .. } = evt
-                && name == "number"
-                && new == "false"
-            {
-                found = true;
-                break;
-            }
-        }
-        assert!(found, ":set nonumber should publish OptionChanged");
-    }
-
-    #[test]
-    fn drain_option_changes_runs_foldmethod_cascade_for_direct_config_writes() {
-        // Architectural test: writes that bypass `:set` -- e.g. a
-        // plugin or the future customize buffer view calling
-        // `config.set` directly -- still trigger the cascade once
-        // `drain_option_changes` runs. Pre-bus the cascade lived
-        // on the cmdline path only; this confirms the migration to
-        // the bus-subscription model fixes that gap.
-        let mut a = app_with("def f():\n    pass\n    pass\n", 10);
-        // No :set involved -- direct write to the registry.
-        a.config
-            .set_typed::<lattice_config::FoldMethodOption>(FoldMethod::Indent)
-            .unwrap();
-        // Folds should not be populated yet -- the cascade is
-        // queued but hasn't been drained.
-        // (The rx hasn't drained, so recompute_folds hasn't run.)
-        // Drain explicitly (production code drains in main_loop /
-        // do_set).
-        a.drain_option_changes();
-        assert_eq!(a.foldmethod(), FoldMethod::Indent);
-        assert!(
-            !a.folds.is_empty(),
-            "drain_option_changes should run the foldmethod cascade and recompute folds"
-        );
-    }
-
-    #[test]
-    fn drain_option_changes_runs_relativenumber_to_number_cascade() {
-        // Direct `config.set(relativenumber, true)` should also
-        // implicitly enable `number` after the drain. Mirrors vim:
-        // `:set rnu` implies `:set nu`.
-        let mut a = app_with("xx", 10);
-        // Start with number off so the cascade has something to do.
-        a.config.set_typed::<lattice_config::Number>(false).unwrap();
-        a.drain_option_changes();
-        assert!(!a.show_line_numbers());
-        // Now flip relativenumber on directly.
-        a.config
-            .set_typed::<lattice_config::RelativeNumber>(true)
-            .unwrap();
-        a.drain_option_changes();
-        assert!(a.relative_line_numbers());
-        assert!(
-            a.show_line_numbers(),
-            "relativenumber=true should cascade to number=true via the bus subscription"
-        );
-    }
-
-    #[test]
-    fn drain_option_changes_runs_ui_theme_sync_for_direct_writes() {
-        // Direct write to a `ui.*` option should refresh the
-        // cached theme projections via `sync_theme_from_config`.
-        let mut a = app_with("xx", 10);
-        a.config
-            .set_typed::<crate::tui_options::UiDimInactive>(false)
-            .unwrap();
-        a.drain_option_changes();
-        assert!(
-            !a.theme.dim_inactive_panes,
-            "ui.dim_inactive=false should propagate to theme.dim_inactive_panes via the cascade"
-        );
-    }
-
-    #[test]
-    fn drain_option_changes_handles_chained_cascade_writes() {
-        // The relativenumber cascade itself calls config.set(number),
-        // which fires another OptionChanged event. The drain loop
-        // must handle the chained event without deadlocking or
-        // dropping it. Confirm by starting from a clean state and
-        // asserting both options ended up correctly set.
-        let mut a = app_with("xx", 10);
-        a.config.set_typed::<lattice_config::Number>(false).unwrap();
-        a.drain_option_changes();
-        a.config
-            .set_typed::<lattice_config::RelativeNumber>(true)
-            .unwrap();
-        a.drain_option_changes();
-        assert!(a.relative_line_numbers());
-        assert!(a.show_line_numbers());
-        // Re-drain should be a no-op (channel empty).
-        a.drain_option_changes();
-        assert!(a.relative_line_numbers());
-        assert!(a.show_line_numbers());
-    }
-
-    #[test]
-    fn event_bus_does_not_publish_option_changed_on_query() {
-        let mut a = app_with("xx", 10);
-        let mut rx = subscribe_all_events(&a);
-        a.command_line = "set number?".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        // No OptionChanged for query; we only get unrelated events
-        // (ModalModeChanged from cmdline transitions, etc.).
-        while let Ok(evt) = rx.try_recv() {
-            assert!(
-                !matches!(evt, Event::OptionChanged { .. }),
-                "query should not publish OptionChanged"
-            );
-        }
-    }
 
     // ---- Initial state ----
 
@@ -17755,14 +17310,6 @@ mod tests {
         assert!(!a.relative_line_numbers());
     }
 
-    #[test]
-    fn set_unknown_option_emits_error() {
-        let mut a = app_with("hello", 10);
-        submit_ex(&mut a, "set frobnicate");
-        let msg = a.last_message.as_ref().unwrap();
-        assert_eq!(msg.level, EchoLevel::Error);
-        assert!(msg.text.contains("frobnicate"));
-    }
     #[test]
     fn list_registers_with_no_state_says_so() {
         let mut a = app_with("hello", 10);
@@ -21453,57 +21000,6 @@ mod tests {
         assert_eq!(a.tabstop(), 2);
     }
 
-    #[test]
-    fn set_unknown_option_errors() {
-        let mut a = app_with("xx", 10);
-        a.command_line = "set whatever".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        let msg = a.last_message.as_ref().expect("error");
-        assert!(msg.text.contains("Unknown option"), "got: {}", msg.text);
-    }
-
-    #[test]
-    fn set_no_form_clears_boolean() {
-        let mut a = app_with("xx", 10);
-        a.command_line = "set nonumber".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        assert!(!a.show_line_numbers());
-    }
-
-    #[test]
-    fn set_no_form_rejects_non_boolean() {
-        let mut a = app_with("xx", 10);
-        a.command_line = "set notabstop".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        let msg = a.last_message.as_ref().expect("error");
-        assert!(msg.text.contains("not a boolean"), "got: {}", msg.text);
-    }
-
-    #[test]
-    fn set_int_out_of_range_errors() {
-        let mut a = app_with("xx", 10);
-        a.command_line = "set tabstop=999".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        let msg = a.last_message.as_ref().expect("error");
-        assert!(msg.text.contains("out of range"), "got: {}", msg.text);
-    }
-
-    #[test]
-    fn describe_option_renders_help_with_metadata() {
-        let mut a = app_with("xx", 10);
-        a.command_line = "describe-option tabstop".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("describe-option help");
-        let body = h.content.as_string();
-        assert!(body.contains("tabstop"));
-        assert!(body.contains("integer"));
-        assert!(body.contains("default"));
-    }
 
     // ---- Computed folds (DESIGN.md §15:18, C.2) ----
 
@@ -23916,18 +23412,6 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    #[test]
-    fn list_options_includes_every_registered_option() {
-        let mut a = app_with("xx", 10);
-        a.command_line = "options".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("options help");
-        let body = h.content.as_string();
-        assert!(body.contains("number"));
-        assert!(body.contains("tabstop"));
-        assert!(body.contains("scrolloff"));
-    }
 
     #[test]
     fn tree_follow_on_file_opens_document_buffer() {
@@ -26525,144 +26009,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ---- M.2.1: option resolution per buffer ----
-
-    /// Test fixture: a registered minor mode that contributes
-    /// option overrides via the `overrides!` macro. Confirms
-    /// the end-to-end pipeline (mode contribution → resolver
-    /// → resolved cache → type-keyed read).
-    struct OptionContributingMode {
-        id: lattice_mode::ModeId,
-    }
-
-    impl OptionContributingMode {
-        fn new() -> Self {
-            Self {
-                id: lattice_mode::ModeId::new("test-option-contrib-mode"),
-            }
-        }
-    }
-
-    impl lattice_mode::Mode for OptionContributingMode {
-        fn id(&self) -> lattice_mode::ModeId {
-            self.id
-        }
-        fn kind(&self) -> lattice_mode::ModeKind {
-            lattice_mode::ModeKind::Minor
-        }
-        fn options(&self) -> lattice_config::OptionOverrideSet {
-            lattice_config::overrides! {
-                lattice_config::Tabstop = 4i64,
-                lattice_config::Number = false,
-            }
-        }
-    }
-
-    #[test]
-    fn recompute_options_uses_registry_defaults_when_no_modes() {
-        let mut a = app_with("hi", 5);
-        let buf = a.document_buffer_id;
-        a.recompute_options_for_buffer(buf);
-        // No active modes, no buffer-locals: the resolved cache
-        // should mirror the registry's current defaults.
-        let v = a.resolved_option::<lattice_config::Tabstop>(buf);
-        assert_eq!(*v, 8);
-        let n = a.resolved_option::<lattice_config::Number>(buf);
-        assert!(*n);
-    }
-
-    #[test]
-    fn recompute_options_overlays_active_mode_contributions() {
-        let mut a = app_with("hi", 5);
-        let buf = a.document_buffer_id;
-
-        // Register the test mode and activate it for the
-        // document buffer. We use Arc::get_mut to mutate the
-        // registry — fine in tests since nothing else holds the
-        // Arc yet.
-        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
-            .expect("mode_registry should be uniquely held in test setup");
-        let mode_id = registry
-            .register(OptionContributingMode::new())
-            .expect("register");
-        let mut active = lattice_mode::ActiveModes::new();
-        let mut locs = lattice_mode::BufferLocals::new();
-        a.mode_registry
-            .activate_minor(
-                &mut active,
-                &mut locs,
-                lattice_protocol::ids::BufferId::new(0),
-                mode_id,
-                lattice_mode::CapabilitySet::empty(),
-            )
-            .expect("activate");
-        a.active_modes.insert(buf, active);
-
-        a.recompute_options_for_buffer(buf);
-
-        // Mode contributes Tabstop=4 and Number=false; both
-        // should appear in the resolved cache (overriding the
-        // registry's 8 / true defaults).
-        let v = a.resolved_option::<lattice_config::Tabstop>(buf);
-        assert_eq!(*v, 4);
-        let n = a.resolved_option::<lattice_config::Number>(buf);
-        assert!(!*n);
-    }
-
-    #[test]
-    fn buffer_local_override_beats_mode_contribution() {
-        let mut a = app_with("hi", 5);
-        let buf = a.document_buffer_id;
-
-        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
-            .expect("mode_registry uniquely held");
-        let mode_id = registry
-            .register(OptionContributingMode::new())
-            .expect("register");
-        let mut active = lattice_mode::ActiveModes::new();
-        let mut locs = lattice_mode::BufferLocals::new();
-        a.mode_registry
-            .activate_minor(
-                &mut active,
-                &mut locs,
-                lattice_protocol::ids::BufferId::new(0),
-                mode_id,
-                lattice_mode::CapabilitySet::empty(),
-            )
-            .expect("activate");
-        a.active_modes.insert(buf, active);
-
-        // Add a buffer-local override that wins over the
-        // mode's contribution (per §6.1: buffer-local =
-        // priority 2, mode = priority 3-4).
-        let mut local = lattice_config::OptionOverrideSet::new();
-        local.push(lattice_config::OptionOverride::new(
-            std::any::TypeId::of::<lattice_config::Tabstop>(),
-            16i64,
-        ));
-        a.buffer_local_overrides.insert(buf, local);
-
-        a.recompute_options_for_buffer(buf);
-
-        // Buffer-local 16 wins over mode's 4.
-        let v = a.resolved_option::<lattice_config::Tabstop>(buf);
-        assert_eq!(*v, 16);
-        // Mode's Number=false still wins (no buffer-local
-        // override for Number).
-        let n = a.resolved_option::<lattice_config::Number>(buf);
-        assert!(!*n);
-    }
-
-    #[test]
-    fn resolved_option_falls_back_to_registry_pre_recompute() {
-        let a = app_with("hi", 5);
-        let buf = a.document_buffer_id;
-        // No `recompute_options_for_buffer` call yet -- the
-        // cache is empty. The fallback path should return the
-        // registry's current value.
-        let v = a.resolved_option::<lattice_config::Tabstop>(buf);
-        assert_eq!(*v, 8);
-    }
 
     // ---- M.3.0: built-in major modes registered at boot ----
 
@@ -26721,16 +26067,6 @@ mod tests {
 
     // ---- M.3.1: ReadOnly option flows from major modes ----
 
-    #[test]
-    fn document_buffer_resolves_read_only_false() {
-        // Default Document buffer: text-mode (no ReadOnly
-        // override) ⇒ resolved value is the registry default
-        // (false).
-        let a = app_with("hi", 5);
-        let buf = a.document_buffer_id;
-        let read_only: bool = *a.resolved_option::<lattice_config::ReadOnly>(buf);
-        assert!(!read_only, "Document buffer should be writable by default");
-    }
 
     #[test]
     fn document_buffer_active_mode_is_text_mode() {
@@ -26741,22 +26077,6 @@ mod tests {
         assert_eq!(active.major(), Some(lattice_mode::TextMode::mode_id()));
     }
 
-    #[test]
-    fn help_buffer_resolves_read_only_true() {
-        // Help-mode contributes ReadOnly = true; the resolved
-        // cache should reflect it.
-        let mut a = app_with("hi", 5);
-        let help = crate::help::HelpBuffer::from_lines(
-            "test",
-            vec!["line one".to_string()],
-        );
-        let help_id = a.open_help_in_pane(help);
-        let read_only: bool = *a.resolved_option::<lattice_config::ReadOnly>(help_id);
-        assert!(
-            read_only,
-            "Help buffer should resolve ReadOnly = true via help-mode"
-        );
-    }
 
     #[test]
     fn help_buffer_active_mode_is_help_mode() {
@@ -26773,17 +26093,6 @@ mod tests {
         assert_eq!(active.major(), Some(crate::modes::HelpMode::mode_id()));
     }
 
-    #[test]
-    fn read_only_option_is_marked_internal() {
-        // Sanity check: ReadOnly is not user-customizable.
-        // M.3.1 makes it mode-driven; users toggle it via
-        // `:enable read-only-mode` (M.7) rather than `:set`.
-        use lattice_config::OptionDecl;
-        assert!(
-            !lattice_config::ReadOnly::CUSTOMIZABLE,
-            "ReadOnly should be non-customizable (mode-driven)"
-        );
-    }
 
     // ---- M.3.2.a: BufferLocal end-to-end integration ----
 

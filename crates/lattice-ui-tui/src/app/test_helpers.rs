@@ -9,6 +9,7 @@
 use lattice_core::Document;
 use lattice_grammar::CommandInvocation;
 use lattice_grammar::registry::MotionId;
+use lattice_protocol::Event;
 
 use crate::buffers::BufferKind;
 use crate::help::HelpBuffer;
@@ -60,6 +61,22 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
 /// motion tests.
 pub(super) fn invoke_motion(id: MotionId) -> Action {
     Action::Invoke(CommandInvocation::of(id.0))
+}
+
+/// Subscribe to every event the App publishes; the caller
+/// drains via the returned receiver. Used by event-bus and
+/// option-cascade tests that need to assert specific events
+/// fired (e.g. `Event::DocumentChanged`,
+/// `Event::OptionChanged`, `Event::ModalModeChanged`).
+pub(super) fn subscribe_all_events(
+    a: &App,
+) -> tokio::sync::mpsc::UnboundedReceiver<Event> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    a.event_bus.subscribe(
+        lattice_runtime::EventFilter::any(),
+        lattice_runtime::SubscriptionTarget::Channel(tx),
+    );
+    rx
 }
 
 /// Wrap a freshly-built [`HelpBuffer`] as the active buffer

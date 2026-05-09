@@ -3884,38 +3884,6 @@ impl App {
 
 
 
-    /// Build the pipeline for the current slot and run it. Caches
-    /// results into `completion_state`.
-    ///
-    /// When `completion.auto_insert_single` is on (the default) and
-    /// the pipeline returns exactly one candidate, the popup is
-    /// skipped and that candidate is applied to the command line
-    /// directly -- same effect as `<Tab><CR>` but without the
-    /// confirm keystroke for an unambiguous match. The popup-open
-    /// boundary is the only fire point; narrowing an already-open
-    /// popup to one candidate while typing does not auto-insert.
-    pub(super) fn open_completion_popup(&mut self) {
-        match self.compute_completion_state() {
-            Ok(state) => {
-                if self.completion_auto_insert_single() && state.candidates.len() == 1 {
-                    let chosen_text = state.candidates[0].raw.text.clone();
-                    self.command_line
-                        .replace_range(state.replace_start..self.command_line.len(), &chosen_text);
-                    // Don't open the popup -- the single candidate
-                    // is already applied. `completion_state` stays
-                    // `None` so the next `<Tab>` would re-trigger
-                    // the pipeline against the new line.
-                    return;
-                }
-                self.completion_state = Some(state);
-            }
-            Err(err) => {
-                let (level, msg) = err.echo();
-                self.set_message(level, msg);
-            }
-        }
-    }
-
     fn execute_ex_line(&mut self, line: &str) {
         match excommand::parse(line, &self.registry) {
             Ok(inv) => match self.dispatch_blocking(inv) {

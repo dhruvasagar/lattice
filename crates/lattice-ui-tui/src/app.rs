@@ -5062,7 +5062,7 @@ impl App {
     /// pane to the new buffer. With no path, re-edit the current
     /// buffer's path (force-reload from disk; `!` required when
     /// dirty).
-    fn do_edit(&mut self, path: Option<std::path::PathBuf>, force: bool) {
+    pub(super) fn do_edit(&mut self, path: Option<std::path::PathBuf>, force: bool) {
         let target = match path {
             Some(p) => p,
             None => match self.document.path() {
@@ -5265,7 +5265,7 @@ impl App {
     /// stashed syntax, dropping the highlight state on the floor
     /// (the visible symptom: opening `:Tree` and pressing `q`
     /// returned to the document with no syntax colours).
-    fn snapshot_active_document(&mut self) {
+    pub(super) fn snapshot_active_document(&mut self) {
         if !matches!(self.active_buffer, BufferKind::Document) {
             return;
         }
@@ -11910,7 +11910,7 @@ impl App {
     /// also synced into their kind-specific cursor / scroll fields
     /// (and the registry copy for help) so the archival state stays
     /// current; live state always lives on `self`.
-    fn snapshot_active_pane(&mut self) {
+    pub(super) fn snapshot_active_pane(&mut self) {
         let cursor = self.cursor;
         let scroll = self.scroll;
         let pane_id = self.pane_tree.active().buffer_id;
@@ -12134,24 +12134,6 @@ impl App {
         locals.insert(crate::modes::HelpHighlights(buffer.highlights.clone()));
     }
 
-    /// Mirror file-tree-mode-owned data from a `FileTreeBuffer`
-    /// into the buffer-locals map for `buffer_id` (M.3.2.c.2).
-    /// Same shape as `seed_help_locals`. Called at file-tree-
-    /// buffer creation time before the buffer moves into the
-    /// registry.
-    fn seed_file_tree_locals(
-        &mut self,
-        buffer_id: crate::buffers::BufferId,
-        buffer: &crate::file_tree::FileTreeBuffer,
-    ) {
-        let locals = self
-            .buffer_locals
-            .entry(buffer_id)
-            .or_default();
-        locals.insert(crate::modes::FileTreeRoot(buffer.root.clone()));
-        locals.insert(crate::modes::FileTreeEntries(buffer.entries.clone()));
-        locals.insert(crate::modes::FileTreeNerdFonts(buffer.nerd_fonts));
-    }
 
     /// Mirror oil-mode-owned data from an `OilBuffer` into
     /// the buffer-locals map for `buffer_id` (M.3.2.c.3).
@@ -12339,173 +12321,8 @@ impl App {
         self.set_message(EchoLevel::Info, format!("oil: {}", dir.display()));
     }
 
-    fn do_open_file_tree(&mut self, root: Option<std::path::PathBuf>) {
-        let root = match root {
-            Some(p) => p,
-            None => match self
-                .document
-                .path()
-                .and_then(|p| p.parent().map(Into::into))
-            {
-                Some(parent) => parent,
-                None => match std::env::current_dir() {
-                    Ok(p) => p,
-                    Err(e) => {
-                        self.set_message(EchoLevel::Error, format!("cwd error: {e}"));
-                        return;
-                    }
-                },
-            },
-        };
-        // De-dup: if the same root is already open, just switch.
-        if let Some(existing_id) = self.buffers.file_tree_with_root(&root) {
-            self.activate_file_tree(existing_id);
-            self.set_message(
-                EchoLevel::Info,
-                format!("tree: {} (already open)", root.display()),
-            );
-            return;
-        }
-        let tree = match FileTreeBuffer::open(&root, self.theme.nerd_fonts) {
-            Ok(t) => t,
-            Err(e) => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("tree open error: {}: {e}", root.display()),
-                );
-                return;
-            }
-        };
-        // Record the current cursor on the position-history ring
-        // so `<C-o>` from inside the tree returns to the document
-        // spot.
-        if matches!(self.active_buffer, BufferKind::Document) {
-            let cur = self.cursor;
-            self.push_position_history(cur, PositionSource::AutoJump);
-        }
-        let new_id = tree.id;
-        // M.3.2.c.2: mirror file-tree-mode-owned data
-        // (`root` / `entries` / `nerd_fonts`) into the
-        // buffer-locals map BEFORE moving `tree` into the
-        // registry. The struct fields stay populated as a
-        // construction artifact / fallback (M.3.2.c.5
-        // retires them).
-        self.seed_file_tree_locals(new_id, &tree);
-        self.buffers.insert(BufferEntry {
-            id: new_id,
-            flags: BufferFlags::default(),
-            data: BufferData::FileTree(tree),
-        });
-        // M.3.1: activate file-tree-mode for this buffer so
-        // its ReadOnly = true contribution lands in the
-        // resolved options cache.
-        self.activate_major_for_buffer_kind(new_id, BufferKind::FileTree);
-        // Snapshot whichever buffer was active so its hot-path
-        // state lands in the registry, then point the active pane
-        // at the new tree.
-        self.snapshot_active_pane();
-        self.snapshot_active_document();
-        self.active_buffer = BufferKind::FileTree;
-        let pane = self.pane_tree.active_mut();
-        pane.buffer = BufferKind::FileTree;
-        pane.buffer_id = new_id;
-        pane.cursor = Position::ZERO;
-        pane.scroll = 0;
-        self.set_message(EchoLevel::Info, format!("tree: {}", root.display()));
-    }
 
-    /// `:TreeClose` -- close the active pane's tree by swapping
-    /// the active pane back to a Document buffer (the original
-    /// document if available; whichever document is registered
-    /// otherwise) and dropping the tree from the registry.
-    fn dismiss_file_tree(&mut self) {
-        if !matches!(self.active_buffer, BufferKind::FileTree) {
-            return;
-        }
-        let tree_id = self.active_pane_buffer_id();
-        // Pick a successor: prefer any document buffer.
-        let successor = self
-            .buffers
-            .document_ids_sorted()
-            .first()
-            .copied()
-            .unwrap_or(self.document_buffer_id);
-        self.activate_buffer(successor);
-        self.buffers.remove(tree_id);
-        // Re-point any other panes that referenced the closed tree.
-        let new_kind = self.active_buffer;
-        let new_id = self.active_pane_buffer_id();
-        for pane in self.pane_tree.leaves_mut() {
-            if pane.buffer_id == tree_id {
-                pane.buffer = new_kind;
-                pane.buffer_id = new_id;
-            }
-        }
-    }
 
-    /// `<CR>` while the active pane shows a file-tree buffer: if
-    /// the cursor is on a directory row, toggle expansion; if on
-    /// a file, open it via the standard `:e FILE` path (which now
-    /// switches to / spawns a Document buffer in the active pane).
-    fn do_file_tree_follow(&mut self) {
-        let active_id = self.active_pane_buffer_id();
-        // Live cursor lives on `self.cursor` (unified across
-        // buffer kinds); the tree's own `cursor` field is
-        // archival save-state.
-        let idx = self.cursor.line as usize;
-        // M.3.2.c.2: prefer entries from buffer-locals; fall
-        // back to the tree's struct field. The toggle below
-        // mutates the struct field in place; we re-mirror
-        // afterwards to keep the locals in sync.
-        let entry = {
-            let from_locals = self
-                .buffer_locals
-                .get(&active_id)
-                .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>())
-                .and_then(|e| e.0.get(idx).cloned());
-            from_locals.or_else(|| {
-                self.buffers
-                    .file_tree(active_id)
-                    .and_then(|t| t.entries.get(idx).cloned())
-            })
-        };
-        let Some(entry) = entry else {
-            return;
-        };
-        match entry.kind {
-            FileTreeEntryKind::Directory { .. } => {
-                let toggle_result = self
-                    .buffers
-                    .file_tree_mut(active_id)
-                    .map(|t| t.toggle_at(idx));
-                match toggle_result {
-                    Some(Err(e)) => {
-                        self.set_message(EchoLevel::Error, format!("toggle error: {e}"));
-                    }
-                    Some(Ok(_)) => {
-                        // Re-mirror entries so locals stay in
-                        // sync with the now-mutated struct
-                        // field. The toggle changes the entry
-                        // count and per-entry expansion state.
-                        if let Some(t) = self.buffers.file_tree(active_id) {
-                            let entries = t.entries.clone();
-                            if let Some(locals) = self.buffer_locals.get_mut(&active_id) {
-                                locals.insert(crate::modes::FileTreeEntries(entries));
-                            }
-                        }
-                    }
-                    None => {}
-                }
-            }
-            FileTreeEntryKind::File => {
-                let path = entry.path.clone();
-                // Open the file in the active pane (replaces the
-                // tree). The user can split first (`<C-w>v`) if
-                // they want to keep the tree visible.
-                self.do_edit(Some(path), false);
-            }
-        }
-    }
 
     /// Bracketed-paste handler. Routes the payload to the right target
     /// based on the current modal state -- cursor for editing modes,

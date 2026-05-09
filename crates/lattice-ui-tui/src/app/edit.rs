@@ -23,10 +23,12 @@
 //! store -- those are owned by `crate::document` /
 //! `crate::registers`.
 
+use lattice_grammar::ModalState;
+use lattice_grammar::YankKind;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
-use super::{App, last_addressable_line, line_byte_len};
+use super::{App, EchoLevel, last_addressable_line, line_byte_len};
 
 impl App {
     /// Vim's `J` / `gJ`: join the current line with the next. With
@@ -97,5 +99,155 @@ impl App {
         if let Ok(applied) = self.apply_edit_blocking(Edit::replace(r, &toggled)) {
             self.cursor = applied.inserted_range.end;
         }
+    }
+
+    /// Bracketed-paste handler. Routes the payload to the right target
+    /// based on the current modal state -- cursor for editing modes,
+    /// command line for `:`, search line for `/` `?`. Always one undo
+    /// unit. The terminal already stripped the bracketed-paste markers
+    /// before crossterm handed us the string.
+    pub(super) fn do_paste_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        match self.modal {
+            ModalState::Command => {
+                self.command_line.push_str(text);
+                self.command_history_cursor = None;
+            }
+            ModalState::Search(_) => {
+                if let Some(line) = self.search_line.as_mut() {
+                    line.pattern.push_str(text);
+                }
+            }
+            // Insert / Replace / Normal / Visual / OperatorPending all
+            // land at the cursor as a single edit. We deliberately don't
+            // transition modes -- the user's mode is preserved across
+            // the paste, matching Vim's `paste` option behaviour.
+            _ => {
+                if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.cursor, text)) {
+                    self.cursor = applied.inserted_range.end;
+                    if matches!(self.modal, ModalState::Insert)
+                        && let Some(rec) = self.recording_insert.as_mut()
+                    {
+                        rec.push_str(text);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Paste from the chosen register (`pending_register` if set, else
+    /// the unnamed register). `before = true` for `P` (paste before
+    /// cursor / above current line), `false` for `p` (paste after
+    /// cursor / below current line). Linewise yanks insert on a new
+    /// line; charwise yanks splice at the cursor.
+    pub(super) fn do_paste(&mut self, before: bool) {
+        let chosen = self.pending_register.take();
+        let Some(reg) = self.read_register(chosen) else {
+            self.set_message(EchoLevel::Error, "register empty".to_string());
+            return;
+        };
+        match reg.kind {
+            YankKind::Charwise => {
+                // `p` inserts after the cursor's byte; `P` at the cursor.
+                let line_len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
+                let insert_at = if before {
+                    self.cursor
+                } else if self.cursor.byte < line_len {
+                    Position::new(self.cursor.line, self.cursor.byte + 1)
+                } else {
+                    self.cursor
+                };
+                if let Ok(applied) = self.apply_edit_blocking(Edit::insert(insert_at, &reg.content))
+                {
+                    // Vim leaves the cursor on the last char of the pasted text.
+                    let end = applied.inserted_range.end;
+                    self.cursor = if end.byte > 0 {
+                        Position::new(end.line, end.byte - 1)
+                    } else {
+                        end
+                    };
+                }
+            }
+            YankKind::Linewise => {
+                // Linewise content is inserted as a whole new line. We
+                // normalise by ensuring exactly one trailing newline on the
+                // payload before splicing at the appropriate line boundary.
+                let mut payload = reg.content.clone();
+                if !payload.ends_with('\n') {
+                    payload.push('\n');
+                }
+                let insert_at = if before {
+                    Position::new(self.cursor.line, 0)
+                } else {
+                    let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
+                    // Insert at end of current line then a newline -- but
+                    // vim's `p` puts the line BELOW. So insert at start of
+                    // the next line. If we're on the last line and there's
+                    // no trailing newline, insert "\n<payload-without-tail>".
+                    if self.cursor.line + 1 < self.document.snapshot().buffer.line_count() {
+                        Position::new(self.cursor.line + 1, 0)
+                    } else {
+                        // Append at EOL of last line; payload starts with \n
+                        // implicit in being on a "new" line.
+                        let _ = self.apply_edit_blocking(Edit::insert(
+                            Position::new(self.cursor.line, len),
+                            "\n",
+                        ));
+                        Position::new(self.cursor.line + 1, 0)
+                    }
+                };
+                if let Ok(applied) = self.apply_edit_blocking(Edit::insert(insert_at, &payload)) {
+                    // Cursor lands at the start of the pasted block.
+                    self.cursor = applied.inserted_range.start;
+                }
+            }
+            YankKind::Blockwise => self.do_paste_blockwise(&reg.content, before),
+        }
+    }
+
+    /// Vim's blockwise paste: each `\n`-separated row is inserted on
+    /// consecutive lines starting at the same column. `p` (after)
+    /// inserts at `cursor.byte + 1`, `P` (before) at `cursor.byte`.
+    /// Rows wider than a target line's existing length are appended
+    /// after end-of-line; missing rows below the buffer extend it
+    /// with new lines. Cursor lands at the top-left of the pasted
+    /// block.
+    pub(super) fn do_paste_blockwise(&mut self, content: &str, before: bool) {
+        if content.is_empty() {
+            return;
+        }
+        let rows: Vec<&str> = content.split('\n').collect();
+        let start_line = self.cursor.line;
+        let line_len = line_byte_len(&self.document.snapshot().buffer, start_line);
+        let start_col = if before {
+            self.cursor.byte
+        } else if self.cursor.byte < line_len {
+            self.cursor.byte + 1
+        } else {
+            self.cursor.byte
+        };
+
+        for (i, row) in rows.iter().enumerate() {
+            let target_line = start_line + i as u32;
+            let total_lines = self.document.snapshot().buffer.line_count();
+            if target_line >= total_lines {
+                // Need a new line at the bottom of the buffer. Append
+                // a newline at the end of the current last line.
+                let last = total_lines.saturating_sub(1);
+                let last_len = line_byte_len(&self.document.snapshot().buffer, last);
+                let _ = self.apply_edit_blocking(Edit::insert(Position::new(last, last_len), "\n"));
+            }
+            let target_len = line_byte_len(&self.document.snapshot().buffer, target_line);
+            let insert_col = start_col.min(target_len);
+            let pos = Position::new(target_line, insert_col);
+            // Pad with spaces if the target line is shorter than the
+            // start column (vim's behaviour: don't extend the rectangle
+            // to the left). With `target_len <= start_col`, append at
+            // end-of-line instead.
+            let _ = self.apply_edit_blocking(Edit::insert(pos, *row));
+        }
+        self.cursor = Position::new(start_line, start_col);
     }
 }

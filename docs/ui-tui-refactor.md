@@ -73,36 +73,36 @@ New slices match these unless there's a documented reason.
   `PositionEntry` / `EffectiveCompletionConfig` / etc.
   data types, and `impl Debug for App`.
 
-## 3. Submodule layout (after R.1.88)
+## 3. Submodule layout (after R.1.98)
 
 | File                   | Lines | Theme                                                              |
 |------------------------|-------|--------------------------------------------------------------------|
-| `app.rs`               | 12957 | App struct + types + free helpers + tests (~10k tests)             |
-| `app/lsp.rs`           |  3378 | every `lattice-lsp` consumer + intro helpers + log openers         |
-| `app/completion.rs`    |  1521 | popup state machine, ranker, ghost text, snippets, refilter, `EffectiveCompletionConfig`, `active_language_id` |
-| `app/lifecycle.rs`     |  1421 | activate-buffer, pane tree, `:e` / `:w` / `:q` / `:bn` / `:ls`, `<C-l>`, document swap, save family, help adoption, buffer-state, jump_to_file_line_col, publish_*_changed |
-| `app/dispatch.rs`      |  1389 | the dispatch core: `apply` / `apply_effect` / `apply_app_effect` / `handle_edits` / `dispatch_blocking` / `run_*_invocation` / `execute_ex_line` / Effect classifiers |
+| `app/lsp.rs`           |  5641 | every `lattice-lsp` consumer + intro helpers + log openers + tests |
+| `app.rs`               |  4667 | App struct + types + free helpers + cross-feature integration tests |
+| `app/dispatch.rs`      |  2438 | the dispatch core: `apply` / `apply_effect` / etc. + tests         |
+| `app/completion.rs`    |  2227 | popup, snippets, ghost text, ranker, `EffectiveCompletionConfig` + tests |
+| `app/lifecycle.rs`     |  2121 | activate-buffer, pane, `:e`/`:w`/`:q`/etc., save, help adoption + tests |
+| `app/edit.rs`          |  1814 | actor-bridge mutation wrappers, yank / paste / Insert / `:d` + tests |
 | `app/folds.rs`         |  1344 | fold compute / open / close / auto-open                            |
-| `app/search.rs`        |  1125 | `/`, `?`, `:s`, `:%s`, find / find-next / find-reverse             |
-| `app/options.rs`       |   922 | `:set`, typed options, customize machinery, per-language overrides + pending-section drainers + 9 typed-option getters + 3 test setters |
-| `app/edit.rs`          |   729 | actor-bridge mutation wrappers, yank / paste / register store / Insert+Replace primitives / `:d` / block-insert |
-| `app/boot.rs`          |   698 | `App::new`, `build_lsp_subsystem`, `load_persistent_config`, `sync_keymap_overlays`, `sync_theme_from_config` |
-| `app/motions.rs`       |   671 | bracket match, history walkers + writer, mark jump, viewport / scroll, cursor clamp, viewport sizing, active-buffer accessors |
+| `app/help.rs`          |  1329 | `:help`, `:describe-*`, `:apropos`, `:keymap` + tests              |
+| `app/motions.rs`       |  1275 | motions, scroll, history walkers + cursor clamp + tests            |
+| `app/search.rs`        |  1136 | `/`, `?`, `:s`, find / find-next / find-reverse + tests            |
+| `app/options.rs`       |  1123 | `:set`, typed options, customize, per-language overrides + tests   |
+| `app/cmdline.rs`       |  1087 | `:` minibuffer + completion + tests                                |
+| `app/highlights.rs`    |   901 | tree-sitter highlight cache + per-frame refresh + tests            |
+| `app/boot.rs`          |   698 | `App::new`, `build_lsp_subsystem`, `load_persistent_config`, syncs |
 | `app/picker.rs`        |   665 | picker state machine + buffer/LSP-instance candidate builders      |
-| `app/cmdline.rs`       |   613 | `:` minibuffer + missing-arg prompt + chord-capture gate + cmdline completion (incl. open-popup) |
-| `app/help.rs`          |   575 | `:help`, `:describe-*`, `:apropos`, `:keymap`, `do_help_follow_link` |
-| `app/highlights.rs`    |   485 | tree-sitter highlight cache + per-frame refresh + post-edit shift  |
-| `app/visual.rs`        |   303 | charwise / linewise / blockwise selection state, `set_selections_blocking` |
+| `app/test_helpers.rs`  |   332 | shared test fixtures (factories, helpers, fixture modes)           |
+| `app/visual.rs`        |   319 | charwise / linewise / blockwise selection state + tests            |
 | `app/file_tree.rs`     |   203 | file-tree buffer ops                                               |
 | `app/mode.rs`          |   195 | `modal_label` + `enter_mode` + `activate_major_for_buffer_kind`    |
 | `app/macros.rs`        |   194 | `q` recording / `@` replay                                          |
-| `app/oil.rs`           |   185 | oil buffer ops (incl. navigate-up)                                  |
-| `app/test_helpers.rs`  |   129 | shared test fixtures                                                |
+| `app/oil.rs`           |   185 | oil buffer ops                                                      |
 | `app/syntax.rs`        |    75 | `maybe_reparse_syntax`                                              |
-| `app/state.rs`         |    23 | type-only stub (per its header)                                    |
+| `app/state.rs`         |    23 | type-only stub                                                      |
 | `app/operators.rs`     |    22 | operator-pending plumbing                                           |
 
-## 4. Slices done (R.1.0 -- R.1.88)
+## 4. Slices done (R.1.0 -- R.1.98)
 
 | #      | Slice                                                                 |
 |--------|-----------------------------------------------------------------------|
@@ -195,6 +195,16 @@ New slices match these unless there's a documented reason.
 | R.1.86 | dispatch core (`apply` + `apply_effect` + `apply_app_effect` + `handle_edits` + `dispatch_blocking` + 6 `run_*` routers + `execute_ex_line` + 5 helpers) → new `app/dispatch.rs` |
 | R.1.87 | active-buffer accessors (`active_buffer_id` + `active_cursor` + `active_text`) → `app/motions.rs` |
 | R.1.88 | shrink the App-impl block to `set_message` only (cleanup; no method moves) |
+| R.1.89 | highlights tests (13) → `app/highlights.rs::tests`                    |
+| R.1.90 | LSP tests (97) + 4 LSP test helpers → `app/lsp.rs::tests`             |
+| R.1.91 | help tests (40) → `app/help.rs::tests`; helpers consolidate to `test_helpers.rs` |
+| R.1.92 | edit tests (81) → `app/edit.rs::tests`                                 |
+| R.1.93 | cmdline tests (35) → `app/cmdline.rs::tests`; `unique_tempdir` helper graduates |
+| R.1.94 | completion tests (33) → `app/completion.rs::tests`; 3 helpers graduate  |
+| R.1.95 | motions tests (57) → `app/motions.rs::tests`                          |
+| R.1.96 | lifecycle tests (39) + diag tests (6) → respective modules; 4 helpers graduate |
+| R.1.97 | dispatch tests (63) + Mode-context test fixtures → `app/dispatch.rs::tests` |
+| R.1.98 | options + search + visual tests + misc cleanup                         |
 
 ## 5. Pending candidates
 
@@ -253,7 +263,7 @@ remaining churn is more of a polish:
 
 ### Documentation / tests pass (R.1.x.final)
 
-## 6. End-state achieved (R.1.88)
+## 6. End-state achieved (R.1.98)
 
 `app.rs` now holds:
 
@@ -275,17 +285,39 @@ remaining churn is more of a polish:
   `is_valid_mark_name`, `dedup_rendered_by_text`,
   `word_under_cursor`, `lsp_position_to_app_byte`,
   `resolve_command_name_or_alias`).
-- A `mod tests` block (~10,400 lines) -- the dominant
-  remaining mass; per-feature relocation is the obvious
-  follow-up.
+- A `mod tests` block (~98 tests, ~2k lines) -- cross-
+  feature integration coverage that doesn't have a
+  clean per-module home (key-harness suites, modal-axis
+  transitions, fold-aware motion, mark history walks,
+  dispatch-edge cases).
 
 Production code line count: **2,555 lines** (down from
-17,849 -- a 14.3% residue, **85.7% drained**). The
-end-state target of "under 2000 lines" was set at R.1.0
+17,849 -- a 14.3% residue, **85.7% drained**). Test mass
+in app.rs: ~2,100 lines (down from ~10,400 at R.1.88 --
+**80% of the test mass relocated**, 473 of 571 tests
+moved to per-feature modules).
+
+Total `app.rs` size: **4,667 lines** (down from 17,849;
+**73.8% drained**). All 1,394 tests still pass.
+
+The end-state target of "under 2000 lines" was set at R.1.0
 when only data types were expected to remain; the actual
 data-type mass is larger than expected (LSP outcome
-enums are ~280 lines on their own) and the App struct
-field list is ~770 lines.
+enums + the App struct field list together account for
+~1,800 lines). Pursuing further compression would mean
+moving the App struct fields' types out, which has
+diminishing returns -- the types are inherently shared
+across feature modules.
+
+### Optional follow-up
+
+- Move LSP outcome types (`HoverOutcome`, `ReferencesOutcome`,
+  `CompletionOutcome`, etc.) to `app/lsp.rs`. Net benefit
+  is modest: types are referenced from many modules, so
+  app.rs would still re-export them.
+- Relocate the residual ~98 cross-feature tests, but each
+  spans multiple subsystems -- they're already in the
+  most natural single home.
 
 ## 7. After R.1.x
 

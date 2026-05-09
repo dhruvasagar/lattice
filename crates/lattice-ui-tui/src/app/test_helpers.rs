@@ -171,6 +171,56 @@ pub(super) fn set_rust_syntax(a: &mut App, source: &str) {
 /// returned path is created on disk; the caller can
 /// populate it with files / subdirs before constructing an
 /// App against it.
+/// Pre-populate the App's insert-completion popup with a
+/// single candidate carrying `top_text` against `query`.
+/// Used by accept / dismiss / commit-char tests that don't
+/// need to drive the full LSP / sync-source pipeline.
+pub(super) fn open_popup_with_top_text(a: &mut App, query: &str, top_text: &str) {
+    let mut state = lattice_completion::InsertCompletionState::open(
+        lattice_completion::CompletionTrigger::Manual,
+        a.cursor,
+        a.cursor,
+        query.to_string(),
+    );
+    let raw = lattice_completion::RawCandidate::plain(
+        top_text,
+        lattice_completion::CandidateKind::Plain,
+    );
+    state.raw.push(raw.clone());
+    state
+        .rendered
+        .push(lattice_completion::RenderedCandidate::from_scored(
+            lattice_completion::ScoredCandidate {
+                raw,
+                score: lattice_completion::MatchScore(800),
+                match_ranges: Vec::new(),
+            },
+        ));
+    a.insert_completion = Some(state);
+}
+
+/// Insert a snippet into the App's per-language snippet
+/// registry. Used by snippet-popup / snippet-expand tests.
+pub(super) fn install_snippet(
+    a: &mut App,
+    language: &str,
+    name: &str,
+    prefix: &str,
+    body: &str,
+) {
+    let parsed = lattice_snippet::parse::parse(body).unwrap();
+    a.snippet_registry.insert(
+        language,
+        lattice_snippet::Snippet {
+            name: name.into(),
+            prefixes: vec![prefix.into()],
+            body: parsed,
+            description: None,
+            scope: String::new(),
+        },
+    );
+}
+
 /// Build a unique temp directory for tests that touch the
 /// filesystem. The path is created on disk; the caller can
 /// drop files into it. Caller is responsible for cleanup

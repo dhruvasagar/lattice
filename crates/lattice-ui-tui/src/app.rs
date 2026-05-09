@@ -6532,38 +6532,6 @@ impl App {
         }
     }
 
-    pub(super) fn clamp_cursor_to_buffer(&mut self) {
-        self.clamp_cursor_to_active_buffer();
-    }
-
-    /// Clamp `self.cursor` to the active buffer's bounds. Same as
-    /// `clamp_cursor_to_buffer` but reads from `active_text()` so
-    /// it works for help / file-tree / document uniformly.
-    pub(super) fn clamp_cursor_to_active_buffer(&mut self) {
-        let buffer = self.active_text();
-        let last_line = last_addressable_line(&buffer);
-        if self.cursor.line > last_line {
-            self.cursor.line = last_line;
-        }
-        let len = line_byte_len(&buffer, self.cursor.line);
-        if self.cursor.byte > len {
-            self.cursor.byte = len;
-        }
-    }
-
-    pub fn ensure_cursor_visible(&mut self) {
-        if self.viewport_height == 0 {
-            return;
-        }
-        if self.cursor.line < self.scroll {
-            self.scroll = self.cursor.line;
-        }
-        let bottom = self.scroll + self.viewport_height - 1;
-        if self.cursor.line > bottom {
-            self.scroll = self.cursor.line + 1 - self.viewport_height;
-        }
-    }
-
     /// The active buffer's text -- a `Buffer` clone (rope is O(1)).
     /// Document, help, file-tree all flow through this, so motion /
     /// scroll / search code can read text without branching on

@@ -5037,52 +5037,6 @@ impl App {
 
 
 
-    /// `<C-t>` -- pop the tag stack (vim's `:pop`). LIFO walk
-    /// back through the chain of `gd` / `gD` / `gy` / `gI`
-    /// drill-downs. Echoes "tag stack empty" with no entries.
-    /// Restores the recorded buffer (when cross-file) and
-    /// position; pushes the post-pop cursor onto the unified
-    /// position-history ring (PluginPush) so `<C-o>` continues
-    /// to walk the chronological jump record after a `<C-t>`
-    /// step.
-    fn do_tag_stack_pop(&mut self) {
-        let Some(entry) = self.tag_stack.pop() else {
-            self.set_message(EchoLevel::Info, "tag stack empty".to_string());
-            return;
-        };
-        // Push the *current* cursor onto the jump list before
-        // walking back so `<C-i>` returns to the post-pop spot.
-        self.push_position_history(self.cursor, PositionSource::PluginPush);
-        // If the recorded buffer differs from the active one,
-        // switch to it. The match is structural: prefer the
-        // exact `buffer_id` if it still exists in the registry,
-        // else any buffer of the recorded `buffer` kind.
-        let active_id = self.active_pane_buffer_id();
-        if entry.buffer_id != active_id {
-            // Best-effort activate; if the original buffer is
-            // gone (closed) the cursor still moves on whatever
-            // buffer is active. Acceptable v1 behaviour --
-            // future passes can echo "tag origin buffer gone"
-            // or hop to the alternate of the same kind.
-            if self.buffers.get(entry.buffer_id).is_some() {
-                self.activate_buffer(entry.buffer_id);
-            }
-        }
-        // Clamp to current buffer extents in case the doc was
-        // edited after the tag-stack push.
-        let buffer = self.active_text();
-        let last = last_addressable_line(&buffer);
-        let line = entry.position.line.min(last);
-        let len = line_byte_len(&buffer, line);
-        let col = entry.position.byte.min(len);
-        self.cursor = Position::new(line, col);
-        let label = if entry.label.is_empty() {
-            format!("tag pop -> ({},{})", line + 1, col + 1)
-        } else {
-            format!("tag pop -> {} ({},{})", entry.label, line + 1, col + 1)
-        };
-        self.set_message(EchoLevel::Info, label);
-    }
 
     /// Jump to `path:line:col` (LSP 0-based line, utf-8 byte
     /// column). Single entrypoint shared by the picker accept
@@ -6997,41 +6951,6 @@ impl App {
 
 
 
-    /// Jump to a recorded mark. `exact = true` puts the cursor at the
-    /// stored byte; `exact = false` jumps to the line and column = first
-    /// non-blank (vim's `'<letter>` semantics).
-    fn do_jump_mark(&mut self, name: char, exact: bool) {
-        if !is_valid_mark_name(name) {
-            self.set_message(EchoLevel::Error, format!("invalid mark: {name}"));
-            return;
-        }
-        let Some(&pos) = self.marks.get(&name) else {
-            self.set_message(EchoLevel::Error, format!("mark not set: {name}"));
-            return;
-        };
-        // Push pre-jump position so Ctrl-O can return.
-        let cur = self.cursor;
-        self.push_position_history(cur, PositionSource::AutoJump);
-        if exact {
-            self.cursor = pos;
-        } else {
-            // Line-only jump: snap byte to first non-blank on that line.
-            let text = self.document.text();
-            let line_text = text
-                .split_inclusive('\n')
-                .nth(pos.line as usize)
-                .map(|l| l.trim_end_matches('\n'))
-                .unwrap_or("");
-            let bytes = line_text.as_bytes();
-            let mut col = 0usize;
-            while col < bytes.len() && (bytes[col] == b' ' || bytes[col] == b'\t') {
-                col += 1;
-            }
-            self.cursor = Position::new(pos.line, col as u32);
-        }
-        self.clamp_cursor_to_buffer();
-        self.auto_open_folds_at_cursor();
-    }
 
 
 

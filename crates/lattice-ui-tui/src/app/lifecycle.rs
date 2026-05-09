@@ -873,6 +873,70 @@ impl App {
         self.pane_tree.active().buffer_id
     }
 
+    /// Copy the App's hot-path cursor / scroll into the active
+    /// pane's stash. Called before any operation that flips which
+    /// pane is active.
+    ///
+    /// **Unified hot-path**: `self.cursor` and `self.scroll` are
+    /// the active buffer's regardless of kind, so the snapshot
+    /// reads from there uniformly. Help / file-tree records are
+    /// also synced into their kind-specific cursor / scroll fields
+    /// (and the registry copy for help) so the archival state stays
+    /// current; live state always lives on `self`.
+    pub(super) fn snapshot_active_pane(&mut self) {
+        let cursor = self.cursor;
+        let scroll = self.scroll;
+        let pane_id = self.pane_tree.active().buffer_id;
+        // Mirror live state into the buffer-specific stash + the
+        // registry record for archival / cross-pane round-trips.
+        match self.active_buffer {
+            BufferKind::Help => {
+                if let Some(h) = self.help_buffer.as_mut() {
+                    h.cursor = cursor;
+                    h.scroll = scroll as usize;
+                    if h.id == pane_id
+                        && let Some(reg) = self.buffers.help_mut(pane_id)
+                    {
+                        *reg = h.clone();
+                    }
+                }
+            }
+            BufferKind::FileTree => {
+                if let Some(t) = self.buffers.file_tree_mut(pane_id) {
+                    t.cursor = cursor;
+                    t.scroll = scroll as usize;
+                }
+            }
+            BufferKind::Oil => {
+                if let Some(o) = self.buffers.oil_mut(pane_id) {
+                    o.cursor = cursor;
+                    o.scroll = scroll as usize;
+                }
+            }
+            BufferKind::Document => {}
+        }
+        let active = self.pane_tree.active_mut();
+        active.cursor = cursor;
+        active.scroll = scroll;
+    }
+
+    /// Total area available to pane content in screen-cell units.
+    /// Currently the buffer area = full terminal minus the mode
+    /// line (1 row) and the echo / cmdline area (1 row). Width is
+    /// the terminal width; v1 doesn't track terminal width as
+    /// state, so we estimate from `viewport_height` and a constant
+    /// width that the renderer overrides with the real terminal
+    /// width before navigation. Good enough until B.1.c has the
+    /// per-frame terminal size cached on App.
+    pub(super) fn buffer_area_rect(&self) -> crate::pane::PaneRect {
+        crate::pane::PaneRect {
+            x: 0,
+            y: 0,
+            width: self.terminal_width.unwrap_or(120),
+            height: self.viewport_height as u16,
+        }
+    }
+
     /// Jump to `path:line:col` (LSP 0-based line, utf-8 byte
     /// column). Single entrypoint shared by the picker accept
     /// path (`JumpToLspLocation`) and the `do_help_follow_link`

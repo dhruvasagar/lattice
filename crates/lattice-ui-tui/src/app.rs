@@ -2228,8 +2228,6 @@ pub struct MacroRecording {
     pub actions: Vec<Action>,
 }
 
-const POSITION_HISTORY_CAP: usize = 100;
-
 /// One entry on the vim-style tag stack. Pushed by `gd` (and
 /// the goto-* family) at the pre-jump cursor; popped by `<C-t>`
 /// to walk back. Distinct from the jump list because the user's
@@ -6428,40 +6426,6 @@ impl App {
         self.cursor = Position::new(spec.start_line, top_col);
     }
 
-
-    /// Push a tagged entry onto the history ring. If the history-cursor
-    /// is not at the end (the user has been walking back), truncate
-    /// forward entries before pushing -- standard "modify-from-middle"
-    /// semantics. Capped at POSITION_HISTORY_CAP entries; oldest dropped.
-    /// Adjacent same-position-and-source duplicates are coalesced.
-    pub fn push_position_history(&mut self, pos: Position, source: PositionSource) {
-        let buffer = self.active_buffer;
-        let buffer_id = self.active_buffer_id();
-        if let Some(last) = self.position_history.last()
-            && last.position == pos
-            && last.source == source
-            && last.buffer == buffer
-            && last.buffer_id == buffer_id
-        {
-            return;
-        }
-        if self.position_history_cursor < self.position_history.len() {
-            self.position_history.truncate(self.position_history_cursor);
-        }
-        self.position_history.push(PositionEntry {
-            position: pos,
-            source,
-            buffer,
-            buffer_id,
-        });
-        if self.position_history.len() > POSITION_HISTORY_CAP {
-            self.position_history.remove(0);
-            // Truncating from the front shifts the cursor too; clamp
-            // before we re-anchor it.
-            self.position_history_cursor = self.position_history_cursor.saturating_sub(1);
-        }
-        self.position_history_cursor = self.position_history.len();
-    }
 
     /// Id of whichever buffer is currently active. The active
     /// pane's `buffer_id` is the source of truth -- documents and

@@ -12,12 +12,9 @@
 //! - `scan_forward_for_match` /
 //!   `scan_backward_for_match` (file-private helpers for
 //!   the bracket walk).
-//!
-//! Stays in app.rs (deferred):
-//! - The remaining motion-class methods (`do_jump_history`,
-//!   `do_walk_history`, `do_jump_mark`, etc.) entangle with
-//!   position-history and tag-stack state; they migrate
-//!   with a future motions.history slice.
+//! - `push_position_history` (the write side of the
+//!   position-history ring; pairs with `do_walk_history`
+//!   here). `POSITION_HISTORY_CAP` lives alongside it.
 //!
 //! What does NOT live here: the motion *grammar* (rules and
 //! parser) -- that lives in `lattice-grammar`. This module
@@ -31,6 +28,12 @@ use super::{
     App, BufferKind, EchoLevel, PositionEntry, PositionSource, is_valid_mark_name,
     last_addressable_line, line_byte_len,
 };
+
+/// Cap on entries in the position-history ring. The write side
+/// (`push_position_history`) drops the oldest entry when this
+/// is exceeded; the walkers (`do_walk_history` etc.) clamp
+/// against the live length.
+const POSITION_HISTORY_CAP: usize = 100;
 
 impl App {
     /// Vim's `%`: jump to the matching `()[]{}`. Behavior: scan
@@ -437,5 +440,39 @@ impl App {
         }
         self.clamp_cursor_to_buffer();
         self.auto_open_folds_at_cursor();
+    }
+
+    /// Push a tagged entry onto the history ring. If the history-cursor
+    /// is not at the end (the user has been walking back), truncate
+    /// forward entries before pushing -- standard "modify-from-middle"
+    /// semantics. Capped at POSITION_HISTORY_CAP entries; oldest dropped.
+    /// Adjacent same-position-and-source duplicates are coalesced.
+    pub(super) fn push_position_history(&mut self, pos: Position, source: PositionSource) {
+        let buffer = self.active_buffer;
+        let buffer_id = self.active_buffer_id();
+        if let Some(last) = self.position_history.last()
+            && last.position == pos
+            && last.source == source
+            && last.buffer == buffer
+            && last.buffer_id == buffer_id
+        {
+            return;
+        }
+        if self.position_history_cursor < self.position_history.len() {
+            self.position_history.truncate(self.position_history_cursor);
+        }
+        self.position_history.push(PositionEntry {
+            position: pos,
+            source,
+            buffer,
+            buffer_id,
+        });
+        if self.position_history.len() > POSITION_HISTORY_CAP {
+            self.position_history.remove(0);
+            // Truncating from the front shifts the cursor too; clamp
+            // before we re-anchor it.
+            self.position_history_cursor = self.position_history_cursor.saturating_sub(1);
+        }
+        self.position_history_cursor = self.position_history.len();
     }
 }

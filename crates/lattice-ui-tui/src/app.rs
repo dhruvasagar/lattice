@@ -3061,65 +3061,6 @@ impl App {
 
 
 
-    // ---- Blocking bridges to the document actor ----
-    //
-    // Per DESIGN.md §5.2.1 every mutating call returns a
-    // `Pending<T>`. The TUI input loop runs on a blocking thread
-    // (crossterm's poll model) so it forwards each Pending to
-    // [`lattice_runtime::block_on`]. These helpers concentrate the
-    // bridging in one place; the rest of `App` reads as if it
-    // owned `Document` directly.
-    //
-    // Returns are pre-flattened: callers that only care about
-    // success use `.ok()`; callers that need to inspect the error
-    // can match on `RuntimeError::Core(_)` for invalid edits vs.
-    // `Busy` / `ActorGone` for actor-protocol failures.
-
-    /// Block_on `apply_edit` and return the `AppliedEdit` (or
-    /// `RuntimeError`). Snapshot republishes inside the actor
-    /// before this returns. On success, publishes a
-    /// [`Event::DocumentChanged`] to the App's event bus and
-    /// records the edit with the LSP supervisor (Phase
-    /// 4.1.i.2) so attached servers see `didChange`.
-    pub fn apply_edit_blocking(&mut self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
-        let result = block_on(self.document.apply_edit(edit));
-        if let Ok(applied) = result.as_ref() {
-            self.publish_document_changed(std::slice::from_ref(applied));
-        }
-        result
-    }
-
-    /// Block_on `apply_edit_batch`. The batch lands as one undo
-    /// unit on the document's undo stack. Each edit in the
-    /// batch is also fed to the LSP supervisor in order
-    /// (Phase 4.1.i.2).
-    pub fn apply_edit_batch_blocking(
-        &mut self,
-        edits: Vec<Edit>,
-    ) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        let result = block_on(self.document.apply_edit_batch(edits));
-        if let Ok(applied) = result.as_ref() {
-            self.publish_document_changed(applied);
-        }
-        result
-    }
-
-    pub fn undo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        let result = block_on(self.document.undo());
-        if let Ok(applied) = result.as_ref() {
-            self.publish_document_changed(applied);
-        }
-        result
-    }
-
-    pub fn redo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        let result = block_on(self.document.redo());
-        if let Ok(applied) = result.as_ref() {
-            self.publish_document_changed(applied);
-        }
-        result
-    }
-
     pub fn save_blocking(&mut self) -> Result<std::path::PathBuf, RuntimeError> {
         // BeforeSave fires before the actor commits, so a future
         // veto-class handler (§5.10.2) can format / sanitize the

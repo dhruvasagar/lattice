@@ -1808,66 +1808,6 @@ impl EffectiveCompletionConfig {
     }
 }
 
-/// Parse a `[completion.per-language.<lang>]` TOML sub-table
-/// into [`PerLanguageOverrides`]. Unknown keys + wrong-typed
-/// values append warnings to `warnings` (caller surfaces them
-/// in one echo); recognised keys with valid values populate the
-/// struct.
-fn parse_per_language_overrides_table(
-    section_path: &str,
-    table: &toml::Table,
-    warnings: &mut Vec<String>,
-) -> lattice_completion::PerLanguageOverrides {
-    let mut out = lattice_completion::PerLanguageOverrides::default();
-    for (key, value) in table {
-        match key.as_str() {
-            "sources" => match value.as_array() {
-                Some(arr) => {
-                    let sources: Vec<lattice_completion::SourceId> = arr
-                        .iter()
-                        .filter_map(|v| {
-                            v.as_str().map(lattice_completion::canonical_source_id)
-                        })
-                        .collect();
-                    out.sources = Some(sources);
-                }
-                None => warnings.push(format!(
-                    "{section_path}.sources: expected array of strings",
-                )),
-            },
-            "auto_trigger" => match value.as_bool() {
-                Some(b) => out.auto_trigger = Some(b),
-                None => warnings.push(format!(
-                    "{section_path}.auto_trigger: expected bool",
-                )),
-            },
-            "auto_insert_single" => match value.as_bool() {
-                Some(b) => out.auto_insert_single = Some(b),
-                None => warnings.push(format!(
-                    "{section_path}.auto_insert_single: expected bool",
-                )),
-            },
-            "suppress_in" => match value.as_array() {
-                Some(arr) => {
-                    out.suppress_in = Some(
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect(),
-                    );
-                }
-                None => warnings.push(format!(
-                    "{section_path}.suppress_in: expected array of strings",
-                )),
-            },
-            other => warnings.push(format!(
-                "{section_path}.{other}: unknown per-language key (recognised: \
-                 sources, auto_trigger, auto_insert_single, suppress_in)",
-            )),
-        }
-    }
-    out
-}
-
 /// Drain payload for `completionItem/resolve` (Phase
 /// 4.2.g.3). Carries the meta-vec index alongside the
 /// resolved item so the drain can update the right entry
@@ -4689,45 +4629,6 @@ impl App {
             )
         };
         self.set_message(echo_level, body);
-    }
-
-    /// Drain every `completion.per-language.<lang>` structural
-    /// section the loader bucketed and merge each into
-    /// `self.per_language_completion`. Per-key TOML wins over
-    /// the spec defaults seeded at `App::new`; unset keys leave
-    /// the default in place.
-    ///
-    /// Called by the runtime startup right after
-    /// `load_persistent_config` finishes. Idempotent (the bucket
-    /// empties as we drain). Per-key parse warnings collapse
-    /// into a single echo at `Warn` level the same way the
-    /// loader's other diagnostics do.
-    pub fn apply_per_language_toml_overrides(&mut self) {
-        let paths = self.pending_structural_section_paths("completion.per-language");
-        let mut warnings: Vec<String> = Vec::new();
-        for path in paths {
-            let lang = match path.strip_prefix("completion.per-language.") {
-                Some(s) if !s.is_empty() => s.to_string(),
-                _ => continue,
-            };
-            let Some(table) = self.take_pending_structural_section(&path) else {
-                continue;
-            };
-            let parsed = parse_per_language_overrides_table(&path, &table, &mut warnings);
-            self.per_language_completion
-                .entry(lang)
-                .or_default()
-                .merge(parsed);
-        }
-        if !warnings.is_empty() {
-            let count = warnings.len();
-            let body = if count == 1 {
-                format!("config: {}", warnings[0])
-            } else {
-                format!("config: {count} per-language warnings (first: {})", warnings[0])
-            };
-            self.set_message(EchoLevel::Warn, body);
-        }
     }
 
     /// Effective completion config for `language` -- per-language

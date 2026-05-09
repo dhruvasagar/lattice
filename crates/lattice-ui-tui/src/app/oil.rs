@@ -139,4 +139,47 @@ impl App {
             self.do_edit(Some(path), false);
         }
     }
+
+    /// `-` -- navigate to the parent of the current buffer's dir.
+    /// In oil: defer to OilBuffer::navigate_up. In file-tree: open
+    /// oil rooted at the parent of the entry under the cursor (or
+    /// the entry itself when it's a directory). Anywhere else: open
+    /// oil rooted at the parent of the active document's path.
+    pub(super) fn do_oil_navigate_up(&mut self) {
+        match self.active_buffer {
+            BufferKind::Oil => {
+                let id = self.active_pane_buffer_id();
+                if let Some(oil) = self.buffers.oil_mut(id) {
+                    if let Err(e) = oil.navigate_up() {
+                        self.set_message(EchoLevel::Error, format!("oil navigate up: {e}"));
+                        return;
+                    }
+                    self.cursor = Position::ZERO;
+                    self.scroll = 0;
+                }
+            }
+            BufferKind::FileTree => {
+                let id = self.active_pane_buffer_id();
+                let dir = self
+                    .buffers
+                    .file_tree(id)
+                    .and_then(|t| t.entry_at_cursor())
+                    .map(|e| {
+                        if matches!(e.kind, crate::file_tree::FileTreeEntryKind::Directory { .. }) {
+                            e.path.clone()
+                        } else {
+                            e.path.parent().unwrap_or(&e.path).to_path_buf()
+                        }
+                    });
+                self.do_open_oil(dir);
+            }
+            _ => {
+                let dir = self
+                    .document
+                    .path()
+                    .and_then(|p| p.parent().map(Into::into));
+                self.do_open_oil(dir);
+            }
+        }
+    }
 }

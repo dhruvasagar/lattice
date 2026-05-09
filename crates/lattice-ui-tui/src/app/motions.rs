@@ -669,3 +669,607 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+    use crate::app::*;
+    use crate::app::test_helpers::{app_with, invoke_motion};
+    use crate::app::TagStackEntry;
+
+    #[test]
+    fn invoke_char_right_advances_cursor() {
+        let mut a = app_with("abc", 10);
+        let id = a.builtins.char_right;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.cursor, Position::new(0, 1));
+    }
+
+    #[test]
+    fn invoke_char_left_at_origin_does_not_underflow() {
+        let mut a = app_with("abc", 10);
+        let id = a.builtins.char_left;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn invoke_line_down_then_line_up() {
+        let mut a = app_with("hello\nworld", 10);
+        let down = a.builtins.line_down;
+        let up = a.builtins.line_up;
+        a.apply(invoke_motion(down));
+        assert_eq!(a.cursor.line, 1);
+        a.apply(invoke_motion(up));
+        assert_eq!(a.cursor.line, 0);
+    }
+
+    #[test]
+    fn invoke_goto_last_line_jumps_to_last_line() {
+        let mut a = app_with("a\nb\nc", 10);
+        let id = a.builtins.goto_last_line;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.cursor.line, 2);
+    }
+
+    #[test]
+    fn invoke_goto_first_line_returns_to_origin() {
+        let mut a = app_with("a\nb\nc", 10);
+        let last = a.builtins.goto_last_line;
+        let first = a.builtins.goto_first_line;
+        a.apply(invoke_motion(last));
+        a.apply(invoke_motion(first));
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn invoke_line_end_moves_to_eol() {
+        let mut a = app_with("hello world", 10);
+        let id = a.builtins.line_end;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.cursor, Position::new(0, 11));
+    }
+
+    #[test]
+    fn ensure_visible_scrolls_when_cursor_goes_off_bottom() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 3);
+        let id = a.builtins.goto_last_line;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.cursor.line, 9);
+        assert_eq!(a.scroll, 9 - 3 + 1);
+    }
+
+    #[test]
+    fn ensure_visible_scrolls_back_to_top_on_goto_first() {
+        let mut a = app_with("0\n1\n2\n3\n4", 2);
+        let last = a.builtins.goto_last_line;
+        let first = a.builtins.goto_first_line;
+        a.apply(invoke_motion(last));
+        a.apply(invoke_motion(first));
+        assert_eq!(a.scroll, 0);
+    }
+
+    #[test]
+    fn set_mark_clears_partial_chord() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('m')));
+        a.apply(Action::SetMark('a'));
+        assert!(a.partial_chord.is_empty());
+    }
+
+    #[test]
+    fn jump_to_mark_clears_partial_chord() {
+        let mut a = app_with("hello\nworld", 10);
+        a.apply(Action::SetMark('a'));
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('`')));
+        a.apply(Action::JumpToMarkExact('a'));
+        assert!(a.partial_chord.is_empty());
+    }
+
+    #[test]
+    fn jump_history_with_no_jumps_emits_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::JumpHistoryBack);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn gg_pushes_jump_history_and_ctrl_o_returns() {
+        let mut a = app_with("a\nb\nc\nd\ne", 10);
+        a.cursor = Position::new(3, 0); // line 3 ('d')
+        a.apply(invoke_motion(a.builtins.goto_first_line));
+        assert_eq!(a.cursor, Position::ZERO);
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.cursor, Position::new(3, 0));
+    }
+
+    #[test]
+    fn star_pushes_position_history() {
+        let mut a = app_with("foo bar foo", 10);
+        a.cursor = Position::new(0, 1); // on 'o' of first "foo"
+        a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
+        // Cursor now on second "foo" at byte 8.
+        assert_eq!(a.cursor, Position::new(0, 8));
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.cursor, Position::new(0, 1));
+    }
+
+    #[test]
+    fn percent_pushes_position_history() {
+        let mut a = app_with("call(arg)", 10);
+        a.cursor = Position::new(0, 4); // on '('
+        a.apply(Action::MatchBracket);
+        assert_eq!(a.cursor, Position::new(0, 8)); // ')'
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.cursor, Position::new(0, 4));
+    }
+
+    #[test]
+    fn mark_jump_pushes_position_history() {
+        let mut a = app_with("hello\nworld", 10);
+        a.cursor = Position::new(1, 2);
+        a.apply(Action::SetMark('a'));
+        a.cursor = Position::ZERO;
+        a.apply(Action::JumpToMarkExact('a'));
+        assert_eq!(a.cursor, Position::new(1, 2));
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.cursor, Position::ZERO);
+    }
+
+    #[test]
+    fn set_mark_pushes_named_mark_into_position_history() {
+        let mut a = app_with("hello\nworld", 10);
+        a.cursor = Position::new(1, 2);
+        a.apply(Action::SetMark('a'));
+        // Last entry is a NamedMark.
+        let last = a.position_history.last().unwrap();
+        assert_eq!(last.position, Position::new(1, 2));
+        assert!(matches!(last.source, PositionSource::NamedMark('a')));
+    }
+
+    #[test]
+    fn jump_history_filters_to_jump_class_only() {
+        let mut a = app_with("aaa\nbbb\nccc\nddd", 10);
+        // mX (NamedMark) followed by gg (AutoJump). Ctrl-O should walk
+        // to the AutoJump entry, NOT the NamedMark.
+        a.cursor = Position::new(1, 0);
+        a.apply(Action::SetMark('a'));
+        // Position history now has [NamedMark('a') at (1,0)].
+        a.cursor = Position::new(3, 0);
+        a.apply(invoke_motion(a.builtins.goto_first_line));
+        // Now history: [NamedMark('a'), AutoJump (3,0)].
+        a.apply(Action::JumpHistoryBack);
+        // Ctrl-O lands on the AutoJump entry, not the named mark.
+        assert_eq!(a.cursor, Position::new(3, 0));
+    }
+
+    #[test]
+    fn jump_and_mark_walks_share_the_same_ring_cursor() {
+        // After Ctrl-O moves cursor through the ring, g; should pick
+        // up from the new cursor position when scanning for marks.
+        let mut a = app_with("a\nb\nc\nd\ne", 10);
+        a.cursor = Position::new(1, 0);
+        a.apply(Action::SetMark('a')); // ring [NamedMark a@(1,0)] cursor=1
+        a.cursor = Position::new(3, 0);
+        a.apply(invoke_motion(a.builtins.goto_first_line));
+        // ring [NamedMark a, AutoJump (3,0)] cursor=2
+        // Ctrl-O jumps to AutoJump (3,0). Snapshot of (0,0) pushed.
+        // Actually: with snapshot pre-step, ring [a, (3,0), (0,0)],
+        // cursor walks from 3 backward to find jump -> index 1 ((3,0)).
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.cursor, Position::new(3, 0));
+        // g; from current ring cursor (1) walks back to find NamedMark
+        // at index 0.
+        a.apply(Action::WalkMarkHistoryBack);
+        assert_eq!(a.cursor, Position::new(1, 0));
+    }
+
+    #[test]
+    fn position_history_dedups_consecutive_same() {
+        let mut a = app_with("a\nb\nc", 10);
+        a.push_position_history(Position::new(2, 0), PositionSource::AutoJump);
+        a.push_position_history(Position::new(2, 0), PositionSource::AutoJump);
+        // Pushing the same position-and-source twice in a row -> single entry.
+        assert_eq!(a.position_history.len(), 1);
+    }
+
+    #[test]
+    fn position_history_capped_at_max() {
+        let mut a = app_with("a\nb\nc", 10);
+        for i in 0..200 {
+            a.push_position_history(Position::new(i % 3, 0), PositionSource::AutoJump);
+        }
+        assert!(a.position_history.len() <= 100);
+    }
+
+    #[test]
+    fn star_finds_next_occurrence_of_word_under_cursor() {
+        let mut a = app_with("foo bar foo bar", 10);
+        a.cursor = Position::new(0, 1); // on 'o' of first "foo"
+        a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
+        assert_eq!(a.cursor, Position::new(0, 8)); // start of second "foo"
+        let last = a.last_search.as_ref().unwrap();
+        assert_eq!(last.pattern, "foo");
+    }
+
+    #[test]
+    fn star_when_cursor_not_on_word_scans_forward() {
+        let mut a = app_with("  hello world", 10);
+        a.cursor = Position::new(0, 0); // on space
+        a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
+        // The first word "hello" appears once in the buffer; pattern is
+        // recorded but no match is found beyond it (no second "hello").
+        let last = a.last_search.as_ref().unwrap();
+        assert_eq!(last.pattern, "hello");
+    }
+
+    #[test]
+    fn star_with_no_word_on_line_emits_error() {
+        let mut a = app_with("   ", 10);
+        a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn star_records_pattern_even_on_no_other_match() {
+        let mut a = app_with("only hello", 10);
+        a.cursor = Position::new(0, 5); // on 'h'
+        a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
+        // Only one occurrence; wrap puts us at the same place.
+        let last = a.last_search.as_ref().unwrap();
+        assert_eq!(last.pattern, "hello");
+    }
+
+    #[test]
+    fn percent_jumps_from_open_to_close_paren() {
+        let mut a = app_with("call(arg1, arg2)", 10);
+        a.cursor = Position::new(0, 4); // on '('
+        a.apply(Action::MatchBracket);
+        assert_eq!(a.cursor, Position::new(0, 15));
+    }
+
+    #[test]
+    fn percent_jumps_from_close_to_open_paren() {
+        let mut a = app_with("call(arg1, arg2)", 10);
+        a.cursor = Position::new(0, 15); // on ')'
+        a.apply(Action::MatchBracket);
+        assert_eq!(a.cursor, Position::new(0, 4));
+    }
+
+    #[test]
+    fn percent_with_nested_picks_correct_match() {
+        let mut a = app_with("a(b(c)d)e", 10);
+        a.cursor = Position::new(0, 1); // on outer '('
+        a.apply(Action::MatchBracket);
+        assert_eq!(a.cursor, Position::new(0, 7)); // outer ')'
+    }
+
+    #[test]
+    fn percent_searches_forward_for_first_bracket_when_cursor_off() {
+        let mut a = app_with("call(arg)", 10);
+        a.cursor = Position::ZERO; // 'c'; first bracket on line is '(' at byte 4
+        a.apply(Action::MatchBracket);
+        assert_eq!(a.cursor, Position::new(0, 8)); // ')'
+    }
+
+    #[test]
+    fn percent_with_no_bracket_on_line_emits_error() {
+        let mut a = app_with("plain text only", 10);
+        a.apply(Action::MatchBracket);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn percent_with_unmatched_bracket_emits_error() {
+        let mut a = app_with("foo(bar", 10);
+        a.cursor = Position::new(0, 3);
+        a.apply(Action::MatchBracket);
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn percent_works_for_brackets_and_braces() {
+        let mut a = app_with("[a, b, c]", 10);
+        a.cursor = Position::ZERO;
+        a.apply(Action::MatchBracket);
+        assert_eq!(a.cursor, Position::new(0, 8));
+    }
+
+    #[test]
+    fn jump_viewport_top_lands_on_scroll_line() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.scroll = 3;
+        a.cursor = Position::new(7, 0);
+        a.apply(Action::JumpViewport(ViewportPos::Top));
+        assert_eq!(a.cursor.line, 3);
+    }
+
+    #[test]
+    fn jump_viewport_middle_lands_at_half_height() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 6);
+        a.scroll = 0;
+        a.apply(Action::JumpViewport(ViewportPos::Middle));
+        // height/2 = 3, so cursor goes to line 3.
+        assert_eq!(a.cursor.line, 3);
+    }
+
+    #[test]
+    fn jump_viewport_bottom_lands_at_height_minus_one() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.scroll = 2;
+        a.apply(Action::JumpViewport(ViewportPos::Bottom));
+        // 2 + 5 - 1 = 6.
+        assert_eq!(a.cursor.line, 6);
+    }
+
+    #[test]
+    fn jump_viewport_clamps_to_last_addressable_line() {
+        let mut a = app_with("a\nb", 50);
+        a.apply(Action::JumpViewport(ViewportPos::Bottom));
+        assert_eq!(a.cursor.line, 1);
+    }
+
+    #[test]
+    fn scroll_cursor_to_center_centers_cursor() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.cursor = Position::new(6, 0);
+        a.apply(Action::ScrollCursorTo(ScrollPos::Center));
+        // cursor.line - height/2 = 6 - 2 = 4.
+        assert_eq!(a.scroll, 4);
+        // Cursor itself unchanged.
+        assert_eq!(a.cursor.line, 6);
+    }
+
+    #[test]
+    fn scroll_cursor_to_top_aligns_scroll_with_cursor() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.cursor = Position::new(6, 0);
+        a.apply(Action::ScrollCursorTo(ScrollPos::Top));
+        assert_eq!(a.scroll, 6);
+    }
+
+    #[test]
+    fn scroll_cursor_to_bottom_pulls_scroll_up_by_height_minus_one() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.cursor = Position::new(8, 0);
+        a.apply(Action::ScrollCursorTo(ScrollPos::Bottom));
+        // 8 - (5 - 1) = 4.
+        assert_eq!(a.scroll, 4);
+    }
+
+    #[test]
+    fn page_down_advances_by_viewport_height_minus_two() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.cursor = Position::ZERO;
+        a.apply(Action::PageDown);
+        assert_eq!(a.cursor.line, 3);
+    }
+
+    #[test]
+    fn page_down_clamps_to_last_addressable_line() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.cursor = Position::new(8, 0);
+        a.apply(Action::PageDown);
+        assert_eq!(a.cursor.line, 9);
+    }
+
+    #[test]
+    fn page_up_steps_back_by_viewport_height_minus_two() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
+        a.cursor = Position::new(7, 0);
+        a.apply(Action::PageUp);
+        assert_eq!(a.cursor.line, 4);
+    }
+
+    #[test]
+    fn page_up_at_top_stays_at_top() {
+        let mut a = app_with("0\n1\n2", 5);
+        a.apply(Action::PageUp);
+        assert_eq!(a.cursor.line, 0);
+    }
+
+    #[test]
+    fn scroll_line_down_advances_scroll_and_pulls_cursor_if_off_top() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6", 3);
+        a.cursor = Position::ZERO;
+        a.scroll = 0;
+        a.apply(Action::ScrollLineDown);
+        assert_eq!(a.scroll, 1);
+        // Cursor was at line 0; now it's off the top, so it follows.
+        assert_eq!(a.cursor.line, 1);
+    }
+
+    #[test]
+    fn scroll_line_up_decreases_scroll_and_pushes_cursor_if_off_bottom() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6", 3);
+        a.cursor = Position::new(4, 0);
+        a.scroll = 2; // viewport covers lines 2,3,4.
+        a.apply(Action::ScrollLineUp);
+        assert_eq!(a.scroll, 1);
+        // Bottom of new viewport is line 3; cursor was at 4, gets pushed up.
+        assert_eq!(a.cursor.line, 3);
+    }
+
+    #[test]
+    fn set_mark_records_cursor_position() {
+        let mut a = app_with("hello\nworld", 10);
+        a.cursor = Position::new(1, 2);
+        a.apply(Action::SetMark('a'));
+        assert_eq!(a.marks.get(&'a'), Some(&Position::new(1, 2)));
+    }
+
+    #[test]
+    fn jump_mark_exact_restores_cursor_position() {
+        let mut a = app_with("hello\nworld\nfoo", 10);
+        a.cursor = Position::new(0, 3);
+        a.apply(Action::SetMark('m'));
+        a.cursor = Position::new(2, 0);
+        a.apply(Action::JumpToMarkExact('m'));
+        assert_eq!(a.cursor, Position::new(0, 3));
+    }
+
+    #[test]
+    fn jump_mark_line_lands_on_first_non_blank() {
+        let mut a = app_with("hello\n    indented\nfoo", 10);
+        a.cursor = Position::new(1, 8); // mid-word on the indented line
+        a.apply(Action::SetMark('a'));
+        a.cursor = Position::ZERO;
+        a.apply(Action::JumpToMarkLine('a'));
+        // Line 1, byte 4 = 'i' (after 4 leading spaces).
+        assert_eq!(a.cursor, Position::new(1, 4));
+    }
+
+    #[test]
+    fn jump_to_unset_mark_emits_error() {
+        let mut a = app_with("hello", 10);
+        a.apply(Action::JumpToMarkExact('z'));
+        let msg = a.last_message.as_ref().unwrap();
+        assert_eq!(msg.level, EchoLevel::Error);
+    }
+
+    #[test]
+    fn count_with_line_motion_advances_count_lines() {
+        let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 20);
+        a.apply(Action::Invoke(
+            CommandInvocation::of(a.builtins.line_down.0)
+                .with_count(lattice_grammar::command::Count(5)),
+        ));
+        assert_eq!(a.cursor.line, 5);
+    }
+
+    #[test]
+    fn count_with_dd_deletes_n_lines_as_single_undo() {
+        // `2dd`: count=2 expands Range::CurrentLine to span 2 lines.
+        // The whole deletion MUST land as a single undo unit -- a
+        // single `u` should restore the original buffer.
+        let mut a = app_with("one\ntwo\nthree\nfour", 10);
+        a.cursor = Position::new(0, 0);
+        a.op_count = 2;
+        let inv = CommandInvocation::of(a.builtins.delete.0)
+            .with_range(lattice_grammar::Range::CurrentLine)
+            .with_count(lattice_grammar::command::Count(2));
+        a.apply(Action::Invoke(inv));
+        // Lines 0 and 1 ("one" and "two") deleted; line 2 ("three") survives.
+        let text = a.document.text();
+        assert!(!text.contains("one"));
+        assert!(!text.contains("two"));
+        assert!(text.contains("three"));
+        assert!(text.contains("four"));
+
+        // One undo should fully restore.
+        let _ = a.undo_blocking();
+        assert_eq!(a.document.text(), "one\ntwo\nthree\nfour");
+    }
+
+    #[test]
+    fn count_with_indent_right_indents_n_lines_as_single_undo() {
+        // `2>>`: count=2 expands Range::CurrentLine to span 2 lines.
+        // The whole indent MUST land as a single undo unit -- the
+        // operator builds the per-line edits up front and commits
+        // via apply_edit_batch.
+        let mut a = app_with("one\ntwo\nthree\nfour", 10);
+        a.cursor = Position::new(0, 0);
+        a.op_count = 2;
+        let inv = CommandInvocation::of(a.builtins.indent_right.0)
+            .with_range(lattice_grammar::Range::CurrentLine)
+            .with_count(lattice_grammar::command::Count(2));
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "    one\n    two\nthree\nfour");
+        // Single undo restores the original buffer.
+        let _ = a.undo_blocking();
+        assert_eq!(a.document.text(), "one\ntwo\nthree\nfour");
+    }
+
+    #[test]
+    fn count_with_indent_left_dedents_n_lines_as_single_undo() {
+        let mut a = app_with("    one\n    two\nthree\nfour", 10);
+        a.cursor = Position::new(0, 0);
+        a.op_count = 2;
+        let inv = CommandInvocation::of(a.builtins.indent_left.0)
+            .with_range(lattice_grammar::Range::CurrentLine)
+            .with_count(lattice_grammar::command::Count(2));
+        a.apply(Action::Invoke(inv));
+        assert_eq!(a.document.text(), "one\ntwo\nthree\nfour");
+        let _ = a.undo_blocking();
+        assert_eq!(a.document.text(), "    one\n    two\nthree\nfour");
+    }
+
+    #[test]
+    fn count_zero_through_pending_count_is_ignored_by_motion() {
+        // pending_count remains 0 after no digit; motion uses default 1.
+        let mut a = app_with("hello world", 10);
+        let id = a.builtins.word_forward;
+        a.apply(invoke_motion(id));
+        assert_eq!(a.cursor, Position::new(0, 6));
+    }
+
+    #[test]
+    fn next_pane_cycles_active() {
+        let mut a = app_with("first\nsecond\nthird", 10);
+        a.cursor = Position::new(2, 0);
+        a.apply(Action::SplitPaneVertical);
+        // After split: 2 panes, both seeded with cursor (2, 0).
+        // Move cursor in the active pane.
+        a.cursor = Position::new(0, 0);
+        a.apply(Action::NextPane);
+        assert_eq!(a.pane_tree.active_index(), 1);
+        // Pane 1 should still hold its stashed cursor (2, 0).
+        assert_eq!(a.cursor, Position::new(2, 0));
+        // Cycle back -- pane 0 holds (0, 0) per the in-active mutation.
+        a.apply(Action::NextPane);
+        assert_eq!(a.pane_tree.active_index(), 0);
+        assert_eq!(a.cursor, Position::new(0, 0));
+    }
+
+    #[test]
+    fn navigate_pane_walks_to_spatial_neighbour() {
+        let mut a = app_with("xx", 10);
+        a.terminal_width = Some(80);
+        a.apply(Action::SplitPaneVertical);
+        // Active=0 (left). Navigate Right -> active=1.
+        a.apply(Action::NavigatePane(PaneDirection::Right));
+        assert_eq!(a.pane_tree.active_index(), 1);
+        // Navigate Left -> active=0.
+        a.apply(Action::NavigatePane(PaneDirection::Left));
+        assert_eq!(a.pane_tree.active_index(), 0);
+    }
+
+    #[test]
+    fn tag_stack_pop_on_empty_echoes_message() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::TagStackPop);
+        let msg = a.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("tag stack empty"));
+    }
+
+    #[test]
+    fn tag_stack_drives_pop_back_to_origin() {
+        let mut a = app_with("alpha\nbeta\ngamma\ndelta\n", 10);
+        // Pretend we drilled down from line 0 col 2 to line 3
+        // col 1 (the gd-like `do_lsp_nav_request` -> drain
+        // single-result path normally pushes; we synthesise
+        // the entry directly to keep the test free of LSP wire).
+        a.tag_stack.push(TagStackEntry {
+            buffer: a.active_buffer,
+            buffer_id: a.active_pane_buffer_id(),
+            position: Position::new(0, 2),
+            label: "foo".into(),
+        });
+        a.cursor = Position::new(3, 1);
+        a.apply(Action::TagStackPop);
+        assert_eq!(a.cursor, Position::new(0, 2));
+        assert!(a.tag_stack.is_empty());
+        // Pop pushes the post-pop cursor onto position history
+        // (PluginPush) so a follow-up `<C-i>` returns to (3, 1).
+        let last = a.position_history.last().expect("history entry");
+        assert!(matches!(last.source, PositionSource::PluginPush));
+        assert_eq!(last.position, Position::new(3, 1));
+    }
+
+}

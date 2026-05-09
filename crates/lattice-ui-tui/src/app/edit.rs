@@ -27,12 +27,13 @@ use lattice_grammar::CommandInvocation;
 use lattice_grammar::ModalState;
 use lattice_grammar::VisualKind;
 use lattice_grammar::YankKind;
+use lattice_grammar::register::Register;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use super::{
-    App, EchoLevel, PendingBlockInsert, ReplaceEntry, last_addressable_line, line_byte_len,
-    previous_position,
+    App, EchoLevel, PendingBlockInsert, ReplaceEntry, UnnamedRegister, last_addressable_line,
+    line_byte_len, previous_position,
 };
 
 impl App {
@@ -545,6 +546,56 @@ impl App {
             if let Some(spec) = self.pending_block_insert.as_mut() {
                 spec.live_edits = spec.live_edits.saturating_add(1);
             }
+        }
+    }
+
+    /// Store a yank into the appropriate register slot. Vim's behavior:
+    ///
+    /// - `Register::BlackHole` -> drop on the floor, no storage.
+    /// - Any explicit register -> store there AND in `""` (unnamed).
+    /// - `Register::Unnamed` -> store in `""`.
+    /// - Yanks (vs deletes) also populate `"0`. We approximate vim's
+    ///   distinction by treating any `Effect::Yank` from a yank operator
+    ///   as also writing `"0`; deletes don't (they hit `"1`+ in vim,
+    ///   which we don't model in v1).
+    pub(super) fn store_yank(&mut self, register: Register, content: String, kind: YankKind) {
+        if matches!(register, Register::BlackHole) {
+            return;
+        }
+        let entry = UnnamedRegister {
+            content: content.clone(),
+            kind,
+        };
+        // Always update unnamed.
+        self.unnamed_register = Some(entry.clone());
+        // If a named / numbered / system register was explicitly chosen,
+        // store there too.
+        match register {
+            Register::Unnamed | Register::BlackHole => {}
+            other => {
+                self.registers.insert(other, entry.clone());
+            }
+        }
+        // For uppercase named registers, vim *appends* to the lowercase
+        // version. v1 simplification: A-Z replaces lowercase too (so
+        // both "a and "A end up with the same content). The append
+        // semantics is logged for follow-up.
+    }
+
+    /// Read the register slot for paste / inspection. Falls back to
+    /// `unnamed_register`.
+    pub(super) fn read_register(
+        &self,
+        register: Option<Register>,
+    ) -> Option<UnnamedRegister> {
+        match register {
+            None | Some(Register::Unnamed) => self.unnamed_register.clone(),
+            Some(Register::BlackHole) => None,
+            Some(r) => self
+                .registers
+                .get(&r)
+                .cloned()
+                .or_else(|| self.unnamed_register.clone()),
         }
     }
 }

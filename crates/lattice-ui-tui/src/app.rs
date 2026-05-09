@@ -3979,38 +3979,6 @@ impl App {
 
 
 
-    /// Active buffer's snippet language id. Maps the active
-    /// document's filename extension to a language string the
-    /// snippet registry indexes by (e.g. `"rs"` -> `"rust"`).
-    /// Falls back to the empty string when no path is set
-    /// (the registry's `"*"` any-language pack still applies).
-    pub(super) fn active_language_id(&self) -> String {
-        let snap = self.document.snapshot();
-        let Some(path) = snap.path.as_ref() else {
-            return String::new();
-        };
-        match path.extension().and_then(|e| e.to_str()) {
-            Some("rs") => "rust".into(),
-            Some("py") => "python".into(),
-            Some("go") => "go".into(),
-            Some("js") | Some("jsx") | Some("mjs") | Some("cjs") => {
-                "javascript".into()
-            }
-            Some("ts") | Some("tsx") => "typescript".into(),
-            Some("c") | Some("h") => "c".into(),
-            Some("cc") | Some("cpp") | Some("cxx") | Some("hpp") | Some("hxx") => {
-                "cpp".into()
-            }
-            Some("md") => "markdown".into(),
-            Some("toml") => "toml".into(),
-            Some("yaml") | Some("yml") => "yaml".into(),
-            Some("json") => "json".into(),
-            Some("sh") => "shellscript".into(),
-            Some("lua") => "lua".into(),
-            Some(other) => other.to_string(),
-            None => String::new(),
-        }
-    }
 
 
 

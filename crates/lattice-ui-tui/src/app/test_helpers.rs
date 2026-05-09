@@ -63,6 +63,22 @@ pub(super) fn invoke_motion(id: MotionId) -> Action {
     Action::Invoke(CommandInvocation::of(id.0))
 }
 
+/// Build + attach a tree-sitter syntax handle synchronously,
+/// matching the slice 3 production seam (one synchronous
+/// parse at attach time, then the worker takes over). Sync
+/// test paths call this instead of building the handle by
+/// hand.
+pub(super) fn attach_test_syntax(a: &mut App, lang: lattice_syntax::Lang) {
+    let snap = a.document.snapshot();
+    let text = snap.buffer.as_string();
+    let tv = snap.version;
+    let mut s = lattice_syntax::Syntax::for_language(lang)
+        .unwrap()
+        .expect("syntax registered for lang");
+    s.parse_at(&text, tv);
+    a.syntax = Some(lattice_syntax::SyntaxHandle::seeded(s));
+}
+
 /// Subscribe to every event the App publishes; the caller
 /// drains via the returned receiver. Used by event-bus and
 /// option-cascade tests that need to assert specific events

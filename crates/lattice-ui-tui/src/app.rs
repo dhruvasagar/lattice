@@ -2800,46 +2800,6 @@ impl App {
         app
     }
 
-    /// Single canonical hook for "this buffer was just opened":
-    /// register `BufferId → Uri` eagerly (path-bearing only),
-    /// then publish [`Event::DocumentOpened`] on the bus.
-    /// Both the initial-document path (`App::new`) and the
-    /// follow-up `:e <path>` path (`App::do_edit`) call this
-    /// helper -- by construction both have set
-    /// `self.document_buffer_id` and `self.document` to the
-    /// new buffer before invoking, so reading from those
-    /// fields is correct in either context.
-    ///
-    /// `version` carries the document's `text_version`
-    /// (bumps only on text-mutating commits; matches the
-    /// LSP `didOpen` `version` field's intent).
-    ///
-    /// Idempotent against the supervisor: re-publishing the
-    /// same URI is a no-op because `LspSupervisorHandle::open_buffer`
-    /// short-circuits already-attached URIs (see
-    /// `lattice_lsp::supervisor`'s `attachments.contains_key`
-    /// guard).
-    pub(super) fn publish_document_opened_for_active(&mut self) {
-        let snap = self.document.snapshot();
-        let path_opt = snap.path().map(std::path::Path::to_path_buf);
-        let version = snap.text_version;
-        let text = snap.buffer.as_string();
-        let buffer_id = self.document_buffer_id;
-        drop(snap);
-
-        if let Some(ref path) = path_opt {
-            let uri = lattice_lsp::actor::uri_from_path(path);
-            self.buffer_uris.insert(buffer_id, uri);
-        }
-
-        self.event_bus.publish(Event::DocumentOpened {
-            id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
-            path: path_opt,
-            version,
-            text,
-        });
-    }
-
     // ---- Typed-options accessors (DESIGN.md §5.12) ----
     //
     // The current value of each option lives in `self.config`
@@ -6653,36 +6613,6 @@ impl App {
         }
     }
 
-    /// Look up the LSP metadata for a candidate via its
-    /// `CandidateData::Extension` payload. Returns `None` for
-    /// non-LSP candidates (buffer-words / future sync sources)
-    /// or when the index is out of range (shouldn't happen but
-    /// guard anyway).
-    pub(crate) fn lsp_completion_meta_for(
-        &self,
-        candidate: &lattice_completion::RenderedCandidate,
-    ) -> Option<&LspCompletionMeta> {
-        let lattice_completion::CandidateData::Extension {
-            kind_id,
-            payload,
-        } = &candidate.raw.data
-        else {
-            return None;
-        };
-        if *kind_id != LSP_COMPLETION_KIND_ID {
-            return None;
-        }
-        if payload.len() != 4 {
-            return None;
-        }
-        let idx = u32::from_le_bytes([
-            payload[0],
-            payload[1],
-            payload[2],
-            payload[3],
-        ]) as usize;
-        self.insert_completion_lsp_meta.get(idx)
-    }
 
     // ---- end Insert-mode completion ----
 

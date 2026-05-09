@@ -39,11 +39,14 @@ use lattice_protocol::position::Position;
 
 use lattice_grammar::ModalState;
 
+use lattice_protocol::Event;
+
 use super::{
     App, BufferKind, CodeActionOutcome, CodeActionRow, CompletionItemRow, CompletionOutcome,
-    EchoLevel, FormatOutcome, HoverOutcome, LspNavKind, ReferencesOutcome, RenameOutcome,
-    SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
-    code_action_kind_glyph, completion_kind_glyph, definition_response_to_locations,
+    EchoLevel, FormatOutcome, HoverOutcome, LSP_COMPLETION_KIND_ID, LspCompletionMeta,
+    LspNavKind, ReferencesOutcome, RenameOutcome, SignatureHelpOutcome, SymbolRow,
+    SymbolsOutcome, TagStackEntry, app_to_lsp_position, code_action_kind_glyph,
+    completion_kind_glyph, definition_response_to_locations,
     flatten_document_symbol_response, flatten_workspace_edit, hover_contents_to_markdown,
     is_word_char_byte, last_addressable_line, line_byte_len, lsp_position_to_app_byte,
     prepare_rename_placeholder, signature_help_to_markdown, symbol_information_to_row,
@@ -250,6 +253,66 @@ impl App {
             self.pending_hover_token = None;
         }
         self.pending_hover_rx = Some(rx);
+    }
+
+    /// Single canonical hook for "this buffer was just opened":
+    /// register `BufferId → Uri` eagerly (path-bearing only),
+    /// then publish `Event::DocumentOpened` on the bus. Both the
+    /// initial-document path (`App::new`) and the follow-up
+    /// `:e <path>` path (`App::do_edit`) call this helper.
+    ///
+    /// Idempotent against the supervisor: re-publishing the same
+    /// URI is a no-op because `LspSupervisorHandle::open_buffer`
+    /// short-circuits already-attached URIs.
+    pub(super) fn publish_document_opened_for_active(&mut self) {
+        let snap = self.document.snapshot();
+        let path_opt = snap.path().map(std::path::Path::to_path_buf);
+        let version = snap.text_version;
+        let text = snap.buffer.as_string();
+        let buffer_id = self.document_buffer_id;
+        drop(snap);
+
+        if let Some(ref path) = path_opt {
+            let uri = lattice_lsp::actor::uri_from_path(path);
+            self.buffer_uris.insert(buffer_id, uri);
+        }
+
+        self.event_bus.publish(Event::DocumentOpened {
+            id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
+            path: path_opt,
+            version,
+            text,
+        });
+    }
+
+    /// Look up the LSP metadata for a candidate via its
+    /// `CandidateData::Extension` payload. Returns `None` for
+    /// non-LSP candidates (buffer-words / future sync sources)
+    /// or when the index is out of range.
+    pub(crate) fn lsp_completion_meta_for(
+        &self,
+        candidate: &lattice_completion::RenderedCandidate,
+    ) -> Option<&LspCompletionMeta> {
+        let lattice_completion::CandidateData::Extension {
+            kind_id,
+            payload,
+        } = &candidate.raw.data
+        else {
+            return None;
+        };
+        if *kind_id != LSP_COMPLETION_KIND_ID {
+            return None;
+        }
+        if payload.len() != 4 {
+            return None;
+        }
+        let idx = u32::from_le_bytes([
+            payload[0],
+            payload[1],
+            payload[2],
+            payload[3],
+        ]) as usize;
+        self.insert_completion_lsp_meta.get(idx)
     }
 
     /// Look up the current URI of a buffer. None for buffers

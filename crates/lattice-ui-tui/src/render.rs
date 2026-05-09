@@ -2653,13 +2653,28 @@ fn combine_prefixed(
 /// Apply an underline overlay over a byte range of a line's
 /// existing styled spans. Unlike [`apply_match_overlay`], this
 /// PRESERVES the underlying span's foreground / background and
-/// only ADDs the `UNDERLINED` modifier + sets the underline
-/// color. Used for inline LSP diagnostic decoration.
+/// only ADDs the `UNDERLINED` modifier. Used for inline LSP
+/// diagnostic decoration.
+///
+/// Why no underline-colour: setting an explicit underline colour
+/// emits the SGR 58 / 59 extension codes (`\x1b[58:5:Nm` /
+/// `\x1b[59m`). They're widely supported but not universally;
+/// terminals that don't recognise them have produced
+/// reproducible visual breakage where text on lines following
+/// the diagnostic line rendered as if `fg = Color::Black` --
+/// the parameters of the unrecognised sequence get swallowed
+/// into subsequent SGR state and pin the foreground to a value
+/// the user perceives as "the next several lines went black"
+/// (the severity colour belongs in the gutter glyph; the body
+/// underline is enough signal). Symptom cleared as soon as the
+/// flagged line scrolled past the viewport. The severity-cell
+/// gutter still carries the per-severity colour, so the user
+/// sees which kind of diagnostic is on the line.
 fn apply_underline_overlay(
     spans: Vec<Span<'static>>,
     overlay_start: usize,
     overlay_end: usize,
-    underline_color: Color,
+    _severity_color: Color,
 ) -> Vec<Span<'static>> {
     let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 2);
     let mut cursor = 0usize;
@@ -2677,10 +2692,7 @@ fn apply_underline_overlay(
                 out.push(Span::styled(pre, span.style));
             }
             let mid = s[overlap_start - span_start..overlap_end - span_start].to_string();
-            let mid_style = span
-                .style
-                .add_modifier(Modifier::UNDERLINED)
-                .underline_color(underline_color);
+            let mid_style = span.style.add_modifier(Modifier::UNDERLINED);
             out.push(Span::styled(mid, mid_style));
             if overlap_end < span_end {
                 let post = s[overlap_end - span_start..].to_string();
@@ -3924,5 +3936,41 @@ mod tests {
             "expected an UNDERLINED modifier somewhere in the row's spans: {:?}",
             lines[0]
         );
+    }
+
+    /// Pins the rendering-breakage fix: when a diagnostic
+    /// underlines a range on the diagnostic's line, no span on
+    /// that line OR on subsequent lines may carry an explicit
+    /// `underline_color`. Setting `underline_color` emits the
+    /// SGR 58/59 extension codes; in terminals that don't
+    /// recognise them, the parameters bleed into following
+    /// SGR state and pin the foreground colour on subsequent
+    /// lines (visible as "the next several lines went black").
+    /// See `apply_underline_overlay`'s docstring for the full
+    /// trail of evidence.
+    #[test]
+    fn diagnostic_underline_does_not_set_underline_color() {
+        let mut app = app_with("first line\nsecond line\nthird line\n", 5);
+        seed_diagnostic(
+            &mut app,
+            0,
+            0,
+            "first line".len() as u32,
+            lattice_lsp::DiagnosticSeverity::WARNING,
+            "unused",
+        );
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        for (row, line) in lines.iter().enumerate() {
+            for (i, span) in line.spans.iter().enumerate() {
+                assert!(
+                    span.style.underline_color.is_none(),
+                    "row {row} span {i} ({:?}) carries underline_color {:?}; \
+                     this leaks SGR 58/59 into terminals that don't support \
+                     it and breaks rendering on subsequent lines",
+                    span.content,
+                    span.style.underline_color,
+                );
+            }
+        }
     }
 }

@@ -3076,137 +3076,13 @@ impl App {
     }
 
 
-    // ---- LSP diagnostic navigation (Phase 4.1.d.iv) ---------
-
-    /// `:diagnostics` -- open a vertico-style picker listing every
-    /// workspace diagnostic. `<CR>` jumps to the selected entry,
-    /// `<Esc>` dismisses, type-to-filter walks substrings against
-    /// the rendered `path:line:col message` rows.
-    ///
-    /// Empty layer echoes "no diagnostics" so the user always
-    /// gets feedback. The picker rows carry severity in the
-    /// marginalia (`[E]` / `[W]` / `[I]` / `[H]`) and the
-    /// diagnostic message as the preview text.
-    pub fn do_list_diagnostics(&mut self) {
-        // `:diagnostics` is a browse-style picker, not a tag-
-        // intent drill-down -- clear any stale nav origin so a
-        // later JumpToLspLocation accept doesn't push a phantom
-        // tag stack entry.
-        self.pending_tag_origin = None;
-        let snapshot = self.lsp_diagnostics.snapshot();
-        if snapshot.is_empty() {
-            self.set_message(EchoLevel::Info, "no diagnostics".to_string());
-            return;
-        }
-        let mut rows: Vec<crate::picker::LspLocationRow> = Vec::new();
-        for (uri, diags) in snapshot {
-            let path = match lattice_lsp::actor::uri_to_path(&uri) {
-                Some(p) => p,
-                None => continue,
-            };
-            for d in diags {
-                let sev = match d.severity {
-                    Some(lattice_lsp::DiagnosticSeverity::ERROR) => "[E]",
-                    Some(lattice_lsp::DiagnosticSeverity::WARNING) => "[W]",
-                    Some(lattice_lsp::DiagnosticSeverity::INFORMATION) => "[I]",
-                    Some(lattice_lsp::DiagnosticSeverity::HINT) => "[H]",
-                    _ => "[?]",
-                };
-                rows.push(crate::picker::LspLocationRow {
-                    path: path.clone(),
-                    line: d.range.start.line,
-                    col: d.range.start.character,
-                    preview: crate::help::one_line(&d.message),
-                    marginalia: sev.to_string(),
-                });
-            }
-        }
-        if rows.is_empty() {
-            self.set_message(EchoLevel::Info, "no diagnostics".to_string());
-            return;
-        }
-        let total = rows.len();
-        let mut p = crate::picker::Picker::new(
-            format!("diagnostics ({total})"),
-            crate::picker::PickerSource::LspLocations,
-            crate::picker::PickerAction::JumpToLspLocation,
-        );
-        p.set_lsp_locations(rows);
-        self.picker = Some(p);
-    }
-
-    /// `]d` / `:diag-next` / `:cnext` -- move the cursor to the
-    /// next diagnostic in the active buffer. Wraps to top.
-    pub fn do_next_diagnostic(&mut self) {
-        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
-            self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
-            return;
-        };
-        let mut diags = self.lsp_diagnostics.diagnostics_for(uri);
-        if diags.is_empty() {
-            self.set_message(EchoLevel::Info, "no diagnostics in buffer".to_string());
-            return;
-        }
-        diags.sort_by_key(|d| (d.range.start.line, d.range.start.character));
-        let cursor = self.cursor;
-        let Some(next) = diags
-            .iter()
-            .find(|d| {
-                d.range.start.line > cursor.line
-                    || (d.range.start.line == cursor.line
-                        && d.range.start.character > cursor.byte)
-            })
-            .or_else(|| diags.first())
-            .map(|d| d.range.start)
-        else {
-            // Unreachable: the empty-diags case returned early
-            // above, so first() is always Some here. Surface a
-            // no-op rather than panicking if the invariant
-            // breaks.
-            return;
-        };
-        self.cursor = Position::new(next.line, next.character);
-        self.publish_position_change();
-    }
-
-    /// `[d` / `:diag-prev` / `:cprev` -- move the cursor to the
-    /// previous diagnostic in the active buffer. Wraps to
-    /// bottom.
-    pub fn do_prev_diagnostic(&mut self) {
-        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
-            self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
-            return;
-        };
-        let mut diags = self.lsp_diagnostics.diagnostics_for(uri);
-        if diags.is_empty() {
-            self.set_message(EchoLevel::Info, "no diagnostics in buffer".to_string());
-            return;
-        }
-        diags.sort_by_key(|d| (d.range.start.line, d.range.start.character));
-        let cursor = self.cursor;
-        let Some(prev) = diags
-            .iter()
-            .rev()
-            .find(|d| {
-                d.range.start.line < cursor.line
-                    || (d.range.start.line == cursor.line
-                        && d.range.start.character < cursor.byte)
-            })
-            .or_else(|| diags.last())
-            .map(|d| d.range.start)
-        else {
-            return;
-        };
-        self.cursor = Position::new(prev.line, prev.character);
-        self.publish_position_change();
-    }
 
     /// Helper: publish a position-only change event. Cheap
     /// stand-in for whatever the rest of the App uses to
     /// signal cursor moves. Currently a no-op since the
     /// renderer reads cursor directly; reserved for future
     /// position-history pushes.
-    fn publish_position_change(&self) {
+    pub(super) fn publish_position_change(&self) {
         // 4.1.d.iv: position history hook reserved -- a real
         // PluginPush entry lands here when the position-history
         // wiring catches up.

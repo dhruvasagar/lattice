@@ -1064,16 +1064,6 @@ mod tests {
         assert!(eff.sources.is_none());
     }
 
-    fn set_rust_syntax(a: &mut App, source: &str) {
-        let mut syntax = lattice_syntax::Syntax::for_language_with_registry(
-            lattice_syntax::Lang::Rust,
-            a.lang_registry.clone(),
-        )
-        .expect("rust syntax")
-        .expect("rust registered");
-        syntax.parse(source);
-        a.syntax = Some(lattice_syntax::SyntaxHandle::seeded(syntax));
-    }
 
     #[test]
     fn reload_snippets_with_no_dirs_reports_empty() {

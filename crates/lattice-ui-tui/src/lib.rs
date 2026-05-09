@@ -1,3 +1,14 @@
+// Glob imports (`use super::*;`) and other dead `use` items have caused
+// observable rendering glitches in editors with diagnostics overlays --
+// the unused-imports warning's underline + the way some editors composite
+// diagnostic underlines with tree-sitter spans interacted badly enough
+// that lines after the flagged `use` rendered without their syntax colours.
+// Promoting `unused_imports` from warning to deny means every test mod's
+// `use ...::*;` either pays its way or fails the build, so the class of
+// glitch can't slip back in. `cargo check --all-targets` was clean at the
+// time this was added.
+#![deny(unused_imports)]
+
 //! Terminal renderer for `lattice` (DESIGN.md §5.6.1 `TuiRenderer`).
 //!
 //! v1 status: a first-class peer of the GPU UI for headless / SSH /

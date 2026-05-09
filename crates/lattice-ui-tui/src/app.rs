@@ -9142,59 +9142,7 @@ impl App {
     }
 
 
-    /// `K` (LSP hover) response handler / `:hover [markdown]`.
-    /// Enters **State A**: popup overlay shown, focus stays on
-    /// the main buffer. The popup auto-dismisses on the next
-    /// motion (apply()'s post-dispatch hook) since it's anchored
-    /// to the symbol the user K'd. To navigate inside the popup
-    /// the user presses `K` again, which `do_lsp_hover_request`
-    /// recognises as "focus into popup" -> State B.
-    fn do_open_hover(&mut self, markdown: &str) {
-        let lines: Vec<String> = markdown.split('\n').map(String::from).collect();
-        let buffer = crate::help::HelpBuffer::from_lines("hover", lines)
-            .with_markdown_syntax(self.lang_registry.clone());
-        // State A: just set the help_buffer. Active stays on the
-        // main buffer; self.cursor untouched. prev_pane_for_help
-        // remains `None` -- the State-A auto-dismiss key.
-        self.help_buffer = Some(buffer);
-    }
 
-    /// **State A -> State B**: focus moves into the popup. After
-    /// this, the popup behaves like any other buffer -- vim
-    /// grammar (motions, `/` search, `n`/`N`, `gg`/`G`, `:` ex
-    /// commands) operates on the popup's content; the doc behind
-    /// is frozen. Dismiss with `<Esc>` / `q` returns focus to
-    /// the doc at the cursor it was on.
-    ///
-    /// `prev_pane_for_help` is the dismiss-restore stash and
-    /// also signals "we're in State B" to the auto-dismiss-on-
-    /// motion hook -- when it's `Some`, motion doesn't close the
-    /// popup.
-    fn focus_help_popup(&mut self) {
-        let Some(help) = self.help_buffer.as_ref() else {
-            return;
-        };
-        let stash_cursor = help.cursor;
-        let stash_scroll = help.scroll as u32;
-        // Capture pre-State-B state so dismiss restores cleanly.
-        let active = self.pane_tree.active();
-        self.prev_pane_for_help = Some(PrevPaneState {
-            buffer: active.buffer,
-            buffer_id: active.buffer_id,
-            cursor: self.cursor,
-            scroll: self.scroll,
-        });
-        // Sync active pane's cursor / scroll stash *before*
-        // swapping `active_buffer` to Help. The renderer reads
-        // `pane.cursor` for any pane whose buffer kind doesn't
-        // match `active_buffer`; without this sync the doc would
-        // appear to jump to wherever pane.cursor was last set
-        // (often (0,0) on a fresh app).
-        self.snapshot_active_pane();
-        self.cursor = stash_cursor;
-        self.scroll = stash_scroll;
-        self.active_buffer = BufferKind::Help;
-    }
 
     /// `K` (Phase 4.2.b). Send `textDocument/hover` to every LSP
     /// server attached to the active document; the spawned task
@@ -10296,13 +10244,6 @@ impl App {
         // around the target; nothing extra needed here.
     }
 
-    /// `:HoverClose` -- dismiss the hover popup. Routes through
-    /// the unified help-dismiss path so State A and State B both
-    /// unwind cleanly (B restores via `prev_pane_for_help`; A
-    /// just drops the popup).
-    fn do_close_hover(&mut self) {
-        self.dismiss_help();
-    }
 
 
 
@@ -11918,35 +11859,6 @@ impl App {
         pane.scroll = stash_scroll;
     }
 
-    /// Close the help overlay and route input back to the document.
-    /// Idempotent: closing when no help is open is a no-op. Pane-
-    /// tracked help buffers stay in the registry (so `:bn` / `:b N`
-    /// can return to them); only the popup slot is cleared and the
-    /// active buffer flips back to Document.
-    fn dismiss_help(&mut self) {
-        self.help_buffer = None;
-        // Restore pre-help state if focus had moved into the help
-        // (State B for hover; in-pane mode for `:lsp-log` etc.).
-        // State A (popup shown but never focused) leaves
-        // `prev_pane_for_help` as `None` -- nothing to restore;
-        // active was never flipped to Help.
-        if let Some(prev) = self.prev_pane_for_help.take() {
-            self.cursor = prev.cursor;
-            self.scroll = prev.scroll;
-            let pane = self.pane_tree.active_mut();
-            pane.buffer = prev.buffer;
-            pane.buffer_id = prev.buffer_id;
-            self.active_buffer = prev.buffer;
-        } else {
-            // State A dismiss (or popup-overlay variant of help
-            // that never took focus): just flip active back as a
-            // safety net; cursor/scroll were never touched.
-            self.active_buffer = BufferKind::Document;
-        }
-        // Help mode reuses Pending::AfterG for the gg chord; clear
-        // it on dismiss so a stranded `g` doesn't leak into Normal
-        // mode.
-    }
 
 
 

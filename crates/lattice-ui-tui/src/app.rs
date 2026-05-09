@@ -4113,30 +4113,6 @@ impl App {
         self.cursor = Position::new(line, col);
     }
 
-    /// Open `*lsp:<server_id>*` in the active pane via the
-    /// in-pane help registry path. Used by both the picker
-    /// accept dispatcher and the direct ex-command short path
-    /// when only one instance matches.
-    pub(super) fn open_lsp_log_in_pane(&mut self, server_id: &str) {
-        let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let buffer = crate::help::HelpBuffer::lsp_server_log(&self.lsp_logger, &arc)
-            .with_markdown_syntax(self.lang_registry.clone());
-        self.open_help_in_pane(buffer);
-    }
-
-    /// Open `*lsp:<server_id>:trace*` in the active pane. Pure
-    /// view -- the trace toggle is `:lsp-trace <server>` and is
-    /// independent of opening / closing this buffer.
-    pub(super) fn open_lsp_trace_log_in_pane(&mut self, server_id: &str) {
-        let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let buffer = crate::help::HelpBuffer::lsp_server_trace(&self.lsp_logger, &arc)
-            .with_markdown_syntax(self.lang_registry.clone());
-        self.open_help_in_pane(buffer);
-    }
-
-
-
-
 
     /// `:set [option | option=value | nooption | option?]`.
     /// Parses against the shared typed-options

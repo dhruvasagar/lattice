@@ -171,6 +171,83 @@ pub(super) fn set_rust_syntax(a: &mut App, source: &str) {
 /// returned path is created on disk; the caller can
 /// populate it with files / subdirs before constructing an
 /// App against it.
+/// Build a process-unique workspace directory under
+/// `lattice-config-test-<pid>-<name>`. Used by
+/// `load_persistent_config` tests that need a real
+/// workspace with `.lattice/config.toml` on disk.
+pub(super) fn fresh_workspace(name: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let p = std::env::temp_dir().join(format!(
+        "lattice-config-test-{}-{}-{}",
+        std::process::id(),
+        name,
+        n,
+    ));
+    let _ = std::fs::remove_dir_all(&p);
+    std::fs::create_dir_all(&p).unwrap();
+    p
+}
+
+/// Write `contents` to `<workspace>/.lattice/config.toml`.
+/// Pairs with `fresh_workspace`. Tests typically build
+/// the workspace then drop a TOML config in via this.
+pub(super) fn write_workspace_config(workspace: &std::path::Path, contents: &str) {
+    let dir = workspace.join(".lattice");
+    std::fs::create_dir_all(&dir).expect("create .lattice dir");
+    std::fs::write(dir.join("config.toml"), contents).expect("write config.toml");
+}
+
+/// Seed the App's LSP diagnostics layer with diagnostics
+/// at the given buffer lines. Each entry gets a synthetic
+/// diagnostic at the line's origin column with severity
+/// `Error`. Used by `:diagnostics` / `next_diagnostic` /
+/// `prev_diagnostic` tests.
+pub(super) fn seed_diags_at_lines(app: &mut App, lines: &[u32]) {
+    use std::str::FromStr;
+    let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+    app.buffer_uris.insert(app.document_buffer_id, uri.clone());
+    let diags: Vec<lattice_lsp::Diagnostic> = lines
+        .iter()
+        .map(|line| lattice_lsp::Diagnostic {
+            range: lattice_lsp::LspRange {
+                start: lattice_lsp::LspPosition {
+                    line: *line,
+                    character: 0,
+                },
+                end: lattice_lsp::LspPosition {
+                    line: *line,
+                    character: 1,
+                },
+            },
+            severity: Some(lattice_lsp::DiagnosticSeverity::ERROR),
+            code: None,
+            code_description: None,
+            source: None,
+            message: format!("err on line {line}"),
+            related_information: None,
+            tags: None,
+            data: None,
+        })
+        .collect();
+    app.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
+        server_id: std::sync::Arc::from("rust"),
+        uri,
+        version: None,
+        diagnostics: std::sync::Arc::from(diags.into_boxed_slice()),
+    });
+}
+
+/// Write a file to a process-unique temp path. Used by
+/// `:e` / file-open tests that need a real file on disk.
+pub(super) fn write_temp_file(name: &str, content: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("lattice-test-{}-{name}", std::process::id()));
+    std::fs::write(&path, content).expect("write temp file");
+    path
+}
+
 /// Pre-populate the App's insert-completion popup with a
 /// single candidate carrying `top_text` against `query`.
 /// Used by accept / dismiss / commit-char tests that don't

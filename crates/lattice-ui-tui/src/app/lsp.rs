@@ -3383,7 +3383,7 @@ mod tests {
 
     use super::*;
     use crate::app::*;
-    use crate::app::test_helpers::app_with;
+    use crate::app::test_helpers::{app_with, seed_diags_at_lines};
 
     #[test]
     fn hover_dismisses_on_document_cursor_motion() {
@@ -5551,6 +5551,91 @@ mod tests {
             after_undo, "\n\nfor",
             "single undo reverted both auto-import and snippet (`{after_undo}`)",
         );
+    }
+
+
+    #[test]
+    fn next_diagnostic_advances_cursor() {
+        let mut app = app_with("a\nb\nc\nd\ne\n", 10);
+        seed_diags_at_lines(&mut app, &[1, 3]);
+        app.cursor = Position::new(0, 0);
+        app.do_next_diagnostic();
+        assert_eq!(app.cursor, Position::new(1, 0));
+        app.do_next_diagnostic();
+        assert_eq!(app.cursor, Position::new(3, 0));
+        // Past the last -> wraps to the first.
+        app.do_next_diagnostic();
+        assert_eq!(app.cursor, Position::new(1, 0));
+    }
+
+    #[test]
+    fn prev_diagnostic_walks_backward() {
+        let mut app = app_with("a\nb\nc\nd\ne\n", 10);
+        seed_diags_at_lines(&mut app, &[1, 3]);
+        app.cursor = Position::new(4, 0);
+        app.do_prev_diagnostic();
+        assert_eq!(app.cursor, Position::new(3, 0));
+        app.do_prev_diagnostic();
+        assert_eq!(app.cursor, Position::new(1, 0));
+        // Past the first -> wraps to the last.
+        app.do_prev_diagnostic();
+        assert_eq!(app.cursor, Position::new(3, 0));
+    }
+
+    #[test]
+    fn next_diagnostic_with_no_attachment_echoes_error() {
+        let mut app = app_with("hi\n", 5);
+        // No buffer_uris mapping -> "no LSP attachment".
+        app.do_next_diagnostic();
+        let msg = app.last_message.as_ref().expect("expected echo");
+        assert!(msg.text.contains("no LSP attachment"), "got: {}", msg.text);
+    }
+
+    #[test]
+    fn next_diagnostic_with_no_diagnostics_echoes_info() {
+        let mut app = app_with("hi\n", 5);
+        // Seed an empty layer mapping.
+        use std::str::FromStr;
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/empty.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, uri);
+        app.do_next_diagnostic();
+        let msg = app.last_message.as_ref().expect("expected echo");
+        assert!(msg.text.contains("no diagnostics"), "got: {}", msg.text);
+    }
+
+    #[test]
+    fn list_diagnostics_opens_picker() {
+        let mut app = app_with("hi\n", 5);
+        seed_diags_at_lines(&mut app, &[0, 1]);
+        app.do_list_diagnostics();
+        let picker = app.picker.as_ref().expect("picker should open");
+        assert!(picker.title.starts_with("diagnostics"));
+        assert!(matches!(
+            picker.source,
+            crate::picker::PickerSource::LspLocations
+        ));
+        assert!(matches!(
+            picker.on_accept,
+            crate::picker::PickerAction::JumpToLspLocation
+        ));
+        // Two diagnostic rows.
+        assert_eq!(picker.candidates.len(), 2);
+        // Severity prefix marginalia in display.
+        let display = &picker.candidates[0].raw.display;
+        assert!(display.starts_with("[E]"), "got: {display}");
+        // Help buffer is NOT opened (the pre-picker shape).
+        assert!(app.help_buffer.is_none());
+    }
+
+    #[test]
+    fn list_diagnostics_with_empty_layer_echoes() {
+        let mut app = app_with("hi\n", 5);
+        // No diagnostics seeded.
+        app.do_list_diagnostics();
+        // Empty diagnostics: no picker, just an echo.
+        assert!(app.picker.is_none());
+        let msg = app.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no diagnostics"));
     }
 
 }

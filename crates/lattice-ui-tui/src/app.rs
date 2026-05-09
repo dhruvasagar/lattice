@@ -2561,8 +2561,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use super::test_helpers::{
-        app_with, app_with_path, attach_test_syntax, invoke_motion, press, press_chars,
-        subscribe_all_events, submit_ex, unique_tempdir,
+        app_with, app_with_path, attach_test_syntax, fresh_workspace, invoke_motion,
+        press, press_chars, subscribe_all_events, submit_ex, unique_tempdir,
+        write_temp_file, write_workspace_config,
     };
     use lattice_protocol::edit::Edit;
 
@@ -2771,25 +2772,6 @@ mod tests {
         assert_eq!(a.pending_syntax_edits.len(), 2);
     }
 
-    #[test]
-    fn maybe_reparse_syntax_drains_pending_edits_and_updates_version() {
-        let mut a = app_with("hello", 5);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        let initial_synced = a.last_synced_syntax_version;
-        a.apply_edit_blocking(Edit::insert(Position::new(0, 5), " world"))
-            .unwrap();
-        assert_eq!(a.pending_syntax_edits.len(), 1);
-        // Drive the reparse-request seam directly (mirrors what
-        // the runtime loop does at the end of each Action).
-        a.maybe_reparse_syntax();
-        // Edits drained.
-        assert_eq!(a.pending_syntax_edits.len(), 0);
-        // Version baseline advanced -- next request will use
-        // this as `from_version`.
-        assert!(a.last_synced_syntax_version > initial_synced);
-        assert_eq!(a.last_synced_syntax_version, a.document.text_version());
-    }
-
 
 
     #[test]
@@ -2956,93 +2938,6 @@ mod tests {
 
 
     // ---- Substitute (:s/foo/bar/[g]) ----
-
-    #[test]
-    fn edit_loads_named_file() {
-        let dir = unique_tempdir();
-        let path = dir.join("hello.txt");
-        std::fs::write(&path, "loaded contents\nsecond line").unwrap();
-        let mut a = app_with("original", 10);
-        let cmd = format!("e {}", path.display());
-        submit_ex(&mut a, &cmd);
-        assert_eq!(a.document.text(), "loaded contents\nsecond line");
-        assert_eq!(a.cursor, Position::ZERO);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn edit_refuses_when_dirty() {
-        let mut a = app_with("modified", 10);
-        a.apply(Action::EnterMode(ModalState::Insert));
-        a.apply(Action::Insert("X".into()));
-        a.apply(Action::EnterMode(ModalState::Normal));
-        assert!(a.document.dirty());
-        submit_ex(&mut a, "e /nonexistent");
-        let msg = a.last_message.as_ref().unwrap();
-        assert_eq!(msg.level, EchoLevel::Error);
-        // Document unchanged.
-        assert_eq!(a.document.text(), "Xmodified");
-    }
-
-    #[test]
-    fn edit_force_overrides_dirty_guard() {
-        let dir = unique_tempdir();
-        let path = dir.join("forced.txt");
-        std::fs::write(&path, "loaded").unwrap();
-        let mut a = app_with("dirty content", 10);
-        a.apply(Action::EnterMode(ModalState::Insert));
-        a.apply(Action::Insert("Z".into()));
-        a.apply(Action::EnterMode(ModalState::Normal));
-        let cmd = format!("e! {}", path.display());
-        submit_ex(&mut a, &cmd);
-        assert_eq!(a.document.text(), "loaded");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn edit_preserves_registers_across_swap() {
-        let dir = unique_tempdir();
-        let path = dir.join("preserve.txt");
-        std::fs::write(&path, "new content").unwrap();
-        let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
-        );
-        a.apply(Action::Invoke(inv));
-        assert!(a.unnamed_register.is_some());
-        let cmd = format!("e {}", path.display());
-        submit_ex(&mut a, &cmd);
-        // Register survives.
-        assert!(a.unnamed_register.is_some());
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn edit_resets_per_document_state() {
-        let dir = unique_tempdir();
-        let path = dir.join("reset.txt");
-        std::fs::write(&path, "fresh").unwrap();
-        let mut a = app_with("aaa\nbbb\nccc", 10);
-        a.cursor = Position::new(2, 1);
-        a.apply(invoke_motion(a.builtins.goto_first_line));
-        // Now position_history has an entry.
-        assert!(!a.position_history.is_empty());
-        let cmd = format!("e {}", path.display());
-        submit_ex(&mut a, &cmd);
-        assert!(a.position_history.is_empty());
-        assert_eq!(a.cursor, Position::ZERO);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn edit_unknown_path_emits_error() {
-        let mut a = app_with("hello", 10);
-        submit_ex(&mut a, "e /absolutely/does/not/exist/anywhere.txt");
-        let msg = a.last_message.as_ref().unwrap();
-        assert_eq!(msg.level, EchoLevel::Error);
-        // Buffer unchanged.
-        assert_eq!(a.document.text(), "hello");
-    }
 
     #[test]
     fn set_number_and_nonumber_toggle_show_line_numbers() {
@@ -4203,30 +4098,6 @@ mod tests {
     }
 
     #[test]
-    fn split_pane_horizontal_creates_second_pane() {
-        let mut a = app_with("xx", 10);
-        a.apply(Action::SplitPaneHorizontal);
-        assert_eq!(a.pane_tree.len(), 2);
-        // Active stays on original.
-        assert_eq!(a.pane_tree.active_index(), 0);
-    }
-
-    #[test]
-    fn split_pane_vertical_creates_second_pane() {
-        let mut a = app_with("xx", 10);
-        a.apply(Action::SplitPaneVertical);
-        assert_eq!(a.pane_tree.len(), 2);
-    }
-
-    #[test]
-    fn close_pane_collapses_split() {
-        let mut a = app_with("xx", 10);
-        a.apply(Action::SplitPaneVertical);
-        a.apply(Action::ClosePane);
-        assert_eq!(a.pane_tree.len(), 1);
-    }
-
-    #[test]
     fn close_last_pane_is_a_noop_with_warning() {
         let mut a = app_with("xx", 10);
         a.apply(Action::ClosePane);
@@ -4305,32 +4176,6 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert!(a.help_buffer.is_some(), "popup persists in State B");
         assert_eq!(a.cursor.line, 1);
-    }
-
-    #[test]
-    fn open_help_popup_preserves_doc_pane_cursor_for_render() {
-        // Bug: invoking a popup-mode help command (`:lsp-status`,
-        // `:describe-key`, etc.) flipped `active_buffer` to Help
-        // without first syncing the doc's `app.cursor` /
-        // `app.scroll` into the active pane's stash. The renderer
-        // reads `pane.cursor` for any pane whose buffer kind
-        // doesn't match `active_buffer` (popup mode = mismatch),
-        // so the doc visibly jumped to wherever pane.cursor was
-        // last (often (0,0)).
-        let mut a = app_with("line0\nline1\nline2\nline3\nline4\n", 5);
-        a.cursor = Position::new(3, 2);
-        a.scroll = 1;
-        a.do_lsp_status();
-        // After open_help, active is Help but the active pane
-        // still shows the doc -- pane.cursor must reflect where
-        // the doc was, not the help buffer's (0,0).
-        let pane = a.pane_tree.active();
-        assert_eq!(
-            pane.cursor,
-            Position::new(3, 2),
-            "doc's pre-help cursor must be stashed onto pane.cursor"
-        );
-        assert_eq!(pane.scroll, 1);
     }
 
     #[test]
@@ -4453,49 +4298,14 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn split_inherits_cursor_and_scroll_from_active() {
-        let mut a = app_with("a\nb\nc\nd", 10);
-        a.cursor = Position::new(2, 0);
-        a.scroll = 1;
-        a.apply(Action::SplitPaneVertical);
-        // Both panes should have (line=2, scroll=1) initially.
-        let panes = a.pane_tree.leaves();
-        assert_eq!(panes[0].cursor.line, 2);
-        assert_eq!(panes[0].scroll, 1);
-        assert_eq!(panes[1].cursor.line, 2);
-        assert_eq!(panes[1].scroll, 1);
-    }
-
     // ---- Multiple Document buffers (DESIGN.md §5.9, B.1.c) ----
 
-    fn write_temp_file(name: &str, content: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("lattice-test-{}-{name}", std::process::id()));
-        std::fs::write(&path, content).expect("write temp file");
-        path
-    }
 
     #[test]
     fn fresh_app_registers_initial_document() {
         let a = app_with("xx", 10);
         assert_eq!(a.buffers.document_ids_sorted().len(), 1);
         assert!(a.buffers.document(a.document_buffer_id).is_some());
-    }
-
-    #[test]
-    fn edit_new_file_registers_a_second_buffer() {
-        let path = write_temp_file("a", "alpha\n");
-        let mut a = app_with("xx", 10);
-        let initial_id = a.document_buffer_id;
-        a.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        // Both buffers exist; active switched to the new one.
-        assert_eq!(a.buffers.document_ids_sorted().len(), 2);
-        assert_ne!(a.document_buffer_id, initial_id);
-        assert_eq!(a.document.text(), "alpha\n");
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -4516,24 +4326,6 @@ mod tests {
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, second_id);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn ls_renders_help_with_every_open_buffer() {
-        let path = write_temp_file("c", "x\n");
-        let mut a = app_with("xx", 10);
-        a.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        a.command_line = "ls".into();
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("buffers help");
-        let body = h.content.as_string();
-        // Two buffers listed.
-        assert!(body.contains("2 open buffer"));
-        assert!(body.contains("2 document"));
         let _ = std::fs::remove_file(path);
     }
 
@@ -4719,53 +4511,6 @@ mod tests {
     }
 
     // ---- File-tree buffer (DESIGN.md §5.9, B.1.d) ----
-
-    #[test]
-    fn tree_open_makes_filetree_active() {
-        let dir = std::env::temp_dir().join(format!("lattice-tree-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok();
-        std::fs::write(dir.join("a.txt"), "alpha").ok();
-        let mut a = app_with("xx", 10);
-        a.command_line = format!("Filetree {}", dir.display());
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.active_buffer, BufferKind::FileTree);
-        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn tree_close_returns_to_document() {
-        let dir = std::env::temp_dir().join(format!("lattice-tree-close-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok();
-        let mut a = app_with("xx", 10);
-        a.command_line = format!("Filetree {}", dir.display());
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        a.apply(Action::HelpDismiss);
-        assert_eq!(a.active_buffer, BufferKind::Document);
-        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 0);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn tree_motion_routes_through_active_buffer() {
-        let dir = std::env::temp_dir().join(format!("lattice-tree-motion-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok();
-        std::fs::write(dir.join("a.txt"), "x").ok();
-        std::fs::write(dir.join("b.txt"), "y").ok();
-        let mut a = app_with("xx", 10);
-        a.command_line = format!("Filetree {}", dir.display());
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        let line_down = a.builtins.line_down;
-        a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
-        // After unification, `self.cursor` is the active buffer's
-        // cursor. The tree's own `cursor` field is archival save-
-        // state synced at activation transitions.
-        assert_eq!(a.cursor.line, 1);
-        std::fs::remove_dir_all(&dir).ok();
-    }
 
     // ---- Typed options registry (DESIGN.md §5.12, B.2) ----
 
@@ -5150,28 +4895,6 @@ mod tests {
 
 
     #[test]
-    fn tree_follow_on_file_opens_document_buffer() {
-        let dir = std::env::temp_dir().join(format!("lattice-tree-follow-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok();
-        std::fs::write(dir.join("alpha.txt"), "hello").ok();
-        let mut a = app_with("xx", 10);
-        a.command_line = format!("Filetree {}", dir.display());
-        a.modal = ModalState::Command;
-        a.apply(Action::CommandLineSubmit);
-        // Move cursor to the alpha.txt entry (row 1).
-        let line_down = a.builtins.line_down;
-        a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
-        // Follow.
-        a.apply(Action::FollowLink);
-        // Active pane now shows the file's Document buffer; the
-        // tree stays in the registry (reachable via :bn / :b).
-        assert_eq!(a.active_buffer, BufferKind::Document);
-        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
-        assert_eq!(a.document.text(), "hello");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
     fn ctrl_o_walks_back_to_document_from_help() {
         // `<C-o>` from inside a help buffer should land back on the
         // document spot the user opened the help from. That's the
@@ -5230,125 +4953,6 @@ mod tests {
 
     /// Helper: seed N diagnostics into the App's LSP layer at
     /// the given lines + map a fake URI to the active buffer.
-    fn seed_diags_at_lines(app: &mut App, lines: &[u32]) {
-        use std::str::FromStr;
-        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.document_buffer_id, uri.clone());
-        let diags: Vec<lattice_lsp::Diagnostic> = lines
-            .iter()
-            .map(|line| lattice_lsp::Diagnostic {
-                range: lattice_lsp::LspRange {
-                    start: lattice_lsp::LspPosition {
-                        line: *line,
-                        character: 0,
-                    },
-                    end: lattice_lsp::LspPosition {
-                        line: *line,
-                        character: 1,
-                    },
-                },
-                severity: Some(lattice_lsp::DiagnosticSeverity::ERROR),
-                code: None,
-                code_description: None,
-                source: None,
-                message: format!("err on line {line}"),
-                related_information: None,
-                tags: None,
-                data: None,
-            })
-            .collect();
-        app.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
-            server_id: std::sync::Arc::from("rust"),
-            uri,
-            version: None,
-            diagnostics: std::sync::Arc::from(diags.into_boxed_slice()),
-        });
-    }
-
-    #[test]
-    fn next_diagnostic_advances_cursor() {
-        let mut app = app_with("a\nb\nc\nd\ne\n", 10);
-        seed_diags_at_lines(&mut app, &[1, 3]);
-        app.cursor = Position::new(0, 0);
-        app.do_next_diagnostic();
-        assert_eq!(app.cursor, Position::new(1, 0));
-        app.do_next_diagnostic();
-        assert_eq!(app.cursor, Position::new(3, 0));
-        // Past the last -> wraps to the first.
-        app.do_next_diagnostic();
-        assert_eq!(app.cursor, Position::new(1, 0));
-    }
-
-    #[test]
-    fn prev_diagnostic_walks_backward() {
-        let mut app = app_with("a\nb\nc\nd\ne\n", 10);
-        seed_diags_at_lines(&mut app, &[1, 3]);
-        app.cursor = Position::new(4, 0);
-        app.do_prev_diagnostic();
-        assert_eq!(app.cursor, Position::new(3, 0));
-        app.do_prev_diagnostic();
-        assert_eq!(app.cursor, Position::new(1, 0));
-        // Past the first -> wraps to the last.
-        app.do_prev_diagnostic();
-        assert_eq!(app.cursor, Position::new(3, 0));
-    }
-
-    #[test]
-    fn next_diagnostic_with_no_attachment_echoes_error() {
-        let mut app = app_with("hi\n", 5);
-        // No buffer_uris mapping -> "no LSP attachment".
-        app.do_next_diagnostic();
-        let msg = app.last_message.as_ref().expect("expected echo");
-        assert!(msg.text.contains("no LSP attachment"), "got: {}", msg.text);
-    }
-
-    #[test]
-    fn next_diagnostic_with_no_diagnostics_echoes_info() {
-        let mut app = app_with("hi\n", 5);
-        // Seed an empty layer mapping.
-        use std::str::FromStr;
-        let uri = lattice_lsp::Uri::from_str("file:///tmp/empty.rs").unwrap();
-        app.buffer_uris.insert(app.document_buffer_id, uri);
-        app.do_next_diagnostic();
-        let msg = app.last_message.as_ref().expect("expected echo");
-        assert!(msg.text.contains("no diagnostics"), "got: {}", msg.text);
-    }
-
-    #[test]
-    fn list_diagnostics_opens_picker() {
-        let mut app = app_with("hi\n", 5);
-        seed_diags_at_lines(&mut app, &[0, 1]);
-        app.do_list_diagnostics();
-        let picker = app.picker.as_ref().expect("picker should open");
-        assert!(picker.title.starts_with("diagnostics"));
-        assert!(matches!(
-            picker.source,
-            crate::picker::PickerSource::LspLocations
-        ));
-        assert!(matches!(
-            picker.on_accept,
-            crate::picker::PickerAction::JumpToLspLocation
-        ));
-        // Two diagnostic rows.
-        assert_eq!(picker.candidates.len(), 2);
-        // Severity prefix marginalia in display.
-        let display = &picker.candidates[0].raw.display;
-        assert!(display.starts_with("[E]"), "got: {display}");
-        // Help buffer is NOT opened (the pre-picker shape).
-        assert!(app.help_buffer.is_none());
-    }
-
-    #[test]
-    fn list_diagnostics_with_empty_layer_echoes() {
-        let mut app = app_with("hi\n", 5);
-        // No diagnostics seeded.
-        app.do_list_diagnostics();
-        // Empty diagnostics: no picker, just an echo.
-        assert!(app.picker.is_none());
-        let msg = app.last_message.as_ref().expect("echo");
-        assert!(msg.text.contains("no diagnostics"));
-    }
-
     // ---- LSP introspection tests (Phase 4.1.g) ---------------
 
     #[test]
@@ -5440,47 +5044,6 @@ mod tests {
     }
 
     #[test]
-    fn open_help_in_pane_registers_buffer_and_activates_pane() {
-        let mut app = app_with("hi\n", 5);
-        let buf = HelpBuffer::from_lines(
-            "test-help",
-            vec!["# heading".into(), "body".into()],
-        );
-        let id = app.open_help_in_pane(buf);
-        // Lives in the registry as a Help variant.
-        assert!(app.buffers.help(id).is_some());
-        // Active pane points at it.
-        assert_eq!(app.active_pane_buffer_id(), id);
-        assert!(matches!(app.active_buffer, BufferKind::Help));
-        // Hot-path popup slot mirrors the registry copy.
-        assert_eq!(
-            app.help_buffer.as_ref().unwrap().title,
-            "test-help"
-        );
-        // :ls walks the registry; help variants count.
-        assert!(app.buffers.help_ids_sorted().contains(&id));
-    }
-
-    #[test]
-    fn open_help_in_pane_dedups_by_title() {
-        let mut app = app_with("hi\n", 5);
-        let id1 = app.open_help_in_pane(HelpBuffer::from_lines(
-            "lsp:rust",
-            vec!["v1".into()],
-        ));
-        let id2 = app.open_help_in_pane(HelpBuffer::from_lines(
-            "lsp:rust",
-            vec!["v2 (refreshed)".into()],
-        ));
-        assert_eq!(id1, id2, "same title returns same BufferId");
-        // Refresh path overwrote the body.
-        let body = app.help_buffer.as_ref().unwrap().content.as_string();
-        assert!(body.contains("refreshed"));
-        // Single help entry in the registry.
-        assert_eq!(app.buffers.help_ids_sorted().len(), 1);
-    }
-
-    #[test]
     fn k_chord_is_registered_in_keymap() {
         // `:describe-key K` walks the keymap registry; without an
         // entry there it reports "K is not bound" even though the
@@ -5498,71 +5061,6 @@ mod tests {
             entry.doc.to_lowercase().contains("hover"),
             "doc should mention hover, got {:?}",
             entry.doc
-        );
-    }
-
-    #[test]
-    fn active_pane_content_height_subtracts_status_row_in_horizontal_split() {
-        // Single pane: content = full buffer height.
-        let mut app = app_with("hi\n", 5);
-        assert_eq!(app.active_pane_content_height(20), 20);
-        // Horizontal split -> two panes, each ~half the buffer
-        // height; minus the per-pane status row.
-        app.pane_tree
-            .split_active(crate::pane::SplitOrientation::Horizontal);
-        let content = app.active_pane_content_height(20);
-        // 20 / 2 = 10; minus status row = 9.
-        assert_eq!(content, 9);
-    }
-
-    #[test]
-    fn persistent_lsp_log_level_applies_from_toml_tree() {
-        let mut app = app_with("hi\n", 5);
-        let toml_text = "[lsp]\nlog-level = \"debug\"\n";
-        app.lsp_config_tree = toml_text.parse().expect("toml parse");
-        app.apply_persistent_lsp_editor_options();
-        // Effect: a Debug-level record on an unattached server lands
-        // in the ring. Default min-level is Info; without the TOML
-        // override the record would be filtered before it reached
-        // the ring.
-        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        app.lsp_logger.log(
-            Some(&id),
-            lattice_lsp::LogLevel::Debug,
-            lattice_lsp::LogSource::Client,
-            "after-toml",
-        );
-        let recs = app.lsp_logger.snapshot_server(&id);
-        assert!(
-            recs.iter().any(|r| r.message == "after-toml"),
-            "Debug record should pass through after TOML log-level=debug",
-        );
-    }
-
-    #[test]
-    fn persistent_lsp_log_level_warns_on_unknown_value() {
-        let mut app = app_with("hi\n", 5);
-        let toml_text = "[lsp]\nlog-level = \"babble\"\n";
-        app.lsp_config_tree = toml_text.parse().expect("toml parse");
-        app.apply_persistent_lsp_editor_options();
-        let msg = app.last_message.as_ref().expect("warn echo");
-        assert!(
-            msg.text.contains("lsp.log-level") && msg.text.contains("babble"),
-            "echo should name the key + value, got {}",
-            msg.text
-        );
-    }
-
-    #[test]
-    fn persistent_lsp_log_level_silent_when_missing() {
-        let mut app = app_with("hi\n", 5);
-        app.last_message = None;
-        // Empty tree: nothing under [lsp].
-        app.lsp_config_tree = toml::Table::new();
-        app.apply_persistent_lsp_editor_options();
-        assert!(
-            app.last_message.is_none(),
-            "no echo when key is absent (default applies)",
         );
     }
 
@@ -5648,103 +5146,6 @@ mod tests {
 
     // ---- Snippet host integration (Phase 4.2.g.4) ----
 
-
-    fn write_workspace_config(workspace: &std::path::Path, contents: &str) {
-        let dir = workspace.join(".lattice");
-        std::fs::create_dir_all(&dir).expect("create .lattice dir");
-        std::fs::write(dir.join("config.toml"), contents).expect("write config.toml");
-    }
-
-    fn fresh_workspace(name: &str) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "lattice-config-test-{}-{}",
-            std::process::id(),
-            name,
-        ));
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).expect("create workspace");
-        p
-    }
-
-    #[test]
-    fn load_persistent_config_applies_scalar_override_from_project_toml() {
-        let ws = fresh_workspace("scalar-override");
-        write_workspace_config(&ws, "tabstop = 4\n");
-        let mut a = app_with("", 5);
-        // tabstop default is 8; override should land before
-        // first frame.
-        assert_eq!(*a.config.get_typed::<lattice_config::Tabstop>().unwrap(), 8);
-        a.load_persistent_config(Some(&ws));
-        assert_eq!(*a.config.get_typed::<lattice_config::Tabstop>().unwrap(), 4);
-    }
-
-    #[test]
-    fn load_persistent_config_buckets_per_language_section() {
-        let ws = fresh_workspace("per-lang-bucket");
-        write_workspace_config(
-            &ws,
-            "[completion.per-language.markdown]\n\
-             auto_trigger = false\n\
-             [completion.per-language.rust]\n\
-             auto_trigger = true\n",
-        );
-        let mut a = app_with("", 5);
-        a.load_persistent_config(Some(&ws));
-        // Both per-language entries land in the structural
-        // bucket, keyed by full dotted path.
-        let paths = a.pending_structural_section_paths("completion.per-language");
-        assert_eq!(paths.len(), 2);
-        assert!(paths.contains(&"completion.per-language.markdown".to_string()));
-        assert!(paths.contains(&"completion.per-language.rust".to_string()));
-        // Drain markdown -> sub-table accessible.
-        let md = a
-            .take_pending_structural_section("completion.per-language.markdown")
-            .expect("markdown section drained");
-        assert_eq!(
-            md.get("auto_trigger").and_then(|v| v.as_bool()),
-            Some(false),
-        );
-        // After drain, only rust remains.
-        let after = a.pending_structural_section_paths("completion.per-language");
-        assert_eq!(after, vec!["completion.per-language.rust".to_string()]);
-    }
-
-    #[test]
-    fn load_persistent_config_collects_unknown_plugin_section_for_later_drain() {
-        // Extensibility: a user writes `[plugin.X]` before the
-        // plugin host exists. Loader buckets it; nothing warns;
-        // the host (Phase 7) drains it when it registers.
-        let ws = fresh_workspace("plugin-deferred");
-        write_workspace_config(
-            &ws,
-            "[plugin.rust-analyzer]\nclippy = true\n",
-        );
-        let mut a = app_with("", 5);
-        a.load_persistent_config(Some(&ws));
-        let paths = a.pending_structural_section_paths("plugin");
-        assert_eq!(paths, vec!["plugin.rust-analyzer".to_string()]);
-        let body = a
-            .take_pending_structural_section("plugin.rust-analyzer")
-            .expect("plugin section drained");
-        assert_eq!(body.get("clippy").and_then(|v| v.as_bool()), Some(true));
-    }
-
-    #[test]
-    fn load_persistent_config_warning_surfaces_on_unknown_key() {
-        let ws = fresh_workspace("unknown-key");
-        write_workspace_config(&ws, "no_such_option = 42\n");
-        let mut a = app_with("", 5);
-        a.load_persistent_config(Some(&ws));
-        // The echo carries the loader's warning.
-        let msg = a.last_message.as_ref().expect("warning echoed");
-        assert_eq!(msg.level, EchoLevel::Warn);
-        assert!(msg.text.contains("config:"), "got `{}`", msg.text);
-        assert!(
-            msg.text.contains("no_such_option"),
-            "got `{}`",
-            msg.text,
-        );
-    }
 
     #[test]
     fn effective_completion_for_markdown_default_excludes_lsp() {
@@ -5864,109 +5265,6 @@ mod tests {
     /// to `a`, wrapped in a [`SyntaxHandle`]. Mirrors the audit
 
     #[test]
-    fn tree_sitter_source_emits_definition_position_symbols_for_rust() {
-        let source = "fn outer(arg: i32) {\n    let local = arg;\n}\n";
-        let mut a = app_with(source, 10);
-        set_rust_syntax(&mut a, source);
-        a.modal = ModalState::Insert;
-        // Cursor at end-of-buffer with empty query so every
-        // candidate matches uniformly; the matcher won't drop
-        // anything for prefix mismatch.
-        a.cursor = Position::new(2, 1);
-        a.do_completion_trigger();
-        let state = a.insert_completion.as_ref().expect("popup");
-        let tree_sitter_id = lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
-        let ts_texts: Vec<&str> = state
-            .raw
-            .iter()
-            .filter(|c| c.source.as_ref().map(|s| s.as_str()) == Some(tree_sitter_id))
-            .map(|c| c.text.as_str())
-            .collect();
-        for expected in &["outer", "arg", "local"] {
-            assert!(
-                ts_texts.contains(expected),
-                "expected `{expected}` in tree-sitter candidates: {ts_texts:?}",
-            );
-        }
-    }
-
-    #[test]
-    fn tree_sitter_source_skipped_by_per_language_override() {
-        let source = "fn outer() {\n    let local = 1;\n}\n";
-        let mut a = app_with(source, 10);
-        set_rust_syntax(&mut a, source);
-        a.modal = ModalState::Insert;
-        a.cursor = Position::new(2, 1);
-        // Override the active language (test buffer has no
-        // path -> language id is "") to exclude tree-sitter.
-        a.per_language_completion.insert(
-            String::new(),
-            lattice_completion::PerLanguageOverrides {
-                sources: Some(vec![lattice_completion::SourceId::new(
-                    lattice_completion::BufferWordsSource::ID,
-                )]),
-                ..Default::default()
-            },
-        );
-        a.do_completion_trigger();
-        let state = a.insert_completion.as_ref().expect("popup");
-        let tree_sitter_id = lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
-        for cand in &state.raw {
-            let src = cand.source.as_ref().map(|s| s.as_str()).unwrap_or("");
-            assert_ne!(
-                src, tree_sitter_id,
-                "tree-sitter source filtered out for this language",
-            );
-        }
-    }
-
-    #[test]
-    fn tree_sitter_and_buffer_words_emit_independently_for_same_name() {
-        // `outer` appears as a function definition (captured
-        // by tree-sitter) AND as a referenced word (captured
-        // by buffer-words). Both sources contribute their
-        // tagged copy in `state.raw` -- the producers run
-        // independently. Visual dedup at the renderer (4.2.g.7
-        // polish) collapses them to a single popup row, so
-        // `state.rendered` has exactly one entry for `outer`,
-        // tagged with the higher-priority source (buffer-words
-        // at 100 > tree-sitter at 80).
-        let source = "fn outer() {\n    outer();\n}\n";
-        let mut a = app_with(source, 10);
-        set_rust_syntax(&mut a, source);
-        a.modal = ModalState::Insert;
-        a.cursor = Position::new(2, 1);
-        a.do_completion_trigger();
-        let state = a.insert_completion.as_ref().expect("popup");
-        let raw_sources: Vec<&str> = state
-            .raw
-            .iter()
-            .filter(|c| c.text == "outer")
-            .map(|c| c.source.as_ref().map(|s| s.as_str()).unwrap_or(""))
-            .collect();
-        assert!(
-            raw_sources.contains(&lattice_completion::BufferWordsSource::ID),
-            "buffer-words copy present in raw set: {raw_sources:?}",
-        );
-        assert!(
-            raw_sources.contains(&lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID),
-            "tree-sitter copy present in raw set: {raw_sources:?}",
-        );
-        let rendered_outer: Vec<&str> = state
-            .rendered
-            .iter()
-            .filter(|c| c.raw.text == "outer")
-            .map(|c| c.raw.source.as_ref().map(|s| s.as_str()).unwrap_or(""))
-            .collect();
-        assert_eq!(rendered_outer.len(), 1, "popup deduped to one row");
-        assert_eq!(
-            rendered_outer[0],
-            lattice_completion::BufferWordsSource::ID,
-            "higher-priority source's row survives the dedup",
-        );
-    }
-
-    #[test]
     fn dedup_helper_keeps_first_occurrence_by_text() {
         // Direct unit test on the dedup helper. Ranker has
         // already sorted; we feed in a vec mimicking the
@@ -6010,26 +5308,6 @@ mod tests {
                 "gen:tree-sitter-symbol",
             ],
         );
-    }
-
-    #[test]
-    fn tree_sitter_source_silent_without_syntax_attached() {
-        // No `set_rust_syntax` -> `app_with` leaves
-        // `self.syntax = None`; tree-sitter source emits
-        // nothing.
-        let mut a = app_with("alpha bravo charlie", 5);
-        a.modal = ModalState::Insert;
-        a.cursor = Position::new(0, 19);
-        a.do_completion_trigger();
-        if let Some(state) = a.insert_completion.as_ref() {
-            let tree_sitter_id = lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
-            for cand in &state.raw {
-                assert_ne!(
-                    cand.source.as_ref().map(|s| s.as_str()),
-                    Some(tree_sitter_id),
-                );
-            }
-        }
     }
 
     /// Inject an `InboundApplyEdit` into the App's drain
@@ -6218,19 +5496,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn load_persistent_config_silent_when_no_files_present() {
-        let ws = fresh_workspace("no-files");
-        // Empty workspace -- no .lattice/config.toml. Loader
-        // produces no messages; the modeline stays clean.
-        let mut a = app_with("", 5);
-        let prior = a.last_message.clone();
-        a.load_persistent_config(Some(&ws));
-        // No new echo (modeline message is whatever the test
-        // setup left, which for app_with is None).
-        assert_eq!(a.last_message, prior);
     }
 
     #[test]
@@ -6472,41 +5737,6 @@ mod tests {
     // ---- M.3.2.b.1: help-mode locals seeded at construction ----
 
     #[test]
-    fn open_help_in_pane_seeds_help_locals() {
-        let mut a = app_with("hi", 5);
-        let help = crate::help::HelpBuffer::from_lines(
-            "test-locals",
-            vec![
-                "# Heading One".to_string(),
-                "see [ex:write](command:ex:write)".to_string(),
-            ],
-        );
-        let help_id = a.open_help_in_pane(help);
-        let locals = a
-            .buffer_locals
-            .get(&help_id)
-            .expect("buffer_locals should be populated for help buffer");
-        // Links parsed from `[ex:write](command:ex:write)`.
-        let links = locals
-            .get::<crate::modes::HelpLinks>()
-            .expect("HelpLinks local seeded");
-        assert_eq!(links.0.len(), 1);
-        // Anchors come from heading slug generation. `from_lines`
-        // doesn't auto-anchor headings (only
-        // `from_lines_and_anchors` plumbs anchors); the seed
-        // should still be present, just empty.
-        let anchors = locals
-            .get::<crate::modes::HelpAnchors>()
-            .expect("HelpAnchors local seeded (possibly empty)");
-        assert_eq!(anchors.0.len(), 0);
-        // Highlights are empty without a markdown registry.
-        let highlights = locals
-            .get::<crate::modes::HelpHighlights>()
-            .expect("HelpHighlights local seeded (possibly empty)");
-        assert_eq!(highlights.0.len(), 0);
-    }
-
-    #[test]
     fn renderer_reads_help_data_through_buffer_locals() {
         // M.3.2.b.2: prove the renderer reads through
         // `buffer_locals` rather than the HelpBuffer's struct
@@ -6604,64 +5834,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    #[test]
-    fn file_tree_locals_carry_owner_metadata() {
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-m3-2-c-2-meta-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::create_dir_all(&tmp);
-        let mut a = app_with("hi", 5);
-        a.do_open_file_tree(Some(tmp.clone()));
-        let tree_id = a.active_pane_buffer_id();
-        let locals = a.buffer_locals.get(&tree_id).unwrap();
-        let descriptors: Vec<_> = locals.iter_descriptors().collect();
-        assert!(descriptors.len() >= 3);
-        for d in &descriptors {
-            assert_eq!(d.owner_mode, "file-tree-mode");
-            assert!(
-                d.name.starts_with("file-tree-mode."),
-                "name {:?} should be namespaced under file-tree-mode",
-                d.name
-            );
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
     // ---- M.3.2.c.3: oil-mode locals seeded ----
-
-    #[test]
-    fn open_oil_seeds_oil_locals() {
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-m3-2-c-3-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::create_dir_all(&tmp);
-
-        let mut a = app_with("hi", 5);
-        a.do_open_oil(Some(tmp.clone()));
-        let oil_id = a.active_pane_buffer_id();
-
-        let locals = a
-            .buffer_locals
-            .get(&oil_id)
-            .expect("oil locals seeded");
-        let dir = locals
-            .get::<crate::modes::OilDir>()
-            .expect("OilDir local present");
-        assert_eq!(dir.0, tmp);
-
-        // Owner-mode metadata.
-        let descriptors: Vec<_> = locals.iter_descriptors().collect();
-        let oil_descriptors: Vec<_> = descriptors
-            .iter()
-            .filter(|d| d.owner_mode == "oil-mode")
-            .collect();
-        assert_eq!(oil_descriptors.len(), 1);
-        assert_eq!(oil_descriptors[0].name, "oil-mode.dir");
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
 
     #[test]
     fn follow_link_reads_link_from_buffer_locals() {

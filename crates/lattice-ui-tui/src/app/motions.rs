@@ -25,11 +25,12 @@
 //! is the App-side glue for motions that need richer state
 //! than the grammar provides.
 
+use lattice_core::Buffer;
 use lattice_grammar::{ScrollPos, ViewportPos};
 use lattice_protocol::position::Position;
 
 use super::{
-    App, BufferKind, EchoLevel, PositionEntry, PositionSource, is_valid_mark_name,
+    App, BufferId, BufferKind, EchoLevel, PositionEntry, PositionSource, is_valid_mark_name,
     last_addressable_line, line_byte_len,
 };
 
@@ -594,5 +595,77 @@ impl App {
             self.position_history_cursor = self.position_history_cursor.saturating_sub(1);
         }
         self.position_history_cursor = self.position_history.len();
+    }
+
+    /// Id of whichever buffer is currently active. The active
+    /// pane's `buffer_id` is the source of truth -- documents and
+    /// trees both live in [`Self::buffers`] under one id space.
+    /// Help still lives outside the registry as a transient
+    /// overlay; while help is active we return its id, otherwise
+    /// the active pane's id.
+    pub fn active_buffer_id(&self) -> BufferId {
+        match self.active_buffer {
+            BufferKind::Help => self
+                .help_buffer
+                .as_ref()
+                .map(|h| h.id)
+                .unwrap_or(self.document_buffer_id),
+            BufferKind::Document | BufferKind::FileTree | BufferKind::Oil => {
+                self.pane_tree.active().buffer_id
+            }
+        }
+    }
+
+    /// Cursor of the currently active buffer. Reads `App::cursor`
+    /// when the document is active or `help_buffer.cursor` when a
+    /// help overlay holds focus. Used by code that records jump
+    /// origins (where `<C-o>` would land if pressed right now)
+    /// without needing to know which buffer kind that origin came
+    /// from.
+    pub fn active_cursor(&self) -> Position {
+        match self.active_buffer {
+            BufferKind::Document => self.cursor,
+            BufferKind::Help => self
+                .help_buffer
+                .as_ref()
+                .map(|h| h.cursor)
+                .unwrap_or(self.cursor),
+            BufferKind::FileTree => self
+                .buffers
+                .file_tree(self.active_pane_buffer_id())
+                .map(|t| t.cursor)
+                .unwrap_or(self.cursor),
+            BufferKind::Oil => self
+                .buffers
+                .oil(self.active_pane_buffer_id())
+                .map(|o| o.cursor)
+                .unwrap_or(self.cursor),
+        }
+    }
+
+    /// The active buffer's text -- a `Buffer` clone (rope is O(1)).
+    /// Document, help, file-tree all flow through this, so motion /
+    /// scroll / search code can read text without branching on
+    /// `BufferKind`. `self.cursor` / `self.scroll` are the live
+    /// position into this buffer.
+    pub fn active_text(&self) -> Buffer {
+        match self.active_buffer {
+            BufferKind::Help => self
+                .help_buffer
+                .as_ref()
+                .map(|h| h.content.clone())
+                .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
+            BufferKind::FileTree => self
+                .buffers
+                .file_tree(self.active_pane_buffer_id())
+                .map(|t| t.content.clone())
+                .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
+            BufferKind::Document => self.document.snapshot().buffer.clone(),
+            BufferKind::Oil => self
+                .buffers
+                .oil(self.active_pane_buffer_id())
+                .map(|o| o.content.clone())
+                .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
+        }
     }
 }

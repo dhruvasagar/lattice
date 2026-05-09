@@ -73,19 +73,19 @@ New slices match these unless there's a documented reason.
   `PositionEntry` / `EffectiveCompletionConfig` / etc.
   data types, and `impl Debug for App`.
 
-## 3. Submodule layout (after R.1.59)
+## 3. Submodule layout (after R.1.60)
 
 | File                   | Lines | Theme                                                              |
 |------------------------|-------|--------------------------------------------------------------------|
-| `app.rs`               | 17614 | App struct + remaining methods + types + free helpers + tests      |
+| `app.rs`               | 17555 | App struct + remaining methods + types + free helpers + tests      |
 | `app/lsp.rs`           |  3296 | every `lattice-lsp` consumer (requests, drains, log buffers)       |
 | `app/folds.rs`         |  1344 | fold compute / open / close / auto-open                            |
 | `app/completion.rs`    |  1250 | popup state machine, ranker, ghost text, snippets, refilter        |
 | `app/search.rs`        |  1125 | `/`, `?`, `:s`, `:%s`, find / find-next / find-reverse             |
 | `app/lifecycle.rs`     |   793 | activate-buffer, pane tree, `:e` / `:w` / `:q` / `:bn` / `:ls`     |
+| `app/edit.rs`          |   729 | actor-bridge mutation wrappers, yank / paste / register store / Insert+Replace primitives / `:d` / block-insert |
 | `app/options.rs`       |   690 | `:set`, typed options, customize machinery                         |
 | `app/picker.rs`        |   665 | picker state machine + buffer/LSP-instance candidate builders      |
-| `app/edit.rs`          |   668 | yank / paste / register store / Insert+Replace primitives / `:d` / block-insert |
 | `app/motions.rs`       |   514 | bracket match, history walkers + writer, mark jump, viewport / scroll, cursor clamp |
 | `app/help.rs`          |   389 | `:help`, `:describe-*`, `:apropos`, `:keymap`                       |
 | `app/cmdline.rs`       |   296 | `:` minibuffer + missing-arg prompt + chord-capture gate            |
@@ -99,7 +99,7 @@ New slices match these unless there's a documented reason.
 | `app/state.rs`         |    23 | small state accessors                                               |
 | `app/operators.rs`     |    22 | operator-pending plumbing                                           |
 
-## 4. Slices done (R.1.0 -- R.1.59)
+## 4. Slices done (R.1.0 -- R.1.60)
 
 | #      | Slice                                                                 |
 |--------|-----------------------------------------------------------------------|
@@ -163,12 +163,13 @@ New slices match these unless there's a documented reason.
 | R.1.57 | `replicate_block_insert` → `app/edit.rs`                              |
 | R.1.58 | `snippet_variable_context` → `app/completion.rs`                      |
 | R.1.59 | cmdline-submit helpers (`try_resolve_missing_arg_prompt` + `chord_capture_active` + `MissingArgPrompt`) → `app/cmdline.rs` |
+| R.1.60 | actor-bridge edit wrappers (`apply_edit_blocking` + `apply_edit_batch_blocking` + `undo_blocking` + `redo_blocking`) → `app/edit.rs` |
 
 ## 5. Pending candidates
 
-No formal slice plan exists past R.1.59; each slice is picked
+No formal slice plan exists past R.1.60; each slice is picked
 when picked. The clusters below are the visible candidates
-from a survey of `app.rs` after R.1.59. Numbers are
+from a survey of `app.rs` after R.1.60. Numbers are
 heuristic -- some clusters fragment into 2--3 sub-slices
 (the way M.3.2 did in `mode-architecture.md`); some collapse
 into one. Rough envelope: **15--25 slices** to fully drain
@@ -191,11 +192,12 @@ which slice to pick first.
   `sync_keymap_overlays`, `sync_theme_from_config`. Largest
   remaining cluster; needs its own naming -- maybe
   `app/boot.rs` rather than overloading lifecycle.
-- **Document mutations.** `apply_edit_blocking`,
-  `apply_edit_batch_blocking`, `undo_blocking`,
-  `redo_blocking`, `replace_document_blocking`,
-  `set_selections_blocking`. Synchronous wrappers; small
-  slice.
+- **Document-mutation tail.** `replace_document_blocking`
+  (used by `:edit path` document swap; lifecycle fit) and
+  `set_selections_blocking` (the selection-only wrapper;
+  callers in `render.rs` keep it `pub`). The four edit-
+  mutation wrappers landed in R.1.60; these two stayed
+  back because they don't fit `app/edit.rs`.
 
 ### → `app/highlights.rs` (new)
 

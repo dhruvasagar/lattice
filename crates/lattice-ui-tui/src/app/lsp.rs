@@ -57,7 +57,7 @@ use super::{
     symbol_information_to_row, word_under_cursor, workspace_symbol_to_row,
 };
 use crate::buffers::BufferId;
-use crate::help::HelpBuffer;
+use crate::help::HelpContent;
 use lattice_protocol::edit::Edit;
 
 impl App {
@@ -928,7 +928,7 @@ impl App {
         let Some(id) = self.buffers.help_with_title("lsp") else {
             return;
         };
-        let new_buf = crate::help::HelpBuffer::lsp_global_log(&self.lsp_logger)
+        let new_buf = crate::help::HelpContent::lsp_global_log(&self.lsp_logger)
             .with_markdown_syntax(self.lang_registry.clone());
         self.replace_help_buffer_preserving_cursor(id, new_buf);
     }
@@ -940,7 +940,7 @@ impl App {
             return;
         };
         let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let new_buf = crate::help::HelpBuffer::lsp_server_log(&self.lsp_logger, &arc)
+        let new_buf = crate::help::HelpContent::lsp_server_log(&self.lsp_logger, &arc)
             .with_markdown_syntax(self.lang_registry.clone());
         self.replace_help_buffer_preserving_cursor(id, new_buf);
     }
@@ -952,22 +952,28 @@ impl App {
             return;
         };
         let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let new_buf = crate::help::HelpBuffer::lsp_server_trace(&self.lsp_logger, &arc)
+        let new_buf = crate::help::HelpContent::lsp_server_trace(&self.lsp_logger, &arc)
             .with_markdown_syntax(self.lang_registry.clone());
         self.replace_help_buffer_preserving_cursor(id, new_buf);
     }
 
     /// Atomically replace a registry-tracked help buffer's body
-    /// with `new_buf`, preserving the existing buffer id + cursor
-    /// + scroll so the user's view stays put across the rebuild.
-    /// Clamps cursor to the new content's line bounds. Also syncs
-    /// `App.help_buffer` (the popup hot-path mirror) when it
-    /// points at the same id.
+    /// with `new_content`, preserving the existing buffer id +
+    /// cursor + scroll so the user's view stays put across the
+    /// rebuild. Clamps cursor to the new content's line bounds.
+    /// Re-seeds the parsed metadata into `buffer_locals[id]` so
+    /// live-tail readers (links / anchors / highlights) reflect
+    /// the updated parse. Also syncs `App.help_buffer` (the popup
+    /// hot-path mirror) when it points at the same id.
     fn replace_help_buffer_preserving_cursor(
         &mut self,
         id: BufferId,
-        mut new_buf: crate::help::HelpBuffer,
+        new_content: crate::help::HelpContent,
     ) {
+        let crate::help::HelpContent {
+            buffer: mut new_buf,
+            metadata,
+        } = new_content;
         let (cur, scr) = match self.buffers.help(id) {
             Some(h) => (h.cursor, h.scroll),
             None => return,
@@ -982,6 +988,9 @@ impl App {
         if let Some(slot) = self.buffers.help_mut(id) {
             *slot = new_buf;
         }
+        // M.3.2.c.5: refresh the locals so the renderer + link/
+        // anchor lookups see the updated parse.
+        self.seed_help_metadata_locals(id, metadata);
         // Sync the popup hot-path mirror when active.
         if self.help_buffer.as_ref().map(|h| h.id) == Some(id)
             && let Some(reg) = self.buffers.help(id)
@@ -3216,7 +3225,7 @@ impl App {
     /// `:lsp-status` -- render every running server in a
     /// help-style buffer.
     pub fn do_lsp_status(&mut self) {
-        let buffer = HelpBuffer::lsp_status(&self.lsp)
+        let buffer = HelpContent::lsp_status(&self.lsp)
             .with_markdown_syntax(self.lang_registry.clone());
         self.open_popup(buffer, crate::popup::PopupPlacement::Centered);
     }
@@ -3301,7 +3310,7 @@ impl App {
     /// when only one instance matches.
     pub(super) fn open_lsp_log_in_pane(&mut self, server_id: &str) {
         let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let buffer = HelpBuffer::lsp_server_log(&self.lsp_logger, &arc)
+        let buffer = HelpContent::lsp_server_log(&self.lsp_logger, &arc)
             .with_markdown_syntax(self.lang_registry.clone());
         self.open_help_in_pane(buffer);
     }
@@ -3311,7 +3320,7 @@ impl App {
     /// independent of opening / closing this buffer.
     pub(super) fn open_lsp_trace_log_in_pane(&mut self, server_id: &str) {
         let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let buffer = HelpBuffer::lsp_server_trace(&self.lsp_logger, &arc)
+        let buffer = HelpContent::lsp_server_trace(&self.lsp_logger, &arc)
             .with_markdown_syntax(self.lang_registry.clone());
         self.open_help_in_pane(buffer);
     }

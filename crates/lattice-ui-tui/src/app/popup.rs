@@ -37,13 +37,13 @@
 //! field, exactly as it does today.
 
 use crate::buffers::BufferKind;
-use crate::help::HelpBuffer;
+use crate::help::{HelpContent, HelpMetadata};
 use crate::popup::PopupPlacement;
 
 use super::{App, PositionSource, PrevPaneState};
 
 impl App {
-    /// Open a popup with `buffer` as its content at the requested
+    /// Open a popup with `content` as its body at the requested
     /// `placement`. The popup focuses in: subsequent vim-grammar
     /// motions and ex-commands operate on the popup's content
     /// (mode-specific bindings come from the buffer's major
@@ -51,11 +51,15 @@ impl App {
     /// restores the user cleanly to the prior buffer / cursor /
     /// scroll.
     ///
-    /// `open_help` is a thin wrapper over this for the common
-    /// command-launched case (centred placement); hover /
-    /// signature help call this directly with
-    /// [`PopupPlacement::CursorAnchored`].
-    pub(crate) fn open_popup(&mut self, buffer: HelpBuffer, placement: PopupPlacement) {
+    /// `content` is a [`HelpContent`] = (slim `HelpBuffer`, parsed
+    /// `HelpMetadata`). The buffer becomes `App.help_buffer` (the
+    /// popup hot-path slot); the metadata is seeded into
+    /// `App.buffer_locals[buffer.id]` via [`Self::seed_help_metadata_locals`]
+    /// so the renderer + link-follow / anchor-jump readers route
+    /// uniformly through buffer_locals (M.3.2.c.5).
+    pub(crate) fn open_popup(&mut self, content: HelpContent, placement: PopupPlacement) {
+        let HelpContent { buffer, metadata } = content;
+        let buffer_id = buffer.id;
         // Record the *document* cursor (we're still active=Document
         // here, since the popup-open precedes the active_buffer
         // flip). Skip the push if we're already in Help (a help->
@@ -96,6 +100,30 @@ impl App {
         self.cursor = stash_cursor;
         self.scroll = stash_scroll;
         self.active_buffer = BufferKind::Help;
+        // M.3.2.c.5: seed parsed metadata into buffer_locals.
+        // Reader sites (renderer's link / anchor / highlights
+        // lookups, do_help_follow_link, scroll-to-anchor) consume
+        // the locals exclusively now that the struct fields are
+        // gone.
+        self.seed_help_metadata_locals(buffer_id, metadata);
+    }
+
+    /// M.3.2.c.5: mirror parsed help metadata into the buffer-locals
+    /// map for `buffer_id`. Idempotent (replace-on-collision). The
+    /// active pane's buffer_id and `buffer.id` may differ (in-pane
+    /// help registry uses the registry id; the popup uses the
+    /// buffer's construction id) -- callers seed under both as
+    /// needed.
+    pub(crate) fn seed_help_metadata_locals(
+        &mut self,
+        buffer_id: crate::buffers::BufferId,
+        metadata: HelpMetadata,
+    ) {
+        let HelpMetadata { links, anchors, highlights } = metadata;
+        let locals = self.buffer_locals.entry(buffer_id).or_default();
+        locals.insert(crate::modes::HelpLinks(links));
+        locals.insert(crate::modes::HelpAnchors(anchors));
+        locals.insert(crate::modes::HelpHighlights(highlights));
     }
 
     /// Update the popup's placement in place. No-op when no popup
@@ -143,7 +171,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::app::test_helpers::app_with;
-    use crate::help::HelpBuffer;
+    use crate::help::HelpContent;
 
     #[test]
     fn lsp_status_popup_is_centered() {
@@ -162,7 +190,7 @@ mod tests {
     #[test]
     fn open_popup_with_explicit_placement_overrides_default() {
         let mut a = app_with("hello", 10);
-        let buf = HelpBuffer::from_lines("test", vec!["body".into()]);
+        let buf = HelpContent::from_lines("test", vec!["body".into()]);
         a.open_popup(buf, PopupPlacement::CursorAnchored);
         assert_eq!(a.popup_placement(), Some(PopupPlacement::CursorAnchored));
     }

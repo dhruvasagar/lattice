@@ -775,24 +775,29 @@ fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
 fn help_render_data<'a>(
     app: &'a App,
     buffer_id: crate::buffers::BufferId,
-    fallback: &'a crate::help::HelpBuffer,
+    _fallback: &'a crate::help::HelpBuffer,
 ) -> (
     &'a [Vec<lattice_syntax::StyledSpan>],
     &'a [crate::help::HelpLink],
 ) {
-    if let Some(locals) = app.buffer_locals.get(&buffer_id) {
-        let highlights = locals
-            .get::<crate::modes::HelpHighlights>()
-            .map(|h| h.0.as_slice())
-            .unwrap_or(&fallback.highlights);
-        let links = locals
-            .get::<crate::modes::HelpLinks>()
-            .map(|h| h.0.as_slice())
-            .unwrap_or(&fallback.links);
-        (highlights, links)
-    } else {
-        (&fallback.highlights, &fallback.links)
-    }
+    // M.3.2.c.5: production reads route through `buffer_locals`
+    // exclusively. The `_fallback` parameter is retained for the
+    // call-site signature stability (the popup overlay holds a
+    // `&HelpBuffer` for cursor / scroll / line-count); empty
+    // slices on a missing locals entry are correct -- it means a
+    // synthetic test path constructed a help buffer without
+    // seeding locals, in which case nothing to highlight or
+    // follow.
+    let locals = app.buffer_locals.get(&buffer_id);
+    let highlights = locals
+        .and_then(|l| l.get::<crate::modes::HelpHighlights>())
+        .map(|h| h.0.as_slice())
+        .unwrap_or(&[]);
+    let links = locals
+        .and_then(|l| l.get::<crate::modes::HelpLinks>())
+        .map(|h| h.0.as_slice())
+        .unwrap_or(&[]);
+    (highlights, links)
 }
 
 fn draw_help_overlay(
@@ -847,13 +852,15 @@ fn draw_help_overlay(
     };
     let lines = help.lines();
     // M.3.2.b.2: read help-mode-owned data via buffer-locals
-    // (canonical) with a fallback to the HelpBuffer's own
-    // fields for the bootstrap window.
-    // `app.help_buffer.id` (construction-time) and the
-    // registered id (= active pane's `buffer_id`) intentionally
-    // differ; locals are keyed by the registered id. See the
-    // comment in `App::open_help_in_pane`.
-    let render_id = app.pane_tree.active().buffer_id;
+    // M.3.2.c.5: in popup-overlay mode the active pane's
+    // `buffer_id` points at the *Document* that the popup is
+    // drawn over -- not the popup's content -- so it's the wrong
+    // locals key. `open_popup` seeds metadata under the popup
+    // buffer's construction id (`help.id`), so we look up there.
+    // (Contrast `draw_help_in_pane` below: in-pane mode swaps the
+    // pane to the registered help buffer, where pane.buffer_id is
+    // the right key.)
+    let render_id = help.id;
     let (highlights, links) = help_render_data(app, render_id, help);
     let visible: Vec<Line> = lines
         .iter()
@@ -3206,7 +3213,7 @@ mod tests {
         // is the end-of-pipeline assertion: highlights from the
         // markdown grammar make it onto the screen.
         let registry = LangRegistry::standard().expect("registry");
-        let h = crate::help::HelpBuffer::from_lines(
+        let h = crate::help::HelpContent::from_lines(
             "t",
             vec!["# Heading line".to_string(), "plain body".to_string()],
         )

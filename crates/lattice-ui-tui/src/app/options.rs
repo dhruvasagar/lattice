@@ -23,7 +23,7 @@ use lattice_core::FoldMethod;
 use lattice_protocol::Event;
 
 use super::{App, EchoLevel, OptionCache};
-use crate::help::HelpBuffer;
+use crate::help::HelpContent;
 
 impl App {
     // ---- Typed-options accessors (DESIGN.md §5.12) ----
@@ -398,7 +398,7 @@ impl App {
         lines.push(String::new());
         lines.push(spec.doc().to_string());
         self.open_popup(
-            HelpBuffer::from_lines(format!("describe-option {name}"), lines)
+            HelpContent::from_lines(format!("describe-option {name}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
             crate::popup::PopupPlacement::Centered,
         );
@@ -420,7 +420,7 @@ impl App {
             ));
         }
         self.open_popup(
-            HelpBuffer::from_lines("options", lines)
+            HelpContent::from_lines("options", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
             crate::popup::PopupPlacement::Centered,
         );
@@ -901,7 +901,7 @@ mod tests {
     #[test]
     fn help_buffer_resolves_read_only_true() {
         let mut a = app_with("hi", 5);
-        let help = crate::help::HelpBuffer::from_lines(
+        let help = crate::help::HelpContent::from_lines(
             "test",
             vec!["line one".to_string()],
         );

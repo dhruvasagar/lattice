@@ -476,14 +476,14 @@ mod tests {
 
     use crate::app::*;
     use crate::app::test_helpers::app_with;
-    use crate::help::HelpBuffer;
+    use crate::help::HelpContent;
 
     #[test]
     fn open_buffer_picker_seeds_with_every_registry_entry() {
         let mut app = app_with("hi\n", 5);
         // Add a help buffer so the picker has more than just the
         // initial document to filter against.
-        let _help_id = app.open_help_in_pane(HelpBuffer::from_lines(
+        let _help_id = app.open_help_in_pane(HelpContent::from_lines(
             "lsp:rust",
             vec!["a".into()],
         ));
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn picker_accept_switches_to_selected_buffer() {
         let mut app = app_with("hi\n", 5);
-        let help_id = app.open_help_in_pane(HelpBuffer::from_lines(
+        let help_id = app.open_help_in_pane(HelpContent::from_lines(
             "test-target",
             vec!["body".into()],
         ));
@@ -554,7 +554,7 @@ mod tests {
         // doc immediately previews the alternate (help) buffer in
         // the active pane.
         let mut app = app_with("hi\n", 5);
-        let help_id = app.open_help_in_pane(HelpBuffer::from_lines(
+        let help_id = app.open_help_in_pane(HelpContent::from_lines(
             "alt",
             vec!["alt body".into()],
         ));
@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn picker_dismiss_restores_origin_when_previewing() {
         let mut app = app_with("hi\n", 5);
-        let _help_id = app.open_help_in_pane(HelpBuffer::from_lines(
+        let _help_id = app.open_help_in_pane(HelpContent::from_lines(
             "alt",
             vec!["alt body".into()],
         ));
@@ -601,11 +601,11 @@ mod tests {
     #[test]
     fn picker_select_next_re_previews_new_candidate() {
         let mut app = app_with("hi\n", 5);
-        let help_a = app.open_help_in_pane(HelpBuffer::from_lines(
+        let help_a = app.open_help_in_pane(HelpContent::from_lines(
             "alpha-help",
             vec!["a".into()],
         ));
-        let help_b = app.open_help_in_pane(HelpBuffer::from_lines(
+        let help_b = app.open_help_in_pane(HelpContent::from_lines(
             "beta-help",
             vec!["b".into()],
         ));
@@ -635,11 +635,11 @@ mod tests {
         // Hover-previewing through several candidates should not
         // push to the jump list; only an *accepted* switch should.
         let mut app = app_with("hi\n", 5);
-        let _h1 = app.open_help_in_pane(HelpBuffer::from_lines(
+        let _h1 = app.open_help_in_pane(HelpContent::from_lines(
             "h-one",
             vec!["a".into()],
         ));
-        let _h2 = app.open_help_in_pane(HelpBuffer::from_lines(
+        let _h2 = app.open_help_in_pane(HelpContent::from_lines(
             "h-two",
             vec!["b".into()],
         ));

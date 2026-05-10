@@ -12,7 +12,7 @@ use lattice_grammar::registry::MotionId;
 use lattice_protocol::Event;
 
 use crate::buffers::BufferKind;
-use crate::help::HelpBuffer;
+use crate::help::HelpContent;
 
 use super::{Action, App};
 
@@ -95,12 +95,17 @@ pub(super) fn subscribe_all_events(
     rx
 }
 
-/// Wrap a freshly-built [`HelpBuffer`] as the active buffer
+/// Wrap a freshly-built [`HelpContent`] as the active buffer
 /// the way the App's `:describe-*` paths do. Shared across
-/// every test that wants help-mode setup.
-pub(super) fn install_help(a: &mut App, h: HelpBuffer) {
-    a.help_buffer = Some(h);
+/// every test that wants help-mode setup. Splits the content
+/// into the slim buffer (popup hot-path slot) + parsed
+/// metadata (seeded into `buffer_locals`).
+pub(super) fn install_help(a: &mut App, h: HelpContent) {
+    let HelpContent { buffer, metadata } = h;
+    let id = buffer.id;
+    a.help_buffer = Some(buffer);
     a.active_buffer = BufferKind::Help;
+    a.seed_help_metadata_locals(id, metadata);
 }
 
 /// Drive a complete ex-command line: enter cmdline, type

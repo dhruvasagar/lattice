@@ -598,7 +598,7 @@ mod tests {
 
     use crate::app::*;
     use crate::app::test_helpers::{app_with, install_help, submit_ex};
-    use crate::help::HelpBuffer;
+    use crate::help::HelpContent;
     use lattice_grammar::{ModalState, SearchDirection};
     use lattice_protocol::position::Position;
 
@@ -1008,7 +1008,7 @@ mod tests {
             "gamma needle".into(),
             "delta".into(),
         ];
-        install_help(&mut a, HelpBuffer::from_lines("search-test", body));
+        install_help(&mut a, HelpContent::from_lines("search-test", body));
         // Open `/` and type `needle` then submit.
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         for c in "needle".chars() {
@@ -1038,7 +1038,7 @@ mod tests {
             "gamma needle".into(),
             "delta needle".into(),
         ];
-        install_help(&mut a, HelpBuffer::from_lines("hl-test", body));
+        install_help(&mut a, HelpContent::from_lines("hl-test", body));
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         for c in "needle".chars() {
             a.apply(Action::SearchAppend(c));
@@ -1059,7 +1059,7 @@ mod tests {
         // help buffer echoed "buffer is read-only". They're not
         // mutations -- the guard list now only covers true edits.
         let mut a = app_with("xx", 10);
-        install_help(&mut a, HelpBuffer::from_lines("ro", vec!["abc".into(); 5]));
+        install_help(&mut a, HelpContent::from_lines("ro", vec!["abc".into(); 5]));
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         // Should be in search modal, not Normal with a read-only
         // echo.

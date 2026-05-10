@@ -40,7 +40,7 @@ use std::time::Duration;
 use super::{App, BufferId, EchoLevel, PositionSource, PrevPaneState, preview_register};
 use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
 use crate::buffers::{BufferFlags, BufferKind};
-use crate::help::HelpBuffer;
+use crate::help::HelpContent;
 use crate::pane::{PaneDirection, SplitOrientation};
 
 impl App {
@@ -802,7 +802,7 @@ impl App {
             }
         }
         self.open_popup(
-            HelpBuffer::from_lines("buffers", lines)
+            HelpContent::from_lines("buffers", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
             crate::popup::PopupPlacement::Centered,
         );
@@ -1145,29 +1145,31 @@ impl App {
     /// ([`Self::snapshot_active_pane`] / [`Self::load_active_pane`])
     /// sync the two at boundaries -- same pattern as Document's
     /// `syntax`/`folds` snapshots.
-    pub(super) fn open_help_in_pane(&mut self, buffer: HelpBuffer) -> BufferId {
+    pub(super) fn open_help_in_pane(&mut self, content: HelpContent) -> BufferId {
+        let HelpContent { buffer, metadata } = content;
         if let Some(existing_id) = self.buffers.help_with_title(&buffer.title) {
             // Already open: refresh its content (so `:lsp-log` re-
             // run picks up new records) and switch the active pane
-            // to it.
+            // to it. Re-seed buffer_locals with the fresh metadata
+            // so live-tail readers (link / anchor / highlights)
+            // see the updated parse.
             if let Some(slot) = self.buffers.help_mut(existing_id) {
                 *slot = buffer;
             }
+            self.seed_help_metadata_locals(existing_id, metadata);
             self.activate_help_in_pane(existing_id);
             return existing_id;
         }
         let id = BufferId::next();
         // Clone for the registry record; the active hot-path copy
         // lands on `self.help_buffer` via `activate_help_in_pane`.
-        // HelpBuffer's heavy field is the rope (O(1) clone); the
-        // markdown highlight Vec is the only allocation cost.
-        // Note: `buffer.id` from `from_lines` and the registered
-        // `id` here are intentionally different. The mismatch is
-        // load-bearing for `activate_help_in_pane`'s
+        // Note: `buffer.id` (the construction-time id) and the
+        // registered `id` here are intentionally different. The
+        // mismatch is load-bearing for `activate_help_in_pane`'s
         // refresh-from-registry logic which fires when
         // `pane.buffer_id != help_buffer.id`. Production reader
-        // sites that look up `buffer_locals` use
-        // `pane.buffer_id` (the registered id), not `help.id`.
+        // sites that look up `buffer_locals` use `pane.buffer_id`
+        // (the registered id).
         let registry_copy = buffer.clone();
         self.buffers.insert(BufferEntry {
             id,
@@ -1178,39 +1180,14 @@ impl App {
         // ReadOnly = true contribution lands in the resolved
         // options cache.
         self.activate_major_for_buffer_kind(id, BufferKind::Help);
-        // M.3.2.b.1: mirror help-mode-owned data into the
-        // buffer-locals map. The data is parsed at HelpBuffer
-        // construction (links from markdown source, anchors
-        // from headings, highlights from tree-sitter); this
-        // step copies it into the typed-map so future reads
-        // can transition off `HelpBuffer.X` and onto
-        // `app.buffer_locals[id].get::<HelpLinks>()` etc.
-        // (M.3.2.b.2 flips readers, then drops the fields
-        // from `HelpBuffer`.)
-        self.seed_help_locals(id, &buffer);
+        // M.3.2.c.5: seed parsed metadata into buffer_locals
+        // under the *registered* id (the locals key the renderer
+        // and link-follow path resolve against).
+        self.seed_help_metadata_locals(id, metadata);
         // Take ownership of the original for the popup hot-path.
         self.help_buffer = Some(buffer);
         self.activate_help_in_pane(id);
         id
-    }
-
-    /// Mirror help-mode-owned data from a `HelpBuffer` into
-    /// the buffer-locals map for `buffer_id`. Called at help-
-    /// buffer creation time (M.3.2.b.1). Idempotent: a second
-    /// call with the same buffer overwrites the prior locals
-    /// since `BufferLocals::insert` is replace-on-collision.
-    fn seed_help_locals(
-        &mut self,
-        buffer_id: BufferId,
-        buffer: &HelpBuffer,
-    ) {
-        let locals = self
-            .buffer_locals
-            .entry(buffer_id)
-            .or_default();
-        locals.insert(crate::modes::HelpLinks(buffer.links.clone()));
-        locals.insert(crate::modes::HelpAnchors(buffer.anchors.clone()));
-        locals.insert(crate::modes::HelpHighlights(buffer.highlights.clone()));
     }
 
     /// M.3.2.c.5: seed an empty set of document mode-locals for a
@@ -1907,7 +1884,7 @@ mod tests {
     #[test]
     fn open_help_in_pane_registers_buffer_and_activates_pane() {
         let mut app = app_with("hi\n", 5);
-        let buf = HelpBuffer::from_lines(
+        let buf = HelpContent::from_lines(
             "test-help",
             vec!["# heading".into(), "body".into()],
         );
@@ -1929,11 +1906,11 @@ mod tests {
     #[test]
     fn open_help_in_pane_dedups_by_title() {
         let mut app = app_with("hi\n", 5);
-        let id1 = app.open_help_in_pane(HelpBuffer::from_lines(
+        let id1 = app.open_help_in_pane(HelpContent::from_lines(
             "lsp:rust",
             vec!["v1".into()],
         ));
-        let id2 = app.open_help_in_pane(HelpBuffer::from_lines(
+        let id2 = app.open_help_in_pane(HelpContent::from_lines(
             "lsp:rust",
             vec!["v2 (refreshed)".into()],
         ));
@@ -2231,7 +2208,7 @@ mod tests {
     #[test]
     fn open_help_in_pane_seeds_help_locals() {
         let mut a = app_with("hi", 5);
-        let help = crate::help::HelpBuffer::from_lines(
+        let help = crate::help::HelpContent::from_lines(
             "test-locals",
             vec![
                 "# Heading One".to_string(),
@@ -2402,7 +2379,7 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let lines: Vec<String> = (0..50).map(|i| format!("popup line {i}")).collect();
         let mut a = app_with("backdrop\n", 30);
-        let buf = crate::help::HelpBuffer::from_lines("status", lines);
+        let buf = crate::help::HelpContent::from_lines("status", lines);
         a.open_popup(buf, crate::popup::PopupPlacement::Centered);
         // Mimic the runtime's per-frame viewport set: in popup
         // mode it's the popup's inner height, not the doc area's.

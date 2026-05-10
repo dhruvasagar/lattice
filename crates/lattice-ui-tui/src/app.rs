@@ -2626,6 +2626,7 @@ mod tests {
     use super::test_helpers::{
         app_with, attach_test_syntax, invoke_motion, submit_ex, write_temp_file,
     };
+    use crate::help::HelpContent;
 
     /// Sanity check: a bare motion drives the cursor through
     /// the full translate + apply path. If this fails, the
@@ -3806,7 +3807,7 @@ mod tests {
         // the struct fields. The renderer should reflect the
         // local-side value.
         let mut a = app_with("hi", 5);
-        let help = crate::help::HelpBuffer::from_lines(
+        let help = crate::help::HelpContent::from_lines(
             "test-render",
             vec!["[link-a](command:a) and [link-b](command:b)".into()],
         );
@@ -4098,7 +4099,7 @@ mod tests {
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         assert!(a.syntax.is_some(), "fixture syntax wired");
         // Open a help buffer in pane (mimics `:lsp-log rust`).
-        let _help_id = a.open_help_in_pane(HelpBuffer::from_lines(
+        let _help_id = a.open_help_in_pane(HelpContent::from_lines(
             "lsp:rust",
             vec!["log line".into()],
         ));
@@ -4413,10 +4414,25 @@ mod tests {
                 line: 3,
             },
         };
+        // M.3.2.c.5: production reads route through buffer_locals;
+        // seed the synthetic link there directly. The locals key
+        // is the popup buffer's construction id (centred-popup
+        // resolution rule).
+        let buf_id = a.help_buffer.as_ref().map(|h| h.id).unwrap();
         if let Some(h) = a.help_buffer.as_mut() {
-            h.links.push(link);
             h.cursor = lattice_protocol::Position::ZERO;
         }
+        let mut existing_links = a
+            .buffer_locals
+            .get(&buf_id)
+            .and_then(|l| l.get::<crate::modes::HelpLinks>())
+            .map(|l| l.0.clone())
+            .unwrap_or_default();
+        existing_links.push(link);
+        a.buffer_locals
+            .entry(buf_id)
+            .or_default()
+            .insert(crate::modes::HelpLinks(existing_links));
         a.active_buffer = BufferKind::Help;
         a.apply(Action::FollowLink);
         // The file should now be the active document.
@@ -4457,10 +4473,25 @@ mod tests {
                 line: 999,
             },
         };
+        // M.3.2.c.5: production reads route through buffer_locals;
+        // seed the synthetic link there directly. The locals key
+        // is the popup buffer's construction id (centred-popup
+        // resolution rule).
+        let buf_id = a.help_buffer.as_ref().map(|h| h.id).unwrap();
         if let Some(h) = a.help_buffer.as_mut() {
-            h.links.push(link);
             h.cursor = lattice_protocol::Position::ZERO;
         }
+        let mut existing_links = a
+            .buffer_locals
+            .get(&buf_id)
+            .and_then(|l| l.get::<crate::modes::HelpLinks>())
+            .map(|l| l.0.clone())
+            .unwrap_or_default();
+        existing_links.push(link);
+        a.buffer_locals
+            .entry(buf_id)
+            .or_default()
+            .insert(crate::modes::HelpLinks(existing_links));
         a.active_buffer = BufferKind::Help;
         a.apply(Action::FollowLink);
         // Out-of-range line should clamp to the last valid line,
@@ -4676,7 +4707,7 @@ mod tests {
         // and verify FollowLink dispatches based on the
         // locals-side link.
         let mut a = app_with("xx", 10);
-        let help = crate::help::HelpBuffer::from_lines(
+        let help = crate::help::HelpContent::from_lines(
             "test-locals-link",
             vec!["plain text -- no markdown link".into()],
         );

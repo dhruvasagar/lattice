@@ -1,7 +1,7 @@
 //! Help-buffer App surface -- the `:describe-*` / `:apropos`
 //! / `:help` / `:keymap` writers that compose help bodies.
 //! Each method renders a help-buffer body via shared helpers
-//! (`HelpBuffer::from_lines{,_and_anchors}` +
+//! (`HelpContent::from_lines{,_and_anchors}` +
 //! `with_markdown_syntax`) and hands it to `open_help`.
 //!
 //! Methods that live here:
@@ -43,7 +43,7 @@ use super::{
     App, BufferKind, EchoLevel, PositionSource, PrevPaneState, line_byte_len,
     resolve_command_name_or_alias,
 };
-use crate::help::{HelpBuffer, command_link, key_link};
+use crate::help::{HelpContent, command_link, key_link};
 
 impl App {
     /// `:help [topic]` (DESIGN.md §5.11). With no topic the index
@@ -72,7 +72,7 @@ impl App {
             format!("help {name}")
         };
         self.open_popup(
-            HelpBuffer::from_lines_and_anchors(title, lines, anchors)
+            HelpContent::from_lines_and_anchors(title, lines, anchors)
                 .with_markdown_syntax(self.lang_registry.clone()),
             crate::popup::PopupPlacement::Centered,
         );
@@ -125,13 +125,18 @@ impl App {
             lines.push(String::new());
             lines.push(format!("See also: {}", topics.join(", ")));
         }
-        let mut buffer =
-            HelpBuffer::from_lines_and_anchors(format!("describe-command {name}"), lines, anchors)
+        let mut content =
+            HelpContent::from_lines_and_anchors(format!("describe-command {name}"), lines, anchors)
                 .with_markdown_syntax(self.lang_registry.clone());
-        if let Some(a) = anchor {
-            buffer.scroll_to_anchor(a);
+        // M.3.2.c.5: scroll-to-anchor was a method on `HelpBuffer`
+        // that read `self.anchors`. With anchors retired off the
+        // struct, look them up on the metadata directly.
+        if let Some(a) = anchor
+            && let Some(line) = crate::help::anchor_line(&content.metadata.anchors, a)
+        {
+            content.buffer.scroll = line as usize;
         }
-        self.open_popup(buffer, crate::popup::PopupPlacement::Centered);
+        self.open_popup(content, crate::popup::PopupPlacement::Centered);
     }
 
     pub(super) fn do_describe_buffer(&mut self) {
@@ -170,7 +175,7 @@ impl App {
             self.relative_line_numbers()
         ));
         self.open_popup(
-            HelpBuffer::from_lines("describe-buffer", lines)
+            HelpContent::from_lines("describe-buffer", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
             crate::popup::PopupPlacement::Centered,
         );
@@ -226,7 +231,7 @@ impl App {
             }
         }
         self.open_popup(
-            HelpBuffer::from_lines(format!("apropos {pattern}"), lines)
+            HelpContent::from_lines(format!("apropos {pattern}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
             crate::popup::PopupPlacement::Centered,
         );
@@ -253,7 +258,7 @@ impl App {
             }
         }
         self.open_popup(
-            HelpBuffer::from_lines(format!("describe-key {chord}"), lines)
+            HelpContent::from_lines(format!("describe-key {chord}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
             crate::popup::PopupPlacement::Centered,
         );
@@ -268,17 +273,20 @@ impl App {
     /// recognises as "focus into popup" -> State B.
     pub(super) fn do_open_hover(&mut self, markdown: &str) {
         let lines: Vec<String> = markdown.split('\n').map(String::from).collect();
-        let buffer = HelpBuffer::from_lines("hover", lines)
+        let content = HelpContent::from_lines("hover", lines)
             .with_markdown_syntax(self.lang_registry.clone());
-        // State A: hover sets help_buffer directly; active stays
-        // on the main buffer (self.cursor untouched);
-        // prev_pane_for_help remains `None` -- the State-A auto-
-        // dismiss key. Hover is the only popup that is anchored
-        // to where the cursor happens to be (it's annotating the
-        // symbol the user K'd) so it sets CursorAnchored
-        // explicitly.
+        // State A: hover sets help_buffer directly without going
+        // through `open_popup` (which would also flip
+        // `active_buffer = Help` and capture `prev_pane_for_help`).
+        // Active stays on the main buffer (self.cursor untouched);
+        // prev_pane_for_help remains `None` -- the State-A
+        // auto-dismiss key. Seed locals separately so the renderer
+        // + link-follow paths see the parsed metadata.
+        let crate::help::HelpContent { buffer, metadata } = content;
+        let buffer_id = buffer.id;
         self.help_buffer = Some(buffer);
         self.popup_placement = crate::popup::PopupPlacement::CursorAnchored;
+        self.seed_help_metadata_locals(buffer_id, metadata);
     }
 
     /// **State A -> State B**: focus moves into the popup. After
@@ -375,7 +383,7 @@ impl App {
             lines.push(String::new());
         }
         self.open_popup(
-            HelpBuffer::from_lines("keymap", lines)
+            HelpContent::from_lines("keymap", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
             crate::popup::PopupPlacement::Centered,
         );
@@ -412,9 +420,9 @@ impl App {
         }
 
         let cursor = self.cursor;
-        let Some(help) = self.help_buffer.as_ref() else {
+        if self.help_buffer.is_none() {
             return;
-        };
+        }
         // M.3.2.c.1: prefer help-mode-owned link data from
         // `buffer_locals`; fall back to the HelpBuffer's
         // struct field if the locals don't contain the link.
@@ -435,8 +443,18 @@ impl App {
         // registered id, so we look up via the active pane's
         // buffer id, not the popup-mode buffer's struct
         // field.
-        let active_help_id = self.pane_tree.active().buffer_id;
-        let link_from_locals = self
+        // M.3.2.c.5: in centred-popup mode `pane.buffer_id` is the
+        // doc behind the popup, not the popup's content. The
+        // popup's construction id (`help.id`) is the locals key
+        // `open_popup` seeded under, so prefer it; fall back to
+        // `pane.buffer_id` for the in-pane case (where the pane
+        // was swapped to the registered help id).
+        let active_help_id = self
+            .help_buffer
+            .as_ref()
+            .map(|h| h.id)
+            .unwrap_or_else(|| self.pane_tree.active().buffer_id);
+        let Some(link) = self
             .buffer_locals
             .get(&active_help_id)
             .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
@@ -444,13 +462,24 @@ impl App {
                 hl.0.iter()
                     .find(|link| range_contains_position(&link.range, cursor))
                     .cloned()
-            });
-        let Some(link) = link_from_locals.or_else(|| {
-            help.links
-                .iter()
-                .find(|link| range_contains_position(&link.range, cursor))
-                .cloned()
-        }) else {
+            })
+            .or_else(|| {
+                // For in-pane help where help_buffer.id != pane.buffer_id,
+                // try the pane's id too.
+                let pane_id = self.pane_tree.active().buffer_id;
+                if pane_id == active_help_id {
+                    return None;
+                }
+                self.buffer_locals
+                    .get(&pane_id)
+                    .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
+                    .and_then(|hl| {
+                        hl.0.iter()
+                            .find(|link| range_contains_position(&link.range, cursor))
+                            .cloned()
+                    })
+            })
+        else {
             self.set_message(EchoLevel::Info, "no link under cursor".to_string());
             return;
         };
@@ -492,28 +521,27 @@ impl App {
                 // the anchor line and move the cursor there. Push
                 // history so `<C-o>` returns to the link site.
                 self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
-                // Anchor lookup runs against the help buffer's
-                // anchor list; the cursor + scroll updates land
-                // on the App's unified hot path.
-                // M.3.2.c.1: read help-mode-owned anchors
-                // through `buffer_locals` (keyed by the
-                // registered id from `pane.buffer_id`, not
-                // `help.id` -- see open_help_in_pane comment)
-                // with a fallback to the struct field for
-                // the bootstrap window / synthetic-test paths.
-                let active_help_id = self.pane_tree.active().buffer_id;
-                let target_line = self.help_buffer.as_ref().and_then(|h| {
-                    let from_locals = self
-                        .buffer_locals
-                        .get(&active_help_id)
-                        .and_then(|locals| locals.get::<crate::modes::HelpAnchors>())
-                        .and_then(|anchors| {
-                            anchors.0.iter().find(|a| a.name == slug).map(|a| a.line)
-                        });
-                    from_locals.or_else(|| {
-                        h.anchors.iter().find(|a| a.name == slug).map(|a| a.line)
+                // M.3.2.c.5: anchors live in buffer_locals
+                // exclusively. Look up under the popup buffer's
+                // own id first (centred-popup case where
+                // pane.buffer_id is the doc behind the popup),
+                // then fall back to the pane's id (in-pane case).
+                let popup_id = self.help_buffer.as_ref().map(|h| h.id);
+                let pane_id = self.pane_tree.active().buffer_id;
+                let target_line = popup_id
+                    .and_then(|id| self.buffer_locals.get(&id))
+                    .and_then(|locals| locals.get::<crate::modes::HelpAnchors>())
+                    .and_then(|anchors| {
+                        anchors.0.iter().find(|a| a.name == slug).map(|a| a.line)
                     })
-                });
+                    .or_else(|| {
+                        self.buffer_locals
+                            .get(&pane_id)
+                            .and_then(|locals| locals.get::<crate::modes::HelpAnchors>())
+                            .and_then(|anchors| {
+                                anchors.0.iter().find(|a| a.name == slug).map(|a| a.line)
+                            })
+                    });
                 if let Some(line) = target_line {
                     let buffer = self.active_text();
                     let len = line_byte_len(&buffer, line);
@@ -566,6 +594,7 @@ mod tests {
 
     use crate::app::*;
     use crate::app::test_helpers::{app_in_command_mode, app_with, install_help};
+    use crate::help::HelpContent;
 
     #[test]
     fn describe_command_opens_help_buffer_with_metadata() {
@@ -1061,7 +1090,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         install_help(
             &mut a,
-            HelpBuffer::from_lines("test", vec!["a".into(), "b".into()]),
+            HelpContent::from_lines("test", vec!["a".into(), "b".into()]),
         );
         a.apply(Action::HelpDismiss);
         assert!(a.help_buffer.is_none());
@@ -1077,7 +1106,7 @@ mod tests {
         // scroll still 0 (viewport math is 10*7/10 - 2 = 5 rows).
         let mut a = app_with("xx", 10);
         let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
-        install_help(&mut a, HelpBuffer::from_lines("scroll-test", lines));
+        install_help(&mut a, HelpContent::from_lines("scroll-test", lines));
         let line_down = a.builtins.line_down;
         for _ in 0..3 {
             a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
@@ -1093,7 +1122,7 @@ mod tests {
     fn help_motion_clamps_to_last_line() {
         let mut a = app_with("xx", 10);
         let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
-        install_help(&mut a, HelpBuffer::from_lines("scroll-test", lines));
+        install_help(&mut a, HelpContent::from_lines("scroll-test", lines));
         let line_down = a.builtins.line_down;
         for _ in 0..1000 {
             a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
@@ -1115,7 +1144,7 @@ mod tests {
         // pane -- when the cursor reaches the bottom row.
         let mut a = app_with("xx", 60);
         let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
-        install_help(&mut a, HelpBuffer::from_lines("size", lines));
+        install_help(&mut a, HelpContent::from_lines("size", lines));
         assert_eq!(a.help_popup_inner_height(60), Some(18));
         // Confirm `active_pane_content_height` routes through the
         // popup-inner branch in State B, so the runtime feeds 18
@@ -1131,7 +1160,7 @@ mod tests {
         let mut a = app_with("xx", 60);
         install_help(
             &mut a,
-            HelpBuffer::from_lines("tiny", vec!["a".into(); 4]),
+            HelpContent::from_lines("tiny", vec!["a".into(); 4]),
         );
         assert_eq!(a.help_popup_inner_height(60), Some(4));
     }
@@ -1142,7 +1171,7 @@ mod tests {
         // the help fills the pane and the regular pane-content-
         // height path applies. No overlay sizing.
         let mut a = app_with("xx", 60);
-        let id = a.open_help_in_pane(HelpBuffer::from_lines("log", vec!["a".into(); 8]));
+        let id = a.open_help_in_pane(HelpContent::from_lines("log", vec!["a".into(); 8]));
         assert_eq!(a.pane_tree.active().buffer_id, id);
         assert_eq!(a.help_popup_inner_height(60), None);
     }
@@ -1159,7 +1188,7 @@ mod tests {
         // motion path clamps `cursor.line` to last_addressable.
         let mut a = app_with("xx", 60);
         let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
-        install_help(&mut a, HelpBuffer::from_lines("scroll", lines));
+        install_help(&mut a, HelpContent::from_lines("scroll", lines));
         a.set_viewport_height(a.active_pane_content_height(60));
         let line_down = a.builtins.line_down;
         let line_up = a.builtins.line_up;
@@ -1184,7 +1213,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         install_help(
             &mut a,
-            HelpBuffer::from_lines("scroll-test", vec!["a".into(); 30]),
+            HelpContent::from_lines("scroll-test", vec!["a".into(); 30]),
         );
         let line_up = a.builtins.line_up;
         for _ in 0..1000 {
@@ -1199,7 +1228,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         install_help(
             &mut a,
-            HelpBuffer::from_lines("hl-test", vec!["hello world".into()]),
+            HelpContent::from_lines("hl-test", vec!["hello world".into()]),
         );
         let char_right = a.builtins.char_right;
         let char_left = a.builtins.char_left;
@@ -1224,7 +1253,7 @@ mod tests {
     #[test]
     fn help_gg_and_capital_g_route_through_grammar() {
         let mut a = app_with("xx", 10);
-        install_help(&mut a, HelpBuffer::from_lines("jt", vec!["x".into(); 30]));
+        install_help(&mut a, HelpContent::from_lines("jt", vec!["x".into(); 30]));
         let goto_first = a.builtins.goto_first_line;
         let goto_last = a.builtins.goto_last_line;
         a.apply(Action::Invoke(CommandInvocation::of(goto_last.0)));
@@ -1240,7 +1269,7 @@ mod tests {
         // `5j` -- the same count semantics as Normal mode.
         let mut a = app_with("xx", 10);
         let lines: Vec<String> = (0..50).map(|i| format!("l{i}")).collect();
-        install_help(&mut a, HelpBuffer::from_lines("count", lines));
+        install_help(&mut a, HelpContent::from_lines("count", lines));
         let line_down = a.builtins.line_down;
         a.apply(Action::Invoke(
             CommandInvocation::of(line_down.0).with_count(lattice_grammar::command::Count(5)),
@@ -1253,7 +1282,7 @@ mod tests {
         // Operators on a help buffer are rejected with a "read-only"
         // echo -- v1 doesn't model yank-against-help yet.
         let mut a = app_with("xx", 10);
-        install_help(&mut a, HelpBuffer::from_lines("ro", vec!["abc".into(); 5]));
+        install_help(&mut a, HelpContent::from_lines("ro", vec!["abc".into(); 5]));
         let yank = a.builtins.yank;
         a.apply(Action::Invoke(
             CommandInvocation::of(yank.0).with_range(lattice_grammar::Range::CurrentLine),
@@ -1270,7 +1299,7 @@ mod tests {
         // doesn't fall through onto the document.
         let mut a = app_with("xx", 10);
         let original = a.document.text();
-        install_help(&mut a, HelpBuffer::from_lines("ro", vec!["abc".into()]));
+        install_help(&mut a, HelpContent::from_lines("ro", vec!["abc".into()]));
         a.apply(Action::Insert("PWNED".into()));
         assert_eq!(a.document.text(), original);
         let msg = a.last_message.as_ref().expect("echo");
@@ -1280,7 +1309,7 @@ mod tests {
     #[test]
     fn help_buffer_active_mode_is_help_mode() {
         let mut a = app_with("hi", 5);
-        let help = crate::help::HelpBuffer::from_lines(
+        let help = crate::help::HelpContent::from_lines(
             "test",
             vec!["line one".to_string()],
         );
@@ -1295,7 +1324,7 @@ mod tests {
     #[test]
     fn help_locals_carry_owner_metadata_for_describe_buffer() {
         let mut a = app_with("hi", 5);
-        let help = crate::help::HelpBuffer::from_lines("t", vec!["body".into()]);
+        let help = crate::help::HelpContent::from_lines("t", vec!["body".into()]);
         let help_id = a.open_help_in_pane(help);
         let locals = a.buffer_locals.get(&help_id).unwrap();
         // Every seeded local should claim help-mode as its owner.

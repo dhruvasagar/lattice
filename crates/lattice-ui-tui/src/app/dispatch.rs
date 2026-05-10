@@ -1384,6 +1384,7 @@ mod tests {
         app_in_command_mode, app_with, attach_test_syntax, invoke_motion,
         press, press_chars, subscribe_all_events, write_temp_file,
     };
+    use crate::help::HelpContent;
     use lattice_protocol::edit::Edit;
     use crate::app::word_under_cursor;
     use crate::app::test_helpers::{fresh_workspace, write_workspace_config};
@@ -2040,10 +2041,11 @@ mod tests {
         // Q16: opening `:` dismisses help. The user can only focus
         // on one thing.
         let mut a = app_with("xx", 10);
-        a.help_buffer = Some(crate::help::HelpBuffer::from_lines(
-            "preexisting",
-            vec!["x".into()],
-        ));
+        // Stuff a HelpBuffer directly into the slot (no metadata
+        // seeding needed for this dismiss-on-cmdline test).
+        let crate::help::HelpContent { buffer, .. } =
+            crate::help::HelpContent::from_lines("preexisting", vec!["x".into()]);
+        a.help_buffer = Some(buffer);
         a.apply(Action::EnterCommandLine);
         assert!(a.help_buffer.is_none());
     }
@@ -2223,7 +2225,7 @@ mod tests {
         // Open help via the same path the App uses internally so
         // the position-history entry is recorded.
         a.open_popup(
-            HelpBuffer::from_lines("h", vec!["help body".into()]),
+            HelpContent::from_lines("h", vec!["help body".into()]),
             crate::popup::PopupPlacement::Centered,
         );
         assert_eq!(a.active_buffer, BufferKind::Help);

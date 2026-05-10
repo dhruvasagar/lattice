@@ -52,6 +52,10 @@ impl App {
                 self.open_popup(content, placement);
                 self.popup_buffer
             }
+            BufferDisplay::FloatingPopup(placement) => {
+                self.open_floating_popup(content, placement);
+                self.popup_buffer
+            }
             BufferDisplay::ActivePane => Some(self.open_help_in_pane(content)),
             BufferDisplay::Split(orientation) => {
                 Some(self.open_help_in_split(content, orientation))
@@ -88,7 +92,9 @@ impl App {
                 self.pane_tree.set_active(new_idx);
                 self.load_active_pane();
             }
-            BufferDisplay::ActivePane | BufferDisplay::Popup(_) => {}
+            BufferDisplay::ActivePane
+            | BufferDisplay::Popup(_)
+            | BufferDisplay::FloatingPopup(_) => {}
         }
     }
 

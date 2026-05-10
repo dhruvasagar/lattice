@@ -27,14 +27,23 @@ use crate::ui::popup::PopupPlacement;
 ///
 /// Renderer-agnostic: a future GPUI / web renderer maps these
 /// variants to its own surfaces. The TUI maps `Popup` to the
-/// existing centred-or-anchored overlay, `ActivePane` to the
-/// `:lsp-log`-style swap-active-pane path, and `Split` to a
-/// horizontal / vertical split via the pane tree.
+/// existing centred-or-anchored overlay, `FloatingPopup` to the
+/// hover-style overlay (popup floats; the doc keeps focus),
+/// `ActivePane` to the `:lsp-log`-style swap-active-pane path,
+/// and `Split` to a horizontal / vertical split via the pane
+/// tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BufferDisplay {
-    /// Overlay drawn over the buffer area. Carries its own
+    /// Focused overlay -- the popup gains focus, the underlying
+    /// document is paused. Used by `:lsp-status` /
+    /// `:describe-*` / `:apropos` / etc. Carries its own
     /// placement (cursor-anchored vs centred).
     Popup(PopupPlacement),
+    /// Floating overlay -- the popup paints on top, but the
+    /// document keeps focus. Cursor motion in the doc
+    /// auto-dismisses (via the `hover-mode` minor contract).
+    /// Used by hover (`K`) and signature help.
+    FloatingPopup(PopupPlacement),
     /// Replace the active pane's buffer with this one. The
     /// previous buffer stays in the registry; pane history /
     /// `<C-^>` (post v1) returns to it.
@@ -48,6 +57,7 @@ pub enum BufferDisplay {
 impl BufferDisplay {
     pub const POPUP_CENTERED: Self = Self::Popup(PopupPlacement::Centered);
     pub const POPUP_CURSOR: Self = Self::Popup(PopupPlacement::CursorAnchored);
+    pub const FLOATING_CURSOR: Self = Self::FloatingPopup(PopupPlacement::CursorAnchored);
     pub const SPLIT_HORIZONTAL: Self = Self::Split(SplitOrientation::Horizontal);
     pub const SPLIT_VERTICAL: Self = Self::Split(SplitOrientation::Vertical);
 }
@@ -125,8 +135,8 @@ pub const fn default_display(category: BufferDisplayCategory) -> BufferDisplay {
         C::HelpDescribe => BufferDisplay::POPUP_CENTERED,
         C::HelpApropos => BufferDisplay::POPUP_CENTERED,
         C::HelpList => BufferDisplay::POPUP_CENTERED,
-        C::Hover => BufferDisplay::POPUP_CURSOR,
-        C::Signature => BufferDisplay::POPUP_CURSOR,
+        C::Hover => BufferDisplay::FLOATING_CURSOR,
+        C::Signature => BufferDisplay::FLOATING_CURSOR,
         C::PickerResult => BufferDisplay::ActivePane,
     }
 }
@@ -147,10 +157,13 @@ mod tests {
             default_display(BufferDisplayCategory::LspLog),
             BufferDisplay::ActivePane
         );
-        // Hover was popup with cursor anchor.
+        // Hover routes to the floating-popup variant (M.4
+        // follow-up): popup floats, doc keeps focus; the
+        // hover-mode minor's auto-dismiss-on-cursor-motion
+        // contract makes State A semantics observable here.
         assert_eq!(
             default_display(BufferDisplayCategory::Hover),
-            BufferDisplay::POPUP_CURSOR
+            BufferDisplay::FLOATING_CURSOR
         );
     }
 

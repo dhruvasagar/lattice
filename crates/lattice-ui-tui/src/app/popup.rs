@@ -135,6 +135,73 @@ impl App {
         self.activate_major_for_buffer_kind(buffer_id, BufferKind::Help);
     }
 
+    /// Open `content` as a *floating* popup over the active
+    /// document (M.4 follow-up). Distinct from
+    /// [`Self::open_popup`]: focus stays on the doc -- cursor
+    /// motion in the doc auto-dismisses (the State A semantics
+    /// `do_open_hover` codified). Activates `markdown-mode` as
+    /// the major and `hover-mode` as the minor; the latter is
+    /// what the dispatch's auto-dismiss check
+    /// (`popup_has_hover_mode`) keys on.
+    ///
+    /// Used by hover (`K`), signature help, and any future
+    /// cursor-anchored quick-info popup that wants the
+    /// "popup floats; doc keeps focus" shape.
+    pub(crate) fn open_floating_popup(
+        &mut self,
+        content: HelpContent,
+        placement: PopupPlacement,
+    ) {
+        let HelpContent { buffer, metadata } = content;
+        let buffer_id = buffer.id;
+        // Drop any previous popup buffer cleanly before adopting
+        // the new one (back-to-back hovers shouldn't pile up).
+        self.dismiss_stale_popup_registry();
+        // Popup buffers participate in `app.buffers` like every
+        // other buffer (same shape `open_popup` uses).
+        self.buffers.insert(crate::buffer_registry::BufferEntry {
+            id: buffer_id,
+            flags: crate::buffers::BufferFlags {
+                listed: false,
+                hidden: true,
+            },
+            data: crate::buffer_registry::BufferData::Help(buffer),
+        });
+        self.popup_buffer = Some(buffer_id);
+        self.popup_placement = placement;
+        self.seed_help_metadata_locals(buffer_id, metadata);
+        // markdown-mode major + hover-mode minor. Markdown
+        // carries the syntax pipeline; hover-mode adds the
+        // auto-dismiss-on-doc-cursor-motion contract (and any
+        // future hover-only behaviour). Help-mode is
+        // intentionally NOT activated -- hover content is
+        // markdown that may include fenced code, but its links
+        // are typically external URLs we don't follow internally.
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
+        let _ = self.mode_registry.activate_major(
+            &mut active,
+            &mut locals,
+            proto_id,
+            lattice_syntax::MarkdownMode::mode_id(),
+            lattice_mode::CapabilitySet::empty(),
+        );
+        let _ = self.mode_registry.activate_minor(
+            &mut active,
+            &mut locals,
+            proto_id,
+            crate::modes::HoverMode::mode_id(),
+            lattice_mode::CapabilitySet::empty(),
+        );
+        self.active_modes.insert(buffer_id, active);
+        self.buffer_locals.insert(buffer_id, locals);
+        self.recompute_options_for_buffer(buffer_id);
+        // Crucially, NO active_buffer flip, NO prev_pane_for_help
+        // capture, NO position-history push, NO cursor/scroll
+        // load -- the document keeps focus. State A.
+    }
+
     /// M.4 (b): clear out a popup buffer's registry / mode /
     /// option-cache state. Called by [`Self::open_popup`] before
     /// adopting a new popup (so back-to-back popups don't

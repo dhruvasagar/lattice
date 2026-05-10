@@ -2381,6 +2381,38 @@ fn compose_visible_lines_inner(
                     .add_modifier(Modifier::ITALIC),
             ));
         }
+        // M.7.3.c: current-line highlight. When
+        // `current-line-highlight-mode` is active (M.7.2 minor
+        // / `:set cursorline`) and this row is the cursor's,
+        // OR `theme.cursor_line_bg` into each body span's style
+        // where the span's bg is unset. Selection wins
+        // per-cell -- spans with bg already set (visual /
+        // hlsearch / current_match overlays) keep their bg.
+        // Pads to buffer width so the highlight extends to the
+        // pane's right edge. Active pane only (this code path
+        // is the active path; the inactive path at line ~1800
+        // doesn't run this).
+        //
+        // Gutter + severity cell are intentionally not
+        // highlighted -- they're their own visual column. vim
+        // does highlight the line-number column; lattice can
+        // add that as a follow-up if users want it.
+        if line_idx == app.cursor.line && app.option_cache.current_line_highlight {
+            let bg = app.theme.cursor_line_bg;
+            for span in body.iter_mut() {
+                if span.style.bg.is_none() {
+                    span.style = span.style.bg(bg);
+                }
+            }
+            let used: usize = body.iter().map(|s| s.content.len()).sum();
+            let pad_width = (buffer_w as usize).saturating_sub(used);
+            if pad_width > 0 {
+                body.push(Span::styled(
+                    " ".repeat(pad_width),
+                    TuiStyle::default().bg(bg),
+                ));
+            }
+        }
         // LSP severity cell (Phase 4.1.d.iii). One cell pre-
         // pended to the gutter; severity glyph + colour when a
         // diagnostic touches the line, blank otherwise. Costs
@@ -3463,6 +3495,69 @@ mod tests {
         let out = apply_whitespace_decoration(input, line, &d);
         let dots = spans_text(&out).chars().filter(|c| *c == '·').count();
         assert_eq!(dots, 2);
+    }
+
+    // ---- M.7.3.c: current-line highlight ----
+
+    fn span_with_bg<'a>(line: &'a Line<'_>, expected_bg: Color) -> Option<&'a Span<'a>> {
+        line.spans.iter().find(|s| s.style.bg == Some(expected_bg))
+    }
+
+    #[test]
+    fn current_line_highlight_off_emits_no_special_bg() {
+        // Default state: the option is off ⇒ cursor row has no
+        // bg from the highlight pass.
+        let app = app_with("hello\nworld\n", 5);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        for line in &lines {
+            assert!(
+                span_with_bg(line, Color::Indexed(236)).is_none(),
+                "no cursor-line bg expected when off",
+            );
+        }
+    }
+
+    #[test]
+    fn current_line_highlight_on_paints_cursor_row_bg() {
+        // Activate `current-line-highlight-mode`; the cursor's
+        // row should pick up the theme's cursor_line_bg.
+        let mut app = app_with("hello\nworld\n", 5);
+        app.toggle_mode_by_name("current-line-highlight-mode");
+        // Cursor starts on line 0; verify its row has the bg.
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let cursor_row = &lines[0];
+        assert!(
+            span_with_bg(cursor_row, Color::Indexed(236)).is_some(),
+            "cursor row should have cursor_line_bg: {cursor_row:?}",
+        );
+        // Non-cursor row stays clean.
+        let other_row = &lines[1];
+        assert!(
+            span_with_bg(other_row, Color::Indexed(236)).is_none(),
+            "other rows should not have cursor_line_bg: {other_row:?}",
+        );
+    }
+
+    #[test]
+    fn current_line_highlight_pads_to_pane_width() {
+        // Even on a short line, the highlight should reach
+        // the right edge -- the renderer appends a pad-span
+        // with bg-only style.
+        let mut app = app_with("hi\n", 5);
+        app.toggle_mode_by_name("current-line-highlight-mode");
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let cursor_row = &lines[0];
+        // Find any pad span: bg = cursor_line_bg, content all
+        // spaces.
+        let pad = cursor_row.spans.iter().find(|s| {
+            s.style.bg == Some(Color::Indexed(236))
+                && s.content.chars().all(|c| c == ' ')
+                && s.content.len() > 1
+        });
+        assert!(
+            pad.is_some(),
+            "expected a pad span: {cursor_row:?}",
+        );
     }
 
     #[test]

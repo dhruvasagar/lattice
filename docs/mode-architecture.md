@@ -1616,7 +1616,7 @@ graceful error handling per CLAUDE.md.
     construction sites to seed `BufferLocals` directly instead of
     inspecting the struct fields. Production code is already on
     locals-only; the deferral is purely test-fixture migration.
-- M.4 -- 🟡 partial.
+- M.4 -- ✅ landed.
   - **Per-kind pane dispatch consolidated.** `draw_panes` and
     `draw_pane_status_line` no longer `match buffer.kind`; the
     branches live behind `draw_pane_content` and
@@ -1720,6 +1720,31 @@ graceful error handling per CLAUDE.md.
       hook lands (it activates `hover-mode` rather than the
       default `help-mode` minor); the `Hover` / `Signature`
       categories are reserved for that migration.
+- M.4 follow-ups (carried forward; can land alongside M.5+):
+  - **Hover via `display_buffer` + minor-mode override hook.**
+    Today `do_open_hover` bypasses the unified
+    `App::display_buffer` dispatch because that path activates
+    `help-mode` as the popup's minor; hover wants `hover-mode`
+    instead (auto-dismiss-on-cursor-motion semantics, no
+    link/anchor follow). Add an optional `minor_mode: ModeId`
+    parameter to the dispatch so callers can specify the
+    minor; migrate `do_open_hover`. The `Hover` / `Signature`
+    categories already exist in the enum reserved for this.
+  - **`:set <category>.display = ...` user overrides for the
+    BufferDisplay dispatch.** Layer typed-option overrides on
+    top of `App::resolve_display(category)`. Adds nine typed
+    options (one per `BufferDisplayCategory` variant; values
+    `popup | active-pane | split-h | split-v`) via the
+    `options!` macro pattern. Reads through the existing
+    `lattice_config::ResolvedOptions` cache; default falls
+    back to `default_display(category)` (current behaviour).
+  - **Bug 4: wrap behaviour for non-document buffers.**
+    Deferred during the bug pass before M.4. `wrap` /
+    `wrap-mode` semantics for help / file-tree / oil panes
+    aren't well-defined yet -- naturally folds into the M.7
+    "Display minor modes" slice (where `wrap-mode` becomes a
+    typed-option-backed minor and per-mode contributions
+    decide the default).
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

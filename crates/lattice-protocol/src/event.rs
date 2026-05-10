@@ -118,6 +118,28 @@ pub enum Event {
         /// The record's message text.
         message: String,
     },
+    /// Fired after `lsp-mode` activates on a buffer and the
+    /// supervisor's `open_buffer` (didOpen) request has been
+    /// queued. The semantic counterpart to LSP's
+    /// `textDocument/didOpen`: the editor now considers this
+    /// buffer LSP-tracked. M.5.3.
+    ///
+    /// `path` is `None` for standalone-server / scratch-buffer
+    /// activations (M.5.0 deferred capability); future revisions
+    /// may add a `server_ids` slice once standalone-server semantics
+    /// land.
+    LspBufferAttached {
+        id: DocumentId,
+        path: Option<PathBuf>,
+    },
+    /// Fired when `lsp-mode` deactivates on a buffer and the
+    /// supervisor has sent `textDocument/didClose` to attached
+    /// servers. The buffer remains open in the editor; only LSP
+    /// tracking ends. M.5.3.
+    LspBufferDetached {
+        id: DocumentId,
+        path: Option<PathBuf>,
+    },
 }
 
 impl Event {
@@ -136,6 +158,8 @@ impl Event {
             Event::BeforeQuit => EventKind::BeforeQuit,
             Event::OptionChanged { .. } => EventKind::OptionChanged,
             Event::LspLogPushed { .. } => EventKind::LspLogPushed,
+            Event::LspBufferAttached { .. } => EventKind::LspBufferAttached,
+            Event::LspBufferDetached { .. } => EventKind::LspBufferDetached,
         }
     }
 }
@@ -155,6 +179,8 @@ pub enum EventKind {
     BeforeQuit,
     OptionChanged,
     LspLogPushed,
+    LspBufferAttached,
+    LspBufferDetached,
 }
 
 /// An edit as actually applied to the buffer (the original `Edit` plus the

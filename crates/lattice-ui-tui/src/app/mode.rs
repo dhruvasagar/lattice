@@ -251,6 +251,15 @@ impl App {
         if matches!(kind, ModeKind::Major) {
             self.maybe_auto_activate_lsp_mode(buffer_id);
         }
+        // M.5.3: lsp-mode activate side-effect -- emit
+        // `LspBufferAttached` for subscribers (statusline,
+        // diagnostics renderer, future plugin hooks). The actual
+        // wire-level didOpen happens via the existing
+        // `attach_driver` listening on `Event::DocumentOpened`,
+        // which fires from the file-open path.
+        if mode_id == lattice_lsp::modes::LspMode::mode_id() {
+            self.on_lsp_mode_activated(buffer_id);
+        }
     }
 
     /// M.5.1: programmatic deactivation of `mode_id` on
@@ -292,6 +301,44 @@ impl App {
         self.active_modes.insert(buffer_id, active);
         self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
+        // M.5.3: lsp-mode deactivate side-effect -- send didClose
+        // to attached servers (`lsp_close_buffer` already does
+        // this for the bdelete path) and emit
+        // `LspBufferDetached`. Server connection persists if
+        // other buffers are still attached.
+        if mode_id == lattice_lsp::modes::LspMode::mode_id() {
+            self.on_lsp_mode_deactivated(buffer_id);
+        }
+    }
+
+    /// M.5.3: lsp-mode activated on `buffer_id`. Emits
+    /// `LspBufferAttached` on the editor's event bus so
+    /// subscribers see the gate flip. Wire-level `didOpen` is
+    /// already driven by the `attach_driver` subscribing to
+    /// `Event::DocumentOpened` from the file-open path.
+    fn on_lsp_mode_activated(&mut self, buffer_id: BufferId) {
+        let path = self.path_for_buffer(buffer_id);
+        self.event_bus.publish(Event::LspBufferAttached {
+            id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
+            path,
+        });
+    }
+
+    /// M.5.3: lsp-mode deactivated on `buffer_id`. Sends
+    /// `textDocument/didClose` per attached server (the LSP wire
+    /// mechanism for "stop tracking this URI") and emits
+    /// `LspBufferDetached`. Mirrors nvim's
+    /// `vim.lsp.buf_detach_client` and emacs `lsp-mode`'s
+    /// disable path. The buffer stays open in the editor; only
+    /// LSP tracking ends. Server connection persists if other
+    /// buffers are still attached.
+    fn on_lsp_mode_deactivated(&mut self, buffer_id: BufferId) {
+        let path = self.path_for_buffer(buffer_id);
+        self.lsp_close_buffer(buffer_id);
+        self.event_bus.publish(Event::LspBufferDetached {
+            id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
+            path,
+        });
     }
 
     /// M.5.1: toggle a mode by name on the active pane's buffer.
@@ -506,6 +553,56 @@ mod tests {
         let a = app_with("fn main() {}", 5);
         let id = a.pane_tree.active().buffer_id;
         assert!(!a.lsp_mode_enabled_for(id));
+    }
+
+    #[test]
+    fn deactivating_lsp_mode_emits_lsp_buffer_detached_event() {
+        // M.5.3: deactivating `lsp-mode` publishes
+        // `Event::LspBufferDetached` on the editor bus.
+        // Subscribers (statusline, future telemetry) see the
+        // gate flip without polling.
+        use crate::app::test_helpers::{app_with_path, subscribe_all_events};
+        let mut a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
+        let id = a.pane_tree.active().buffer_id;
+        // Subscribe AFTER auto-activation so the channel only
+        // captures the deactivate path.
+        let mut rx = subscribe_all_events(&a);
+        assert!(a.lsp_mode_enabled_for(id));
+        a.toggle_mode_by_name("lsp-mode");
+        assert!(!a.lsp_mode_enabled_for(id));
+        // Drain the receiver synchronously and look for our
+        // event. (The bus is sync; events are queued
+        // immediately on publish.)
+        let mut found_detached = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, lattice_protocol::Event::LspBufferDetached { .. }) {
+                found_detached = true;
+                break;
+            }
+        }
+        assert!(
+            found_detached,
+            "expected Event::LspBufferDetached on bus after `:lsp-mode` toggle off"
+        );
+    }
+
+    #[test]
+    fn deactivating_lsp_mode_clears_buffer_uri_mapping() {
+        // M.5.3: the deactivate path runs through `lsp_close_buffer`
+        // which also clears `App::buffer_uris` for that id (so
+        // future requests don't leak the URI). Verifies the
+        // detach side-effect on App state, not just the event.
+        use crate::app::test_helpers::app_with_path;
+        let mut a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
+        let id = a.pane_tree.active().buffer_id;
+        // The publish_document_opened path inserts the URI
+        // mapping at App::new time.
+        assert!(a.buffer_uri(id).is_some());
+        a.toggle_mode_by_name("lsp-mode");
+        assert!(
+            a.buffer_uri(id).is_none(),
+            "lsp-mode deactivate should clear buffer_uris[id]"
+        );
     }
 
     #[test]

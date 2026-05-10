@@ -6142,6 +6142,55 @@ mod tests {
     }
 
     #[test]
+    fn m6_end_to_end_independent_sub_modes_per_feature() {
+        // M.6.4: full contract exercised end-to-end.
+        // 1. `:lsp-mode` cascade-on activates all 9 sub-modes.
+        // 2. Disable one sub-mode (`lsp-format-mode`); other
+        //    features still fire (or echo their own sub-mode
+        //    name on bail).
+        // 3. Re-enable; everything works again.
+        let mut a = app_with("xx", 10);
+        a.toggle_mode_by_name("lsp-mode");
+        assert!(a.lsp_format_mode_enabled_for(a.document_buffer_id));
+        assert!(a.lsp_hover_mode_enabled_for(a.document_buffer_id));
+
+        // Disable just format-mode.
+        a.toggle_mode_by_name("lsp-format-mode");
+        assert!(!a.lsp_format_mode_enabled_for(a.document_buffer_id));
+        // Other sub-modes still active.
+        assert!(a.lsp_hover_mode_enabled_for(a.document_buffer_id));
+        assert!(a.lsp_completion_mode_enabled_for(a.document_buffer_id));
+        assert!(a.lsp_diagnostics_mode_enabled_for(a.document_buffer_id));
+
+        // Format request bails with format-mode echo.
+        a.do_lsp_format_request(false);
+        assert!(
+            a.last_message
+                .as_ref()
+                .map(|m| m.text.contains("lsp-format-mode disabled"))
+                .unwrap_or(false),
+            "expected format-mode echo, got: {:?}",
+            a.last_message,
+        );
+
+        // Hover still works (well, fails for "no LSP server" but
+        // not for "mode disabled" -- the sub-mode gate passes).
+        a.last_message = None;
+        a.apply(Action::LspHoverRequest);
+        if let Some(msg) = &a.last_message {
+            assert!(
+                !msg.text.contains("lsp-hover-mode disabled"),
+                "hover sub-mode unexpectedly gated: {}",
+                msg.text,
+            );
+        }
+
+        // Re-enable format-mode.
+        a.toggle_mode_by_name("lsp-format-mode");
+        assert!(a.lsp_format_mode_enabled_for(a.document_buffer_id));
+    }
+
+    #[test]
     fn next_diagnostic_with_lsp_diagnostics_mode_off_echoes_gate() {
         // M.6.3 contract: `:lsp-diagnostics-mode` off ⇒ the
         // navigation gate echoes the sub-mode name and bails

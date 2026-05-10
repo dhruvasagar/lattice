@@ -1938,6 +1938,75 @@ graceful error handling per CLAUDE.md.
   `:describe-event NAME`. Tests verify the catalogue lists
   all three M.5.3.b LSP events grouped under
   `lattice-lsp`.
+- M.6 -- ✅ landed across M.6.0 / M.6.1 / M.6.2 / M.6.3 /
+  M.6.4. Nine LSP sub-mode minors give per-feature
+  toggles inside the `lsp-mode` umbrella; each is
+  independently disable-able while the umbrella stays
+  active. Decomposition:
+  - **M.6.0 -- declarations.** `lsp_sub_mode!` macro in
+    `lattice-lsp::modes` declares `LspCompletionMode`,
+    `LspDiagnosticsMode`, `LspHoverMode`, `LspSignatureMode`,
+    `LspFormatMode`, `LspRenameMode`, `LspSymbolsMode`,
+    `LspCodeActionMode`, `LspNavMode`. Pure markers (kind
+    Minor, no options, no capability requirements, no-op
+    lifecycle hooks). `register_lsp_log_modes` (kept name
+    for compatibility) extends to register all nine.
+    App-side accessors `lsp_<feature>_mode_enabled_for(id)`
+    -- one per sub-mode -- back the gate sites; a
+    `minor_mode_enabled_for` helper backs all nine.
+  - **M.6.1 -- cascade.** `on_lsp_mode_activated` invokes
+    `activate_lsp_sub_modes_for(id)` which flips every
+    sub-mode on in one .remove/.insert pass (option recompute
+    paid once, not nine times); already-active sub-modes are
+    skipped silently. `on_lsp_mode_deactivated` mirrors with
+    `deactivate_lsp_sub_modes_for`. **Deliberate trade-off:**
+    sub-modes auto-activate regardless of which capabilities
+    the attached server advertises. They are user-controllable
+    *disable switches*, not duplicate capability gates -- the
+    wire layer already filters per-server
+    (`handle.capabilities().supports_hover()` etc. before
+    issuing). Auto-activating regardless of capability avoids
+    the async race between umbrella activation (immediate)
+    and the `initialize` response (hundreds of ms), and gives
+    the right user-facing error when a server doesn't support
+    a feature ("server doesn't advertise hover" rather than
+    "lsp-hover-mode disabled"). Re-toggling `:lsp-mode` is the
+    "reset to defaults" gesture (cascade-off then cascade-on
+    flips every sub-mode back on, including ones the user had
+    disabled individually).
+  - **M.6.2 -- per-feature gates.** Each `do_lsp_*_request`
+    gates on its specific sub-mode via the new
+    `check_lsp_sub_mode_gate(mode_id, label)` helper, which
+    runs the umbrella check first (single
+    message-source-of-truth: enable lsp-mode first, then the
+    sub-mode). Insert-mode auto-triggers (`do_lsp_insert_completion_request`,
+    `do_lsp_signature_help_request`, `do_lsp_on_type_formatting_request`)
+    skip the echo path and check the bool directly -- a typed
+    character that doesn't fire isn't a moment to surface
+    mode state. Twelve methods touched.
+  - **M.6.3 -- diagnostic surfaces.** `render::severity_for_line`
+    + `render::diagnostics_on_line` (gutter glyph + inline
+    underline) move from the umbrella gate to
+    `lsp_diagnostics_mode_enabled_for`. `do_next_diagnostic`
+    / `do_prev_diagnostic` gate on `lsp-diagnostics-mode`
+    (echo). Existing M.5.6 tests stay green via cascade-off
+    propagating to the sub-mode. Modeline `[lsp:server]`
+    intentionally stays on the umbrella -- it reflects "is
+    this buffer LSP-tracked?" not "are diagnostics on?".
+    Test fixture `seed_diags_at_lines` auto-activates lsp-mode
+    (matches `seed_diagnostic` helper).
+  - **M.6.4 -- coverage + docs.** End-to-end test
+    `m6_end_to_end_independent_sub_modes_per_feature`
+    exercises cascade-on + independent disable + selective
+    feature behaviour + re-enable. `docs/help/lsp-mode.md`
+    extended with the sub-mode table, contract details
+    (umbrella echo wins, sub-modes aren't capability gates,
+    re-toggle = reset), and the programmatic accessor
+    catalogue. `lsp.*` namespace cleanup (M.6.5 in the table)
+    deferred to a separate one-line slice.
+
+  Workspace: 1369 → 1383 (+14 across the four sub-slices --
+  3 declarations, 4 cascade, 4 gate, 2 diagnostic, 1 e2e).
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

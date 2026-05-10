@@ -50,6 +50,63 @@ scratch buffers experimenting with a server).
 | Diagnostics (gutter, underline)   | Hidden in the renderer; layer keeps storing  |
 | Modeline `[lsp:<server>]` segment | Hidden                                       |
 
+## Sub-modes (M.6)
+
+`lsp-mode` is the umbrella; nine **sub-modes** turn each LSP
+feature on and off independently. When the umbrella activates,
+every sub-mode auto-activates with it (cascade); deactivating
+the umbrella deactivates them all. Between those two extremes,
+the user can run `:<sub-mode>` to disable a specific surface
+while leaving the rest live -- the canonical "diagnostics are
+too distracting in this file but I still want hover" case.
+
+| Sub-mode                | Gates                                                |
+|-------------------------|------------------------------------------------------|
+| `lsp-completion-mode`   | LSP insert-mode completion + `:complete`             |
+| `lsp-diagnostics-mode`  | Gutter glyphs + inline underline + `]d`/`[d`         |
+| `lsp-hover-mode`        | `K` hover popup                                      |
+| `lsp-signature-mode`    | Auto signature help on `(` / `,`                     |
+| `lsp-format-mode`       | `:lsp-format` / `:lsp-format-range` + on-type-format |
+| `lsp-rename-mode`       | `:lsp-rename`                                        |
+| `lsp-symbols-mode`      | `:lsp-symbols` / `:lsp-workspace-symbol`             |
+| `lsp-code-action-mode`  | `:lsp-code-action`                                   |
+| `lsp-nav-mode`          | `gd`/`gD`/`gy`/`gI` definition family + `gr`         |
+
+**The umbrella check wins.** When `lsp-mode` is off, the
+echo always says `lsp-mode disabled` -- one
+message-source-of-truth. Only when the umbrella is on and a
+specific sub-mode is off does the per-sub-mode echo fire
+(`lsp-hover-mode disabled`, etc.).
+
+**Sub-modes are user-controllable disable switches, not
+capability gates.** A sub-mode auto-activates regardless of
+which capabilities the attached server advertises. The
+wire layer already filters per-server (`supports_hover()` etc.
+before issuing a request). If a server doesn't support a
+feature, the user-facing error is "server doesn't advertise
+hover", not "lsp-hover-mode disabled" -- the sub-mode is on,
+the server just can't help.
+
+**Re-toggling the umbrella is the reset gesture.** If you've
+disabled several sub-modes individually and want to start
+fresh, run `:lsp-mode` twice: cascade-off, then cascade-on.
+Every sub-mode flips back on.
+
+### Programmatic API
+
+Each sub-mode has a typed accessor matching the umbrella's
+shape:
+
+- `App::lsp_completion_mode_enabled_for(buffer_id) -> bool`
+- `App::lsp_diagnostics_mode_enabled_for(buffer_id) -> bool`
+- `App::lsp_hover_mode_enabled_for(buffer_id) -> bool`
+- `App::lsp_signature_mode_enabled_for(buffer_id) -> bool`
+- `App::lsp_format_mode_enabled_for(buffer_id) -> bool`
+- `App::lsp_rename_mode_enabled_for(buffer_id) -> bool`
+- `App::lsp_symbols_mode_enabled_for(buffer_id) -> bool`
+- `App::lsp_code_action_mode_enabled_for(buffer_id) -> bool`
+- `App::lsp_nav_mode_enabled_for(buffer_id) -> bool`
+
 The diagnostics layer continues to receive data from the
 server -- toggling back on shows current state immediately,
 without a re-fetch round-trip. The server-side document

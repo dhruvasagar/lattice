@@ -1773,6 +1773,24 @@ graceful error handling per CLAUDE.md.
   per-mode typed `BufferLocals`, so we get emacs's "globalised
   minor" UX without `kill-all-local-variables` semantics.
   User-facing `:help modes` topic added.
+- M.5.2 -- ✅ landed. `lsp-mode` auto-activation hook on
+  major-mode entry. New `LspSupervisor::has_server_for_path`
+  / `LspSupervisorHandle::has_server_for_path` answers "is
+  there a configured server for this path?" via the existing
+  `file_patterns` registry. App-side
+  `maybe_auto_activate_lsp_mode(buffer_id)` runs after every
+  major activation (both the buffer-creation path and the
+  `:<mode-name>` toggle path) -- looks up the buffer's path,
+  asks the supervisor, activates `lsp-mode` if a match
+  exists and `lsp-mode` isn't already active. Modelled as a
+  synchronous post-activation hook for now; converting to an
+  event-bus subscription on `MajorEntered` is a follow-up
+  once the broader subscriber API lands. **Asymmetric by
+  design**: no auto-deactivate on `MajorExited` -- minors
+  survive major swaps; user runs `:lsp-mode` to flip off
+  explicitly. Per-major opt-out (`:set rust-mode.lsp = false`)
+  is deferred to a future slice once typed-option per-mode
+  conventions are settled.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

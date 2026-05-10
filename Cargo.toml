@@ -12,6 +12,7 @@ members = [
 	"crates/lattice-snippet",
 	"crates/lattice-runtime",
 	"crates/lattice-help",
+	"crates/lattice-file-tree",
 	"crates/lattice-oil",
 	"crates/lattice-lsp",
 	"crates/lattice-ui-tui",

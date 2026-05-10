@@ -791,6 +791,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-file-tree"
+version = "0.1.0"
+dependencies = [
+ "lattice-core",
+ "lattice-protocol",
+]
+
+[[package]]
 name = "lattice-grammar"
 version = "0.1.0"
 dependencies = [
@@ -915,6 +923,7 @@ dependencies = [
  "lattice-completion",
  "lattice-config",
  "lattice-core",
+ "lattice-file-tree",
  "lattice-grammar",
  "lattice-help",
  "lattice-lsp",

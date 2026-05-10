@@ -7,5 +7,6 @@
 //! the renderer crate; only the *data shapes* and *geometry math*
 //! live in lattice-core.
 
+pub mod icons;
 pub mod pane;
 pub mod popup;

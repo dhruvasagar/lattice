@@ -614,6 +614,68 @@ mod tests {
     }
 
     #[test]
+    fn set_number_true_activates_line_numbers_mode_on_active_buffer() {
+        // M.7.1 convergence: `:set number=true` activates
+        // `line-numbers-mode` on the active buffer; `:set
+        // nonumber` deactivates it. The two surfaces stay in
+        // sync.
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        // Default Number=true; M.7.1 means the mode should
+        // already be active on the active buffer (initial cascade
+        // when typed-option is true at startup). But initial
+        // boot doesn't fire OptionChanged, so the mode isn't
+        // pre-activated. Verify by explicit set.
+        a.do_set("nonumber");
+        assert!(!a.active_modes.get(&id).unwrap().has_minor(
+            lattice_mode::modes::LineNumbersMode::mode_id()
+        ));
+        a.do_set("number");
+        assert!(a.active_modes.get(&id).unwrap().has_minor(
+            lattice_mode::modes::LineNumbersMode::mode_id()
+        ));
+        a.do_set("nonumber");
+        assert!(!a.active_modes.get(&id).unwrap().has_minor(
+            lattice_mode::modes::LineNumbersMode::mode_id()
+        ));
+    }
+
+    #[test]
+    fn set_wrap_converges_with_wrap_mode() {
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        let wrap_id = lattice_mode::modes::WrapMode::mode_id();
+        a.do_set("wrap");
+        assert!(a.active_modes.get(&id).unwrap().has_minor(wrap_id));
+        a.do_set("nowrap");
+        assert!(!a.active_modes.get(&id).unwrap().has_minor(wrap_id));
+    }
+
+    #[test]
+    fn line_numbers_mode_activation_matches_set_number() {
+        // M.7.1 the other direction: activating the mode AND
+        // running `:set number` produce the same observable
+        // state. (Mode activation doesn't reach back into the
+        // typed-option layer in v1 -- that's a separate
+        // refinement -- but the resolved-option view converges
+        // because the mode contribution wins regardless.)
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        a.do_set("nonumber");
+        assert!(!a.show_line_numbers());
+        // Mode activation flips the mode-contribution layer.
+        a.toggle_mode_by_name("line-numbers-mode");
+        assert!(a.show_line_numbers(), "mode contribution overrides set false");
+        // `:set number` activates the mode (already active --
+        // no-op) and flips the typed-option layer.
+        a.do_set("number");
+        assert!(a.show_line_numbers());
+        assert!(a.active_modes.get(&id).unwrap().has_minor(
+            lattice_mode::modes::LineNumbersMode::mode_id()
+        ));
+    }
+
+    #[test]
     fn read_only_mode_toggle_flips_read_only_resolved_value() {
         // M.7.0: `:read-only-mode` lets users mark an arbitrary
         // buffer read-only. `ReadOnly` itself is

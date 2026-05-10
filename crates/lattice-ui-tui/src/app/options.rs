@@ -390,6 +390,24 @@ impl App {
                 if self.relative_line_numbers() {
                     let _ = self.config.set_typed::<lattice_config::Number>(true);
                 }
+                // M.7.1: mirror to `relative-line-numbers-mode`.
+                self.mirror_typed_option_to_display_mode::<lattice_config::RelativeNumber>(
+                    lattice_mode::modes::RelativeLineNumbersMode::mode_id(),
+                );
+            }
+            "number" => {
+                // M.7.1: mirror to `line-numbers-mode` on the
+                // active buffer. Typed-option-driven `:set number`
+                // and mode-driven `:line-numbers-mode` converge to
+                // one observable state.
+                self.mirror_typed_option_to_display_mode::<lattice_config::Number>(
+                    lattice_mode::modes::LineNumbersMode::mode_id(),
+                );
+            }
+            "wrap" => {
+                self.mirror_typed_option_to_display_mode::<lattice_config::Wrap>(
+                    lattice_mode::modes::WrapMode::mode_id(),
+                );
             }
             "foldmethod" => {
                 // Recompute folds against the new method. Idempotent
@@ -401,6 +419,41 @@ impl App {
                 self.sync_theme_from_config();
             }
             _ => {}
+        }
+    }
+
+    /// M.7.1: read the typed-option layer for `D` (a boolean
+    /// display option) and mirror its current value to the
+    /// corresponding display minor mode on the active buffer.
+    /// `true` ⇒ mode active; `false` ⇒ mode inactive. Idempotent
+    /// per buffer (already-(in)active short-circuits in the
+    /// underlying register/deregister calls).
+    ///
+    /// Reads through `config.get_typed::<D>()` (the *typed-option*
+    /// layer) rather than `resolved_option::<D>` -- the user's
+    /// explicit `:set` gesture is the authority for the mode's
+    /// activation state, not the resolved layered view.
+    fn mirror_typed_option_to_display_mode<D>(
+        &mut self,
+        mode_id: lattice_mode::ModeId,
+    ) where
+        D: lattice_config::OptionDecl<Value = bool>,
+    {
+        let buffer_id = self.document_buffer_id;
+        let on = self
+            .config
+            .get_typed::<D>()
+            .map(|v| *v)
+            .unwrap_or(false);
+        let currently_active = self
+            .active_modes
+            .get(&buffer_id)
+            .map(|modes| modes.has_minor(mode_id))
+            .unwrap_or(false);
+        if on && !currently_active {
+            self.activate_mode_by_id(buffer_id, mode_id);
+        } else if !on && currently_active {
+            self.deactivate_mode_by_id(buffer_id, mode_id);
         }
     }
 

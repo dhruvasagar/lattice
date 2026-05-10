@@ -1775,17 +1775,15 @@ fn draw_file_tree_pane(
     let nerd_fonts = app.theme.nerd_fonts;
     let theme = &app.theme;
     let raw_text = tree.content.as_string();
-    // M.3.2.c.2: read entries via buffer-locals (canonical),
-    // fall back to the struct field. The renderer needs an
-    // owned copy because the iter borrows the entries' slice;
-    // the locals path returns `&Vec` which is fine.
-    let entries_from_locals = app
+    // M.3.2.c.5: read entries through `buffer_locals` exclusively.
+    // The vestigial `tree.entries` field stays for tests; production
+    // resolves through the locals map keyed on `pane.buffer_id`.
+    let entries: &[crate::file_tree::FileTreeEntry] = app
         .buffer_locals
         .get(&pane.buffer_id)
-        .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>());
-    let entries: &[crate::file_tree::FileTreeEntry] = entries_from_locals
+        .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>())
         .map(|e| e.0.as_slice())
-        .unwrap_or(&tree.entries);
+        .unwrap_or(&[]);
     let lines: Vec<Line> = raw_text
         .split('\n')
         .enumerate()

@@ -153,22 +153,16 @@ impl App {
     pub(super) fn do_file_tree_follow(&mut self) {
         let active_id = self.active_pane_buffer_id();
         let idx = self.cursor.line as usize;
-        // M.3.2.c.2: prefer entries from buffer-locals; fall
-        // back to the tree's struct field. The toggle below
-        // mutates the struct field in place; we re-mirror
-        // afterwards to keep the locals in sync.
-        let entry = {
-            let from_locals = self
-                .buffer_locals
-                .get(&active_id)
-                .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>())
-                .and_then(|e| e.0.get(idx).cloned());
-            from_locals.or_else(|| {
-                self.buffers
-                    .file_tree(active_id)
-                    .and_then(|t| t.entries.get(idx).cloned())
-            })
-        };
+        // M.3.2.c.5: read entries exclusively through buffer_locals.
+        // The struct field is still mutated by `toggle_at` (the
+        // existing API on FileTreeBuffer); after the toggle we
+        // re-mirror it onto locals so subsequent reads pick up the
+        // new shape.
+        let entry = self
+            .buffer_locals
+            .get(&active_id)
+            .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>())
+            .and_then(|e| e.0.get(idx).cloned());
         let Some(entry) = entry else {
             return;
         };

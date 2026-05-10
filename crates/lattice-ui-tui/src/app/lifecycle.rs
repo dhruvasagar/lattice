@@ -563,18 +563,12 @@ impl App {
     pub(super) fn do_write(&mut self, path: Option<std::path::PathBuf>) {
         if matches!(self.active_buffer, BufferKind::Oil) {
             let oil_id = self.active_pane_buffer_id();
-            // M.3.2.c.3: read dir from buffer-locals for the
-            // status message; fall back to the struct field.
+            // M.3.2.c.5: read dir through buffer_locals exclusively.
             let dir_display = self
                 .buffer_locals
                 .get(&oil_id)
                 .and_then(|locals| locals.get::<crate::modes::OilDir>())
                 .map(|d| d.0.display().to_string())
-                .or_else(|| {
-                    self.buffers
-                        .oil(oil_id)
-                        .map(|o| o.dir.display().to_string())
-                })
                 .unwrap_or_default();
             if let Some(oil) = self.buffers.oil_mut(oil_id) {
                 match oil.apply() {
@@ -785,18 +779,20 @@ impl App {
                         id.0, h.title,
                     ));
                 }
-                BufferData::Oil(o) => {
-                    // M.3.2.c.3: prefer dir from buffer-locals.
+                BufferData::Oil(_) => {
+                    // M.3.2.c.5: read dir through buffer_locals
+                    // exclusively. The struct field stays as
+                    // vestigial for tests.
                     let dir = self
                         .buffer_locals
                         .get(&id)
                         .and_then(|locals| locals.get::<crate::modes::OilDir>())
-                        .map(|d| d.0.clone())
-                        .unwrap_or_else(|| o.dir.clone());
+                        .map(|d| d.0.display().to_string())
+                        .unwrap_or_default();
                     lines.push(format!(
                         "  {active_marker}{listed_marker} #{:<3} oil      {}",
                         id.0,
-                        dir.display()
+                        dir
                     ));
                 }
             }

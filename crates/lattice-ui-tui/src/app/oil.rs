@@ -104,13 +104,16 @@ impl App {
         let active_id = self.active_pane_buffer_id();
         let Some(oil) = self.buffers.oil(active_id) else { return; };
         let Some(entry) = oil.entry_at_cursor().cloned() else { return; };
-        // M.3.2.c.3: read dir from buffer-locals.
-        let dir = self
+        // M.3.2.c.5: read dir through buffer_locals exclusively.
+        // The struct field stays as vestigial for tests.
+        let Some(dir) = self
             .buffer_locals
             .get(&active_id)
             .and_then(|locals| locals.get::<crate::modes::OilDir>())
             .map(|d| d.0.clone())
-            .unwrap_or_else(|| oil.dir.clone());
+        else {
+            return;
+        };
         if entry.is_dir {
             let navigate_result = self
                 .buffers

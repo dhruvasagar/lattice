@@ -1578,20 +1578,44 @@ graceful error handling per CLAUDE.md.
   `buffer_locals`. Round-trip bug fix: `last_synced_syntax_version`
   now persists across switch-away-and-back (was silently rolling
   back to 0). 5 new tests cover seeding + accessor behaviour.
-- M.3.2.c.5 -- 🟡 partial. **DocumentEntry mode-fields retired**:
-  `syntax`, `last_parsed_text_version`, `last_synced_syntax_version`,
-  `folds` are gone from `DocumentEntry`; the entry now holds only
-  `id` + `handle`. Activation transitions stash / restore mode-state
-  through `buffer_locals` directly. Helpers
-  `seed_empty_document_locals(id)` (initial seed at construction) and
-  `snapshot_active_document` (de-activation stash) own the writes.
-  **Deferred to a follow-up slice**: HelpBuffer / FileTreeBuffer /
-  OilBuffer field retirement. The mirror + locals path for those is
-  already in place; production reads route through locals; the
-  fallback to struct fields exists for synthetic-test paths and would
-  require rewriting ~70 test constructions to remove. BufferStorage
-  retirement decision likewise deferred until all four kinds have
-  retired their fields.
+- M.3.2.c.5 -- 🟡 partial-with-known-limit.
+  - **DocumentEntry mode-fields fully retired**: `syntax`,
+    `last_parsed_text_version`, `last_synced_syntax_version`, `folds`
+    are gone from `DocumentEntry`; the entry now holds only `id` +
+    `handle`. Activation transitions stash / restore mode-state
+    through `buffer_locals` directly via
+    `seed_empty_document_locals(id)` (initial seed at construction)
+    and `snapshot_active_document` (de-activation stash).
+  - **HelpBuffer**: production read paths flipped to `buffer_locals`
+    exclusively. New `HelpContent` bundle (slim `HelpBuffer` +
+    parsed `HelpMetadata`) returned by every factory; `App::open_popup`
+    seeds metadata into `buffer_locals[help.id]`. Struct fields
+    (`links`/`anchors`/`highlights`) stay as vestigial test-fixture
+    state. `Deref<Target = HelpBuffer>` on `HelpContent` keeps tests
+    that access `content.cursor`/`content.line_count()` etc. working.
+  - **FileTreeBuffer**: renderer + `do_open_file_tree_under_cursor`
+    read `entries` exclusively through `buffer_locals`. Vestigial
+    fields stay; the `toggle_at` mutator continues to write the
+    struct field, with a re-mirror to locals after each call.
+  - **OilBuffer**: `do_oil_follow`, `do_write` (oil branch), and
+    `do_list_buffers` read `dir` exclusively through `buffer_locals`.
+    Vestigial fields stay; `navigate_into` mutates the struct field
+    and re-mirrors to locals.
+  - **BufferStorage decision: keep the enum.** Document is
+    structurally different from Help / FileTree / Oil (its content
+    lives in an actor accessed via `DocumentHandle`; the others
+    embed a rope inline + carry kind-specific methods like
+    `FileTreeBuffer::toggle_at` / `OilBuffer::navigate_into` /
+    `OilBuffer::apply` whose semantics are meaningfully distinct).
+    Collapsing into one `Buffer` struct would either smear the
+    Document-vs-rope distinction or inline `Option<DocumentHandle>`
+    on every kind -- either way encoding the dispatch the enum
+    already encodes cleanly.
+  - **Deferred**: full struct-field removal across the three
+    non-Document kinds. Would require rewriting ~70 test
+    construction sites to seed `BufferLocals` directly instead of
+    inspecting the struct fields. Production code is already on
+    locals-only; the deferral is purely test-fixture migration.
 
 ### 10.1 Why LSP is the right canary (M.5 first among "real" mode work)
 

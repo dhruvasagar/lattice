@@ -240,7 +240,7 @@ fn logging_log_trace_on(c: &mut Criterion) {
 // Edit-path benches (added with the per-actor fan-in refactor).
 //
 // These three benches monitor the cost the new architecture
-// (DESIGN.md §5.2.5 + docs/lsp-architecture.md §11) puts on the
+// (DESIGN.md §5.2.5 + docs/dev/architecture/lsp-architecture.md §11) puts on the
 // keystroke path:
 //
 //   (a) `lsp_edit_publish_*`       -- UI-thread overhead per edit

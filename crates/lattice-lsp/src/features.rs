@@ -40,7 +40,7 @@ use crate::actor::ServerHandle;
 use crate::pending::Pending;
 
 impl ServerHandle {
-    /// `textDocument/hover` (DESIGN.md §5.4 / docs/lsp-features.md).
+    /// `textDocument/hover` (DESIGN.md §5.4 / docs/dev/notes/lsp-features.md).
     /// Returns `None` when the server has nothing to say at the
     /// cursor position. The body's `contents` field is what the
     /// renderer feeds into the [`crate::HoverPopup`] markdown
@@ -55,7 +55,7 @@ impl ServerHandle {
     }
 
     /// `textDocument/definition` (DESIGN.md §5.4 /
-    /// docs/lsp-features.md). Returns the location(s) where the
+    /// docs/dev/notes/lsp-features.md). Returns the location(s) where the
     /// symbol under the cursor is defined. `GotoDefinitionResponse`
     /// is an enum: single `Location`, `Vec<Location>`, or
     /// `Vec<LocationLink>` (richer links carrying origin range).
@@ -69,7 +69,7 @@ impl ServerHandle {
     }
 
     /// `textDocument/declaration` (DESIGN.md §5.4 /
-    /// docs/lsp-features.md). `gD` family. Same response shape as
+    /// docs/dev/notes/lsp-features.md). `gD` family. Same response shape as
     /// `goto_definition`; servers usually point at the *forward
     /// declaration* (header file in C / extern statement in Rust)
     /// rather than the implementation. Multi-server merge dedups

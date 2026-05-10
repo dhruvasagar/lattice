@@ -29,7 +29,7 @@ asynchronicity.
 > All multi-result LSP lookups + `:diagnostics` route through
 > a unified vertico picker; tag stack `<C-t>` pops drill-down
 > chains. Per-feature status tracked in
-> [`../lsp-features.md`](../lsp-features.md).
+> [`../dev/notes/lsp-features.md`](../dev/notes/lsp-features.md).
 
 ---
 
@@ -53,7 +53,7 @@ asynchronicity.
 | **Folding**           | LSP-provided fold ranges merge into the fold engine — see [`folding.md`](folding.md).                                                                                                              |
 
 The full feature matrix (every LSP 3.17 capability + status)
-lives in [`../lsp-features.md`](../lsp-features.md).
+lives in [`../dev/notes/lsp-features.md`](../dev/notes/lsp-features.md).
 
 ---
 
@@ -240,7 +240,7 @@ args = ["--stdio"]
 ```
 
 The keys mirror `ServerConfig` (see
-[`../lsp-architecture.md`](../lsp-architecture.md) for the
+[`../dev/architecture/lsp-architecture.md`](../dev/architecture/lsp-architecture.md) for the
 schema).
 
 ### Per-language overrides
@@ -528,9 +528,9 @@ decluttering on screens.
 
 - **[`folding.md`](folding.md)** — fold engine; LSP fold ranges
   merge in via `FoldMethod::Lsp` (4.4).
-- **[`../lsp-features.md`](../lsp-features.md)** — feature
+- **[`../dev/notes/lsp-features.md`](../dev/notes/lsp-features.md)** — feature
   matrix.
-- **[`../lsp-architecture.md`](../lsp-architecture.md)** —
+- **[`../dev/architecture/lsp-architecture.md`](../dev/architecture/lsp-architecture.md)** —
   developer-facing architecture.
-- **[`../DESIGN.md#54-lsp-subsystem`](../DESIGN.md)** §5.4 —
+- **[`../dev/architecture/design.md#54-lsp-subsystem`](../dev/architecture/design.md)** §5.4 —
   canonical design.

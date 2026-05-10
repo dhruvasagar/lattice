@@ -24,7 +24,7 @@ the same shape as `keymap-architecture.md` for §5.2.
   See `mode-architecture.md` §2 for rationale.
 - **§5.8 anchored to the companion doc.** Replaces the
   former three subsections with one §5.8.1 listing the
-  high-level commitments DESIGN.md depends on. Trait surface,
+  high-level commitments design.md depends on. Trait surface,
   lifecycle events, typed option registry, group resolution,
   customize surface, migration plan all live in
   `mode-architecture.md`.
@@ -642,7 +642,7 @@ the byte-shift logic and `didChange` fire-out apply uniformly.
 
 ### 5.4 LSP Subsystem
 
-We write our own client. `tower-lsp` is server-side; `async-lsp` brings tower middleware that doesn't fit our actor model. `lsp-types` (LSP 3.17) provides the wire types; the rest is hand-rolled. The companion docs ([`lsp-architecture.md`](lsp-architecture.md) for module-level commentary, [`help/lsp.md`](help/lsp.md) for the user surface, [`lsp-features.md`](lsp-features.md) for per-method tracking) elaborate beyond the design-relevant detail captured here.
+We write our own client. `tower-lsp` is server-side; `async-lsp` brings tower middleware that doesn't fit our actor model. `lsp-types` (LSP 3.17) provides the wire types; the rest is hand-rolled. The companion docs ([`lsp-architecture.md`](lsp-architecture.md) for module-level commentary, [`../../user/lsp.md`](../../user/lsp.md) for the user surface, [`../notes/lsp-features.md`](../notes/lsp-features.md) for per-method tracking) elaborate beyond the design-relevant detail captured here.
 
 #### 5.4.1 Crate layout
 
@@ -833,11 +833,11 @@ LSP requests are §5.2.5 *Background*-class — no sync-prelude budget. The wire
 | `LspLogger::log` per record | ~91ns |
 | `LspLogger::log` trace-off short-circuit | ~9ns |
 
-The §8.2 commitment is "LSP plumbing never shows up next to editor work in a flame graph." `BENCHMARKS.md` carries the full bench table.
+The §8.2 commitment is "LSP plumbing never shows up next to editor work in a flame graph." `../operations/benchmarks.md` carries the full bench table.
 
 #### 5.4.11 Roadmap
 
-Features land in this order: diagnostics → completion + resolve → hover → definition / declaration / typeDefinition / implementation / references → documentSymbol / workspace.symbol → codeAction → rename → formatting (full + range + on-type) → signatureHelp → semanticTokens → inlayHint → foldingRange → documentHighlight → callHierarchy + typeHierarchy → codeLens → documentLink → inlineValue → inlineCompletion. Per-method status in [`lsp-features.md`](lsp-features.md).
+Features land in this order: diagnostics → completion + resolve → hover → definition / declaration / typeDefinition / implementation / references → documentSymbol / workspace.symbol → codeAction → rename → formatting (full + range + on-type) → signatureHelp → semanticTokens → inlayHint → foldingRange → documentHighlight → callHierarchy + typeHierarchy → codeLens → documentLink → inlineValue → inlineCompletion. Per-method status in [`../notes/lsp-features.md`](../notes/lsp-features.md).
 
 #### 5.4.12 Non-goals (v1)
 
@@ -914,7 +914,7 @@ The strategy: features that *aren't architecturally core* but *are essential to 
 
 **Bootstrap.** The plugin manager itself is bundled; you can't install it via itself. Bundled plugins live in `core-plugins/<name>.wasm` next to the binary, or compiled-in via `include_bytes!` for single-binary distributions. On first launch the host instantiates them with their pre-granted capabilities; the plugin manager then handles user-installed plugins from `${XDG_DATA_HOME}/lattice/plugins/`.
 
-**Bundled-plugin candidates** (Phase 8 -- post-Phase-7 plugin host; concrete inventory in `docs/IMPLEMENTATION.md`):
+**Bundled-plugin candidates** (Phase 8 -- post-Phase-7 plugin host; concrete inventory in `docs/../operations/implementation.md`):
 
 - **LSP server manager** -- install / update / uninstall LSPs into a managed `${XDG_DATA_HOME}/lattice/lsp/<name>/<version>/` tree; bundled registry of common servers; SHA-pinned downloads. Lighthouse implementation -- the first non-trivial bundled plugin we build, validating that the WIT surface is sized correctly.
 - **Plugin manager** -- install / update / uninstall third-party plugins; capability-prompt UX.
@@ -1227,7 +1227,7 @@ This is the load-bearing async invariant of the editor. Every other piece of the
 
 ### 5.8 Major Modes and Minor Modes
 
-The major / minor mode system is the primary customization mechanism. The full design -- trait surface, lifecycle events, typed option registry, `OptionGroup` registry, customize surface, plugin path, migration plan -- is documented in [`docs/mode-architecture.md`](mode-architecture.md). This section anchors the high-level commitments DESIGN.md depends on; consult the companion doc for the load-bearing detail.
+The major / minor mode system is the primary customization mechanism. The full design -- trait surface, lifecycle events, typed option registry, `OptionGroup` registry, customize surface, plugin path, migration plan -- is documented in [`docs/mode-architecture.md`](mode-architecture.md). This section anchors the high-level commitments design.md depends on; consult the companion doc for the load-bearing detail.
 
 #### 5.8.1 Commitments
 
@@ -2328,8 +2328,8 @@ we don't settle for µs targets just because incumbent editors do.
   engineering path; relaxed where the Today column reflects a
   legitimate trade we're keeping. CI fails on >10% regression
   vs. main on any benchmark.
-- **Today.** The current `docs/BENCHMARKS.md` median. "—" means
-  unmeasured (a gap; backs a row in `BENCHMARKS.md`'s "what's
+- **Today.** The current `docs/../operations/benchmarks.md` median. "—" means
+  unmeasured (a gap; backs a row in `../operations/benchmarks.md`'s "what's
   NOT here" section).
 - **Stretch.** Credible with N-months-of-known-engineering, not
   novel research. Cited paths: GPU renderer, suffix-array search
@@ -2415,7 +2415,7 @@ The Floor / Target / Stretch numbers above are not asserted in
 isolation -- specific architecture decisions enable each one:
 
 - **`ArcSwap::Cache::load` (~2ns)** is the renderer's read floor; the
-  full DESIGN.md §5.6.8 split between editor thread (writer) and
+  full design.md §5.6.8 split between editor thread (writer) and
   render thread (reader) is what permits one atomic primitive on
   the read path.
 - **Sync edit fast-path (planned)** drops the keystroke round-trip

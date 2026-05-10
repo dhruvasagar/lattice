@@ -4,7 +4,7 @@ A modal, GPU-accelerated, plugin-first text editor written in Rust. Combines vim
 
 ## Status
 
-**Phase 1+ -- modal engine, ex-commands, async actor, snapshot model, completion, help, basic perf benches, CI.** The authoritative ledger is `docs/IMPLEMENTATION.md` (read it whenever you need to know what's done vs. spec'd). The design spec is `docs/DESIGN.md` (current revision: v0.4). Bench results are in `docs/BENCHMARKS.md`. Do not assume any module, type, or symbol mentioned in the design doc is implemented -- check `docs/IMPLEMENTATION.md` first.
+**Phase 1+ -- modal engine, ex-commands, async actor, snapshot model, completion, help, basic perf benches, CI.** The authoritative ledger is `docs/dev/operations/implementation.md` (read it whenever you need to know what's done vs. spec'd). The design spec is `docs/dev/architecture/design.md` (current revision: v0.4). Bench results are in `docs/dev/operations/benchmarks.md`. Do not assume any module, type, or symbol mentioned in the design doc is implemented -- check `docs/dev/operations/implementation.md` first.
 
 ## Paramount goals (in priority order when they conflict)
 
@@ -32,8 +32,8 @@ A change that ships only code is incomplete; the doc, the bench, and the test ar
 ## Key design decisions
 
 - **Vim modal state is a buffer-level state machine** (Normal / Insert / Visual / Op-pending / Command / Search), orthogonal to major / minor modes. Major mode = content-type identity (rust, markdown). The two axes do not collapse.
-- **Unified command / grammar dispatch.** Operators, motions, text objects, ex-commands, plugin contributions, and palette entries all share `CommandInvocation` and flow through one `execute(...)`. The `:` line is a parser front-end. See docs/DESIGN.md §5.2.1.
-- **Everything is a buffer.** File tree, outline, diagnostics, search results, terminal, REPL -- all are buffers (read-only, interactive, or editable) placed by the user into panes via splits. There is no fixed sidebar or bottom-panel concept. See docs/DESIGN.md §5.9. Concretely: documents and file trees today live in a single `BufferRegistry` keyed by `BufferId`; `:bn` / `:bp` / `:ls` / `:bd` / `:b N` operate uniformly across kinds. Each entry carries `BufferFlags { listed, hidden }` for vim-style `nobuflisted` / `hidden` semantics. Help is still rendered as a transient popup overlay (registry move queued).
+- **Unified command / grammar dispatch.** Operators, motions, text objects, ex-commands, plugin contributions, and palette entries all share `CommandInvocation` and flow through one `execute(...)`. The `:` line is a parser front-end. See docs/dev/architecture/design.md §5.2.1.
+- **Everything is a buffer.** File tree, outline, diagnostics, search results, terminal, REPL -- all are buffers (read-only, interactive, or editable) placed by the user into panes via splits. There is no fixed sidebar or bottom-panel concept. See docs/dev/architecture/design.md §5.9. Concretely: documents and file trees today live in a single `BufferRegistry` keyed by `BufferId`; `:bn` / `:bp` / `:ls` / `:bd` / `:b N` operate uniformly across kinds. Each entry carries `BufferFlags { listed, hidden }` for vim-style `nobuflisted` / `hidden` semantics. Help is still rendered as a transient popup overlay (registry move queued).
 - **Renderer trait** abstracts rendering paths: `EditorRenderer` (code + rich, four explicit fast paths), `DocumentRenderer` (popups, status lines, pickers, previews), `TuiRenderer` (terminal -- first-class peer for headless / SSH, not throwaway), future `WebRenderer`.
 - **Iconography is v1 (§5.6.7).** A sprite atlas (separate from glyphs; same GPU pipeline) backs file-type icons, severity icons, gutter markers, status indicators, picker leading icons, notification badges. Bundled `builtin-icons` set + plugin sprites + user overrides. Path 4 (full inline media blocks) stays post-1.0.
 - **Built-in vim grammar stays native.** `lattice-grammar` is a Rust crate. The default keymap never crosses the WASM boundary; WASM exists for *extensions*.
@@ -55,7 +55,7 @@ Rust + tokio (multi-thread) + ropey + tree-sitter + GPUI (preferred) or wgpu fal
 
 **One extension substrate.** No Lua, no vimscript, no elisp, no embedded Scheme. WASM (Rust today; any Component-Model language tomorrow) is the single substrate for plugins *and* user configuration. The user's `init.rs` is compiled to WASM and loaded by the plugin host with a boot-capability set. TOML covers static option overrides only; anything programmable (keymaps, autocmds, hooks, custom commands) lives in the Rust-WASM init module. Static settings stay declarative; logic stays code; one toolchain.
 
-## Where to look in docs/DESIGN.md
+## Where to look in docs/dev/architecture/design.md
 
 - §1 Vision; §2 Goals / non-goals
 - §3 Architectural overview (three layers, threading)
@@ -81,7 +81,7 @@ Rust + tokio (multi-thread) + ropey + tree-sitter + GPUI (preferred) or wgpu fal
 
 - The four paramount goals override stylistic preferences when they conflict.
 - Match the doc's tone in any new design fragments: terse, principle-led, tradeoffs flagged honestly.
-- Code blocks in docs/DESIGN.md use **tab indentation** (the existing pattern).
+- Code blocks in docs/dev/architecture/design.md use **tab indentation** (the existing pattern).
 - Don't introduce backwards-compat hacks for vim or emacs configs -- explicit non-goal.
 - Do not add features, refactors, or abstractions beyond what a task requires; design discipline matters here because the doc is being lived-in, not legacy.
-- Verify before recommending: a memory or doc reference to a file / type / symbol is *not* evidence it exists. Only `docs/DESIGN.md` and `docs/IMPLEMENTATION.md` are authoritative; verify against the source.
+- Verify before recommending: a memory or doc reference to a file / type / symbol is *not* evidence it exists. Only `docs/dev/architecture/design.md` and `docs/dev/operations/implementation.md` are authoritative; verify against the source.

@@ -182,7 +182,7 @@ Run `cargo test -p lattice-syntax`. If it passes, run
 ### Step 6 -- update docs
 
 - Add a row to the bundled-languages table at the top of this doc.
-- Update `docs/IMPLEMENTATION.md` if you advance a checklist item.
+- Update `docs/dev/operations/implementation.md` if you advance a checklist item.
 - The DESIGN.md §5.4 list of supported languages doesn't need a
   per-language update; the registry is the source of truth.
 
@@ -286,7 +286,7 @@ output, identify which node names changed.
 
 - [`folding.md`](folding.md) -- how `folds.scm` captures map to
   the user-facing fold model (`zc` / `zo` / `zi` / etc.).
-- `docs/DESIGN.md` §5.3 -- the syntax subsystem design.
-- `docs/DESIGN.md` §5.5 -- plugin host architecture (Phase 7).
+- `docs/dev/architecture/design.md` §5.3 -- the syntax subsystem design.
+- `docs/dev/architecture/design.md` §5.5 -- plugin host architecture (Phase 7).
 - The [tree-sitter docs](https://tree-sitter.github.io/) for the
   query language and the per-grammar conventions.

@@ -1,7 +1,7 @@
 # Benchmark Results
 
 Captured numbers from the criterion suite, indexed against the
-performance commitments in DESIGN.md §8.2 (Floor / Target / Today
+performance commitments in ../architecture/design.md §8.2 (Floor / Target / Today
 / Stretch).
 
 This document is a snapshot, not a moving record -- update it when a
@@ -67,12 +67,12 @@ better.
 
 ## Runtime / actor (`crates/lattice-runtime/benches/actor.rs`)
 
-The load-bearing async primitives (DESIGN.md §5.2.1, §5.6.8, §5.7).
+The load-bearing async primitives (../architecture/design.md §5.2.1, §5.6.8, §5.7).
 
 | Benchmark                                       | 10 lines   | 1k lines   | 50k lines  | Floor / Target         | Improvement target                                                                             |
 |-------------------------------------------------|------------|------------|------------|------------------------|------------------------------------------------------------------------------------------------|
 | **Snapshot publish standalone** (new)           | **~101ns** | **~101ns** | **~97ns**  | ~80ns / <500ns         | ⏹️ at the practical floor (Arc::new + atomic). Constant across sizes -- buffer clone is O(1).   |
-| `apply_edit` round-trip (block_on)              | 83.1µs     | 82.6µs     | 84.0µs     | ~50µs / <100µs         | 🔼 sync edit fast-path drops to ~5µs (DESIGN.md §8.2 stretch).                                 |
+| `apply_edit` round-trip (block_on)              | 83.1µs     | 82.6µs     | 84.0µs     | ~50µs / <100µs         | 🔼 sync edit fast-path drops to ~5µs (../architecture/design.md §8.2 stretch).                                 |
 | **Dispatch round-trip** (motion) (new)          | **~78µs**  | **~86µs**  | **~513µs** | ~50µs / <100µs (small) | ⏹️ scheduler-bound on small bufs; large-buf cost is the motion walk itself.                     |
 | Snapshot publish via apply_edit                 | 85.5µs     | 86.3µs     | 85.6µs     | same as apply_edit     | (envelope, not standalone publish)                                                             |
 | Snapshot load (`load_full`)                     | **~16ns**  | --         | --         | ~16ns / <20ns          | ⏹️ at the floor (atomic acquire + Arc bump).                                                    |
@@ -140,7 +140,7 @@ default backtrack limit is 1M iterations; our
 `(handler_\d+)\b.*\b\1` pattern hits ~150ms before terminating.
 For an editor we'd want a stricter per-search timeout (target:
 abort at 50ms, surface "search timed out" to the user) -- needs
-the cancellation token contract (DESIGN.md §5.2.5) to land first.
+the cancellation token contract (../architecture/design.md §5.2.5) to land first.
 Today the search just runs to completion or hits the recursion
 cap.
 
@@ -397,7 +397,7 @@ derived projection. Numbers above reflect the post-fix state.
 **Architectural change, 2026-05-03.** `lattice-syntax` previously ran
 `tree_sitter_highlight::Highlighter` (which parses internally) AND a
 separate `tree_sitter::Parser` for the folds query — two parses per
-edit on every recognised buffer. The Option B migration ([Steps 1–4](../docs/IMPLEMENTATION.md))
+edit on every recognised buffer. The Option B migration ([Steps 1–4](../docs/implementation.md))
 collapsed both onto a single `Parser` + `Tree` owned by `Syntax`:
 
 - One parse per edit. Highlight, folds, and any future query consumer
@@ -476,7 +476,7 @@ these benches measure the underlying registry costs.
 | `config::set_with_publisher`          | **145ns** | ~120ns / <500ns | Same as above plus the publisher closure -- registry's contribution to the §5.10 `OptionChanged` flow.  |
 | `config::parse_and_set_command_bool`  | **220ns** | ~180ns / <1µs  | Full cmdline path: `parse_set` + lookup + parse_and_set + format echo + publish.                         |
 | `config::resolved_get_typed`          | **13.5ns** | ~12ns / <50ns | M.2.1: type-keyed read against the per-buffer `ResolvedOptions` cache. One `TypeId` HashMap probe + `Arc::clone` + downcast. The hot-path read for mode-aware option access; the `App.option_cache` projection sits on top for sub-ns reads. |
-| `config::resolve_into_10_layers`      | **851ns** | ~800ns / <10µs | M.2.1: full recompute -- bootstrap from registry currents, then layer 10 minor-mode contributions on top. Per `mode-architecture.md` §6.3.2 the gate is p99 < 10µs at 10 minors; we hit ~12× headroom because the bootstrap walk dominates and the layer merge is bounded. |
+| `config::resolve_into_10_layers`      | **851ns** | ~800ns / <10µs | M.2.1: full recompute -- bootstrap from registry currents, then layer 10 minor-mode contributions on top. Per `../architecture/mode-architecture.md` §6.3.2 the gate is p99 < 10µs at 10 minors; we hit ~12× headroom because the bootstrap walk dominates and the layer merge is bounded. |
 
 The `App.option_cache` projection turns the per-frame
 renderer reads into ~1ns field accesses; M.2.1's resolved
@@ -492,7 +492,7 @@ many reads.
 
 ## LSP wire layer (`crates/lattice-lsp/benches/lsp.rs`)
 
-Per DESIGN.md §5.4 + §5.2.5, LSP requests are **Background**-class
+Per ../architecture/design.md §5.4 + §5.2.5, LSP requests are **Background**-class
 (no sync-prelude budget). The wire-layer benches don't gate any
 per-keystroke commitment; they exist to prove the plumbing
 itself never appears next to editor work in a flame graph.
@@ -510,14 +510,14 @@ itself never appears next to editor work in a flame graph.
 | `lsp::logging::log_info`              | **91ns**   | ~80ns / <500ns | Per-record cost: lock + push + format + tracing fan-out. Background-class.                         |
 | `lsp::logging::log_trace_off`         | **9ns**    | ~5ns / <50ns   | Trace toggle off short-circuit -- a HashSet lookup + return. Hot path when trace stays disabled.  |
 | `lsp::logging::log_trace_on`          | **99ns**   | ~80ns / <500ns | Trace toggle on -- includes the ring push. Negligible at editor pace; perceptible at indexer bursts. |
-| `lsp_edit_publish_three_subs`         | **1.9µs**  | ~1.5µs / <5µs  | UI-thread cost per applied edit: `EventBus::publish` of one `Event::DocumentChanged` with one `AppliedEdit`, three `DocumentChanged` subscribers attached. The *only* LSP work the keystroke thread does after the per-actor fan-in refactor (docs/lsp-architecture.md §11). |
+| `lsp_edit_publish_three_subs`         | **1.9µs**  | ~1.5µs / <5µs  | UI-thread cost per applied edit: `EventBus::publish` of one `Event::DocumentChanged` with one `AppliedEdit`, three `DocumentChanged` subscribers attached. The *only* LSP work the keystroke thread does after the per-actor fan-in refactor (docs/../architecture/lsp-architecture.md §11). |
 | `lsp_edit_propagation_publish_to_recv`| **227ns**  | ~200ns / <600ns| Bus → mpsc receive hop: time from `EventBus::publish` to the per-actor fan-in's `mpsc::recv().await` returning. Excludes the actor's own `record_edit`. |
 | `lsp_didchange_flush_16_edits`        | **8.4µs**  | ~6µs / <25µs   | Actor-side debounce-arm cost: 16 `DocSync::record_edit` calls + `take_flush_payload` + serialise to `textDocument/didChange` JSON. Runs off the UI thread (post-debounce). |
 | `lsp_diagnostics_line_severity_wait_free` | **25ns** | ~20ns / <75ns  | Render-thread `DiagnosticsLayer::line_severity(uri, line)` after the audit's C3 fix. Pre-fix path locked an inner `Mutex` + cloned the full diagnostics list per call (microseconds, ~3000 calls/sec on the render thread = milliseconds wasted). New path: one `ArcSwap::load` + a borrowed-slice filter — wait-free, allocation-free. |
 
 The full LSP feature matrix (per-method status) lives in
-[`lsp-features.md`](lsp-features.md); the architecture in
-[`lsp-architecture.md`](lsp-architecture.md). Per-feature
+[`../notes/lsp-features.md`](../notes/lsp-features.md); the architecture in
+[`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md). Per-feature
 benches (request round-trip latency end-to-end through a real
 server) land alongside their features in 4.2 / 4.3 / 4.4.
 
@@ -584,7 +584,7 @@ startup catalog enumeration).
 
 ### Why these targets
 
-The keymap-architecture doc (`docs/keymap-architecture.md` §4)
+The keymap-architecture doc (`docs/../architecture/keymap-architecture.md` §4)
 commits to "**lookup p99 < 1 µs** including chord
 normalisation and trie walk." Slice 8.a delivers
 the **chord-normalisation half** of that budget at 1.7ns --
@@ -690,7 +690,7 @@ be reset by deleting `target/criterion/`.
    only credible path to microsecond full-buffer scans on 200k-line
    corpora. ~5× memory cost; rebuild on every edit.
 
-9. **🔼 Allocation discipline check** (DESIGN.md §A.6). Per-keystroke
+9. **🔼 Allocation discipline check** (../architecture/design.md §A.6). Per-keystroke
    alloc count via `dhat-rs`. Catches refactor regressions before
    wall-clock benches do.
 

@@ -765,7 +765,7 @@ mod tests {
         assert!(!a.folds.iter().any(|f| f.start_line == 2));
     }
 
-    // --- Linear j/k skip closed folds (`docs/help/folding.md`) ---
+    // --- Linear j/k skip closed folds (`docs/user/folding.md`) ---
 
     #[test]
     fn line_down_from_closed_fold_heading_skips_to_after_fold() {

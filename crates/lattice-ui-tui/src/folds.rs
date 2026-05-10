@@ -1,5 +1,5 @@
 //! Computed folds (DESIGN.md §5.1, §15:18; user-facing reference
-//! at `docs/help/folding.md`).
+//! at `docs/user/folding.md`).
 //!
 //! Folds derived automatically from the buffer's structure. v1
 //! providers:
@@ -191,7 +191,7 @@ fn is_closer_line(line: &str) -> bool {
 }
 
 /// Markdown heading-based fold provider (DESIGN.md §15:18,
-/// `docs/help/folding.md`). Walks the buffer for ATX headings
+/// `docs/user/folding.md`). Walks the buffer for ATX headings
 /// (`^#+\s`) and emits one fold per heading whose body has at
 /// least one row. Heading depth (the number of `#`s) determines
 /// nesting: a `## H2` ends at the next same-or-shallower heading

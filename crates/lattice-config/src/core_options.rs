@@ -161,7 +161,7 @@ crate::options! {
     /// Priority bucket for the `gen:lsp-completion` insert-mode
     /// completion source. Higher numbers float that source's items
     /// above ties from lower-priority sources
-    /// (`docs/insert-completion.md` §3.4 / §3.6). Default 200;
+    /// (`docs/dev/architecture/insert-completion.md` §3.4 / §3.6). Default 200;
     /// LSP-driven IDE completions usually want to win against
     /// local buffer words and snippets at tied score.
     #[name("completion.source.lsp.priority")]

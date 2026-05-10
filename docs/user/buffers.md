@@ -157,7 +157,7 @@ lists every registered option and its current value.
 - `:apropos pattern` -- substring search across all command
   metadata.
 
-## Anchors in DESIGN.md
+## Anchors in design.md
 
 - §5.9 -- everything-is-a-buffer principle and the pane / window
   composition model.

@@ -209,9 +209,9 @@ Inspect the workflow:
       (visit the repo home page; the diagram should show three layers
       in colored boxes)
 - [ ] `LICENSE` (MIT) is at the repo root
-- [ ] `docs/IMPLEMENTATION.md` "Up next" list starts with Phase 4 (LSP)
+- [ ] `docs/implementation.md` "Up next" list starts with Phase 4 (LSP)
       and no longer mentions the per-search timeout (shipped)
-- [ ] `docs/VERIFY.md` (this file) exists
+- [ ] `docs/verify.md` (this file) exists
 
 ---
 

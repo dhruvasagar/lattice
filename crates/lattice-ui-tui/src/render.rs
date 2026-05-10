@@ -278,7 +278,7 @@ fn popup_height(candidate_count: usize) -> usize {
 
 /// Vertico-style cmdline completion popup (DESIGN.md §5.11.3,
 /// **Insert-mode completion popup** (Phase 4.2.g.1, design
-/// in `docs/insert-completion.md` §5). Multi-column layout:
+/// in `docs/dev/architecture/insert-completion.md` §5). Multi-column layout:
 /// `[kind glyph] [label]   [detail]   [src]`. Anchored below
 /// the cursor at the popup's `anchor` position; falls back to
 /// above when there's no room below. Selected row reverse-
@@ -2352,7 +2352,7 @@ fn compose_visible_lines_inner(
                 }
             }
         }
-        // Heading-preserved fold render (`docs/help/folding.md`):
+        // Heading-preserved fold render (`docs/user/folding.md`):
         // append the ` ┄ N lines folded` suffix AFTER all overlays
         // so the heading's syntax / visual / search styling is
         // preserved, with the dim summary trailing off the right.
@@ -2610,7 +2610,7 @@ fn gutter_width(line_count: u32) -> u32 {
 /// Pick the gutter fold glyph for a buffer line: ▸ when the line
 /// begins a closed fold, ▾ when it begins an open fold, or `None`
 /// when the line is unaffiliated with any fold start.
-/// (`docs/help/folding.md`).
+/// (`docs/user/folding.md`).
 fn fold_glyph_for(view: &FrameView<'_>, line_idx: u32) -> Option<char> {
     let f = view.fold_start_at_any(line_idx)?;
     Some(if f.closed { '▸' } else { '▾' })

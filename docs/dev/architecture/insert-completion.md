@@ -48,7 +48,7 @@ follow-on.
    action is also a registered command in `CommandRegistry`,
    reachable from `:` and from the API. Bindings are the
    convenience layer over the canonical command surface
-   (DESIGN.md §5.2.1).
+   (design.md §5.2.1).
 6. **Snippet engine that ships with the snippet ecosystem.**
    TextMate-format JSON, drop-in compatible with VS Code's
    snippet repositories (and thus with the
@@ -632,7 +632,7 @@ across every list-shaped surface.
 ### 6.5 Command surface (every binding has a command)
 
 Every action above is registered as an ex-command in the
-unified `CommandRegistry` (DESIGN.md §5.2.1). Users can
+unified `CommandRegistry` (design.md §5.2.1). Users can
 invoke any of them from `:`, from a macro, from a plugin,
 or from `init.rs`:
 
@@ -1318,11 +1318,11 @@ budget (8 ms at 120 Hz / 16 ms at 60 Hz, CLAUDE.md goal #1).
 
 ## 14. Cross-references
 
-- DESIGN.md §5.11.3 — completion pipeline (cmdline today;
+- design.md §5.11.3 — completion pipeline (cmdline today;
   Insert-mode peer formalised by this doc).
-- DESIGN.md §5.9.10 — rich minibuffer (the picker UX this
+- design.md §5.9.10 — rich minibuffer (the picker UX this
   doc's popup descends from).
-- DESIGN.md §5.2.1 — unified command/grammar dispatch (why
+- design.md §5.2.1 — unified command/grammar dispatch (why
   every binding here is also a registered command).
 - [`lsp-architecture.md`](lsp-architecture.md) §10 — LSP
   request fan-out, cancellation tokens.
@@ -1330,7 +1330,7 @@ budget (8 ms at 120 Hz / 16 ms at 60 Hz, CLAUDE.md goal #1).
   — current pipeline traits; `insert.rs` is the new module
   this doc adds.
 - `lattice-snippet` (new crate, 4.2.g.4) — engine + parser.
-- `help/lsp.md` — user-facing LSP completion blurb (will
+- `../../user/lsp.md` — user-facing LSP completion blurb (will
   pivot from `:complete` picker to inline popup once
   4.2.g.2 lands).
 - `friendly-snippets` upstream:

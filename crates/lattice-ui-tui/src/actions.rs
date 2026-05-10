@@ -3,7 +3,7 @@
 //! objects (`lattice_grammar::builtins`) and built-in ex-commands
 //! (`lattice_grammar::ex_commands`).
 //!
-//! See `docs/8i-approach.md` for the slice 8.i plan. Each action
+//! See `docs/dev/notes/8i-approach.md` for the slice 8.i plan. Each action
 //! registered here returns `Effect::AppAction(AppEffect::Foo)`
 //! from its `apply` closure; the App's `apply_app_effect` then
 //! routes the `AppEffect` to the historical handler. Once slice

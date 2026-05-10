@@ -1,6 +1,6 @@
 //! `KeymapRegistry` -- the public, layered keymap engine the
 //! input dispatcher consults. Audit slice 8.c of the M3
-//! refactor; see `docs/keymap-architecture.md` for the design.
+//! refactor; see `docs/dev/architecture/keymap-architecture.md` for the design.
 //!
 //! ## Five-layer model (DESIGN.md §5.2.3)
 //!

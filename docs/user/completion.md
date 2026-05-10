@@ -25,7 +25,7 @@ list, ranked together.
 > same engine. Per-source priority + frequency ranking
 > (4.2.g.5), tree-sitter / path sources (4.2.g.6) follow. The
 > behavioural spec for the full surface is in
-> [`docs/insert-completion.md`](../insert-completion.md).
+> [`docs/insert-completion.md`](../dev/architecture/insert-completion.md).
 
 ---
 
@@ -424,5 +424,5 @@ typing-flow completion.
 - [`completion-popup`](#) — multi-column layout details.
 - [`completion-snippets`](#) — TextMate snippet syntax (4.2.g.4).
 - [`lsp`](lsp.md) — LSP integration overall.
-- [`docs/insert-completion.md`](../insert-completion.md) —
+- [`docs/insert-completion.md`](../dev/architecture/insert-completion.md) —
   full behavioural spec.

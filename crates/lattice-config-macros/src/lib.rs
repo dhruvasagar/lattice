@@ -1,6 +1,6 @@
 //! Proc-macro front-end for `lattice-config`'s declarative
 //! option / group / overrides declarations (M.2.0+M.2.1, Design
-//! B + D from `docs/mode-architecture.md` discussion notes).
+//! B + D from `docs/dev/architecture/mode-architecture.md` discussion notes).
 //!
 //! Three public macros:
 //!

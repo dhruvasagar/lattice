@@ -717,7 +717,7 @@ impl std::fmt::Debug for LspSupervisor {
 // ---------------------------------------------------------------
 // Snapshot + handle (the public, post-spawn API).
 //
-// The audit (docs/lsp-architecture.md §11 + post-fix audit) found
+// The audit (docs/dev/architecture/lsp-architecture.md §11 + post-fix audit) found
 // that 14+ App methods called `try_lock` on
 // `Arc<tokio::sync::Mutex<LspSupervisor>>` from the UI thread
 // (modeline render, Insert-mode trigger probes, etc.) and silently

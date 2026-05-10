@@ -1,6 +1,6 @@
 //! TextMate-format snippet engine for lattice
 //! (Phase 4.2.g.4; design in
-//! [`docs/insert-completion.md`](../../docs/insert-completion.md) §8).
+//! [`docs/dev/architecture/insert-completion.md`](../../docs/dev/architecture/insert-completion.md) §8).
 //!
 //! Three responsibilities:
 //!

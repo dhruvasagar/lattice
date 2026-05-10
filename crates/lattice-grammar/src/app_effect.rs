@@ -4,7 +4,7 @@
 //! Background: the keymap-bound `Action` enum in `lattice-ui-tui`
 //! historically encoded the App's response to non-grammar chords
 //! (`<Esc>`, `o`, `<C-w>v`, ...). Slice 8.i (see
-//! [`docs/8i-approach.md`](../../../docs/8i-approach.md)) retires
+//! [`docs/dev/notes/8i-approach.md`](../../../docs/dev/notes/8i-approach.md)) retires
 //! the per-binding `Action` bridge and routes those chords through
 //! the unified dispatcher's `CommandKind::Action` branch instead.
 //! Action-kind registry entries return `Effect::AppAction(AppEffect)`;
@@ -75,7 +75,7 @@ pub enum ScrollPos {
 }
 
 /// App-side typed effect produced by a `CommandKind::Action`
-/// dispatch (DESIGN.md §5.2.1, see also `docs/8i-approach.md`).
+/// dispatch (DESIGN.md §5.2.1, see also `docs/dev/notes/8i-approach.md`).
 ///
 /// Variants are added incrementally during slice 8.i as each
 /// historical `Action` variant is promoted from the legacy

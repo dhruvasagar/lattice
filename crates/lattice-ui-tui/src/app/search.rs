@@ -964,7 +964,7 @@ mod tests {
 
     #[test]
     fn search_into_closed_fold_auto_opens_it() {
-        // `docs/help/folding.md`: search hits open the fold the
+        // `docs/user/folding.md`: search hits open the fold the
         // cursor lands in.
         let initial = "# H1\nbody one needle\nbody two\n# H2\nafter\n";
         let mut a = app_with(initial, 10);

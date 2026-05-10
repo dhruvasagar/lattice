@@ -156,7 +156,7 @@ impl App {
         register_mode_toggle_commands(&mut registry, &mode_registry);
         let mode_registry = std::sync::Arc::new(mode_registry);
         // App-side action registrations (slice 8.i; see
-        // `docs/8i-approach.md`). Each `CommandKind::Action`
+        // `docs/dev/notes/8i-approach.md`). Each `CommandKind::Action`
         // entry returns `Effect::AppAction(AppEffect::Foo)`;
         // per-mode keymap modules consume the resulting
         // `ActionIds` to build typed `CommandInvocation`s for

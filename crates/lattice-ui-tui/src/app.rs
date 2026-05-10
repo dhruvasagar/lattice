@@ -14,7 +14,7 @@
 //! cross-module free helpers (`line_byte_len`, `is_word_char_byte`,
 //! `word_under_cursor`, etc.), and a `mod tests` block of cross-
 //! feature integration tests. Per-feature App methods live in
-//! `app/<feature>.rs` submodules -- see `docs/ui-tui-refactor.md`
+//! `app/<feature>.rs` submodules -- see `docs/dev/notes/ui-tui-refactor.md`
 //! for the full per-module catalog. The R.1.x slice sequence
 //! (R.1.0 -- R.1.98) split the App's monolithic impl block apart.
 //!
@@ -94,7 +94,7 @@ use crate::pane::{PaneDirection, PaneTree};
 // per-feature destination for the App's methods. R.1.0 only
 // creates the empty modules with scoping doc comments;
 // subsequent R.1.x slices move method blocks across without
-// rethinking the structure. See docs/keymap-architecture.md
+// rethinking the structure. See docs/dev/architecture/keymap-architecture.md
 // (or the dedicated R.1 doc) for the full feature -> module
 // mapping.
 mod boot;
@@ -894,7 +894,7 @@ pub struct App {
     /// `apply` returns `Effect::AppAction(AppEffect::Foo)`. Per-
     /// mode keymap modules consume this alongside `builtins` to
     /// build typed `CommandInvocation`s for chord bindings (slice
-    /// 8.i; see `docs/8i-approach.md`).
+    /// 8.i; see `docs/dev/notes/8i-approach.md`).
     pub action_ids: crate::actions::ActionIds,
     /// Layered keymap registry (DESIGN.md §5.2.3, audit slice 8.c).
     /// Populated at construction time; the input dispatcher reads
@@ -1185,7 +1185,7 @@ pub struct App {
         lattice_config::OptionOverrideSet,
     >,
     /// Free-form help topic registry (DESIGN.md §5.11). `:help`
-    /// reads from this; built-ins are sourced from `docs/help/*.md`
+    /// reads from this; built-ins are sourced from `docs/user/*.md`
     /// at build time. Plugins / future LSP integrations register
     /// additional topics through the same registry.
     pub help_topics: std::sync::Arc<crate::help_topics::HelpTopicRegistry>,
@@ -1250,7 +1250,7 @@ pub struct App {
     /// path / tree-sitter / plugin), and the host's keystroke
     /// dispatcher routes through a "completion-popup minor mode"
     /// keymap layer while it's `Some`. Behavioural spec lives in
-    /// [`docs/insert-completion.md`](../../docs/insert-completion.md).
+    /// [`docs/dev/architecture/insert-completion.md`](../../docs/dev/architecture/insert-completion.md).
     pub insert_completion: Option<lattice_completion::InsertCompletionState>,
     /// Sidecar metadata for LSP-sourced candidates in the
     /// active insert-completion popup. Indexed by the
@@ -1302,7 +1302,7 @@ pub struct App {
     /// items bubble above tied peers next time. In-memory only
     /// in v1 -- cleared on process exit; persistence with a
     /// privacy story lands later (Phase 4.2.g.7 polish queue per
-    /// `docs/insert-completion.md` §11).
+    /// `docs/dev/architecture/insert-completion.md` §11).
     pub completion_accept_freq:
         std::collections::HashMap<(String, lattice_completion::CandidateKind), u32>,
     /// TOML structural sections collected by the config loader at
@@ -1318,7 +1318,7 @@ pub struct App {
     pub pending_config_structural_sections:
         std::collections::BTreeMap<String, toml::Table>,
     /// Per-language insert-completion overrides (Phase 4.2.g.5
-    /// (3b/3); spec at `docs/insert-completion.md` §9). Seeded
+    /// (3b/3); spec at `docs/dev/architecture/insert-completion.md` §9). Seeded
     /// at App init from
     /// [`lattice_completion::per_language_defaults`] (markdown
     /// drops LSP, rust enables auto-fire, etc.); user TOML in
@@ -3126,7 +3126,7 @@ mod tests {
 
     #[test]
     fn linear_j_does_not_auto_open_fold() {
-        // `docs/help/folding.md`: linear motions (j/k/h/l/w/b) do
+        // `docs/user/folding.md`: linear motions (j/k/h/l/w/b) do
         // NOT trigger auto-open. The cursor "skips" over closed
         // folds via `line_inside_closed_fold` filtering -- but the
         // fold itself stays closed. Here we simulate a synthetic

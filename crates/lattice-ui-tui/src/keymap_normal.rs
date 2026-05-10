@@ -94,7 +94,7 @@ use crate::keymap_trie::{
 /// bindings not yet in this catalog.
 ///
 /// `actions` is the App-side action ID table (slice 8.i; see
-/// `docs/8i-approach.md`). Bindings that historically fired an
+/// `docs/dev/notes/8i-approach.md`). Bindings that historically fired an
 /// `Action::Foo` directly via `bind_legacy` get migrated to
 /// `bind(... CommandInvocation::of(actions.foo) ...)` as the
 /// per-batch slices land; the rest stay on the bridge until

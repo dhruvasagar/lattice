@@ -15,7 +15,7 @@ detection.
 > cascade), the syntax-highlighted heading render, and the
 > operator semantics described here are the **planned** v1
 > behavior tracked under task C.2 in
-> [`../IMPLEMENTATION.md`](../IMPLEMENTATION.md). Manual folds
+> [`../dev/operations/implementation.md`](../dev/operations/implementation.md). Manual folds
 > (`zf` / `zo` / `zc` / `za` / `zR` / `zM` / `zd`) are
 > shipped today; the rest of this doc is the contract for
 > the rollout.
@@ -463,10 +463,10 @@ chooses the glyph based on `app.fold_state_at(line)`:
 
 ## See also
 
-- [`../IMPLEMENTATION.md`](../IMPLEMENTATION.md) — current build
+- [`../dev/operations/implementation.md`](../dev/operations/implementation.md) — current build
   status; check the Phase 1 row + the "Up next" list for fold
   rollout progress.
-- [`../DESIGN.md`](../DESIGN.md) §15:18 — fold storage / interaction
+- [`../dev/architecture/design.md`](../dev/architecture/design.md) §15:18 — fold storage / interaction
   open question (resolved by the design here).
 - vim's `:help folding` — the reference we model strict semantics
   on (with the syntax-highlight-preserving improvement noted in

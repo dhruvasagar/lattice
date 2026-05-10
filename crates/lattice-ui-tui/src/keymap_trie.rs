@@ -1,6 +1,6 @@
 //! `KeymapTrie` -- the lookup data structure the keymap registry
 //! consults on the keystroke path. Audit slice 8.b of the M3
-//! refactor; see `docs/keymap-architecture.md` for the design.
+//! refactor; see `docs/dev/architecture/keymap-architecture.md` for the design.
 //!
 //! ## Shape
 //!
@@ -261,7 +261,7 @@ impl KeymapTrie {
     /// The registry's layer-stack collapse calls this in
     /// priority order (lowest first) so the highest-priority
     /// layer's bindings end up authoritative. See
-    /// `docs/keymap-architecture.md` §2 + §4 (layer-merge on
+    /// `docs/dev/architecture/keymap-architecture.md` §2 + §4 (layer-merge on
     /// write, not on read).
     pub fn merge_over(&mut self, other: &KeymapTrie) {
         merge_node(&mut self.root, &other.root);

@@ -1,15 +1,15 @@
 # LSP Architecture (developer reference)
 
 This document is the implementer-side companion to
-[DESIGN.md §5.4](DESIGN.md). DESIGN.md is the terse,
+[design.md §5.4](design.md). design.md is the terse,
 principle-led canonical text; this is the longer-form "how it
 actually works", with concrete pointers into the
 `lattice-lsp` crate.
 
 User-facing help lives in
-[`help/lsp.md`](help/lsp.md). The feature
+[`../../user/lsp.md`](../../user/lsp.md). The feature
 tracking matrix lives in
-[`lsp-features.md`](lsp-features.md).
+[`../notes/lsp-features.md`](../notes/lsp-features.md).
 
 ---
 
@@ -471,7 +471,7 @@ The picker walks `LspSupervisor::running_actors()` snapshot under the supervisor
 
 ### Log buffers as in-pane registry buffers
 
-Persistent log views (`*lsp:<server>*` / `*lsp:<server>:trace*`) and other help-shaped views (`:describe-*`, `:diagnostics`) live in the unified [`BufferRegistry`] (DESIGN.md §5.9.8) as `BufferData::Help`. The popup-overlay path remains available for transient surfaces (hover, future doc lookups, error toasts). LSP commands route through the in-pane path via the picker accept dispatcher (Phase 3); the remaining migrations (`:describe-*`, `:diagnostics`) are mechanical -- swap `open_help` for `open_help_in_pane` at each call site -- and follow when a session needs them.
+Persistent log views (`*lsp:<server>*` / `*lsp:<server>:trace*`) and other help-shaped views (`:describe-*`, `:diagnostics`) live in the unified [`BufferRegistry`] (design.md §5.9.8) as `BufferData::Help`. The popup-overlay path remains available for transient surfaces (hover, future doc lookups, error toasts). LSP commands route through the in-pane path via the picker accept dispatcher (Phase 3); the remaining migrations (`:describe-*`, `:diagnostics`) are mechanical -- swap `open_help` for `open_help_in_pane` at each call site -- and follow when a session needs them.
 
 ### Live-tail (Phase 4)
 
@@ -489,7 +489,7 @@ Trace records (level == `trace` OR source == `trace`) refresh `*lsp:<server>:tra
 
 ### Configuration surface
 
-Documented in [`help/lsp.md`](help/lsp.md). Wire-level keys:
+Documented in [`../../user/lsp.md`](../../user/lsp.md). Wire-level keys:
 
 ```toml
 [lsp]
@@ -746,7 +746,7 @@ actor; auto-restart + `didOpen` replay lands in 4.4.
 ## 11. Edit-path architecture
 
 The hot edit path is the architecture's tightest constraint:
-the UI thread must commit a keystroke in <8 ms p99 (DESIGN.md
+the UI thread must commit a keystroke in <8 ms p99 (design.md
 §8). LSP synchronisation cannot show up on that critical
 path. The pipeline below keeps it off entirely.
 
@@ -851,15 +851,15 @@ Per applied edit (one publish):
 - Debounce timer reset (cheap pinned sleep reset).
 
 The `didChange` write itself is amortised over the debounce
-window. Bench numbers: see [`BENCHMARKS.md`](BENCHMARKS.md)
+window. Bench numbers: see [`../operations/benchmarks.md`](../operations/benchmarks.md)
 under the `lsp_edit_publish_*` rows.
 
 ---
 
 ## See also
 
-- [DESIGN.md §5.4](DESIGN.md) -- canonical design.
-- [`lsp-features.md`](lsp-features.md) -- feature matrix.
-- [`help/lsp.md`](help/lsp.md) -- user help.
-- [`BENCHMARKS.md`](BENCHMARKS.md) -- bench numbers (LSP rows
+- [design.md §5.4](design.md) -- canonical design.
+- [`../notes/lsp-features.md`](../notes/lsp-features.md) -- feature matrix.
+- [`../../user/lsp.md`](../../user/lsp.md) -- user help.
+- [`../operations/benchmarks.md`](../operations/benchmarks.md) -- bench numbers (LSP rows
   added when feature benches land).

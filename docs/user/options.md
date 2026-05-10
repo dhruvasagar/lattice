@@ -169,7 +169,7 @@ there is no Lua / vimscript / elisp.
 > **Status:** the plugin host and `init.rs` loader are the
 > Phase 4+ surface. Today, all configuration runs through TOML
 > + `:set`. Track progress in
-> [`../IMPLEMENTATION.md`](../IMPLEMENTATION.md).
+> [`../dev/operations/implementation.md`](../dev/operations/implementation.md).
 
 ---
 
@@ -233,6 +233,6 @@ help-mode for the buffer) over fighting its contributions.
 - `:options` — **live** reference of every registered option.
 - `:describe-option <name>` — full metadata for one option.
 - `:apropos <pattern>` — search options + commands + events.
-- [`../DESIGN.md`](../DESIGN.md) §5.12 — the configuration
+- [`../dev/architecture/design.md`](../dev/architecture/design.md) §5.12 — the configuration
   system spec (typed options, layered resolver, customize
   buffer view).

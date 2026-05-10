@@ -1,0 +1,86 @@
+# lattice docs
+
+Documentation lives in two trees with very different audiences:
+
+```
+docs/
+├── user/        ← reference for *using* lattice
+└── dev/         ← reference for *building* lattice
+    ├── architecture/   the design + the architectural specs
+    ├── operations/     implementation status, benchmarks, verification
+    └── notes/          historical session-scoped notes / migration plans
+```
+
+## user/
+
+Hand-written reference for end users. What `:help [topic]` opens
+in-editor — the `<topic>.md` filename is the topic name.
+
+| Topic                      | File                                       |
+|----------------------------|--------------------------------------------|
+| Index / topic catalogue    | [user/README.md](user/README.md)           |
+| Folding                    | [user/folding.md](user/folding.md)         |
+| Buffers + panes            | [user/buffers.md](user/buffers.md)         |
+| Languages                  | [user/languages.md](user/languages.md)     |
+| Insert completion          | [user/completion.md](user/completion.md)   |
+| Modes (major + minor)      | [user/modes.md](user/modes.md)             |
+| LSP                        | [user/lsp.md](user/lsp.md)                 |
+| `lsp-mode` umbrella        | [user/lsp-mode.md](user/lsp-mode.md)       |
+| Options / configuration    | [user/options.md](user/options.md)         |
+
+The `lattice-help` crate embeds these via `include_str!`, so the
+binary is self-contained — `:help options` works on a machine with
+no network, no filesystem layout assumption beyond the binary
+itself.
+
+## dev/architecture/
+
+The design specs. **Authoritative for "what is lattice supposed to
+be."** Read these to understand a subsystem's invariants before
+changing it.
+
+| Doc                                                              | What it covers                                                                                  |
+|------------------------------------------------------------------|-------------------------------------------------------------------------------------------------|
+| [design.md](dev/architecture/design.md)                          | The full design spec (v0.4). Three-layer architecture, vim grammar, plugin host, perf budgets. |
+| [mode-architecture.md](dev/architecture/mode-architecture.md)    | Major + minor modes, option resolution layer stack, customize, introspection.                  |
+| [keymap-architecture.md](dev/architecture/keymap-architecture.md)| Layered keymap registry, chord trie, dispatch.                                                  |
+| [lsp-architecture.md](dev/architecture/lsp-architecture.md)      | LSP supervisor / actor / client, attach lifecycle, capability gating.                          |
+| [insert-completion.md](dev/architecture/insert-completion.md)    | Insert-mode completion: sources, ranking, popup, ghost text.                                   |
+
+## dev/operations/
+
+State-of-the-build artefacts. **Authoritative for "what is built
+right now."**
+
+| Doc                                                       | What it covers                                                  |
+|-----------------------------------------------------------|-----------------------------------------------------------------|
+| [implementation.md](dev/operations/implementation.md)     | The shipping ledger. What's done vs. spec'd, per slice.         |
+| [benchmarks.md](dev/operations/benchmarks.md)             | Latest measured perf numbers + how to reproduce them.           |
+| [verify.md](dev/operations/verify.md)                     | Manual verification checklist for end-to-end smoke testing.     |
+
+## dev/notes/
+
+Session-scoped notes / migration plans / historical specs. Useful
+context but not authoritative.
+
+| Doc                                                     | What it covers                                                         |
+|---------------------------------------------------------|------------------------------------------------------------------------|
+| [8i-approach.md](dev/notes/8i-approach.md)              | The slice 8.i refactor plan that produced today's `Action` model.       |
+| [lsp-features.md](dev/notes/lsp-features.md)            | LSP feature checklist with per-feature status notes.                    |
+| [m3-binding-census.md](dev/notes/m3-binding-census.md)  | The M.3 keymap binding census.                                          |
+| [ui-tui-refactor.md](dev/notes/ui-tui-refactor.md)      | The `lattice-ui-tui` decomposition into per-feature App submodules.     |
+
+## When to read which
+
+- **You want to use a feature** — start at `user/README.md`.
+- **You're changing a subsystem** — read its spec under
+  `dev/architecture/`, then check `dev/operations/implementation.md`
+  for the build status.
+- **You're auditing what ships today** — start with
+  `dev/operations/`. Implementation > Benchmarks > Verify.
+- **You're catching up on prior work** — `dev/notes/` for
+  migration plans; `git log` for the actual landing record.
+
+The top-level `CLAUDE.md` (project root) carries the project's
+collaboration rules and goal hierarchy. It links into this tree
+where useful but isn't itself part of the docs.

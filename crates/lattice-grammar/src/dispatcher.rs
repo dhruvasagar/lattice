@@ -10,7 +10,7 @@
 //! Phase 1 implements operator-with-motion-target (the most common path),
 //! motion-alone, text-object-alone, and explicit grammar `Range` resolution.
 //! `ExCommand` and `Action` paths are wired -- the latter via slice 8.i.0
-//! (see `docs/8i-approach.md`); registry entries grow during slices
+//! (see `docs/dev/notes/8i-approach.md`); registry entries grow during slices
 //! 8.i.1-3 as the legacy `Action` bridge in `lattice-ui-tui` retires.
 
 use lattice_protocol::position::{Position, Range as ProtoRange};

@@ -1,7 +1,7 @@
 # Lattice — Implementation Tracker
 
 This doc is the **current-state ledger** for the v1.0 build. It maps every
-feature back to its anchor in DESIGN.md / CLAUDE.md and shows what's done,
+feature back to its anchor in ../architecture/design.md / CLAUDE.md and shows what's done,
 what's in flight, and what's still pending.
 
 Commit history is the authoritative log of *what changed when*. This file is
@@ -31,7 +31,7 @@ rendering, and v1.0 polish.
 
 ### Build order: core first, plugins later
 
-DESIGN.md §3.1 codifies the fast-path-vs-orchestration split:
+../architecture/design.md §3.1 codifies the fast-path-vs-orchestration split:
 features that fire per-keystroke (LSP wire + dispatch, snippet
 engine, picker UI, completion engine, modal grammar) live in
 core; opinionated tools built *on top of* the editor (magit
@@ -73,7 +73,7 @@ Reasons this ordering wins:
 | 6     | Document Renderer + UI Components     | ⛔ not started           | Popups, pickers, panels-as-buffers all live in §5.9                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 7     | Plugin Host                           | ⛔ not started           | wasmtime + Component Model + WIT scaffolding                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | 8     | Major/Minor Modes + Reference Plugins | ⛔ not started           | Major / minor modes are themselves plugins (§5.8.3)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| 8b    | Bundled plugins                       | ⛔ not started           | Curated set of first-party WASM Component plugins shipping with the editor binary -- LSP server manager (lighthouse), plugin manager, fuzzy-finder, project grep, git client, snippet engine, editing helpers, diff viewer, outline sidebar, format-on-save, test runner, markdown preview. Each crate lives at `crates/lattice-plugin-<name>/`. See DESIGN.md §5.5.6 for the strategy + the seven WIT prerequisites Phase 7 must expose. Depends on Phase 7. |
+| 8b    | Bundled plugins                       | ⛔ not started           | Curated set of first-party WASM Component plugins shipping with the editor binary -- LSP server manager (lighthouse), plugin manager, fuzzy-finder, project grep, git client, snippet engine, editing helpers, diff viewer, outline sidebar, format-on-save, test runner, markdown preview. Each crate lives at `crates/lattice-plugin-<name>/`. See ../architecture/design.md §5.5.6 for the strategy + the seven WIT prerequisites Phase 7 must expose. Depends on Phase 7. |
 | 9     | Rich Buffer Rendering                 | ⛔ not started           | Per-line shaped path, Fenwick height index                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 10    | Polish + v1.0                         | ⛔ not started           | `*scratch:rust*` live-eval workflow (§10), accessibility, packaging, themes                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
@@ -87,10 +87,10 @@ diagnostics broadcast bus -- everything needed for the editor
 to attach servers and receive diagnostics.
 
 LSP docs are now comprehensive across audiences: design-doc
-readers (`DESIGN.md` §5.4), implementers / contributors
-([`lsp-architecture.md`](lsp-architecture.md)), users
-([`help/lsp.md`](help/lsp.md)), and per-feature trackers
-([`lsp-features.md`](lsp-features.md) -- every LSP 3.17
+readers (`../architecture/design.md` §5.4), implementers / contributors
+([`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md)), users
+([`../../user/lsp.md`](../../user/lsp.md)), and per-feature trackers
+([`../notes/lsp-features.md`](../notes/lsp-features.md) -- every LSP 3.17
 capability with status).
 
 Roadmap: 4.1.a wire (done) → 4.1.b actor + handshake (done) →
@@ -107,7 +107,7 @@ inline completion).
 ## Option B: incremental reparse + span cache
 
 **The keystroke-to-fresh-tree architecture** specified in
-DESIGN.md §5.3 / §8.2: every edit produces an `EditDelta`,
+../architecture/design.md §5.3 / §8.2: every edit produces an `EditDelta`,
 threaded to the syntax worker which applies `tree.edit()` and
 runs `Parser::parse(.., Some(&old_tree))` for incremental
 reparse. The frame-level span cache turns steady-state
@@ -141,14 +141,14 @@ lines / ~100µs at 16k lines.
 pre-Option-B (the ~178µs `highlight_lines` walk every frame
 was wasted work whenever nothing changed).
 
-Bench rows live in `BENCHMARKS.md` under "Native highlight"
+Bench rows live in `benchmarks.md` under "Native highlight"
 (B.2/B.4 incremental rows), "Frame render" (B.3 cache rows),
 and "Buffer ops" (B.1/B.5 rows). §8.2 floor-rows updated with
 measured numbers.
 
 Two follow-ups deliberately deferred:
 
-- **Per-pattern QueryCursor caching** (BENCHMARKS.md "Improvement
+- **Per-pattern QueryCursor caching** (benchmarks.md "Improvement
   target" on `highlight::rust/200`): drops the cache-miss highlight
   cost when an edit invalidates the span cache. Lower priority --
   cache miss only fires on actual changes.
@@ -227,7 +227,7 @@ Three follow-ups deliberately deferred (open):
   rapid edits. C.5's `didChange`-now-fires-for-operators may have
   partially fixed hover staleness as a side effect; diagnostics
   retention is a separate decoration-pipeline bug.
-- **Per-pattern QueryCursor caching**: the BENCHMARKS.md improvement
+- **Per-pattern QueryCursor caching**: the benchmarks.md improvement
   target on `highlight::rust/200` (3.2ms → ~1ms achievable). Cache
   miss only fires on actual changes; lower priority.
 - **Per-DocumentEntry edit accumulation** for inactive panes:
@@ -239,7 +239,7 @@ Three follow-ups deliberately deferred (open):
 ## Vim grammar coverage (Phase 1 catalog)
 
 This section enumerates every named primitive in vim's grammar against its
-status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12.
+status here. Anchor: ../architecture/design.md §5.2 + the seven unifications in §5.10–§5.12.
 
 ### Modal states
 
@@ -346,13 +346,13 @@ status here. Anchor: DESIGN.md §5.2 + the seven unifications in §5.10–§5.12
 | Pattern backrefs (`/(\w+).*\1/`)           | ✅                    | fancy-regex NFA path; bounded by 1M-iteration recursion limit                                            |
 | Replacement backrefs (`:s/(a)(b)/$2$1/`)   | ✅                    | `$1` etc. via fancy-regex's `replace_all` template                                                       |
 | Search-as-you-type live preview (hlsearch) | ✅                    | every match highlighted; persists after submit; compile errors silenced during preview                  |
-| Substitute-as-you-type live preview        | ✅                    | DESIGN.md §5.9.10; magenta strike-through overlay on matches as the user types `:s/pat/repl/...`; honours `/g` flag and `%s` scope |
-| Search cooperative cancellation            | ✅                    | DESIGN.md §5.2.5; search loops poll a `CancellationToken` per chunk + per match; flipped token returns `CoreError::Cancelled` |
+| Substitute-as-you-type live preview        | ✅                    | ../architecture/design.md §5.9.10; magenta strike-through overlay on matches as the user types `:s/pat/repl/...`; honours `/g` flag and `%s` scope |
+| Search cooperative cancellation            | ✅                    | ../architecture/design.md §5.2.5; search loops poll a `CancellationToken` per chunk + per match; flipped token returns `CoreError::Cancelled` |
 | Per-search deadline timer                  | ⛔                    | the cancellation seam is in place; the deadline-flipper (Reflex < 2 ms) is the remaining piece          |
 
 ### Ex commands
 
-Unification status (DESIGN.md §5.2.1, §B.2): every ex-command is now a
+Unification status (../architecture/design.md §5.2.1, §B.2): every ex-command is now a
 registered `ExCommandSpec` peer of motions / operators / text objects.
 The `:` parser front-end resolves aliases, looks up by name, calls the
 spec's `parse_args` (or builds an `Args::List` directly for the
@@ -386,7 +386,7 @@ canonical name. Plugin-registered names (e.g.
 the tail, not adjacent to the cmdline colon. See
 `crates/lattice-ui-tui/src/excommand.rs::parse_kind_prefixed`.
 
-**`:` surface invariant.** DESIGN.md §2.2 explicitly excludes a
+**`:` surface invariant.** ../architecture/design.md §2.2 explicitly excludes a
 function-call / palette / scripting syntax on `:`. The `:` line is
 vim's ex-syntax DSL; code paths (plugins, `init.rs`, the Rust
 functional API) construct `CommandInvocation` directly via the WIT
@@ -431,7 +431,7 @@ candidate that would error when accepted. They remain reachable via
 
 ---
 
-## Introspection architecture (DESIGN.md §5.11)
+## Introspection architecture (../architecture/design.md §5.11)
 
 Help is **buffer-backed from day one**, modeled after emacs's `*Help*`.
 A `HelpBuffer` (in `lattice-ui-tui::help`) holds a real
@@ -611,7 +611,7 @@ navigation arrive incrementally:
 | `:describe-event`                        | ⛔     | needs event bus §5.10                                             |
 | `:describe-mode`                         | ⛔     | needs major/minor modes (Phase 8)                                 |
 
-### Keymap registry (DESIGN.md §5.2.3)
+### Keymap registry (../architecture/design.md §5.2.3)
 
 `KeymapEntry { chord, mode, doc, command }` in `lattice-ui-tui::keymap`,
 populated as a `&'static [KeymapEntry] DEFAULT_KEYMAP` covering every
@@ -630,7 +630,7 @@ seed.
 
 ---
 
-## Async / actor architecture (DESIGN.md §5.2.1, §5.6.8, §5.7)
+## Async / actor architecture (../architecture/design.md §5.2.1, §5.6.8, §5.7)
 
 The async core lands in `lattice-runtime`. Every document is owned by
 its own tokio task (the **document actor**); mutations route through a
@@ -735,7 +735,7 @@ The 50+ `app.document.snapshot()` call sites in keystroke handlers
 remain on `load_full` -- each runs ≤1× per keystroke, dominated by
 other work, so the migration there is deferred.
 
-**`LatencyClass` declaration** (DESIGN.md §5.2.5) is now a field on
+**`LatencyClass` declaration** (../architecture/design.md §5.2.5) is now a field on
 every `CommandSpec`. `:describe-command` surfaces it under a
 "Latency:" section. v1 is purely declarative; the cancellation /
 deadline machinery that enforces it lands with the §5.10 event-bus.
@@ -837,7 +837,7 @@ snapshot_post_publish_read at 10/1k/50k lines).
 
 Remaining 4.2:
 - **Buffer-level Insert-mode completion** -- design spec at
-  [`insert-completion.md`](insert-completion.md). 4.2.g.1
+  [`../architecture/insert-completion.md`](../architecture/insert-completion.md). 4.2.g.1
   (shell + buffer-words + popup widget + minor-mode keymap)
   ✅; 4.2.g.2 (LSP source + isIncomplete refresh + typed
   routing payload via `CandidateData::Extension` /
@@ -901,7 +901,7 @@ Remaining 4.2:
   tree-sitter scope detection are their own slices;
   `canonical_source_id` maps short labels (`lsp`, `snippet`,
   `buffer-words`, `path`, `tree-sitter`) to canonical ids;
-  help refresh in `docs/help/completion.md` lists the
+  help refresh in `docs/../../user/completion.md` lists the
   built-in defaults table + recognised keys + merge
   semantics) ✅. **4.2.g.5 complete.** 4.2.g.6 (1/2)
   (tree-sitter local-symbol completion source --
@@ -1097,7 +1097,7 @@ in `crates/lattice-lsp/benches/lsp.rs`:
 OpenDoc → RecordEdit FIFO, scratch-buffer (no path) skip,
 unknown-URI warn-and-skip, 50-edit burst coalesce into one
 didChange, shutdown unsubscribes the bus. Architecture
-detail in `docs/lsp-architecture.md` §5 + new §11
+detail in `docs/../architecture/lsp-architecture.md` §5 + new §11
 ("Edit-path architecture") with the bus → fan-in → actor
 diagram.
 
@@ -1210,7 +1210,7 @@ Deferred with rationale:
   `input.rs` becomes a chord-string normaliser; plugins
   gain a structured extension point.
 
-`docs/BENCHMARKS.md` got the new perf rows
+`docs/benchmarks.md` got the new perf rows
 (`lsp_diagnostics_line_severity_wait_free` at 25ns, the
 existing edit-path benches). Tests stayed green at every
 slice boundary.
@@ -1220,7 +1220,7 @@ slice boundary.
    (`dispatch_with_cancel` + cooperative search cancellation), so LSP
    request cancellation hooks into existing seams; the remaining work
    is the LSP client (tower-lsp or hand-rolled) + per-server shims.
-2. **Computed folds** (per `docs/help/folding.md`) — **✅ done for
+2. **Computed folds** (per `docs/../../user/folding.md`) — **✅ done for
    all v1 providers except tree-sitter syntax queries.** Manual
    `zf` / `zo` / `zc` / `za` / `zR` / `zM` / `zd` / `zj` / `zk`,
    plus the new `zi` (`:set foldenable!`). Two computed providers:
@@ -1230,7 +1230,7 @@ slice boundary.
    is a v1 cascade (markdown for `.md`, indent otherwise) until the
    tree-sitter scope-query provider lands.
 
-   Beyond storage, the user-facing pieces from `docs/help/folding.md`:
+   Beyond storage, the user-facing pieces from `docs/../../user/folding.md`:
    identity-hash recompute (heading text + indent depth) preserves
    closed-state across edits in unrelated sections; closed folds
    render heading-preserved with a dim ` ┄ N lines folded` suffix
@@ -1284,7 +1284,7 @@ slice boundary.
    `sync_theme_from_config()` to refresh the cached `Theme`
    `Style` projections.
 
-   **§5.12 amendment landed in DESIGN.md (no plugin code yet).**
+   **§5.12 amendment landed in ../architecture/design.md (no plugin code yet).**
    Two-layer config codified: `~/.config/lattice/options.toml`
    for static data; `~/.config/lattice/init.rs` compiled to WASM
    Component, loaded by the §5.5 plugin host with a `boot`
@@ -1303,7 +1303,7 @@ slice boundary.
    `:` via `:<kind> <name>` syntax. Three reserved kind words on
    `:` (`motion`, `operator`, `text-object`); ex-commands keep
    their bare alias surface. Operator targets resolve via
-   implicit-namespace lookup. DESIGN.md §2.2 codifies the
+   implicit-namespace lookup. ../architecture/design.md §2.2 codifies the
    no-function-call-syntax-on-`:` invariant; §5.2.1 specifies the
    kind-prefix grammar. See
    `crates/lattice-ui-tui/src/excommand.rs::parse_kind_prefixed`.
@@ -1386,7 +1386,7 @@ slice boundary.
 5b. **Help topic surface (`:help`)** ✅ done.
 	`lattice-ui-tui::help_topics` defines a `HelpTopicRegistry`
 	keyed by name; bodies are either `Static(&'static str)`
-	(built-ins are sourced from `docs/help/*.md` via
+	(built-ins are sourced from `docs/user/*.md` via
 	`include_str!` so the binary is self-contained) or
 	`Dynamic(closure)` -- the seam for LSP / plugin / config-
 	supplied topics. `:help` with no arg opens the registry's
@@ -1420,7 +1420,7 @@ slice boundary.
 
 ## §15 open questions still load-bearing
 
-These are tracked in DESIGN.md §15. Items the implementation has resolved
+These are tracked in ../architecture/design.md §15. Items the implementation has resolved
 are crossed out there. Items that influence active tasks:
 
 - §15:18 Folds storage / interaction — feeds the **Computed folds** task above.
@@ -1453,7 +1453,7 @@ Workspace tests as of the last commit. Coverage by crate:
 | lattice-ui-tui                   | 1394  |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators,
-runtime actor) — see `docs/BENCHMARKS.md` for the latest numbers.
+runtime actor) — see `docs/benchmarks.md` for the latest numbers.
 
 ---
 

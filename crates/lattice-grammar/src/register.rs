@@ -21,7 +21,7 @@ impl Register {
     /// Map a user-typed register-prefix char (the `<X>` in `"<X>`)
     /// to a [`Register`] variant. Returns `None` for chars that
     /// don't name any register (the App treats `None` as "drop
-    /// pending state" -- see `docs/8i-approach.md` slice 8.i.3).
+    /// pending state" -- see `docs/dev/notes/8i-approach.md` slice 8.i.3).
     ///
     /// Mirrors vim's `:help registers`: letters name a register,
     /// digits name the numbered ring, `"` re-selects the unnamed

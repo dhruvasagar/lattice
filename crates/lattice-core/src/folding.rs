@@ -8,7 +8,7 @@
 //! announce fold ranges) reads from the same enum.
 
 /// `:set foldmethod=...` (DESIGN.md §15:18, C.2;
-/// `docs/help/folding.md`). Decides which provider feeds the
+/// `docs/user/folding.md`). Decides which provider feeds the
 /// per-buffer fold list.
 ///
 /// - `Manual` -- only user `zf` ranges, no auto-recompute.

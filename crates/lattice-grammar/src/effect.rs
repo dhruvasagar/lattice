@@ -203,7 +203,7 @@ pub enum Effect {
     /// `:HoverClose` -- dismiss the active hover popup.
     CloseHover,
     /// `:help [topic]` -- open a free-form help topic. With no
-    /// topic the host renders the index (`docs/help/README.md`
+    /// topic the host renders the index (`docs/user/README.md`
     /// equivalent); with a topic the host looks it up in its
     /// help-topic registry and surfaces the body in a help
     /// buffer. Unknown topics echo an error.
@@ -396,7 +396,7 @@ pub enum Effect {
     /// chord-bound work that has no grammar concept attached
     /// (`<Esc>` exits Visual, `<C-w>v` splits a pane, `o` opens a
     /// line below). Slice 8.i wires this surface; see
-    /// `docs/8i-approach.md`.
+    /// `docs/dev/notes/8i-approach.md`.
     AppAction(AppEffect),
 
     Many(Vec<Effect>),

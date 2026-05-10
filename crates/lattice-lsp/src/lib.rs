@@ -41,7 +41,7 @@
 //! LSP requests are §5.2.5 *Background*-class -- they have no
 //! sync-prelude budget and may be cancelled / superseded freely.
 //! Per-call performance characteristics live in
-//! `benches/lsp.rs` and are mirrored in `docs/BENCHMARKS.md`.
+//! `benches/lsp.rs` and are mirrored in `docs/dev/operations/benchmarks.md`.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::panic))]
 

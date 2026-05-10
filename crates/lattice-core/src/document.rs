@@ -46,7 +46,7 @@ pub struct Document {
     // `lattice-config` access. Removing the field here breaks the
     // `lattice-core -> lattice-mode` dep, which lets `lattice-mode`
     // gain a dep on `lattice-config` for typed-option contributions
-    // without forming a cycle. See `docs/mode-architecture.md`.
+    // without forming a cycle. See `docs/dev/architecture/mode-architecture.md`.
 }
 
 #[derive(Debug, Default)]

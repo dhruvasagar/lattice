@@ -7,24 +7,24 @@ the UI layer, ad-hoc dispatch in `lattice-lsp`, no formal mode
 registry) to a single composable mode model that all customization
 flows through.
 
-This document is a *companion* to DESIGN.md, not a replacement.
-DESIGN.md §5.8 names major / minor modes as the primary
+This document is a *companion* to design.md, not a replacement.
+design.md §5.8 names major / minor modes as the primary
 customization model; this doc spells out the trait, the resolution
 algorithm, the taxonomy criteria, and the migration sequence the
-spec leaves implicit. After review, DESIGN.md gets a link here from
+spec leaves implicit. After review, design.md gets a link here from
 §5.6 / §5.8 / §5.9 / §5.10 / §5.12.
 
 ## 1. Vision
 
 > *"Composable, content-type-aware customization. Modal state
-> (Normal/Insert/Visual/etc.) is orthogonal."* -- DESIGN.md §2.1
+> (Normal/Insert/Visual/etc.) is orthogonal."* -- design.md §2.1
 
 > *"A buffer has exactly one major mode. The major mode declares:
 > ... rendering profile, style mappings, default minor modes,
-> commands."* -- DESIGN.md §5.8.1
+> commands."* -- design.md §5.8.1
 
 > *"A buffer can have any number [of minor modes] active.
-> Composable, additive features."* -- DESIGN.md §5.8.2
+> Composable, additive features."* -- design.md §5.8.2
 
 The architecture commitments this implies:
 
@@ -54,7 +54,7 @@ The architecture commitments this implies:
   of one mode's options) or a `OptionGroup` (an explicit
   cross-mode collection -- `lsp`, `picker`, `editor`, ...). Both
   work in TUI and GUI: the customize buffer is just a buffer
-  with a `customize-mode` major (DESIGN.md §5.9.10's
+  with a `customize-mode` major (design.md §5.9.10's
   "everything-is-a-buffer applies to interactive prompts");
   GPUI and ratatui render the same form-row decorations, with
   widget sophistication varying by surface. v1 ships both
@@ -72,10 +72,10 @@ The architecture commitments this implies:
   hot path (cached, invalidated on mode toggle / option write).
   Mode-keymap layering uses the existing layered registry from
   `keymap-architecture.md` §5-6. Lifecycle events ride the
-  existing typed event bus (DESIGN.md §5.10).
+  existing typed event bus (design.md §5.10).
 - **Introspection from day one.** `:describe-mode <name>`,
   `:list-modes`, `:describe-option-resolution <name>` show what's
-  active and where each resolved value came from. (DESIGN.md
+  active and where each resolved value came from. (design.md
   §5.11 commits; this doc extends.)
 
 ## 2. Correction to §5.8.3 (three implementation paths)
@@ -212,7 +212,7 @@ as the migration checklist in §10.
 | `lsp-server-log-mode`     | `:lsp-server-log` buffers                                   | `lattice-lsp`              | Read-only, server-stderr feed.                                                   |
 | `file-tree-mode`          | `BufferKind::FileTree`                                      | `lattice-core`             | Tree nav keymap, expand/collapse, open-on-`<CR>`.                                |
 | `oil-mode`                | `BufferKind::Oil`                                           | `lattice-core`             | Editable directory; `:write` applies rename / delete.                            |
-| `command-line-mode`       | `:` minibuffer (DESIGN.md §5.9.10)                          | `lattice-core`             | Rich minibuffer's command-prompt major.                                          |
+| `command-line-mode`       | `:` minibuffer (design.md §5.9.10)                          | `lattice-core`             | Rich minibuffer's command-prompt major.                                          |
 | `search-line-mode`        | `/` and `?` minibuffer                                      | `lattice-core`             | Same family as `command-line-mode`.                                              |
 | `diagnostics-mode`        | `:diagnostics` buffer                                       | `lattice-lsp`              | Read-only, jump-on-`<CR>`.                                                       |
 | `buffer-list-mode`        | `:ls` output (when promoted to a buffer)                    | `lattice-core`             | Read-only, switch-on-`<CR>`.                                                     |
@@ -487,7 +487,7 @@ optimization. Not blocking v1.
 - Recompute on mode toggle p99 < 10µs for a buffer with 10
   active minor modes.
 
-Bench lands in `BENCHMARKS.md` as part of M.2.1.
+Bench lands in `../operations/benchmarks.md` as part of M.2.1.
 
 ### 6.4 Option identity: types are keys, strings are metadata
 
@@ -1038,7 +1038,7 @@ and the underlying option store are identical:
 
 This works because the customize buffer is just another
 buffer (`customize-mode` major). The "everything is a buffer"
-commitment (§5.9 of DESIGN.md, §3 of this doc) means the same
+commitment (§5.9 of design.md, §3 of this doc) means the same
 rendering pipeline that paints documents, help, file-tree
 buffers also paints customize. No GUI-only path, no
 separate-form-view component.
@@ -1068,7 +1068,7 @@ without rework.
 
 ## 7. Lifecycle events
 
-Mode lifecycle rides the existing typed event bus (DESIGN.md
+Mode lifecycle rides the existing typed event bus (design.md
 §5.10). Plugins / other modes subscribe with the same filter
 machinery as any other typed event:
 
@@ -1204,7 +1204,7 @@ ready; we just feed it from the mode registry.
 
 ### 9.2 Event bus
 
-DESIGN.md §5.10 already commits to a typed event bus with
+design.md §5.10 already commits to a typed event bus with
 filter-based subscriptions. Mode lifecycle events (§7) are
 just additional payload variants. Mode-declared subscriptions
 register with the bus on activation, deregister on
@@ -1212,7 +1212,7 @@ deactivation.
 
 ### 9.3 Configuration registry
 
-DESIGN.md §5.12 + the existing `lattice-config::ConfigRegistry`
+design.md §5.12 + the existing `lattice-config::ConfigRegistry`
 hold typed options as the global-layer store. **M.2 expands
 `lattice-config` to own not just the store but the resolver
 mechanism + cached `ResolvedOptions`** -- modes contribute
@@ -1533,10 +1533,10 @@ it.
 
 | #         | Slice                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Crate(s)                                                                    | Done when                                                                                                                                                                                                                     |
 |-----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| M.0       | This doc (mode-architecture.md) reviewed + accepted. DESIGN.md §5.6 / §5.8 / §5.9 / §5.10 / §5.12 augmented with links + the §5.8.3 correction. No code.                                                                                                                                                                                                                                                                                                                                                                                                                       | `docs/`                                                                     | User reviews + signs off; DESIGN.md links land.                                                                                                                                                                               |
+| M.0       | This doc (mode-architecture.md) reviewed + accepted. design.md §5.6 / §5.8 / §5.9 / §5.10 / §5.12 augmented with links + the §5.8.3 correction. No code.                                                                                                                                                                                                                                                                                                                                                                                                                       | `docs/`                                                                     | User reviews + signs off; design.md links land.                                                                                                                                                                               |
 | M.1       | New `lattice-mode` crate. `Mode` trait, `ModeRegistry`, `ActiveModes` on `Document` (the actual lattice-core per-buffer-state container; `Buffer` is the rope wrapper), lifecycle event variants. No actual modes registered. Tests for registration, conflict, capability checks.                                                                                                                                                                                                                                                                                             | new `lattice-mode`, `lattice-core`                                          | `cargo test -p lattice-mode` green; `Document` carries `ActiveModes` (empty by default).                                                                                                                                      |
 | M.2.0     | **`lattice-config` types-as-keys + resolver primitives.** `Option` trait, `options!` / `editor_options!` macros, `OptionGroup` trait + `groups!` macro, `linkme` aggregation, `OptionOverride` / `OptionOverrideSet`, `Resolver`, `ResolvedOptions`. Migrate every existing built-in option from `Option::new()` to the macro form. Remove the public `Option::new()` constructor (keep `register_erased` `pub(crate)` for the M.10 plugin adapter).                                                                                                                           | `lattice-config` (callers in every crate that registers options)            | Macro API is the only public surface; existing options work identically; `resolve(layered)` returns `ResolvedOptions` correctly for any iterator of layers; cross-crate display-name uniqueness panics at startup.            |
-| M.2.1     | **Mode-driven layers + App orchestration.** `Mode::options() -> OptionOverrideSet` real shape (`OptionOverride` / `OptionOverrideSet` / `OverridePriority` moved to `lattice-mode` to break the cycle); `lattice-config::overrides!` proc macro for compile-time-typed override construction; App carries `active_modes` / `buffer_local_overrides` / `resolved_options` keyed by `BufferId`; `App::recompute_options_for_buffer(...)` stitches layered input; `App::resolved_option::<D>(buffer)` for type-keyed reads. Bench in BENCHMARKS.md for resolution + invalidation. | `lattice-mode`, `lattice-config`, `lattice-config-macros`, `lattice-ui-tui` | `resolved_get_typed` p99 < 50ns (measured ~13.5ns); `resolve_into_10_layers` p99 < 10µs (measured ~851ns). Mode toggles refresh the cache; reads are O(1).                                                                    |
+| M.2.1     | **Mode-driven layers + App orchestration.** `Mode::options() -> OptionOverrideSet` real shape (`OptionOverride` / `OptionOverrideSet` / `OverridePriority` moved to `lattice-mode` to break the cycle); `lattice-config::overrides!` proc macro for compile-time-typed override construction; App carries `active_modes` / `buffer_local_overrides` / `resolved_options` keyed by `BufferId`; `App::recompute_options_for_buffer(...)` stitches layered input; `App::resolved_option::<D>(buffer)` for type-keyed reads. Bench in ../operations/benchmarks.md for resolution + invalidation. | `lattice-mode`, `lattice-config`, `lattice-config-macros`, `lattice-ui-tui` | `resolved_get_typed` p99 < 50ns (measured ~13.5ns); `resolve_into_10_layers` p99 < 10µs (measured ~851ns). Mode toggles refresh the cache; reads are O(1).                                                                    |
 | M.3.0     | Declare every built-in major mode (`text-mode`, `rust-mode`, `python-mode`, `javascript-mode`, `markdown-mode`, `help-mode`, `file-tree-mode`, `oil-mode`, `lsp-log-mode`, `lsp-trace-log-mode`, `lsp-server-log-mode`). Self-register at App boot via per-crate `register_*_modes` helpers. Pure declarations -- empty `options()` etc.                                                                                                                                                                                                                                       | `lattice-mode`, `lattice-syntax`, `lattice-lsp`, `lattice-ui-tui`           | Every mode is reachable via `mode_registry.is_registered(...)`; per-mode unit tests (id uniqueness, kind, registry population) green.                                                                                         |
 | M.3.1     | `ReadOnly` core option (Editor group, `customizable = false`); read-only majors (`HelpMode`, `FileTreeMode`, `LspLogMode`, `LspTraceLogMode`, `LspServerLogMode`) contribute `overrides! { ReadOnly = true }` via `Mode::options()`. App activates the resolved major at buffer creation (`activate_major_for_buffer_kind`) and triggers `recompute_options_for_buffer`. `BufferKind::is_read_only` callers shift to `app.resolved_option::<ReadOnly>(buffer_id)`.                                                                                                             | `lattice-config`, `lattice-mode`, `lattice-lsp`, `lattice-ui-tui`           | Help / FileTree / LSP-log buffers resolve `ReadOnly = true`; Document / Oil resolve `false`. End-to-end mode-driven option pipeline validated on a real piece of buffer state.                                                |
 | M.3.2.a   | **Buffer-locals foundation.** New `BufferLocal` trait + `BufferLocals` typed-map in `lattice-mode`. `ModeContext` rewritten to carry `&mut BufferLocals` + `current_mode` for the OWNER_MODE check. `Mode::on_activate`/`on_deactivate` signatures change to `&mut ModeContext<'_>`. Registry's activation methods thread `&mut BufferLocals` through. App carries `buffer_locals: HashMap<BufferId, BufferLocals>`. New `WrongOwnerMode` error variant. No per-kind data migration in this slice.                                                                             | `lattice-mode`, `lattice-ui-tui`                                            | A test mode's `on_activate` populates a `BufferLocal`, `on_deactivate` removes it, `:describe-buffer`-style descriptor iteration returns expected entries.                                                                    |
@@ -1876,7 +1876,7 @@ graceful error handling per CLAUDE.md.
   M.5 gate across one buffer's lifetime: file-open
   auto-activation (M.5.2), toggle-off detach event (M.5.3)
   + request-gate echo (M.5.4) + publish-site sync gate
-  (M.5.5), toggle-on resumption. `docs/help/lsp-mode.md`
+  (M.5.5), toggle-on resumption. `docs/../../user/lsp-mode.md`
   documents the gate behaviour for end users (toggle,
   auto-activation, what's gated when off, programmatic
   API, editor-bus events) and is reachable via
@@ -2166,7 +2166,7 @@ graceful error handling per CLAUDE.md.
   - **M.6.4 -- coverage + docs.** End-to-end test
     `m6_end_to_end_independent_sub_modes_per_feature`
     exercises cascade-on + independent disable + selective
-    feature behaviour + re-enable. `docs/help/lsp-mode.md`
+    feature behaviour + re-enable. `docs/../../user/lsp-mode.md`
     extended with the sub-mode table, contract details
     (umbrella echo wins, sub-modes aren't capability gates,
     re-toggle = reset), and the programmatic accessor

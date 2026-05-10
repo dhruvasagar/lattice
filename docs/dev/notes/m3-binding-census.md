@@ -276,7 +276,7 @@ Active when `picker_open`. Wins over every modal handler.
 | `<Char>` | `PickerAppend(c)` | input.rs:362 |
 
 `keymap.rs` has **no descriptors for any picker bindings**. The picker
-overlay is documented in `DESIGN.md §5.9.7` but has no rows in the
+overlay is documented in `../architecture/design.md §5.9.7` but has no rows in the
 catalog. Audit deliverable: every Action above is a "fires Action with
 no descriptor" hit.
 

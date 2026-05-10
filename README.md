@@ -36,7 +36,7 @@ foundation:
   layered paint paths optimized per content type (code vs. rich text vs.
   inline media). TUI is a first-class peer — not a throwaway.
 
-The full design is in [`docs/DESIGN.md`](docs/DESIGN.md) (v0.4, ~2300 lines).
+The full design is in [`docs/dev/architecture/design.md`](docs/dev/architecture/design.md) (v0.4, ~2300 lines).
 
 ---
 
@@ -150,7 +150,7 @@ cargo clippy --workspace      # workspace lints (deny unsafe outside opt-in)
 cargo bench --workspace
 ```
 
-Numbers are tracked in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+Numbers are tracked in [`docs/dev/operations/benchmarks.md`](docs/dev/operations/benchmarks.md).
 
 **Editor sanity tour**
 
@@ -178,8 +178,8 @@ In the running editor:
 
 ## Performance commitments
 
-Tracked against [DESIGN.md §8.2](docs/DESIGN.md). Latest measured numbers in
-[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md):
+Tracked against [DESIGN.md §8.2](docs/dev/architecture/design.md). Latest measured numbers in
+[`docs/dev/operations/benchmarks.md`](docs/dev/operations/benchmarks.md):
 
 | Commitment                   | Target (p99) | Status                                               |
 |------------------------------|--------------|------------------------------------------------------|
@@ -199,7 +199,7 @@ flipped `CancellationToken` within ~100 µs).
 ## Roadmap
 
 11 phases. The detailed status ledger is in
-[`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md); the phase-level summary:
+[`docs/dev/operations/implementation.md`](docs/dev/operations/implementation.md); the phase-level summary:
 
 | Phase | Title                                  | Status      |
 |-------|----------------------------------------|-------------|
@@ -267,7 +267,7 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] Every command / option / mode / keybinding carries metadata at registration time
 - [x] `:describe-command`, `:describe-buffer`, `:describe-key`, `:keymap`, `:apropos`
 - [x] `:describe-option`, `:options` (typed options registry)
-- [x] `:help [topic]` -- free-form topic surface with `<Tab>` completion; built-ins embedded via `include_str!` from `docs/help/*.md`; `Dynamic` body variant is the seam for LSP / plugin-supplied topics; `:describe-*` views emit "See also" topic cross-links
+- [x] `:help [topic]` -- free-form topic surface with `<Tab>` completion; built-ins embedded via `include_str!` from `docs/user/*.md`; `Dynamic` body variant is the seam for LSP / plugin-supplied topics; `:describe-*` views emit "See also" topic cross-links
 - [ ] `:describe-event`, `:describe-mode` (each lands when its registry does)
 
 **Configuration** (DESIGN.md §5.12)
@@ -337,13 +337,13 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 
 | Doc                                       | Purpose                                                  |
 |-------------------------------------------|----------------------------------------------------------|
-| [`docs/DESIGN.md`](docs/DESIGN.md)        | The design spec (v0.4, authoritative for what to build). |
-| [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) | Per-feature status ledger; updated per session.   |
-| [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)| Latest measured numbers vs. §8.2 commitments.            |
-| [`docs/VERIFY.md`](docs/VERIFY.md)        | Manual-verification checklist for recently shipped features. |
-| [`docs/lsp-architecture.md`](docs/lsp-architecture.md) | LSP developer reference (companion to DESIGN.md §5.4). |
-| [`docs/lsp-features.md`](docs/lsp-features.md) | Every LSP 3.17 capability + implementation status.  |
-| [`docs/help/`](docs/help/)                | User-facing reference (the `:help`-style topic docs).    |
+| [`docs/dev/architecture/design.md`](docs/dev/architecture/design.md)        | The design spec (v0.4, authoritative for what to build). |
+| [`docs/dev/operations/implementation.md`](docs/dev/operations/implementation.md) | Per-feature status ledger; updated per session.   |
+| [`docs/dev/operations/benchmarks.md`](docs/dev/operations/benchmarks.md)| Latest measured numbers vs. §8.2 commitments.            |
+| [`docs/dev/operations/verify.md`](docs/dev/operations/verify.md)        | Manual-verification checklist for recently shipped features. |
+| [`docs/dev/architecture/lsp-architecture.md`](docs/dev/architecture/lsp-architecture.md) | LSP developer reference (companion to DESIGN.md §5.4). |
+| [`docs/dev/notes/lsp-features.md`](docs/dev/notes/lsp-features.md) | Every LSP 3.17 capability + implementation status.  |
+| [`docs/user/`](docs/user/)                | User-facing reference (the `:help`-style topic docs).    |
 | [`CLAUDE.md`](CLAUDE.md)                  | Conventions for AI-assisted contributions.               |
 
 When something disagrees, **DESIGN.md and IMPLEMENTATION.md are the
@@ -356,7 +356,7 @@ authoritative sources** for what should exist and what currently does.
 The project is open to contributions, but please note the development model:
 
 1. **The design doc is load-bearing.** Significant features need to land in
-   `docs/DESIGN.md` first (or be a refinement of an existing section). Open
+   `docs/dev/architecture/design.md` first (or be a refinement of an existing section). Open
    an issue describing the design rationale before sending a PR for
    non-trivial work.
 2. **The four paramount goals override stylistic preferences when they
@@ -374,7 +374,7 @@ The project is open to contributions, but please note the development model:
 ### Good first issues
 
 - Documenting a vim grammar primitive that's missing from
-  `docs/IMPLEMENTATION.md`'s catalog table.
+  `docs/dev/operations/implementation.md`'s catalog table.
 - Adding a built-in motion / text object behind the existing
   `register_motion` / `register_text_object` API.
 - Adding a tree-sitter grammar (look at how `lattice-syntax` wires Rust /

@@ -3,7 +3,7 @@
 Authoritative design for lattice's key-input dispatch. The
 plan section at the end lists the slices that take us from the
 current state (input.rs hand-rolled match table; keymap.rs
-documentation-only) to the architecture DESIGN.md §5.2.3 has
+documentation-only) to the architecture design.md §5.2.3 has
 spec'd since day one.
 
 ## 1. Vision
@@ -12,7 +12,7 @@ spec'd since day one.
 > command invocations -- the default vim keymap is itself a
 > config file, not hardcoded behavior. Any user or plugin can
 > invoke any command, compose commands, or build entirely new
-> editing flows."* -- DESIGN.md §3 / §5.2.3
+> editing flows."* -- design.md §3 / §5.2.3
 
 The architecture commitments this implies:
 
@@ -33,7 +33,7 @@ The architecture commitments this implies:
   registration writes. The mechanism scales with the
   binding count, not the buffer size.
 
-## 2. Five-layer model (DESIGN.md §5.2.3)
+## 2. Five-layer model (design.md §5.2.3)
 
 Keymap resolution walks layers in priority order:
 
@@ -699,12 +699,12 @@ the regression net.
 ### Slice 8.h -- Plugin / user-config integration ✅ landed
 
 The plugin host (WASM Component-Model) is post-1.0 (see
-DESIGN.md §13 roadmap), so this slice ships the **registry-side
+design.md §13 roadmap), so this slice ships the **registry-side
 infrastructure** every future host integration sits on top of:
 
 - **`KeymapCapability` enum** in `keymap_registry.rs` -- the
   privilege bundle a writer presents when calling the gated
-  bind APIs. Variants mirror the WIT spec (DESIGN.md §5.5):
+  bind APIs. Variants mirror the WIT spec (design.md §5.5):
   - `Full` -- unrestricted; reserved for the host's startup
     catalog enumeration.
   - `User` -- writes to `KeymapLayer::User` only;
@@ -762,7 +762,7 @@ infrastructure** every future host integration sits on top of:
 ### Slice 8.i -- Retire the `bind_legacy` bridge
 
 The full approach memo lives at
-[`docs/8i-approach.md`](8i-approach.md): goal, the
+[`docs/../notes/8i-approach.md`](../notes/8i-approach.md): goal, the
 `Effect::AppAction(AppEffect)` carrier shape (option α), the
 type-hoisting decisions, and the sub-slice plan.
 
@@ -1088,12 +1088,12 @@ type-hoisting decisions, and the sub-slice plan.
       commitment, ~3× the bare trie-lookup numbers (the
       remainder is dispatcher fan-out + Action
       construction).
-    - `docs/BENCHMARKS.md`: rows added + a slice-8.i
+    - `docs/../operations/benchmarks.md`: rows added + a slice-8.i
       narrative paragraph confirming the dispatcher
       rebuild stayed in budget; AbsorbPartialChord /
       AbsorbOperatorPrefix short-circuits don't
       measurably hurt the hot path.
-    - `docs/DESIGN.md`: cross-references added to §5.2.4
+    - `docs/design.md`: cross-references added to §5.2.4
       (Extensibility) and §5.11 (Introspection). §5.2.3
       already pointed at the architecture doc; §5.2.4 now
       points at §5 / §6 here for keymap-side extension
@@ -1130,15 +1130,15 @@ type-hoisting decisions, and the sub-slice plan.
 
 ## See also
 
-- [DESIGN.md §5.2.3](DESIGN.md) -- canonical spec.
-- [DESIGN.md §5.2.4](DESIGN.md) -- extensibility (matches §5.5
+- [design.md §5.2.3](design.md) -- canonical spec.
+- [design.md §5.2.4](design.md) -- extensibility (matches §5.5
   here).
-- [DESIGN.md §9](DESIGN.md) -- plugin WIT interfaces.
+- [design.md §9](design.md) -- plugin WIT interfaces.
 - `crates/lattice-ui-tui/src/keymap.rs` -- the catalog (to be
   promoted to source-of-truth in slice 8.c).
 - `crates/lattice-ui-tui/src/input.rs` -- the legacy
   hand-rolled dispatcher (to be replaced incrementally
   through slices 8.d-g).
-- `docs/m3-binding-census.md` -- inventory of every existing
+- `docs/../notes/m3-binding-census.md` -- inventory of every existing
   built-in binding (one-time migration checklist; produced
   during planning).

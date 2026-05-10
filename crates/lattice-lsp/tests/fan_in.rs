@@ -2,7 +2,7 @@
 //! (`lattice_lsp::fan_in`).
 //!
 //! These cover the new edit-path architecture (see
-//! docs/lsp-architecture.md §11):
+//! docs/dev/architecture/lsp-architecture.md §11):
 //!
 //! - publish on the bus -> actor sees `didChange` with the
 //!   right ranges and texts (the case the old supervisor-mutex

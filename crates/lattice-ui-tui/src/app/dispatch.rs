@@ -913,7 +913,7 @@ impl App {
         // `pending_count * op_count` math here. Bare invocations
         // arriving without a baked count default to 1.
         let mut effective_count = inv.count.map(|c| c.0).unwrap_or(1);
-        // Fold-aware operator expansion (`docs/help/folding.md`):
+        // Fold-aware operator expansion (`docs/user/folding.md`):
         // when the cursor sits on the heading line of a closed fold
         // and the operator's range is `CurrentLine` (the `dd` / `yy`
         // / `cc` / `>>` family), grow the count so the operator
@@ -936,7 +936,7 @@ impl App {
         let mut should_exit_visual = false;
         let inv_for_repeat = inv.clone();
         // Vertical-jump motions auto-open folds the cursor lands in
-        // (`docs/help/folding.md`). Linear motions don't -- this set
+        // (`docs/user/folding.md`). Linear motions don't -- this set
         // is intentionally narrow: `gg`, `G`, and counted `numberG`
         // (the same builtins the jump-list `<C-o>`/`<C-i>` walk
         // uses).
@@ -968,7 +968,7 @@ impl App {
                 } else {
                     // Non-jump motions snap out of any closed fold's
                     // hidden body to the nearest visible line per
-                    // `docs/help/folding.md`.
+                    // `docs/user/folding.md`.
                     self.snap_cursor_past_closed_folds(prev_cursor_line);
                 }
             }
@@ -1910,7 +1910,7 @@ mod tests {
 
     #[test]
     fn dd_on_closed_fold_heading_deletes_whole_fold() {
-        // `docs/help/folding.md`: dd on a closed fold deletes the
+        // `docs/user/folding.md`: dd on a closed fold deletes the
         // entire fold range as a single undo unit. Use a sibling
         // # H2 heading so the # H1 fold has a bounded end.
         let initial = "# H1\nbody one\nbody two\n# H2\nafter\n";

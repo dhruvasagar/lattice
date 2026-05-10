@@ -2431,7 +2431,7 @@ impl App {
     /// fires the request, applies the returned edits as one
     /// undo unit.
     ///
-    /// Single-server strategy per docs/lsp-architecture.md §7b:
+    /// Single-server strategy per docs/dev/architecture/lsp-architecture.md §7b:
     /// "Two formatters can't agree on whitespace." -- so unlike
     /// nav we don't fan out / merge.
     ///
@@ -2829,7 +2829,7 @@ impl App {
 
     /// `:lsp-signature-help` (Phase 4.3). Fan-out across attached
     /// servers; first non-empty `SignatureHelp` response wins
-    /// (per docs/lsp-architecture.md §7b "First non-empty wins.
+    /// (per docs/dev/architecture/lsp-architecture.md §7b "First non-empty wins.
     /// Signatures are usually language-specific; merging rarely
     /// useful.").
     pub(super) fn do_lsp_signature_help_request(&mut self) {
@@ -2933,7 +2933,7 @@ impl App {
 
     /// Generic dispatch for the four navigation flavours
     /// (definition / declaration / typeDefinition / implementation
-    /// -- DESIGN.md §5.4 / docs/lsp-features.md). All share the
+    /// -- DESIGN.md §5.4 / docs/dev/notes/lsp-features.md). All share the
     /// same `Vec<Location>` shape, so dispatch is parameterised
     /// by `LspNavKind`; the kind selects the LSP method and
     /// drives the user-facing echo from `drain_pending_definitions`.

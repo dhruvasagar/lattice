@@ -317,7 +317,7 @@ pub enum CommandRegistration {
     /// typed [`crate::app_effect::AppEffect`]. Wired in slice 8.i.0;
     /// populated from the per-mode keymap modules during 8.i.1-3 as
     /// the legacy `Action` bridge retires. See
-    /// `docs/8i-approach.md`.
+    /// `docs/dev/notes/8i-approach.md`.
     Action(ActionSpec),
 }
 
@@ -499,7 +499,7 @@ impl CommandRegistry {
     }
 
     /// Register a free-form action (DESIGN.md §5.2.1; see
-    /// `docs/8i-approach.md`). Used by chord bindings whose
+    /// `docs/dev/notes/8i-approach.md`). Used by chord bindings whose
     /// historical `Action` enum payload had no grammar concept
     /// attached. The spec's `apply` returns an
     /// [`crate::effect::Effect`] -- typically

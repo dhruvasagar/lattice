@@ -21,7 +21,7 @@
 //! manifests, `:describe-option`). Internal access on the hot path
 //! is type-driven (`config.get::<Tabstop>()`).
 //!
-//! See `docs/mode-architecture.md` §6.4 for the design rationale
+//! See `docs/dev/architecture/mode-architecture.md` §6.4 for the design rationale
 //! (types-as-keys eliminating the cross-crate string-collision
 //! risk) and §6.8 for the constraint enforcement table (which
 //! rules land at compile time vs link time vs plugin-load time).

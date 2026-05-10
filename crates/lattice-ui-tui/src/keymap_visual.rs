@@ -20,7 +20,7 @@
 //! These are pre-dispatch overrides rather than a separate
 //! `BindingMode::VisualBlock` -- the architecture's eventual model
 //! is a minor-mode layer pushed at blockwise entry / popped at
-//! exit (see `docs/keymap-architecture.md` §5.3); slice 8.e keeps
+//! exit (see `docs/dev/architecture/keymap-architecture.md` §5.3); slice 8.e keeps
 //! the surgical pre-check until that layer machinery lands. The
 //! drift test below pins the kind branch so a future graduation
 //! to `push_layer` is mechanical.

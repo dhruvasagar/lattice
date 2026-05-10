@@ -2,7 +2,7 @@
 //!
 //! Hand-written, free-form help docs (the `:help <topic>` surface,
 //! distinct from the introspection-driven `:describe-*` views) live
-//! here. v1 ships a small built-in set sourced from `docs/help/*.md`
+//! here. v1 ships a small built-in set sourced from `docs/user/*.md`
 //! at build time via `include_str!`; plugins / future LSP / config
 //! extensions register additional topics through the same registry,
 //! so `:help` becomes the single user-facing entry point for
@@ -160,7 +160,7 @@ impl CandidateGenerator for HelpTopicsGenerator {
     }
 }
 
-/// The v1 built-in topic set. Sourced from `docs/help/*.md` via
+/// The v1 built-in topic set. Sourced from `docs/user/*.md` via
 /// `include_str!` so the binary is self-contained -- no filesystem
 /// dependency at runtime.
 pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
@@ -171,13 +171,13 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
     r.register(HelpTopic {
         name: "index".into(),
         summary: "Topic index -- start here when you don't know what to look up.".into(),
-        body: HelpTopicBody::Static(include_str!("../../../docs/help/README.md")),
+        body: HelpTopicBody::Static(include_str!("../../../docs/user/README.md")),
         related_command_patterns: Vec::new(),
     });
     r.register(HelpTopic {
         name: "folding".into(),
         summary: "Manual + computed folds, fold operators, navigation, auto-open on search.".into(),
-        body: HelpTopicBody::Static(include_str!("../../../docs/help/folding.md")),
+        body: HelpTopicBody::Static(include_str!("../../../docs/user/folding.md")),
         // `fold` covers any future fold-related command name; we
         // don't bind broader prefixes (e.g. `z`) because they
         // overlap too many unrelated chord-prefix bindings.
@@ -186,7 +186,7 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
     r.register(HelpTopic {
         name: "buffers".into(),
         summary: "Buffers, panes, splits, file tree, navigation, theme customization.".into(),
-        body: HelpTopicBody::Static(include_str!("../../../docs/help/buffers.md")),
+        body: HelpTopicBody::Static(include_str!("../../../docs/user/buffers.md")),
         related_command_patterns: vec![
             "buffer".into(),
             "tree".into(),
@@ -201,7 +201,7 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
         summary: "Bundled languages, coverage roadmap, and how to add a new language \
                   (tree-sitter or otherwise)."
             .into(),
-        body: HelpTopicBody::Static(include_str!("../../../docs/help/languages.md")),
+        body: HelpTopicBody::Static(include_str!("../../../docs/user/languages.md")),
         // Most language-related commands route through `:set
         // syntax=...` once that lands; for now bind the topic to
         // the foldmethod option so users land on the right doc when
@@ -213,7 +213,7 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
         summary: "Insert-mode completion: triggers, sources, popup keymap, configuration, \
                   troubleshooting."
             .into(),
-        body: HelpTopicBody::Static(include_str!("../../../docs/help/completion.md")),
+        body: HelpTopicBody::Static(include_str!("../../../docs/user/completion.md")),
         related_command_patterns: vec![
             "complete".into(),
             "completion".into(),
@@ -226,7 +226,7 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
         summary: "Major + minor modes: what they are, how `:<mode-name>` toggles work, \
                   major-mode swaps, auto-activation hooks, the option-resolution model."
             .into(),
-        body: HelpTopicBody::Static(include_str!("../../../docs/help/modes.md")),
+        body: HelpTopicBody::Static(include_str!("../../../docs/user/modes.md")),
         // Bind to the auto-generated `:<mode-name>` commands so
         // `:describe-command rust-mode` (or any registered mode)
         // surfaces a "See also: modes" cross-link to the topic.
@@ -237,7 +237,7 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
         summary: "Per-buffer gate that controls whether LSP features run \
                   (auto-activation, toggle, what's gated, programmatic API)."
             .into(),
-        body: HelpTopicBody::Static(include_str!("../../../docs/help/lsp-mode.md")),
+        body: HelpTopicBody::Static(include_str!("../../../docs/user/lsp-mode.md")),
         related_command_patterns: vec!["lsp".into()],
     });
     r.register(HelpTopic {
@@ -246,7 +246,7 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
                   (defaults / TOML / runtime / mode contributions / per-buffer), \
                   groups, and how to find every registered option."
             .into(),
-        body: HelpTopicBody::Static(include_str!("../../../docs/help/options.md")),
+        body: HelpTopicBody::Static(include_str!("../../../docs/user/options.md")),
         // `set` covers `:set NAME=VALUE`; the typed-options
         // surface picks up `:options` / `:describe-option` /
         // `:customize` automatically once those bind here.

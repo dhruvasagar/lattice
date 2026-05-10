@@ -3,7 +3,7 @@
 //! flow.
 //!
 //! Behavioural spec lives in
-//! [`docs/insert-completion.md`](../../../docs/insert-completion.md).
+//! [`docs/dev/architecture/insert-completion.md`](../../../docs/dev/architecture/insert-completion.md).
 //! This module is the data-flow layer: state types, trigger
 //! enum, sync source trait, fuzzy matcher tuned for code
 //! completion, and the per-buffer aggregator that holds it all
@@ -488,7 +488,7 @@ impl InsertRanker {
     pub const ID: &'static str = "rank:insert";
 
     /// Cap on the per-item frequency bonus, per
-    /// `docs/insert-completion.md` §3.6.
+    /// `docs/dev/architecture/insert-completion.md` §3.6.
     pub const FREQUENCY_BONUS_CAP: u32 = 50;
 
     pub fn new() -> Self {
@@ -497,7 +497,7 @@ impl InsertRanker {
 
     /// Rank by `score + bonus(raw)`, descending. The host
     /// owns the bonus composition: per
-    /// `docs/insert-completion.md` §3.6,
+    /// `docs/dev/architecture/insert-completion.md` §3.6,
     ///
     /// ```text
     /// final_score = base_score
@@ -588,7 +588,7 @@ impl PerLanguageOverrides {
 }
 
 /// Spec-driven defaults shipping with v1
-/// (`docs/insert-completion.md` §9). Markdown / text restrict
+/// (`docs/dev/architecture/insert-completion.md` §9). Markdown / text restrict
 /// to snippet + buffer-words (no LSP for prose); rust enables
 /// auto-fire + auto-insert-single since rust-analyzer's items
 /// are precise.

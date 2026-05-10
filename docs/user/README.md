@@ -6,8 +6,8 @@ every feature has a deep-dive doc you can read end-to-end when you
 need to understand it, and skim when you just need a keystroke.
 
 This is **user documentation**, not internal notes. For the design
-spec see [`../DESIGN.md`](../DESIGN.md); for current build status
-see [`../IMPLEMENTATION.md`](../IMPLEMENTATION.md).
+spec see [`../dev/architecture/design.md`](../dev/architecture/design.md); for current build status
+see [`../dev/operations/implementation.md`](../dev/operations/implementation.md).
 
 In-editor lookup is `:help [topic]` -- with no arg it opens this
 index page; with a topic name it opens the matching doc rendered
@@ -60,6 +60,6 @@ a PR if you want one prioritized.
 - **You want to understand how X composes with Y:** read the
   topic's "Edge cases" / "Interaction" sections.
 - **You want to know if a feature exists yet:**
-  [`../IMPLEMENTATION.md`](../IMPLEMENTATION.md) is the ledger.
+  [`../dev/operations/implementation.md`](../dev/operations/implementation.md) is the ledger.
 - **You want to know why it works the way it does:**
-  [`../DESIGN.md`](../DESIGN.md) is the spec.
+  [`../dev/architecture/design.md`](../dev/architecture/design.md) is the spec.

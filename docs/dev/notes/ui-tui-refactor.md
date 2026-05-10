@@ -24,7 +24,7 @@ invisible. R.1.x is a mechanical move-only refactor that:
   documents what stayed in `app.rs` and why), so future
   slices can pick up exactly where the previous one stopped.
 - Prepares ground for the M.* mode-architecture migration
-  (`docs/mode-architecture.md` §10) -- once an App method is
+  (`docs/../architecture/mode-architecture.md` §10) -- once an App method is
   in the right per-concern file, moving it across the
   `lattice-mode` boundary later is one local change, not a
   cross-file untangle.
@@ -322,7 +322,7 @@ across feature modules.
 ## 7. After R.1.x
 
 This refactor sets up the M.* mode-architecture migration
-(`docs/mode-architecture.md` §10). Specifically: every per-
+(`docs/../architecture/mode-architecture.md` §10). Specifically: every per-
 concern module under `app/` becomes a candidate adapter
 boundary when its methods graduate to `Mode::on_activate` /
 `Mode::on_deactivate` hooks or to mode-owned `BufferLocal`

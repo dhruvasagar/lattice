@@ -612,7 +612,7 @@ impl App {
     }
 
     /// Total ranker bonus for a candidate -- per-source priority
-    /// (`docs/insert-completion.md` §3.4 / §3.6) plus the capped
+    /// (`docs/dev/architecture/insert-completion.md` §3.4 / §3.6) plus the capped
     /// frequency lift. Future bonus terms (preselect,
     /// deprecated penalty) compose into this same closure as
     /// 4.2.g.5 / 4.2.g.6 land them.
@@ -909,7 +909,7 @@ impl App {
         // closed; the next trigger re-evaluates from scratch.
         self.completion_in_path_context = false;
         // Bump the accept-frequency counter for this item. Per
-        // `docs/insert-completion.md` §3.6, the ranker rereads
+        // `docs/dev/architecture/insert-completion.md` §3.6, the ranker rereads
         // this map and adds a bounded bonus so the user's
         // recently-accepted picks float above tied peers next
         // time the popup opens. We bump unconditionally here:

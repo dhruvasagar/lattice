@@ -13,9 +13,9 @@ embeds an App-level `Action` directly inside `BoundCommand`. Slice
 `CommandInvocation` dispatch.
 
 **Companion docs:**
-- [`docs/keymap-architecture.md`](keymap-architecture.md) §9 (slice
+- [`docs/../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md) §9 (slice
   list, Action-collapse trade-off flagged in §10).
-- [`docs/DESIGN.md`](DESIGN.md) §5.2.1 (unified dispatcher), §5.2.3
+- [`docs/../architecture/design.md`](../architecture/design.md) §5.2.1 (unified dispatcher), §5.2.3
   (five-layer keymap), §5.2.4 (extensibility).
 - [`docs/m3-binding-census.md`](m3-binding-census.md) -- raw inventory
   of every built-in binding.
@@ -213,7 +213,7 @@ open without forcing the call now.
 The trade-off accepted: one more enum to maintain. The alternative
 (option β) trades that for a 50% bigger Effect that mixes editor-
 core and editor-shell concerns. Worth a paragraph in §10 of
-keymap-architecture.md as the resolution of the
+../architecture/keymap-architecture.md as the resolution of the
 "`Action` enum collapse" trade-off flagged there.
 
 ### Where AppEffect lives
@@ -395,7 +395,7 @@ piece that takes the longest to land and verify.
 
 **Caveat:** `Action::SetPending` is currently published into recorded
 macros (`rec.actions.push(action.clone())`). Macros record
-`CommandInvocation`s anyway (per design DESIGN.md §5.2 "Macros
+`CommandInvocation`s anyway (per design ../architecture/design.md §5.2 "Macros
 record `CommandInvocation` sequences, not keystrokes") -- the
 SetPending entries in today's macro recordings are migration debt
 that goes away with the parser rewrite. Verify slice 8.i.4's macro
@@ -476,7 +476,7 @@ Two encoding choices for the parameter:
 
 Mostly use distinct IDs for enum-bounded params; use args for char
 captures and the rare numeric param. Document the convention as a
-follow-on edit to `docs/keymap-architecture.md` §3.5.
+follow-on edit to `docs/../architecture/keymap-architecture.md` §3.5.
 
 ### 8.i.3 -- Wildcard-captured variants
 
@@ -517,12 +517,12 @@ typed `CommandInvocation`.
   `translate_insert`/`translate_normal` from `input.rs` and the
   reference bodies in each per-mode test module.
 - Replace the per-mode drift tests with the test
-  keymap-architecture.md §9 (slice 8.i bullet) calls for: "every
+  ../architecture/keymap-architecture.md §9 (slice 8.i bullet) calls for: "every
   catalog entry resolves to a real `CommandInvocation`."
 - Bench rollup. Confirm no regression on the keymap_handle_lookup
   hot path now that the trie is the only path.
-- Doc updates: `docs/keymap-architecture.md` §10 closes the
-  "`Action` enum collapse" trade-off; `docs/IMPLEMENTATION.md`
+- Doc updates: `docs/../architecture/keymap-architecture.md` §10 closes the
+  "`Action` enum collapse" trade-off; `docs/../operations/implementation.md`
   records 8.i landed; this file gets a "completed" note.
 
 **Land condition:** `cargo test --workspace` green; bench numbers
@@ -549,7 +549,7 @@ Bounded scope is part of the deliverable. Out of scope for 8.i:
   slice 8.h but no major-mode bindings exist yet. Major-mode
   registration follows the same shape; the slice is independent.
 - **Macro recording format change.** Macros record
-  `CommandInvocation`s already (DESIGN.md §5.2). The `SetPending`
+  `CommandInvocation`s already (../architecture/design.md §5.2). The `SetPending`
   entries in today's recordings are debt that disappears with
   Pending; no format-version bump needed.
 

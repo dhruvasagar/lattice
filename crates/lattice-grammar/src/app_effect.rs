@@ -37,19 +37,11 @@ use crate::modal::{ModalState, SearchDirection, VisualKind};
 use crate::register::Register;
 use crate::registry::OperatorId;
 
-/// Vim's `<C-w>` pane-navigation direction. App-side concept
-/// hosted here so `AppEffect::NavigatePane(PaneDirection)` can
-/// carry the typed payload without `lattice-ui-tui` having to
-/// dance through a dependency cycle. Slice 8.i.4.d hoist; the
-/// App's previous `crate::pane::PaneDirection` becomes a
-/// `pub use` re-export of this type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PaneDirection {
-    Left,
-    Down,
-    Up,
-    Right,
-}
+// M.4 follow-up: `PaneDirection` moved to `lattice-core::ui::pane`
+// (the same crate as the pane geometry). lattice-grammar
+// re-exports it so `AppEffect::NavigatePane(PaneDirection)`
+// remains ergonomic.
+pub use lattice_core::ui::pane::PaneDirection;
 
 /// Vim's `H` / `M` / `L` target positions: where in the visible
 /// viewport the cursor lands. App-side concept hosted here so

@@ -4,13 +4,16 @@
 //! agnostic; tree-sitter, LSP, plugin, and rendering concerns live elsewhere.
 
 pub mod buffer;
+pub mod buffers;
 pub mod document;
 pub mod error;
 pub mod folding;
 pub mod search;
+pub mod ui;
 pub mod undo;
 
 pub use crate::buffer::Buffer;
+pub use crate::buffers::{BufferFlags, BufferId, BufferKind};
 pub use crate::document::{Document, DocumentBuilder};
 pub use crate::error::{CoreError, CoreResult};
 pub use crate::folding::FoldMethod;

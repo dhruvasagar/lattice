@@ -1791,6 +1791,25 @@ graceful error handling per CLAUDE.md.
   explicitly. Per-major opt-out (`:set rust-mode.lsp = false`)
   is deferred to a future slice once typed-option per-mode
   conventions are settled.
+- M.5.3 -- ✅ landed. `lsp-mode` activation / deactivation
+  lifecycle. Two new editor events
+  (`Event::LspBufferAttached` / `Event::LspBufferDetached` in
+  `lattice-protocol`) carry the higher-level "buffer is now
+  / no longer LSP-tracked" semantic. App-side
+  `on_lsp_mode_activated` / `on_lsp_mode_deactivated` fire
+  from `activate_mode_by_id` / `deactivate_mode_by_id` when
+  the target mode is `LspMode`. Deactivation routes through
+  the existing `lsp_close_buffer` path: sends
+  `textDocument/didClose` per attached server (the LSP
+  wire-level "stop tracking this URI" message; matches
+  nvim's `vim.lsp.buf_detach_client` and emacs `lsp-mode` /
+  eglot), clears `App::buffer_uris[id]`, the server
+  connection persists if other buffers are still attached.
+  Activation today emits the event signal only; wire-level
+  `didOpen` still fires from the `attach_driver` listening
+  to `DocumentOpened` (file-open path). Unifying attach
+  through lsp-mode (re-attach on `:lsp-mode` re-activate
+  after a deactivate) is M.5.5 territory.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

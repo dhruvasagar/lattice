@@ -380,6 +380,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("filetree-close", "ex:filetree-close"),
     ("describe-option", "ex:describe-option"),
     ("options", "ex:options"),
+    ("describe-events", "ex:describe-events"),
+    ("describe-event", "ex:describe-event"),
     ("hover", "ex:hover"),
     ("HoverClose", "ex:hover-close"),
     ("h", "ex:help"),

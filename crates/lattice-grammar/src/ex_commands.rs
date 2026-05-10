@@ -59,6 +59,8 @@ pub struct ExBuiltins {
     pub oil: ExCommandId,
     pub describe_option: ExCommandId,
     pub list_options: ExCommandId,
+    pub describe_events: ExCommandId,
+    pub describe_event: ExCommandId,
     pub hover: ExCommandId,
     pub hover_close: ExCommandId,
     pub help: ExCommandId,
@@ -552,6 +554,46 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let describe_events = registry.register_ex_command(
+        "ex:describe-events",
+        "List every registered event (`:describe-events`). Walks the \
+         distributed-slice event registry and renders one row per event \
+         with name + source crate + doc.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::DescribeEvents)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let describe_event = registry.register_ex_command(
+        "ex:describe-event",
+        "Open the help view for a registered event (`:describe-event NAME`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(name) => Ok(Effect::DescribeEvent {
+                    name: name.to_string(),
+                }),
+                _ => Err(CommandError::BadArgs("expected event name".into())),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "name",
+                kind: ArgKind::String,
+                doc: "Registered event name (e.g. `lsp.buffer-attached`).",
+                prompt: "event:",
+                default: ArgDefault::Required,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let hover = registry.register_ex_command(
         "ex:hover",
         "Open a hover popup at the cursor (`:hover [markdown]`). v1 path: feed text manually; \
@@ -1040,6 +1082,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         oil,
         describe_option,
         list_options,
+        describe_events,
+        describe_event,
         hover,
         hover_close,
         help,

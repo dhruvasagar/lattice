@@ -618,6 +618,59 @@ mod tests {
     }
 
     #[test]
+    fn describe_events_renders_catalogue_grouped_by_source_crate() {
+        // M.5.3.c: `:describe-events` walks `EVENT_DESCRIPTORS`
+        // (the linkme distributed slice every `register_event!`
+        // pushes into) and renders a help buffer. Every event
+        // in the registry should appear in the rendered body.
+        let mut a = app_with("hi", 5);
+        a.do_describe_events();
+        let h = a
+            .popup_help()
+            .expect(":describe-events should open a help popup");
+        let body = h.content.as_string();
+        // The three M.5.3.b LSP events should be listed.
+        assert!(
+            body.contains("lsp.buffer-attached"),
+            "describe-events body missing `lsp.buffer-attached`; got:\n{body}"
+        );
+        assert!(
+            body.contains("lsp.buffer-detached"),
+            "describe-events body missing `lsp.buffer-detached`; got:\n{body}"
+        );
+        assert!(
+            body.contains("lsp.log-pushed"),
+            "describe-events body missing `lsp.log-pushed`; got:\n{body}"
+        );
+        // Source crate header for grouped section.
+        assert!(
+            body.contains("lattice-lsp"),
+            "describe-events body should group by source crate; got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn describe_event_renders_single_descriptor() {
+        let mut a = app_with("hi", 5);
+        a.do_describe_event("lsp.buffer-attached");
+        let h = a
+            .popup_help()
+            .expect(":describe-event should open a help popup");
+        let body = h.content.as_string();
+        assert!(body.contains("lsp.buffer-attached"));
+        assert!(body.contains("lattice-lsp"));
+    }
+
+    #[test]
+    fn describe_event_unknown_name_emits_error_echo() {
+        let mut a = app_with("hi", 5);
+        a.do_describe_event("definitely-not-an-event");
+        let msg = a.last_message.as_ref().expect("error echo");
+        assert!(msg.text.contains("no event named"));
+        assert!(a.popup_buffer.is_none());
+    }
+
+    #[test]
     fn toggle_command_resolves_through_ex_command_registry() {
         // M.5.1: the `:<mode-name>` ex-command auto-registered at
         // boot drives the same toggle. End-to-end through

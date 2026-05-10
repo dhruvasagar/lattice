@@ -1094,6 +1094,8 @@ impl App {
             Effect::SnippetExpand => self.do_snippet_expand_at_cursor(),
             Effect::ReloadSnippets => self.do_reload_snippets(),
             Effect::ToggleMode { mode_name } => self.toggle_mode_by_name(&mode_name),
+            Effect::DescribeEvents => self.do_describe_events(),
+            Effect::DescribeEvent { name } => self.do_describe_event(&name),
             Effect::AppAction(app) => self.apply_app_effect(app),
             Effect::Many(many) => {
                 for e in many {
@@ -1320,6 +1322,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::SnippetExpand
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
+        | Effect::DescribeEvents
+        | Effect::DescribeEvent { .. }
         | Effect::AppAction(_) => false,
     }
 }
@@ -1384,6 +1388,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::SnippetExpand
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
+        | Effect::DescribeEvents
+        | Effect::DescribeEvent { .. }
         | Effect::AppAction(_) => false,
     }
 }

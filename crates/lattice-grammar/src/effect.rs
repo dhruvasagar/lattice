@@ -328,6 +328,17 @@ pub enum Effect {
     /// `.json` file in the project's snippet directory.
     ReloadSnippets,
 
+    /// `:describe-events` -- render a help buffer listing every
+    /// registered event (M.5.3.c). Walks
+    /// `lattice_protocol::event_registry::EVENT_DESCRIPTORS` and
+    /// formats each as `name :: source-crate :: doc`.
+    DescribeEvents,
+    /// `:describe-event <name>` -- render the descriptor for a
+    /// single registered event (M.5.3.c). The introspection
+    /// counterpart of `:describe-command` for events.
+    DescribeEvent {
+        name: String,
+    },
     /// `:<mode-name>` -- toggle a registered mode on the active
     /// buffer (M.5.1; mode-architecture §9.6.1). For minors:
     /// activate if inactive, deactivate if active. For majors:

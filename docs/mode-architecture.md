@@ -1663,6 +1663,46 @@ graceful error handling per CLAUDE.md.
     popups; dismiss removes them from the registry); (c) the
     in-pane vs popup display preference for help buffers
     (today centred-popup is hard-wired in App methods).
+- Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
+  In support of M.4 and the broader "everything-is-a-buffer"
+  commitment, content models that aren't tui-shaped were lifted
+  out of `lattice-ui-tui` so any future renderer (GPUI, web)
+  can depend on them without pulling ratatui:
+  - **lattice-help** ✅. `HelpBuffer` / `HelpContent` /
+    `HelpMetadata` / link parser / topic registry. The seven
+    LSP-aware factories (`HelpContent::diagnostics` /
+    `lsp_*`) and their two helpers (`summarise_capabilities`,
+    `format_log_record`) moved to `lattice-lsp::help_views` as
+    free functions returning `lattice_help::HelpContent` --
+    they read LSP runtime types
+    (`DiagnosticsLayer` / `LspSupervisor` / `LspLogger` /
+    `Capabilities` / `LogRecord`) and shouldn't pull lsp into
+    a content-model crate. `lattice-ui-tui::{help, help_topics}`
+    are now re-export shims.
+  - **lattice-oil** ✅. Clean extraction; oil's rope holds bare
+    names and the renderer adds icons as spans, so no icon dep
+    to factor out.
+  - **lattice-file-tree** ✅, with prerequisite icon split:
+    `lattice_core::ui::icons` now owns the path → glyph + colour
+    table, returning `(&'static str, IconColor)` where
+    `IconColor` is a renderer-neutral enum (`Rgb(u32)` plus
+    seven named variants). `lattice-ui-tui::icons` reduces to a
+    thin adapter that maps `IconColor` → ratatui `Color` /
+    `Style`. `lattice-file-tree` embeds glyphs in the rope via
+    `glyph_for_entry`; colour is applied by the renderer at draw
+    time.
+  - **lattice-app** -- ⏸ deferred. `App` (~31k LoC across 24
+    submodules in `crates/lattice-ui-tui/src/app/`) is tightly
+    coupled to ratatui types in render paths, the picker, the
+    cmdline overlay, and the popup geometry. Extracting
+    cleanly requires either (a) lifting `theme` / `render` /
+    picker-rendering / cmdline-rendering into `lattice-app`
+    too -- which doesn't shrink the renderer crate, just
+    renames it -- or (b) making `App` renderer-agnostic by
+    threading a renderer trait through every draw path, which
+    is the M.6+ "additional renderers" milestone, not an M.4
+    follow-up. Documented as a non-goal for the current
+    architectural slice.
 
 ### 10.1 Why LSP is the right canary (M.5 first among "real" mode work)
 

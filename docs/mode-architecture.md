@@ -1971,15 +1971,28 @@ graceful error handling per CLAUDE.md.
     `read-only-mode` doesn't get a cascade hook --
     `customizable = false` means `:set read-only` is rejected,
     so there's no second source of truth.
-  - **Deferred to M.7.2:** `whitespace-show-mode` and
-    `current-line-highlight-mode`. Their backing typed
-    options (`list`, `cursorline`) don't exist yet -- the
-    renderer has no plumbing for trailing whitespace
-    decoration or current-line highlight. M.7.2 lands the
-    options + the modes together.
+  - **M.7.2 -- whitespace + current-line-highlight.**
+    Two typed options under the Editor group: `Whitespace`
+    (alias `list`, vim convention; default false) and
+    `CursorLine` (canonical `current-line-highlight`;
+    aliases `cul` / `cursorline`; default false). Two minor
+    modes via `display_minor_mode!`: `whitespace-show-mode`
+    contributes `Whitespace = true`,
+    `current-line-highlight-mode` contributes
+    `CursorLine = true`. Cascade convergence wired through
+    `mirror_typed_option_to_display_mode::<D>` -- `:set list`
+    ↔ `:whitespace-show-mode`, `:set cursorline` ↔
+    `:current-line-highlight-mode`.
+  - **Deferred to M.7.3:** the renderer's actual painting
+    plumbing for whitespace glyphs + current-line highlight.
+    The option + mode + cascade declarations exist today;
+    the renderer's `option_cache.show_whitespace` /
+    `current_line_bg` reads, theme entries, and per-line
+    decoration emission are the genuinely-new visual work.
 
-  Workspace 1383 → 1390 (+7 across M.7.0 + M.7.1; 1 in
-  lattice-mode unit tests, 6 in ui-tui integration tests).
+  Workspace 1383 → 1394 (+11 across M.7.0 / M.7.1 / M.7.2;
+  3 in lattice-mode unit tests, 8 in ui-tui integration
+  tests).
 
 - M.6 -- ✅ landed across M.6.0 / M.6.1 / M.6.2 / M.6.3 /
   M.6.4. Nine LSP sub-mode minors give per-feature
@@ -2050,6 +2063,16 @@ graceful error handling per CLAUDE.md.
 
   Workspace: 1369 → 1383 (+14 across the four sub-slices --
   3 declarations, 4 cascade, 4 gate, 2 diagnostic, 1 e2e).
+- M.6.5 -- ✅ landed. `lsp.log-level` →
+  `lsp-mode.log-level` namespace cleanup.
+  `apply_persistent_lsp_editor_options` reads canonical
+  first; legacy key still works for one minor version with a
+  deprecation Warn echo. Canonical wins silently when both
+  are set. The `lsp.*` TOML namespace is now exclusively the
+  structural `workspace/configuration` passthrough
+  (per-server subtables like `[lsp.rust-analyzer]`);
+  editor-side options owned by the `lsp-mode` minor live
+  under `lsp-mode.*`. Workspace 1390 → 1392 (+2 new tests).
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

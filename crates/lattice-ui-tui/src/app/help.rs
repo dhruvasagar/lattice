@@ -71,10 +71,10 @@ impl App {
         } else {
             format!("help {name}")
         };
-        self.open_popup(
+        self.display_buffer(
             HelpContent::from_lines_and_anchors(title, lines, anchors)
                 .with_markdown_syntax(self.lang_registry.clone()),
-            crate::popup::PopupPlacement::Centered,
+            lattice_core::ui::display::BufferDisplayCategory::HelpTopic,
         );
     }
 
@@ -136,7 +136,10 @@ impl App {
         {
             content.buffer.scroll = line as usize;
         }
-        self.open_popup(content, crate::popup::PopupPlacement::Centered);
+        self.display_buffer(
+            content,
+            lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+        );
     }
 
     pub(super) fn do_describe_buffer(&mut self) {
@@ -174,10 +177,10 @@ impl App {
             self.show_line_numbers(),
             self.relative_line_numbers()
         ));
-        self.open_popup(
+        self.display_buffer(
             HelpContent::from_lines("describe-buffer", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
-            crate::popup::PopupPlacement::Centered,
+            lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
         );
     }
 
@@ -230,10 +233,10 @@ impl App {
                 ));
             }
         }
-        self.open_popup(
+        self.display_buffer(
             HelpContent::from_lines(format!("apropos {pattern}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
-            crate::popup::PopupPlacement::Centered,
+            lattice_core::ui::display::BufferDisplayCategory::HelpApropos,
         );
     }
 
@@ -257,10 +260,10 @@ impl App {
                 }
             }
         }
-        self.open_popup(
+        self.display_buffer(
             HelpContent::from_lines(format!("describe-key {chord}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
-            crate::popup::PopupPlacement::Centered,
+            lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
         );
     }
 
@@ -424,10 +427,10 @@ impl App {
             }
             lines.push(String::new());
         }
-        self.open_popup(
+        self.display_buffer(
             HelpContent::from_lines("keymap", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
-            crate::popup::PopupPlacement::Centered,
+            lattice_core::ui::display::BufferDisplayCategory::HelpList,
         );
     }
 

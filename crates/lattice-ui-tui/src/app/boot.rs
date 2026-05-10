@@ -30,7 +30,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::{App, BufferData, BufferEntry, BufferFlags, BufferId, BufferKind, DocumentEntry, EchoLevel, OptionCache};
-use crate::help::HelpDisplayMode;
 use crate::pane::{PaneState, PaneTree};
 
 /// Build a fresh LSP subsystem. Returns the supervisor wrapped
@@ -447,7 +446,6 @@ impl App {
             command_history_pending: None,
             popup_buffer: None,
             prev_pane_for_help: None,
-            help_display_mode: HelpDisplayMode::default(),
             popup_placement: crate::popup::PopupPlacement::default(),
             completion_registry,
             completion_state: None,

@@ -424,10 +424,10 @@ impl App {
         }
         lines.push(String::new());
         lines.push(spec.doc().to_string());
-        self.open_popup(
+        self.display_buffer(
             HelpContent::from_lines(format!("describe-option {name}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
-            crate::popup::PopupPlacement::Centered,
+            lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
         );
     }
 
@@ -446,10 +446,10 @@ impl App {
                 spec.get_formatted()
             ));
         }
-        self.open_popup(
+        self.display_buffer(
             HelpContent::from_lines("options", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
-            crate::popup::PopupPlacement::Centered,
+            lattice_core::ui::display::BufferDisplayCategory::HelpList,
         );
     }
 

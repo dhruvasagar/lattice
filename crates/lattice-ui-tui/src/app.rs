@@ -88,7 +88,6 @@ use std::sync::Arc;
 use crate::buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
 
-use crate::help::HelpDisplayMode;
 use crate::pane::{PaneDirection, PaneTree};
 
 // R.1.0 -- app/ submodule skeleton. Each submodule is a
@@ -101,6 +100,7 @@ use crate::pane::{PaneDirection, PaneTree};
 mod boot;
 mod cmdline;
 mod completion;
+mod display;
 mod dispatch;
 mod edit;
 mod file_tree;
@@ -1214,10 +1214,9 @@ pub struct App {
     /// `BufferFlags { listed: false, hidden: true }`. Resolve the
     /// concrete handle through [`Self::popup_help`] /
     /// [`Self::popup_help_mut`] -- the slot itself is just a
-    /// reference into the registry. Display strategy is the
-    /// centred popup today; [`Self::help_display_mode`] picks
-    /// between surfaces (split / tab / minibuffer arrive post
-    /// multi-buffer).
+    /// reference into the registry. Display strategy is governed
+    /// by [`lattice_core::ui::display::BufferDisplayCategory`];
+    /// callers route through [`Self::display_buffer`].
     pub popup_buffer: Option<crate::buffers::BufferId>,
     /// Pane state captured before activating help -- used by
     /// `dismiss_popup` to restore the user to whatever buffer +
@@ -1227,11 +1226,6 @@ pub struct App {
     /// pane scope -- multi-pane help dismissal will key by pane
     /// id when that scenario surfaces.
     pub prev_pane_for_help: Option<PrevPaneState>,
-    /// Where the active help buffer is rendered. v1 only implements
-    /// `Popup`; the other variants are reserved for the multi-buffer
-    /// phase. Configurable per-user (eventually via `:set
-    /// help.display-mode=...`).
-    pub help_display_mode: HelpDisplayMode,
     /// Where the popup overlay sits on screen when one is open.
     /// Carried on App (not on the buffer) because the popup is a
     /// generic rectangular surface inside which any buffer kind

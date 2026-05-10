@@ -5,7 +5,7 @@
 //! render today is just one display strategy for this buffer; when
 //! multi-buffer support lands the same content can be shown in a
 //! split, tab, or window per a user preference (see
-//! [`HelpDisplayMode`]). This is the emacs model: `*Help*` is a
+//! `lattice_core::ui::display::BufferDisplay`). This is the emacs model: `*Help*` is a
 //! buffer; its content is queryable, navigable with normal motions,
 //! and its links are followable.
 //!
@@ -26,7 +26,7 @@
 //!    docs.rs, this editor's markdown highlighter); navigation
 //!    inside the editor dispatches on the URL's scheme.
 //!
-//! 3. **Display target is a user preference** -- [`HelpDisplayMode`]
+//! 3. **Display target is a user preference** -- `BufferDisplay`
 //!    enumerates the surfaces a help buffer can be shown in. v1
 //!    implements `Popup` only; `Split` / `Tab` / `Window` arrive
 //!    behind multi-buffer.
@@ -54,23 +54,13 @@ use lattice_core::BufferId;
 
 pub mod topics;
 
-/// Where a help buffer is displayed. Configured per-user; v1 only
-/// implements [`HelpDisplayMode::Popup`]. The other variants exist now
-/// to lock in the API shape -- when multi-buffer support arrives the
-/// renderer dispatches on this enum without touching the help-content
-/// layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HelpDisplayMode {
-    /// Centred bordered overlay over the buffer area. Available today.
-    #[default]
-    Popup,
-    /// Horizontal split below the active buffer. Post-multi-buffer.
-    Split,
-    /// Separate tab in the tab bar. Post-multi-buffer.
-    Tab,
-    /// Separate OS-level window. Post-multi-buffer.
-    Window,
-}
+// Display strategy for help-flavoured buffers (popup / split /
+// active-pane / ...) lives in `lattice_core::ui::display` as
+// [`BufferDisplay`] / [`BufferDisplayCategory`] -- one enum
+// covers every dedicated-buffer producer (LSP status, hover,
+// signature, the various help / describe / apropos surfaces),
+// not just help. Callers in the App route through
+// [`App::display_buffer`].
 
 // `PopupPlacement` lives in `crate::popup`. The popup is a
 // generic rendering surface (a rect drawn over the buffer area
@@ -1065,11 +1055,6 @@ mod tests {
     #[test]
     fn command_link_helper_renders_markup() {
         assert_eq!(command_link("ex:write"), "[ex:write](command:ex:write)");
-    }
-
-    #[test]
-    fn display_mode_default_is_popup() {
-        assert_eq!(HelpDisplayMode::default(), HelpDisplayMode::Popup);
     }
 
     #[test]

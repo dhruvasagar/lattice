@@ -340,6 +340,12 @@ impl App {
                 // Already on the target via preview; no additional
                 // action needed beyond letting the picker drop.
                 if id != self.active_pane_buffer_id() {
+                    // M.4: honour `BufferDisplayCategory::PickerResult`.
+                    // For `Split(orientation)` this opens a new pane
+                    // and focuses it before the activation, matching
+                    // a user override like `:set picker-result.display
+                    // = split-h`. `ActivePane` (default) is a no-op.
+                    self.prepare_pane_for_picker_result();
                     self.activate_buffer(id);
                 }
             }
@@ -371,6 +377,11 @@ impl App {
                 if let Some(origin) = self.pending_tag_origin.take() {
                     self.tag_stack.push(origin);
                 }
+                // M.4: honour `BufferDisplayCategory::PickerResult`
+                // for the destination pane (split into a new sibling
+                // before the jump if the user has overridden to a
+                // `Split` display).
+                self.prepare_pane_for_picker_result();
                 self.jump_to_file_line_col(&path, line, col);
             }
             crate::picker::RoutingPayload::LspCompletion { index } => {

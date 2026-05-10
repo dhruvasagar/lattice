@@ -794,10 +794,10 @@ impl App {
                 }
             }
         }
-        self.open_popup(
+        self.display_buffer(
             HelpContent::from_lines("buffers", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
-            crate::popup::PopupPlacement::Centered,
+            lattice_core::ui::display::BufferDisplayCategory::HelpList,
         );
     }
 

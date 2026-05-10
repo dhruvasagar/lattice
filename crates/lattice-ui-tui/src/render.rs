@@ -782,7 +782,8 @@ fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(para, area);
 }
 
-/// tab / window targets per [`crate::help::HelpDisplayMode`]. Width is
+/// `BufferDisplay::Split` and future tab / window variants per
+/// [`lattice_core::ui::display::BufferDisplay`]. Width is
 /// `min(buffer_width - 4, 100)`, height is 70% of the buffer area.
 /// Content is the [`crate::help::HelpBuffer`]'s rope text; we slice
 /// the visible window from the rendered string. Link markup

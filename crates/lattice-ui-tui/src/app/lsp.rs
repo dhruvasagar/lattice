@@ -3224,7 +3224,10 @@ impl App {
     pub fn do_lsp_status(&mut self) {
         let buffer = lattice_lsp::help_views::lsp_status_help(&self.lsp)
             .with_markdown_syntax(self.lang_registry.clone());
-        self.open_popup(buffer, crate::popup::PopupPlacement::Centered);
+        self.display_buffer(
+            buffer,
+            lattice_core::ui::display::BufferDisplayCategory::LspStatus,
+        );
     }
 
     /// `:lsp-server-log` -- vertico picker over every running
@@ -3309,7 +3312,10 @@ impl App {
         let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
         let buffer = lattice_lsp::help_views::lsp_server_log_help(&self.lsp_logger, &arc)
             .with_markdown_syntax(self.lang_registry.clone());
-        self.open_help_in_pane(buffer);
+        self.display_buffer(
+            buffer,
+            lattice_core::ui::display::BufferDisplayCategory::LspLog,
+        );
     }
 
     /// Open `*lsp:<server_id>:trace*` in the active pane. Pure
@@ -3319,7 +3325,10 @@ impl App {
         let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
         let buffer = lattice_lsp::help_views::lsp_server_trace_help(&self.lsp_logger, &arc)
             .with_markdown_syntax(self.lang_registry.clone());
-        self.open_help_in_pane(buffer);
+        self.display_buffer(
+            buffer,
+            lattice_core::ui::display::BufferDisplayCategory::LspLog,
+        );
     }
 
     /// Helper: publish a position-only change event. Cheap

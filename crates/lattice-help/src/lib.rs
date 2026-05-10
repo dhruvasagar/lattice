@@ -501,6 +501,11 @@ pub enum HelpLinkTarget {
     /// leading colon). Multi-arg commands like `lsp-log rust`
     /// pass through verbatim.
     Execute(String),
+    /// `[label](customize:NAME)` -- re-dispatches `:customize NAME`
+    /// (M.9.1). Used by the customize picker so each group / mode
+    /// row in the no-args view follows to its own focused buffer
+    /// on `<CR>`.
+    Customize(String),
     /// `[[…]]` whose payload didn't match a known scheme. Preserved
     /// verbatim for forward-compat -- a plugin / future scheme can
     /// inspect the raw payload.
@@ -675,6 +680,8 @@ fn classify_link_url(url: &str) -> HelpLinkTarget {
         HelpLinkTarget::Chord(rest.to_string())
     } else if let Some(rest) = url.strip_prefix("help:") {
         HelpLinkTarget::Topic(rest.to_string())
+    } else if let Some(rest) = url.strip_prefix("customize:") {
+        HelpLinkTarget::Customize(rest.to_string())
     } else if let Some(rest) = url.strip_prefix('#') {
         // Markdown intra-document anchor (`[label](#slug)`). Matches
         // the GitHub-style slug auto-generated from headings by
@@ -1187,6 +1194,21 @@ mod tests {
         match classify_link_url("#1-tree-sitter-core") {
             HelpLinkTarget::Anchor(s) => assert_eq!(s, "1-tree-sitter-core"),
             other => panic!("expected Anchor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_link_url_routes_customize_scheme() {
+        // M.9.1: `customize:NAME` follows to `:customize NAME`.
+        match classify_link_url("customize:lsp-completion-mode") {
+            HelpLinkTarget::Customize(s) => {
+                assert_eq!(s, "lsp-completion-mode");
+            }
+            other => panic!("expected Customize, got {other:?}"),
+        }
+        match classify_link_url("customize:editor") {
+            HelpLinkTarget::Customize(s) => assert_eq!(s, "editor"),
+            other => panic!("expected Customize, got {other:?}"),
         }
     }
 

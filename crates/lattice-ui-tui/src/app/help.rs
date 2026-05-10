@@ -1192,6 +1192,10 @@ impl App {
                 self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
                 self.do_open_help_topic(Some(&name));
             }
+            crate::help::HelpLinkTarget::Customize(name) => {
+                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
+                self.do_customize(Some(&name));
+            }
             crate::help::HelpLinkTarget::Anchor(slug) => {
                 // Intra-doc jump: scroll the *current* help buffer to
                 // the anchor line and move the cursor there. Push
@@ -2220,6 +2224,47 @@ mod tests {
             "expected mode-shadow indicator\n{body}",
         );
         assert!(body.contains("Active"), "should report active state");
+    }
+
+    #[test]
+    fn customize_picker_link_follows_to_focused_view() {
+        // M.9.1: <CR> on a `[name](customize:name)` link in
+        // the picker re-fires `:customize <name>` and renders
+        // the focused view for the group / mode. Read the
+        // links from `buffer_locals` (post-M.3.2.c.5 readers
+        // go through there exclusively) keyed on the popup's
+        // construction id.
+        let mut a = app_with("xx", 10);
+        a.command_line = "customize".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let popup_id = a.popup_buffer.expect("picker open");
+        let editor_link = a
+            .buffer_locals
+            .get(&popup_id)
+            .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
+            .and_then(|hl| {
+                hl.0.iter()
+                    .find(|l| matches!(
+                        &l.target,
+                        lattice_help::HelpLinkTarget::Customize(s) if s == "editor"
+                    ))
+                    .cloned()
+            });
+        let link = editor_link.expect("no editor link in picker");
+        // Move cursor to the link's start position, then
+        // dispatch follow-link.
+        a.cursor.line = link.range.start.line;
+        a.cursor.byte = link.range.start.byte;
+        a.do_help_follow_link();
+        // After the follow, the popup buffer holds the focused
+        // group view.
+        let h2 = a.popup_help().expect("focused view open");
+        let body = h2.content.as_string();
+        assert!(
+            body.contains("# customize :: editor"),
+            "expected focused editor view, got: {body}",
+        );
     }
 
     #[test]

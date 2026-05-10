@@ -2085,6 +2085,13 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
 /// servers are joined with `+` (`[lsp:rust+typos]`); the §5.4
 /// multi-server merge model means more than one is legitimate.
 fn active_lsp_segment(app: &App) -> String {
+    // M.5.6: hide the modeline LSP segment when `lsp-mode` is
+    // off. The supervisor may still hold attachments (other
+    // buffers can still be tracked); we don't surface this
+    // buffer's quiet state via a stale `[lsp:...]` indicator.
+    if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+        return String::new();
+    }
     let Some(uri) = app.buffer_uris.get(&app.document_buffer_id) else {
         return String::new();
     };
@@ -2643,7 +2650,8 @@ fn render_diagnostic_severity_cell(
 /// active buffer. Walks `app.lsp_diagnostics` keyed by the
 /// active URI (looked up via `app.buffer_uri`). Returns `None`
 /// when:
-/// - the active buffer has no URI (unsaved scratch), or
+/// - `lsp-mode` is inactive on the active buffer (M.5.6 gate),
+/// - the active buffer has no URI (unsaved scratch),
 /// - the buffer has no LSP attachment, or
 /// - no diagnostic touches the line.
 pub(crate) fn severity_for_line(
@@ -2651,17 +2659,25 @@ pub(crate) fn severity_for_line(
     _snap: &DocumentSnapshot,
     line_idx: u32,
 ) -> Option<DiagnosticSeverity> {
+    if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+        return None;
+    }
     let uri = app.buffer_uri(app.document_buffer_id)?;
     app.lsp_diagnostics.line_severity(uri, line_idx)
 }
 
 /// Diagnostics that overlap `line_idx` of the active buffer.
-/// Used by the inline-underline overlay.
+/// Used by the inline-underline overlay. Gated on `lsp-mode`
+/// (M.5.6); the diagnostics layer keeps storing data when the
+/// mode is off, but the renderer pretends none exist.
 pub(crate) fn diagnostics_on_line(
     app: &App,
     _snap: &DocumentSnapshot,
     line_idx: u32,
 ) -> Vec<LspDiagnostic> {
+    if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+        return Vec::new();
+    }
     let Some(uri) = app.buffer_uri(app.document_buffer_id) else {
         return Vec::new();
     };
@@ -3885,6 +3901,12 @@ mod tests {
     /// Helper: seed a diagnostic into the App's LSP layer for
     /// the given line range + severity, mapping the App's
     /// active buffer to a fake URI.
+    ///
+    /// M.5.6: also activates `lsp-mode` on the buffer so the
+    /// renderer's gate (`severity_for_line` /
+    /// `diagnostics_on_line`) lets the diagnostic through. Tests
+    /// were written before the gate; activating here keeps them
+    /// probing the rendering path they were originally probing.
     fn seed_diagnostic(
         app: &mut App,
         line: u32,
@@ -3896,6 +3918,12 @@ mod tests {
         use std::str::FromStr;
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
         app.buffer_uris.insert(app.document_buffer_id, uri.clone());
+        // Activate lsp-mode so the M.5.6 render gate doesn't
+        // suppress what we're about to paint. Idempotent: tests
+        // that have already toggled it on no-op here.
+        if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-mode");
+        }
         let diag = lattice_lsp::Diagnostic {
             range: lattice_lsp::LspRange {
                 start: lattice_lsp::LspPosition {
@@ -3922,6 +3950,37 @@ mod tests {
             version: None,
             diagnostics: std::sync::Arc::from(vec![diag].into_boxed_slice()),
         });
+    }
+
+    #[test]
+    fn lsp_mode_off_suppresses_diagnostic_glyphs() {
+        // M.5.6: the render-side gate hides diagnostics when
+        // `lsp-mode` is off, even if the diagnostics layer holds
+        // data and a URI is mapped. Mirrors the supervisor-side
+        // gates in M.5.4 / M.5.5: the user's "off" setting
+        // suppresses every visible LSP signal for that buffer.
+        let mut app = app_with("fn main() {}\n", 5);
+        // Seed the diagnostic the same way other tests do (this
+        // also auto-activates lsp-mode via the helper).
+        seed_diagnostic(
+            &mut app,
+            0,
+            0,
+            7,
+            lattice_lsp::DiagnosticSeverity::ERROR,
+            "boom",
+        );
+        // Toggle lsp-mode OFF; the diagnostic glyph should
+        // disappear from the rendered gutter.
+        app.toggle_mode_by_name("lsp-mode");
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(
+            !row0.contains('■'),
+            "lsp-mode off should suppress the error glyph; got {row0:?}"
+        );
+        // And the modeline LSP segment hides.
+        assert_eq!(active_lsp_segment(&app), "");
     }
 
     #[test]

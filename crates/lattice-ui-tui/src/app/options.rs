@@ -126,40 +126,33 @@ impl App {
         self.drain_option_changes();
     }
 
-    /// Repopulate [`Self::option_cache`] from the canonical values
-    /// in [`Self::config`]. Called at App-init time and from the
-    /// `Event::OptionChanged` cascade so any write source (cmdline,
-    /// plugin, customize buffer) refreshes the renderer-visible
-    /// projection. Cheap: 9 typed reads (~30ns each).
+    /// Repopulate [`Self::option_cache`] from the *active buffer's*
+    /// resolved values (M.4: renderer through `ResolvedOptions`).
+    /// Falls back to the registry's current value when
+    /// `resolved_options` doesn't yet have a cache entry for the
+    /// active buffer (transient state during boot before the first
+    /// `recompute_options_for_buffer`). Called at App-init time, on
+    /// every `Event::OptionChanged` cascade, and -- post-M.4 -- on
+    /// active-buffer switch so the cache always tracks the active
+    /// buffer's resolved settings (mode contributions included).
+    /// Cheap: 9 typed reads.
     pub(super) fn rebuild_option_cache(&mut self) {
         use lattice_config::{
             CompletionAutoInsertSingle, FoldEnable, FoldMethodOption, IgnoreCase, Number,
             RelativeNumber, Scrolloff, Tabstop, Wrap,
         };
-        // Type-keyed reads against the post-boot registry.
-        // `expect` is fine here -- registration happens in
-        // `App::new` before this function is reachable, and a
-        // missing option is a build-config bug, not a runtime
-        // condition we recover from.
+        let buffer = self.document_buffer_id;
         self.option_cache = OptionCache {
-            show_line_numbers: *self.config.get_typed::<Number>().expect("Number"),
-            relative_line_numbers: *self
-                .config
-                .get_typed::<RelativeNumber>()
-                .expect("RelativeNumber"),
-            wrap_lines: *self.config.get_typed::<Wrap>().expect("Wrap"),
-            ignorecase: *self.config.get_typed::<IgnoreCase>().expect("IgnoreCase"),
-            tabstop: *self.config.get_typed::<Tabstop>().expect("Tabstop") as u32,
-            foldenable: *self.config.get_typed::<FoldEnable>().expect("FoldEnable"),
-            foldmethod: *self
-                .config
-                .get_typed::<FoldMethodOption>()
-                .expect("FoldMethodOption"),
-            scrolloff: *self.config.get_typed::<Scrolloff>().expect("Scrolloff") as u32,
+            show_line_numbers: *self.resolved_option::<Number>(buffer),
+            relative_line_numbers: *self.resolved_option::<RelativeNumber>(buffer),
+            wrap_lines: *self.resolved_option::<Wrap>(buffer),
+            ignorecase: *self.resolved_option::<IgnoreCase>(buffer),
+            tabstop: *self.resolved_option::<Tabstop>(buffer) as u32,
+            foldenable: *self.resolved_option::<FoldEnable>(buffer),
+            foldmethod: *self.resolved_option::<FoldMethodOption>(buffer),
+            scrolloff: *self.resolved_option::<Scrolloff>(buffer) as u32,
             completion_auto_insert_single: *self
-                .config
-                .get_typed::<CompletionAutoInsertSingle>()
-                .expect("CompletionAutoInsertSingle"),
+                .resolved_option::<CompletionAutoInsertSingle>(buffer),
         };
     }
 
@@ -250,6 +243,13 @@ impl App {
         resolver.resolve_into(layered, &mut resolved);
 
         self.resolved_options.insert(buffer, resolved);
+        // M.4: keep `option_cache` in lockstep with the active
+        // buffer's resolved options so the renderer's hot-path
+        // accessors (`app.show_line_numbers()` etc.) reflect mode
+        // contributions for the buffer the user is looking at.
+        if buffer == self.document_buffer_id {
+            self.rebuild_option_cache();
+        }
     }
 
     /// Read a resolved option's value for `buffer`. Returns the
@@ -348,10 +348,22 @@ impl App {
     /// the canonical name regardless of which alias the user
     /// typed).
     fn apply_option_cascade(&mut self, canonical_name: &str) {
+        // M.4: a global `:set` write updates the config layer
+        // (the lowest-priority resolver layer). Re-resolve the
+        // active buffer so its `ResolvedOptions` reflects the new
+        // value -- otherwise the cache rebuild below reads stale
+        // resolved data and the user-visible option doesn't
+        // change. Inactive buffers re-resolve lazily on their
+        // next `recompute_options_for_buffer` (mode toggle, etc.).
+        let active_id = self.document_buffer_id;
+        self.recompute_options_for_buffer(active_id);
         // Refresh the hot-path cache so subsequent reads from
         // `app.show_line_numbers()` etc. see the new value.
         // Cheap (~300ns total for all 9 options); only runs when
         // an option actually changed, never on every frame.
+        // Note: `recompute_options_for_buffer` already calls
+        // `rebuild_option_cache` when `buffer == active`; this
+        // belt-and-braces call covers the bootstrap window.
         self.rebuild_option_cache();
         match canonical_name {
             "relativenumber" => {

@@ -913,6 +913,11 @@ impl App {
     /// principled instead of sprinkling per-option fixups across
     /// every entry point that changes the active buffer.
     pub(super) fn activate_buffer_state(&mut self) {
+        // M.4: refresh the renderer's hot-path option cache from
+        // the just-activated buffer's resolved options. Without
+        // this, `app.show_line_numbers()` etc. would still reflect
+        // the previously-active buffer's mode contributions.
+        self.rebuild_option_cache();
         // Make sure the syntax tree matches the current text. If
         // the entry stashed a parse for the document's current
         // version this no-ops; otherwise it parses + recomputes

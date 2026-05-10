@@ -46,6 +46,7 @@ changing it.
 | [keymap-architecture.md](dev/architecture/keymap-architecture.md)| Layered keymap registry, chord trie, dispatch.                                                  |
 | [lsp-architecture.md](dev/architecture/lsp-architecture.md)      | LSP supervisor / actor / client, attach lifecycle, capability gating.                          |
 | [insert-completion.md](dev/architecture/insert-completion.md)    | Insert-mode completion: sources, ranking, popup, ghost text.                                   |
+| [diagrams.md](dev/architecture/diagrams.md)                      | ASCII architecture diagrams (3-layer, threading, buffers/panes, mode resolver, LSP, completion).|
 
 ## dev/operations/
 

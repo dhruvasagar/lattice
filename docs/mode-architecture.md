@@ -2057,6 +2057,55 @@ graceful error handling per CLAUDE.md.
 
   Workspace 1394 → 1401 (+7 across the three commands).
 
+- M.9 -- ✅ landed across M.9.0 / M.9.1 / M.9.2.
+  `:customize [name]` ships as a buffer-backed form view with
+  three resolution paths and inline edit. The user-facing
+  surface that ties together everything M.0–M.8 declared.
+  - **M.9.0 -- listing form.** `:customize` (no args) opens
+    the picker (every registered group + every customizable
+    mode); `:customize <group>` lists every customizable
+    option in the group; `:customize <mode-name>` lists the
+    options the mode contributes via `Mode::options()`.
+    Resolution uses the `ends_with_mode_suffix` const fn to
+    distinguish modes from groups -- matches the §6.7.1
+    invariant. Mode views surface a `[mode-shadow]` indicator
+    when the mode is active on the current buffer (the user
+    sees that a `:set` write would be overridden by the
+    contribution layer until the mode deactivates).
+    Routes through `display_buffer` under
+    `BufferDisplayCategory::HelpList`.
+  - **M.9.1 -- picker links.** New
+    `HelpLinkTarget::Customize(name)` variant +
+    `customize:NAME` link scheme. The picker's
+    `[name](customize:name)` rows follow on `<CR>` to the
+    focused customize buffer for that group / mode. Pushes
+    the prior cursor onto the position history so `<C-o>`
+    walks back from the focused view to the picker.
+  - **M.9.2 -- inline edit.** New
+    `HelpLinkTarget::CustomizeEdit(name)` variant +
+    `customize-edit:NAME` link scheme (parsed before the
+    shorter `customize:` so the prefix-overlap is unambiguous).
+    `append_customize_row` wraps each option's name in
+    `[NAME](customize-edit:NAME)`; `<CR>` on the row
+    prefills the cmdline with `:set NAME=current_value` and
+    switches to Command mode. The actual write goes through
+    the existing `:set` parser -- validation + cascade +
+    `OptionChanged` event-bus publishing all run unchanged.
+    The visible body text is preserved across M.9.0 → M.9.2
+    because `extract_links_and_clean` strips the markdown
+    link syntax during render.
+
+  Deferred polish: auto-refresh the customize popup after
+  an `OptionChanged` write (today the popup goes stale
+  until the user re-runs `:customize`). The
+  `customize-mode` major (the spec's named mode for the
+  form buffer) stays implicit -- the customize buffer
+  composes `markdown-mode` + the link-scheme handlers, no
+  dedicated major needed for v1's surfaces.
+
+  Workspace 1418 → 1427 (+9 across all three sub-slices in
+  ui-tui, +2 in lattice-help).
+
 - M.6 -- ✅ landed across M.6.0 / M.6.1 / M.6.2 / M.6.3 /
   M.6.4. Nine LSP sub-mode minors give per-feature
   toggles inside the `lsp-mode` umbrella; each is

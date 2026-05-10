@@ -561,6 +561,74 @@ mod tests {
     use crate::app::test_helpers::app_with;
 
     #[test]
+    fn line_numbers_mode_overrides_typed_option_layer() {
+        // M.7.0: the mode-contribution layer wins against the
+        // typed-option layer. `Number` defaults to `true`; the
+        // user can `:set nonumber` to flip the typed-option
+        // layer to `false`, then `:line-numbers-mode` to
+        // re-enable just for this buffer via the mode layer.
+        // The resolved value reflects the mode contribution.
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        // Flip the typed-option layer to false globally.
+        a.do_set("nonumber");
+        assert!(!a.show_line_numbers(), "set nonumber should flip cache");
+        // Activate `:line-numbers-mode` for this buffer; the
+        // mode-contribution layer overrides the typed-option
+        // layer's false.
+        a.toggle_mode_by_name("line-numbers-mode");
+        assert!(
+            *a.resolved_option::<lattice_config::Number>(id),
+            "mode contribution should override typed-option false",
+        );
+        assert!(a.show_line_numbers(), "hot-path cache should track");
+        // Deactivating the mode removes the contribution; the
+        // typed-option layer (false) takes over again.
+        a.toggle_mode_by_name("line-numbers-mode");
+        assert!(!a.show_line_numbers());
+    }
+
+    #[test]
+    fn relative_line_numbers_mode_implies_line_numbers() {
+        // M.7.0: `:relative-line-numbers-mode` contributes both
+        // RelativeNumber=true AND Number=true (vim's `:set rnu`
+        // implies `:set nu` cascade, baked into the mode's
+        // contribution so users who never touch
+        // `:line-numbers-mode` still get a visible gutter).
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        a.toggle_mode_by_name("relative-line-numbers-mode");
+        assert!(*a.resolved_option::<lattice_config::RelativeNumber>(id));
+        assert!(*a.resolved_option::<lattice_config::Number>(id));
+    }
+
+    #[test]
+    fn wrap_mode_toggle_flips_wrap_lines() {
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        assert!(!a.wrap_lines());
+        a.toggle_mode_by_name("wrap-mode");
+        assert!(*a.resolved_option::<lattice_config::Wrap>(id));
+        a.toggle_mode_by_name("wrap-mode");
+        assert!(!a.wrap_lines());
+    }
+
+    #[test]
+    fn read_only_mode_toggle_flips_read_only_resolved_value() {
+        // M.7.0: `:read-only-mode` lets users mark an arbitrary
+        // buffer read-only. `ReadOnly` itself is
+        // `customizable = false` (no `:set` surface); this is
+        // the user-typed pathway.
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        assert!(!*a.resolved_option::<lattice_config::ReadOnly>(id));
+        a.toggle_mode_by_name("read-only-mode");
+        assert!(*a.resolved_option::<lattice_config::ReadOnly>(id));
+        a.toggle_mode_by_name("read-only-mode");
+        assert!(!*a.resolved_option::<lattice_config::ReadOnly>(id));
+    }
+
+    #[test]
     fn toggle_minor_mode_by_name_activates_then_deactivates() {
         // M.5.1: `:lsp-mode` (or any minor name) toggles. First
         // call activates, second deactivates. The mode is

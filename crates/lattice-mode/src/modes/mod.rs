@@ -13,12 +13,14 @@
 //! All modes registered here self-register at App boot via
 //! [`register_foundation_modes`].
 
+pub mod display;
 pub mod file_tree;
 pub mod help;
 pub mod hover;
 pub mod oil;
 pub mod text;
 
+pub use display::{LineNumbersMode, ReadOnlyMode, RelativeLineNumbersMode, WrapMode};
 pub use file_tree::FileTreeMode;
 pub use help::HelpMode;
 pub use hover::HoverMode;
@@ -48,6 +50,20 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(HoverMode)
         .expect("hover-mode must register without conflict");
+    // M.7.0: display minor modes -- user-toggleable wrappers
+    // around typed display options.
+    registry
+        .register(LineNumbersMode)
+        .expect("line-numbers-mode must register without conflict");
+    registry
+        .register(RelativeLineNumbersMode)
+        .expect("relative-line-numbers-mode must register without conflict");
+    registry
+        .register(WrapMode)
+        .expect("wrap-mode must register without conflict");
+    registry
+        .register(ReadOnlyMode)
+        .expect("read-only-mode must register without conflict");
 }
 
 #[cfg(test)]
@@ -63,5 +79,10 @@ mod tests {
         assert!(registry.is_registered(OilMode::mode_id()));
         assert!(registry.is_registered(HelpMode::mode_id()));
         assert!(registry.is_registered(HoverMode::mode_id()));
+        // M.7.0 display minors.
+        assert!(registry.is_registered(LineNumbersMode::mode_id()));
+        assert!(registry.is_registered(RelativeLineNumbersMode::mode_id()));
+        assert!(registry.is_registered(WrapMode::mode_id()));
+        assert!(registry.is_registered(ReadOnlyMode::mode_id()));
     }
 }

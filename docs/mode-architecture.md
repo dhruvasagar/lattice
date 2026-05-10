@@ -1993,6 +1993,41 @@ graceful error handling per CLAUDE.md.
   Workspace 1383 → 1394 (+11 across M.7.0 / M.7.1 / M.7.2;
   3 in lattice-mode unit tests, 8 in ui-tui integration
   tests).
+- M.8 -- ✅ landed. Three introspection ex-commands matching
+  the existing `:describe-option` / `:describe-event`
+  shape:
+  - **`:list-modes`** renders every registered mode under
+    `## majors` / `## minors` headers; current major + each
+    active minor get a `*` marker. Mode counterpart of
+    `:options`.
+  - **`:describe-mode <name>`** shows id, kind, contributed
+    option overrides (TypeId → display name resolved via
+    OPTION_DECLS), required capabilities, current
+    activation state on the active buffer. Counterpart of
+    `:describe-option`.
+  - **`:describe-option-resolution <name>`** walks the
+    §6.1 layer model in priority order (modal-state →
+    buffer-local → minors in reverse activation order →
+    major → typed-option → default), marking each
+    contributing layer with a ⭐. The "why is this option
+    that value" introspection — answers shadowing
+    surprises like "I `:set nonumber` but the gutter still
+    shows" by surfacing that a minor mode contributes
+    `Number = true`.
+
+  Surfaces: three new `Effect` variants
+  (`ListModes` / `DescribeMode` / `DescribeOptionResolution`),
+  three ex-command registrations + aliases, three
+  `App::do_*` methods routing through `display_buffer`
+  under `HelpList` / `HelpDescribe` categories. The
+  `:describe-mode <name>`'s contributed-options view drops
+  per-value formatting for v1 -- the override's
+  `Arc<dyn Any>` value can't be cleanly downcast without
+  knowing the option's Value type at runtime; v2 can wire
+  this through the `OptionDecl` metadata once a typed
+  formatter table is needed elsewhere.
+
+  Workspace 1394 → 1401 (+7 across the three commands).
 
 - M.6 -- ✅ landed across M.6.0 / M.6.1 / M.6.2 / M.6.3 /
   M.6.4. Nine LSP sub-mode minors give per-feature

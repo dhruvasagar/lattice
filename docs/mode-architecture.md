@@ -1849,6 +1849,26 @@ graceful error handling per CLAUDE.md.
   removed from both `Event` and `EventKind`; remaining
   built-in events stay until a follow-up cleanup migrates
   them.
+- M.5.4 -- ✅ landed. LSP request entry points gate on
+  `lsp_mode_enabled_for(active_buffer)`. Thirteen `do_lsp_*`
+  methods updated (hover, completion, on-type-format,
+  rename, code-action, format, document-symbol,
+  workspace-symbol, signature-help, nav including the
+  shared definition / declaration / typeDef / impl path,
+  references). The gate fires *after* any prior-token
+  cancellation so stale in-flight work tears down even
+  when the gate is now closed. New
+  `App::check_lsp_mode_gate()` helper centralises the
+  echo: ex-command and chord-keymap entry points emit one
+  `Info`-level "lsp-mode disabled (`:lsp-mode` to enable)"
+  echo so the gate is discoverable; insert-mode triggers
+  (completion / on-type-format / signature) gate silently
+  via the raw `lsp_mode_enabled_for` check (typing path
+  doesn't echo on every keystroke). Pre-existing tests
+  that probed post-gate behaviour (URI-bail, tag-origin
+  capture, pre-cancel-prior-token) updated to activate
+  lsp-mode first; one new test verifies the gate echo
+  semantics.
 - M.5.3.c -- ✅ landed. `:describe-events` ex-command
   introspection. `Effect::DescribeEvents` /
   `Effect::DescribeEvent { name }` register as

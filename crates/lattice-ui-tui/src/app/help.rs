@@ -1111,6 +1111,51 @@ impl App {
         self.modal = lattice_grammar::ModalState::Command;
     }
 
+    /// `:tutor [N]` -- open the interactive Lattice tutor
+    /// lesson `N` (default: 1). Vim-tutor pattern: the lesson
+    /// content is embedded in the binary via `include_str!`,
+    /// and each invocation copies a fresh practice file to a
+    /// temp path so the user can edit / practice motions on
+    /// the file itself without losing the canonical lesson
+    /// source. Re-running `:tutor` starts over.
+    ///
+    /// v1 ships lesson 1 only. Subsequent lessons land as
+    /// additional `docs/user/tutor/lesson-N.md` files, each
+    /// added to this match.
+    pub(super) fn do_tutor(&mut self, lesson: Option<u32>) {
+        let lesson_num = lesson.unwrap_or(1);
+        let lesson_text: &'static str = match lesson_num {
+            1 => include_str!("../../../../docs/user/tutor/lesson-1.md"),
+            n => {
+                self.set_message(
+                    crate::app::EchoLevel::Error,
+                    format!(
+                        "lesson {n} doesn't exist yet (lessons 1 available); \
+                         contributions welcome"
+                    ),
+                );
+                return;
+            }
+        };
+        // Copy the embedded lesson to a temp file so the user
+        // can edit / practice without affecting the binary's
+        // canonical copy. Each invocation overwrites, so re-
+        // running `:tutor` starts the user fresh.
+        let mut path = std::env::temp_dir();
+        path.push(format!("lattice-tutor-lesson-{lesson_num}.txt"));
+        if let Err(e) = std::fs::write(&path, lesson_text) {
+            self.set_message(
+                crate::app::EchoLevel::Error,
+                format!("tutor: failed to write lesson file: {e}"),
+            );
+            return;
+        }
+        // Open the temp file via the existing `:e` mechanism.
+        // The user can `:w` to save edits to the temp path; the
+        // canonical lesson source stays untouched.
+        self.do_edit(Some(path), false);
+    }
+
     /// Follow the help link under the cursor (`<CR>` in help mode).
     /// Looks up the link by cursor position, then dispatches based
     /// on the link target's variant. Source links echo the
@@ -2395,6 +2440,37 @@ mod tests {
         a.drain_option_changes();
         // `:set` write took effect.
         assert_eq!(a.tabstop(), 4);
+    }
+
+    // ---- :tutor ----
+
+    #[test]
+    fn tutor_writes_lesson_one_to_temp_and_opens_it() {
+        // `:tutor` (no arg) defaults to lesson 1; copies the
+        // embedded markdown to a temp file and opens it.
+        let mut a = app_with("xx", 10);
+        a.do_tutor(None);
+        // The active document path now points at the temp file.
+        let path = std::env::temp_dir().join("lattice-tutor-lesson-1.txt");
+        assert!(
+            path.exists(),
+            "tutor should have written lesson file at {path:?}",
+        );
+        // The file's content should match the embedded lesson.
+        let written = std::fs::read_to_string(&path).expect("read lesson file");
+        assert!(written.contains("Welcome to the Lattice Tutor"));
+        assert!(written.contains("Lesson 1.1"));
+        // Cleanup.
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn tutor_unknown_lesson_echoes_error() {
+        let mut a = app_with("xx", 10);
+        a.do_tutor(Some(99));
+        let msg = a.last_message.as_ref().expect("error echo");
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("lesson 99 doesn't exist yet"));
     }
 
     #[test]

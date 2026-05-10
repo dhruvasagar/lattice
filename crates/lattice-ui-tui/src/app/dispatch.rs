@@ -1102,6 +1102,7 @@ impl App {
                 self.do_describe_option_resolution(&name)
             }
             Effect::Customize { name } => self.do_customize(name.as_deref()),
+            Effect::Tutor { lesson } => self.do_tutor(lesson),
             Effect::AppAction(app) => self.apply_app_effect(app),
             Effect::Many(many) => {
                 for e in many {
@@ -1334,6 +1335,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::DescribeMode { .. }
         | Effect::DescribeOptionResolution { .. }
         | Effect::Customize { .. }
+        | Effect::Tutor { .. }
         | Effect::AppAction(_) => false,
     }
 }
@@ -1404,6 +1406,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::DescribeMode { .. }
         | Effect::DescribeOptionResolution { .. }
         | Effect::Customize { .. }
+        | Effect::Tutor { .. }
         | Effect::AppAction(_) => false,
     }
 }

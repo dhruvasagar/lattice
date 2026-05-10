@@ -377,6 +377,18 @@ pub enum Effect {
     Customize {
         name: Option<String>,
     },
+    /// `:tutor [N]` -- open the interactive tutor lesson `N`
+    /// (default: 1) in a fresh editable buffer. The lesson
+    /// content is embedded in the binary and copied to a
+    /// temp file each time so the user starts fresh and can
+    /// practice motions / operators on the file itself
+    /// (vim-tutor pattern). v1 ships lesson 1 only;
+    /// subsequent lessons land as separate
+    /// `docs/user/tutor/lesson-N.md` files registered through
+    /// the same handler.
+    Tutor {
+        lesson: Option<u32>,
+    },
     /// `:<mode-name>` -- toggle a registered mode on the active
     /// buffer (M.5.1; mode-architecture §9.6.1). For minors:
     /// activate if inactive, deactivate if active. For majors:

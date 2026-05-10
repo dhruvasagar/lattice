@@ -65,6 +65,7 @@ pub struct ExBuiltins {
     pub describe_mode: ExCommandId,
     pub describe_option_resolution: ExCommandId,
     pub customize: ExCommandId,
+    pub tutor: ExCommandId,
     pub hover: ExCommandId,
     pub hover_close: ExCommandId,
     pub help: ExCommandId,
@@ -666,6 +667,44 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let tutor = registry.register_ex_command(
+        "ex:tutor",
+        "Open the interactive Lattice tutor lesson \
+         (`:tutor [N]`). With no arg, opens lesson 1. The \
+         lesson is embedded in the binary; each invocation \
+         copies a fresh practice file to a temp path so you \
+         can edit / practice without losing the canonical \
+         lesson source. Run `:tutor` again to start over.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::None => Ok(Effect::Tutor { lesson: None }),
+                Args::String(s) => {
+                    let n: u32 = s.parse().map_err(|_| {
+                        CommandError::BadArgs(format!(
+                            "expected lesson number, got `{s}`"
+                        ))
+                    })?;
+                    Ok(Effect::Tutor { lesson: Some(n) })
+                }
+                _ => Err(CommandError::BadArgs(
+                    "expected at most one numeric argument".into(),
+                )),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "lesson",
+                kind: ArgKind::String,
+                doc: "Lesson number (default: 1).",
+                prompt: "lesson:",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let customize = registry.register_ex_command(
         "ex:customize",
         "Open the customize buffer (`:customize [name]`). With no \
@@ -1194,6 +1233,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         describe_mode,
         describe_option_resolution,
         customize,
+        tutor,
         hover,
         hover_close,
         help,

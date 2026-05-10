@@ -1745,6 +1745,16 @@ graceful error handling per CLAUDE.md.
     "Display minor modes" slice (where `wrap-mode` becomes a
     typed-option-backed minor and per-mode contributions
     decide the default).
+- M.5.0 -- ✅ landed. `LspMode` minor declared in
+  `lattice-lsp::modes` (kind = Minor; no capability
+  requirements -- standalone-server use cases want activation
+  on un-named buffers). Registered at boot via
+  `register_lsp_log_modes`. App accessor
+  `App::lsp_mode_enabled_for(buffer_id) -> bool` reads the
+  active-modes set; default-false everywhere until M.5.2's
+  auto-activation hook lands. Lifecycle hooks are no-ops in
+  this slice; M.5.3 wires the real attach/detach +
+  didOpen/didClose.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

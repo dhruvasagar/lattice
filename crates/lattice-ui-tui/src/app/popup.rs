@@ -60,6 +60,11 @@ impl App {
     pub(crate) fn open_popup(&mut self, content: HelpContent, placement: PopupPlacement) {
         let HelpContent { buffer, metadata } = content;
         let buffer_id = buffer.id;
+        // Drop any previous popup buffer cleanly before adopting
+        // the new one. Avoids stale registry entries / mode state
+        // accumulating across back-to-back `:lsp-status` / `:help`
+        // / `:apropos` invocations.
+        self.dismiss_stale_popup_registry();
         // Record the *document* cursor (we're still active=Document
         // here, since the popup-open precedes the active_buffer
         // flip). Skip the push if we're already in Help (a help->
@@ -95,6 +100,23 @@ impl App {
         // uniformly across buffer kinds.
         let stash_cursor = buffer.cursor;
         let stash_scroll = buffer.scroll as u32;
+        // M.4 (b): popup buffers participate in `app.buffers` like
+        // any other buffer. The slot keeps a hot-path mirror so
+        // the renderer + keymap stay single-path; the registry
+        // entry is the durable record. `listed: false` keeps `:ls`
+        // / `:bn` / `:bp` from cycling through transient popups;
+        // `hidden: true` is informational (popups don't have
+        // windows of their own). Same shape as
+        // [`Self::open_help_in_pane`] uses for `:lsp-log` etc.
+        let registry_copy = buffer.clone();
+        self.buffers.insert(crate::buffer_registry::BufferEntry {
+            id: buffer_id,
+            flags: crate::buffers::BufferFlags {
+                listed: false,
+                hidden: true,
+            },
+            data: crate::buffer_registry::BufferData::Help(registry_copy),
+        });
         self.popup_buffer = Some(buffer);
         self.popup_placement = placement;
         self.cursor = stash_cursor;
@@ -106,6 +128,27 @@ impl App {
         // the locals exclusively now that the struct fields are
         // gone.
         self.seed_help_metadata_locals(buffer_id, metadata);
+        // M.4 (Option B): popup help buffers run `markdown-mode`
+        // major + `help-mode` minor -- same activation
+        // `open_help_in_pane` performs for the registry-tracked
+        // copy. Drives the `pane_render_provider` lookup uniformly
+        // across the popup and in-pane display strategies.
+        self.activate_major_for_buffer_kind(buffer_id, BufferKind::Help);
+    }
+
+    /// M.4 (b): clear out a popup buffer's registry / mode /
+    /// option-cache state. Called by [`Self::open_popup`] before
+    /// adopting a new popup (so back-to-back popups don't
+    /// accumulate stale entries) and by [`Self::dismiss_popup`]
+    /// when the popup closes. No-op when no popup is set.
+    pub(super) fn dismiss_stale_popup_registry(&mut self) {
+        let Some(prev) = self.popup_buffer.as_ref().map(|h| h.id) else {
+            return;
+        };
+        self.buffers.remove(prev);
+        self.active_modes.remove(&prev);
+        self.buffer_locals.remove(&prev);
+        self.resolved_options.remove(&prev);
     }
 
     /// M.3.2.c.5: mirror parsed help metadata into the buffer-locals
@@ -147,6 +190,7 @@ impl App {
     /// was captured at open. Idempotent: closing when no popup
     /// is open is a no-op.
     pub(crate) fn dismiss_popup(&mut self) {
+        self.dismiss_stale_popup_registry();
         self.popup_buffer = None;
         self.popup_placement = PopupPlacement::default();
         // Restore pre-popup state if focus had moved into it
@@ -226,6 +270,54 @@ mod tests {
         a.set_popup_placement(PopupPlacement::CursorAnchored);
         // No popup open: placement read returns None regardless.
         assert_eq!(a.popup_placement(), None);
+    }
+
+    #[test]
+    fn popup_registers_buffer_with_unlisted_hidden_flags() {
+        // M.4 (b): popup buffers participate in `app.buffers` like
+        // every other buffer, with `listed: false` (skipped by `:bn`
+        // / `:bp` / `:ls`) and `hidden: true` (informational; popups
+        // don't have windows of their own).
+        let mut a = app_with("hello", 10);
+        a.do_lsp_status();
+        let id = a.popup_buffer.as_ref().expect("popup open").id;
+        let entry = a.buffers.get(id).expect("popup registered");
+        assert!(!entry.flags.listed);
+        assert!(entry.flags.hidden);
+        assert!(entry.help().is_some());
+        // `:ls` / `:bn` cycling skips it.
+        assert!(!a.buffers.listed_ids_sorted().contains(&id));
+    }
+
+    #[test]
+    fn dismiss_popup_removes_buffer_from_registry() {
+        // M.4 (b): closing a popup tears down its registry / mode /
+        // option-cache state. Otherwise back-to-back popups
+        // accumulate stale entries indefinitely.
+        let mut a = app_with("hello", 10);
+        a.do_lsp_status();
+        let id = a.popup_buffer.as_ref().expect("popup open").id;
+        assert!(a.buffers.get(id).is_some());
+        a.dismiss_popup();
+        assert!(a.buffers.get(id).is_none());
+        assert!(a.active_modes.get(&id).is_none());
+        assert!(a.buffer_locals.get(&id).is_none());
+    }
+
+    #[test]
+    fn back_to_back_popups_do_not_leak_registry_entries() {
+        // M.4 (b): opening a second popup over an already-open one
+        // dismisses the prior buffer's registry entry rather than
+        // leaving it dangling. The registry only ever holds the
+        // active popup at a time.
+        let mut a = app_with("hello", 10);
+        a.do_lsp_status();
+        let first_id = a.popup_buffer.as_ref().expect("first popup open").id;
+        a.do_lsp_status(); // re-runs, allocates a fresh popup
+        let second_id = a.popup_buffer.as_ref().expect("second popup open").id;
+        assert_ne!(first_id, second_id);
+        assert!(a.buffers.get(first_id).is_none(), "stale entry leaked");
+        assert!(a.buffers.get(second_id).is_some());
     }
 
     #[test]

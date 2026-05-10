@@ -690,8 +690,7 @@ impl App {
             && self.active_buffer == BufferKind::Document
             && self.cursor != pre_cursor
         {
-            self.popup_buffer = None;
-            self.popup_placement = crate::popup::PopupPlacement::default();
+            self.dismiss_popup();
         }
         let _ = pre_active;
         // Slice 8.f: re-stack Insert-mode minor-mode layers in

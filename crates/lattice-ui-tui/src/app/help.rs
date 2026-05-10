@@ -284,6 +284,21 @@ impl App {
         // + link-follow paths see the parsed metadata.
         let crate::help::HelpContent { buffer, metadata } = content;
         let buffer_id = buffer.id;
+        // Drop a previous popup's registry / mode state before
+        // adopting this one (back-to-back hovers shouldn't pile up).
+        self.dismiss_stale_popup_registry();
+        // M.4 (b): hover popup buffers participate in `app.buffers`
+        // like every other buffer. `listed: false` keeps them out
+        // of `:bn` / `:bp` / `:ls`; `hidden: true` is informational.
+        let registry_copy = buffer.clone();
+        self.buffers.insert(crate::buffer_registry::BufferEntry {
+            id: buffer_id,
+            flags: crate::buffers::BufferFlags {
+                listed: false,
+                hidden: true,
+            },
+            data: crate::buffer_registry::BufferData::Help(registry_copy),
+        });
         self.popup_buffer = Some(buffer);
         self.popup_placement = crate::popup::PopupPlacement::CursorAnchored;
         self.seed_help_metadata_locals(buffer_id, metadata);

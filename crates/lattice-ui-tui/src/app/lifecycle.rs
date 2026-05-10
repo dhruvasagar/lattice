@@ -2605,6 +2605,53 @@ mod tests {
     }
 
     #[test]
+    fn oil_navigate_up_from_oil_buffer_goes_to_parent() {
+        // `-` key from an oil buffer navigates to the parent
+        // dir.
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-oil-up-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("nested")).expect("nested");
+
+        let mut a = app_with("hi", 5);
+        a.do_open_oil(Some(tmp.join("nested")));
+        let oil_id = a.active_pane_buffer_id();
+        assert_eq!(
+            a.buffer_locals
+                .get(&oil_id)
+                .and_then(|l| l.get::<crate::modes::OilDir>())
+                .map(|d| d.0.clone())
+                .unwrap_or_default(),
+            tmp.join("nested"),
+        );
+        // Trigger `-`.
+        a.apply(crate::app::Action::OilNavigateUp);
+        let dir_after = a
+            .buffers
+            .oil(oil_id)
+            .map(|o| o.dir.clone())
+            .unwrap_or_default();
+        assert_eq!(dir_after, tmp);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn oil_navigate_up_from_document_opens_oil_at_parent() {
+        // `-` from a document buffer should open oil for the
+        // parent of the document's path. Use a document with no
+        // path -- this falls back to cwd.
+        let mut a = app_with("hi", 5);
+        // Start in a Document buffer (default).
+        assert_eq!(a.active_buffer, BufferKind::Document);
+        a.apply(crate::app::Action::OilNavigateUp);
+        // Active buffer should now be Oil.
+        assert_eq!(a.active_buffer, BufferKind::Oil);
+    }
+
+    #[test]
     fn oil_normal_mode_o_then_insert_then_write_creates_file() {
         // Full keystroke pipeline test: in an oil buffer,
         // press `o` (Normal: open line below + Insert), type

@@ -153,10 +153,18 @@ impl App {
     /// Cheap: 9 typed reads.
     pub(super) fn rebuild_option_cache(&mut self) {
         use lattice_config::{
-            CompletionAutoInsertSingle, FoldEnable, FoldMethodOption, IgnoreCase, Number,
-            RelativeNumber, Scrolloff, Tabstop, Wrap,
+            CompletionAutoInsertSingle, CursorLine, FoldEnable, FoldMethodOption, IgnoreCase,
+            Number, RelativeNumber, Scrolloff, Tabstop, Whitespace, WhitespaceEol,
+            WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
         };
         let buffer = self.document_buffer_id;
+        // M.7.3.a: parse a typed-option String into a single
+        // glyph. Empty string ⇒ category is not decorated.
+        // First-char semantics keeps v1 simple; future combining
+        // sequences land without an option-shape change because
+        // the cache layer can grow into something richer (e.g.
+        // `SmallString`) without changing the boundary.
+        let glyph = |s: &str| -> Option<char> { s.chars().next() };
         self.option_cache = OptionCache {
             show_line_numbers: *self.resolved_option::<Number>(buffer),
             relative_line_numbers: *self.resolved_option::<RelativeNumber>(buffer),
@@ -168,6 +176,13 @@ impl App {
             scrolloff: *self.resolved_option::<Scrolloff>(buffer) as u32,
             completion_auto_insert_single: *self
                 .resolved_option::<CompletionAutoInsertSingle>(buffer),
+            show_whitespace: *self.resolved_option::<Whitespace>(buffer),
+            current_line_highlight: *self.resolved_option::<CursorLine>(buffer),
+            whitespace_tab: glyph(&self.resolved_option::<WhitespaceTab>(buffer)),
+            whitespace_trailing: glyph(&self.resolved_option::<WhitespaceTrailing>(buffer)),
+            whitespace_leading: glyph(&self.resolved_option::<WhitespaceLeading>(buffer)),
+            whitespace_space: glyph(&self.resolved_option::<WhitespaceSpace>(buffer)),
+            whitespace_eol: glyph(&self.resolved_option::<WhitespaceEol>(buffer)),
         };
     }
 
@@ -822,6 +837,49 @@ mod tests {
             a.show_line_numbers(),
             "relativenumber=true should cascade to number=true via the bus subscription"
         );
+    }
+
+    #[test]
+    fn rebuild_option_cache_picks_up_whitespace_glyphs() {
+        // M.7.3.a: the OptionCache surfaces 5 typed-option
+        // glyphs as `Option<char>`. Defaults match emacs
+        // whitespace-mode's visible set: tab + trailing +
+        // leading on, space + EOL off.
+        let a = app_with("xx", 10);
+        let cache = &a.option_cache;
+        // Whitespace decoration starts off (the option is
+        // false by default; the mode isn't auto-active).
+        assert!(!cache.show_whitespace);
+        // Glyph defaults from `lattice-config::core_options`.
+        assert_eq!(cache.whitespace_tab, Some('→'));
+        assert_eq!(cache.whitespace_trailing, Some('·'));
+        assert_eq!(cache.whitespace_leading, Some('·'));
+        // Off-by-default categories.
+        assert_eq!(cache.whitespace_space, None);
+        assert_eq!(cache.whitespace_eol, None);
+    }
+
+    #[test]
+    fn rebuild_option_cache_picks_up_current_line_highlight() {
+        // M.7.3.a: cursor-line option projects through the
+        // cache. Default off.
+        let a = app_with("xx", 10);
+        assert!(!a.option_cache.current_line_highlight);
+    }
+
+    #[test]
+    fn whitespace_glyph_set_via_set_propagates_to_cache() {
+        // M.7.3.a: a `:set display.whitespace.tab=⇥` write
+        // flows through the cascade and updates the cache's
+        // `whitespace_tab` to the new glyph.
+        let mut a = app_with("xx", 10);
+        a.do_set("display.whitespace.tab=⇥");
+        a.drain_option_changes();
+        assert_eq!(a.option_cache.whitespace_tab, Some('⇥'));
+        // Empty string disables the category.
+        a.do_set("display.whitespace.tab=");
+        a.drain_option_changes();
+        assert_eq!(a.option_cache.whitespace_tab, None);
     }
 
     #[test]

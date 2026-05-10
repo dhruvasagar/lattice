@@ -121,7 +121,8 @@ pub use core_options::{
     HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay,
     HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, Number,
     PickerResultDisplay, ReadOnly, RelativeNumber, Scrolloff, SignatureDisplay,
-    Tabstop, Whitespace, Wrap,
+    Tabstop, Whitespace, WhitespaceEol, WhitespaceLeading, WhitespaceSpace,
+    WhitespaceTab, WhitespaceTrailing, Wrap,
 };
 pub use erased::ErasedOption;
 pub use group::{

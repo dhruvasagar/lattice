@@ -290,6 +290,59 @@ crate::options! {
     #[name("picker.result.display")]
     pub PickerResultDisplay: lattice_core::ui::display::BufferDisplayPreference =
         lattice_core::ui::display::BufferDisplayPreference::Default;
+
+    // ---- M.7.3 whitespace decoration glyphs ----
+    //
+    // Five discrete typed glyphs, replacing vim's encoded
+    // `listchars=tab:→\ ,trail:·,space:·,...` blob with a
+    // properly typed surface that's discoverable through
+    // `:options` and `:describe-option`. Each option is a
+    // String (single visible glyph in v1; future combining
+    // sequences can land without an option-shape change).
+    // Empty string ⇒ that whitespace category is not decorated.
+    //
+    // Defaults follow emacs `whitespace-mode`'s canonical
+    // visible set: tabs + trailing + leading. Mid-text spaces
+    // and end-of-line markers are opt-in (most users find
+    // them noisy).
+    //
+    // All five flow through the renderer's whitespace pre-pass
+    // when `whitespace-show-mode` is active (M.7.2 minor) /
+    // `:set list` (M.7.1 cascade); see `Whitespace` in the
+    // Editor group.
+
+    /// Glyph rendered in place of the tab character when
+    /// whitespace decoration is active. Followed by a
+    /// space-pad to the next tabstop column. Empty string ⇒
+    /// tabs render bare. Default `→`.
+    #[name("display.whitespace.tab")]
+    pub WhitespaceTab: String = "→".into();
+
+    /// Glyph for trailing whitespace (spaces or tabs at
+    /// end-of-line). Rendered with a `trailing` style (red
+    /// by default; theme-driven). Empty ⇒ no decoration.
+    /// Default `·`.
+    #[name("display.whitespace.trailing")]
+    pub WhitespaceTrailing: String = "·".into();
+
+    /// Glyph for leading whitespace -- non-tab indentation
+    /// at the start of a line. Mirrors emacs
+    /// `whitespace-mode`'s `indentation` highlight.
+    /// Default `·`.
+    #[name("display.whitespace.leading")]
+    pub WhitespaceLeading: String = "·".into();
+
+    /// Glyph for plain spaces in the middle of text
+    /// (between non-whitespace characters). Most users find
+    /// this loud; default empty. Set to `·` to mirror
+    /// emacs's `space-mark`.
+    #[name("display.whitespace.space")]
+    pub WhitespaceSpace: String = String::new();
+
+    /// Glyph at end-of-line (vim's `eol` listchar). Default
+    /// empty; `¬` is the conventional choice.
+    #[name("display.whitespace.eol")]
+    pub WhitespaceEol: String = String::new();
 }
 
 // M.2.0c: `CoreOptions` struct and `register_core_options`

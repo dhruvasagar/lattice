@@ -72,6 +72,31 @@ pub struct Theme {
     /// Hint severity.
     pub diagnostic_hint_glyph: char,
     pub diagnostic_hint_style: Style,
+
+    // ---- M.7.3 whitespace decoration ---------------------
+
+    /// Style applied to "neutral" whitespace glyphs (tab,
+    /// leading, mid-text space, EOL). Default: dim dark-gray --
+    /// visible enough to read structure, quiet enough to not
+    /// fight the syntax highlight. Trailing whitespace gets a
+    /// louder style ([`Self::whitespace_trailing_style`]); they
+    /// split because trailing is a lint signal where the others
+    /// are structural.
+    pub whitespace_style: Style,
+    /// Style for trailing-whitespace glyphs. Default: red,
+    /// no modifier -- "this shouldn't be here" without
+    /// shouting.
+    pub whitespace_trailing_style: Style,
+
+    // ---- M.7.3 current-line highlight --------------------
+
+    /// Background applied to the cursor's row when
+    /// `current-line-highlight-mode` is active (M.7.2 minor /
+    /// `:set cursorline`). Default: a subtle dark gray
+    /// (`Color::Indexed(236)` -- the conventional darker-than-
+    /// background row tint in 256-color palettes). Active pane
+    /// only; selection bg wins per-cell when the two overlap.
+    pub cursor_line_bg: Color,
 }
 
 impl Default for Theme {
@@ -105,6 +130,12 @@ impl Default for Theme {
             file_tree_hidden_style: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
             file_tree_file_style: Style::new(),
             nerd_fonts: true,
+            // M.7.3: whitespace + current-line defaults.
+            whitespace_style: Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
+            whitespace_trailing_style: Style::new().fg(Color::Red),
+            cursor_line_bg: Color::Indexed(236),
         }
     }
 }

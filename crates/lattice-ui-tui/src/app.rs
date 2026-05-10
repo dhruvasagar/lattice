@@ -1861,6 +1861,19 @@ pub struct OptionCache {
     pub foldmethod: FoldMethod,
     pub scrolloff: u32,
     pub completion_auto_insert_single: bool,
+    // M.7.3.a: whitespace decoration on/off + per-category
+    // glyphs. The `show_whitespace` bool gates the renderer's
+    // whitespace pre-pass; the per-category `Option<char>`s say
+    // *what* glyph to substitute when a category fires.
+    // `None` ⇒ that category is not decorated (typed-option
+    // empty string parses to None at cache rebuild time).
+    pub show_whitespace: bool,
+    pub current_line_highlight: bool,
+    pub whitespace_tab: Option<char>,
+    pub whitespace_trailing: Option<char>,
+    pub whitespace_leading: Option<char>,
+    pub whitespace_space: Option<char>,
+    pub whitespace_eol: Option<char>,
 }
 
 impl Default for OptionCache {
@@ -1881,6 +1894,17 @@ impl Default for OptionCache {
             foldmethod: FoldMethod::Manual,
             scrolloff: 0,
             completion_auto_insert_single: true,
+            // M.7.3.a defaults: features off; emacs-like glyph
+            // defaults for the categories the option declares
+            // are rebuilt from the typed options on first
+            // `rebuild_option_cache` run.
+            show_whitespace: false,
+            current_line_highlight: false,
+            whitespace_tab: Some('→'),
+            whitespace_trailing: Some('·'),
+            whitespace_leading: Some('·'),
+            whitespace_space: None,
+            whitespace_eol: None,
         }
     }
 }

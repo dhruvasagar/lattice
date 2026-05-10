@@ -1456,37 +1456,13 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
             continue;
         };
         let pane = *pane;
-        match pane.buffer {
-            crate::buffers::BufferKind::Document => {
-                if is_active {
-                    draw_buffer(frame, content_rect, app, snap);
-                } else {
-                    draw_inactive_document(frame, content_rect, app, &pane, idx);
-                }
-            }
-            crate::buffers::BufferKind::Help => {
-                // Help-as-buffer (DESIGN.md §5.9): when help is the
-                // active buffer it fills the pane area, just like
-                // a document. The centred popup overlay is reserved
-                // for the *transient* hover state where help_buffer
-                // is set but active is another kind. Doing both
-                // (popup + draw the doc behind it) would mean help
-                // motions visibly scroll the doc backdrop, which
-                // breaks the "help is just a buffer" model the
-                // user expects.
-                if is_active {
-                    draw_help_in_pane(frame, content_rect, app);
-                } else {
-                    draw_inactive_help(frame, content_rect, app, &pane);
-                }
-            }
-            crate::buffers::BufferKind::FileTree => {
-                draw_file_tree_pane(frame, content_rect, app, &pane, is_active);
-            }
-            crate::buffers::BufferKind::Oil => {
-                draw_oil_pane(frame, content_rect, app, &pane, is_active);
-            }
-        }
+        // M.4: per-kind dispatch consolidated into
+        // `draw_pane_content`. The match still lives inside that
+        // helper; from `draw_panes`'s POV the call is uniform.
+        // Mode-driven dispatch (each major mode contributes its
+        // own draw fn) replaces the helper-side match in a
+        // follow-up.
+        draw_pane_content(frame, content_rect, app, snap, &pane, is_active, idx);
         if let Some(sr) = status_rect {
             draw_pane_status_line(frame, sr, app, &pane, is_active);
         }
@@ -1498,6 +1474,52 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
     // bottom of the upper pane already provides one.
     if multi {
         draw_pane_separators(frame, &rects, app);
+    }
+}
+
+/// M.4: per-kind pane-content dispatch. Centralises the
+/// `match buffer.kind` that used to live in `draw_panes` so the
+/// outer loop is uniform. Replaced by mode-driven dispatch (each
+/// major mode contributes its own renderer) in a follow-up; for
+/// now the per-kind branch lives here.
+fn draw_pane_content(
+    frame: &mut Frame,
+    content_rect: Rect,
+    app: &App,
+    snap: &DocumentSnapshot,
+    pane: &crate::pane::PaneState,
+    is_active: bool,
+    idx: usize,
+) {
+    match pane.buffer {
+        crate::buffers::BufferKind::Document => {
+            if is_active {
+                draw_buffer(frame, content_rect, app, snap);
+            } else {
+                draw_inactive_document(frame, content_rect, app, pane, idx);
+            }
+        }
+        crate::buffers::BufferKind::Help => {
+            // Help-as-buffer (DESIGN.md §5.9): when help is the
+            // active buffer it fills the pane area, just like a
+            // document. The centred popup overlay is reserved for
+            // the *transient* hover state where help_buffer is set
+            // but active is another kind. Doing both (popup + draw
+            // the doc behind it) would mean help motions visibly
+            // scroll the doc backdrop, which breaks the "help is
+            // just a buffer" model the user expects.
+            if is_active {
+                draw_help_in_pane(frame, content_rect, app);
+            } else {
+                draw_inactive_help(frame, content_rect, app, pane);
+            }
+        }
+        crate::buffers::BufferKind::FileTree => {
+            draw_file_tree_pane(frame, content_rect, app, pane, is_active);
+        }
+        crate::buffers::BufferKind::Oil => {
+            draw_oil_pane(frame, content_rect, app, pane, is_active);
+        }
     }
 }
 
@@ -1540,59 +1562,12 @@ fn draw_pane_status_line(
     pane: &crate::pane::PaneState,
     is_active: bool,
 ) {
-    let label = match pane.buffer {
-        crate::buffers::BufferKind::Document => app
-            .buffers
-            .document(pane.buffer_id)
-            .map(|e| {
-                let path = e
-                    .handle
-                    .path()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "[no name]".to_string());
-                let dirty = if e.handle.dirty() { " [+]" } else { "" };
-                format!("{path}{dirty}")
-            })
-            .unwrap_or_else(|| "[no buffer]".to_string()),
-        crate::buffers::BufferKind::Help => app
-            .help_buffer
-            .as_ref()
-            .map(|h| format!("[help] {}", h.title))
-            .unwrap_or_else(|| "[help]".to_string()),
-        crate::buffers::BufferKind::FileTree => {
-            // M.3.2.c.2: read root via buffer-locals (canonical),
-            // fall back to the struct field for the bootstrap
-            // window.
-            let root_from_locals = app
-                .buffer_locals
-                .get(&pane.buffer_id)
-                .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
-                .map(|r| r.0.clone());
-            let root = root_from_locals.or_else(|| {
-                app.buffers
-                    .file_tree(pane.buffer_id)
-                    .map(|t| t.root.clone())
-            });
-            root.map(|p| format!("[tree] {}", p.display()))
-                .unwrap_or_else(|| "[tree]".to_string())
-        }
-        crate::buffers::BufferKind::Oil => app
-            .buffers
-            .oil(pane.buffer_id)
-            .map(|o| {
-                let dirty = if o.is_dirty() { " [+]" } else { "" };
-                // M.3.2.c.3: read dir from buffer-locals
-                // (canonical), fall back to struct field.
-                let dir = app
-                    .buffer_locals
-                    .get(&pane.buffer_id)
-                    .and_then(|locals| locals.get::<crate::modes::OilDir>())
-                    .map(|d| d.0.clone())
-                    .unwrap_or_else(|| o.dir.clone());
-                format!("[oil] {}{dirty}", dir.display())
-            })
-            .unwrap_or_else(|| "[oil]".to_string()),
-    };
+    // M.4: status label resolves through `App::pane_status_label`,
+    // which folds the per-`BufferKind` formatting behind a single
+    // method. The renderer doesn't `match buffer.kind` -- the
+    // App-side dispatch can later route through mode-contributed
+    // status renderers without changing this call site.
+    let label = app.pane_status_label(pane);
     let pos = format!("{}:{}", pane.cursor.line + 1, pane.cursor.byte);
     let style = if is_active {
         app.theme.pane_status_active

@@ -339,6 +339,30 @@ pub enum Effect {
     DescribeEvent {
         name: String,
     },
+
+    /// `:list-modes` -- render every registered mode in a help
+    /// buffer (M.8). Groups by kind (Major / Minor); each row
+    /// shows the mode's id and current activation state on the
+    /// active buffer. The mode counterpart of `:options`.
+    ListModes,
+    /// `:describe-mode <name>` -- render one mode's metadata
+    /// (M.8): id, kind, contributed option overrides,
+    /// required capabilities, and current activation state on
+    /// the active buffer. The introspection counterpart of
+    /// `:describe-command` / `:describe-option` /
+    /// `:describe-event` for modes.
+    DescribeMode {
+        name: String,
+    },
+    /// `:describe-option-resolution <name>` -- show which
+    /// resolver layer (modal / buffer-local / mode
+    /// contribution / typed-option / default) provides the
+    /// resolved value for `<name>` on the active buffer
+    /// (M.8). Helps debug surprising values when a mode's
+    /// contribution shadows a `:set` write or vice versa.
+    DescribeOptionResolution {
+        name: String,
+    },
     /// `:<mode-name>` -- toggle a registered mode on the active
     /// buffer (M.5.1; mode-architecture §9.6.1). For minors:
     /// activate if inactive, deactivate if active. For majors:

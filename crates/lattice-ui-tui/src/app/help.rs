@@ -474,6 +474,304 @@ impl App {
         );
     }
 
+    /// `:list-modes` (M.8) -- render every registered mode as a
+    /// help buffer. Groups by kind (Major / Minor); each row
+    /// shows the mode's id and `*` if currently active on the
+    /// active buffer. Mode counterpart of `:options`.
+    pub(super) fn do_list_modes(&mut self) {
+        let mut majors: Vec<lattice_mode::ModeId> = Vec::new();
+        let mut minors: Vec<lattice_mode::ModeId> = Vec::new();
+        for (id, kind) in self.mode_registry.iter_meta() {
+            match kind {
+                lattice_mode::ModeKind::Major => majors.push(id),
+                lattice_mode::ModeKind::Minor => minors.push(id),
+            }
+        }
+        majors.sort_by_key(|m| m.as_str().to_string());
+        minors.sort_by_key(|m| m.as_str().to_string());
+
+        let buffer_id = self.document_buffer_id;
+        let active = self.active_modes.get(&buffer_id);
+        let active_major = active.and_then(|a| a.major());
+        let is_minor_active = |id: lattice_mode::ModeId| -> bool {
+            active.map(|a| a.has_minor(id)).unwrap_or(false)
+        };
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!(
+            "# Modes ({} registered)",
+            majors.len() + minors.len(),
+        ));
+        lines.push(String::new());
+        lines.push(
+            "Mark `*` indicates the mode is active on the currently \
+             focused buffer. For per-mode detail run \
+             `:describe-mode <name>`. Toggle a mode with \
+             `:<mode-name>` (e.g. `:lsp-mode`)."
+                .into(),
+        );
+        lines.push(String::new());
+
+        lines.push(format!("## majors ({})", majors.len()));
+        lines.push(String::new());
+        for id in &majors {
+            let marker = if Some(*id) == active_major { "*" } else { " " };
+            lines.push(format!("- {marker} [{id}](mode:{id})"));
+        }
+        lines.push(String::new());
+
+        lines.push(format!("## minors ({})", minors.len()));
+        lines.push(String::new());
+        for id in &minors {
+            let marker = if is_minor_active(*id) { "*" } else { " " };
+            lines.push(format!("- {marker} [{id}](mode:{id})"));
+        }
+
+        self.display_buffer(
+            HelpContent::from_lines("list-modes", lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+            lattice_core::ui::display::BufferDisplayCategory::HelpList,
+        );
+    }
+
+    /// `:describe-mode <name>` (M.8) -- render one mode's
+    /// metadata: id, kind, contributed option overrides
+    /// (mapping each `TypeId` back to the option's display name
+    /// via `OPTION_DECLS`), required capabilities, and current
+    /// activation state on the active buffer. Mode counterpart
+    /// of `:describe-option`.
+    pub(super) fn do_describe_mode(&mut self, name: &str) {
+        let mode_id = lattice_mode::ModeId::new(name);
+        let Some(mode) = self.mode_registry.get(mode_id) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("no mode named `{name}`"),
+            );
+            return;
+        };
+
+        // TypeId → option name lookup. The OPTION_DECLS slice
+        // carries `(name, type_id_fn)` pairs for every registered
+        // option; we walk it to render the mode's contributed
+        // overrides as readable names instead of opaque TypeIds.
+        let type_id_to_name: std::collections::HashMap<std::any::TypeId, &'static str> =
+            lattice_config::OPTION_DECLS
+                .iter()
+                .map(|d| ((d.type_id)(), d.name))
+                .collect();
+
+        let buffer_id = self.document_buffer_id;
+        let active = self.active_modes.get(&buffer_id);
+        let is_active = match mode.kind() {
+            lattice_mode::ModeKind::Major => {
+                active.and_then(|a| a.major()) == Some(mode_id)
+            }
+            lattice_mode::ModeKind::Minor => {
+                active.map(|a| a.has_minor(mode_id)).unwrap_or(false)
+            }
+        };
+        let kind_label = match mode.kind() {
+            lattice_mode::ModeKind::Major => "major",
+            lattice_mode::ModeKind::Minor => "minor",
+        };
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# mode :: {}", mode_id));
+        lines.push(String::new());
+        lines.push(format!("- kind: `{kind_label}`"));
+        lines.push(format!(
+            "- active on current buffer: {}",
+            if is_active { "yes" } else { "no" }
+        ));
+
+        // Option contributions.
+        let opts = mode.options();
+        if opts.is_empty() {
+            lines.push("- contributed options: (none)".into());
+        } else {
+            lines.push(format!(
+                "- contributed options ({}):",
+                opts.iter().count(),
+            ));
+            for ovr in opts.iter() {
+                let name = type_id_to_name
+                    .get(&ovr.option_type_id)
+                    .copied()
+                    .unwrap_or("(unknown option)");
+                lines.push(format!("    - `{name}`"));
+            }
+        }
+
+        // Capabilities.
+        let caps = mode.required_capabilities();
+        if caps == lattice_mode::CapabilitySet::empty() {
+            lines.push("- required capabilities: (none)".into());
+        } else {
+            lines.push(format!("- required capabilities: `{caps:?}`"));
+        }
+
+        lines.push(String::new());
+        lines.push(format!(
+            "Toggle with `:{}`. For options the mode contributes, \
+             see `:describe-option <name>`.",
+            mode_id,
+        ));
+
+        self.display_buffer(
+            HelpContent::from_lines(format!("describe-mode {name}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+            lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+        );
+    }
+
+    /// `:describe-option-resolution <name>` (M.8) -- show
+    /// which resolver layer provides the resolved value for
+    /// `<name>` on the active buffer. Helps debug surprising
+    /// values where a mode contribution shadows a `:set` write
+    /// or vice versa. The mode-architecture §6.1 layer model
+    /// translated to a per-option introspection view.
+    pub(super) fn do_describe_option_resolution(&mut self, name: &str) {
+        let Some(spec) = self.config.lookup(name) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("E518: Unknown option: {name}"),
+            );
+            return;
+        };
+        // Derive TypeId from the canonical name by walking
+        // OPTION_DECLS (the linkme slice every `options!` macro
+        // invocation pushes into). The spec we just looked up
+        // gives us `spec.name()` (canonical even if the user
+        // typed an alias). If the option has aliases, we may
+        // miss; fall back to a name-prefix scan if needed.
+        let canonical_name = spec.name();
+        let target_type_id = lattice_config::OPTION_DECLS
+            .iter()
+            .find(|d| d.name == canonical_name)
+            .map(|d| (d.type_id)())
+            .expect("registered option must have OPTION_DECLS entry");
+
+        let buffer_id = self.document_buffer_id;
+        let modes_snapshot = self
+            .active_modes
+            .get(&buffer_id)
+            .cloned()
+            .unwrap_or_default();
+        let buffer_local = self.buffer_local_overrides.get(&buffer_id);
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# option resolution :: {}", name));
+        lines.push(String::new());
+        lines.push(format!("- type:                 `{}`", spec.type_label()));
+        lines.push(format!("- resolved value:       `{}`", spec.get_formatted()));
+        lines.push(format!("- typed-option (`:set`): `{}`", spec.get_formatted()));
+        lines.push(format!("- default:              `{}`", spec.default_formatted()));
+        lines.push(String::new());
+        lines.push(
+            "Layered contributions for this buffer (highest → lowest):"
+                .into(),
+        );
+        lines.push(String::new());
+
+        // Layer 1: modal-state (always empty in v1).
+        lines.push("- modal-state: (empty -- v1 wires no modal-overrides)".into());
+
+        // Layer 2: buffer-local.
+        let local_has = buffer_local
+            .map(|set| set.iter().any(|o| o.option_type_id == target_type_id))
+            .unwrap_or(false);
+        if local_has {
+            lines.push("- buffer-local (`:setlocal`): contributes ⭐".into());
+        } else {
+            lines.push("- buffer-local (`:setlocal`): (no override)".into());
+        }
+
+        // Layer 3: minors (in reverse activation order — last
+        // activated has highest priority among modes).
+        let minors: Vec<lattice_mode::ModeId> = modes_snapshot
+            .minors()
+            .iter()
+            .copied()
+            .rev()
+            .collect();
+        if minors.is_empty() {
+            lines.push("- minors: (none active)".into());
+        } else {
+            let mut any_contributes = false;
+            for minor_id in &minors {
+                let Some(minor) = self.mode_registry.get(*minor_id) else {
+                    continue;
+                };
+                let opts = minor.options();
+                let contributes = opts
+                    .iter()
+                    .any(|o| o.option_type_id == target_type_id);
+                if contributes {
+                    if !any_contributes {
+                        lines.push("- minors:".into());
+                        any_contributes = true;
+                    }
+                    lines.push(format!("    - `{minor_id}` ⭐"));
+                }
+            }
+            if !any_contributes {
+                lines.push(format!(
+                    "- minors: {} active, none contribute this option",
+                    minors.len(),
+                ));
+            }
+        }
+
+        // Layer 4: major.
+        match modes_snapshot.major() {
+            Some(major_id) => match self.mode_registry.get(major_id) {
+                Some(major) => {
+                    let opts = major.options();
+                    let contributes = opts
+                        .iter()
+                        .any(|o| o.option_type_id == target_type_id);
+                    if contributes {
+                        lines.push(format!("- major: `{major_id}` contributes ⭐"));
+                    } else {
+                        lines.push(format!(
+                            "- major: `{major_id}` (no contribution)",
+                        ));
+                    }
+                }
+                None => {
+                    lines.push(format!("- major: `{major_id}` (mode missing)"));
+                }
+            },
+            None => {
+                lines.push("- major: (none active)".into());
+            }
+        }
+
+        // Layers 5/6: typed-option + built-in default.
+        lines.push(format!(
+            "- typed-option layer: `{}`",
+            spec.get_formatted(),
+        ));
+        lines.push(format!(
+            "- built-in default:   `{}`",
+            spec.default_formatted(),
+        ));
+
+        lines.push(String::new());
+        lines.push(
+            "⭐ marks layers contributing this option. The highest \
+             marked layer wins. Mode-architecture §6.1 explains the \
+             layer priority order in detail."
+                .into(),
+        );
+
+        self.display_buffer(
+            HelpContent::from_lines(format!("describe-option-resolution {name}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+            lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+        );
+    }
+
     /// Follow the help link under the cursor (`<CR>` in help mode).
     /// Looks up the link by cursor position, then dispatches based
     /// on the link target's variant. Source links echo the
@@ -1435,4 +1733,136 @@ mod tests {
         }
     }
 
+    // ---- M.8: :list-modes / :describe-mode ----
+
+    #[test]
+    fn list_modes_groups_by_kind_and_marks_active() {
+        // M.8: `:list-modes` renders every registered mode under
+        // `## majors` / `## minors` headers; the current major
+        // gets a `*` marker.
+        let mut a = app_with("hi", 5);
+        // Activate `lsp-mode` so the active marker appears on a
+        // minor too.
+        a.toggle_mode_by_name("lsp-mode");
+        a.command_line = "list-modes".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.popup_help().expect("list-modes opens help");
+        let body = h.content.as_string();
+        assert!(body.contains("## majors"), "missing majors section\n{body}");
+        assert!(body.contains("## minors"), "missing minors section\n{body}");
+        // Active markers: text-mode is the default major; lsp-mode
+        // was just activated. (The `[name](mode:name)` markdown
+        // links get cleaned to bare `name` in the rendered body
+        // by `extract_links_and_clean` -- the link metadata
+        // travels separately on `HelpMetadata.links`.)
+        assert!(
+            body.lines().any(|l| l.contains("- * text-mode")),
+            "text-mode should be marked active\n{body}",
+        );
+        assert!(
+            body.lines().any(|l| l.contains("- * lsp-mode")),
+            "lsp-mode should be marked active\n{body}",
+        );
+        // Inactive entries get a space marker, not `*`.
+        assert!(
+            body.lines().any(|l| l.contains("-   help-mode")),
+            "help-mode should appear without active marker\n{body}",
+        );
+    }
+
+    #[test]
+    fn describe_mode_renders_metadata() {
+        // M.8: `:describe-mode line-numbers-mode` shows kind +
+        // contributed options + capabilities.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-mode line-numbers-mode".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.popup_help().expect("describe-mode help");
+        let body = h.content.as_string();
+        assert!(body.contains("# mode :: line-numbers-mode"));
+        assert!(body.contains("- kind: `minor`"));
+        assert!(
+            body.contains("contributed options"),
+            "missing contributed-options section\n{body}",
+        );
+        assert!(
+            body.contains("`number`"),
+            "should reference the contributed option name\n{body}",
+        );
+    }
+
+    #[test]
+    fn describe_mode_unknown_emits_error_no_overlay() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-mode definitely-not-a-mode".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.popup_buffer.is_none());
+        let msg = a.last_message.as_ref().expect("error echo");
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("no mode named"));
+    }
+
+    #[test]
+    fn describe_option_resolution_shows_minor_contribution() {
+        // M.8: with `:line-numbers-mode` active, the resolution
+        // view marks that minor as a contributor for `number`.
+        let mut a = app_with("xx", 10);
+        a.toggle_mode_by_name("line-numbers-mode");
+        a.command_line = "describe-option-resolution number".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.popup_help().unwrap().content.as_string();
+        assert!(body.contains("# option resolution :: number"));
+        assert!(body.contains("minors"));
+        assert!(
+            body.contains("`line-numbers-mode` ⭐"),
+            "should mark line-numbers-mode as a contributor\n{body}",
+        );
+    }
+
+    #[test]
+    fn describe_option_resolution_no_modes_contributing() {
+        // No display mode active ⇒ minor section says none
+        // contribute.
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-option-resolution wrap".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.popup_help().unwrap().content.as_string();
+        assert!(body.contains("# option resolution :: wrap"));
+        // wrap-mode isn't auto-active by default.
+        assert!(
+            body.contains("none contribute this option")
+                || body.contains("(none active)"),
+            "expected no-contribution message\n{body}",
+        );
+    }
+
+    #[test]
+    fn describe_option_resolution_unknown_emits_error() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "describe-option-resolution definitely-not-an-option".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let msg = a.last_message.as_ref().expect("error echo");
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("E518"));
+    }
+
+    #[test]
+    fn describe_mode_shows_active_state_for_current_buffer() {
+        let mut a = app_with("xx", 10);
+        a.toggle_mode_by_name("lsp-mode");
+        a.command_line = "describe-mode lsp-mode".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.popup_help().unwrap().content.as_string();
+        assert!(
+            body.contains("active on current buffer: yes"),
+            "expected active=yes\n{body}",
+        );
+    }
 }

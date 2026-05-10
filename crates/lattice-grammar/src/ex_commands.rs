@@ -61,6 +61,9 @@ pub struct ExBuiltins {
     pub list_options: ExCommandId,
     pub describe_events: ExCommandId,
     pub describe_event: ExCommandId,
+    pub list_modes: ExCommandId,
+    pub describe_mode: ExCommandId,
+    pub describe_option_resolution: ExCommandId,
     pub hover: ExCommandId,
     pub hover_close: ExCommandId,
     pub help: ExCommandId,
@@ -594,6 +597,74 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let list_modes = registry.register_ex_command(
+        "ex:list-modes",
+        "List every registered mode (`:list-modes`). Groups by \
+         kind (Major / Minor) and shows each mode's current \
+         activation state on the active buffer.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::ListModes)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let describe_mode = registry.register_ex_command(
+        "ex:describe-mode",
+        "Open the help view for a registered mode \
+         (`:describe-mode NAME`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(name) => Ok(Effect::DescribeMode {
+                    name: name.to_string(),
+                }),
+                _ => Err(CommandError::BadArgs("expected mode name".into())),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "name",
+                kind: ArgKind::String,
+                doc: "Registered mode name (e.g. `lsp-mode`, `text-mode`).",
+                prompt: "mode:",
+                default: ArgDefault::Required,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let describe_option_resolution = registry.register_ex_command(
+        "ex:describe-option-resolution",
+        "Show which resolver layer provides the resolved value \
+         for an option on the active buffer \
+         (`:describe-option-resolution NAME`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(name) => Ok(Effect::DescribeOptionResolution {
+                    name: name.to_string(),
+                }),
+                _ => Err(CommandError::BadArgs("expected option name".into())),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "name",
+                kind: ArgKind::String,
+                doc: "Registered option name (e.g. `number`, `tabstop`).",
+                prompt: "option:",
+                default: ArgDefault::Required,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let hover = registry.register_ex_command(
         "ex:hover",
         "Open a hover popup at the cursor (`:hover [markdown]`). v1 path: feed text manually; \
@@ -1084,6 +1155,9 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         list_options,
         describe_events,
         describe_event,
+        list_modes,
+        describe_mode,
+        describe_option_resolution,
         hover,
         hover_close,
         help,

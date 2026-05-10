@@ -125,6 +125,23 @@ crate::options! {
     #[aliases("so")]
     #[validate(validate_scrolloff)]
     pub Scrolloff: i64 = 0;
+
+    /// Show whitespace glyphs (trailing spaces, tabs, leading
+    /// indentation) as visible markers. Vim's `:set list`.
+    /// Backing option for `whitespace-show-mode` (M.7.2). The
+    /// renderer's whitespace-painting plumbing lands in M.7.3 --
+    /// today this option is read by the cascade and the mode
+    /// machinery, but the renderer doesn't yet emit decorations.
+    #[aliases("list")]
+    pub Whitespace: bool = false;
+
+    /// Highlight the cursor's current line with a different
+    /// background style. Vim's `:set cursorline`. Backing option
+    /// for `current-line-highlight-mode` (M.7.2). The renderer's
+    /// current-line-highlight pipeline lands in M.7.3.
+    #[aliases("cul", "cursorline")]
+    #[name("current-line-highlight")]
+    pub CursorLine: bool = false;
 }
 
 // ---- Completion group: insert-completion knobs ----

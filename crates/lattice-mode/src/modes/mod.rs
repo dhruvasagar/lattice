@@ -20,7 +20,10 @@ pub mod hover;
 pub mod oil;
 pub mod text;
 
-pub use display::{LineNumbersMode, ReadOnlyMode, RelativeLineNumbersMode, WrapMode};
+pub use display::{
+    CurrentLineHighlightMode, LineNumbersMode, ReadOnlyMode, RelativeLineNumbersMode,
+    WhitespaceShowMode, WrapMode,
+};
 pub use file_tree::FileTreeMode;
 pub use help::HelpMode;
 pub use hover::HoverMode;
@@ -64,6 +67,15 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(ReadOnlyMode)
         .expect("read-only-mode must register without conflict");
+    // M.7.2: whitespace + current-line-highlight modes. Their
+    // backing typed options exist; the renderer's painting hooks
+    // land in M.7.3.
+    registry
+        .register(WhitespaceShowMode)
+        .expect("whitespace-show-mode must register without conflict");
+    registry
+        .register(CurrentLineHighlightMode)
+        .expect("current-line-highlight-mode must register without conflict");
 }
 
 #[cfg(test)]
@@ -84,5 +96,8 @@ mod tests {
         assert!(registry.is_registered(RelativeLineNumbersMode::mode_id()));
         assert!(registry.is_registered(WrapMode::mode_id()));
         assert!(registry.is_registered(ReadOnlyMode::mode_id()));
+        // M.7.2 display minors.
+        assert!(registry.is_registered(WhitespaceShowMode::mode_id()));
+        assert!(registry.is_registered(CurrentLineHighlightMode::mode_id()));
     }
 }

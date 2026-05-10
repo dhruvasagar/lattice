@@ -652,6 +652,33 @@ mod tests {
     }
 
     #[test]
+    fn set_list_converges_with_whitespace_show_mode() {
+        // M.7.2: `:set list` (vim alias for whitespace-show)
+        // activates `whitespace-show-mode`; `:set nolist`
+        // deactivates.
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        let mode_id = lattice_mode::modes::WhitespaceShowMode::mode_id();
+        a.do_set("list");
+        assert!(a.active_modes.get(&id).unwrap().has_minor(mode_id));
+        a.do_set("nolist");
+        assert!(!a.active_modes.get(&id).unwrap().has_minor(mode_id));
+    }
+
+    #[test]
+    fn set_cursorline_converges_with_current_line_highlight_mode() {
+        // M.7.2: `:set cursorline` (vim alias) ↔
+        // `:current-line-highlight-mode`.
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        let mode_id = lattice_mode::modes::CurrentLineHighlightMode::mode_id();
+        a.do_set("cursorline");
+        assert!(a.active_modes.get(&id).unwrap().has_minor(mode_id));
+        a.do_set("nocursorline");
+        assert!(!a.active_modes.get(&id).unwrap().has_minor(mode_id));
+    }
+
+    #[test]
     fn line_numbers_mode_activation_matches_set_number() {
         // M.7.1 the other direction: activating the mode AND
         // running `:set number` produce the same observable

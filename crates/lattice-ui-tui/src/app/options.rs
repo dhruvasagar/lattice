@@ -409,6 +409,22 @@ impl App {
                     lattice_mode::modes::WrapMode::mode_id(),
                 );
             }
+            "whitespace" => {
+                // M.7.2: `:set list` (alias) / `:set whitespace`
+                // (canonical) ↔ `:whitespace-show-mode`.
+                self.mirror_typed_option_to_display_mode::<lattice_config::Whitespace>(
+                    lattice_mode::modes::WhitespaceShowMode::mode_id(),
+                );
+            }
+            "current-line-highlight" => {
+                // M.7.2: `:set cursorline` ↔
+                // `:current-line-highlight-mode`. Canonical name
+                // is `current-line-highlight`; alias `cursorline`
+                // (vim).
+                self.mirror_typed_option_to_display_mode::<lattice_config::CursorLine>(
+                    lattice_mode::modes::CurrentLineHighlightMode::mode_id(),
+                );
+            }
             "foldmethod" => {
                 // Recompute folds against the new method. Idempotent
                 // and cheap when method is `Manual` (the recompute

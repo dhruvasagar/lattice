@@ -117,11 +117,11 @@ pub use core_options::{
     CompletionAutoInsertSingle, CompletionExtraCommitChars, CompletionGhostText,
     CompletionSourceBufferWordsPriority, CompletionSourceLspPriority,
     CompletionSourcePathPriority, CompletionSourceSnippetPriority,
-    CompletionSourceTreeSitterPriority, FoldEnable, FoldMethodOption,
+    CompletionSourceTreeSitterPriority, CursorLine, FoldEnable, FoldMethodOption,
     HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay,
     HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, Number,
     PickerResultDisplay, ReadOnly, RelativeNumber, Scrolloff, SignatureDisplay,
-    Tabstop, Wrap,
+    Tabstop, Whitespace, Wrap,
 };
 pub use erased::ErasedOption;
 pub use group::{

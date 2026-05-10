@@ -125,6 +125,26 @@ display_minor_mode!(
     contributes lattice_config::ReadOnly = true,
 );
 
+// M.7.2: `whitespace-show-mode` -- backing for `:set list`
+// (vim convention). Renderer's whitespace-glyph plumbing
+// lands in M.7.3; today the mode + option exist as the
+// declarative + cascade surface, ready for the renderer hook.
+display_minor_mode!(
+    WhitespaceShowMode,
+    "whitespace-show-mode",
+    contributes lattice_config::Whitespace = true,
+);
+
+// M.7.2: `current-line-highlight-mode` -- backing for
+// `:set cursorline`. Same M.7.3 deferral note as
+// whitespace-show-mode: option + mode declared today,
+// renderer's current-line-highlight pipeline lands later.
+display_minor_mode!(
+    CurrentLineHighlightMode,
+    "current-line-highlight-mode",
+    contributes lattice_config::CursorLine = true,
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +156,8 @@ mod tests {
             RelativeLineNumbersMode::mode_id(),
             WrapMode::mode_id(),
             ReadOnlyMode::mode_id(),
+            WhitespaceShowMode::mode_id(),
+            CurrentLineHighlightMode::mode_id(),
         ];
         for (i, a) in ids.iter().enumerate() {
             for b in &ids[i + 1..] {
@@ -151,6 +173,8 @@ mod tests {
             &RelativeLineNumbersMode,
             &WrapMode,
             &ReadOnlyMode,
+            &WhitespaceShowMode,
+            &CurrentLineHighlightMode,
         ];
         for m in modes {
             assert_eq!(m.kind(), ModeKind::Minor, "{} not minor", m.id());
@@ -193,6 +217,18 @@ mod tests {
     #[test]
     fn read_only_mode_contributes_read_only_true() {
         let opts = ReadOnlyMode.options();
+        assert_eq!(opts.iter().count(), 1);
+    }
+
+    #[test]
+    fn whitespace_show_mode_contributes_whitespace_true() {
+        let opts = WhitespaceShowMode.options();
+        assert_eq!(opts.iter().count(), 1);
+    }
+
+    #[test]
+    fn current_line_highlight_mode_contributes_cursorline_true() {
+        let opts = CurrentLineHighlightMode.options();
         assert_eq!(opts.iter().count(), 1);
     }
 }

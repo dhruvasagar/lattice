@@ -1810,6 +1810,27 @@ graceful error handling per CLAUDE.md.
   to `DocumentOpened` (file-open path). Unifying attach
   through lsp-mode (re-attach on `:lsp-mode` re-activate
   after a deactivate) is M.5.5 territory.
+- M.5.3.a -- ✅ landed. Typed-event surface + EventBus typed
+  API. Replaces "every event in `lattice-protocol::Event`"
+  with "feature crates declare their events at home;
+  protocol owns the declaration API." Mirrors the
+  `lattice-mode` ownership model.
+  - `lattice-protocol::event_registry`: `Event` trait
+    (Any + Debug + Send + Sync + 'static), `EventTypeId`
+    (TypeId + name), `EventDescriptor` (name, doc, source
+    crate), `EVENT_DESCRIPTORS` `linkme` distributed slice,
+    and `register_event!` macro that impls the trait and
+    pushes the descriptor in one declaration.
+  - `lattice-runtime::EventBus::publish_typed::<T>` /
+    `subscribe_typed::<T>` -- type-erased internal
+    `Arc<dyn Any + Send + Sync>` bus with TypeId-keyed
+    buckets and downcast forwarder closures. Closed-channel
+    pruning + lock-discipline mirror the legacy enum path.
+  - The legacy `Event` enum and enum-based bus stay; new
+    events (M.5.3.b LSP migration first) use the typed
+    path. Migrating built-in variants is a future
+    cleanup slice. `:describe-events` (M.5.3.c) walks
+    `EVENT_DESCRIPTORS`.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

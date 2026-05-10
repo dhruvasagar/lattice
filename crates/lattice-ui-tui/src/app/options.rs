@@ -431,21 +431,100 @@ impl App {
         );
     }
 
-    /// `:options` -- list every registered option in a help view.
+    /// `:options` -- live reference of every registered option,
+    /// grouped by [`OptionGroup`] (DESIGN.md §5.11). Each option
+    /// shows its canonical name + aliases, type label, current
+    /// value, default value, and doc string. Self-updating: walks
+    /// the [`lattice_config::OPTION_DECLS`] linkme slice, so adding
+    /// a new option via `options! { ... }` lights it up here at
+    /// the next build with no extra wiring.
+    ///
+    /// Pairs with `:help options` (conceptual prose: `:set` syntax,
+    /// types, layered resolution, TOML) and `:describe-option <name>`
+    /// (per-option deep-dive). `customizable = false` options are
+    /// hidden from this view -- they're mode-driven engine state
+    /// (`read-only`, ...), not user-typed config.
     pub(super) fn do_list_options(&mut self) {
-        let mut lines: Vec<String> = Vec::new();
-        let mut specs = self.config.iter();
-        specs.sort_by_key(|s| s.name());
-        lines.push(format!("{} registered option(s):", specs.len()));
-        lines.push(String::new());
-        for spec in specs {
-            lines.push(format!(
-                "  {:<32} {:<10} = {}",
-                spec.name(),
-                spec.type_label(),
-                spec.get_formatted()
-            ));
+        use lattice_config::{GROUP_DECLS, OPTION_DECLS};
+        use std::collections::BTreeMap;
+
+        // Bucket every customizable option by its group. The doc /
+        // type / default come from the linkme metadata; the *current*
+        // value comes from the registry by name (the metadata can't
+        // carry a runtime value -- it's a `&'static`).
+        let mut by_group: BTreeMap<&'static str, Vec<&'static lattice_config::OptionDeclMetadata>> =
+            BTreeMap::new();
+        for meta in OPTION_DECLS.iter() {
+            if !meta.customizable {
+                continue;
+            }
+            by_group.entry(meta.group_name).or_default().push(*meta);
         }
+        for v in by_group.values_mut() {
+            v.sort_by_key(|m| m.name);
+        }
+
+        // Group docs (one-liner each) so each section gets a header
+        // explaining what the group is for.
+        let group_doc: BTreeMap<&'static str, &'static str> =
+            GROUP_DECLS.iter().map(|g| (g.name, g.doc)).collect();
+
+        let total: usize = by_group.values().map(|v| v.len()).sum();
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# Options ({total} customisable)"));
+        lines.push(String::new());
+        lines.push(
+            "Live reference of every registered option, grouped by group. \
+             For per-option detail run `:describe-option <name>`. For \
+             concepts (`:set` syntax, layered resolution, TOML, plugin \
+             options) read `:help options`."
+                .into(),
+        );
+        lines.push(String::new());
+
+        for (group, options) in &by_group {
+            lines.push(format!("## {} ({})", group, options.len()));
+            if let Some(doc) = group_doc.get(group) {
+                lines.push(String::new());
+                lines.push((*doc).to_string());
+            }
+            lines.push(String::new());
+            for meta in options {
+                let spec = self.config.lookup(meta.name);
+                let aliases = spec
+                    .as_ref()
+                    .map(|s| s.aliases())
+                    .filter(|a| !a.is_empty())
+                    .map(|a| format!(" [{}]", a.join(", ")))
+                    .unwrap_or_default();
+                let type_label = (meta.type_label)();
+                let default = (meta.default_formatted)();
+                let current = spec
+                    .as_ref()
+                    .map(|s| s.get_formatted())
+                    .unwrap_or_else(|| "?".into());
+                let header = if current == default {
+                    format!("- **{}**{} : {} = {}", meta.name, aliases, type_label, current)
+                } else {
+                    format!(
+                        "- **{}**{} : {} = {} (default: {})",
+                        meta.name, aliases, type_label, current, default,
+                    )
+                };
+                lines.push(header);
+                for doc_line in meta.doc.lines() {
+                    let trimmed = doc_line.trim();
+                    if !trimmed.is_empty() {
+                        lines.push(format!("  {trimmed}"));
+                    }
+                }
+                if let Some(values) = spec.as_ref().and_then(|s| s.enumerate_values()) {
+                    lines.push(format!("  values: {}", values.join(", ")));
+                }
+                lines.push(String::new());
+            }
+        }
+
         self.display_buffer(
             HelpContent::from_lines("options", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
@@ -796,6 +875,50 @@ mod tests {
         assert!(body.contains("number"));
         assert!(body.contains("tabstop"));
         assert!(body.contains("scrolloff"));
+    }
+
+    #[test]
+    fn list_options_groups_by_group_and_includes_docs() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "options".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.popup_help().expect("options help");
+        let body = h.content.as_string();
+        // Group section headers (markdown ##) for the built-in
+        // groups that own options today.
+        assert!(body.contains("## editor"), "missing editor section\n{body}");
+        assert!(
+            body.contains("## completion"),
+            "missing completion section\n{body}"
+        );
+        assert!(body.contains("## display"), "missing display section\n{body}");
+        // Each option's doc string is included alongside the row.
+        // `tabstop`'s doc starts with "Number of spaces a hard tab".
+        assert!(
+            body.contains("Number of spaces a hard tab"),
+            "tabstop doc not rendered\n{body}",
+        );
+        // Aliases are surfaced in the option header (`tabstop [ts]`,
+        // `number [nu]`).
+        assert!(body.contains("[ts]"), "tabstop alias missing\n{body}");
+        assert!(body.contains("[nu]"), "number alias missing\n{body}");
+    }
+
+    #[test]
+    fn list_options_hides_non_customizable_options() {
+        // `read-only` is `customizable = false` (mode-driven, not
+        // user-typed); the live reference should hide it.
+        let mut a = app_with("xx", 10);
+        a.command_line = "options".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.popup_help().expect("options help");
+        let body = h.content.as_string();
+        assert!(
+            !body.contains("**read-only**"),
+            "read-only should be hidden from :options reference\n{body}",
+        );
     }
 
     // ---- M.2.1: option resolution per buffer ----

@@ -240,6 +240,22 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
         body: HelpTopicBody::Static(include_str!("../../../docs/help/lsp-mode.md")),
         related_command_patterns: vec!["lsp".into()],
     });
+    r.register(HelpTopic {
+        name: "options".into(),
+        summary: "Typed configuration: `:set` syntax, layered resolution \
+                  (defaults / TOML / runtime / mode contributions / per-buffer), \
+                  groups, and how to find every registered option."
+            .into(),
+        body: HelpTopicBody::Static(include_str!("../../../docs/help/options.md")),
+        // `set` covers `:set NAME=VALUE`; the typed-options
+        // surface picks up `:options` / `:describe-option` /
+        // `:customize` automatically once those bind here.
+        related_command_patterns: vec![
+            "set".into(),
+            "option".into(),
+            "customize".into(),
+        ],
+    });
     Arc::new(r)
 }
 

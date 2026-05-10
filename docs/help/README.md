@@ -46,7 +46,7 @@ same surface).
 | Block-visual mode (`Ctrl-V`, `I` / `A` / `>` / `<`, replicate-on-Esc)                                 | _planned_                    | ⛔     |
 | Ex-commands (`:w`, `:e`, `:s`, `:g`, `:d`, alias resolution, surface forms)                           | _planned_                    | ⛔     |
 | Help system (`:describe-*`, `:apropos`, `:keymap`, missing-arg prompts)                               | _planned_                    | ⛔     |
-| Options and theme (`:set name=value`, `:describe-option`, `ui.*` styling)                             | _planned_                    | ⛔     |
+| Options and configuration (`:set`, layered resolver, TOML, groups, live `:options` reference)         | [options.md](options.md)     | ✅     |
 | Plugins (WASM Component Model, capabilities, fuel)                                                    | _planned_                    | ⛔     |
 | Performance posture (latency budgets, what's safe in a hot loop)                                      | _planned_                    | ⛔     |
 

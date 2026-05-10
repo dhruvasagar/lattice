@@ -188,6 +188,23 @@ mod tests {
     }
 
     #[test]
+    fn hover_popup_activates_hover_mode_minor() {
+        // M.4: do_open_hover activates `hover-mode` as a minor on
+        // the popup buffer. Future hover-only behaviour gates on
+        // this mode being active rather than the popup's state
+        // shape (`prev_pane_for_help.is_none()`).
+        let mut a = app_with("hello", 10);
+        a.do_open_hover("hover body");
+        let buffer_id = a.help_buffer.as_ref().expect("popup open").id;
+        let modes = a.active_modes.get(&buffer_id).expect("popup has modes");
+        assert!(
+            modes.minors().contains(&crate::modes::HoverMode::mode_id()),
+            "hover popup should activate hover-mode minor; got {:?}",
+            modes.minors()
+        );
+    }
+
+    #[test]
     fn open_popup_with_explicit_placement_overrides_default() {
         let mut a = app_with("hello", 10);
         let buf = HelpContent::from_lines("test", vec!["body".into()]);

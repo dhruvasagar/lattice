@@ -287,6 +287,27 @@ impl App {
         self.help_buffer = Some(buffer);
         self.popup_placement = crate::popup::PopupPlacement::CursorAnchored;
         self.seed_help_metadata_locals(buffer_id, metadata);
+        // M.4 hover-popup unification: activate `hover-mode` as a
+        // minor on the popup buffer. Future hover-specific
+        // behaviour (auto-close timer, signature-help fan-in, ...)
+        // contributes through this minor instead of being
+        // hard-coded in the dispatch. The dismiss-on-doc-cursor-
+        // motion check still uses `prev_pane_for_help.is_none()`
+        // for now -- routing it through the active-modes lookup
+        // is a follow-up.
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
+        let _ = self.mode_registry.activate_minor(
+            &mut active,
+            &mut locals,
+            proto_id,
+            crate::modes::HoverMode::mode_id(),
+            lattice_mode::CapabilitySet::empty(),
+        );
+        self.active_modes.insert(buffer_id, active);
+        self.buffer_locals.insert(buffer_id, locals);
+        self.recompute_options_for_buffer(buffer_id);
     }
 
     /// **State A -> State B**: focus moves into the popup. After

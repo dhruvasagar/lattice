@@ -349,6 +349,43 @@ impl Mode for OilMode {
     }
 }
 
+/// M.4 hover-popup unification: the minor mode activated on the
+/// hover popup buffer. Marker mode for v1 -- the only behaviour
+/// gated on it today is the State-A auto-dismiss-on-doc-cursor-
+/// motion in `app/dispatch.rs`. Future minor-mode contributions
+/// (auto-close timer, bound-`<Esc>`-to-dismiss, signature-help
+/// fan-in) layer on without touching the popup-overlay code.
+///
+/// The popup's content is markdown -- the major mode that the App
+/// activates alongside `hover-mode` is `markdown-mode`, so the
+/// renderer's syntax + link extraction treats hover content as
+/// any other markdown buffer.
+pub struct HoverMode;
+
+impl HoverMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("hover-mode")
+    }
+}
+
+impl Mode for HoverMode {
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        Ok(())
+    }
+    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        Ok(())
+    }
+}
+
 /// Resolve the default major-mode id for a [`BufferKind`].
 /// `Document` returns `None` because the mode is determined
 /// by language detection (see
@@ -371,6 +408,8 @@ pub fn register_buffer_kind_modes(registry: &mut ModeRegistry) {
         .register(FileTreeMode)
         .expect("file-tree-mode register");
     registry.register(OilMode).expect("oil-mode register");
+    // M.4: minor modes shipped by the TUI layer.
+    registry.register(HoverMode).expect("hover-mode register");
 }
 
 /// Resolve the major-mode id a buffer should activate based

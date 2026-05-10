@@ -175,9 +175,21 @@ impl App {
         // motions there move the popup's cursor, not the doc's.
         let pre_active = self.active_buffer;
         let pre_cursor = self.cursor;
-        let popup_in_state_a = self.help_buffer.is_some()
-            && self.prev_pane_for_help.is_none()
-            && pre_active == BufferKind::Document;
+        // M.4 hover-popup unification: gate the auto-dismiss-on-
+        // doc-cursor-motion behaviour on `hover-mode` being active
+        // on the popup buffer, instead of the structural
+        // `prev_pane_for_help.is_none()` check. State A (popup
+        // shown, doc focused) is "hover-mode active + active is
+        // Document"; State B (focused popup) is "active is Help"
+        // -- the second clause stays as the State-A discriminator.
+        let popup_has_hover_mode = self
+            .help_buffer
+            .as_ref()
+            .map(|h| h.id)
+            .and_then(|id| self.active_modes.get(&id))
+            .map(|modes| modes.minors().contains(&crate::modes::HoverMode::mode_id()))
+            .unwrap_or(false);
+        let popup_in_state_a = popup_has_hover_mode && pre_active == BufferKind::Document;
         // While a macro recording is in flight, capture every Action
         // EXCEPT the recording-management ones themselves (otherwise the
         // recording would include "stop recording" or recurse on play).

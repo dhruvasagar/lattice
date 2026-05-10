@@ -1831,6 +1831,24 @@ graceful error handling per CLAUDE.md.
     path. Migrating built-in variants is a future
     cleanup slice. `:describe-events` (M.5.3.c) walks
     `EVENT_DESCRIPTORS`.
+- M.5.3.b -- ✅ landed. LSP events out of `lattice-protocol`'s
+  central enum and into `lattice-lsp::events` as concrete
+  types using the typed-event surface from M.5.3.a:
+  `LspBufferAttached { id, path }`,
+  `LspBufferDetached { id, path }`,
+  `LspLogPushed { server_id: Arc<str>, level, source, message }`.
+  Each registers via `register_event!` so
+  `EVENT_DESCRIPTORS` enumerates them for the M.5.3.c
+  `:describe-events` view. Publishers route through
+  `EventBus::publish_typed` (`LspLogger`'s publisher
+  closure, App's mode activate/deactivate hooks).
+  Subscribers use `EventBus::subscribe_typed::<T>` (App
+  boot's lsp-log live-tail wiring). `LogEventPublisher`'s
+  type changes from `Arc<dyn Fn(Event)>` to
+  `Arc<dyn Fn(LspLogPushed)>`. The three variants are
+  removed from both `Event` and `EventKind`; remaining
+  built-in events stay until a follow-up cleanup migrates
+  them.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

@@ -1720,31 +1720,39 @@ graceful error handling per CLAUDE.md.
       hook lands (it activates `hover-mode` rather than the
       default `help-mode` minor); the `Hover` / `Signature`
       categories are reserved for that migration.
-- M.4 follow-ups (carried forward; can land alongside M.5+):
-  - **Hover via `display_buffer` + minor-mode override hook.**
-    Today `do_open_hover` bypasses the unified
-    `App::display_buffer` dispatch because that path activates
-    `help-mode` as the popup's minor; hover wants `hover-mode`
-    instead (auto-dismiss-on-cursor-motion semantics, no
-    link/anchor follow). Add an optional `minor_mode: ModeId`
-    parameter to the dispatch so callers can specify the
-    minor; migrate `do_open_hover`. The `Hover` / `Signature`
-    categories already exist in the enum reserved for this.
-  - **`:set <category>.display = ...` user overrides for the
-    BufferDisplay dispatch.** Layer typed-option overrides on
-    top of `App::resolve_display(category)`. Adds nine typed
-    options (one per `BufferDisplayCategory` variant; values
-    `popup | active-pane | split-h | split-v`) via the
-    `options!` macro pattern. Reads through the existing
-    `lattice_config::ResolvedOptions` cache; default falls
-    back to `default_display(category)` (current behaviour).
+- M.4 follow-ups -- ✅ all landed.
+  - **Hover via `display_buffer` + `FloatingPopup` variant.**
+    `BufferDisplay::FloatingPopup(placement)` codifies State A
+    semantics (popup floats; doc keeps focus; `markdown-mode`
+    major + `hover-mode` minor). `App::open_floating_popup` is
+    the dispatch target. `default_display(Hover)` and
+    `default_display(Signature)` route here. `do_open_hover`
+    is now a one-line `display_buffer(content, Hover)` call.
+  - **`:set <category>.display = ...` user overrides.**
+    `BufferDisplayPreference` enum in
+    `lattice_core::ui::display` (flat: `Default | PopupCentered
+    | PopupCursor | FloatingCursor | ActivePane | SplitHorizontal
+    | SplitVertical`); `OptionType` impl in
+    `lattice_config::domain`. Nine typed options under the
+    `Display` group (`lsp.status.display`, `lsp.log.display`,
+    `help.topic.display`, `help.describe.display`,
+    `help.apropos.display`, `help.list.display`,
+    `hover.display`, `signature.display`,
+    `picker.result.display`). Each defaults to `Default` --
+    `App::resolve_display(category)` reads the option, calls
+    `pref.resolve(category)`, falls through to
+    `default_display(category)` on `Default`. No behavioural
+    change unless the user opts in.
   - **Bug 4: wrap behaviour for non-document buffers.**
-    Deferred during the bug pass before M.4. `wrap` /
-    `wrap-mode` semantics for help / file-tree / oil panes
-    aren't well-defined yet -- naturally folds into the M.7
-    "Display minor modes" slice (where `wrap-mode` becomes a
-    typed-option-backed minor and per-mode contributions
-    decide the default).
+    `HelpMode` and `HoverMode` contribute `Wrap = true` via
+    `Mode::options()`; the resolver layers it over the editor
+    default (`Wrap = false`) and the renderer's existing
+    `option_cache.wrap_lines` pipeline picks it up. Long
+    markdown bodies (help docs, hover descriptions) wrap
+    inside their pane / popup width instead of overflowing
+    horizontally. File-tree, oil, and lsp-log modes
+    intentionally don't contribute -- line-oriented content,
+    wrapping confuses the layout.
 - M.5.0 -- ✅ landed. `LspMode` minor declared in
   `lattice-lsp::modes` (kind = Minor; no capability
   requirements -- standalone-server use cases want activation

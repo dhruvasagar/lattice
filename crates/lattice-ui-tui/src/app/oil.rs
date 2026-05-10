@@ -97,6 +97,14 @@ impl App {
         pane.buffer_id = new_id;
         pane.cursor = Position::ZERO;
         pane.scroll = 0;
+        // Sync the App-side hot-path cursor / scroll to the
+        // freshly-activated oil pane. Without this, `self.cursor`
+        // carries over from the prior document buffer and oil
+        // edits land at the wrong rope position (e.g. `o` opens
+        // a line at the document's cursor column instead of
+        // end-of-row in the oil listing).
+        self.cursor = Position::ZERO;
+        self.scroll = 0;
         self.set_message(EchoLevel::Info, format!("oil: {}", dir.display()));
     }
 

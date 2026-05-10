@@ -73,7 +73,19 @@ impl App {
     /// [`Event::DocumentChanged`] to the App's event bus and
     /// records the edit with the LSP supervisor (Phase
     /// 4.1.i.2) so attached servers see `didChange`.
+    ///
+    /// Oil-buffer routing: when `active_buffer == Oil` the edit
+    /// lands on `oil.content` (the in-memory rope owned by the
+    /// `OilBuffer`) instead of the document actor's rope. The
+    /// document actor is the wrong destination for oil edits --
+    /// oil's content is intentionally separate so `:w` can diff
+    /// against a snapshot and translate into filesystem
+    /// operations. LSP `didChange` is intentionally not fired
+    /// for oil edits (oil isn't an LSP-tracked buffer).
     pub(super) fn apply_edit_blocking(&mut self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
+        if matches!(self.active_buffer, super::BufferKind::Oil) {
+            return self.apply_edit_to_oil(edit);
+        }
         let result = block_on(self.document.apply_edit(edit));
         if let Ok(applied) = result.as_ref() {
             self.publish_document_changed(std::slice::from_ref(applied));
@@ -85,15 +97,51 @@ impl App {
     /// unit on the document's undo stack. Each edit in the
     /// batch is also fed to the LSP supervisor in order
     /// (Phase 4.1.i.2).
+    ///
+    /// Oil-buffer routing matches `apply_edit_blocking`: when
+    /// `active_buffer == Oil` the batch lands on `oil.content`
+    /// edit-by-edit. The "one undo unit" semantics are weaker
+    /// for oil (its content has no undo stack); v1 oil falls
+    /// back to `:e!` reload for "undo all my changes."
     pub(super) fn apply_edit_batch_blocking(
         &mut self,
         edits: Vec<Edit>,
     ) -> Result<Vec<AppliedEdit>, RuntimeError> {
+        if matches!(self.active_buffer, super::BufferKind::Oil) {
+            let mut applied = Vec::with_capacity(edits.len());
+            for edit in edits {
+                applied.push(self.apply_edit_to_oil(edit)?);
+            }
+            return Ok(applied);
+        }
         let result = block_on(self.document.apply_edit_batch(edits));
         if let Ok(applied) = result.as_ref() {
             self.publish_document_changed(applied);
         }
         result
+    }
+
+    /// Apply a single `Edit` to the active oil buffer's rope
+    /// (`oil.content`). Returns the `AppliedEdit` with the
+    /// inserted-range / removed-text fields populated, same
+    /// shape as the document path. Used by
+    /// `apply_edit_blocking` and `apply_edit_batch_blocking`'s
+    /// oil routing.
+    fn apply_edit_to_oil(&mut self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
+        let oil_id = self.active_pane_buffer_id();
+        let Some(oil) = self.buffers.oil_mut(oil_id) else {
+            // Treating "active buffer is oil but no oil
+            // entry in the registry" as Cancelled rather than
+            // a hard error -- the dispatcher just no-ops.
+            // Should never happen in practice (the Oil kind +
+            // missing registry entry is a state-machine bug).
+            return Err(RuntimeError::Core(
+                lattice_core::CoreError::Cancelled,
+            ));
+        };
+        oil.content
+            .apply_edit(&edit)
+            .map_err(RuntimeError::Core)
     }
 
     pub(super) fn undo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
@@ -386,8 +434,14 @@ impl App {
     /// Vim's `o` -- open a new line below the cursor, splice a
     /// newline at end-of-line, drop the cursor on the new empty
     /// line, switch to Insert.
+    ///
+    /// Reads line length from `active_text()` so the path works
+    /// uniformly across Document / Oil / etc. -- without that,
+    /// `o` in an oil buffer reads the wrong (document) rope's
+    /// line length and inserts mid-row.
     pub(super) fn do_open_line_below(&mut self) {
-        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
+        let buf = self.active_text();
+        let len = line_byte_len(&buf, self.cursor.line);
         let eol = Position::new(self.cursor.line, len);
         if self.apply_edit_blocking(Edit::insert(eol, "\n")).is_ok() {
             self.cursor = Position::new(self.cursor.line + 1, 0);

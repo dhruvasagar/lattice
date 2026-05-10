@@ -2561,6 +2561,191 @@ mod tests {
     }
 
     #[test]
+    fn oil_open_then_write_creates_a_new_file_on_disk() {
+        // End-to-end: open an oil buffer for an empty dir,
+        // directly seed a new filename in the rope, run :w,
+        // verify the file exists on disk. Tests the diff-and-
+        // apply pipeline.
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-oil-create-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("create tmp");
+
+        let mut a = app_with("hi", 5);
+        a.do_open_oil(Some(tmp.clone()));
+        assert_eq!(a.active_buffer, BufferKind::Oil);
+
+        let oil_id = a.active_pane_buffer_id();
+        let oil = a.buffers.oil_mut(oil_id).expect("oil");
+        oil.content
+            .apply_edit(&lattice_protocol::edit::Edit::insert(
+                lattice_protocol::position::Position::ZERO,
+                "newfile.txt\n".to_string(),
+            ))
+            .expect("insert edit");
+
+        // Save. Should run OilBuffer::apply and create the file.
+        a.do_write(None);
+        let msg = a.last_message.as_ref().expect("write echo");
+        assert!(
+            msg.text.contains("oil: applied"),
+            "expected oil-apply success echo, got: {}",
+            msg.text,
+        );
+        let new_path = tmp.join("newfile.txt");
+        assert!(
+            new_path.exists(),
+            "expected {} to be created",
+            new_path.display(),
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn oil_normal_mode_o_then_insert_then_write_creates_file() {
+        // Full keystroke pipeline test: in an oil buffer,
+        // press `o` (Normal: open line below + Insert), type
+        // a filename, press <Esc>, run :w. Verify the file is
+        // created on disk.
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-oil-o-write-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("create tmp");
+        // Seed a file so there's an existing row to position
+        // after.
+        std::fs::write(tmp.join("seed.txt"), "x").expect("seed");
+
+        let mut a = app_with("hi", 5);
+        a.do_open_oil(Some(tmp.clone()));
+        a.apply(crate::app::Action::OpenLineBelow);
+        assert_eq!(a.modal, lattice_grammar::ModalState::Insert);
+        a.apply(crate::app::Action::Insert("new.rs".into()));
+        a.apply(crate::app::Action::EnterMode(lattice_grammar::ModalState::Normal));
+        a.do_write(None);
+        let new_path = tmp.join("new.rs");
+        assert!(
+            new_path.exists(),
+            "expected {} to be created via the keystroke path; \
+             write echo: {:?}",
+            new_path.display(),
+            a.last_message,
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn oil_keystroke_pipeline_inserts_into_oil_rope() {
+        // Regression: before the run_oil_invocation rewrite,
+        // typing a chord in an oil buffer dispatched through
+        // the document actor (which doesn't own the oil rope),
+        // so the rope stayed empty no matter what the user
+        // typed. Now the dispatch routes through a temp
+        // Document and copies the resulting buffer back onto
+        // `oil.content`.
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-oil-keystroke-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("create tmp");
+        // Seed one file so the listing has a row.
+        std::fs::write(tmp.join("existing.txt"), "x").expect("seed");
+
+        let mut a = app_with("hi", 5);
+        a.do_open_oil(Some(tmp.clone()));
+        let oil_id = a.active_pane_buffer_id();
+        // Initial rope has one row: `existing.txt`.
+        let initial = a.buffers.oil(oil_id).map(|o| o.content.as_string());
+        assert!(
+            initial.as_ref().map(|s| s.contains("existing.txt")).unwrap_or(false),
+            "expected `existing.txt` in initial listing: {:?}",
+            initial,
+        );
+        // Dispatch an Insert action with text. In an oil buffer,
+        // this should land in the oil rope, not the document.
+        a.modal = lattice_grammar::ModalState::Insert;
+        a.apply(crate::app::Action::Insert("foo".into()));
+        let after = a.buffers.oil(oil_id).map(|o| o.content.as_string());
+        assert!(
+            after.as_ref().map(|s| s.contains("foo")).unwrap_or(false),
+            "expected `foo` to land in oil rope: {:?}",
+            after,
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn oil_navigate_into_subdir_replaces_listing() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-oil-nav-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp.join("subdir")).expect("create subdir");
+        std::fs::write(tmp.join("subdir/inner.txt"), "hi").expect("write inner");
+
+        let mut a = app_with("hi", 5);
+        a.do_open_oil(Some(tmp.clone()));
+        let oil_id = a.active_pane_buffer_id();
+
+        // The rope content lists `subdir` (and `..`).
+        let listing_before = a.buffers.oil(oil_id).map(|o| o.content.as_string());
+        assert!(
+            listing_before
+                .as_ref()
+                .map(|s| s.contains("subdir"))
+                .unwrap_or(false),
+            "expected `subdir` in initial listing: {:?}",
+            listing_before,
+        );
+
+        // Move cursor to the subdir entry. The exact line index
+        // depends on sort: dirs first, so subdir is at 0 (or 1
+        // if `..` is included). Let's find it.
+        let snap = a
+            .buffers
+            .oil(oil_id)
+            .expect("oil")
+            .snapshot_entries();
+        let subdir_line = snap
+            .iter()
+            .position(|e| e.name == "subdir")
+            .expect("subdir in snapshot");
+        a.cursor.line = subdir_line as u32;
+        a.cursor.byte = 0;
+        a.do_oil_follow();
+
+        // Listing now shows subdir's contents (`inner.txt`).
+        let listing_after = a.buffers.oil(oil_id).map(|o| o.content.as_string());
+        assert!(
+            listing_after
+                .as_ref()
+                .map(|s| s.contains("inner.txt"))
+                .unwrap_or(false),
+            "after navigate-into, expected `inner.txt`: {:?}",
+            listing_after,
+        );
+
+        // The buffer-locals dir reflects the new location.
+        let dir = a
+            .buffer_locals
+            .get(&oil_id)
+            .and_then(|l| l.get::<crate::modes::OilDir>())
+            .map(|d| d.0.clone())
+            .expect("OilDir present");
+        assert_eq!(dir, tmp.join("subdir"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn open_oil_seeds_oil_locals() {
         let tmp = std::env::temp_dir().join(format!(
             "lattice-m3-2-c-3-{}",

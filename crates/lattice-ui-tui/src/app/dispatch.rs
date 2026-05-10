@@ -771,8 +771,104 @@ impl App {
         self.run_document_invocation(inv);
     }
 
+    /// Dispatch a `CommandInvocation` against the active oil
+    /// buffer's rope. Oil's content lives in `oil.content` (a
+    /// `Buffer`), separate from `self.document` (the actor-
+    /// backed document buffer). The grammar dispatcher only
+    /// knows about `Document`, so we synthesise a temporary
+    /// `Document` from oil's rope, dispatch through it, and
+    /// copy the resulting buffer back. Edits + cursor updates
+    /// land on the oil rope without touching the document
+    /// actor.
+    ///
+    /// This is the seam that makes oil writable. v1 supports
+    /// motions, operators (insert / delete / change / yank),
+    /// and visual selections against oil's rope. The `:w`
+    /// path is separate (`do_write` matches on
+    /// `BufferKind::Oil` and routes to `OilBuffer::apply`).
     fn run_oil_invocation(&mut self, inv: CommandInvocation) {
-        self.run_document_invocation(inv);
+        let oil_id = self.active_pane_buffer_id();
+        let Some(oil_text) = self
+            .buffers
+            .oil(oil_id)
+            .map(|o| o.content.as_string())
+        else {
+            return;
+        };
+        // Mirror the document-side dispatcher's count + register
+        // pre-processing so oil keystrokes feel identical to
+        // document keystrokes.
+        let mut inv = inv;
+        if let Some(reg) = self.pending_register.take()
+            && inv.register.is_none()
+        {
+            inv = inv.with_register(reg);
+        }
+        let effective_count = inv.count.map(|c| c.0).unwrap_or(1);
+        if effective_count > 1 {
+            inv = inv.with_count(lattice_grammar::command::Count(effective_count));
+        }
+        self.pending_count = 0;
+        self.op_count = 0;
+
+        let mut temp_doc = lattice_core::Document::from_text(oil_text);
+        let was_visual = matches!(self.modal, ModalState::Visual(_));
+        let inv_for_repeat = inv.clone();
+        let cursor_before = self.cursor;
+        let result = lattice_grammar::execute(
+            &self.registry,
+            &mut temp_doc,
+            cursor_before,
+            inv,
+            &lattice_protocol::CancellationToken::never(),
+        );
+        let Ok(effect) = result else {
+            return;
+        };
+        // Copy the (possibly mutated) rope back onto the oil
+        // buffer. For motion-only effects this is a no-op (the
+        // grammar's motion path doesn't mutate the document);
+        // for operator effects it carries the change.
+        if let Some(oil) = self.buffers.oil_mut(oil_id) {
+            oil.content = temp_doc.buffer().clone();
+        }
+        // Apply the effect's cursor / mode / register / yank
+        // implications. We re-implement a narrow `apply_effect`
+        // here -- the document-side `handle_edits` would re-
+        // publish through the document actor, which oil
+        // explicitly bypasses.
+        let mut should_exit_visual = false;
+        match &effect {
+            Effect::Edits(edits) => {
+                if let Some(first) = edits.first() {
+                    self.cursor = first.original_range.start;
+                }
+                self.last_change = Some(inv_for_repeat);
+                should_exit_visual = true;
+            }
+            Effect::SelectionChange(set) => {
+                let primary = set.primary();
+                self.cursor = primary.head;
+            }
+            Effect::Yank { register, content, kind } => {
+                self.store_yank(*register, content.clone(), *kind);
+                should_exit_visual = true;
+            }
+            Effect::EnterMode(modal) => {
+                self.modal = *modal;
+            }
+            Effect::None => {}
+            // Ex-command effects + other variants don't apply
+            // to oil's keystroke path; they route through the
+            // ex-command dispatcher (do_write / etc.) and are
+            // never produced by motion / operator / text-object
+            // invocations against an oil buffer.
+            _ => {}
+        }
+        if was_visual && should_exit_visual && matches!(self.modal, ModalState::Visual(_)) {
+            self.do_exit_visual();
+        }
+        self.clamp_cursor_to_buffer();
     }
 
 

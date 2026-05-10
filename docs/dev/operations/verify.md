@@ -1,228 +1,752 @@
 # Verification checklist
 
-A walk-through to manually verify the features and fixes shipped in
-the recent session by running the editor. Open a real file (the
-project's own README is fine) so the buffer has multiple lines and
-some unicode (`§`).
+A thorough manual verification of every feature lattice ships
+today. Use this for release sign-off, post-refactor regression
+sweeps, and onboarding "what does the editor actually do."
+
+Each section is independent; jump to whatever's relevant. Items
+are checkboxes you tick as you go.
 
 ```sh
+# Use a real source tree so motions / search / folds have
+# meaningful content.
 cargo run --release -- README.md
 ```
 
-Each section maps to one or more commits. If anything diverges from
-the expected behaviour, capture the exact keystrokes you typed and
-the output you saw — that's enough to reproduce.
+The user docs in [`../../user/`](../../user/) are the canonical
+reference for each feature; this file is the runtime
+counterpart.
 
 ---
 
-## 1. Build & launch
+## 1. Build, launch, baseline
 
 - [ ] `cargo build --release` succeeds without warnings
-- [ ] `cargo test --workspace` reports 1099 passing, 0 failing
+- [ ] `cargo test --workspace` passes (current baseline:
+      ~1428 ui-tui tests, all 22 crates green)
 - [ ] `cargo clippy --workspace --all-targets` clean
 - [ ] `cargo fmt --all -- --check` clean
 - [ ] `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --workspace` clean
 - [ ] `cargo run --release -- README.md` opens the file in the TUI
+- [ ] Modeline shows file path + cursor position (`README.md  1:0`)
+- [ ] Status line at the bottom shows the active mode
 
 ---
 
-## 2. Cursor display-width fix
-*(commit `3f10caa`, fixes the `/Perf` issue you found)*
+## 2. Modal editing
 
-Open a file with multibyte chars on a line. README.md line 11 and
-the project's CLAUDE.md line 54 contain `§` (2 bytes / 1 cell).
+User doc: [`user/modes.md`](../../user/modes.md).
 
-- [ ] `/Perf<CR>` highlights `Perf` on a `§`-containing line
-- [ ] After search submit, the cursor sits exactly on `P`, not on `e`
-- [ ] `n` jumps to the next match; cursor lands on `P` of that match
-- [ ] `N` jumps to the previous match; cursor lands on `P`
-- [ ] On a CJK / emoji line (try `:%s/x/中/<CR>` then `gg/中`), the
-      cursor still lands on the first column of the wide glyph
+### Mode transitions
 
----
+- [ ] Editor starts in **Normal** mode
+- [ ] `i` enters **Insert**; modeline reflects this
+- [ ] Type a character; it appears at the cursor
+- [ ] `<Esc>` returns to Normal; cursor moves left one
+- [ ] `a` enters Insert one column to the right
+- [ ] `I` enters Insert at first non-blank
+- [ ] `A` enters Insert at end-of-line
+- [ ] `o` opens a new line below + Insert
+- [ ] `O` opens a new line above + Insert
+- [ ] `v` enters charwise **Visual**; selection extends with motions
+- [ ] `V` enters linewise Visual; whole lines highlight
+- [ ] `<C-v>` (or `<C-q>`) enters blockwise Visual; rectangular selection
+- [ ] `R` enters **Replace**; typing overwrites instead of inserting
+- [ ] `:` enters **Command** mode; cmdline appears at bottom
+- [ ] `/` enters **Search**; same cmdline shape, prompt is `/`
+- [ ] `?` enters Search backward; prompt is `?`
+- [ ] In Visual mode, `o` swaps the selection's anchor and cursor
+- [ ] `gv` (in Normal) re-selects the previous Visual selection
 
-## 3. Cancellation tokens
-*(commits `57ff0b7`, `a5dca1c`, `262c249`)*
+### Mode-aware echo
 
-This is mostly infrastructure — there's no Esc-to-cancel UX yet
-because the v1 input loop is single-threaded. Verification is via
-tests, but two regression checks are worth running:
-
-- [ ] `cargo test -p lattice-protocol` shows 35 passing (5 cancel
-      tests added)
-- [ ] `cargo test -p lattice-grammar` shows 183+ passing (cancel +
-      dispatcher tests)
-- [ ] `/(\w+) \w+ \1<CR>` (a backref pattern that needs the
-      fancy-regex NFA) still finds the duplicate-word match without
-      hanging the editor
-
----
-
-## 4. §5.10 event bus
-*(commit `a637f9c`)*
-
-Observation-only baseline — nothing publishes yet, so the bus is
-not user-visible. Verification:
-
-- [ ] `cargo test -p lattice-runtime` shows 30 passing (8 event-bus
-      tests included)
+- [ ] In Insert mode, the echo line shows `-- INSERT --`
+- [ ] In Visual modes, echo shows the selection shape and char/byte count
+- [ ] Recording a macro (`qa`...): echo shows `recording @a`
 
 ---
 
-## 5. Block-visual I / A / > / < + single-undo
-*(commits `c8636e9`, `b50fa61`, `fa9267f`, `db29123`, `75013f5`)*
+## 3. Motions
 
-Open a small buffer with at least 3 short lines:
+User doc: [`user/folding.md`](../../user/folding.md) covers
+fold-aware variants. Core motion list:
 
-```sh
-printf 'abcd\n1234\nWXYZ\n' > /tmp/box.txt
-cargo run --release -- /tmp/box.txt
-```
+### Cursor / character
 
-### `>` / `<` in any visual mode
+- [ ] `h` / `j` / `k` / `l` — left / down / up / right
+- [ ] Arrow keys work in Insert mode
+- [ ] `0` — start of line
+- [ ] `^` — first non-blank
+- [ ] `$` — end of line
+- [ ] `g_` — last non-blank
+- [ ] `gg` — first line
+- [ ] `G` — last line
+- [ ] `42G` — line 42
+- [ ] `:42<CR>` — same as `42G`
 
-- [ ] `Vjj>`  (linewise visual + indent right) — indents 3 lines
-- [ ] `u` once restores the original (single undo)
-- [ ] `Vjj<` (after re-indenting) — dedents 3 lines
-- [ ] `2>>` indents the cursor's line + the line below; `u` once reverts
-- [ ] `3>>` indents 3 lines; `u` once reverts
+### Word / token
 
-### Block-visual rectangle ops
+- [ ] `w` — next word start
+- [ ] `b` — previous word start
+- [ ] `e` — next word end
+- [ ] `ge` — previous word end
+- [ ] `W` / `B` / `E` / `gE` — same but treats punctuation as part of word
 
-- [ ] `Ctrl-V` (or `Ctrl-Q`) enters Blockwise visual; cursor block changes
-- [ ] `lj` extends the block 1 col right + 1 row down — rectangle highlights
-- [ ] `x` deletes the rectangle; cursor lands on the block's top-left col
-      (NOT on column 0)
-- [ ] `u` once fully reverts the rectangle delete
-- [ ] `Ctrl-V` then `ll` then `y` — rectangle yanked; `p` pastes it as a
-      rectangle on consecutive lines
+### Paragraph / sentence
 
-### Block-visual `I` (insert at block's left column)
+- [ ] `(` / `)` — previous / next sentence
+- [ ] `{` / `}` — previous / next paragraph
+- [ ] `]]` / `[[` — section forward / backward (where applicable)
 
-- [ ] `Ctrl-V` with cursor at column 1, `jj` to extend down — block selects
-      column 1 across 3 rows
-- [ ] `I` enters Insert with cursor at the block's top-left
-- [ ] Type `XYZ` — `XYZ` appears live on the top row only
-- [ ] `<Esc>` — `XYZ` is replicated on the other 2 rows at the same column
-- [ ] `u` once fully reverts (whole I session is one undo)
-- [ ] Re-do the I session but type `<Backspace>` mid-way — backspace
-      reflects on the top row; on `<Esc>` the (corrected) prefix replicates
+### Find character on line
 
-### Block-visual `A` (append at block's right column)
+- [ ] `fX` — jump to next `X` on the line; cursor lands ON it
+- [ ] `FX` — same backward
+- [ ] `tX` — jump to char before next `X`
+- [ ] `TX` — same backward
+- [ ] `;` — repeat last `f` / `F` / `t` / `T`
+- [ ] `,` — reverse-repeat
+- [ ] `3fX` — jump to the third `X` ahead
 
-- [ ] `Ctrl-V` with cursor at column 1, extend down 2 rows + right 1 col
-- [ ] `A` enters Insert one byte past the block's right column on the top row
-- [ ] Type `@` then `<Esc>` — `@` lands on every row at the right edge
-- [ ] `u` once fully reverts
+### Match / pair
 
-### Edge case: short rows
+- [ ] `%` — jump to matching `(`/`)`, `[`/`]`, `{`/`}`, `<`/`>`
+- [ ] On an unmatched bracket, `%` echoes "no match"
 
-- [ ] On a buffer like `abcd\n12\nWXYZ`, block at columns 3..3, `I` and type
-      `Q<Esc>` — top and bottom row get `Q`; the short middle row is
-      skipped (vim's behavior)
+### Viewport
 
----
+- [ ] `H` — top of viewport
+- [ ] `M` — middle of viewport
+- [ ] `L` — bottom of viewport
+- [ ] `<C-d>` / `<C-u>` — half-page down / up
+- [ ] `<C-f>` / `<C-b>` — full page down / up
+- [ ] `<C-e>` / `<C-y>` — scroll one line down / up (cursor sticky)
+- [ ] `zz` / `zt` / `zb` — center / top / bottom-align cursor row
 
-## 6. Counts on linewise operators
-*(commit `b50fa61`, `fa9267f`)*
+### Position history
 
-Open a buffer with several lines:
-
-- [ ] `2dd` deletes 2 lines; `u` once restores both
-- [ ] `3yy` yanks 3 lines; `p` pastes all 3 below
-- [ ] `2>>` indents 2 lines; `u` once dedents both
-- [ ] `2<<` (after a 2>>) dedents 2 lines; `u` once restores
-- [ ] `2gUU` uppercases 2 lines; `u` once restores
-- [ ] `2cc` clears 2 lines and enters Insert
-- [ ] Visual selection `Vjj>` indents the 3 lines; `u` once dedents
+- [ ] `<C-o>` walks back through the position history
+- [ ] `<C-i>` walks forward
+- [ ] `m{a-z}` sets a named mark; `'a` jumps to it
+- [ ] `:marks<CR>` lists every set mark
 
 ---
 
-## 7. `:g` body parsed at submit time
-*(commit `81cc40b`)*
+## 4. Operators
 
-- [ ] `:g/foo/this-is-not-a-command<CR>` reports the unknown-command
-      error IMMEDIATELY, before any matching line is processed
-- [ ] `:g/foo/<CR>` (empty body) errors at submit with "empty body"
-- [ ] `:g/^/d<CR>` deletes every line (body is `:d`, parsed once)
+User doc: lattice's operator grammar mirrors vim.
+
+- [ ] `dw` deletes a word; cursor lands at the deletion site
+- [ ] `de` deletes to end-of-word
+- [ ] `dd` deletes a line
+- [ ] `2dd` deletes 2 lines (count + linewise)
+- [ ] `D` deletes to end-of-line
+- [ ] `yw` yanks a word into `"` register
+- [ ] `yy` yanks a line
+- [ ] `Y` yanks to end-of-line
+- [ ] `cw` changes a word (delete + Insert)
+- [ ] `cc` changes a line
+- [ ] `C` changes to end-of-line
+- [ ] `s` substitutes the cursor char (delete one + Insert)
+- [ ] `S` substitutes the line
+- [ ] `>>` indents the line
+- [ ] `<<` dedents the line
+- [ ] `2>>` indents 2 lines
+- [ ] `gUU` upper-cases the line
+- [ ] `guu` lower-cases the line
+- [ ] `g~~` toggles case on the line
+- [ ] `~` toggles case on the cursor char
+- [ ] `=` re-indents using the active formatter (LSP if `lsp-format-mode` on)
+- [ ] After any operator, `.` repeats the last change
+
+### Operator + count + motion
+
+- [ ] `d3w` deletes 3 words
+- [ ] `5dd` deletes 5 lines
+- [ ] `c3l` changes 3 chars
+- [ ] `y$` yanks to end-of-line
 
 ---
 
-## 8. Substitute live preview
-*(commit `4fec95d`)*
+## 5. Text objects
 
-Open README.md (has many `Lattice` occurrences):
-
-- [ ] `:s/Lattice` (no second `/`) — first match on the cursor's line
-      lights up in magenta with strike-through
-- [ ] `:s/Lattice/X` — same first match still highlighted; the typed
-      replacement does not modify the buffer (preview only)
-- [ ] `:s/Lattice/X/g` — every match on the cursor's line lights up
-- [ ] `:%s/Lattice/X/g` — every match across the whole buffer lights up
-- [ ] `<Esc>` cancels the cmdline; preview clears
-- [ ] `<CR>` (with `:s/Lattice/X/g`) actually performs the substitute;
-      the preview clears as the cmdline closes
-- [ ] After backspacing past `s/`, the preview disappears
+- [ ] `daw` — delete a word (with surrounding whitespace)
+- [ ] `diw` — delete inner word (no whitespace)
+- [ ] `da"` / `di"` — around / inner double-quote string
+- [ ] `da'` / `di'` — single-quote
+- [ ] `da(` / `di(` — around / inner parens (also `dab` / `dib`)
+- [ ] `da{` / `di{` — around / inner braces (also `daB` / `diB`)
+- [ ] `da[` / `di[` — around / inner brackets
+- [ ] `da<` / `di<` — angle brackets
+- [ ] `dap` / `dip` — around / inner paragraph
+- [ ] `das` / `dis` — around / inner sentence
+- [ ] All also work with `c`, `y`, `>`, `<`, `gU`, `gu`
 
 ---
 
-## 9. Generalized interactive arg-prompts
-*(commit `4fa9731`)*
+## 6. Search & Substitute
 
-- [ ] `:describe-command<CR>` (no arg) does NOT error — instead the
-      cmdline prefills `describe-command ` and the echo line shows
-      `command:` (the schema's prompt). Cursor stays in Command mode
-      so you can type the arg and submit.
-- [ ] `:apropos<CR>` (no arg) prefills `apropos ` with a `pattern:` prompt
-- [ ] `:describe-key<CR>` (no arg) prefills `describe-key ` and the
-      next chord auto-submits the lookup (chord-kind arg behavior)
-- [ ] `:write<CR>` (no arg, optional path) saves the current buffer
-      normally — no prompt arms (path is Optional, not Required)
-- [ ] `:e!<CR>` (no arg, alias + bang) reloads the current file —
-      no prompt (path is Optional)
+User doc: section in [`user/buffers.md`](../../user/buffers.md).
+
+### Search
+
+- [ ] `/foo<CR>` jumps to the next `foo`
+- [ ] All matches are highlighted (hlsearch on by default)
+- [ ] `n` jumps to the next match; `N` to the previous
+- [ ] Matches wrap around the buffer
+- [ ] `:noh<CR>` clears the hlsearch overlay
+- [ ] `?bar<CR>` searches backward
+- [ ] `*` searches forward for the word under cursor
+- [ ] `#` searches backward for the word under cursor
+- [ ] Multibyte cursor: search lands on the first byte/cell of the match
+      (e.g. `§Perf` cursor lands on `P`, not on `e`)
+- [ ] Live highlight while typing in `/`: matches glow as you type
+- [ ] `<Esc>` cancels search; cursor returns to start position
+- [ ] Backref pattern (`/(\w+) \w+ \1`) finds duplicate-word neighbours
+
+### Substitute
+
+- [ ] `:s/foo/bar<CR>` replaces the first match on the current line
+- [ ] `:s/foo/bar/g` replaces every match on the current line
+- [ ] `:%s/foo/bar/g` replaces every match in the buffer
+- [ ] `:'<,'>s/foo/bar/g` (in Visual) replaces within the selection
+- [ ] Live preview: as you type `:s/foo/bar/g`, current line's matches
+      light up in magenta with strike-through
+- [ ] `:%s/foo/bar/g` previews highlight every match in the buffer
+- [ ] Cancelling (`<Esc>`) clears the preview without modifying anything
+- [ ] Submitting (`<CR>`) performs the substitute; preview clears
+
+---
+
+## 7. Registers & macros
+
+- [ ] `"ayy` yanks the line into register `a`
+- [ ] `"ap` pastes from register `a`
+- [ ] `:registers<CR>` (or `:reg`) lists all populated registers
+- [ ] `qa` starts recording into register `a`
+- [ ] `q` stops recording
+- [ ] `@a` plays back the macro
+- [ ] `@@` repeats the last-played macro
+- [ ] Numbered registers `"0..9` carry recent yanks/deletes per vim convention
+- [ ] `"_` (black hole) — `"_dd` deletes without affecting any register
+
+---
+
+## 8. Marks
+
+- [ ] `ma` sets mark `a` at the cursor
+- [ ] `'a` jumps to the line of mark `a` (first non-blank)
+- [ ] `` `a `` jumps to the exact column of mark `a`
+- [ ] `:marks<CR>` lists all set marks
+- [ ] Marks survive across mode switches and buffer switches
+- [ ] `''` jumps to the previous cursor location
+
+---
+
+## 9. Ex-commands
+
+- [ ] `:w<CR>` writes the buffer to its path
+- [ ] `:w foo.txt` writes to `foo.txt`
+- [ ] `:q<CR>` quits if the buffer is clean
+- [ ] `:q!<CR>` quits unconditionally
+- [ ] `:wq<CR>` writes + quits
+- [ ] `:e foo.rs<CR>` opens `foo.rs` in the active pane
+- [ ] `:e!<CR>` reloads the current file from disk
+- [ ] `:bn<CR>` cycles to the next buffer
+- [ ] `:bp<CR>` cycles to the previous buffer
+- [ ] `:ls<CR>` lists every open buffer
+- [ ] `:b 3<CR>` switches to buffer 3
+- [ ] `:b<CR>` (no arg) opens the buffer picker
+- [ ] `:bd<CR>` closes the active buffer
+- [ ] `:set foo=bar<CR>` sets typed option `foo` to `bar`
+- [ ] `:set foo?<CR>` echoes the current value
+- [ ] `:set nofoo<CR>` (boolean) sets to false
+- [ ] `:noh<CR>` clears hlsearch
+- [ ] `:reg<CR>` shows registers
+- [ ] `:marks<CR>` shows marks
+- [ ] Ex-command arg-prompt: `:describe-command<CR>` prefills the cmdline
+      with `describe-command ` and the echo shows `command:`
 - [ ] After an arg-prompt is armed, `<Esc>` cancels back to Normal
-      and clears the arming
+
+### `:g` / `:v`
+
+- [ ] `:g/^$/d<CR>` deletes every empty line
+- [ ] `:g/^/d<CR>` deletes every line
+- [ ] `:v/foo/d<CR>` deletes every line that doesn't contain `foo`
+- [ ] `:g/foo/<CR>` (empty body) errors with "empty body"
+- [ ] `:g/foo/not-a-command<CR>` errors at submit (parsed at submit time)
 
 ---
 
-## 10. CI / tooling
-*(commit `231964b`)*
+## 10. Buffers & Panes
 
-Inspect the workflow:
+User doc: [`user/buffers.md`](../../user/buffers.md).
 
-- [ ] `.github/workflows/ci.yml` shows a matrix with `ubuntu-latest`,
-      `macos-latest`, `windows-latest` for both `test` and `bench-compile`
-- [ ] A `fmt` job runs `cargo fmt --all -- --check`
-- [ ] A `doc` job runs `cargo doc --no-deps --workspace` with
-      `RUSTDOCFLAGS=-D warnings`
-- [ ] On a fresh PR, the workflow should run all 5 jobs (test ×3,
-      fmt, doc, bench-compile ×3); push to main additionally runs
-      bench-baseline
+### Buffers
+
+- [ ] Multiple `:e` calls accumulate buffers in the registry
+- [ ] `:ls<CR>` (or `:buffers`) shows every entry with `%` for active
+- [ ] `:bn` / `:bp` cycle through every buffer kind (doc, file-tree, oil, ...)
+- [ ] `:b 1<CR>` activates buffer #1
+- [ ] `:b foo<CR>` activates a buffer whose path contains `foo`
+- [ ] `:bd` closes the active buffer
+- [ ] `:bd!` closes even if dirty
+- [ ] Closing a dirty buffer without `!` echoes an error
+
+### Panes / splits
+
+- [ ] `<C-w>s` splits the active pane horizontally
+- [ ] `<C-w>v` splits vertically
+- [ ] `<C-w>w` cycles focus through panes
+- [ ] `<C-w>h/j/k/l` moves focus by direction
+- [ ] `<C-w>q` closes the active pane
+- [ ] `<C-w>=` equalises pane sizes
+- [ ] Each pane has its own cursor + scroll state for its buffer
+- [ ] Same buffer in two panes: cursors are independent
+- [ ] Closing the last pane shows the empty-buffer state, not a crash
 
 ---
 
-## 11. Documentation
-*(commits `58a17ad`, `5e4086c`, `91a6d8e`)*
+## 11. File tree
 
-- [ ] `README.md` exists and is non-empty
-- [ ] The architecture diagram renders as a mermaid flowchart on GitHub
-      (visit the repo home page; the diagram should show three layers
-      in colored boxes)
-- [ ] `LICENSE` (MIT) is at the repo root
-- [ ] `docs/implementation.md` "Up next" list starts with Phase 4 (LSP)
-      and no longer mentions the per-search timeout (shipped)
-- [ ] `docs/verify.md` (this file) exists
+User doc: [`user/buffers.md`](../../user/buffers.md) (file-tree
+section).
+
+- [ ] `:Tree<CR>` opens the file tree in a new pane
+- [ ] Tree shows `▸` for collapsed, `▾` for expanded directories
+- [ ] File icons appear (when nerd-fonts are on; toggle via theme)
+- [ ] `j` / `k` navigate entries
+- [ ] `<CR>` on a file opens it in the original pane
+- [ ] `<CR>` on a directory toggles expand / collapse
+- [ ] Hidden files (`.git`, etc.) shown dimmer than regular files
+- [ ] `:TreeClose<CR>` closes the tree pane
+
+---
+
+## 12. Oil buffer
+
+User doc: [`user/buffers.md`](../../user/buffers.md) (oil
+section).
+
+> **Note:** Oil currently has known issues; the
+> [`docs/superpowers/plans/2026-05-06-filetree-icons-oil.md`](../../superpowers/plans/2026-05-06-filetree-icons-oil.md)
+> plan tracks the rebuild.
+
+- [ ] `:Oil<CR>` opens the current document's parent dir as an oil buffer
+- [ ] `:Oil /tmp<CR>` opens `/tmp`
+- [ ] Each row shows one entry (file or directory) by name
+- [ ] `<CR>` on a file opens it
+- [ ] `<CR>` on a directory navigates into it
+- [ ] `..` row navigates to parent directory
+- [ ] Edit a row's name → `:w<CR>` renames the entry on disk
+- [ ] Delete a row → `:w<CR>` removes the entry
+- [ ] Adding a new line → `:w<CR>` creates a new file with that name
+- [ ] Echo on each operation reports what the write actually did
+
+---
+
+## 13. Folding
+
+User doc: [`user/folding.md`](../../user/folding.md).
+
+### Manual folds
+
+- [ ] `Vjj` (linewise visual over 3 lines) then `zf` creates a fold
+- [ ] Fold renders one line: heading + ` ┄ N lines folded` suffix
+- [ ] `zo` opens the fold under cursor
+- [ ] `zc` closes it again
+- [ ] `za` toggles open/closed
+- [ ] `zR` opens every fold
+- [ ] `zM` closes every fold
+- [ ] `zd` deletes the manual fold
+- [ ] `zj` / `zk` jump to next / previous fold start
+
+### Computed folds
+
+- [ ] `:set foldmethod=indent<CR>` switches to indent-based folds
+- [ ] `:set foldmethod=markdown<CR>` switches to markdown headings
+- [ ] `:set foldmethod=syntax<CR>` switches to tree-sitter cascade
+- [ ] `:set foldmethod=manual<CR>` returns to manual-only
+
+### Operator interaction
+
+- [ ] `dd` on a closed fold deletes the entire fold range (every line)
+- [ ] `yy` on a closed fold yanks the entire fold range
+- [ ] `>>` on a closed fold indents every line in the fold
+- [ ] Linear motions (`j` / `k`) skip closed folds (one keystroke crosses)
+- [ ] Word motions (`w` / `b`) treat the fold as a single line
+
+### Search vs folds
+
+- [ ] `/foo<CR>` opens the fold containing the match if any
+- [ ] `n` / `N` opens enclosing folds as needed
+
+---
+
+## 14. Help system
+
+User docs: every file under [`../../user/`](../../user/).
+
+### `:help`
+
+- [ ] `:help<CR>` opens the topic index
+- [ ] `:help folding<CR>` opens the folding topic
+- [ ] `:help <Tab>` enumerates registered topics
+- [ ] Markdown rendering: headings, code fences, tables, links
+- [ ] `<CR>` on a `[topic](help:topic)` link follows to that topic
+- [ ] `<C-o>` walks back through navigation history
+- [ ] `q` / `<Esc>` dismisses the help popup
+
+### `:describe-*`
+
+- [ ] `:describe-command write<CR>` shows full metadata for `:w`
+- [ ] `:describe-command<CR>` (no arg) prefills the cmdline
+- [ ] `:describe-key gd<CR>` shows what `gd` does
+- [ ] `:describe-buffer<CR>` shows the active buffer's state
+- [ ] `:describe-option number<CR>` shows full metadata for `number`
+- [ ] `:describe-option-resolution number<CR>` shows the resolver layer view
+- [ ] `:describe-events<CR>` shows the typed-event catalogue
+- [ ] `:describe-event lsp.buffer-attached<CR>` shows one event
+- [ ] `:describe-mode lsp-mode<CR>` shows mode metadata
+- [ ] `:apropos buffer<CR>` shows every command/option/event matching `buffer`
+
+### `:list-*`
+
+- [ ] `:options<CR>` lists every customizable option, grouped by group
+- [ ] `:list-modes<CR>` lists every registered mode (majors + minors)
+- [ ] `:keymap<CR>` lists every default chord binding
+- [ ] `:registers<CR>` shows registers
+- [ ] `:marks<CR>` shows marks
+
+---
+
+## 15. Modes (major + minor)
+
+User doc: [`user/modes.md`](../../user/modes.md).
+
+### Toggle
+
+- [ ] `:lsp-mode<CR>` toggles lsp-mode on the active buffer
+- [ ] `:list-modes<CR>` shows lsp-mode now active (with `*` marker)
+- [ ] `:line-numbers-mode<CR>` toggles line-numbers-mode
+- [ ] `:wrap-mode<CR>` toggles wrap-mode
+- [ ] `:read-only-mode<CR>` toggles read-only-mode
+- [ ] `:current-line-highlight-mode<CR>` toggles cursor-line bg
+- [ ] `:whitespace-show-mode<CR>` toggles whitespace decoration
+- [ ] Toggling an unknown mode echoes "not a registered mode"
+
+### Convergence (M.7.1)
+
+- [ ] `:set number<CR>` activates `line-numbers-mode` (visible in `:list-modes`)
+- [ ] `:set nonumber<CR>` deactivates it
+- [ ] `:set wrap<CR>` activates `wrap-mode`
+- [ ] `:set list<CR>` activates `whitespace-show-mode`
+- [ ] `:set cursorline<CR>` activates `current-line-highlight-mode`
+
+### Major-mode swap
+
+- [ ] On a `.rs` file, the major is `rust-mode` (`:list-modes` shows `*`)
+- [ ] `:text-mode<CR>` swaps to plain text major
+- [ ] Active minors survive the swap
+
+---
+
+## 16. Options & customize
+
+User doc: [`user/options.md`](../../user/options.md).
+
+### `:set` & `:options`
+
+- [ ] `:options<CR>` shows every customizable option grouped by group
+      (editor, completion, display, ...)
+- [ ] Each row shows name + aliases + type + current value + default + doc
+- [ ] `:set tabstop=4<CR>` sets tabstop; visible in subsequent reads
+- [ ] `:set tabstop?<CR>` echoes `tabstop=4`
+- [ ] `:set tabstop=999<CR>` errors with the validator's range message
+- [ ] `:set foldmethod=<Tab>` enumerates `manual`, `indent`, `markdown`, `syntax`
+- [ ] `:set rnu<CR>` (alias for `relativenumber`) works
+- [ ] `:set noix<CR>` rejected; `:set noignorecase<CR>` works
+
+### `:customize`
+
+- [ ] `:customize<CR>` opens the picker view (groups + customizable modes)
+- [ ] Each row is a `[name](customize:name)` link
+- [ ] `<CR>` on the `editor` row opens `:customize editor` focused view
+- [ ] `:customize editor<CR>` lists every editor-group option
+- [ ] `:customize lsp-completion-mode<CR>` lists options that mode contributes
+      (with `[mode-shadow]` indicator if active on current buffer)
+- [ ] `:customize` unknown name echoes error
+- [ ] `<CR>` on an option row prefills `:set NAME=current` and enters Command
+- [ ] Editing the value + submit applies via `:set` (cascade fires)
+
+---
+
+## 17. LSP basics
+
+User doc: [`user/lsp.md`](../../user/lsp.md) +
+[`user/lsp-mode.md`](../../user/lsp-mode.md).
+
+Open a `.rs` file (or any language with a configured server).
+
+### Auto-attach
+
+- [ ] Modeline shows `[lsp:rust-analyzer]` (or whatever server)
+- [ ] `:lsp-status<CR>` shows attached servers + capabilities
+- [ ] `:lsp-log<CR>` shows the server's log
+- [ ] `:lsp-trace rust<CR>` enables JSON-RPC tracing
+- [ ] `:lsp-trace-log rust<CR>` shows the trace log
+- [ ] `:lsp-restart rust<CR>` restarts the server
+- [ ] `:lsp-server-log<CR>` shows the server's stderr
+
+### Umbrella gate
+
+- [ ] `:lsp-mode<CR>` toggles the umbrella OFF
+- [ ] `K` echoes "lsp-mode disabled" (gate fires)
+- [ ] Modeline `[lsp:...]` segment hides
+- [ ] Diagnostics disappear from the gutter
+- [ ] `:lsp-mode<CR>` re-toggles ON; everything resumes
+
+---
+
+## 18. LSP sub-modes (M.6)
+
+User doc: [`user/lsp-mode.md`](../../user/lsp-mode.md) §
+"Sub-modes".
+
+With `lsp-mode` ON (cascade activates all 9 sub-modes):
+
+- [ ] `:list-modes<CR>` shows all of `lsp-completion-mode`,
+      `lsp-diagnostics-mode`, `lsp-hover-mode`, `lsp-signature-mode`,
+      `lsp-format-mode`, `lsp-rename-mode`, `lsp-symbols-mode`,
+      `lsp-code-action-mode`, `lsp-nav-mode` as active
+- [ ] `:lsp-hover-mode<CR>` toggles only hover off; `K` echoes
+      "lsp-hover-mode disabled"
+- [ ] `:lsp-diagnostics-mode<CR>` off: diagnostics disappear from gutter,
+      but other features still work
+- [ ] `:lsp-format-mode<CR>` off: `:lsp-format` echoes "lsp-format-mode disabled"
+- [ ] `:lsp-nav-mode<CR>` off: `gd` echoes "lsp-nav-mode disabled"
+- [ ] Cycling `:lsp-mode<CR>` twice (off→on) resets every sub-mode to active
+
+### Per-feature checks (with all sub-modes on)
+
+- [ ] `K` opens the hover popup (cursor-anchored, markdown-rendered)
+- [ ] `gd` jumps to definition; `<C-o>` returns
+- [ ] `gD` jumps to declaration
+- [ ] `gy` jumps to type definition
+- [ ] `gI` jumps to implementation
+- [ ] `gr` opens the references picker
+- [ ] `:lsp-symbols<CR>` opens the document symbol picker
+- [ ] `:lsp-workspace-symbol foo<CR>` opens the workspace symbol picker
+- [ ] `:lsp-format<CR>` formats the buffer
+- [ ] `:lsp-format-range<CR>` (in Visual) formats the selection
+- [ ] `:lsp-rename newname<CR>` renames the symbol under cursor
+- [ ] `:lsp-code-action<CR>` opens the code-action picker
+- [ ] Typing `(` in a function call opens signature help
+- [ ] `:complete<CR>` (or insert-mode auto-trigger) opens completion popup
+
+### Diagnostics
+
+- [ ] Errors render with `■` glyph (red) in the gutter
+- [ ] Warnings with `▲` (yellow)
+- [ ] Info with `●` (blue)
+- [ ] Hints with `·` (dim gray)
+- [ ] Underline overlay on the affected range
+- [ ] `]d` jumps to the next diagnostic
+- [ ] `[d` jumps to the previous
+- [ ] `:diagnostics<CR>` opens the diagnostics picker
+
+---
+
+## 19. Insert completion
+
+User doc: [`user/completion.md`](../../user/completion.md).
+
+In Insert mode in a `.rs` file:
+
+- [ ] Typing a few chars opens the completion popup
+- [ ] Popup shows source-tag prefix (`gen:lsp-completion`, `gen:snippet`, ...)
+- [ ] `<Tab>` selects the next candidate
+- [ ] `<S-Tab>` selects the previous
+- [ ] `<C-n>` / `<C-p>` also work
+- [ ] `<CR>` accepts the focused candidate
+- [ ] `<Esc>` dismisses the popup without accepting
+- [ ] Single-candidate auto-insert: typing a unique prefix at popup-open
+      time inserts directly (when `completion.auto_insert_single = true`)
+- [ ] Ghost text (`completion.ghost_text = true`): top candidate shows
+      as dim italic suffix at end-of-line
+
+### Sources
+
+- [ ] LSP completion (rust-analyzer items appear in the popup)
+- [ ] Buffer-words: completion of words elsewhere in the buffer
+- [ ] Snippets: snippet names appear with `[snip]` tag
+- [ ] Tree-sitter symbols: definition-position identifiers
+- [ ] Path: when cursor is in a string literal that looks like a path
+
+### Per-language overrides
+
+- [ ] `[completion.per-language.rust]` in TOML can override priorities
+- [ ] `:set completion.source.lsp.priority=300<CR>` raises LSP priority
+
+---
+
+## 20. Snippets
+
+- [ ] In Insert mode, type a snippet trigger (e.g. `pln`) + `<C-y>` (or
+      whatever the configured expand chord is)
+- [ ] Snippet expands; cursor lands on the first tabstop
+- [ ] `<Tab>` jumps to the next tabstop
+- [ ] `<S-Tab>` jumps backward
+- [ ] Editing one tabstop with mirrors updates every mirror
+- [ ] Final tabstop ends snippet; cursor stays in Insert
+- [ ] `:reload-snippets<CR>` re-reads snippet files from disk
+
+---
+
+## 21. Display options
+
+User doc: [`user/options.md`](../../user/options.md).
+
+### Line numbers
+
+- [ ] `:set number<CR>` shows the gutter
+- [ ] `:set relativenumber<CR>` shows distances; cursor row absolute
+- [ ] `:set norelativenumber<CR>` returns to absolute
+- [ ] `:set nonumber<CR>` hides the gutter
+
+### Wrap
+
+- [ ] `:set wrap<CR>` wraps long lines visually
+- [ ] `:set nowrap<CR>` returns to horizontal scroll
+
+### Whitespace decoration (M.7.3)
+
+- [ ] `:set list<CR>` (or `:whitespace-show-mode<CR>`) enables decoration
+- [ ] Tabs render as `→` in dim gray
+- [ ] Trailing whitespace renders as `·` in red
+- [ ] Leading non-tab whitespace renders as `·` in dim gray
+- [ ] Mid-text spaces unchanged (default)
+- [ ] EOL marker not shown (default)
+- [ ] `:set display.whitespace.tab=⇥<CR>` changes the tab glyph
+- [ ] `:set display.whitespace.eol=¬<CR>` enables EOL markers
+- [ ] `:set nolist<CR>` disables decoration
+
+### Current-line highlight (M.7.3)
+
+- [ ] `:set cursorline<CR>` enables the cursor row's bg highlight
+- [ ] Highlight extends to the pane's right edge
+- [ ] Inactive panes don't get the highlight
+- [ ] Selection still wins per-cell where it overlaps the cursor row
+- [ ] `:set nocursorline<CR>` disables it
+
+### Read-only
+
+- [ ] `:read-only-mode<CR>` makes the active buffer read-only
+- [ ] Mutating operators (`dd`, `i`, ...) echo "buffer is read-only"
+- [ ] `:read-only-mode<CR>` again returns to writable
+
+---
+
+## 22. Tabs / indent
+
+- [ ] `:set tabstop=4<CR>` makes a tab character render as 4 cells
+- [ ] `:set tabstop=8<CR>` returns to default
+- [ ] In Insert mode, `<Tab>` inserts a real tab (or expands per
+      indent settings if those land later)
+
+---
+
+## 23. Position history (jump list / mark ring)
+
+- [ ] After `gg`, `<C-o>` returns to the previous cursor location
+- [ ] After multiple jumps (`G`, `<C-o>`, `gd`, ...), `<C-o>` walks back
+      through them
+- [ ] `<C-i>` walks forward
+- [ ] `:jumps<CR>` (when implemented) shows the position history
+
+---
+
+## 24. Help popup geometry (M.7.3 follow-up)
+
+- [ ] `:help<CR>` opens a centered popup that's visibly larger than
+      old (up to 120 wide, 40 tall, scaled to terminal size)
+- [ ] `:options<CR>`, `:describe-*`, `:apropos`, `:customize` all
+      use the larger centered placement
+- [ ] `K` opens a hover popup that's small (cursor-anchored, tooltip
+      caps unchanged: 30..=80 wide, 5..=20 tall)
+- [ ] In a 60-row terminal, centered popup uses ~40 rows
+- [ ] In a 20-row terminal, centered popup uses ~15 rows (3/4 of buffer)
+
+---
+
+## 25. Themes / appearance
+
+- [ ] `:set ui.dim_inactive=false<CR>` makes inactive panes look identical
+      to the active one (no DIM modifier overlay)
+- [ ] `:set ui.dim_inactive=true<CR>` returns to dimmed inactive
+- [ ] Diagnostic glyphs render with the configured per-severity colors
+
+---
+
+## 26. Performance smoke
+
+Open a large file (`crates/lattice-ui-tui/src/render.rs` is 3k+ lines):
+
+- [ ] `gg` lands instantly
+- [ ] `G` lands instantly
+- [ ] `j`/`k` motion feels responsive (no perceptible latency)
+- [ ] `/foo<CR>` finds matches without freezing
+- [ ] `:%s/foo/bar/g` completes within a frame for typical patterns
+- [ ] LSP request (`K`) returns quickly; no UI freeze
+
+Latest measured numbers:
+[`benchmarks.md`](benchmarks.md).
+
+---
+
+## 27. Cross-cutting
+
+### Error handling
+
+- [ ] Submitting an unknown ex-command echoes "unknown command: foo"
+- [ ] `:set unknown=1<CR>` echoes E518
+- [ ] `:bd` on the only buffer closes the editor (or echoes a message)
+- [ ] Opening a non-existent file with `:e missing.txt` creates a new buffer
+- [ ] Opening a binary file (try `cargo run -- /bin/ls`) doesn't crash
+
+### Recovery
+
+- [ ] `<C-z>` (or terminal suspend) suspends the editor; `fg` resumes
+      cleanly without losing state
+- [ ] Resizing the terminal: layout reflows; popup re-positions
+- [ ] Closing a popup with `q` always returns control to the document
+
+### Unicode
+
+- [ ] Lines with `§` / `中` / emoji render correctly
+- [ ] Cursor lands on the first cell of a wide glyph after motion
+- [ ] Search / substitute correctly handles multibyte ranges
 
 ---
 
 ## What to do if a check fails
 
-1. Confirm you're running the latest `main` branch:
-   `git log --oneline -1` should show a commit message that matches
-   what you're testing.
-2. Rebuild from a clean state: `cargo clean && cargo build --release`.
-   Sometimes a stale `target/` shadows recent changes.
-3. Capture the exact keystrokes + the visual output. Include the
-   commit SHA and any error message printed in the echo area.
-4. Open a GitHub issue with the above plus the output of
-   `cargo --version` and the OS / terminal.
+1. Confirm latest `main`: `git log --oneline -1`.
+2. Rebuild clean: `cargo clean && cargo build --release`.
+3. Capture exact keystrokes + visual output. Include the commit
+   SHA.
+4. Open a GitHub issue with the above + `cargo --version` + OS /
+   terminal.
+
+---
+
+## See also
+
+- User-facing reference: [`../../user/`](../../user/) — every
+  feature has a deep-dive doc.
+- Implementation status:
+  [`implementation.md`](implementation.md) — what ships today
+  vs. what's spec'd.
+- Architecture diagrams:
+  [`../architecture/diagrams.md`](../architecture/diagrams.md)
+  — visual entry points to the design.

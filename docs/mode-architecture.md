@@ -1849,6 +1849,25 @@ graceful error handling per CLAUDE.md.
   removed from both `Event` and `EventKind`; remaining
   built-in events stay until a follow-up cleanup migrates
   them.
+- M.5.5 -- ✅ landed. Document sync gate on `lsp-mode`.
+  `lattice-lsp::events::LspDocumentChanged` (typed event,
+  `register_event!`-registered) replaces the per-actor
+  fan-in's prior `Event::DocumentChanged` subscription. App's
+  `publish_document_changed` always publishes the generic
+  `DocumentChanged` (non-LSP subscribers stay informed) and
+  additionally publishes the typed `LspDocumentChanged` only
+  when `lsp_mode_enabled_for(active_buffer)` is true. Result:
+  with the gate off, no didChange flows to any attached
+  server; with the gate on, fan-in routes per-edit work the
+  same way it did before.
+  - `EventBus::unsubscribe` extended to walk the `typed_subs`
+    bucket (M.5.3.a's typed-event surface). Supervisor
+    shutdown that unsubscribes the fan-in tears down typed
+    subscriptions correctly.
+  - didSave wire plumbing isn't in place today (capabilities
+    advertise it but no fan-in pumps `Event::DocumentSaved`
+    to servers); when that lands, the same pattern applies
+    via a typed `LspDocumentSaved`.
 - M.5.4 -- ✅ landed. LSP request entry points gate on
   `lsp_mode_enabled_for(active_buffer)`. Thirteen `do_lsp_*`
   methods updated (hover, completion, on-type-format,

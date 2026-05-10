@@ -60,6 +60,24 @@ use crate::buffers::BufferId;
 use lattice_protocol::edit::Edit;
 
 impl App {
+    /// M.5.0: is `lsp-mode` active for `buffer_id`? Every LSP
+    /// entry point (hover, completion, diagnostics-render,
+    /// document-sync, ...) gates on this in subsequent slices;
+    /// returns `true` when the minor is in
+    /// `active_modes[buffer_id]`'s minor list, `false`
+    /// otherwise (no buffer registered, or mode not active on
+    /// it).
+    ///
+    /// In M.5.0 nothing reads this -- the surface is here so
+    /// M.5.2 (auto-activation hook), M.5.3 (lifecycle), and
+    /// M.5.4+ (gates) have a single accessor to consume.
+    pub fn lsp_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.active_modes
+            .get(&buffer_id)
+            .map(|modes| modes.has_minor(lattice_lsp::modes::LspMode::mode_id()))
+            .unwrap_or(false)
+    }
+
     /// `K` (Phase 4.2.b). Send `textDocument/hover` to every LSP
     /// server attached to the active document; the spawned task
     /// awaits the actor's response on the LSP runtime, so the
@@ -3400,6 +3418,42 @@ mod tests {
     use super::*;
     use crate::app::*;
     use crate::app::test_helpers::{app_with, seed_diags_at_lines};
+
+    #[test]
+    fn lsp_mode_enabled_for_returns_false_by_default() {
+        // M.5.0: a freshly-opened buffer has no `lsp-mode`
+        // activated yet. Auto-activation lands in M.5.2 via the
+        // `MajorEntered` event hook; until then the accessor is
+        // false everywhere.
+        let a = app_with("fn main() {}", 5);
+        let id = a.pane_tree.active().buffer_id;
+        assert!(!a.lsp_mode_enabled_for(id));
+    }
+
+    #[test]
+    fn lsp_mode_enabled_for_tracks_minor_activation() {
+        // M.5.0: activating `lsp-mode` through the registry
+        // flips the accessor. M.5.3 will wrap this in actual
+        // `:lsp-mode` toggle / auto-activation flow; for now
+        // we drive the registry directly.
+        let mut a = app_with("fn main() {}", 5);
+        let id = a.pane_tree.active().buffer_id;
+        let proto_id = lattice_protocol::ids::BufferId::new(id.0 as u64);
+        let mut active = a.active_modes.remove(&id).unwrap_or_default();
+        let mut locals = a.buffer_locals.remove(&id).unwrap_or_default();
+        a.mode_registry
+            .activate_minor(
+                &mut active,
+                &mut locals,
+                proto_id,
+                lattice_lsp::modes::LspMode::mode_id(),
+                lattice_mode::CapabilitySet::empty(),
+            )
+            .expect("activate lsp-mode");
+        a.active_modes.insert(id, active);
+        a.buffer_locals.insert(id, locals);
+        assert!(a.lsp_mode_enabled_for(id));
+    }
 
     #[test]
     fn hover_dismisses_on_document_cursor_motion() {

@@ -200,22 +200,21 @@ impl App {
             lattice_runtime::SubscriptionTarget::Channel(option_tx),
         );
         // LSP log live-tail (Phase 4): every record the LspLogger
-        // appends fires Event::LspLogPushed; the App's drain hook
-        // refreshes any open `*lsp*` / `*lsp:<server>*` /
+        // appends fires `LspLogPushed` (M.5.3.b: typed event in
+        // `lattice-lsp::events`); the App's drain hook refreshes
+        // any open `*lsp*` / `*lsp:<server>*` /
         // `*lsp:<server>:trace*` help buffer from the logger
         // snapshot so views update live as records arrive.
-        let (lsp_log_tx, lsp_log_event_rx) = tokio::sync::mpsc::unbounded_channel();
-        event_bus.subscribe(
-            lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::LspLogPushed),
-            lattice_runtime::SubscriptionTarget::Channel(lsp_log_tx),
-        );
+        let (lsp_log_tx, lsp_log_event_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspLogPushed>();
+        event_bus.subscribe_typed(lsp_log_tx);
         // Wire the logger's publisher to the same bus. The
         // logger lives in `lattice-lsp`; the closure captures an
         // Arc<EventBus> clone so the logger's lifetime is
         // independent of any single App field.
         let bus_for_log = event_bus.clone();
         lsp_logger.set_event_publisher(std::sync::Arc::new(move |event| {
-            bus_for_log.publish(event);
+            bus_for_log.publish_typed(event);
         }));
         // Typed-options registry (DESIGN.md §5.12). Single source
         // of truth for every option's *current value*: each

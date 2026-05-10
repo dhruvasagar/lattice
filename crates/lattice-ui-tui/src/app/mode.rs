@@ -318,7 +318,7 @@ impl App {
     /// `Event::DocumentOpened` from the file-open path.
     fn on_lsp_mode_activated(&mut self, buffer_id: BufferId) {
         let path = self.path_for_buffer(buffer_id);
-        self.event_bus.publish(Event::LspBufferAttached {
+        self.event_bus.publish_typed(lattice_lsp::LspBufferAttached {
             id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
             path,
         });
@@ -335,7 +335,7 @@ impl App {
     fn on_lsp_mode_deactivated(&mut self, buffer_id: BufferId) {
         let path = self.path_for_buffer(buffer_id);
         self.lsp_close_buffer(buffer_id);
-        self.event_bus.publish(Event::LspBufferDetached {
+        self.event_bus.publish_typed(lattice_lsp::LspBufferDetached {
             id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
             path,
         });
@@ -558,31 +558,27 @@ mod tests {
     #[test]
     fn deactivating_lsp_mode_emits_lsp_buffer_detached_event() {
         // M.5.3: deactivating `lsp-mode` publishes
-        // `Event::LspBufferDetached` on the editor bus.
+        // `LspBufferDetached` on the editor bus. M.5.3.b moved
+        // the event from the central enum to `lattice-lsp`,
+        // delivered via the typed-bus path
+        // (`subscribe_typed::<LspBufferDetached>`).
         // Subscribers (statusline, future telemetry) see the
         // gate flip without polling.
-        use crate::app::test_helpers::{app_with_path, subscribe_all_events};
+        use crate::app::test_helpers::app_with_path;
         let mut a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
         let id = a.pane_tree.active().buffer_id;
         // Subscribe AFTER auto-activation so the channel only
         // captures the deactivate path.
-        let mut rx = subscribe_all_events(&a);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspBufferDetached>();
+        a.event_bus.subscribe_typed(tx);
         assert!(a.lsp_mode_enabled_for(id));
         a.toggle_mode_by_name("lsp-mode");
         assert!(!a.lsp_mode_enabled_for(id));
-        // Drain the receiver synchronously and look for our
-        // event. (The bus is sync; events are queued
-        // immediately on publish.)
-        let mut found_detached = false;
-        while let Ok(ev) = rx.try_recv() {
-            if matches!(ev, lattice_protocol::Event::LspBufferDetached { .. }) {
-                found_detached = true;
-                break;
-            }
-        }
+        let received = rx.try_recv();
         assert!(
-            found_detached,
-            "expected Event::LspBufferDetached on bus after `:lsp-mode` toggle off"
+            received.is_ok(),
+            "expected LspBufferDetached on bus after `:lsp-mode` toggle off"
         );
     }
 

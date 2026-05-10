@@ -886,9 +886,11 @@ impl App {
         }
     }
 
-    /// Drain queued `lattice_protocol::Event::LspLogPushed`
-    /// events (Phase 4) and refresh any open log / trace help
-    /// buffers from the logger snapshot. Called once per
+    /// Drain queued `lattice_lsp::LspLogPushed` events (Phase 4;
+    /// M.5.3.b: the event type moved from
+    /// `lattice-protocol::Event::LspLogPushed` into
+    /// `lattice-lsp::events`). Refreshes any open log / trace
+    /// help buffers from the logger snapshot. Called once per
     /// main-loop tick + at the end of any path that pushes a
     /// log record synchronously.
     ///
@@ -907,21 +909,20 @@ impl App {
         let mut server_traces: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         while let Ok(event) = rx.try_recv() {
-            if let lattice_protocol::Event::LspLogPushed {
+            let lattice_lsp::LspLogPushed {
                 server_id,
                 level,
                 source,
                 ..
-            } = event
-            {
-                match server_id {
-                    None => subsystem = true,
-                    Some(id) => {
-                        if level == "trace" || source == "trace" {
-                            server_traces.insert(id);
-                        } else {
-                            server_logs.insert(id);
-                        }
+            } = event;
+            match server_id {
+                None => subsystem = true,
+                Some(id) => {
+                    let id_owned = id.to_string();
+                    if level == "trace" || source == "trace" {
+                        server_traces.insert(id_owned);
+                    } else {
+                        server_logs.insert(id_owned);
                     }
                 }
             }

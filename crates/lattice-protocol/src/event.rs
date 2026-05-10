@@ -94,53 +94,15 @@ pub enum Event {
         old: Option<String>,
         new: String,
     },
-    /// Fired when [`lattice_lsp::LspLogger::log`] appends a record
-    /// to a log ring (subsystem-wide when `server_id` is `None`,
-    /// per-server otherwise). Subscribers (the App) refresh any
-    /// open `*lsp*` / `*lsp:<server>*` / `*lsp:<server>:trace*`
-    /// help buffers from the logger snapshot so log views update
-    /// live as records arrive.
-    ///
-    /// Carries primitive fields rather than a typed `LogRecord`
-    /// because `lattice-protocol` sits below `lattice-lsp` in the
-    /// crate graph; subscribers that need the typed record can
-    /// re-snapshot through the logger.
-    LspLogPushed {
-        /// `None` for subsystem-wide records; `Some(id)` per-server.
-        server_id: Option<String>,
-        /// Severity tag (`"trace"`, `"debug"`, `"info"`, `"warn"`,
-        /// `"error"`) -- string-formatted to keep the protocol crate
-        /// independent of `lattice-lsp::LogLevel`.
-        level: String,
-        /// Source tag (`"client"`, `"stderr"`, `"log"`, `"show"`,
-        /// `"trace"`).
-        source: String,
-        /// The record's message text.
-        message: String,
-    },
-    /// Fired after `lsp-mode` activates on a buffer and the
-    /// supervisor's `open_buffer` (didOpen) request has been
-    /// queued. The semantic counterpart to LSP's
-    /// `textDocument/didOpen`: the editor now considers this
-    /// buffer LSP-tracked. M.5.3.
-    ///
-    /// `path` is `None` for standalone-server / scratch-buffer
-    /// activations (M.5.0 deferred capability); future revisions
-    /// may add a `server_ids` slice once standalone-server semantics
-    /// land.
-    LspBufferAttached {
-        id: DocumentId,
-        path: Option<PathBuf>,
-    },
-    /// Fired when `lsp-mode` deactivates on a buffer and the
-    /// supervisor has sent `textDocument/didClose` to attached
-    /// servers. The buffer remains open in the editor; only LSP
-    /// tracking ends. M.5.3.
-    LspBufferDetached {
-        id: DocumentId,
-        path: Option<PathBuf>,
-    },
 }
+
+// M.5.3.b: `LspLogPushed`, `LspBufferAttached`, and
+// `LspBufferDetached` moved out of this enum and into
+// `lattice-lsp::events` as concrete types implementing
+// [`crate::event_registry::Event`]. They publish via the
+// typed-bus path (`EventBus::publish_typed`); subscribers
+// use `EventBus::subscribe_typed::<T>`. Future cleanup will
+// migrate the rest of the enum the same way.
 
 impl Event {
     /// Project the event to its [`EventKind`] discriminator. Used
@@ -157,9 +119,6 @@ impl Event {
             Event::ModalModeChanged { .. } => EventKind::ModalModeChanged,
             Event::BeforeQuit => EventKind::BeforeQuit,
             Event::OptionChanged { .. } => EventKind::OptionChanged,
-            Event::LspLogPushed { .. } => EventKind::LspLogPushed,
-            Event::LspBufferAttached { .. } => EventKind::LspBufferAttached,
-            Event::LspBufferDetached { .. } => EventKind::LspBufferDetached,
         }
     }
 }
@@ -178,9 +137,6 @@ pub enum EventKind {
     ModalModeChanged,
     BeforeQuit,
     OptionChanged,
-    LspLogPushed,
-    LspBufferAttached,
-    LspBufferDetached,
 }
 
 /// An edit as actually applied to the buffer (the original `Edit` plus the

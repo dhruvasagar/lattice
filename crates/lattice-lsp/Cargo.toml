@@ -13,6 +13,7 @@ lattice-core = { path = "../lattice-core" }
 lattice-runtime = { path = "../lattice-runtime" }
 lattice-help = { path = "../lattice-help" }
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros", "process", "io-util", "time"] }
+linkme = { workspace = true }
 arc-swap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -49,16 +49,17 @@ use std::time::SystemTime;
 
 use std::sync::Mutex;
 
-use lattice_protocol::Event;
+use crate::events::LspLogPushed;
 
 /// Closure invoked on every successful append. Wired by the App
-/// (or test harness) to publish [`Event::LspLogPushed`] onto the
-/// runtime event bus, which lets log buffers refresh live as
-/// records arrive. Optional: `LspLogger::with_defaults()` starts
-/// with no publisher; `set_event_publisher` installs one.
-pub type LogEventPublisher = Arc<dyn Fn(Event) + Send + Sync>;
+/// (or test harness) to publish [`LspLogPushed`] onto the runtime
+/// event bus via `EventBus::publish_typed`, which lets log
+/// buffers refresh live as records arrive. Optional:
+/// `LspLogger::with_defaults()` starts with no publisher;
+/// `set_event_publisher` installs one.
+pub type LogEventPublisher = Arc<dyn Fn(LspLogPushed) + Send + Sync>;
 
-/// Compact severity tag for [`Event::LspLogPushed`]. Mirrors
+/// Compact severity tag for [`LspLogPushed`]. Mirrors
 /// [`LogSource::tag`]'s shape for the level discriminator.
 fn level_tag(l: LogLevel) -> &'static str {
     match l {
@@ -294,9 +295,9 @@ impl LspLogger {
     }
 
     /// Install / replace the event publisher. Subsequent `log`
-    /// calls fire the closure with [`Event::LspLogPushed`] after
-    /// the record lands in its ring. The App wires this at boot
-    /// so the runtime event bus sees every append; subscribers
+    /// calls fire the closure with [`LspLogPushed`] after the
+    /// record lands in its ring. The App wires this at boot so
+    /// the runtime event bus sees every append; subscribers
     /// (live log views) drain the bus on tick.
     pub fn set_event_publisher(&self, publisher: LogEventPublisher) {
         *lock(&self.state.event_publisher) = Some(publisher);
@@ -391,13 +392,16 @@ impl LspLogger {
         // Fan out to the runtime event bus before / after the
         // ring push. We snapshot primitive fields so the publisher
         // closure (which lives in the App via `lattice-protocol`)
-        // doesn't need to import LSP types.
-        let publish_payload = (
-            record.server_id.as_ref().map(|s| s.to_string()),
-            level_tag(record.level).to_string(),
-            record.source.tag().to_string(),
-            record.message.clone(),
-        );
+        // M.5.3.b: payload is now a typed `LspLogPushed` struct.
+        // `server_id` is `Arc<str>` (cheap clone, matches the
+        // record's own type) rather than the prior `String`
+        // round-trip.
+        let publish_payload = LspLogPushed {
+            server_id: record.server_id.clone(),
+            level: level_tag(record.level).to_string(),
+            source: record.source.tag().to_string(),
+            message: record.message.clone(),
+        };
 
         match server_id {
             None => {
@@ -417,13 +421,7 @@ impl LspLogger {
         // ours and we never hold both at once.
         let publisher = lock(&self.state.event_publisher).clone();
         if let Some(p) = publisher {
-            let (server_id, level, source, message) = publish_payload;
-            p(Event::LspLogPushed {
-                server_id,
-                level,
-                source,
-                message,
-            });
+            p(publish_payload);
         }
     }
 

@@ -1376,14 +1376,16 @@ pub struct App {
     /// this flag so a hover-preview doesn't pollute the jump
     /// list. Cleared at the end of every preview tick.
     pub previewing: bool,
-    /// Receiver for [`Event::LspLogPushed`] events (Phase 4).
-    /// Drained once per main-loop tick by
-    /// [`Self::drain_lsp_log_events`]; matching log buffers in
-    /// `BufferRegistry` are rebuilt from the logger snapshot so
-    /// `*lsp*` / `*lsp:<server>*` / `*lsp:<server>:trace*` views
-    /// update live without the user having to reopen them.
+    /// Receiver for [`lattice_lsp::LspLogPushed`] events (Phase
+    /// 4; M.5.3.b moved the event type from `lattice-protocol`'s
+    /// central enum to `lattice-lsp::events`). Drained once per
+    /// main-loop tick by [`Self::drain_lsp_log_events`];
+    /// matching log buffers in `BufferRegistry` are rebuilt from
+    /// the logger snapshot so `*lsp*` / `*lsp:<server>*` /
+    /// `*lsp:<server>:trace*` views update live without the
+    /// user having to reopen them.
     pub lsp_log_event_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_protocol::Event>>,
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
     // `completion.auto_insert_single` lives on the typed-options
     // registry (`self.config` type-keyed by
     // `lattice_config::CompletionAutoInsertSingle`). Read via

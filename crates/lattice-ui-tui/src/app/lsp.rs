@@ -196,6 +196,36 @@ impl App {
         false
     }
 
+    /// M.6.2: shared gate for a per-feature LSP sub-mode. Checks
+    /// the umbrella first (so the user gets one consistent
+    /// message-source-of-truth: enable `lsp-mode` first, then
+    /// the sub-mode); returns `true` only when both are active.
+    /// Echoes at `Info` matching the umbrella's level.
+    ///
+    /// Used by `do_lsp_*_request` methods that want a
+    /// user-discoverable bail message. Insert-mode auto-triggers
+    /// (insert completion, signature help, on-type formatting)
+    /// skip the echo path entirely and check the bool directly
+    /// -- a typed character that doesn't fire isn't a moment to
+    /// surface mode state.
+    fn check_lsp_sub_mode_gate(
+        &mut self,
+        sub_mode_id: lattice_mode::ModeId,
+        sub_mode_name: &str,
+    ) -> bool {
+        if !self.check_lsp_mode_gate() {
+            return false;
+        }
+        if self.minor_mode_enabled_for(self.document_buffer_id, sub_mode_id) {
+            return true;
+        }
+        self.set_message(
+            EchoLevel::Info,
+            format!("{sub_mode_name} disabled for this buffer (`:{sub_mode_name}` to enable)"),
+        );
+        false
+    }
+
     /// `K` (Phase 4.2.b). Send `textDocument/hover` to every LSP
     /// server attached to the active document; the spawned task
     /// awaits the actor's response on the LSP runtime, so the
@@ -229,8 +259,11 @@ impl App {
         if let Some(token) = self.pending_hover_token.take() {
             token.cancel();
         }
-        // M.5.4: lsp-mode gate.
-        if !self.check_lsp_mode_gate() {
+        // M.6.2: lsp-hover-mode gate (umbrella check inside).
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspHoverMode::mode_id(),
+            "lsp-hover-mode",
+        ) {
             return;
         }
 
@@ -608,11 +641,11 @@ impl App {
     /// are dropped.
     pub(super) fn do_lsp_insert_completion_request(&mut self) {
         const MAX_LSP_ITEMS: usize = 500;
-        // M.5.4: lsp-mode gate. Insert-mode is high-frequency;
-        // we suppress the echo for completion specifically (the
-        // user is typing, not invoking a discrete command) by
-        // checking the mode without firing the gate's echo.
-        if !self.lsp_mode_enabled_for(self.document_buffer_id) {
+        // M.6.2: lsp-completion-mode gate (umbrella implied by
+        // M.6.1 cascade: sub-mode can't be on without umbrella).
+        // Insert-mode is high-frequency; silent on bail (the user
+        // is typing, not invoking a discrete command).
+        if !self.lsp_completion_mode_enabled_for(self.document_buffer_id) {
             return;
         }
         if let Some(token) = self.pending_insert_completion_lsp_token.take() {
@@ -1520,9 +1553,10 @@ impl App {
     /// priority server advertising the trigger; apply the returned
     /// edits as one undo unit.
     pub(super) fn do_lsp_on_type_formatting_request(&mut self, trigger: char) {
-        // M.5.4: lsp-mode gate. Insert-mode trigger; silent
-        // (same shape as completion).
-        if !self.lsp_mode_enabled_for(self.document_buffer_id) {
+        // M.6.2: lsp-format-mode gate. Insert-mode trigger; silent
+        // (same shape as completion -- typed character that
+        // doesn't fire isn't a moment to surface mode state).
+        if !self.lsp_format_mode_enabled_for(self.document_buffer_id) {
             return;
         }
         let Some(uri) = self
@@ -1601,8 +1635,11 @@ impl App {
         if let Some(token) = self.pending_rename_token.take() {
             token.cancel();
         }
-        // M.5.4: lsp-mode gate.
-        if !self.check_lsp_mode_gate() {
+        // M.6.2: lsp-rename-mode gate (umbrella check inside).
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspRenameMode::mode_id(),
+            "lsp-rename-mode",
+        ) {
             return;
         }
         let Some(uri) = self
@@ -1966,8 +2003,11 @@ impl App {
         }
         // Browse-style; not a tag-intent drill-down.
         self.pending_tag_origin = None;
-        // M.5.4: lsp-mode gate (after cancel-stale-work).
-        if !self.check_lsp_mode_gate() {
+        // M.6.2: lsp-code-action-mode gate (after cancel-stale-work).
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspCodeActionMode::mode_id(),
+            "lsp-code-action-mode",
+        ) {
             return;
         }
         let Some(uri) = self
@@ -2191,8 +2231,11 @@ impl App {
         }
         // Browse-style; not a tag-intent drill-down.
         self.pending_tag_origin = None;
-        // M.5.4: lsp-mode gate (after cancel-stale-work).
-        if !self.check_lsp_mode_gate() {
+        // M.6.2: lsp-completion-mode gate (after cancel-stale-work).
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspCompletionMode::mode_id(),
+            "lsp-completion-mode",
+        ) {
             return;
         }
         let Some(uri) = self
@@ -2365,8 +2408,11 @@ impl App {
         if let Some(token) = self.pending_format_token.take() {
             token.cancel();
         }
-        // M.5.4: lsp-mode gate (after cancel-stale-work).
-        if !self.check_lsp_mode_gate() {
+        // M.6.2: lsp-format-mode gate (after cancel-stale-work).
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspFormatMode::mode_id(),
+            "lsp-format-mode",
+        ) {
             return;
         }
         let Some(uri) = self
@@ -2538,8 +2584,11 @@ impl App {
         }
         // Outline browse; not a tag-intent drill-down.
         self.pending_tag_origin = None;
-        // M.5.4: lsp-mode gate (after cancel-stale-work).
-        if !self.check_lsp_mode_gate() {
+        // M.6.2: lsp-symbols-mode gate (after cancel-stale-work).
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspSymbolsMode::mode_id(),
+            "lsp-symbols-mode",
+        ) {
             return;
         }
         let Some(uri) = self
@@ -2612,8 +2661,11 @@ impl App {
         }
         // Workspace search browse; not a tag-intent drill-down.
         self.pending_tag_origin = None;
-        // M.5.4: lsp-mode gate (after cancel-stale-work).
-        if !self.check_lsp_mode_gate() {
+        // M.6.2: lsp-symbols-mode gate (after cancel-stale-work).
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspSymbolsMode::mode_id(),
+            "lsp-symbols-mode",
+        ) {
             return;
         }
         // Workspace symbol is workspace-scoped, so we fan out
@@ -2751,10 +2803,11 @@ impl App {
         if let Some(token) = self.pending_signature_help_token.take() {
             token.cancel();
         }
-        // M.5.4: lsp-mode gate (after cancel-stale-work).
+        // M.6.2: lsp-signature-mode gate (after cancel-stale-work).
         // Insert-mode auto-trigger; silent (matches completion /
-        // on-type-format).
-        if !self.lsp_mode_enabled_for(self.document_buffer_id) {
+        // on-type-format -- typed character that doesn't fire
+        // isn't a moment to surface mode state).
+        if !self.lsp_signature_mode_enabled_for(self.document_buffer_id) {
             return;
         }
         let Some(uri) = self
@@ -2860,11 +2913,13 @@ impl App {
         if let Some(token) = self.pending_definition_token.take() {
             token.cancel();
         }
-        // M.5.4: lsp-mode gate (after cancel-stale-work).
+        // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
         // Keymap-driven (`gd` / `gD` / `gy` / `gI`); echo so
-        // users find out why nothing happened when lsp-mode is
-        // off.
-        if !self.check_lsp_mode_gate() {
+        // users find out why nothing happened when nav is gated.
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspNavMode::mode_id(),
+            "lsp-nav-mode",
+        ) {
             return;
         }
         let Some(uri) = self
@@ -3063,8 +3118,12 @@ impl App {
         }
         // Browse-style; not a tag-intent drill-down.
         self.pending_tag_origin = None;
-        // M.5.4: lsp-mode gate (after cancel-stale-work).
-        if !self.check_lsp_mode_gate() {
+        // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
+        // `gr` is part of the nav family.
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspNavMode::mode_id(),
+            "lsp-nav-mode",
+        ) {
             return;
         }
         let Some(uri) = self
@@ -3703,6 +3762,92 @@ mod tests {
         assert!(
             msg.text.contains("lsp-mode disabled"),
             "expected lsp-mode-disabled echo, got: {}",
+            msg.text
+        );
+    }
+
+    #[test]
+    fn lsp_hover_mode_off_with_umbrella_on_echoes_sub_mode_message() {
+        // M.6.2: when umbrella is on but sub-mode is off, the
+        // gate echoes the *sub-mode's* name -- the user knows
+        // exactly which switch to flip.
+        let mut a = app_with("xx", 10);
+        a.toggle_mode_by_name("lsp-mode");
+        // Cascade activated lsp-hover-mode; toggle it off
+        // independently.
+        a.toggle_mode_by_name("lsp-hover-mode");
+        assert!(a.lsp_mode_enabled_for(a.document_buffer_id));
+        assert!(!a.lsp_hover_mode_enabled_for(a.document_buffer_id));
+        // Hover request now bails with sub-mode echo (umbrella
+        // is on, so the umbrella check inside the helper passes).
+        a.apply(Action::LspHoverRequest);
+        let msg = a.last_message.as_ref().expect("gate echo");
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(
+            msg.text.contains("lsp-hover-mode disabled"),
+            "expected lsp-hover-mode-disabled echo, got: {}",
+            msg.text
+        );
+    }
+
+    #[test]
+    fn lsp_format_mode_off_gates_format_request() {
+        // M.6.2: independent disable of `lsp-format-mode`. Format
+        // requests echo the sub-mode's name; other LSP requests
+        // (hover, nav) keep working in the same buffer.
+        let mut a = app_with("xx", 10);
+        a.toggle_mode_by_name("lsp-mode");
+        a.toggle_mode_by_name("lsp-format-mode");
+        // Format gates. (Tested via the do_lsp_format_request
+        // method directly -- the dispatch path through
+        // ex-commands also routes here.)
+        a.do_lsp_format_request(false);
+        let msg = a.last_message.as_ref().expect("format gate echo");
+        assert!(
+            msg.text.contains("lsp-format-mode disabled"),
+            "expected lsp-format-mode-disabled echo, got: {}",
+            msg.text
+        );
+    }
+
+    #[test]
+    fn lsp_nav_mode_off_gates_definition_request() {
+        // M.6.2: nav family (`gd` / `gD` / `gy` / `gI` / `gr`)
+        // shares one sub-mode (`lsp-nav-mode`).
+        let mut a = app_with("xx", 10);
+        a.toggle_mode_by_name("lsp-mode");
+        a.toggle_mode_by_name("lsp-nav-mode");
+        a.do_lsp_definition_request();
+        let msg = a.last_message.as_ref().expect("nav gate echo");
+        assert!(
+            msg.text.contains("lsp-nav-mode disabled"),
+            "expected lsp-nav-mode-disabled echo, got: {}",
+            msg.text
+        );
+    }
+
+    #[test]
+    fn umbrella_off_wins_over_sub_mode_state() {
+        // M.6.2: when the umbrella is off, the sub-mode message
+        // never fires -- the umbrella check is the first thing
+        // every gate does. The user sees one consistent message
+        // ("enable lsp-mode first") rather than a stack of
+        // sub-mode-disabled echoes.
+        let mut a = app_with("xx", 10);
+        // Activate umbrella + sub-modes via cascade, then turn
+        // umbrella off. Sub-modes also flip off via cascade-off
+        // — but even hypothetically a stale sub-mode entry
+        // wouldn't bypass the umbrella check.
+        a.toggle_mode_by_name("lsp-mode");
+        a.toggle_mode_by_name("lsp-mode");
+        assert!(!a.lsp_mode_enabled_for(a.document_buffer_id));
+        a.apply(Action::LspHoverRequest);
+        let msg = a.last_message.as_ref().expect("umbrella echo");
+        // Umbrella echo, not sub-mode echo.
+        assert!(
+            msg.text.contains("lsp-mode disabled") &&
+            !msg.text.contains("lsp-hover-mode"),
+            "expected umbrella echo (not sub-mode echo), got: {}",
             msg.text
         );
     }

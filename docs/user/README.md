@@ -31,24 +31,24 @@ same surface).
 
 ## Topics
 
-| Topic                                                                                                 | File                         | Status |
-|-------------------------------------------------------------------------------------------------------|------------------------------|--------|
-| Folding (manual + indent + markdown + tree-sitter, operator interaction, navigation, auto-open)       | [folding.md](folding.md)     | ✅     |
-| Buffers and panes (registry, splits, file tree, navigation, theme)                                    | [buffers.md](buffers.md)     | ✅     |
-| Languages (bundled set, coverage roadmap, add new language tree-sitter or otherwise)                  | [languages.md](languages.md) | ✅     |
-| Modal editing (Normal / Insert / Visual / Op-pending / Command / Search / Replace, the chord grammar) | _planned_                    | ⛔     |
-| Operators (`d` / `y` / `c` / `>` / `<` / `gU` / `gu` / `g~`)                                          | _planned_                    | ⛔     |
-| Motions (cursor, word, paragraph, sentence, viewport, find-char, search)                              | _planned_                    | ⛔     |
-| Text objects (`iw` / `aw` / `ip` / `ap` / `i{` / `a{` etc.)                                           | _planned_                    | ⛔     |
-| Search and substitute (`/` / `?` / `:s` / live preview / regex syntax / backrefs)                     | _planned_                    | ⛔     |
-| Registers and macros                                                                                  | _planned_                    | ⛔     |
-| Marks and position history                                                                            | _planned_                    | ⛔     |
-| Block-visual mode (`Ctrl-V`, `I` / `A` / `>` / `<`, replicate-on-Esc)                                 | _planned_                    | ⛔     |
-| Ex-commands (`:w`, `:e`, `:s`, `:g`, `:d`, alias resolution, surface forms)                           | _planned_                    | ⛔     |
-| Help system (`:describe-*`, `:apropos`, `:keymap`, missing-arg prompts)                               | _planned_                    | ⛔     |
-| Options and configuration (`:set`, layered resolver, TOML, groups, live `:options` reference)         | [options.md](options.md)     | ✅     |
-| Plugins (WASM Component Model, capabilities, fuel)                                                    | _planned_                    | ⛔     |
-| Performance posture (latency budgets, what's safe in a hot loop)                                      | _planned_                    | ⛔     |
+| Topic                                                                                                       | File                                | Status |
+|-------------------------------------------------------------------------------------------------------------|-------------------------------------|--------|
+| Modal editing (Normal / Insert / Visual / Op-pending / Command / Search / Replace + the vim grammar)        | [modal-editing.md](modal-editing.md)| ✅     |
+| Modes (major + minor; `:<mode-name>` toggle; LSP umbrella + sub-modes; display modes; convergence with `:set`) | [modes.md](modes.md)             | ✅     |
+| Ex-commands (`:w`, `:e`, `:s`, `:g`, `:d`, arg schemas, completion, ranges, aliases)                        | [ex-commands.md](ex-commands.md)    | ✅     |
+| Buffers and panes (registry, splits, file tree, navigation, theme)                                          | [buffers.md](buffers.md)            | ✅     |
+| Folding (manual + indent + markdown + tree-sitter, operator interaction, navigation, auto-open)             | [folding.md](folding.md)            | ✅     |
+| Insert completion (sources, popup keymap, ranking, ghost text, snippets)                                    | [completion.md](completion.md)      | ✅     |
+| Options and configuration (`:set`, layered resolver, TOML, groups, live `:options` reference)               | [options.md](options.md)            | ✅     |
+| LSP (servers, capabilities, attach lifecycle, every `:lsp-*` command in context)                            | [lsp.md](lsp.md)                    | ✅     |
+| `lsp-mode` (the umbrella minor + 9 sub-modes that gate per-feature LSP traffic)                             | [lsp-mode.md](lsp-mode.md)          | ✅     |
+| Languages (bundled set, coverage roadmap, add new language tree-sitter or otherwise)                        | [languages.md](languages.md)        | ✅     |
+| Search and substitute (`/` / `?` / `:s` / live preview / regex syntax / backrefs)                           | _covered in modal-editing + ex-commands_ | 🟡 |
+| Registers, marks, macros                                                                                    | _covered in modal-editing_          | 🟡     |
+| Help system (`:describe-*`, `:apropos`, `:keymap`, missing-arg prompts)                                     | _covered in ex-commands_            | 🟡     |
+| Plugins (WASM Component Model, capabilities, fuel)                                                          | _planned (Phase 7+)_                | ⛔     |
+| Performance posture (latency budgets, what's safe in a hot loop)                                            | _planned_                           | ⛔     |
+| Tutor (vim-tutor-style interactive lesson sequence)                                                         | _planned_                           | ⛔     |
 
 Topics with `_planned_` aren't drafted yet — open an issue or send
 a PR if you want one prioritized.

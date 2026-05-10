@@ -256,6 +256,41 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
             "customize".into(),
         ],
     });
+    r.register(HelpTopic {
+        name: "modal-editing".into(),
+        summary: "Modal editing: Normal / Insert / Visual / Command \
+                  / Search / Replace, the vim grammar (operators + \
+                  motions + text objects + counts), and registers / \
+                  marks / macros."
+            .into(),
+        body: HelpTopicBody::Static(include_str!("../../../docs/user/modal-editing.md")),
+        related_command_patterns: vec![
+            // Match the operator/motion-class command names from
+            // the grammar registry so :describe-command on `dd`,
+            // `yw`, `gd`, etc. surfaces a "see also: modal-editing".
+            "operator:".into(),
+            "motion:".into(),
+            "text-object:".into(),
+            "register".into(),
+            "mark".into(),
+            "macro".into(),
+        ],
+    });
+    r.register(HelpTopic {
+        name: "ex-commands".into(),
+        summary: "The `:` line: built-in commands, arg schemas, tab \
+                  completion, ranges, aliases, `:g` / `:v` / `:s` \
+                  with live preview."
+            .into(),
+        body: HelpTopicBody::Static(include_str!("../../../docs/user/ex-commands.md")),
+        related_command_patterns: vec![
+            // Most ex-command names start with `ex:`; bind broadly
+            // so :describe-command on any of them links here.
+            "ex:".into(),
+            "substitute".into(),
+            "global".into(),
+        ],
+    });
     Arc::new(r)
 }
 
@@ -274,6 +309,48 @@ mod tests {
         let r = builtin_topics();
         assert!(r.lookup("folding").is_some());
         assert!(r.lookup("buffers").is_some());
+    }
+
+    #[test]
+    fn builtin_topics_include_new_foundational_topics() {
+        // Documentation overhaul (workstream 4): `modal-editing`
+        // covers the keymap-side; `ex-commands` covers the `:`
+        // surface; `modes` is the major/minor counterpart.
+        let r = builtin_topics();
+        assert!(
+            r.lookup("modal-editing").is_some(),
+            "modal-editing topic should be registered",
+        );
+        assert!(
+            r.lookup("ex-commands").is_some(),
+            "ex-commands topic should be registered",
+        );
+        assert!(
+            r.lookup("modes").is_some(),
+            "modes topic should be registered",
+        );
+    }
+
+    #[test]
+    fn topics_for_command_routes_describe_to_modal_editing() {
+        // `:describe-command operator:delete` surfaces a See
+        // also: link to modal-editing via the `operator:` pattern.
+        let r = builtin_topics();
+        let hits: Vec<&str> = r
+            .topics_for_command("operator:delete")
+            .map(|t| t.name.as_str())
+            .collect();
+        assert!(hits.contains(&"modal-editing"), "got {hits:?}");
+    }
+
+    #[test]
+    fn topics_for_command_routes_ex_commands_for_ex_prefixed() {
+        let r = builtin_topics();
+        let hits: Vec<&str> = r
+            .topics_for_command("ex:write")
+            .map(|t| t.name.as_str())
+            .collect();
+        assert!(hits.contains(&"ex-commands"), "got {hits:?}");
     }
 
     #[test]

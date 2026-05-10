@@ -16,6 +16,7 @@ thiserror = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time"] }
 criterion = { workspace = true }
+linkme = { workspace = true }
 
 [[bench]]
 name = "actor"

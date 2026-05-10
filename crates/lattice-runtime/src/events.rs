@@ -43,11 +43,14 @@
 //!   will eventually run with a fuel budget; v1 calls them inline
 //!   or punts to caller for Invocation targets.
 
+use std::any::TypeId;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use lattice_grammar::CommandInvocation;
+use lattice_protocol::event_registry::Event as TypedEvent;
 use lattice_protocol::{Event, EventKind};
 use tokio::sync::mpsc;
 
@@ -123,7 +126,7 @@ struct Subscription {
     target: SubscriptionTarget,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct Inner {
     /// Indexed by kind for O(1) bucket lookup at publish.
     by_kind: HashMap<EventKind, Vec<Subscription>>,
@@ -135,6 +138,36 @@ struct Inner {
     /// [`EventBus::drain_pending_invocations`] each tick and routes
     /// these through the document actor.
     pending_invocations: Vec<CommandInvocation>,
+    /// M.5.3.a typed-event subscriptions, keyed by Rust
+    /// `std::any::TypeId`. Each entry stores a closure that
+    /// downcasts the boxed payload and forwards to the
+    /// caller's typed channel; the closure carries enough type
+    /// information that the bus's publish path stays
+    /// `Arc<dyn Any + Send + Sync>`-typed.
+    typed_subs: HashMap<TypeId, Vec<TypedSubscription>>,
+}
+
+impl std::fmt::Debug for Inner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Inner")
+            .field("by_kind", &self.by_kind)
+            .field("wildcard", &self.wildcard)
+            .field("pending_invocations", &self.pending_invocations)
+            .field("typed_sub_buckets", &self.typed_subs.len())
+            .finish()
+    }
+}
+
+/// Internal record for a typed subscription. The closure
+/// downcasts the `Arc<dyn Any + Send + Sync>` payload to the
+/// concrete event type and forwards to the subscriber's typed
+/// channel; it returns `false` if the channel has been closed
+/// so the bus can prune lazily.
+struct TypedSubscription {
+    id: SubscriptionId,
+    forward: Arc<
+        dyn Fn(&Arc<dyn std::any::Any + Send + Sync>) -> bool + Send + Sync,
+    >,
 }
 
 /// Process-shared event bus. Cheap to construct (one `Mutex`
@@ -233,6 +266,7 @@ impl EventBus {
                 by_kind,
                 wildcard,
                 pending_invocations,
+                typed_subs: _,
             } = &mut *inner;
 
             if let Some(bucket) = by_kind.get(&kind) {
@@ -288,6 +322,100 @@ impl EventBus {
     pub fn subscription_count(&self) -> usize {
         let inner = self.inner.lock().expect("EventBus poisoned");
         inner.by_kind.values().map(Vec::len).sum::<usize>() + inner.wildcard.len()
+    }
+
+    /// M.5.3.a: subscribe to a *typed* event. The bus stores a
+    /// downcast closure that forwards to `tx`; on publish the
+    /// closure unwraps the boxed payload to the concrete type
+    /// `T` and sends it. Subscribers register one channel per
+    /// event type they care about; multi-type subscribers
+    /// register multiple times.
+    ///
+    /// Closed channels are pruned lazily on the next matching
+    /// publish (same shape as the legacy `subscribe` path).
+    pub fn subscribe_typed<T>(&self, tx: mpsc::UnboundedSender<T>) -> SubscriptionId
+    where
+        T: TypedEvent + Clone,
+    {
+        let id = SubscriptionId::next();
+        let forward: Arc<
+            dyn Fn(&Arc<dyn std::any::Any + Send + Sync>) -> bool + Send + Sync,
+        > = Arc::new(move |payload| {
+            let Some(typed) = payload.downcast_ref::<T>() else {
+                // Wrong type for this subscriber -- not an error
+                // (the bus dispatches to whichever bucket it
+                // can; downcast failure should be unreachable
+                // in practice because the bucket is keyed on
+                // TypeId).
+                return true;
+            };
+            tx.send(typed.clone()).is_ok()
+        });
+        let mut inner = self.inner.lock().expect("EventBus poisoned");
+        inner
+            .typed_subs
+            .entry(TypeId::of::<T>())
+            .or_default()
+            .push(TypedSubscription { id, forward });
+        id
+    }
+
+    /// M.5.3.a: publish a typed event. Boxes the event into
+    /// `Arc<dyn Any + Send + Sync>` once, then walks the
+    /// `TypeId`-keyed subscriber bucket. Each subscriber's
+    /// downcast closure clones the typed value into its own
+    /// channel; closures returning `false` (channel closed)
+    /// get pruned lazily on the next publish hitting the same
+    /// bucket.
+    pub fn publish_typed<T>(&self, event: T)
+    where
+        T: TypedEvent,
+    {
+        let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(event);
+        let tid = TypeId::of::<T>();
+
+        // Snapshot phase: clone the forwarder Arcs out from
+        // under the lock. Same pattern the legacy `publish`
+        // uses for channel senders -- never call into a
+        // subscriber while holding the bus mutex.
+        let forwarders: Vec<(SubscriptionId, Arc<_>)> = {
+            let inner = self.inner.lock().expect("EventBus poisoned");
+            inner
+                .typed_subs
+                .get(&tid)
+                .map(|bucket| {
+                    bucket
+                        .iter()
+                        .map(|s| (s.id, s.forward.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+
+        // Dispatch phase: lock dropped. Closed channels surface
+        // via `false`; we collect them for pruning.
+        let mut dead: Vec<SubscriptionId> = Vec::new();
+        for (id, forward) in forwarders {
+            if !forward(&payload) {
+                dead.push(id);
+            }
+        }
+
+        // Pruning phase.
+        if !dead.is_empty() {
+            let mut inner = self.inner.lock().expect("EventBus poisoned");
+            if let Some(bucket) = inner.typed_subs.get_mut(&tid) {
+                bucket.retain(|s| !dead.contains(&s.id));
+            }
+        }
+    }
+
+    /// M.5.3.a: count of typed subscribers across every type-id
+    /// bucket. Mirrors [`Self::subscription_count`] for the
+    /// typed surface.
+    pub fn typed_subscription_count(&self) -> usize {
+        let inner = self.inner.lock().expect("EventBus poisoned");
+        inner.typed_subs.values().map(Vec::len).sum()
     }
 }
 
@@ -554,5 +682,78 @@ mod tests {
         bus.publish(make_event());
         assert_eq!(bus.drain_pending_invocations().len(), 2);
         assert_eq!(bus.subscription_count(), 1);
+    }
+
+    // M.5.3.a: typed-event surface tests. Declared at module
+    // scope so the `register_event!` macro's linkme entry lands
+    // in the link graph.
+    #[derive(Debug, Clone)]
+    struct TypedTestEvent {
+        n: u32,
+    }
+
+    lattice_protocol::register_event!(
+        TypedTestEvent,
+        "lattice-runtime.typed-test-event",
+        "Test event for the EventBus typed-event API.",
+        "lattice-runtime-tests",
+    );
+
+    #[test]
+    fn typed_publish_delivers_to_typed_subscriber() {
+        let bus = EventBus::new();
+        let (tx, mut rx) = mpsc::unbounded_channel::<TypedTestEvent>();
+        bus.subscribe_typed(tx);
+        bus.publish_typed(TypedTestEvent { n: 7 });
+        let received = rx.try_recv().expect("typed event delivered");
+        assert_eq!(received.n, 7);
+    }
+
+    #[test]
+    fn typed_subscriber_only_sees_matching_type() {
+        // A subscriber for one event type doesn't receive
+        // events of another type, even when both are typed.
+        #[derive(Debug, Clone)]
+        struct OtherEvent {}
+        // Can't register OtherEvent inside a fn (linkme needs
+        // module scope). Manual impl is enough since we only
+        // need the trait, not the descriptor entry.
+        impl lattice_protocol::event_registry::Event for OtherEvent {
+            fn event_type_id(
+                &self,
+            ) -> lattice_protocol::event_registry::EventTypeId {
+                lattice_protocol::event_registry::EventTypeId::of::<Self>(
+                    "test.other",
+                )
+            }
+        }
+        let bus = EventBus::new();
+        let (tx, mut rx) = mpsc::unbounded_channel::<TypedTestEvent>();
+        bus.subscribe_typed(tx);
+        bus.publish_typed(OtherEvent {});
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn typed_subscription_count_tracks_typed_subscribers() {
+        let bus = EventBus::new();
+        assert_eq!(bus.typed_subscription_count(), 0);
+        let (tx, _rx) = mpsc::unbounded_channel::<TypedTestEvent>();
+        bus.subscribe_typed(tx);
+        assert_eq!(bus.typed_subscription_count(), 1);
+    }
+
+    #[test]
+    fn typed_publish_prunes_dead_channel_lazily() {
+        let bus = EventBus::new();
+        {
+            let (tx, _rx) = mpsc::unbounded_channel::<TypedTestEvent>();
+            bus.subscribe_typed(tx);
+            // Drop _rx here; tx send will fail on next publish.
+        }
+        // Subscriber is registered but its channel is dead.
+        bus.publish_typed(TypedTestEvent { n: 1 });
+        // After the publish, the dead subscriber is pruned.
+        assert_eq!(bus.typed_subscription_count(), 0);
     }
 }

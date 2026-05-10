@@ -28,9 +28,11 @@ pub mod cancel;
 pub mod edit;
 pub mod error;
 pub mod event;
+pub mod event_registry;
 pub mod ids;
 pub mod position;
 pub mod selection;
+
 
 pub use crate::cancel::CancellationToken;
 pub use crate::edit::{Edit, EditDelta, EditKind};

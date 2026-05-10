@@ -272,7 +272,11 @@ impl App {
     /// per-frame cost from ~178µs to noise floor (key compare +
     /// fold hash, ~50ns).
     pub fn refresh_highlights(&mut self) {
-        let Some(syntax) = self.syntax.as_ref() else {
+        // M.3.2.c.4: route through the buffer-locals-backed
+        // accessor. For the active buffer this still resolves to
+        // `self.syntax` (App's hot-path slot); for any future
+        // multi-buffer reads it would route through `buffer_locals`.
+        let Some(syntax) = self.document_syntax_for(self.document_buffer_id) else {
             self.visible_highlights = Vec::new();
             self.visible_highlights_key = None;
             return;
@@ -410,44 +414,49 @@ impl App {
             })
             .collect();
         for (idx, doc_id, scroll, height) in pending {
-            let Some(entry) = self.buffers.document_mut(doc_id) else {
+            // M.3.2.c.4 / .c.5: read the syntax handle through
+            // the locals-backed accessor (clone is a cheap Arc
+            // bump). Active / inactive documents resolve through
+            // the same path; on .c.5 the entry no longer carries
+            // mode-state at all.
+            let syntax = self.document_syntax_for(doc_id).cloned();
+            let Some(syntax) = syntax else {
+                continue;
+            };
+            let last_parsed = self.document_last_parsed_text_version_for(doc_id);
+            let last_synced = self.document_last_synced_syntax_version_for(doc_id);
+            let Some(entry) = self.buffers.document(doc_id) else {
                 continue;
             };
             let snap = entry.handle.snapshot();
             let tv = snap.version;
-            if entry.syntax.is_none() {
-                continue;
+            if tv != last_parsed {
+                // Slice B.2 part 2: inactive-pane path doesn't
+                // yet accumulate per-document edit deltas (the
+                // active-pane path does, on
+                // App.pending_syntax_edits). For now we send
+                // empty edits which routes the worker to full
+                // reparse. The inactive-pane path is rare
+                // (only fires when pane shows a different
+                // document) so the perf cost stays bounded.
+                syntax.request_reparse(
+                    last_synced,
+                    tv,
+                    snap.buffer.clone(),
+                    Vec::new(),
+                );
+                // M.3.2.c.5: write the new baseline back into
+                // buffer_locals so subsequent reads see it.
+                let locals = self.buffer_locals.entry(doc_id).or_default();
+                locals.insert(crate::modes::DocumentLastParsedTextVersion(tv));
+                locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(tv));
             }
-            if let Some(syntax) = entry.syntax.as_ref() {
-                if tv != entry.last_parsed_text_version {
-                    // Slice B.2 part 2: inactive-pane path
-                    // doesn't yet accumulate per-document edit
-                    // deltas (the active-pane path does, on
-                    // App.pending_syntax_edits). For now we send
-                    // empty edits which routes the worker to
-                    // full reparse. Per-DocumentEntry edit
-                    // accumulation is its own follow-up; the
-                    // inactive-pane path is rare (only fires
-                    // when pane shows a different document) so
-                    // the perf cost stays bounded.
-                    // Slice B.5: pass Buffer (O(1) clone) instead
-                    // of pre-materializing the String here.
-                    syntax.request_reparse(
-                        entry.last_synced_syntax_version,
-                        tv,
-                        snap.buffer.clone(),
-                        Vec::new(),
-                    );
-                    entry.last_parsed_text_version = tv;
-                    entry.last_synced_syntax_version = tv;
-                }
-                let end = scroll.saturating_add(height);
-                let spans = syntax
-                    .snapshot()
-                    .highlight_lines(scroll, end)
-                    .unwrap_or_default();
-                self.pane_highlights.insert(idx, spans);
-            }
+            let end = scroll.saturating_add(height);
+            let spans = syntax
+                .snapshot()
+                .highlight_lines(scroll, end)
+                .unwrap_or_default();
+            self.pane_highlights.insert(idx, spans);
         }
     }
 

@@ -269,7 +269,7 @@ impl App {
                 // dismiss when active_buffer is Document, which
                 // is the State A shape.
                 if matches!(self.active_buffer, BufferKind::Document) {
-                    self.dismiss_help();
+                    self.dismiss_popup();
                 }
                 self.completion_state = None;
             }
@@ -593,7 +593,7 @@ impl App {
             }
 
             Action::HelpDismiss => match self.active_buffer {
-                BufferKind::Help => self.dismiss_help(),
+                BufferKind::Help => self.dismiss_popup(),
                 BufferKind::FileTree => self.dismiss_file_tree(),
                 BufferKind::Document | BufferKind::Oil => {}
             },
@@ -655,7 +655,20 @@ impl App {
             Action::SearchNext => self.repeat_search(false),
             Action::SearchPrevious => self.repeat_search(true),
         }
-        self.ensure_cursor_visible();
+        // Skip ensure_cursor_visible when the popup just dismissed
+        // back to the document. `app.viewport_height` is still the
+        // popup's small inner height at this point (runtime resets
+        // it on the *next* iteration), so running ensure on the
+        // restored doc cursor / scroll would adjust scroll against
+        // the wrong viewport and visibly jolt the backdrop on
+        // close. The next iteration's render fires with the correct
+        // viewport and the restored (cursor, scroll) is already a
+        // valid view -- it's the pair we captured pre-popup.
+        let popup_dismissed = matches!(pre_active, BufferKind::Help)
+            && matches!(self.active_buffer, BufferKind::Document);
+        if !popup_dismissed {
+            self.ensure_cursor_visible();
+        }
         self.maybe_reparse_syntax();
         // State-A hover-auto-dismiss: popup was shown, focus
         // never moved into it (so `prev_pane_for_help` is None),
@@ -666,6 +679,7 @@ impl App {
             && self.cursor != pre_cursor
         {
             self.help_buffer = None;
+            self.popup_placement = crate::popup::PopupPlacement::default();
         }
         let _ = pre_active;
         // Slice 8.f: re-stack Insert-mode minor-mode layers in
@@ -2208,7 +2222,10 @@ mod tests {
         a.cursor = Position::new(2, 0);
         // Open help via the same path the App uses internally so
         // the position-history entry is recorded.
-        a.open_help(HelpBuffer::from_lines("h", vec!["help body".into()]));
+        a.open_popup(
+            HelpBuffer::from_lines("h", vec!["help body".into()]),
+            crate::popup::PopupPlacement::Centered,
+        );
         assert_eq!(a.active_buffer, BufferKind::Help);
         a.apply(Action::JumpHistoryBack);
         assert_eq!(a.active_buffer, BufferKind::Document);

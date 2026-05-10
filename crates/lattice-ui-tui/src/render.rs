@@ -1142,20 +1142,20 @@ fn display_rows_for_len(len: usize, inner_width: usize, cont_width: usize) -> us
     1 + (len - inner_width).div_ceil(cont_width)
 }
 
-/// Tooltip-style placement for the hover / help popup overlay.
+/// Placement for the help popup overlay.
 ///
-/// Anchors the popup near the *document* cursor that triggered it,
-/// rather than centering. Falls back to the centered position if
-/// the cursor isn't visible (off-screen scroll, no active doc
-/// pane, etc.).
+/// Honors the popup's [`crate::popup::PopupPlacement`]:
+/// - `Centered` (default for command-launched popups like
+///   `:lsp-status`, `:describe-*`, `:apropos`, `:help`, `:keymap`,
+///   `:options`, `:ls`) sits at the centre of the buffer area.
+/// - `CursorAnchored` (hover, signature help) anchors next to the
+///   document cursor: below when there's room, above otherwise,
+///   horizontally aligned with the cursor column. Falls back to
+///   centred if the cursor isn't visible.
 ///
-/// Placement rules:
-/// - Below cursor when there's room; otherwise above.
-/// - Horizontally aligned to the cursor column, shifted left to
-///   keep the popup inside `buffer_area`.
-/// - In State A (active = Document) the doc cursor is `app.cursor`
-///   / `app.scroll`; in State B (active = Help) it lives in the
-///   active pane's stash.
+/// In State A (active = Document) the doc cursor is `app.cursor`
+/// / `app.scroll`; in State B (active = Help) it lives in the
+/// active pane's stash.
 fn position_help_popup(
     app: &App,
     snap: &DocumentSnapshot,
@@ -1173,6 +1173,9 @@ fn position_help_popup(
             height,
         }
     };
+    if matches!(app.popup_placement, crate::popup::PopupPlacement::Centered) {
+        return centered();
+    }
     let pane_area = match active_pane_content_rect(app, buffer_area) {
         Some(r) => r,
         None => return centered(),
@@ -3192,6 +3195,32 @@ mod tests {
             .find(|s| s.style != TuiStyle::default())
             .expect("at least one styled span");
         assert_eq!(first.content.as_ref(), "fn");
+    }
+
+    #[test]
+    fn render_help_line_emits_styled_spans_for_markdown_heading() {
+        use lattice_syntax::LangRegistry;
+        // Build a help buffer whose first line is a markdown
+        // heading; verify the rendered Vec<Span> for that line has
+        // at least one Span with a non-default tui::Style. This
+        // is the end-of-pipeline assertion: highlights from the
+        // markdown grammar make it onto the screen.
+        let registry = LangRegistry::standard().expect("registry");
+        let h = crate::help::HelpBuffer::from_lines(
+            "t",
+            vec!["# Heading line".to_string(), "plain body".to_string()],
+        )
+        .with_markdown_syntax(registry);
+        let lines = h.lines();
+        let spans = render_help_line(&lines[0], &h.highlights[0]);
+        let any_styled = spans
+            .iter()
+            .any(|sp| sp.style != ratatui::style::Style::default());
+        assert!(
+            any_styled,
+            "expected at least one styled Span for `# Heading line`, got {:?}",
+            spans
+        );
     }
 
     #[test]

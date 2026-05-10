@@ -70,6 +70,12 @@ pub enum HelpDisplayMode {
     Window,
 }
 
+// `PopupPlacement` lives in `crate::popup`. The popup is a
+// generic rendering surface (a rect drawn over the buffer area
+// inside which any buffer can render); placement / anchoring is
+// a property of the popup itself, not of whatever buffer happens
+// to be inside it.
+
 /// One open help buffer. The content is a real [`Buffer`] (rope-
 /// backed), so it composes with everything else that consumes
 /// `Buffer` -- search, motions, syntax highlighting (once a help
@@ -1344,6 +1350,89 @@ mod tests {
                 .unwrap_or(false),
             "expected Heading1 span on heading line, got {:?}",
             h.highlights.first()
+        );
+    }
+
+    #[test]
+    fn hover_markdown_with_fenced_rust_block_has_highlights() {
+        // Representative LSP hover body: fenced ```rust block
+        // followed by prose with inline backtick code. Verifies
+        // the markdown highlighter populates highlights for at
+        // least the fenced code lines (rust injection) and the
+        // inline-code spans on prose lines.
+        let registry = LangRegistry::standard().expect("registry");
+        let lines = vec![
+            "```rust".to_string(),
+            "fn write(&mut self, buf: &[u8]) -> Result<usize>".to_string(),
+            "```".to_string(),
+            String::new(),
+            "Writes the contents of `buf` to the stream.".to_string(),
+        ];
+        let h = HelpBuffer::from_lines("hover", lines).with_markdown_syntax(registry);
+        // Line 1: fenced rust code -- should carry Keyword spans
+        // (`fn`) once the rust injection runs.
+        let line1_has_styled = h
+            .highlights
+            .get(1)
+            .map(|spans| !spans.is_empty())
+            .unwrap_or(false);
+        assert!(
+            line1_has_styled,
+            "expected highlights on fenced rust line, got {:?}",
+            h.highlights.get(1)
+        );
+        // Line 4: inline `buf` -- should carry MarkupRaw or
+        // similar.
+        let line4_has_styled = h
+            .highlights
+            .get(4)
+            .map(|spans| !spans.is_empty())
+            .unwrap_or(false);
+        assert!(
+            line4_has_styled,
+            "expected highlights on inline-code line, got {:?}",
+            h.highlights.get(4)
+        );
+    }
+
+    #[test]
+    fn with_markdown_syntax_populates_subheading_and_inline_code() {
+        let registry = LangRegistry::standard().expect("registry");
+        let lines = vec![
+            "# :lsp-status".to_string(),
+            String::new(),
+            "## rust-analyzer".to_string(),
+            "- workspace root: `/home/foo`".to_string(),
+            "- supports hover: true".to_string(),
+        ];
+        let h = HelpBuffer::from_lines("lsp-status", lines).with_markdown_syntax(registry);
+        let h1 = h.highlights[0]
+            .iter()
+            .any(|sp| sp.style == lattice_syntax::Style::Heading1);
+        // tree-sitter-md tags every heading with the same `markup.heading`
+        // capture; the capture-name table maps it to Heading1
+        // uniformly, so `##` shows up the same as `#`. Acceptable for
+        // v1 -- improving heading-level differentiation requires a
+        // grammar query update or per-level capture extraction.
+        let h2 = h.highlights[2]
+            .iter()
+            .any(|sp| sp.style == lattice_syntax::Style::Heading1);
+        assert!(h1, "line 0 (# heading): {:?}", h.highlights[0]);
+        assert!(h2, "line 2 (## heading): {:?}", h.highlights[2]);
+        // inline code on line 3 -- look for any Markup-family span
+        // (MarkupRaw) covering the backticked range.
+        let has_raw = h.highlights[3].iter().any(|sp| {
+            matches!(
+                sp.style,
+                lattice_syntax::Style::MarkupRaw
+                    | lattice_syntax::Style::Markup
+                    | lattice_syntax::Style::String
+            )
+        });
+        assert!(
+            has_raw,
+            "expected inline-code style on `/home/foo`, got {:?}",
+            h.highlights[3]
         );
     }
 

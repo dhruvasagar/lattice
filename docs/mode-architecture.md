@@ -1559,6 +1559,40 @@ it.
 Each slice ships docs + tests + (perf-relevant) benches +
 graceful error handling per CLAUDE.md.
 
+#### Slice landings (running ledger)
+
+- M.3.0 / M.3.1 / M.3.2.a / M.3.2.b.{1,2} / M.3.2.c.{1,2,3} -- ✅ landed
+  (see git log; readers flipped through `buffer_locals` first-with-fallback
+  pattern; per-kind data mirrored at construction sites).
+- M.3.2.c.4 -- ✅ landed. Four `BufferLocal` newtypes
+  (`DocumentSyntax`, `DocumentLastParsedTextVersion`,
+  `DocumentLastSyncedSyntaxVersion`, `DocumentFolds`) under
+  `text-mode` ownership in `crate::modes`. Reader accessors
+  on App: `document_syntax_for(id)`, `document_folds_for(id)`,
+  `document_last_parsed_text_version_for(id)`,
+  `document_last_synced_syntax_version_for(id)`. Active-buffer
+  hot-path readers (`refresh_highlights`, `recompute_syntax_folds`,
+  `maybe_reparse_syntax`, completion's tree-sitter source, the
+  inactive-pane reparse) flow through these accessors. The active
+  branch returns the App field directly; inactive returns from
+  `buffer_locals`. Round-trip bug fix: `last_synced_syntax_version`
+  now persists across switch-away-and-back (was silently rolling
+  back to 0). 5 new tests cover seeding + accessor behaviour.
+- M.3.2.c.5 -- 🟡 partial. **DocumentEntry mode-fields retired**:
+  `syntax`, `last_parsed_text_version`, `last_synced_syntax_version`,
+  `folds` are gone from `DocumentEntry`; the entry now holds only
+  `id` + `handle`. Activation transitions stash / restore mode-state
+  through `buffer_locals` directly. Helpers
+  `seed_empty_document_locals(id)` (initial seed at construction) and
+  `snapshot_active_document` (de-activation stash) own the writes.
+  **Deferred to a follow-up slice**: HelpBuffer / FileTreeBuffer /
+  OilBuffer field retirement. The mirror + locals path for those is
+  already in place; production reads route through locals; the
+  fallback to struct fields exists for synthetic-test paths and would
+  require rewriting ~70 test constructions to remove. BufferStorage
+  retirement decision likewise deferred until all four kinds have
+  retired their fields.
+
 ### 10.1 Why LSP is the right canary (M.5 first among "real" mode work)
 
 After foundation slices M.0-M.4 land, M.5 (the `lsp-mode`

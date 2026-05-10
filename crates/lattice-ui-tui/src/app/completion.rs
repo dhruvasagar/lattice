@@ -397,7 +397,7 @@ impl App {
             lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID,
         );
         if effective.source_enabled(&tree_sitter_id)
-            && let Some(syntax) = self.syntax.as_ref()
+            && let Some(syntax) = self.document_syntax_for(self.document_buffer_id)
         {
             // Each source emits independently. tree-sitter
             // names overlap heavily with buffer-words (which

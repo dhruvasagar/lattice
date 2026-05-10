@@ -29,8 +29,9 @@
 use std::sync::Arc;
 
 use lsp_types::{
-    ClientCapabilities, GeneralClientCapabilities, PositionEncodingKind,
-    PublishDiagnosticsClientCapabilities, ServerCapabilities,
+    ClientCapabilities, GeneralClientCapabilities, HoverClientCapabilities, MarkupKind,
+    PositionEncodingKind, PublishDiagnosticsClientCapabilities, ServerCapabilities,
+    SignatureHelpClientCapabilities, SignatureInformationSettings,
     StaleRequestSupportClientCapabilities, TagSupport, TextDocumentClientCapabilities,
     TextDocumentSyncClientCapabilities, WorkspaceClientCapabilities,
     WorkspaceEditClientCapabilities,
@@ -146,11 +147,34 @@ fn text_document_capabilities() -> TextDocumentClientCapabilities {
     TextDocumentClientCapabilities {
         synchronization: Some(synchronization_capabilities()),
         publish_diagnostics: Some(publish_diagnostics_capabilities()),
-        // 4.2 capabilities (hover, definition, etc.) are added
-        // alongside their feature commits. 4.3 (codeAction, rename,
-        // formatting, signatureHelp), 4.4 (semanticTokens, inlayHint,
-        // foldingRange, documentHighlight) likewise.
+        // Advertise that we render hover / signatureHelp content as
+        // markdown (preferred) or plaintext. Without this the
+        // server defaults to plaintext per the LSP spec, which
+        // strips fenced code blocks and inline markup -- the
+        // markdown highlighter then has no patterns to colour and
+        // the popup renders as flat grey text.
+        hover: Some(hover_capabilities()),
+        signature_help: Some(signature_help_capabilities()),
         ..Default::default()
+    }
+}
+
+fn hover_capabilities() -> HoverClientCapabilities {
+    HoverClientCapabilities {
+        dynamic_registration: Some(false),
+        content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+    }
+}
+
+fn signature_help_capabilities() -> SignatureHelpClientCapabilities {
+    SignatureHelpClientCapabilities {
+        dynamic_registration: Some(false),
+        signature_information: Some(SignatureInformationSettings {
+            documentation_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+            parameter_information: None,
+            active_parameter_support: None,
+        }),
+        context_support: None,
     }
 }
 
@@ -524,6 +548,40 @@ mod tests {
         let td = caps.text_document.unwrap();
         assert!(td.synchronization.is_some());
         assert!(td.publish_diagnostics.is_some());
+    }
+
+    #[test]
+    fn client_advertises_markdown_for_hover() {
+        // rust-analyzer (and most servers) downgrade to plaintext
+        // unless the client opts into Markdown via
+        // `textDocument.hover.contentFormat`. Without this advert
+        // hover popups arrive as flat plaintext and the markdown
+        // grammar has no patterns to colour.
+        let caps = client_capabilities();
+        let td = caps.text_document.unwrap();
+        let hover = td.hover.expect("hover capability advertised");
+        let formats = hover.content_format.expect("content_format advertised");
+        assert!(
+            formats.contains(&MarkupKind::Markdown),
+            "expected Markdown in hover content_format, got {:?}",
+            formats
+        );
+    }
+
+    #[test]
+    fn client_advertises_markdown_for_signature_help() {
+        let caps = client_capabilities();
+        let td = caps.text_document.unwrap();
+        let sig = td.signature_help.expect("signature_help advertised");
+        let info = sig.signature_information.expect("signature info advertised");
+        let formats = info
+            .documentation_format
+            .expect("documentation_format advertised");
+        assert!(
+            formats.contains(&MarkupKind::Markdown),
+            "expected Markdown in signatureHelp documentation_format, got {:?}",
+            formats
+        );
     }
 
     #[test]

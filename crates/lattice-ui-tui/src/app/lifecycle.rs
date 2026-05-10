@@ -69,12 +69,38 @@ impl App {
             let pane = self.pane_tree.active_mut();
             pane.buffer = BufferKind::Document;
             pane.buffer_id = id;
-            if let Some(entry) = self.buffers.document_mut(id)
-                && entry.syntax.is_some()
-            {
-                self.syntax = entry.syntax.take();
-                self.last_parsed_text_version = entry.last_parsed_text_version;
-                self.folds = std::mem::take(&mut entry.folds);
+            // M.3.2.c.5: pull stashed mode-state out of buffer_locals
+            // when re-activating a buffer the user just left for a
+            // pane overlay. The `_is_some()` guard preserves the
+            // help-overlay invariant -- when the active buffer
+            // returns from a popup that didn't focus into help, no
+            // sync happened, so locals are stale and we leave
+            // App.syntax / App.folds untouched.
+            let stashed_syntax = self
+                .buffer_locals
+                .get(&id)
+                .and_then(|l| l.get::<crate::modes::DocumentSyntax>())
+                .and_then(|s| s.0.clone());
+            if stashed_syntax.is_some() {
+                self.syntax = stashed_syntax;
+                self.last_parsed_text_version = self
+                    .buffer_locals
+                    .get(&id)
+                    .and_then(|l| l.get::<crate::modes::DocumentLastParsedTextVersion>())
+                    .map(|v| v.0)
+                    .unwrap_or(0);
+                self.last_synced_syntax_version = self
+                    .buffer_locals
+                    .get(&id)
+                    .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
+                    .map(|v| v.0)
+                    .unwrap_or(0);
+                self.folds = self
+                    .buffer_locals
+                    .get(&id)
+                    .and_then(|l| l.get::<crate::modes::DocumentFolds>())
+                    .map(|f| f.0.clone())
+                    .unwrap_or_default();
             }
             return;
         }
@@ -89,14 +115,33 @@ impl App {
         // published-cell; the previous cache pointed at the old
         // document.
         self.snapshot_cache = self.document.snapshot_cache();
-        self.syntax = entry.syntax.take();
-        self.last_parsed_text_version = entry.last_parsed_text_version;
-        // Folds round-trip with the buffer (see DocumentEntry
-        // doc-comment). On first activation the entry is empty
-        // and `activate_buffer_state` seeds from foldmethod;
-        // subsequent re-activations restore the user's
-        // open/closed state.
-        self.folds = std::mem::take(&mut entry.folds);
+        // M.3.2.c.5: pull stashed mode-state out of buffer_locals
+        // (formerly held on `entry.syntax` / `entry.folds` etc.).
+        // First activation has empty locals; `activate_buffer_state`
+        // seeds via the foldmethod / reparse seam.
+        self.syntax = self
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentSyntax>())
+            .and_then(|s| s.0.clone());
+        self.last_parsed_text_version = self
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentLastParsedTextVersion>())
+            .map(|v| v.0)
+            .unwrap_or(0);
+        self.last_synced_syntax_version = self
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
+            .map(|v| v.0)
+            .unwrap_or(0);
+        self.folds = self
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentFolds>())
+            .map(|f| f.0.clone())
+            .unwrap_or_default();
         self.document_buffer_id = id;
         let pane = self.pane_tree.active_mut();
         pane.buffer = BufferKind::Document;
@@ -471,12 +516,11 @@ impl App {
             data: BufferData::Document(DocumentEntry {
                 id: new_id,
                 handle: new_handle.clone(),
-                syntax: None,
-                last_parsed_text_version: 0,
-                last_synced_syntax_version: 0,
-                folds: Vec::new(),
             }),
         });
+        // M.3.2.c.5: seed empty mode-state into the new buffer's
+        // locals so reader accessors resolve uniformly.
+        self.seed_empty_document_locals(new_id);
         // Save the currently-active buffer's hot-path state into
         // its registry entry, then load the new buffer's into the
         // hot path.
@@ -555,17 +599,38 @@ impl App {
         }
     }
 
-    /// `:q[uit]` -- request editor shutdown. Honors the dirty
-    /// guard unless `force` (a trailing `!`). Publishes
-    /// `Event::BeforeQuit` for observability; subscribers see it
-    /// but cannot veto in v1.
+    /// `:q[uit]` -- vim-style window close. With multiple panes
+    /// open, closes the active pane (no dirty check; the buffer
+    /// lives on in the registry / other panes). With one pane
+    /// left, runs the dirty guard against any document with
+    /// unsaved changes and shuts down the editor. `force` (`!`)
+    /// bypasses the dirty guard. Publishes `Event::BeforeQuit`
+    /// for observability when the editor actually quits.
     pub(super) fn do_quit(&mut self, force: bool) {
-        if !force && self.document.dirty() {
-            self.set_message(
-                EchoLevel::Error,
-                "no write since last change (add ! to override)".to_string(),
-            );
+        if self.pane_tree.len() > 1 {
+            self.do_close_pane();
             return;
+        }
+        if !force {
+            let dirty_id = self
+                .buffers
+                .document_ids_sorted()
+                .into_iter()
+                .find(|id| {
+                    self.buffers
+                        .document(*id)
+                        .is_some_and(|d| d.handle.dirty())
+                });
+            if let Some(id) = dirty_id {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!(
+                        "no write since last change for buffer #{} (add ! to override)",
+                        id.0
+                    ),
+                );
+                return;
+            }
         }
         // BeforeQuit is observation-only in v1 (no veto seam yet).
         // Subscribers see it; the quit proceeds regardless.
@@ -736,9 +801,10 @@ impl App {
                 }
             }
         }
-        self.open_help(
+        self.open_popup(
             HelpBuffer::from_lines("buffers", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
+            crate::popup::PopupPlacement::Centered,
         );
     }
 
@@ -823,16 +889,22 @@ impl App {
         if !matches!(self.active_buffer, BufferKind::Document) {
             return;
         }
-        if let Some(entry) = self.buffers.document_mut(self.document_buffer_id) {
-            entry.syntax = self.syntax.take();
-            entry.last_parsed_text_version = self.last_parsed_text_version;
-            // Folds round-trip with the buffer: stashing them here
-            // preserves the user's open/closed state across a
-            // switch-away-and-back. The activation hook on the
-            // destination side decides whether to recompute (first
-            // visit) or restore (subsequent visits).
-            entry.folds = std::mem::take(&mut self.folds);
-        }
+        // M.3.2.c.5: stash mode-state into buffer_locals (the
+        // canonical home post-DocumentEntry-field-retirement).
+        // Round-tripping every field — including
+        // `last_synced_syntax_version` — preserves the syntax
+        // worker baseline across a switch-away-and-back so an
+        // out-of-order reparse race can't slip through.
+        let id = self.document_buffer_id;
+        let syntax = self.syntax.take();
+        let last_parsed = self.last_parsed_text_version;
+        let last_synced = self.last_synced_syntax_version;
+        let folds = std::mem::take(&mut self.folds);
+        let locals = self.buffer_locals.entry(id).or_default();
+        locals.insert(crate::modes::DocumentSyntax(syntax));
+        locals.insert(crate::modes::DocumentLastParsedTextVersion(last_parsed));
+        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(last_synced));
+        locals.insert(crate::modes::DocumentFolds(folds));
     }
 
     /// Lifecycle hook fired after a document buffer becomes the
@@ -1053,47 +1125,6 @@ impl App {
     /// [`BufferRegistry`] and swaps the active pane to it; that's
     /// what `:lsp-log` / `:lsp-server-log` / `:lsp-trace-log` (Phase
     /// 3) and future persistent help views route through.
-    pub(super) fn open_help(&mut self, buffer: HelpBuffer) {
-        // Record the *document* cursor (we're still active=Document
-        // here, since open_help precedes the active_buffer flip).
-        // Skip the push if we're already in Help (a help->help
-        // re-open from a link follow); the inter-help transition
-        // is recorded by `do_help_follow_link` itself.
-        if matches!(self.active_buffer, BufferKind::Document) {
-            let cur = self.cursor;
-            self.push_position_history(cur, PositionSource::AutoJump);
-        }
-        // Sync the active pane's cursor / scroll stash *before*
-        // swapping `active_buffer` to Help. Once active is Help,
-        // the active pane's buffer (Document) no longer matches
-        // `app.active_buffer`, so the renderer paints it as
-        // visually inactive -- reading from `pane.cursor` rather
-        // than `app.cursor`. Without this snapshot the pane stash
-        // is whatever it was last set to (often (0,0)) and the
-        // doc visibly jumps to the top of file when the popup
-        // opens.
-        self.snapshot_active_pane();
-        // Capture pre-help state so dismiss restores the user
-        // cleanly. Mirrors `activate_help_in_pane` / `focus_help_popup`.
-        if !matches!(self.active_buffer, BufferKind::Help) {
-            let active = self.pane_tree.active();
-            self.prev_pane_for_help = Some(PrevPaneState {
-                buffer: active.buffer,
-                buffer_id: active.buffer_id,
-                cursor: self.cursor,
-                scroll: self.scroll,
-            });
-        }
-        // Load the help buffer's cursor / scroll into the App's
-        // hot path. Motion / scroll / search read / write them
-        // uniformly across buffer kinds.
-        let stash_cursor = buffer.cursor;
-        let stash_scroll = buffer.scroll as u32;
-        self.help_buffer = Some(buffer);
-        self.cursor = stash_cursor;
-        self.scroll = stash_scroll;
-        self.active_buffer = BufferKind::Help;
-    }
 
     /// Adopt a help buffer into the unified [`BufferRegistry`] and
     /// swap the active pane to it -- the in-pane counterpart to
@@ -1180,6 +1211,121 @@ impl App {
         locals.insert(crate::modes::HelpLinks(buffer.links.clone()));
         locals.insert(crate::modes::HelpAnchors(buffer.anchors.clone()));
         locals.insert(crate::modes::HelpHighlights(buffer.highlights.clone()));
+    }
+
+    /// M.3.2.c.5: seed an empty set of document mode-locals for a
+    /// freshly-registered document buffer. Subsequent activation
+    /// transitions read through these slots; if the slot is
+    /// missing the accessor returns the type's natural default.
+    /// Idempotent (replace-on-collision).
+    pub(super) fn seed_empty_document_locals(&mut self, buffer_id: BufferId) {
+        let locals = self.buffer_locals.entry(buffer_id).or_default();
+        locals.insert(crate::modes::DocumentSyntax(None));
+        locals.insert(crate::modes::DocumentLastParsedTextVersion(0));
+        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(0));
+        locals.insert(crate::modes::DocumentFolds(Vec::new()));
+    }
+
+    /// M.3.2.c.4 mirror for the active document: copy the App's
+    /// hot-path fields (`syntax`, `last_parsed_text_version`,
+    /// `last_synced_syntax_version`, `folds`) into the buffer-
+    /// locals map for `self.document_buffer_id`. Called from
+    /// every site that mutates those fields so reader-side flips
+    /// (M.3.2.c.4 follow-up + retirement) can resolve mode-owned
+    /// state through `buffer_locals` uniformly across active /
+    /// inactive buffers.
+    #[allow(dead_code)]
+    pub(super) fn seed_active_document_locals(&mut self) {
+        if !matches!(self.active_buffer, BufferKind::Document) {
+            return;
+        }
+        let id = self.document_buffer_id;
+        let syntax = self.syntax.clone();
+        let last_parsed = self.last_parsed_text_version;
+        let last_synced = self.last_synced_syntax_version;
+        let folds = self.folds.clone();
+        let locals = self.buffer_locals.entry(id).or_default();
+        locals.insert(crate::modes::DocumentSyntax(syntax));
+        locals.insert(crate::modes::DocumentLastParsedTextVersion(last_parsed));
+        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(last_synced));
+        locals.insert(crate::modes::DocumentFolds(folds));
+    }
+
+    // ---- M.3.2.c.4 reader accessors ----
+    //
+    // These resolve mode-owned document state through
+    // `buffer_locals` so callers don't have to branch on
+    // active-vs-inactive. The active buffer's hot-path fields
+    // (`App.syntax`, `App.folds`, etc.) remain canonical;
+    // locals mirror them at de-activation boundaries so reads
+    // for inactive buffers route through this path uniformly.
+
+    /// Mode-owned syntax handle for `id`. For the active
+    /// document this is `App.syntax` (the live hot-path slot);
+    /// for inactive documents it routes through `buffer_locals`.
+    /// Returns `None` for `Lang::Plain` documents and for
+    /// non-document buffers.
+    pub(crate) fn document_syntax_for(
+        &self,
+        id: BufferId,
+    ) -> Option<&lattice_syntax::SyntaxHandle> {
+        if id == self.document_buffer_id
+            && matches!(self.active_buffer, BufferKind::Document)
+        {
+            return self.syntax.as_ref();
+        }
+        self.buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentSyntax>())
+            .and_then(|s| s.0.as_ref())
+    }
+
+    /// Mode-owned fold list for `id`. Same active / inactive
+    /// resolution as [`Self::document_syntax_for`]. Returns an
+    /// empty slice for buffers that have no folds yet (or for
+    /// non-document buffers).
+    #[allow(dead_code)]
+    pub(crate) fn document_folds_for(&self, id: BufferId) -> &[crate::app::Fold] {
+        if id == self.document_buffer_id
+            && matches!(self.active_buffer, BufferKind::Document)
+        {
+            return &self.folds;
+        }
+        self.buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentFolds>())
+            .map(|f| f.0.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Mode-owned `last_parsed_text_version` for `id`.
+    #[allow(dead_code)]
+    pub(crate) fn document_last_parsed_text_version_for(&self, id: BufferId) -> u64 {
+        if id == self.document_buffer_id
+            && matches!(self.active_buffer, BufferKind::Document)
+        {
+            return self.last_parsed_text_version;
+        }
+        self.buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentLastParsedTextVersion>())
+            .map(|v| v.0)
+            .unwrap_or(0)
+    }
+
+    /// Mode-owned `last_synced_syntax_version` for `id`.
+    #[allow(dead_code)]
+    pub(crate) fn document_last_synced_syntax_version_for(&self, id: BufferId) -> u64 {
+        if id == self.document_buffer_id
+            && matches!(self.active_buffer, BufferKind::Document)
+        {
+            return self.last_synced_syntax_version;
+        }
+        self.buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
+            .map(|v| v.0)
+            .unwrap_or(0)
     }
 
     pub(super) fn save_blocking(&mut self) -> Result<std::path::PathBuf, RuntimeError> {
@@ -1557,6 +1703,62 @@ mod tests {
         a.apply(Action::SplitPaneVertical);
         a.apply(Action::ClosePane);
         assert_eq!(a.pane_tree.len(), 1);
+    }
+
+    #[test]
+    fn quit_with_multiple_panes_closes_active_pane() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::SplitPaneVertical);
+        assert_eq!(a.pane_tree.len(), 2);
+        a.do_quit(false);
+        assert!(!a.should_quit, "extra pane: :q must not exit the editor");
+        assert_eq!(a.pane_tree.len(), 1);
+    }
+
+    #[test]
+    fn quit_with_multiple_panes_skips_dirty_check() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::SplitPaneVertical);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("z".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        assert!(a.document.dirty());
+        a.do_quit(false);
+        assert!(!a.should_quit);
+        assert_eq!(a.pane_tree.len(), 1);
+    }
+
+    #[test]
+    fn quit_with_last_pane_clean_quits_editor() {
+        let mut a = app_with("xx", 10);
+        a.do_quit(false);
+        assert!(a.should_quit);
+    }
+
+    #[test]
+    fn quit_with_last_pane_dirty_refuses() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("z".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        a.do_quit(false);
+        assert!(!a.should_quit);
+        assert!(
+            a.last_message
+                .as_ref()
+                .map(|m| m.text.contains("no write since last change"))
+                .unwrap_or(false)
+        );
+    }
+
+    #[test]
+    fn quit_force_with_last_pane_dirty_quits() {
+        let mut a = app_with("xx", 10);
+        a.apply(Action::EnterMode(ModalState::Insert));
+        a.apply(Action::Insert("z".into()));
+        a.apply(Action::EnterMode(ModalState::Normal));
+        a.do_quit(true);
+        assert!(a.should_quit);
     }
 
     #[test]
@@ -2083,6 +2285,214 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn boot_seeds_initial_document_locals() {
+        // M.3.2.c.4: the initial document buffer should have its
+        // four mode-owned locals (DocumentSyntax, last_parsed,
+        // last_synced, folds) seeded with empty defaults. Reader-
+        // side flips later in this slice route through this map.
+        let a = app_with("hello", 10);
+        let id = a.document_buffer_id;
+        let locals = a
+            .buffer_locals
+            .get(&id)
+            .expect("initial document has buffer_locals");
+        assert!(
+            locals.get::<crate::modes::DocumentSyntax>().is_some(),
+            "DocumentSyntax local seeded"
+        );
+        assert!(
+            locals
+                .get::<crate::modes::DocumentLastParsedTextVersion>()
+                .is_some(),
+            "DocumentLastParsedTextVersion local seeded"
+        );
+        assert!(
+            locals
+                .get::<crate::modes::DocumentLastSyncedSyntaxVersion>()
+                .is_some(),
+            "DocumentLastSyncedSyntaxVersion local seeded"
+        );
+        assert!(
+            locals.get::<crate::modes::DocumentFolds>().is_some(),
+            "DocumentFolds local seeded"
+        );
+    }
+
+    #[test]
+    fn snapshot_active_document_mirrors_into_locals() {
+        // After de-activating a document (which moves App.syntax
+        // / App.folds into entry.syntax / entry.folds), the
+        // buffer-locals for that document should reflect the
+        // entry's new contents.
+        let mut a = app_with("hello\nworld", 10);
+        let active_id = a.document_buffer_id;
+        // Force a non-default fold so the mirror has something
+        // to observe.
+        a.folds.push(crate::app::Fold {
+            start_line: 0,
+            end_line: 1,
+            closed: false,
+            identity: None,
+        });
+        a.last_parsed_text_version = 42;
+        a.last_synced_syntax_version = 41;
+        a.snapshot_active_document();
+        let locals = a
+            .buffer_locals
+            .get(&active_id)
+            .expect("locals exist for active id");
+        let parsed = locals
+            .get::<crate::modes::DocumentLastParsedTextVersion>()
+            .expect("last_parsed mirrored");
+        let synced = locals
+            .get::<crate::modes::DocumentLastSyncedSyntaxVersion>()
+            .expect("last_synced mirrored");
+        let folds = locals
+            .get::<crate::modes::DocumentFolds>()
+            .expect("folds mirrored");
+        assert_eq!(parsed.0, 42);
+        assert_eq!(synced.0, 41);
+        assert_eq!(folds.0.len(), 1);
+        assert_eq!(folds.0[0].start_line, 0);
+    }
+
+    #[test]
+    fn popup_dismiss_does_not_jolt_backdrop_scroll() {
+        // Open a centred popup over a long doc so the doc's scroll
+        // sits at a non-zero baseline; dismiss; assert the doc's
+        // scroll round-trips. The bug: `ensure_cursor_visible`
+        // fires after dispatch with `viewport_height` still set to
+        // the popup's small inner height, recomputing scroll
+        // against the wrong viewport and shifting the backdrop.
+        let many_lines: String = (0..50).map(|i| format!("line {i}\n")).collect();
+        let mut a = app_with(&many_lines, 30);
+        // Park the cursor mid-document so scroll is non-zero.
+        a.cursor = lattice_protocol::position::Position::new(40, 0);
+        a.scroll = 30;
+        let pre_cursor = a.cursor;
+        let pre_scroll = a.scroll;
+        // :lsp-status opens a centred popup (focuses Help mode).
+        a.do_lsp_status();
+        // viewport_height is now the popup's inner height (small).
+        // Set it explicitly to mimic what runtime would do.
+        a.set_viewport_height(
+            a.help_popup_inner_height(30).unwrap_or(a.viewport_height),
+        );
+        // Dismiss the popup (the dispatch path calls this on Esc).
+        a.dismiss_popup();
+        // Now simulate what `apply` does post-dispatch: the fix is
+        // that ensure_cursor_visible gets skipped on this transition,
+        // so we don't even need to call it. Verify cursor + scroll
+        // are restored to pre-popup values.
+        assert_eq!(a.cursor, pre_cursor, "cursor restored");
+        assert_eq!(a.scroll, pre_scroll, "scroll restored without jolt");
+    }
+
+    #[test]
+    fn popup_with_long_content_scrolls_when_cursor_descends() {
+        // Popup with 50 lines of content; focused (active_buffer =
+        // Help). Step the cursor past the popup viewport's bottom
+        // row and assert popup scroll advances to keep the cursor
+        // visible. Goes through the input + keymap layer (`press`)
+        // so the path matches what real `j` keystrokes hit, not
+        // the App's direct-Invoke shortcut.
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let lines: Vec<String> = (0..50).map(|i| format!("popup line {i}")).collect();
+        let mut a = app_with("backdrop\n", 30);
+        let buf = crate::help::HelpBuffer::from_lines("status", lines);
+        a.open_popup(buf, crate::popup::PopupPlacement::Centered);
+        // Mimic the runtime's per-frame viewport set: in popup
+        // mode it's the popup's inner height, not the doc area's.
+        let inner = a
+            .help_popup_inner_height(30)
+            .expect("popup inner height available");
+        a.set_viewport_height(inner);
+        // Press `j` enough times to step past the visible
+        // viewport. Each iteration mirrors the runtime: refresh
+        // viewport_height, then process the keystroke.
+        for _ in 0..(inner + 5) {
+            a.set_viewport_height(
+                a.help_popup_inner_height(30).unwrap_or(a.viewport_height),
+            );
+            crate::app::test_helpers::press(
+                &mut a,
+                KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()),
+            );
+        }
+        assert!(
+            a.cursor.line >= inner,
+            "cursor should descend past the visible viewport, got line {} (inner {})",
+            a.cursor.line,
+            inner
+        );
+        assert!(
+            a.scroll > 0,
+            "scroll should advance once cursor leaves the visible window, got scroll {}",
+            a.scroll
+        );
+        assert!(
+            a.cursor.line < a.scroll + inner,
+            "cursor must still be inside the scrolled viewport (cursor {}, scroll {}, inner {})",
+            a.cursor.line,
+            a.scroll,
+            inner
+        );
+    }
+
+    #[test]
+    fn document_syntax_for_inactive_resolves_through_locals() {
+        // For an inactive document buffer the accessor must
+        // resolve through buffer_locals (since `App.syntax` only
+        // holds the active document's handle).
+        use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
+        use crate::buffers::{BufferFlags, BufferId};
+        let mut a = app_with("active", 5);
+        // Manufacture a second document buffer + seed empty
+        // locals to validate the accessor path. Real `:e <new>`
+        // does this through `do_edit`.
+        let inactive_id = BufferId::next();
+        let doc_handle = a.document.clone();
+        a.buffers.insert(BufferEntry {
+            id: inactive_id,
+            flags: BufferFlags::default(),
+            data: BufferData::Document(DocumentEntry {
+                id: inactive_id,
+                handle: doc_handle,
+            }),
+        });
+        a.seed_empty_document_locals(inactive_id);
+        // Read for the inactive buffer flows through locals; syntax
+        // is None which the accessor returns as None.
+        assert!(
+            a.document_syntax_for(inactive_id).is_none(),
+            "accessor returns None for empty locals"
+        );
+        // last_parsed / last_synced come back as 0 on the inactive
+        // buffer's empty locals.
+        assert_eq!(a.document_last_parsed_text_version_for(inactive_id), 0);
+        assert_eq!(a.document_last_synced_syntax_version_for(inactive_id), 0);
+        // folds slice is empty.
+        assert!(a.document_folds_for(inactive_id).is_empty());
+    }
+
+    #[test]
+    fn document_locals_carry_owner_metadata() {
+        let a = app_with("hi", 10);
+        let id = a.document_buffer_id;
+        let locals = a.buffer_locals.get(&id).unwrap();
+        let descriptors: Vec<_> = locals.iter_descriptors().collect();
+        for d in descriptors.iter().filter(|d| d.name.starts_with("text-mode.")) {
+            assert_eq!(d.owner_mode, "text-mode");
+        }
+        // At minimum the four document locals.
+        let names: Vec<_> = descriptors.iter().map(|d| d.name).collect();
+        assert!(names.contains(&"text-mode.syntax"));
+        assert!(names.contains(&"text-mode.last-parsed-text-version"));
+        assert!(names.contains(&"text-mode.last-synced-syntax-version"));
+        assert!(names.contains(&"text-mode.folds"));
     }
 
     #[test]

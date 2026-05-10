@@ -300,15 +300,23 @@ impl App {
             data: BufferData::Document(DocumentEntry {
                 id: document_buffer_id,
                 handle: document.clone(),
-                // Active buffer's syntax / folds live on the App
-                // for the hot path; the registry entry stays empty
-                // until a switch snapshots the active state back.
-                syntax: None,
-                last_parsed_text_version: 0,
-                last_synced_syntax_version: 0,
-                folds: Vec::new(),
             }),
         });
+        // M.3.2.c.4: seed the initial document's buffer-locals so
+        // reader-side flips can route through the locals map for
+        // inactive buffers uniformly. The active buffer's hot-
+        // path fields (App.syntax / App.folds / ...) are still
+        // canonical until the readers flip; locals are updated at
+        // each de-activation boundary via
+        // `seed_document_entry_locals`.
+        let mut buffer_locals: HashMap<super::BufferId, lattice_mode::BufferLocals> =
+            HashMap::new();
+        let mut initial_locals = lattice_mode::BufferLocals::default();
+        initial_locals.insert(crate::modes::DocumentSyntax(None));
+        initial_locals.insert(crate::modes::DocumentLastParsedTextVersion(0));
+        initial_locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(0));
+        initial_locals.insert(crate::modes::DocumentFolds(Vec::new()));
+        buffer_locals.insert(document_buffer_id, initial_locals);
         let mut app = Self {
             document,
             snapshot_cache,
@@ -427,7 +435,7 @@ impl App {
                 std::sync::Arc::new(registry)
             },
             active_modes: std::collections::HashMap::new(),
-            buffer_locals: std::collections::HashMap::new(),
+            buffer_locals,
             resolved_options: std::collections::HashMap::new(),
             buffer_local_overrides: std::collections::HashMap::new(),
             help_topics,
@@ -439,6 +447,7 @@ impl App {
             help_buffer: None,
             prev_pane_for_help: None,
             help_display_mode: HelpDisplayMode::default(),
+            popup_placement: crate::popup::PopupPlacement::default(),
             completion_registry,
             completion_state: None,
             insert_completion: None,

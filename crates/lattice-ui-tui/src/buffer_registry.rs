@@ -23,7 +23,6 @@
 use std::collections::HashMap;
 
 use lattice_runtime::DocumentHandle;
-use lattice_syntax::SyntaxHandle;
 
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
 use crate::file_tree::FileTreeBuffer;
@@ -50,23 +49,17 @@ use crate::help::HelpBuffer;
 pub struct DocumentEntry {
     pub id: BufferId,
     pub handle: DocumentHandle,
-    pub syntax: Option<SyntaxHandle>,
-    pub last_parsed_text_version: u64,
-    /// Slice B.2 part 2: parallels App's
-    /// `last_synced_syntax_version` for inactive-pane documents.
-    /// When this entry's syntax handle is the target of a
-    /// reparse request (via `refresh_pane_highlights`), the
-    /// previous value is sent as `from_version` so the worker
-    /// can verify edits apply to the right tree baseline.
-    /// Updated to `text_version` after each request.
-    pub last_synced_syntax_version: u64,
-    /// Per-buffer fold list. Empty means "not yet computed for
-    /// this buffer." The activation hook recomputes against
-    /// the current `App.foldmethod` on first activation;
-    /// subsequent re-activations (switching back to this
-    /// buffer) restore the user's open/closed state without
-    /// re-walking the buffer.
-    pub folds: Vec<crate::app::Fold>,
+    // M.3.2.c.5: `syntax`, `last_parsed_text_version`,
+    // `last_synced_syntax_version`, and `folds` retired off the
+    // entry. They live in `App.buffer_locals[id]` as
+    // [`crate::modes::DocumentSyntax`] /
+    // [`crate::modes::DocumentLastParsedTextVersion`] /
+    // [`crate::modes::DocumentLastSyncedSyntaxVersion`] /
+    // [`crate::modes::DocumentFolds`]. Reads route through
+    // `App::document_syntax_for` and friends; writes go through
+    // `App::seed_document_entry_locals` /
+    // `App::seed_active_document_locals` at the activation
+    // boundary helpers in `app/lifecycle.rs`.
 }
 
 /// One slot in the registry. The kind-specific data lives in

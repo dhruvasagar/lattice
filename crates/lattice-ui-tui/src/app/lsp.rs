@@ -3216,8 +3216,9 @@ impl App {
     /// `:lsp-status` -- render every running server in a
     /// help-style buffer.
     pub fn do_lsp_status(&mut self) {
-        let buffer = HelpBuffer::lsp_status(&self.lsp);
-        self.open_help(buffer.with_markdown_syntax(self.lang_registry.clone()));
+        let buffer = HelpBuffer::lsp_status(&self.lsp)
+            .with_markdown_syntax(self.lang_registry.clone());
+        self.open_popup(buffer, crate::popup::PopupPlacement::Centered);
     }
 
     /// `:lsp-server-log` -- vertico picker over every running

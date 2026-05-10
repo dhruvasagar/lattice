@@ -34,7 +34,14 @@ impl App {
         if tv == self.last_parsed_text_version {
             return;
         }
-        if let Some(syntax) = self.syntax.as_ref() {
+        // M.3.2.c.4: route through the locals-backed accessor.
+        // Clone the handle (cheap Arc bump) to release the
+        // immutable `self` borrow before we mutably borrow
+        // `self.pending_syntax_edits` below.
+        let syntax = self
+            .document_syntax_for(self.document_buffer_id)
+            .cloned();
+        if let Some(syntax) = syntax {
             // Slice B.2 part 2: ship the accumulated EditDeltas
             // to the worker. Worker applies them via tree.edit()
             // before running incremental Parser::parse, falling

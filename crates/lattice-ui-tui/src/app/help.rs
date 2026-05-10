@@ -71,9 +71,10 @@ impl App {
         } else {
             format!("help {name}")
         };
-        self.open_help(
+        self.open_popup(
             HelpBuffer::from_lines_and_anchors(title, lines, anchors)
                 .with_markdown_syntax(self.lang_registry.clone()),
+            crate::popup::PopupPlacement::Centered,
         );
     }
 
@@ -130,7 +131,7 @@ impl App {
         if let Some(a) = anchor {
             buffer.scroll_to_anchor(a);
         }
-        self.open_help(buffer);
+        self.open_popup(buffer, crate::popup::PopupPlacement::Centered);
     }
 
     pub(super) fn do_describe_buffer(&mut self) {
@@ -168,9 +169,10 @@ impl App {
             self.show_line_numbers(),
             self.relative_line_numbers()
         ));
-        self.open_help(
+        self.open_popup(
             HelpBuffer::from_lines("describe-buffer", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
+            crate::popup::PopupPlacement::Centered,
         );
     }
 
@@ -223,9 +225,10 @@ impl App {
                 ));
             }
         }
-        self.open_help(
+        self.open_popup(
             HelpBuffer::from_lines(format!("apropos {pattern}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
+            crate::popup::PopupPlacement::Centered,
         );
     }
 
@@ -249,9 +252,10 @@ impl App {
                 }
             }
         }
-        self.open_help(
+        self.open_popup(
             HelpBuffer::from_lines(format!("describe-key {chord}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
+            crate::popup::PopupPlacement::Centered,
         );
     }
 
@@ -266,10 +270,15 @@ impl App {
         let lines: Vec<String> = markdown.split('\n').map(String::from).collect();
         let buffer = HelpBuffer::from_lines("hover", lines)
             .with_markdown_syntax(self.lang_registry.clone());
-        // State A: just set the help_buffer. Active stays on the
-        // main buffer; self.cursor untouched. prev_pane_for_help
-        // remains `None` -- the State-A auto-dismiss key.
+        // State A: hover sets help_buffer directly; active stays
+        // on the main buffer (self.cursor untouched);
+        // prev_pane_for_help remains `None` -- the State-A auto-
+        // dismiss key. Hover is the only popup that is anchored
+        // to where the cursor happens to be (it's annotating the
+        // symbol the user K'd) so it sets CursorAnchored
+        // explicitly.
         self.help_buffer = Some(buffer);
+        self.popup_placement = crate::popup::PopupPlacement::CursorAnchored;
     }
 
     /// **State A -> State B**: focus moves into the popup. After
@@ -301,35 +310,11 @@ impl App {
     }
 
     /// `:HoverClose` -- dismiss the hover popup. Routes through
-    /// the unified help-dismiss path so State A and State B both
-    /// unwind cleanly (B restores via `prev_pane_for_help`; A
-    /// just drops the popup).
+    /// the unified `dismiss_popup` path so State A and State B
+    /// both unwind cleanly (B restores via `prev_pane_for_help`;
+    /// A just drops the popup).
     pub(super) fn do_close_hover(&mut self) {
-        self.dismiss_help();
-    }
-
-    /// Close the help overlay and route input back to the document.
-    /// Idempotent: closing when no help is open is a no-op.
-    /// Pane-tracked help buffers stay in the registry (so `:bn` /
-    /// `:b N` can return to them); only the popup slot is cleared
-    /// and the active buffer flips back to Document.
-    pub(super) fn dismiss_help(&mut self) {
-        self.help_buffer = None;
-        // Restore pre-help state if focus had moved into the help
-        // (State B for hover; in-pane mode for `:lsp-log` etc.).
-        // State A (popup shown but never focused) leaves
-        // `prev_pane_for_help` as `None` -- nothing to restore;
-        // active was never flipped to Help.
-        if let Some(prev) = self.prev_pane_for_help.take() {
-            self.cursor = prev.cursor;
-            self.scroll = prev.scroll;
-            let pane = self.pane_tree.active_mut();
-            pane.buffer = prev.buffer;
-            pane.buffer_id = prev.buffer_id;
-            self.active_buffer = prev.buffer;
-        } else {
-            self.active_buffer = BufferKind::Document;
-        }
+        self.dismiss_popup();
     }
 
     pub(super) fn do_list_keymap(&mut self) {
@@ -389,9 +374,10 @@ impl App {
             }
             lines.push(String::new());
         }
-        self.open_help(
+        self.open_popup(
             HelpBuffer::from_lines("keymap", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
+            crate::popup::PopupPlacement::Centered,
         );
     }
 

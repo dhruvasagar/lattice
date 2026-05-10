@@ -103,7 +103,8 @@ impl App {
     /// or no parse tree yet). Reads the latest snapshot from the
     /// async syntax handle (wait-free).
     fn recompute_syntax_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
-        if let Some(syntax) = self.syntax.as_ref() {
+        // M.3.2.c.4: route through the locals-backed accessor.
+        if let Some(syntax) = self.document_syntax_for(self.document_buffer_id) {
             let snap = syntax.snapshot();
             if let Some(folds) = crate::folds::compute_syntax_folds(&snap) {
                 return folds;

@@ -172,6 +172,115 @@ impl BufferLocal for OilDir {
     }
 }
 
+// ---- M.3.2.c.4: language-mode / text-mode buffer-locals ----
+//
+// `DocumentEntry` carries four pieces of mode-internal state:
+// - `syntax: Option<SyntaxHandle>` -- per-language major mode's
+//   tree-sitter handle (incremental parse + highlight surface).
+// - `last_parsed_text_version` / `last_synced_syntax_version` --
+//   the syntax pipeline's edit-coalescing baselines.
+// - `folds: Vec<Fold>` -- universal across language majors;
+//   foundational text-mode owns it.
+//
+// These live as buffer-locals so a future language major (e.g.
+// `RustMode` registering a richer indent / fold profile) can
+// declare ownership without touching `DocumentEntry`'s shape.
+//
+// The OWNER_MODE attribution is `"text-mode"` for the foundational
+// data; `:describe-buffer` will show that. Once each language
+// mode declares richer per-language state (M.4+), we can split
+// the syntax handle's owner attribution per-language without
+// changing the local's shape.
+
+/// Per-document tree-sitter syntax handle. `Some` once a language
+/// has been detected for the buffer and a parse has been
+/// requested; `None` for `Lang::Plain` documents and for buffers
+/// that haven't been activated yet.
+#[derive(Debug, Clone)]
+pub struct DocumentSyntax(pub Option<lattice_syntax::SyntaxHandle>);
+
+impl BufferLocal for DocumentSyntax {
+    const NAME: &'static str = "text-mode.syntax";
+    const DOC: &'static str =
+        "Per-document tree-sitter syntax handle. Drives the highlight \
+         walk + the fold computation. Owned by the document's active \
+         language major (text-mode for `Lang::Plain`, the matching \
+         language mode otherwise); the handle's runtime data lives in \
+         a worker actor referenced by this slot.";
+    const OWNER_MODE: &'static str = "text-mode";
+    fn describe(&self) -> String {
+        match &self.0 {
+            Some(_) => "attached".to_string(),
+            None => "(none)".to_string(),
+        }
+    }
+}
+
+/// Document version (the rope's monotonic edit counter) of the
+/// most recent successful parse. The renderer's syntax walk
+/// short-circuits when `text_version == last_parsed_text_version`;
+/// the reparse seam treats inequality as "edits to drain into the
+/// worker" and fires an incremental reparse.
+#[derive(Debug, Clone, Copy)]
+pub struct DocumentLastParsedTextVersion(pub u64);
+
+impl BufferLocal for DocumentLastParsedTextVersion {
+    const NAME: &'static str = "text-mode.last-parsed-text-version";
+    const DOC: &'static str =
+        "Document version (rope monotonic) of the most recent \
+         successful parse. Cheap idempotency check on the highlight \
+         hot path: equal version means the cached spans are still \
+         current; unequal triggers a reparse.";
+    const OWNER_MODE: &'static str = "text-mode";
+    fn describe(&self) -> String {
+        format!("v{}", self.0)
+    }
+}
+
+/// Document version that was the baseline for the last syntax-
+/// worker request fired for this buffer. Sent as `from_version`
+/// on each request so the worker can verify edits apply to the
+/// expected tree baseline before running the incremental
+/// `tree.edit()`. Independent of `last_parsed_text_version`
+/// because the worker may still be in flight when the next
+/// request fires.
+#[derive(Debug, Clone, Copy)]
+pub struct DocumentLastSyncedSyntaxVersion(pub u64);
+
+impl BufferLocal for DocumentLastSyncedSyntaxVersion {
+    const NAME: &'static str = "text-mode.last-synced-syntax-version";
+    const DOC: &'static str =
+        "Document version baseline most recently sent to the syntax \
+         worker. Worker uses it as `from_version` to verify edits \
+         apply against the expected tree before running tree.edit().";
+    const OWNER_MODE: &'static str = "text-mode";
+    fn describe(&self) -> String {
+        format!("v{}", self.0)
+    }
+}
+
+/// Per-document fold list. Empty means "not yet computed for this
+/// buffer." First-activation seeds from the active foldmethod;
+/// subsequent re-activations restore the user's open / closed
+/// state. Universal across language majors -- the foundational
+/// text-mode owns the data shape; per-language fold queries are
+/// a presentation-layer concern read through the syntax local.
+#[derive(Debug, Clone, Default)]
+pub struct DocumentFolds(pub Vec<crate::app::Fold>);
+
+impl BufferLocal for DocumentFolds {
+    const NAME: &'static str = "text-mode.folds";
+    const DOC: &'static str =
+        "Per-document fold list. Empty until the activation hook \
+         seeds from the buffer's foldmethod; thereafter holds the \
+         user's open / closed state across buffer-switch \
+         round-trips.";
+    const OWNER_MODE: &'static str = "text-mode";
+    fn describe(&self) -> String {
+        format!("{} fold(s)", self.0.len())
+    }
+}
+
 /// Macro for buffer-kind majors that are read-only (Help,
 /// FileTree). Oil is writable so it gets its own impl.
 macro_rules! read_only_buffer_kind_mode {

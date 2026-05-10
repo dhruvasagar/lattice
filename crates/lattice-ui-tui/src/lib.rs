@@ -48,6 +48,7 @@ pub mod keymap_visual;
 pub mod modes;
 pub mod pane;
 pub mod picker;
+pub mod popup;
 pub mod render;
 pub mod runtime;
 pub mod icons;

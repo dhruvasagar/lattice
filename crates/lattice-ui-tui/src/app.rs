@@ -116,6 +116,7 @@ mod oil;
 mod operators;
 mod options;
 mod picker;
+mod popup;
 mod search;
 mod state;
 mod syntax;
@@ -655,7 +656,7 @@ pub struct UnnamedRegister {
 }
 
 /// Snapshot of the active pane's state captured just before help
-/// took it over. Used by `dismiss_help` to restore the user to the
+/// took it over. Used by `dismiss_popup` to restore the user to the
 /// buffer + cursor + scroll they came from. The same struct serves
 /// both display modes (in-pane and popup-overlay) -- popup mode
 /// doesn't actually mutate `pane.buffer` so the restore there is
@@ -1209,7 +1210,7 @@ pub struct App {
     /// surfaces.
     pub help_buffer: Option<HelpBuffer>,
     /// Pane state captured before activating help -- used by
-    /// `dismiss_help` to restore the user to whatever buffer +
+    /// `dismiss_popup` to restore the user to whatever buffer +
     /// cursor + scroll they came from. Set by both display
     /// paths (in-pane via `activate_help_in_pane`, popup via
     /// `open_help_popup_overlay`); cleared by dismiss. v1 single-
@@ -1221,6 +1222,15 @@ pub struct App {
     /// phase. Configurable per-user (eventually via `:set
     /// help.display-mode=...`).
     pub help_display_mode: HelpDisplayMode,
+    /// Where the popup overlay sits on screen when one is open.
+    /// Carried on App (not on the buffer) because the popup is a
+    /// generic rectangular surface inside which any buffer kind
+    /// renders -- placement is a property of the popup, not of
+    /// whatever buffer happens to be its content. Cursor-anchored
+    /// popups (hover / signature help) set this when they open;
+    /// the default (centred) covers `:lsp-status`, `:describe-*`,
+    /// `:apropos`, `:help`, `:keymap`, `:options`, `:ls`, ...
+    pub popup_placement: crate::popup::PopupPlacement,
 
     /// Pluggable completion pipeline (DESIGN.md §5.11.3). Owned by
     /// the App at v1 -- promotes to a sibling crate when plugins

@@ -397,9 +397,10 @@ impl App {
         }
         lines.push(String::new());
         lines.push(spec.doc().to_string());
-        self.open_help(
+        self.open_popup(
             HelpBuffer::from_lines(format!("describe-option {name}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
+            crate::popup::PopupPlacement::Centered,
         );
     }
 
@@ -418,9 +419,10 @@ impl App {
                 spec.get_formatted()
             ));
         }
-        self.open_help(
+        self.open_popup(
             HelpBuffer::from_lines("options", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
+            crate::popup::PopupPlacement::Centered,
         );
     }
 

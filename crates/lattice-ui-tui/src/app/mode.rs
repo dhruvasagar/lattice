@@ -117,6 +117,26 @@ impl App {
                 );
             }
         }
+        // M.4 (Option B): per-kind default minor (help-mode for
+        // Help kinds today). Activated AFTER the major so it
+        // layers correctly in the resolver's priority stack.
+        if let Some(minor_id) = crate::modes::default_minor_mode_id_for_buffer_kind(kind) {
+            if let Err(e) = self.mode_registry.activate_minor(
+                &mut active,
+                &mut locals,
+                proto_id,
+                minor_id,
+                lattice_mode::CapabilitySet::empty(),
+            ) {
+                self.set_message(
+                    EchoLevel::Warn,
+                    format!(
+                        "mode: activate_minor({}) for buffer {} failed: {}",
+                        minor_id, buffer_id.0, e,
+                    ),
+                );
+            }
+        }
         self.active_modes.insert(buffer_id, active);
         self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);

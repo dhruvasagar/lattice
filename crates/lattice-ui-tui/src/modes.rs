@@ -318,8 +318,57 @@ macro_rules! read_only_buffer_kind_mode {
     };
 }
 
-read_only_buffer_kind_mode!(HelpMode, "help-mode");
 read_only_buffer_kind_mode!(FileTreeMode, "file-tree-mode");
+
+/// `help-mode`: a *minor* mode that turns a markdown buffer into a
+/// help buffer (DESIGN.md §5.11). Composes with `markdown-mode`
+/// (the major), which carries the syntax pipeline + motion
+/// semantics. Help-mode adds:
+///
+/// - `ReadOnly = true` (option contribution).
+/// - Link / anchor metadata parsing (today carried on the
+///   `HelpContent` bundle; future: contributed by help-mode's
+///   `on_activate`).
+/// - `<CR>` follow-link dispatch (gated on this minor being
+///   active).
+/// - The `:help` / `:describe-*` / `:apropos` / `:keymap` / etc.
+///   workflow commands (gated on this minor being active).
+///
+/// Decoupling stance (M.4): the popup UI component is buffer-
+/// agnostic. It can render any buffer; help-mode-tagged buffers
+/// just happen to be the only popup content kind today. The
+/// user's display preference (popup / split / tab / minibuffer)
+/// is orthogonal to which mode the buffer carries.
+pub struct HelpMode;
+
+impl HelpMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("help-mode")
+    }
+}
+
+impl Mode for HelpMode {
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
+    fn options(&self) -> OptionOverrideSet {
+        lattice_config::overrides! {
+            lattice_config::ReadOnly = true,
+        }
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        Ok(())
+    }
+    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        Ok(())
+    }
+}
 
 /// Oil is the editable directory listing -- writable. No
 /// `ReadOnly = true` override.
@@ -395,20 +444,41 @@ impl Mode for HoverMode {
 pub fn major_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId> {
     match kind {
         BufferKind::Document => None,
-        BufferKind::Help => Some(HelpMode::mode_id()),
+        // M.4 (Option B): help buffers run `markdown-mode` as the
+        // major (the markdown content drives motion + syntax) and
+        // pick up `help-mode` as a minor at activation time. The
+        // minor adds the help-only behaviour (ReadOnly, links,
+        // anchors, `:help`-family commands) without forking the
+        // major-mode chassis.
+        BufferKind::Help => Some(lattice_syntax::MarkdownMode::mode_id()),
         BufferKind::FileTree => Some(FileTreeMode::mode_id()),
         BufferKind::Oil => Some(OilMode::mode_id()),
     }
 }
 
-/// Register every TUI-owned major mode against `registry`.
+/// M.4 (Option B): minor modes the App activates alongside the
+/// major resolved by [`major_mode_id_for_buffer_kind`]. Returns
+/// the per-kind minor that gives the buffer its full identity.
+/// Help buffers get `help-mode` (read-only + link/anchor
+/// follow); other kinds currently get nothing -- their majors
+/// already carry their full contribution set.
+pub fn default_minor_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId> {
+    match kind {
+        BufferKind::Help => Some(HelpMode::mode_id()),
+        BufferKind::Document | BufferKind::FileTree | BufferKind::Oil => None,
+    }
+}
+
+/// Register every TUI-owned mode against `registry`. Includes
+/// majors (`file-tree-mode`, `oil-mode`) and minors (`help-mode`,
+/// `hover-mode`).
 pub fn register_buffer_kind_modes(registry: &mut ModeRegistry) {
-    registry.register(HelpMode).expect("help-mode register");
     registry
         .register(FileTreeMode)
         .expect("file-tree-mode register");
     registry.register(OilMode).expect("oil-mode register");
-    // M.4: minor modes shipped by the TUI layer.
+    // M.4 (Option B): minor modes shipped by the TUI layer.
+    registry.register(HelpMode).expect("help-mode register");
     registry.register(HoverMode).expect("hover-mode register");
 }
 
@@ -449,13 +519,24 @@ mod tests {
     #[test]
     fn buffer_kind_to_mode_id_table() {
         assert_eq!(major_mode_id_for_buffer_kind(BufferKind::Document), None);
+        // M.4 (Option B): help buffers run markdown-mode as their
+        // major; help-mode is layered on as a minor by the App's
+        // activation path (see `default_minor_mode_id_for_buffer_kind`).
         assert_eq!(
             major_mode_id_for_buffer_kind(BufferKind::Help),
+            Some(lattice_syntax::MarkdownMode::mode_id())
+        );
+        assert_eq!(
+            default_minor_mode_id_for_buffer_kind(BufferKind::Help),
             Some(HelpMode::mode_id())
         );
         assert_eq!(
             major_mode_id_for_buffer_kind(BufferKind::FileTree),
             Some(FileTreeMode::mode_id())
+        );
+        assert_eq!(
+            default_minor_mode_id_for_buffer_kind(BufferKind::FileTree),
+            None
         );
         assert_eq!(
             major_mode_id_for_buffer_kind(BufferKind::Oil),
@@ -475,10 +556,11 @@ mod tests {
     #[test]
     fn resolve_major_mode_combines_kind_and_lang() {
         // Help / FileTree / Oil ignore Lang -- their kind alone
-        // determines the major.
+        // determines the major. Help maps to markdown-mode
+        // (Option B); help-mode is the minor.
         assert_eq!(
             resolve_major_mode(BufferKind::Help, Lang::Rust),
-            HelpMode::mode_id()
+            lattice_syntax::MarkdownMode::mode_id()
         );
         assert_eq!(
             resolve_major_mode(BufferKind::FileTree, Lang::Plain),

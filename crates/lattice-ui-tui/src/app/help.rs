@@ -287,17 +287,24 @@ impl App {
         self.help_buffer = Some(buffer);
         self.popup_placement = crate::popup::PopupPlacement::CursorAnchored;
         self.seed_help_metadata_locals(buffer_id, metadata);
-        // M.4 hover-popup unification: activate `hover-mode` as a
-        // minor on the popup buffer. Future hover-specific
-        // behaviour (auto-close timer, signature-help fan-in, ...)
-        // contributes through this minor instead of being
-        // hard-coded in the dispatch. The dismiss-on-doc-cursor-
-        // motion check still uses `prev_pane_for_help.is_none()`
-        // for now -- routing it through the active-modes lookup
-        // is a follow-up.
+        // M.4 (Option B): hover popup is `markdown-mode` major +
+        // `hover-mode` minor. Markdown carries the syntax
+        // pipeline; hover-mode adds the auto-dismiss-on-doc-
+        // cursor-motion contract (and future hover-only behaviour
+        // like auto-close timers). Help-mode is intentionally NOT
+        // activated -- hover content is markdown that may include
+        // fenced code, but its links are typically external URLs
+        // we don't follow internally.
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
+        let _ = self.mode_registry.activate_major(
+            &mut active,
+            &mut locals,
+            proto_id,
+            lattice_syntax::MarkdownMode::mode_id(),
+            lattice_mode::CapabilitySet::empty(),
+        );
         let _ = self.mode_registry.activate_minor(
             &mut active,
             &mut locals,
@@ -1328,7 +1335,12 @@ mod tests {
     }
 
     #[test]
-    fn help_buffer_active_mode_is_help_mode() {
+    fn help_buffer_active_modes_are_markdown_major_help_minor() {
+        // M.4 (Option B): a help buffer is `markdown-mode` major +
+        // `help-mode` minor. Markdown carries the syntax + motion
+        // chassis; help-mode adds ReadOnly + link/anchor follow +
+        // help-only commands. Decouples help-as-content from
+        // popup-as-display.
         let mut a = app_with("hi", 5);
         let help = crate::help::HelpContent::from_lines(
             "test",
@@ -1339,7 +1351,17 @@ mod tests {
             .active_modes
             .get(&help_id)
             .expect("active_modes populated for help");
-        assert_eq!(active.major(), Some(crate::modes::HelpMode::mode_id()));
+        assert_eq!(
+            active.major(),
+            Some(lattice_syntax::MarkdownMode::mode_id())
+        );
+        assert!(
+            active
+                .minors()
+                .contains(&crate::modes::HelpMode::mode_id()),
+            "help-mode should be active as a minor; got {:?}",
+            active.minors()
+        );
     }
 
     #[test]

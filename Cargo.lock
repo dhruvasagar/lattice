@@ -846,6 +846,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-oil"
+version = "0.1.0"
+dependencies = [
+ "lattice-core",
+ "lattice-protocol",
+]
+
+[[package]]
 name = "lattice-protocol"
 version = "0.1.0"
 dependencies = [
@@ -911,6 +919,7 @@ dependencies = [
  "lattice-help",
  "lattice-lsp",
  "lattice-mode",
+ "lattice-oil",
  "lattice-protocol",
  "lattice-runtime",
  "lattice-snippet",

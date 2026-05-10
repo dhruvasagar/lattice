@@ -17,6 +17,7 @@ lattice-syntax = { path = "../lattice-syntax" }
 lattice-runtime = { path = "../lattice-runtime" }
 lattice-lsp = { path = "../lattice-lsp" }
 lattice-help = { path = "../lattice-help" }
+lattice-oil = { path = "../lattice-oil" }
 lsp-types = { workspace = true }
 tokio = { workspace = true }
 tree-sitter = { workspace = true }

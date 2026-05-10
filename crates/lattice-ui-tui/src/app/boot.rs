@@ -434,6 +434,7 @@ impl App {
                 crate::modes::register_buffer_kind_modes(&mut registry);
                 std::sync::Arc::new(registry)
             },
+            pane_render_registry: crate::render::build_pane_render_registry(),
             active_modes: std::collections::HashMap::new(),
             buffer_locals,
             resolved_options: std::collections::HashMap::new(),

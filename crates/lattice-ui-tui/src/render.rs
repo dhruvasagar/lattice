@@ -1500,11 +1500,12 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
     }
 }
 
-/// M.4: per-kind pane-content dispatch. Centralises the
-/// `match buffer.kind` that used to live in `draw_panes` so the
-/// outer loop is uniform. Replaced by mode-driven dispatch (each
-/// major mode contributes its own renderer) in a follow-up; for
-/// now the per-kind branch lives here.
+/// M.4: pane-content dispatch. Looks up the active buffer's mode
+/// in `App::pane_render_registry` (walks minors then major) so
+/// each major / minor mode owns its render path; falls back to
+/// the document path when no provider matches. Replaces the
+/// helper-side `match buffer.kind` so a plugin-installed mode can
+/// register its own renderer without touching the dispatcher.
 fn draw_pane_content(
     frame: &mut Frame,
     content_rect: Rect,
@@ -1514,36 +1515,135 @@ fn draw_pane_content(
     is_active: bool,
     idx: usize,
 ) {
-    match pane.buffer {
-        crate::buffers::BufferKind::Document => {
-            if is_active {
-                draw_buffer(frame, content_rect, app, snap);
-            } else {
-                draw_inactive_document(frame, content_rect, app, pane, idx);
-            }
-        }
-        crate::buffers::BufferKind::Help => {
-            // Help-as-buffer (DESIGN.md §5.9): when help is the
-            // active buffer it fills the pane area, just like a
-            // document. The centred popup overlay is reserved for
-            // the *transient* hover state where popup_buffer is set
-            // but active is another kind. Doing both (popup + draw
-            // the doc behind it) would mean help motions visibly
-            // scroll the doc backdrop, which breaks the "help is
-            // just a buffer" model the user expects.
-            if is_active {
-                draw_help_in_pane(frame, content_rect, app);
-            } else {
-                draw_inactive_help(frame, content_rect, app, pane);
-            }
-        }
-        crate::buffers::BufferKind::FileTree => {
-            draw_file_tree_pane(frame, content_rect, app, pane, is_active);
-        }
-        crate::buffers::BufferKind::Oil => {
-            draw_oil_pane(frame, content_rect, app, pane, is_active);
-        }
+    if let Some(provider) = app.pane_render_provider(pane.buffer_id) {
+        (provider.render)(frame, content_rect, app, snap, pane, is_active, idx);
+        return;
     }
+    // Default path: document buffer. The active branch reads the
+    // live `app.cursor` / `app.scroll`; the inactive one reads the
+    // pane's stashed cursor + scroll.
+    if is_active {
+        draw_buffer(frame, content_rect, app, snap);
+    } else {
+        draw_inactive_document(frame, content_rect, app, pane, idx);
+    }
+}
+
+/// M.4: per-mode pane-render adapters. Each adapter has the
+/// uniform [`crate::pane_render::PaneRenderFn`] signature; the
+/// existing per-kind draw fns retain their original signatures and
+/// the adapter forwards the relevant subset.
+
+fn help_pane_render(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    _snap: &DocumentSnapshot,
+    pane: &crate::pane::PaneState,
+    is_active: bool,
+    _idx: usize,
+) {
+    // Help-as-buffer (DESIGN.md §5.9): when help is the active
+    // buffer it fills the pane area, just like a document. The
+    // centred popup overlay is reserved for the transient hover
+    // state where popup_buffer is set but active is another kind.
+    if is_active {
+        draw_help_in_pane(frame, area, app);
+    } else {
+        draw_inactive_help(frame, area, app, pane);
+    }
+}
+
+fn file_tree_pane_render(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    _snap: &DocumentSnapshot,
+    pane: &crate::pane::PaneState,
+    is_active: bool,
+    _idx: usize,
+) {
+    draw_file_tree_pane(frame, area, app, pane, is_active);
+}
+
+fn oil_pane_render(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    _snap: &DocumentSnapshot,
+    pane: &crate::pane::PaneState,
+    is_active: bool,
+    _idx: usize,
+) {
+    draw_oil_pane(frame, area, app, pane, is_active);
+}
+
+fn help_pane_status(app: &App, _pane: &crate::pane::PaneState) -> String {
+    app.popup_buffer
+        .as_ref()
+        .map(|h| format!("[help] {}", h.title))
+        .unwrap_or_else(|| "[help]".to_string())
+}
+
+fn file_tree_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
+    let root = app
+        .buffer_locals
+        .get(&pane.buffer_id)
+        .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
+        .map(|r| r.0.clone());
+    root.map(|p| format!("[tree] {}", p.display()))
+        .unwrap_or_else(|| "[tree]".to_string())
+}
+
+fn oil_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
+    app.buffers
+        .oil(pane.buffer_id)
+        .map(|o| {
+            let dirty = if o.is_dirty() { " [+]" } else { "" };
+            let dir = app
+                .buffer_locals
+                .get(&pane.buffer_id)
+                .and_then(|locals| locals.get::<crate::modes::OilDir>())
+                .map(|d| d.0.display().to_string())
+                .unwrap_or_default();
+            format!("[oil] {dir}{dirty}")
+        })
+        .unwrap_or_else(|| "[oil]".to_string())
+}
+
+/// Boot-time registration of the renderer-side providers for the
+/// built-in modes. Plugin-installed modes (post-1.0) extend this
+/// registry through the same interface.
+pub fn build_pane_render_registry() -> crate::pane_render::PaneRenderRegistry {
+    use crate::pane_render::{PaneRenderProvider, PaneRenderRegistry};
+    use lattice_mode::Mode;
+    let mut registry = PaneRenderRegistry::new();
+    // Help-mode is a *minor* mode layered onto markdown-mode; the
+    // pane-render dispatcher walks minors first, so this entry
+    // wins over markdown's default (document) path when the
+    // help-mode minor is active.
+    registry.register(
+        lattice_mode::modes::HelpMode.id(),
+        PaneRenderProvider {
+            render: help_pane_render,
+            status: help_pane_status,
+        },
+    );
+    registry.register(
+        lattice_mode::modes::FileTreeMode.id(),
+        PaneRenderProvider {
+            render: file_tree_pane_render,
+            status: file_tree_pane_status,
+        },
+    );
+    registry.register(
+        lattice_mode::modes::OilMode.id(),
+        PaneRenderProvider {
+            render: oil_pane_render,
+            status: oil_pane_status,
+        },
+    );
+    registry
 }
 
 /// Walk the pane rects and draw a vertical separator wherever two

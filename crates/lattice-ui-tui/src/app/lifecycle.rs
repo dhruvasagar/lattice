@@ -1078,55 +1078,30 @@ impl App {
         }
     }
 
-    /// M.4: status-line label for a pane, dispatched on its
-    /// `BufferKind`. Centralises the per-kind formatting so the
-    /// renderer doesn't `match buffer.kind` directly. When mode-
-    /// contributed status renderers land, this method dispatches
-    /// through the active major mode instead of the kind enum.
+    /// M.4: status-line label for a pane. Dispatches through
+    /// `pane_render_provider` (walks active minors then major) so
+    /// each mode owns its own status formatter; falls back to the
+    /// document path when no provider matches. Replaces the
+    /// previous `match buffer.kind` dispatch so plugin-installed
+    /// modes can contribute status formatting through the same
+    /// registry the renderer uses.
     pub fn pane_status_label(&self, pane: &crate::pane::PaneState) -> String {
-        match pane.buffer {
-            BufferKind::Document => self
-                .buffers
-                .document(pane.buffer_id)
-                .map(|e| {
-                    let path = e
-                        .handle
-                        .path()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "[no name]".to_string());
-                    let dirty = if e.handle.dirty() { " [+]" } else { "" };
-                    format!("{path}{dirty}")
-                })
-                .unwrap_or_else(|| "[no buffer]".to_string()),
-            BufferKind::Help => self
-                .popup_buffer
-                .as_ref()
-                .map(|h| format!("[help] {}", h.title))
-                .unwrap_or_else(|| "[help]".to_string()),
-            BufferKind::FileTree => {
-                let root = self
-                    .buffer_locals
-                    .get(&pane.buffer_id)
-                    .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
-                    .map(|r| r.0.clone());
-                root.map(|p| format!("[tree] {}", p.display()))
-                    .unwrap_or_else(|| "[tree]".to_string())
-            }
-            BufferKind::Oil => self
-                .buffers
-                .oil(pane.buffer_id)
-                .map(|o| {
-                    let dirty = if o.is_dirty() { " [+]" } else { "" };
-                    let dir = self
-                        .buffer_locals
-                        .get(&pane.buffer_id)
-                        .and_then(|locals| locals.get::<crate::modes::OilDir>())
-                        .map(|d| d.0.display().to_string())
-                        .unwrap_or_default();
-                    format!("[oil] {dir}{dirty}")
-                })
-                .unwrap_or_else(|| "[oil]".to_string()),
+        if let Some(provider) = self.pane_render_provider(pane.buffer_id) {
+            return (provider.status)(self, pane);
         }
+        // Default path: document buffer.
+        self.buffers
+            .document(pane.buffer_id)
+            .map(|e| {
+                let path = e
+                    .handle
+                    .path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "[no name]".to_string());
+                let dirty = if e.handle.dirty() { " [+]" } else { "" };
+                format!("{path}{dirty}")
+            })
+            .unwrap_or_else(|| "[no buffer]".to_string())
     }
 
     /// Jump to `path:line:col` (LSP 0-based line, utf-8 byte
@@ -1197,7 +1172,7 @@ impl App {
     /// ([`Self::snapshot_active_pane`] / [`Self::load_active_pane`])
     /// sync the two at boundaries -- same pattern as Document's
     /// `syntax`/`folds` snapshots.
-    pub(super) fn open_help_in_pane(&mut self, content: HelpContent) -> BufferId {
+    pub(crate) fn open_help_in_pane(&mut self, content: HelpContent) -> BufferId {
         let HelpContent { buffer, metadata } = content;
         if let Some(existing_id) = self.buffers.help_with_title(&buffer.title) {
             // Already open: refresh its content (so `:lsp-log` re-

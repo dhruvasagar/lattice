@@ -19,7 +19,7 @@ use super::{Action, App};
 /// Build an `App` over a fresh in-memory document with the
 /// requested visible viewport height. The 95%-case factory
 /// for App-level tests.
-pub(super) fn app_with(text: &str, viewport: u32) -> App {
+pub(crate) fn app_with(text: &str, viewport: u32) -> App {
     let mut a = App::new(Document::from_text(text));
     a.set_viewport_height(viewport);
     a

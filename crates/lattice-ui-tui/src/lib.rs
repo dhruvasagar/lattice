@@ -47,6 +47,7 @@ pub mod keymap_trie;
 pub mod keymap_visual;
 pub mod modes;
 pub mod pane;
+pub mod pane_render;
 pub mod picker;
 pub mod popup;
 pub mod render;

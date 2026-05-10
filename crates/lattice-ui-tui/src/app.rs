@@ -123,7 +123,7 @@ mod syntax;
 mod visual;
 
 #[cfg(test)]
-mod test_helpers;
+pub(crate) mod test_helpers;
 
 // Slice 8.i.4.d: the `Pending` enum and `Action::SetPending`
 // variant retired here. All multi-key Normal-mode chord state
@@ -1128,6 +1128,13 @@ pub struct App {
     /// One process-shared registry; all Documents share the
     /// same mode definitions.
     pub mode_registry: std::sync::Arc<lattice_mode::ModeRegistry>,
+    /// Mode-keyed pane render dispatch (M.4 follow-up). Populated
+    /// at boot; lookup walks active minors then the major to find
+    /// the per-buffer renderer + status formatter, with the
+    /// document path as the fallback when no provider matches.
+    /// Replaces the helper-side `match buffer.kind` in
+    /// `draw_pane_content` and `pane_status_label`.
+    pub pane_render_registry: crate::pane_render::PaneRenderRegistry,
     /// Per-buffer active modes (major + minors). M.1 wired the
     /// field on `Document` for the document buffer, but
     /// `Document` lives behind the actor's snapshot-cache, so

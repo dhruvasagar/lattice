@@ -227,11 +227,11 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     } else {
         draw_command_or_echo(frame, chunks[2], app);
     }
-    // Help popup overlay -- painted whenever a help_buffer is
+    // Help popup overlay -- painted whenever a popup_buffer is
     // set AND the active pane isn't already showing it as an
     // in-pane buffer (the in-pane case is handled by the Help
     // arm of `draw_panes`). Two scenarios trigger this:
-    // - **State A** (active = Document, help_buffer = Some):
+    // - **State A** (active = Document, popup_buffer = Some):
     //   first `K` shown the popup, focus is still on the doc;
     //   doc paints normally below, popup floats on top, no
     //   cursor inside the popup.
@@ -240,7 +240,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     //   paints with a visible cursor at `app.cursor`; doc paints
     //   as inactive (frozen at `pane.cursor`) below.
     let active_pane_kind = app.pane_tree.active().buffer;
-    if app.help_buffer.is_some() && active_pane_kind != crate::buffers::BufferKind::Help {
+    if app.popup_buffer.is_some() && active_pane_kind != crate::buffers::BufferKind::Help {
         draw_help_overlay(frame, chunks[0], app, snap);
     }
     // Picker candidate list (precedence over completion popup --
@@ -829,7 +829,7 @@ fn draw_help_overlay(
     app: &App,
     snap: &DocumentSnapshot,
 ) {
-    let Some(help) = app.help_buffer.as_ref() else {
+    let Some(help) = app.popup_buffer.as_ref() else {
         return;
     };
     // Tooltip-style sizing: cap to a reasonable max so the popup
@@ -866,7 +866,7 @@ fn draw_help_overlay(
     // and emit per-row styled spans.
     let viewport = inner.height as usize;
     // Active-buffer scroll lives on `app.scroll` after the
-    // unification; help_buffer's own `scroll` field is archival
+    // unification; popup_buffer's own `scroll` field is archival
     // save-state synced at activation transitions.
     let scroll = if matches!(app.active_buffer, crate::buffers::BufferKind::Help) {
         app.scroll as usize
@@ -1312,7 +1312,7 @@ fn pane_buffer_matches_active(app: &App, idx: usize) -> bool {
 /// help content. Per-pane status line (drawn separately by
 /// `draw_pane_status_line`) shows the title.
 fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(help) = app.help_buffer.as_ref() else {
+    let Some(help) = app.popup_buffer.as_ref() else {
         return;
     };
     let viewport = area.height as usize;
@@ -1320,7 +1320,7 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
     let lines = help.lines();
     let cursor_line = app.cursor.line as usize;
     // M.3.2.b.2: read help-mode-owned data via buffer-locals.
-    // `app.help_buffer.id` (construction-time) and the
+    // `app.popup_buffer.id` (construction-time) and the
     // registered id (= active pane's `buffer_id`) intentionally
     // differ; locals are keyed by the registered id. See the
     // comment in `App::open_help_in_pane`.
@@ -1397,7 +1397,7 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
     let Some(help) = app
         .buffers
         .help(pane.buffer_id)
-        .or(app.help_buffer.as_ref())
+        .or(app.popup_buffer.as_ref())
     else {
         return;
     };
@@ -1526,7 +1526,7 @@ fn draw_pane_content(
             // Help-as-buffer (DESIGN.md §5.9): when help is the
             // active buffer it fills the pane area, just like a
             // document. The centred popup overlay is reserved for
-            // the *transient* hover state where help_buffer is set
+            // the *transient* hover state where popup_buffer is set
             // but active is another kind. Doing both (popup + draw
             // the doc behind it) would mean help motions visibly
             // scroll the doc backdrop, which breaks the "help is

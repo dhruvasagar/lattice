@@ -103,7 +103,7 @@ pub(super) fn subscribe_all_events(
 pub(super) fn install_help(a: &mut App, h: HelpContent) {
     let HelpContent { buffer, metadata } = h;
     let id = buffer.id;
-    a.help_buffer = Some(buffer);
+    a.popup_buffer = Some(buffer);
     a.active_buffer = BufferKind::Help;
     a.seed_help_metadata_locals(id, metadata);
 }

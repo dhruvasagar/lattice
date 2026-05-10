@@ -1004,7 +1004,7 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         assert!(!a.auto_submit_after_chord);
         assert!(matches!(a.modal, ModalState::Normal));
-        assert!(a.help_buffer.is_some());
+        assert!(a.popup_buffer.is_some());
     }
 
     #[test]
@@ -1013,7 +1013,7 @@ mod tests {
         // command itself (smart-resolve).
         let mut a = app_in_command_mode("describe-command");
         a.apply(Action::CommandLineDescribeUnderCursor);
-        let h = a.help_buffer.as_ref().expect("help should open");
+        let h = a.popup_buffer.as_ref().expect("help should open");
         assert!(h.title.contains("ex:describe-command"));
     }
 
@@ -1025,7 +1025,7 @@ mod tests {
         // `arg:name` anchor.
         let mut a = app_in_command_mode("describe-command moti");
         a.apply(Action::CommandLineDescribeUnderCursor);
-        let h = a.help_buffer.as_ref().expect("help should open");
+        let h = a.popup_buffer.as_ref().expect("help should open");
         assert!(h.title.contains("ex:describe-command"));
         // scroll should be set to the arg:name anchor's line.
         let arg_anchor = h.anchors.iter().find(|a| a.name == "arg:name").unwrap();
@@ -1038,7 +1038,7 @@ mod tests {
         // resolves to a known command. Hybrid: describe THAT.
         let mut a = app_in_command_mode("describe-command motion:line-down");
         a.apply(Action::CommandLineDescribeUnderCursor);
-        let h = a.help_buffer.as_ref().expect("help should open");
+        let h = a.popup_buffer.as_ref().expect("help should open");
         assert!(h.title.contains("motion:line-down"));
     }
 
@@ -1046,7 +1046,7 @@ mod tests {
     fn ctrl_h_on_unknown_word_emits_error_message() {
         let mut a = app_in_command_mode("no-such-command");
         a.apply(Action::CommandLineDescribeUnderCursor);
-        assert!(a.help_buffer.is_none());
+        assert!(a.popup_buffer.is_none());
         let msg = a.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }

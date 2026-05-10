@@ -52,7 +52,7 @@ impl App {
     /// scroll.
     ///
     /// `content` is a [`HelpContent`] = (slim `HelpBuffer`, parsed
-    /// `HelpMetadata`). The buffer becomes `App.help_buffer` (the
+    /// `HelpMetadata`). The buffer becomes `App.popup_buffer` (the
     /// popup hot-path slot); the metadata is seeded into
     /// `App.buffer_locals[buffer.id]` via [`Self::seed_help_metadata_locals`]
     /// so the renderer + link-follow / anchor-jump readers route
@@ -95,7 +95,7 @@ impl App {
         // uniformly across buffer kinds.
         let stash_cursor = buffer.cursor;
         let stash_scroll = buffer.scroll as u32;
-        self.help_buffer = Some(buffer);
+        self.popup_buffer = Some(buffer);
         self.popup_placement = placement;
         self.cursor = stash_cursor;
         self.scroll = stash_scroll;
@@ -131,7 +131,7 @@ impl App {
     /// between cursor-anchored and centred mid-popup (e.g. hover
     /// promoted to a focused reference view).
     pub(crate) fn set_popup_placement(&mut self, placement: PopupPlacement) {
-        if self.help_buffer.is_some() {
+        if self.popup_buffer.is_some() {
             self.popup_placement = placement;
         }
     }
@@ -139,7 +139,7 @@ impl App {
     /// Read-side accessor for the renderer: the active popup's
     /// placement, or `None` when no popup is open.
     pub fn popup_placement(&self) -> Option<PopupPlacement> {
-        self.help_buffer.as_ref().map(|_| self.popup_placement)
+        self.popup_buffer.as_ref().map(|_| self.popup_placement)
     }
 
     /// Close the popup. Drops the popup's content slot, resets
@@ -147,7 +147,7 @@ impl App {
     /// was captured at open. Idempotent: closing when no popup
     /// is open is a no-op.
     pub(crate) fn dismiss_popup(&mut self) {
-        self.help_buffer = None;
+        self.popup_buffer = None;
         self.popup_placement = PopupPlacement::default();
         // Restore pre-popup state if focus had moved into it
         // (State B for hover; in-pane mode for `:lsp-log` etc.).
@@ -195,7 +195,7 @@ mod tests {
         // shape (`prev_pane_for_help.is_none()`).
         let mut a = app_with("hello", 10);
         a.do_open_hover("hover body");
-        let buffer_id = a.help_buffer.as_ref().expect("popup open").id;
+        let buffer_id = a.popup_buffer.as_ref().expect("popup open").id;
         let modes = a.active_modes.get(&buffer_id).expect("popup has modes");
         assert!(
             modes.minors().contains(&crate::modes::HoverMode::mode_id()),

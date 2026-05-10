@@ -183,7 +183,7 @@ impl App {
         // Document"; State B (focused popup) is "active is Help"
         // -- the second clause stays as the State-A discriminator.
         let popup_has_hover_mode = self
-            .help_buffer
+            .popup_buffer
             .as_ref()
             .map(|h| h.id)
             .and_then(|id| self.active_modes.get(&id))
@@ -690,7 +690,7 @@ impl App {
             && self.active_buffer == BufferKind::Document
             && self.cursor != pre_cursor
         {
-            self.help_buffer = None;
+            self.popup_buffer = None;
             self.popup_placement = crate::popup::PopupPlacement::default();
         }
         let _ = pre_active;
@@ -2015,7 +2015,7 @@ mod tests {
         // The submitted line was `describe-key j` -- which opens
         // a help buffer for chord `j`. Smoke check that some
         // help got produced.
-        assert!(a.help_buffer.is_some());
+        assert!(a.popup_buffer.is_some());
     }
 
     #[test]
@@ -2057,9 +2057,9 @@ mod tests {
         // seeding needed for this dismiss-on-cmdline test).
         let crate::help::HelpContent { buffer, .. } =
             crate::help::HelpContent::from_lines("preexisting", vec!["x".into()]);
-        a.help_buffer = Some(buffer);
+        a.popup_buffer = Some(buffer);
         a.apply(Action::EnterCommandLine);
-        assert!(a.help_buffer.is_none());
+        assert!(a.popup_buffer.is_none());
     }
 
     #[test]
@@ -2118,12 +2118,12 @@ mod tests {
         // captures pre-State-B state so dismiss restores cleanly.
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("hover body line 1\nhover body line 2");
-        assert!(a.help_buffer.is_some());
+        assert!(a.popup_buffer.is_some());
         assert!(matches!(a.active_buffer, BufferKind::Document));
         assert!(a.prev_pane_for_help.is_none());
         // Second K -> focus into popup.
         a.do_lsp_hover_request();
-        assert!(a.help_buffer.is_some(), "popup stays up after focus");
+        assert!(a.popup_buffer.is_some(), "popup stays up after focus");
         assert!(matches!(a.active_buffer, BufferKind::Help));
         let stash = a.prev_pane_for_help.expect("State B captures stash");
         assert_eq!(stash.buffer, BufferKind::Document);

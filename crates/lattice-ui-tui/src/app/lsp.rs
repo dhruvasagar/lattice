@@ -83,7 +83,7 @@ impl App {
         // Popup shown but focus still on main buffer (State A) --
         // second K transfers focus into the popup. No new LSP
         // request fires; we just promote.
-        if self.help_buffer.is_some() {
+        if self.popup_buffer.is_some() {
             self.focus_help_popup();
             return;
         }
@@ -963,7 +963,7 @@ impl App {
     /// rebuild. Clamps cursor to the new content's line bounds.
     /// Re-seeds the parsed metadata into `buffer_locals[id]` so
     /// live-tail readers (links / anchors / highlights) reflect
-    /// the updated parse. Also syncs `App.help_buffer` (the popup
+    /// the updated parse. Also syncs `App.popup_buffer` (the popup
     /// hot-path mirror) when it points at the same id.
     fn replace_help_buffer_preserving_cursor(
         &mut self,
@@ -992,10 +992,10 @@ impl App {
         // anchor lookups see the updated parse.
         self.seed_help_metadata_locals(id, metadata);
         // Sync the popup hot-path mirror when active.
-        if self.help_buffer.as_ref().map(|h| h.id) == Some(id)
+        if self.popup_buffer.as_ref().map(|h| h.id) == Some(id)
             && let Some(reg) = self.buffers.help(id)
         {
-            self.help_buffer = Some(reg.clone());
+            self.popup_buffer = Some(reg.clone());
         }
     }
 
@@ -3402,7 +3402,7 @@ mod tests {
         // async LSP path), move the cursor, assert dismissal.
         let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
         a.do_open_hover("hover body");
-        assert!(a.help_buffer.is_some());
+        assert!(a.popup_buffer.is_some());
         // State A: focus still on doc, prev_pane_for_help is None.
         assert!(a.prev_pane_for_help.is_none());
         assert!(matches!(a.active_buffer, BufferKind::Document));
@@ -3410,7 +3410,7 @@ mod tests {
         let inv = lattice_grammar::CommandInvocation::of(a.builtins.char_right.0);
         a.apply(Action::Invoke(inv));
         assert!(
-            a.help_buffer.is_none(),
+            a.popup_buffer.is_none(),
             "hover popup should dismiss on cursor motion in State A"
         );
     }
@@ -3423,10 +3423,10 @@ mod tests {
         // doesn't move the cursor.
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("hover body");
-        assert!(a.help_buffer.is_some());
+        assert!(a.popup_buffer.is_some());
         a.apply(Action::PushDigit(5));
         assert!(
-            a.help_buffer.is_some(),
+            a.popup_buffer.is_some(),
             "hover should survive a count-prefix push"
         );
     }
@@ -3438,7 +3438,7 @@ mod tests {
         a.command_line = "hover documentation".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("hover open");
+        let h = a.popup_buffer.as_ref().expect("hover open");
         assert_eq!(h.title, "hover");
         assert!(h.content.as_string().contains("documentation"));
         // State A: focus stays on doc.
@@ -3452,11 +3452,11 @@ mod tests {
         a.command_line = "hover x".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.help_buffer.is_some());
+        assert!(a.popup_buffer.is_some());
         a.command_line = "HoverClose".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.help_buffer.is_none());
+        assert!(a.popup_buffer.is_none());
     }
 
     #[test]
@@ -3465,7 +3465,7 @@ mod tests {
         a.command_line = "hover".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("hover open");
+        let h = a.popup_buffer.as_ref().expect("hover open");
         assert!(h.content.as_string().contains("empty"));
     }
 
@@ -3550,7 +3550,7 @@ mod tests {
         tx.send(crate::app::HoverOutcome::Body("**bold body**".into()))
             .unwrap();
         a.drain_pending_hover();
-        let h = a.help_buffer.as_ref().expect("popup");
+        let h = a.popup_buffer.as_ref().expect("popup");
         assert!(h.content.as_string().contains("**bold body**"));
         // State A entry: focus still on the doc.
         assert!(matches!(a.active_buffer, BufferKind::Document));
@@ -3574,7 +3574,7 @@ mod tests {
         tx.send(crate::app::HoverOutcome::NoBody { servers_tried: 1 })
             .unwrap();
         a.drain_pending_hover();
-        assert!(a.help_buffer.is_none(), "no popup for empty hover");
+        assert!(a.popup_buffer.is_none(), "no popup for empty hover");
         let msg = a.last_message.as_ref().expect("echo on no-hover-info");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(
@@ -3613,7 +3613,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
         a.pending_hover_rx = Some(rx);
         a.drain_pending_hover();
-        assert!(a.help_buffer.is_none());
+        assert!(a.popup_buffer.is_none());
         assert!(a.last_message.is_none());
     }
 
@@ -4836,7 +4836,7 @@ mod tests {
         ))
         .unwrap();
         a.drain_pending_signature_help();
-        let h = a.help_buffer.as_ref().expect("popup");
+        let h = a.popup_buffer.as_ref().expect("popup");
         assert_eq!(h.title, "hover");
         assert!(a.pending_signature_help_token.is_none());
     }
@@ -4853,7 +4853,7 @@ mod tests {
         a.drain_pending_signature_help();
         let msg = a.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no signature info"));
-        assert!(a.help_buffer.is_none());
+        assert!(a.popup_buffer.is_none());
     }
 
     #[test]
@@ -5151,14 +5151,14 @@ mod tests {
         assert!(app.lsp_logger.is_tracing(&id));
         // Pure toggle now -- the trace buffer is opened separately
         // via :lsp-trace-log so peeking doesn't flip the toggle off.
-        assert!(app.help_buffer.is_none());
+        assert!(app.popup_buffer.is_none());
         let msg = app.last_message.as_ref().unwrap();
         assert!(msg.text.contains("on"));
         assert!(msg.text.contains(":lsp-trace-log"));
         // On -> off.
         app.do_toggle_lsp_trace("rust");
         assert!(!app.lsp_logger.is_tracing(&id));
-        assert!(app.help_buffer.is_none());
+        assert!(app.popup_buffer.is_none());
     }
 
     #[test]
@@ -5190,7 +5190,7 @@ mod tests {
     fn lsp_status_with_no_servers_renders_placeholder() {
         let mut app = app_with("hi\n", 5);
         app.do_lsp_status();
-        let body = app.help_buffer.as_ref().unwrap().content.as_string();
+        let body = app.popup_buffer.as_ref().unwrap().content.as_string();
         assert!(body.contains("0 server"));
         assert!(body.contains("no LSP servers running"));
     }
@@ -5634,7 +5634,7 @@ mod tests {
         let display = &picker.candidates[0].raw.display;
         assert!(display.starts_with("[E]"), "got: {display}");
         // Help buffer is NOT opened (the pre-picker shape).
-        assert!(app.help_buffer.is_none());
+        assert!(app.popup_buffer.is_none());
     }
 
     #[test]

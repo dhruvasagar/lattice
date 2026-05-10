@@ -444,7 +444,7 @@ impl App {
             command_history: Vec::new(),
             command_history_cursor: None,
             command_history_pending: None,
-            help_buffer: None,
+            popup_buffer: None,
             prev_pane_for_help: None,
             help_display_mode: HelpDisplayMode::default(),
             popup_placement: crate::popup::PopupPlacement::default(),

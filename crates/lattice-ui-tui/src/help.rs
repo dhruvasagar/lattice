@@ -161,7 +161,7 @@ pub struct HelpMetadata {
 
 /// M.3.2.c.5: pair of (slim help buffer, parsed metadata) returned
 /// from every help factory. The App splits this into:
-/// - `buffer` -> `App.help_buffer` (the popup hot-path slot)
+/// - `buffer` -> `App.popup_buffer` (the popup hot-path slot)
 /// - `metadata` -> `App.buffer_locals[buffer.id]` via
 ///   `seed_help_metadata_locals` at popup-open time.
 #[derive(Debug, Clone)]

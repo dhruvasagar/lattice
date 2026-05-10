@@ -1200,15 +1200,20 @@ pub struct App {
     /// Snapshot of the user's typed command_line on the first Up so
     /// Down can return to it after walking through history.
     pub command_history_pending: Option<String>,
-    /// Active help buffer (DESIGN.md §5.11). `Some` while a
-    /// `:describe-*` / `:apropos` view is open. Held as a real
-    /// rope-backed [`HelpBuffer`] -- the same data shape as a code
-    /// buffer -- so the migration to multi-buffer (Phase 6 / §5.9)
-    /// only needs to swap the *display strategy* without touching the
-    /// help-content layer. The current display strategy is the
+    /// Content of the active popup overlay (DESIGN.md §5.11; M.4).
+    /// `Some` while a `:describe-*` / `:apropos` / hover / etc.
+    /// popup is open. Despite the existing concrete type, this slot
+    /// is the *popup's content reference* -- not a help-only field.
+    /// Help is one mode the buffer in this slot may carry (the
+    /// markdown-mode major + help-mode minor combination); a future
+    /// popup can hold any buffer kind here. The follow-up that
+    /// generalises this to a registry-keyed `BufferId` reference
+    /// (so the popup buffer participates in `app.buffers` like every
+    /// other buffer) keeps the slot's name and contract; only the
+    /// stored type changes. The current display strategy is the
     /// centred popup; [`Self::help_display_mode`] picks between
-    /// surfaces.
-    pub help_buffer: Option<HelpBuffer>,
+    /// surfaces (split / tab / minibuffer arrive post multi-buffer).
+    pub popup_buffer: Option<HelpBuffer>,
     /// Pane state captured before activating help -- used by
     /// `dismiss_popup` to restore the user to whatever buffer +
     /// cursor + scroll they came from. Set by both display
@@ -3232,7 +3237,7 @@ mod tests {
         // Should have opened the help buffer; no "unknown
         // command" error from the parser.
         assert!(
-            a.help_buffer.is_some(),
+            a.popup_buffer.is_some(),
             "help should open from canonical-name describe-command"
         );
     }
@@ -3265,7 +3270,7 @@ mod tests {
         // Move within popup.
         let inv = lattice_grammar::CommandInvocation::of(a.builtins.line_down.0);
         a.apply(Action::Invoke(inv));
-        assert!(a.help_buffer.is_some(), "popup persists in State B");
+        assert!(a.popup_buffer.is_some(), "popup persists in State B");
         assert_eq!(a.cursor.line, 1);
     }
 
@@ -3445,7 +3450,7 @@ mod tests {
         a.command_line = "h folding".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("help open");
+        let h = a.popup_buffer.as_ref().expect("help open");
         assert_eq!(h.title, "help folding");
     }
 
@@ -3829,11 +3834,11 @@ mod tests {
             .insert(synthetic);
 
         // Lookup via the registered id (= `help_id` returned
-        // by `open_help_in_pane`). Note: `app.help_buffer.id`
+        // by `open_help_in_pane`). Note: `app.popup_buffer.id`
         // is the construction-time id and intentionally
         // differs from `help_id`; locals are keyed by the
         // registered id (see comment in `open_help_in_pane`).
-        let help_buf = a.help_buffer.as_ref().expect("help_buffer set");
+        let help_buf = a.popup_buffer.as_ref().expect("popup_buffer set");
         let locals = a
             .buffer_locals
             .get(&help_id)
@@ -4073,7 +4078,7 @@ mod tests {
         assert!(matches!(a.active_buffer, BufferKind::Help));
         // Dismiss.
         a.apply(Action::HelpDismiss);
-        assert!(a.help_buffer.is_none());
+        assert!(a.popup_buffer.is_none());
         assert!(matches!(a.active_buffer, BufferKind::Document));
         assert_eq!(a.cursor, lattice_protocol::Position::new(1, 4));
         assert!(a.prev_pane_for_help.is_none());
@@ -4418,8 +4423,8 @@ mod tests {
         // seed the synthetic link there directly. The locals key
         // is the popup buffer's construction id (centred-popup
         // resolution rule).
-        let buf_id = a.help_buffer.as_ref().map(|h| h.id).unwrap();
-        if let Some(h) = a.help_buffer.as_mut() {
+        let buf_id = a.popup_buffer.as_ref().map(|h| h.id).unwrap();
+        if let Some(h) = a.popup_buffer.as_mut() {
             h.cursor = lattice_protocol::Position::ZERO;
         }
         let mut existing_links = a
@@ -4477,8 +4482,8 @@ mod tests {
         // seed the synthetic link there directly. The locals key
         // is the popup buffer's construction id (centred-popup
         // resolution rule).
-        let buf_id = a.help_buffer.as_ref().map(|h| h.id).unwrap();
-        if let Some(h) = a.help_buffer.as_mut() {
+        let buf_id = a.popup_buffer.as_ref().map(|h| h.id).unwrap();
+        if let Some(h) = a.popup_buffer.as_mut() {
             h.cursor = lattice_protocol::Position::ZERO;
         }
         let mut existing_links = a

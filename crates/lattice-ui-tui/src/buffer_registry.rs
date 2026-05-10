@@ -144,7 +144,7 @@ pub enum BufferData {
     FileTree(FileTreeBuffer),
     /// Help / log / picker-listing buffers placed into a pane
     /// (DESIGN.md §5.9, §5.11). The transient overlay path
-    /// (`App.help_buffer`) remains for popup-style displays
+    /// (`App.popup_buffer`) remains for popup-style displays
     /// (hover, doc lookups, error toasts); persistent help views
     /// (`:lsp-log`, `:lsp-server-log`, `:lsp-trace-log`,
     /// `:describe-*`, `:diagnostics`) route here so they live in

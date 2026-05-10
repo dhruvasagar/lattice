@@ -275,7 +275,7 @@ impl App {
         let lines: Vec<String> = markdown.split('\n').map(String::from).collect();
         let content = HelpContent::from_lines("hover", lines)
             .with_markdown_syntax(self.lang_registry.clone());
-        // State A: hover sets help_buffer directly without going
+        // State A: hover sets popup_buffer directly without going
         // through `open_popup` (which would also flip
         // `active_buffer = Help` and capture `prev_pane_for_help`).
         // Active stays on the main buffer (self.cursor untouched);
@@ -284,7 +284,7 @@ impl App {
         // + link-follow paths see the parsed metadata.
         let crate::help::HelpContent { buffer, metadata } = content;
         let buffer_id = buffer.id;
-        self.help_buffer = Some(buffer);
+        self.popup_buffer = Some(buffer);
         self.popup_placement = crate::popup::PopupPlacement::CursorAnchored;
         self.seed_help_metadata_locals(buffer_id, metadata);
         // M.4 (Option B): hover popup is `markdown-mode` major +
@@ -324,7 +324,7 @@ impl App {
     /// is frozen. Dismiss with `<Esc>` / `q` returns focus to
     /// the doc at the cursor it was on.
     pub(super) fn focus_help_popup(&mut self) {
-        let Some(help) = self.help_buffer.as_ref() else {
+        let Some(help) = self.popup_buffer.as_ref() else {
             return;
         };
         let stash_cursor = help.cursor;
@@ -448,7 +448,7 @@ impl App {
         }
 
         let cursor = self.cursor;
-        if self.help_buffer.is_none() {
+        if self.popup_buffer.is_none() {
             return;
         }
         // M.3.2.c.1: prefer help-mode-owned link data from
@@ -464,7 +464,7 @@ impl App {
         // M.3.2.c.5 retires the struct field; tests will
         // construct a `BufferLocals` directly at that point.
         //
-        // Note: `app.help_buffer.id` (the construction-time
+        // Note: `app.popup_buffer.id` (the construction-time
         // id) and the registered id (= `pane.buffer_id`) are
         // intentionally different (see comment in
         // `open_help_in_pane`); locals are keyed by the
@@ -478,7 +478,7 @@ impl App {
         // `pane.buffer_id` for the in-pane case (where the pane
         // was swapped to the registered help id).
         let active_help_id = self
-            .help_buffer
+            .popup_buffer
             .as_ref()
             .map(|h| h.id)
             .unwrap_or_else(|| self.pane_tree.active().buffer_id);
@@ -492,7 +492,7 @@ impl App {
                     .cloned()
             })
             .or_else(|| {
-                // For in-pane help where help_buffer.id != pane.buffer_id,
+                // For in-pane help where popup_buffer.id != pane.buffer_id,
                 // try the pane's id too.
                 let pane_id = self.pane_tree.active().buffer_id;
                 if pane_id == active_help_id {
@@ -520,7 +520,7 @@ impl App {
                 // Help -> help transition: record where we were in
                 // the *current* help buffer so `<C-o>` brings us
                 // back to it. The subsequent `do_describe_command`
-                // replaces `help_buffer`, so the entry's
+                // replaces `popup_buffer`, so the entry's
                 // `buffer_id` becomes "stale" -- the unified ring
                 // walker filters those out (see `do_walk_history`).
                 self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
@@ -554,7 +554,7 @@ impl App {
                 // own id first (centred-popup case where
                 // pane.buffer_id is the doc behind the popup),
                 // then fall back to the pane's id (in-pane case).
-                let popup_id = self.help_buffer.as_ref().map(|h| h.id);
+                let popup_id = self.popup_buffer.as_ref().map(|h| h.id);
                 let pane_id = self.pane_tree.active().buffer_id;
                 let target_line = popup_id
                     .and_then(|id| self.buffer_locals.get(&id))
@@ -631,7 +631,7 @@ mod tests {
         a.command_line = "describe-command ex:write".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("help view should open");
+        let h = a.popup_buffer.as_ref().expect("help view should open");
         assert!(h.title.contains("ex:write"));
         // First two lines: "ex:write  (ex-command)" + blank.
         let lines = h.lines();
@@ -650,7 +650,7 @@ mod tests {
         a.command_line = "describe-command ex:write".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().unwrap();
+        let h = a.popup_buffer.as_ref().unwrap();
         let body = h.content.as_string();
         assert!(
             body.contains("Defined at:"),
@@ -682,7 +682,7 @@ mod tests {
         a.command_line = "describe-command ex:quit".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().unwrap();
+        let h = a.popup_buffer.as_ref().unwrap();
         let source_link = h
             .links
             .iter()
@@ -702,7 +702,7 @@ mod tests {
         a.command_line = "describe-command ex:apropos".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().unwrap();
+        let h = a.popup_buffer.as_ref().unwrap();
         // ex:apropos has one arg "pattern" -- expect "args" plus "arg:pattern".
         assert!(
             h.anchors.iter().any(|a| a.name == "args"),
@@ -725,7 +725,7 @@ mod tests {
         a.command_line = "describe-command ex:quit".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().unwrap();
+        let h = a.popup_buffer.as_ref().unwrap();
         assert!(
             h.anchors.iter().all(|a| a.name == "latency"),
             "ex:quit has no args; only the latency anchor is expected: {:?}",
@@ -741,7 +741,7 @@ mod tests {
         a.command_line = "describe-command ex:apropos".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().unwrap();
+        let h = a.popup_buffer.as_ref().unwrap();
         let lines = h.lines();
         let args_anchor = h.anchors.iter().find(|a| a.name == "args").unwrap();
         let arg_anchor = h.anchors.iter().find(|a| a.name == "arg:pattern").unwrap();
@@ -756,7 +756,7 @@ mod tests {
         a.command_line = "describe-command ex:apropos".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        let body = a.popup_buffer.as_ref().unwrap().content.as_string();
         assert!(
             body.contains("Arguments:"),
             "expected Arguments section: {body}"
@@ -773,7 +773,7 @@ mod tests {
         a.command_line = "describe-key j".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().unwrap();
+        let h = a.popup_buffer.as_ref().unwrap();
         let body = h.content.as_string();
         assert!(
             body.contains("Bound at:"),
@@ -803,7 +803,7 @@ mod tests {
         a.command_line = "describe-key j".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().unwrap();
+        let h = a.popup_buffer.as_ref().unwrap();
         let body = h.content.as_string();
         assert!(
             body.contains("motion:line-down"),
@@ -828,7 +828,7 @@ mod tests {
         a.command_line = "describe-key j".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().unwrap();
+        let h = a.popup_buffer.as_ref().unwrap();
         let source_links: Vec<_> = h
             .links
             .iter()
@@ -864,7 +864,7 @@ mod tests {
         a.command_line = "describe-key xyzzy".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        let body = a.popup_buffer.as_ref().unwrap().content.as_string();
         assert!(body.contains("not bound"), "body: {body}");
     }
 
@@ -878,7 +878,7 @@ mod tests {
         let mut a = app_in_command_mode("describe-command apropos");
         a.apply(Action::CommandLineSubmit);
         let h = a
-            .help_buffer
+            .popup_buffer
             .as_ref()
             .expect("describe-command apropos should open help");
         assert!(
@@ -900,7 +900,7 @@ mod tests {
         // Same shape but with a short alias (`w` -> `ex:write`).
         let mut a = app_in_command_mode("describe-command w");
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("describe-command w");
+        let h = a.popup_buffer.as_ref().expect("describe-command w");
         // Title shows whatever the user typed; the resolved spec
         // is `ex:write`. Body must mention the canonical name to
         // confirm we resolved correctly.
@@ -915,7 +915,7 @@ mod tests {
     fn describe_command_unknown_alias_emits_error() {
         let mut a = app_in_command_mode("describe-command xyzzy-not-a-thing");
         a.apply(Action::CommandLineSubmit);
-        assert!(a.help_buffer.is_none());
+        assert!(a.popup_buffer.is_none());
         let m = a.last_message.as_ref().unwrap();
         assert_eq!(m.level, EchoLevel::Error);
     }
@@ -927,7 +927,7 @@ mod tests {
         a.command_line = "describe-command ex:quit".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let body = a.help_buffer.as_ref().unwrap().content.as_string();
+        let body = a.popup_buffer.as_ref().unwrap().content.as_string();
         assert!(
             !body.contains("Arguments:"),
             "Arguments section should be omitted: {body}"
@@ -940,7 +940,7 @@ mod tests {
         a.command_line = "describe-command ex:nope".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.help_buffer.is_none());
+        assert!(a.popup_buffer.is_none());
         let msg = a.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
@@ -951,7 +951,7 @@ mod tests {
         a.command_line = "describe-buffer".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("help view should open");
+        let h = a.popup_buffer.as_ref().expect("help view should open");
         // Some predictable content lines.
         let body = h.content.as_string();
         assert!(body.contains("modal state"));
@@ -966,7 +966,7 @@ mod tests {
         a.command_line = "apropos write".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("help view should open");
+        let h = a.popup_buffer.as_ref().expect("help view should open");
         let body = h.content.as_string();
         // Both ex:write and ex:write-quit match the substring.
         assert!(body.contains("ex:write"));
@@ -979,7 +979,7 @@ mod tests {
         a.command_line = "apropos zxqzxqzxq".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().unwrap();
+        let h = a.popup_buffer.as_ref().unwrap();
         let body = h.content.as_string();
         assert!(body.contains("no matches"));
     }
@@ -990,7 +990,7 @@ mod tests {
         a.command_line = "help".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("help open");
+        let h = a.popup_buffer.as_ref().expect("help open");
         assert_eq!(h.title, "help");
         let body = h.content.as_string();
         // Index page advertises the topic table.
@@ -1003,7 +1003,7 @@ mod tests {
         a.command_line = "help folding".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("help open");
+        let h = a.popup_buffer.as_ref().expect("help open");
         assert_eq!(h.title, "help folding");
         let body = h.content.as_string();
         assert!(
@@ -1018,7 +1018,7 @@ mod tests {
         a.command_line = "help nonexistent".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.help_buffer.is_none());
+        assert!(a.popup_buffer.is_none());
         let msg = a.last_message.as_ref().expect("error");
         assert!(msg.text.contains("no help topic"), "got: {}", msg.text);
     }
@@ -1032,7 +1032,7 @@ mod tests {
         a.command_line = "describe-command ex:buffers".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("describe-command open");
+        let h = a.popup_buffer.as_ref().expect("describe-command open");
         assert!(
             h.links
                 .iter()
@@ -1049,7 +1049,7 @@ mod tests {
         a.command_line = "describe-command ex:buffers".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("describe open");
+        let h = a.popup_buffer.as_ref().expect("describe open");
         let link = h
             .links
             .iter()
@@ -1059,7 +1059,7 @@ mod tests {
         let target_pos = link.range.start;
         a.cursor = target_pos;
         a.apply(Action::FollowLink);
-        let h = a.help_buffer.as_ref().expect("help reopen");
+        let h = a.popup_buffer.as_ref().expect("help reopen");
         assert_eq!(h.title, "help buffers");
     }
 
@@ -1073,7 +1073,7 @@ mod tests {
         a.command_line = "help languages".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.help_buffer.as_ref().expect("languages help open");
+        let h = a.popup_buffer.as_ref().expect("languages help open");
         // Find the anchor link to "#1-tree-sitter-core" (which the
         // languages topic ships in its quick-reference table).
         let link = h
@@ -1098,7 +1098,7 @@ mod tests {
         // (regardless of buffer kind); we set it there.
         a.cursor = link.range.start;
         a.apply(Action::FollowLink);
-        let h = a.help_buffer.as_ref().expect("help still open");
+        let h = a.popup_buffer.as_ref().expect("help still open");
         assert_eq!(
             h.title, "help languages",
             "follow-link must NOT swap topics for an anchor jump"
@@ -1121,7 +1121,7 @@ mod tests {
             HelpContent::from_lines("test", vec!["a".into(), "b".into()]),
         );
         a.apply(Action::HelpDismiss);
-        assert!(a.help_buffer.is_none());
+        assert!(a.popup_buffer.is_none());
         assert_eq!(a.active_buffer, BufferKind::Document);
     }
 
@@ -1140,7 +1140,7 @@ mod tests {
             a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
         }
         // After unification, `self.cursor` / `self.scroll` are
-        // the active buffer's. The help_buffer's cursor field is
+        // the active buffer's. The popup_buffer's cursor field is
         // archival save-state synced at activation transitions.
         assert_eq!(a.cursor.line, 3);
         assert_eq!(a.scroll, 0);

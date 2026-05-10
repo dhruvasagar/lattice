@@ -506,6 +506,14 @@ pub enum HelpLinkTarget {
     /// row in the no-args view follows to its own focused buffer
     /// on `<CR>`.
     Customize(String),
+    /// `[label](customize-edit:NAME)` -- prefills the cmdline
+    /// with `:set NAME=<current-value>` and enters Command
+    /// mode (M.9.2). Used by the customize buffer's per-row
+    /// links so `<CR>` on an option row opens an inline edit.
+    /// The actual write goes through the existing `:set`
+    /// machinery, so validation, cascade, and event-bus
+    /// publishing all run unchanged.
+    CustomizeEdit(String),
     /// `[[…]]` whose payload didn't match a known scheme. Preserved
     /// verbatim for forward-compat -- a plugin / future scheme can
     /// inspect the raw payload.
@@ -680,6 +688,10 @@ fn classify_link_url(url: &str) -> HelpLinkTarget {
         HelpLinkTarget::Chord(rest.to_string())
     } else if let Some(rest) = url.strip_prefix("help:") {
         HelpLinkTarget::Topic(rest.to_string())
+    } else if let Some(rest) = url.strip_prefix("customize-edit:") {
+        // Order: `customize-edit:` must precede `customize:`
+        // because both share the leading prefix.
+        HelpLinkTarget::CustomizeEdit(rest.to_string())
     } else if let Some(rest) = url.strip_prefix("customize:") {
         HelpLinkTarget::Customize(rest.to_string())
     } else if let Some(rest) = url.strip_prefix('#') {
@@ -1206,6 +1218,23 @@ mod tests {
             }
             other => panic!("expected Customize, got {other:?}"),
         }
+        match classify_link_url("customize:editor") {
+            HelpLinkTarget::Customize(s) => assert_eq!(s, "editor"),
+            other => panic!("expected Customize, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_link_url_routes_customize_edit_scheme_separately() {
+        // M.9.2: `customize-edit:NAME` is a distinct scheme
+        // from `customize:NAME` (must come first in the parse
+        // chain since they share a prefix).
+        match classify_link_url("customize-edit:tabstop") {
+            HelpLinkTarget::CustomizeEdit(s) => assert_eq!(s, "tabstop"),
+            other => panic!("expected CustomizeEdit, got {other:?}"),
+        }
+        // The plain `customize:` scheme stays correct -- not
+        // accidentally captured by the longer prefix's parse.
         match classify_link_url("customize:editor") {
             HelpLinkTarget::Customize(s) => assert_eq!(s, "editor"),
             other => panic!("expected Customize, got {other:?}"),

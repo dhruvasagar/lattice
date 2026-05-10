@@ -1029,7 +1029,10 @@ impl App {
 
     /// Shared row formatter for the customize views. Renders
     /// one option's metadata in the
-    /// `:options`-listing-compatible shape.
+    /// `:options`-listing-compatible shape. Wraps the option
+    /// name in a `[NAME](customize-edit:NAME)` link so `<CR>`
+    /// on the row prefills the cmdline with `:set NAME=current`
+    /// for inline editing (M.9.2).
     fn append_customize_row(
         &self,
         lines: &mut Vec<String>,
@@ -1048,12 +1051,18 @@ impl App {
             .as_ref()
             .map(|s| s.get_formatted())
             .unwrap_or_else(|| "?".into());
+        // M.9.2: name is a link target -- `<CR>` fires the
+        // cmdline-prefill edit. The link's label cleans down
+        // to the bare option name during render
+        // (`extract_links_and_clean`), so the visible row text
+        // is unchanged from M.9.0.
+        let name_link = format!("[{0}](customize-edit:{0})", meta.name);
         let header = if current == default {
-            format!("- **{}**{} : {} = {}", meta.name, aliases, type_label, current)
+            format!("- **{}**{} : {} = {}", name_link, aliases, type_label, current)
         } else {
             format!(
                 "- **{}**{} : {} = {} (default: {})",
-                meta.name, aliases, type_label, current, default,
+                name_link, aliases, type_label, current, default,
             )
         };
         lines.push(header);
@@ -1067,6 +1076,39 @@ impl App {
             lines.push(format!("    values: {}", values.join(", ")));
         }
         lines.push(String::new());
+    }
+
+    /// `<CR>` on a customize-edit link (M.9.2). Prefills the
+    /// cmdline with `:set NAME=current_value` and switches to
+    /// Command mode so the user can edit the value and submit.
+    /// The actual write goes through the existing `:set` parser
+    /// (validates, cascades, fires `OptionChanged` on the bus).
+    ///
+    /// `read-only` and other `customizable = false` options are
+    /// rejected -- they're not in the customize listing in the
+    /// first place, but a stale link from a prior render
+    /// shouldn't crash. Echoes an info message.
+    fn do_customize_edit(&mut self, name: &str) {
+        let Some(spec) = self.config.lookup(name) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("E518: Unknown option: {name}"),
+            );
+            return;
+        };
+        let current = spec.get_formatted();
+        // For booleans, surface the `noNAME` alternative form
+        // by prefilling without `=` -- the user can overwrite
+        // with `noNAME` directly. For non-bool, prefill with
+        // `name=current` so the user sees the value and can
+        // edit it inline.
+        let prefill = if spec.is_bool() {
+            format!("set {name}={current}")
+        } else {
+            format!("set {name}={current}")
+        };
+        self.command_line = prefill;
+        self.modal = lattice_grammar::ModalState::Command;
     }
 
     /// Follow the help link under the cursor (`<CR>` in help mode).
@@ -1195,6 +1237,9 @@ impl App {
             crate::help::HelpLinkTarget::Customize(name) => {
                 self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
                 self.do_customize(Some(&name));
+            }
+            crate::help::HelpLinkTarget::CustomizeEdit(name) => {
+                self.do_customize_edit(&name);
             }
             crate::help::HelpLinkTarget::Anchor(slug) => {
                 // Intra-doc jump: scroll the *current* help buffer to
@@ -2265,6 +2310,75 @@ mod tests {
             body.contains("# customize :: editor"),
             "expected focused editor view, got: {body}",
         );
+    }
+
+    #[test]
+    fn customize_edit_link_prefills_cmdline_with_set_name_value() {
+        // M.9.2: <CR> on an option row in the customize buffer
+        // prefills the cmdline with `:set NAME=current_value`
+        // and switches to Command mode for inline editing.
+        let mut a = app_with("xx", 10);
+        a.command_line = "customize editor".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let popup_id = a.popup_buffer.expect("customize editor open");
+        // Find the customize-edit link for `tabstop`.
+        let edit_link = a
+            .buffer_locals
+            .get(&popup_id)
+            .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
+            .and_then(|hl| {
+                hl.0.iter()
+                    .find(|l| matches!(
+                        &l.target,
+                        lattice_help::HelpLinkTarget::CustomizeEdit(s) if s == "tabstop"
+                    ))
+                    .cloned()
+            });
+        let link = edit_link.expect("no customize-edit link for tabstop");
+        // Move cursor to the link, follow.
+        a.cursor.line = link.range.start.line;
+        a.cursor.byte = link.range.start.byte;
+        a.do_help_follow_link();
+        // Cmdline should be prefilled with `set tabstop=8`
+        // (default value).
+        assert_eq!(a.command_line, "set tabstop=8");
+        assert_eq!(a.modal, ModalState::Command);
+    }
+
+    #[test]
+    fn customize_edit_then_set_submit_writes_through_normal_pipeline() {
+        // M.9.2 round-trip: edit link prefills cmdline; user
+        // overwrites the value and submits; `:set` machinery
+        // applies the write through the normal cascade.
+        let mut a = app_with("xx", 10);
+        a.command_line = "customize editor".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let popup_id = a.popup_buffer.expect("editor view open");
+        let link = a
+            .buffer_locals
+            .get(&popup_id)
+            .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
+            .and_then(|hl| {
+                hl.0.iter()
+                    .find(|l| matches!(
+                        &l.target,
+                        lattice_help::HelpLinkTarget::CustomizeEdit(s) if s == "tabstop"
+                    ))
+                    .cloned()
+            })
+            .expect("no edit link");
+        a.cursor.line = link.range.start.line;
+        a.cursor.byte = link.range.start.byte;
+        a.do_help_follow_link();
+        // User edits the value: `set tabstop=4`.
+        a.command_line = "set tabstop=4".into();
+        a.apply(Action::CommandLineSubmit);
+        // Drain the OptionChanged event so the cache rebuilds.
+        a.drain_option_changes();
+        // `:set` write took effect.
+        assert_eq!(a.tabstop(), 4);
     }
 
     #[test]

@@ -1938,6 +1938,49 @@ graceful error handling per CLAUDE.md.
   `:describe-event NAME`. Tests verify the catalogue lists
   all three M.5.3.b LSP events grouped under
   `lattice-lsp`.
+- M.7 -- ✅ landed across M.7.0 / M.7.1 (with M.7.2 deferred).
+  Display minor modes wrap typed display options; `:set`
+  and `:<mode-name>` converge.
+  - **M.7.0 -- declarations.** `display_minor_mode!` macro in
+    `lattice-mode::modes::display` declares
+    `LineNumbersMode`, `RelativeLineNumbersMode`, `WrapMode`,
+    `ReadOnlyMode`. Each contributes its corresponding
+    typed-option's "on" value via `Mode::options()`.
+    Activation flips the mode-contribution layer in the
+    resolver (priority `mode > typed-option`); deactivation
+    removes it. `register_foundation_modes` extends to
+    register all four.
+    `relative-line-numbers-mode` contributes both
+    `RelativeNumber = true` AND `Number = true` directly,
+    matching vim's `:set rnu ⇒ :set nu` cascade so users who
+    never touch `:line-numbers-mode` still get a visible
+    gutter. `read-only-mode` is the user-typed pathway for
+    the `customizable = false` `ReadOnly` option (the only
+    user surface; `:set read-only` is rejected).
+  - **M.7.1 -- bidirectional convergence.** New
+    `mirror_typed_option_to_display_mode::<D>(mode_id)`
+    helper called from `apply_option_cascade` after
+    `:set number` / `:set relativenumber` / `:set wrap`. The
+    helper reads the typed-option layer's value and
+    activates / deactivates the matching mode on the active
+    buffer. Mode → typed-option direction is intentionally
+    not mirrored: `:line-numbers-mode` flips the
+    mode-contribution layer only (modes are buffer-scoped;
+    the typed option is global -- flipping the mode
+    shouldn't silently rewrite the user's global default).
+    `read-only-mode` doesn't get a cascade hook --
+    `customizable = false` means `:set read-only` is rejected,
+    so there's no second source of truth.
+  - **Deferred to M.7.2:** `whitespace-show-mode` and
+    `current-line-highlight-mode`. Their backing typed
+    options (`list`, `cursorline`) don't exist yet -- the
+    renderer has no plumbing for trailing whitespace
+    decoration or current-line highlight. M.7.2 lands the
+    options + the modes together.
+
+  Workspace 1383 → 1390 (+7 across M.7.0 + M.7.1; 1 in
+  lattice-mode unit tests, 6 in ui-tui integration tests).
+
 - M.6 -- ✅ landed across M.6.0 / M.6.1 / M.6.2 / M.6.3 /
   M.6.4. Nine LSP sub-mode minors give per-feature
   toggles inside the `lsp-mode` umbrella; each is

@@ -204,6 +204,77 @@ crate::options! {
     pub CompletionGhostText: bool = false;
 }
 
+// ---- Display group: per-feature buffer-display preferences ----
+//
+// One option per `BufferDisplayCategory` variant, each typed
+// `BufferDisplayPreference`. Default is `Default`, which means
+// "use the category's built-in default" -- the resolver in
+// `App::resolve_display` falls through to `default_display()`
+// when an option resolves to `Default`. Setting a non-default
+// value (e.g. `:set lsp.log.display = split-h`) overrides the
+// dispatch for that category.
+crate::options! {
+    group = crate::Display;
+
+    /// Where `:lsp-status` opens.
+    #[name("lsp.status.display")]
+    pub LspStatusDisplay: lattice_core::ui::display::BufferDisplayPreference =
+        lattice_core::ui::display::BufferDisplayPreference::Default;
+
+    /// Where `:lsp-log` / `:lsp-trace-log` open. Default
+    /// `active-pane` (live-tailed log buffers want to live in
+    /// a real pane).
+    #[name("lsp.log.display")]
+    pub LspLogDisplay: lattice_core::ui::display::BufferDisplayPreference =
+        lattice_core::ui::display::BufferDisplayPreference::Default;
+
+    /// Where `:help <topic>` opens.
+    #[name("help.topic.display")]
+    pub HelpTopicDisplay: lattice_core::ui::display::BufferDisplayPreference =
+        lattice_core::ui::display::BufferDisplayPreference::Default;
+
+    /// Where `:describe-command` / `:describe-buffer` /
+    /// `:describe-key` / `:describe-option` /
+    /// `:describe-event` open.
+    #[name("help.describe.display")]
+    pub HelpDescribeDisplay: lattice_core::ui::display::BufferDisplayPreference =
+        lattice_core::ui::display::BufferDisplayPreference::Default;
+
+    /// Where `:apropos <pattern>` opens.
+    #[name("help.apropos.display")]
+    pub HelpAproposDisplay: lattice_core::ui::display::BufferDisplayPreference =
+        lattice_core::ui::display::BufferDisplayPreference::Default;
+
+    /// Where state-listing help views open (`:ls`, `:keymap`,
+    /// `:options`, `:describe-events`, ...).
+    #[name("help.list.display")]
+    pub HelpListDisplay: lattice_core::ui::display::BufferDisplayPreference =
+        lattice_core::ui::display::BufferDisplayPreference::Default;
+
+    /// Where the hover popup (`K`) renders. Default
+    /// `floating-cursor` (popup floats on the doc; the doc
+    /// keeps focus); user can flip to `popup-cursor` (focused
+    /// popup) or `active-pane`.
+    #[name("hover.display")]
+    pub HoverDisplay: lattice_core::ui::display::BufferDisplayPreference =
+        lattice_core::ui::display::BufferDisplayPreference::Default;
+
+    /// Where signature help renders. Same default-shape as
+    /// hover (cursor-anchored floating).
+    #[name("signature.display")]
+    pub SignatureDisplay: lattice_core::ui::display::BufferDisplayPreference =
+        lattice_core::ui::display::BufferDisplayPreference::Default;
+
+    /// Where the *selected* buffer / location lands after a
+    /// picker accept (`:diagnostics`, `:references`,
+    /// `:symbol`, `:Files`, `:buffers`, `:lsp-server-log`).
+    /// Default `active-pane`; `split-h` / `split-v` open the
+    /// pick in a new sibling pane.
+    #[name("picker.result.display")]
+    pub PickerResultDisplay: lattice_core::ui::display::BufferDisplayPreference =
+        lattice_core::ui::display::BufferDisplayPreference::Default;
+}
+
 // M.2.0c: `CoreOptions` struct and `register_core_options`
 // helper retired. Built-in options self-register via the
 // macro-generated `register_fn` thunks (`OPTION_DECLS` linkme

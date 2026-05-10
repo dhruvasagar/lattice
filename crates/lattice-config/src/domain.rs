@@ -12,8 +12,35 @@
 //! are foreign — local-trait-on-foreign-type is permitted.
 
 use lattice_core::FoldMethod;
+use lattice_core::ui::display::BufferDisplayPreference;
 
 use crate::option_type::OptionType;
+
+impl OptionType for BufferDisplayPreference {
+    fn parse(s: &str) -> Result<Self, String> {
+        BufferDisplayPreference::parse_label(s)
+    }
+
+    fn format(&self) -> String {
+        self.label().to_string()
+    }
+
+    fn type_label() -> &'static str {
+        "display-preference"
+    }
+
+    fn enumerate() -> Option<Vec<&'static str>> {
+        Some(vec![
+            "default",
+            "popup-centered",
+            "popup-cursor",
+            "floating-cursor",
+            "active-pane",
+            "split-h",
+            "split-v",
+        ])
+    }
+}
 
 impl OptionType for FoldMethod {
     fn parse(s: &str) -> Result<Self, String> {

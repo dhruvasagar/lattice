@@ -23,7 +23,7 @@
 //! command keeps emitting its category, and the resolver +
 //! dispatcher are the only places that learn new variants.
 
-use lattice_core::ui::display::{BufferDisplay, BufferDisplayCategory, default_display};
+use lattice_core::ui::display::{BufferDisplay, BufferDisplayCategory};
 use lattice_core::ui::pane::SplitOrientation;
 
 use crate::buffers::BufferId;
@@ -64,14 +64,64 @@ impl App {
     }
 
     /// Resolve a [`BufferDisplayCategory`] to a concrete
-    /// [`BufferDisplay`]. v1 returns the built-in default;
-    /// follow-up reads a typed-option override
-    /// (`:set lsp.log.display = split-h`, etc.) before falling
-    /// back to the default.
+    /// [`BufferDisplay`]. Reads the per-category typed option
+    /// (`:set <category>.display = ...`) and falls back to
+    /// [`default_display`] when the option resolves to
+    /// `BufferDisplayPreference::Default` (the implicit value
+    /// when the user hasn't set it explicitly).
+    ///
+    /// Reads route through the config registry's typed-keyed
+    /// `get_typed::<D>()` -- O(1) hash lookup + an `Arc::clone`.
     pub fn resolve_display(&self, category: BufferDisplayCategory) -> BufferDisplay {
-        // TODO(M.4): consult `lattice_config::ResolvedOptions` for
-        // a `<category>.display` override before defaulting.
-        default_display(category)
+        use lattice_core::ui::display::BufferDisplayPreference;
+        let pref: BufferDisplayPreference = match category {
+            BufferDisplayCategory::LspStatus => self
+                .config
+                .get_typed::<lattice_config::LspStatusDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::LspLog => self
+                .config
+                .get_typed::<lattice_config::LspLogDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::HelpTopic => self
+                .config
+                .get_typed::<lattice_config::HelpTopicDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::HelpDescribe => self
+                .config
+                .get_typed::<lattice_config::HelpDescribeDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::HelpApropos => self
+                .config
+                .get_typed::<lattice_config::HelpAproposDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::HelpList => self
+                .config
+                .get_typed::<lattice_config::HelpListDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::Hover => self
+                .config
+                .get_typed::<lattice_config::HoverDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::Signature => self
+                .config
+                .get_typed::<lattice_config::SignatureDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::PickerResult => self
+                .config
+                .get_typed::<lattice_config::PickerResultDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+        };
+        pref.resolve(category)
     }
 
     /// Apply the [`BufferDisplayCategory::PickerResult`] preference
@@ -173,6 +223,36 @@ mod tests {
         let content = HelpContent::from_lines("hover", vec!["doc string".into()]);
         a.display_buffer(content, BufferDisplayCategory::Hover);
         assert_eq!(a.popup_placement(), Some(PopupPlacement::CursorAnchored));
+    }
+
+    #[test]
+    fn set_category_display_overrides_resolved_value() {
+        // M.4 follow-up: a typed-option override
+        // (`:set hover.display = popup-cursor`) flips
+        // `App::resolve_display(Hover)` from the built-in
+        // floating-cursor default to the user-chosen
+        // popup-cursor variant. Mechanism: the
+        // `BufferDisplayPreference` enum-typed option resolves
+        // to a non-`Default` variant; `pref.resolve(category)`
+        // returns the override.
+        let mut a = app_with("hi", 5);
+        // Default (Hover) is FloatingPopup(CursorAnchored).
+        assert_eq!(
+            a.resolve_display(BufferDisplayCategory::Hover),
+            BufferDisplay::FLOATING_CURSOR
+        );
+        // Override via the typed-options surface.
+        a.do_set("hover.display=popup-cursor");
+        assert_eq!(
+            a.resolve_display(BufferDisplayCategory::Hover),
+            BufferDisplay::POPUP_CURSOR
+        );
+        // Resetting to default round-trips back.
+        a.do_set("hover.display=default");
+        assert_eq!(
+            a.resolve_display(BufferDisplayCategory::Hover),
+            BufferDisplay::FLOATING_CURSOR
+        );
     }
 
     #[test]

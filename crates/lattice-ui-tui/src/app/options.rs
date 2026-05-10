@@ -36,9 +36,18 @@ impl App {
     // checks stay at field-access speed (~1ns) instead of the
     // ~33ns mutex+ArcSwap+downcast dance per call.
 
-    /// `:set number`. Default `true`.
+    /// `:set number`. Default `true`. Reads the active buffer's
+    /// resolved value via the hot-path cache.
     pub fn show_line_numbers(&self) -> bool {
         self.option_cache.show_line_numbers
+    }
+
+    /// `:set number` for an arbitrary buffer (per-pane resolution).
+    /// Used by inactive-pane render paths so each pane's mode
+    /// stack can drive its own gutter independently of the active
+    /// buffer's settings.
+    pub fn show_line_numbers_for(&self, buffer: crate::buffers::BufferId) -> bool {
+        *self.resolved_option::<lattice_config::Number>(buffer)
     }
 
     /// `:set relativenumber`. Default `false`. When true the
@@ -48,6 +57,12 @@ impl App {
     /// mirrors that cascade.
     pub fn relative_line_numbers(&self) -> bool {
         self.option_cache.relative_line_numbers
+    }
+
+    /// `:set relativenumber` for an arbitrary buffer (per-pane
+    /// resolution). Same shape as [`Self::show_line_numbers_for`].
+    pub fn relative_line_numbers_for(&self, buffer: crate::buffers::BufferId) -> bool {
+        *self.resolved_option::<lattice_config::RelativeNumber>(buffer)
     }
 
     /// `:set wrap`. Default `false`. (v1 renderer always
@@ -898,6 +913,41 @@ mod tests {
         let buf = a.document_buffer_id;
         let v = a.resolved_option::<lattice_config::Tabstop>(buf);
         assert_eq!(*v, 8);
+    }
+
+    #[test]
+    fn show_line_numbers_for_resolves_per_buffer() {
+        // Two buffers: the active doc keeps the global default
+        // (true); the second sets a buffer-local override to false.
+        // `show_line_numbers_for` must return the per-buffer
+        // resolved value, not the active buffer's setting.
+        use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
+        use crate::buffers::{BufferFlags, BufferId};
+        let mut a = app_with("hi", 5);
+        let active = a.document_buffer_id;
+        // Manufacture a second document buffer.
+        let other = BufferId::next();
+        let handle = a.document.clone();
+        a.buffers.insert(BufferEntry {
+            id: other,
+            flags: BufferFlags::default(),
+            data: BufferData::Document(DocumentEntry {
+                id: other,
+                handle,
+            }),
+        });
+        // Buffer-local: Number = false on `other`.
+        let mut local = lattice_config::OptionOverrideSet::new();
+        local.push(lattice_config::OptionOverride::new(
+            std::any::TypeId::of::<lattice_config::Number>(),
+            false,
+        ));
+        a.buffer_local_overrides.insert(other, local);
+        a.recompute_options_for_buffer(other);
+        // Active buffer keeps the default (true); the override
+        // only applies to `other`.
+        assert!(a.show_line_numbers_for(active));
+        assert!(!a.show_line_numbers_for(other));
     }
 
     // ---- M.3.1: ReadOnly option flows from major modes ----

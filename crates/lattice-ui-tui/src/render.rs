@@ -71,6 +71,10 @@ pub struct FrameView<'a> {
     pub folds: Arc<[Fold]>,
     pub visible_highlights: Arc<[Vec<StyledSpan>]>,
     pub show_line_numbers: bool,
+    /// M.4: resolved per-pane in `for_buffer`; tracks the active
+    /// buffer's setting in `from_app`. Reading this through the
+    /// view lets per-pane render paths route consistently.
+    pub relative_line_numbers: bool,
 }
 
 impl<'a> FrameView<'a> {
@@ -92,6 +96,25 @@ impl<'a> FrameView<'a> {
                 app.visible_highlights.clone().into_boxed_slice(),
             ),
             show_line_numbers: app.show_line_numbers(),
+            relative_line_numbers: app.relative_line_numbers(),
+        }
+    }
+
+    /// M.4: per-pane FrameView -- resolves options for `buffer_id`
+    /// instead of capturing the active buffer's settings. Used by
+    /// inactive-pane render paths so each pane's mode stack drives
+    /// its own gutter independently. The fold / highlight snapshots
+    /// stay tied to the active doc (inactive panes pull their own
+    /// per-pane span snapshots through `app.pane_highlights`).
+    pub fn for_buffer(app: &'a App, buffer_id: crate::buffers::BufferId) -> Self {
+        Self {
+            app,
+            folds: Arc::from(app.folds.clone().into_boxed_slice()),
+            visible_highlights: Arc::from(
+                app.visible_highlights.clone().into_boxed_slice(),
+            ),
+            show_line_numbers: app.show_line_numbers_for(buffer_id),
+            relative_line_numbers: app.relative_line_numbers_for(buffer_id),
         }
     }
 
@@ -1610,7 +1633,10 @@ fn draw_inactive_document(
     // chain and gets its own `FrameView`; each chain stays
     // internally consistent regardless of multi-thread render
     // / input interleaving.
-    let view = FrameView::from_app(app);
+    // M.4: resolve options for THIS pane's buffer, not the
+    // active one. Two visible doc panes with different mode
+    // stacks now render their gutters independently.
+    let view = FrameView::for_buffer(app, pane.buffer_id);
     let Some(entry) = app.buffers.document(pane.buffer_id) else {
         return;
     };
@@ -1710,7 +1736,7 @@ fn render_gutter_for_inactive(
             TuiStyle::default().fg(Color::DarkGray),
         );
     }
-    let n = if !view.app.relative_line_numbers() || line_idx == cursor_line {
+    let n = if !view.relative_line_numbers || line_idx == cursor_line {
         (line_idx + 1).to_string()
     } else {
         line_idx.abs_diff(cursor_line).to_string()

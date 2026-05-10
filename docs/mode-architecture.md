@@ -1755,6 +1755,24 @@ graceful error handling per CLAUDE.md.
   auto-activation hook lands. Lifecycle hooks are no-ops in
   this slice; M.5.3 wires the real attach/detach +
   didOpen/didClose.
+- M.5.1 -- ✅ landed. §9.6.1 auto-generated `:<mode-name>`
+  toggle commands. Boot-time
+  `register_mode_toggle_commands(cmd_registry, mode_registry)`
+  walks every registered mode and registers a per-mode
+  ex-command whose apply-fn returns
+  `Effect::ToggleMode { mode_name }`. The dispatcher routes
+  that to `App::toggle_mode_by_name`; minors flip
+  active↔inactive, majors activate (registry treats
+  re-activation of the current major as a reload, otherwise
+  swaps in). New `ModeRegistry::iter_meta()` exposes
+  `(ModeId, ModeKind)` for catalogue iteration (also used by
+  M.8's `:list-modes`). Programmatic API:
+  `App::activate_mode_by_id` / `deactivate_mode_by_id` /
+  `toggle_mode_by_name` for hooks / config callers. **Major
+  swaps don't touch active minors** -- state lives in
+  per-mode typed `BufferLocals`, so we get emacs's "globalised
+  minor" UX without `kill-all-local-variables` semantics.
+  User-facing `:help modes` topic added.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

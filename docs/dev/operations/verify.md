@@ -328,20 +328,22 @@ section).
 User doc: [`user/buffers.md`](../../user/buffers.md) (oil
 section).
 
-> **Note:** Oil currently has known issues; the
-> [`docs/superpowers/plans/2026-05-06-filetree-icons-oil.md`](../../superpowers/plans/2026-05-06-filetree-icons-oil.md)
-> plan tracks the rebuild.
-
 - [ ] `:Oil<CR>` opens the current document's parent dir as an oil buffer
 - [ ] `:Oil /tmp<CR>` opens `/tmp`
-- [ ] Each row shows one entry (file or directory) by name
-- [ ] `<CR>` on a file opens it
-- [ ] `<CR>` on a directory navigates into it
-- [ ] `..` row navigates to parent directory
-- [ ] Edit a row's name → `:w<CR>` renames the entry on disk
-- [ ] Delete a row → `:w<CR>` removes the entry
-- [ ] Adding a new line → `:w<CR>` creates a new file with that name
-- [ ] Echo on each operation reports what the write actually did
+- [ ] Each row shows one entry (file or directory) by name; icons
+      render per file type
+- [ ] `<CR>` on a file opens it in the original pane
+- [ ] `<CR>` on a directory navigates into it (replaces listing)
+- [ ] `-` from oil navigates to the parent directory
+- [ ] `-` from a Document buffer opens oil at the document's parent
+- [ ] Edit a row's name (`cw`) → `:w<CR>` renames the file on disk
+- [ ] Delete a row (`dd`) → `:w<CR>` removes the entry
+- [ ] Add a new line (`o NAME<Esc>`) → `:w<CR>` creates the file
+- [ ] One delete + one create → rename heuristic kicks in (preserves
+      file attributes)
+- [ ] Two+ of either side → independent deletes / creates execute
+      in order (renames → deletes → creates)
+- [ ] Echo after `:w` reports `oil: applied changes in <dir>`
 
 ---
 

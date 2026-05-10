@@ -12,20 +12,20 @@
 
 ## File Map
 
-| File | Action | Responsibility |
-|---|---|---|
-| `crates/lattice-ui-tui/src/icons.rs` | **Create** | `icon_for_entry()` — glyph + style per path/kind |
-| `crates/lattice-ui-tui/src/oil.rs` | **Create** | `OilBuffer`, `OilEntry`, open/navigate/apply |
-| `crates/lattice-ui-tui/src/theme.rs` | Modify | Add 3 style fields for dir/hidden/file |
-| `crates/lattice-ui-tui/src/buffers.rs` | Modify | Add `BufferKind::Oil` |
-| `crates/lattice-ui-tui/src/buffer_registry.rs` | Modify | Add `BufferData::Oil`, `oil()`/`oil_mut()` accessors |
-| `crates/lattice-ui-tui/src/file_tree.rs` | Modify | `render_to_buffer` calls `icons::icon_for_entry` |
-| `crates/lattice-ui-tui/src/render.rs` | Modify | Colored spans in `draw_file_tree_pane`; new `draw_oil_pane` |
-| `crates/lattice-ui-tui/src/app.rs` | Modify | `do_open_oil`, `do_oil_follow`, `run_oil_invocation`, `-` keybind, `:w` dispatch, `do_edit` dir branch |
-| `crates/lattice-ui-tui/src/input.rs` | Modify | Oil buffer-local keys; `-` in Normal for Doc/Tree |
-| `crates/lattice-ui-tui/src/lib.rs` | Modify | Add `pub mod icons;` and `pub mod oil;` |
-| `crates/lattice-grammar/src/effect.rs` | Modify | Add `Effect::OpenOil { dir }` |
-| `crates/lattice-grammar/src/ex_commands.rs` | Modify | Add `:oil`; rename `ex:tree` → `ex:filetree` |
+| File                                           | Action     | Responsibility                                                                                         |
+|------------------------------------------------|------------|--------------------------------------------------------------------------------------------------------|
+| `crates/lattice-ui-tui/src/icons.rs`           | **Create** | `icon_for_entry()` — glyph + style per path/kind                                                       |
+| `crates/lattice-ui-tui/src/oil.rs`             | **Create** | `OilBuffer`, `OilEntry`, open/navigate/apply                                                           |
+| `crates/lattice-ui-tui/src/theme.rs`           | Modify     | Add 3 style fields for dir/hidden/file                                                                 |
+| `crates/lattice-ui-tui/src/buffers.rs`         | Modify     | Add `BufferKind::Oil`                                                                                  |
+| `crates/lattice-ui-tui/src/buffer_registry.rs` | Modify     | Add `BufferData::Oil`, `oil()`/`oil_mut()` accessors                                                   |
+| `crates/lattice-ui-tui/src/file_tree.rs`       | Modify     | `render_to_buffer` calls `icons::icon_for_entry`                                                       |
+| `crates/lattice-ui-tui/src/render.rs`          | Modify     | Colored spans in `draw_file_tree_pane`; new `draw_oil_pane`                                            |
+| `crates/lattice-ui-tui/src/app.rs`             | Modify     | `do_open_oil`, `do_oil_follow`, `run_oil_invocation`, `-` keybind, `:w` dispatch, `do_edit` dir branch |
+| `crates/lattice-ui-tui/src/input.rs`           | Modify     | Oil buffer-local keys; `-` in Normal for Doc/Tree                                                      |
+| `crates/lattice-ui-tui/src/lib.rs`             | Modify     | Add `pub mod icons;` and `pub mod oil;`                                                                |
+| `crates/lattice-grammar/src/effect.rs`         | Modify     | Add `Effect::OpenOil { dir }`                                                                          |
+| `crates/lattice-grammar/src/ex_commands.rs`    | Modify     | Add `:oil`; rename `ex:tree` → `ex:filetree`                                                           |
 
 ---
 
@@ -1842,3 +1842,93 @@ git commit -m "feat: add - keybinding for context-sensitive oil navigation"
 | `<CR>` in FileTree → `-` also routes correctly | Task 9 |
 
 All spec requirements covered. ✓
+
+---
+
+## Completion note (2026-05-10)
+
+**Status:** ✅ Landed. Plan tasks 1–9 are all implemented.
+The implementation deviates from the plan's file paths in a
+few places because the codebase reorganised after the plan
+was authored:
+
+- **`lattice-ui-tui::icons` → `lattice-core::ui::icons`.** The
+  icon resolver was lifted into the renderer-agnostic core
+  crate so future GPUI / web renderers can consume it without
+  pulling in ratatui. The `IconColor` enum (with `Rgb(u32)`
+  plus seven named variants) is the renderer-neutral surface;
+  the TUI renderer maps `IconColor` → `ratatui::Color` /
+  `Style` in a thin adapter (`lattice-ui-tui::icons`).
+- **`lattice-ui-tui::oil` → `lattice-oil` crate.** Oil's data
+  model + diff/apply logic moved to its own crate as part
+  of the `lattice-ui-tui` shrink (renderer-agnostic content
+  models live outside the TUI renderer crate).
+- **`lattice-ui-tui::file_tree` → `lattice-file-tree` crate.**
+  Same reasoning as oil.
+- **Modes integration (post-plan).** The mode-architecture
+  migration (M.0–M.9) introduced `oil-mode` as a major mode
+  declared in `lattice-mode::modes::oil`. `do_open_oil` now
+  calls `activate_major_for_buffer_kind(new_id, BufferKind::Oil)`
+  to wire the major into the M.3+ modes machinery. Buffer-
+  locals carry an `OilDir` newtype owned by `oil-mode`
+  (M.3.2.c.3 mirror). `read-only-mode` is intentionally not
+  contributed by oil-mode (oil is writable; that's the whole
+  point).
+
+### Late-stage bug fix (2026-05-10)
+
+The keystroke pipeline initially mis-routed in-buffer edits
+through the **document actor** rather than the oil rope. The
+user reported "the oil buffer doesn't work" — symptoms: `o`
+in oil split a row mid-name; Insert-mode typing showed in the
+echo but the rope stayed empty; `:w` succeeded with the
+"applied" echo but no files were created or renamed. Root
+cause was a layered routing miss:
+
+1. `apply_edit_blocking` (the chokepoint that EVERY edit path
+   uses) always sent edits to `self.document`.
+2. `run_oil_invocation` (the grammar-dispatched path for
+   motions / operators) was a one-line `run_document_invocation`
+   passthrough -- so dispatch ran against the document actor
+   too.
+3. `do_open_line_below` (the `o` chord's body) read the line
+   length from `self.document.snapshot().buffer` -- gave the
+   document's row length, not oil's, so the inserted newline
+   landed in the wrong column.
+4. `do_open_oil` set `pane.cursor = Position::ZERO` but didn't
+   touch `self.cursor`, so the App's hot-path cursor carried
+   over from the prior buffer.
+
+Fix wired into one slice:
+
+- `apply_edit_blocking` + `apply_edit_batch_blocking` route to
+  a new `apply_edit_to_oil` helper when `active_buffer ==
+  Oil`. The helper mutates `oil.content` directly via
+  `Buffer::apply_edit` and skips the document-actor LSP
+  `didChange` publish (oil isn't LSP-tracked).
+- `run_oil_invocation` builds a temp `Document` from
+  `oil.content`, runs `lattice_grammar::execute` against it,
+  copies the resulting buffer back onto `oil.content`, and
+  threads cursor / mode / register / yank effects through.
+- `do_open_line_below` reads from `active_text()` (the
+  polymorphic accessor) instead of `self.document`.
+- `do_open_oil` syncs `self.cursor` / `self.scroll` to
+  `Position::ZERO` alongside the pane state.
+
+Tests added (`crates/lattice-ui-tui/src/app/lifecycle.rs`):
+
+- `oil_open_then_write_creates_a_new_file_on_disk` -- diff/
+  apply round-trip via direct rope mutation.
+- `oil_keystroke_pipeline_inserts_into_oil_rope` -- regression
+  for the apply_edit_blocking routing.
+- `oil_normal_mode_o_then_insert_then_write_creates_file` --
+  full keystroke flow through the App's effect pipeline.
+- `oil_navigate_into_subdir_replaces_listing` -- navigation.
+- `oil_navigate_up_from_oil_buffer_goes_to_parent` -- `-` in
+  oil.
+- `oil_navigate_up_from_document_opens_oil_at_parent` -- `-`
+  from a document.
+
+Workspace 1428 → 1436 (+8 oil-side tests across the fix). Oil
+is now a first-class writable directory listing alongside the
+file tree.

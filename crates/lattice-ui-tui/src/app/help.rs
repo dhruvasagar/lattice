@@ -772,6 +772,303 @@ impl App {
         );
     }
 
+    /// `:customize [name]` (M.9.0) -- open the customize
+    /// buffer. Three resolution paths:
+    ///
+    /// - **No arg.** Open the picker view: every registered
+    ///   group + every mode with at least one customizable
+    ///   option. Each row is a hyperlink that re-fires
+    ///   `:customize <name>` on follow. Lets users browse
+    ///   without knowing names up front.
+    /// - **`<name>` ending in `-mode`.** Focused mode view:
+    ///   the options the mode contributes via
+    ///   `Mode::options()`. Useful for understanding what a
+    ///   mode flips when it activates.
+    /// - **`<name>` not ending in `-mode`.** Group view: every
+    ///   option declared with that group, sectioned by group
+    ///   header. Cross-mode browsing.
+    ///
+    /// Read-only listing in M.9.0; M.9.1 lands per-row
+    /// navigation + Enter-to-edit. Today the user can use
+    /// `:set NAME=VALUE` from the cmdline to edit any option
+    /// they see in the form -- the values flow through the
+    /// same registry the form reads from.
+    pub(super) fn do_customize(&mut self, name: Option<&str>) {
+        match name {
+            None => self.do_customize_picker(),
+            Some(n) if lattice_config::ends_with_mode_suffix(n) => {
+                self.do_customize_mode(n)
+            }
+            Some(n) => self.do_customize_group(n),
+        }
+    }
+
+    /// `:customize` (no args) -- render the picker view:
+    /// every group + every registered mode that contributes
+    /// at least one customizable option. Each row is a
+    /// `[name](customize:name)` link.
+    fn do_customize_picker(&mut self) {
+        // Modes that contribute at least one customizable
+        // option. We map TypeId → customizable flag via
+        // OPTION_DECLS so non-customizable contributions
+        // don't pull modes onto the list.
+        let customizable_type_ids: std::collections::HashSet<std::any::TypeId> =
+            lattice_config::OPTION_DECLS
+                .iter()
+                .filter(|d| d.customizable)
+                .map(|d| (d.type_id)())
+                .collect();
+        let mut customisable_modes: Vec<lattice_mode::ModeId> = Vec::new();
+        for (mode_id, _kind) in self.mode_registry.iter_meta() {
+            if let Some(mode) = self.mode_registry.get(mode_id) {
+                let opts = mode.options();
+                if opts
+                    .iter()
+                    .any(|o| customizable_type_ids.contains(&o.option_type_id))
+                {
+                    customisable_modes.push(mode_id);
+                }
+            }
+        }
+        customisable_modes.sort_by_key(|m| m.as_str().to_string());
+
+        // Groups: every registered OptionGroup plus its
+        // option count.
+        let mut group_counts: std::collections::BTreeMap<&'static str, (usize, &'static str)> =
+            std::collections::BTreeMap::new();
+        for g in lattice_config::GROUP_DECLS.iter() {
+            group_counts.insert(g.name, (0, g.doc));
+        }
+        for d in lattice_config::OPTION_DECLS.iter() {
+            if !d.customizable {
+                continue;
+            }
+            if let Some(entry) = group_counts.get_mut(d.group_name) {
+                entry.0 += 1;
+            }
+        }
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push("# Customize".into());
+        lines.push(String::new());
+        lines.push(
+            "Pick a group to browse options across modes, or a mode \
+             to see what it contributes. `:customize <name>` opens \
+             the focused view; this picker is just navigation."
+                .into(),
+        );
+        lines.push(String::new());
+
+        lines.push(format!("## groups ({})", group_counts.len()));
+        lines.push(String::new());
+        for (name, (count, doc)) in &group_counts {
+            lines.push(format!(
+                "- [{name}](customize:{name}) ({count}) -- {doc}"
+            ));
+        }
+        lines.push(String::new());
+
+        lines.push(format!(
+            "## modes ({})",
+            customisable_modes.len(),
+        ));
+        lines.push(String::new());
+        for id in &customisable_modes {
+            lines.push(format!("- [{id}](customize:{id})"));
+        }
+
+        self.display_buffer(
+            HelpContent::from_lines("customize", lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+            lattice_core::ui::display::BufferDisplayCategory::HelpList,
+        );
+    }
+
+    /// `:customize <group>` -- render every customizable
+    /// option in `<group>`. Each row shows the option's
+    /// canonical name + aliases, type, current value, default
+    /// (when it differs), and the doc string.
+    fn do_customize_group(&mut self, group_name: &str) {
+        let group_doc = lattice_config::GROUP_DECLS
+            .iter()
+            .find(|g| g.name == group_name)
+            .map(|g| g.doc);
+        let Some(doc) = group_doc else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("no group named `{group_name}`"),
+            );
+            return;
+        };
+
+        let mut entries: Vec<&'static lattice_config::OptionDeclMetadata> =
+            lattice_config::OPTION_DECLS
+                .iter()
+                .filter(|d| d.customizable && d.group_name == group_name)
+                .copied()
+                .collect();
+        entries.sort_by_key(|d| d.name);
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# customize :: {group_name}"));
+        lines.push(String::new());
+        lines.push(doc.to_string());
+        lines.push(String::new());
+        if entries.is_empty() {
+            lines.push("(no customizable options in this group)".into());
+        } else {
+            lines.push(format!("{} option(s):", entries.len()));
+            lines.push(String::new());
+            for meta in &entries {
+                self.append_customize_row(&mut lines, meta);
+            }
+        }
+        lines.push(String::new());
+        lines.push(
+            "To edit any option above run `:set NAME=VALUE` from \
+             the cmdline. Per-row edit affordances land in M.9.1."
+                .into(),
+        );
+        self.display_buffer(
+            HelpContent::from_lines(format!("customize {group_name}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+            lattice_core::ui::display::BufferDisplayCategory::HelpList,
+        );
+    }
+
+    /// `:customize <mode-name>` -- render every option the
+    /// mode contributes via `Mode::options()`. Each row shows
+    /// the same metadata as the group view, plus a
+    /// `[mode-shadow]` indicator when the contribution is
+    /// active on the active buffer (the contribution would
+    /// shadow a `:set` write of a different value).
+    fn do_customize_mode(&mut self, mode_name: &str) {
+        let mode_id = lattice_mode::ModeId::new(mode_name);
+        let Some(mode) = self.mode_registry.get(mode_id) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("no mode named `{mode_name}`"),
+            );
+            return;
+        };
+
+        // Build TypeId → metadata lookup so we can render the
+        // mode's contributed TypeIds with full option detail.
+        let by_type_id: std::collections::HashMap<std::any::TypeId, &'static lattice_config::OptionDeclMetadata> =
+            lattice_config::OPTION_DECLS
+                .iter()
+                .map(|d| ((d.type_id)(), *d))
+                .collect();
+
+        let buffer_id = self.document_buffer_id;
+        let active = self.active_modes.get(&buffer_id);
+        let mode_active_here = match mode.kind() {
+            lattice_mode::ModeKind::Major => {
+                active.and_then(|a| a.major()) == Some(mode_id)
+            }
+            lattice_mode::ModeKind::Minor => {
+                active.map(|a| a.has_minor(mode_id)).unwrap_or(false)
+            }
+        };
+
+        let mut entries: Vec<&'static lattice_config::OptionDeclMetadata> = Vec::new();
+        for ovr in mode.options().iter() {
+            if let Some(meta) = by_type_id.get(&ovr.option_type_id) {
+                if meta.customizable {
+                    entries.push(meta);
+                }
+            }
+        }
+        entries.sort_by_key(|d| d.name);
+        entries.dedup_by_key(|d| d.name);
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# customize :: {mode_id}"));
+        lines.push(String::new());
+        lines.push(format!(
+            "Mode kind: `{}`. {} on the active buffer.",
+            match mode.kind() {
+                lattice_mode::ModeKind::Major => "major",
+                lattice_mode::ModeKind::Minor => "minor",
+            },
+            if mode_active_here { "Active" } else { "Inactive" },
+        ));
+        lines.push(String::new());
+        if entries.is_empty() {
+            lines.push(
+                "(this mode contributes no customizable options)".into(),
+            );
+        } else {
+            lines.push(format!("Contributes {} option(s):", entries.len()));
+            lines.push(String::new());
+            for meta in &entries {
+                self.append_customize_row(&mut lines, meta);
+                if mode_active_here {
+                    lines.push(
+                        "    [mode-shadow] this mode's contribution is \
+                         active on the active buffer; a `:set` write \
+                         here will be overridden by the mode-contribution \
+                         layer until the mode deactivates."
+                            .into(),
+                    );
+                }
+            }
+        }
+        lines.push(String::new());
+        lines.push(
+            "To edit any option above run `:set NAME=VALUE` from \
+             the cmdline. Per-row edit affordances land in M.9.1."
+                .into(),
+        );
+        self.display_buffer(
+            HelpContent::from_lines(format!("customize {mode_name}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+            lattice_core::ui::display::BufferDisplayCategory::HelpList,
+        );
+    }
+
+    /// Shared row formatter for the customize views. Renders
+    /// one option's metadata in the
+    /// `:options`-listing-compatible shape.
+    fn append_customize_row(
+        &self,
+        lines: &mut Vec<String>,
+        meta: &lattice_config::OptionDeclMetadata,
+    ) {
+        let spec = self.config.lookup(meta.name);
+        let aliases = spec
+            .as_ref()
+            .map(|s| s.aliases())
+            .filter(|a| !a.is_empty())
+            .map(|a| format!(" [{}]", a.join(", ")))
+            .unwrap_or_default();
+        let type_label = (meta.type_label)();
+        let default = (meta.default_formatted)();
+        let current = spec
+            .as_ref()
+            .map(|s| s.get_formatted())
+            .unwrap_or_else(|| "?".into());
+        let header = if current == default {
+            format!("- **{}**{} : {} = {}", meta.name, aliases, type_label, current)
+        } else {
+            format!(
+                "- **{}**{} : {} = {} (default: {})",
+                meta.name, aliases, type_label, current, default,
+            )
+        };
+        lines.push(header);
+        for doc_line in meta.doc.lines() {
+            let trimmed = doc_line.trim();
+            if !trimmed.is_empty() {
+                lines.push(format!("    {trimmed}"));
+            }
+        }
+        if let Some(values) = spec.as_ref().and_then(|s| s.enumerate_values()) {
+            lines.push(format!("    values: {}", values.join(", ")));
+        }
+        lines.push(String::new());
+    }
+
     /// Follow the help link under the cursor (`<CR>` in help mode).
     /// Looks up the link by cursor position, then dispatches based
     /// on the link target's variant. Source links echo the
@@ -1839,6 +2136,114 @@ mod tests {
                 || body.contains("(none active)"),
             "expected no-contribution message\n{body}",
         );
+    }
+
+    // ---- M.9.0: :customize ----
+
+    #[test]
+    fn customize_no_args_renders_picker_with_groups_and_modes() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "customize".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.popup_help().expect("customize picker");
+        let body = h.content.as_string();
+        assert!(body.contains("# Customize"));
+        assert!(body.contains("## groups"));
+        assert!(body.contains("## modes"));
+        // Built-in groups appear in the picker.
+        assert!(body.contains("editor"), "missing editor group\n{body}");
+        assert!(body.contains("display"), "missing display group\n{body}");
+        // Customize-able modes appear (display modes from M.7
+        // contribute typed options).
+        assert!(
+            body.contains("line-numbers-mode"),
+            "missing line-numbers-mode in picker\n{body}",
+        );
+        assert!(
+            body.contains("wrap-mode"),
+            "missing wrap-mode in picker\n{body}",
+        );
+    }
+
+    #[test]
+    fn customize_group_renders_options_with_metadata() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "customize editor".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.popup_help().expect("customize editor");
+        let body = h.content.as_string();
+        assert!(body.contains("# customize :: editor"));
+        // Editor group has tabstop, number, wrap, etc.
+        assert!(body.contains("tabstop"), "missing tabstop\n{body}");
+        assert!(body.contains("number"), "missing number\n{body}");
+        // Doc lines indented under each row.
+        assert!(
+            body.contains("Number of spaces a hard tab"),
+            "tabstop doc not rendered\n{body}",
+        );
+    }
+
+    #[test]
+    fn customize_mode_shows_contributed_options() {
+        // line-numbers-mode contributes Number=true. The
+        // mode view should show that option.
+        let mut a = app_with("xx", 10);
+        a.command_line = "customize line-numbers-mode".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.popup_help().expect("customize line-numbers-mode");
+        let body = h.content.as_string();
+        assert!(body.contains("# customize :: line-numbers-mode"));
+        assert!(body.contains("Mode kind:"));
+        assert!(
+            body.contains("**number**"),
+            "should list contributed Number option\n{body}",
+        );
+    }
+
+    #[test]
+    fn customize_mode_emits_shadow_indicator_when_active() {
+        // M.9.0 contract: when the mode is active on the
+        // current buffer, the form surfaces a [mode-shadow]
+        // indicator -- the user understands that a `:set`
+        // write would be overridden.
+        let mut a = app_with("xx", 10);
+        a.toggle_mode_by_name("line-numbers-mode");
+        a.command_line = "customize line-numbers-mode".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let body = a.popup_help().unwrap().content.as_string();
+        assert!(
+            body.contains("[mode-shadow]"),
+            "expected mode-shadow indicator\n{body}",
+        );
+        assert!(body.contains("Active"), "should report active state");
+    }
+
+    #[test]
+    fn customize_unknown_group_emits_error_no_overlay() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "customize definitely-not-a-group".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.popup_buffer.is_none());
+        let msg = a.last_message.as_ref().expect("error echo");
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("no group named"));
+    }
+
+    #[test]
+    fn customize_unknown_mode_emits_error_no_overlay() {
+        let mut a = app_with("xx", 10);
+        a.command_line = "customize definitely-not-a-mode".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        assert!(a.popup_buffer.is_none());
+        let msg = a.last_message.as_ref().expect("error echo");
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(msg.text.contains("no mode named"));
     }
 
     #[test]

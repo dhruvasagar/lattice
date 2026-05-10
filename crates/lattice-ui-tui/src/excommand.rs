@@ -385,6 +385,7 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("list-modes", "ex:list-modes"),
     ("describe-mode", "ex:describe-mode"),
     ("describe-option-resolution", "ex:describe-option-resolution"),
+    ("customize", "ex:customize"),
     ("hover", "ex:hover"),
     ("HoverClose", "ex:hover-close"),
     ("h", "ex:help"),

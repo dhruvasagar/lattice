@@ -363,6 +363,20 @@ pub enum Effect {
     DescribeOptionResolution {
         name: String,
     },
+
+    /// `:customize [name]` -- open the customize buffer
+    /// (M.9). With no arg, opens the group + mode picker.
+    /// With an arg ending in `-mode`, opens the focused
+    /// view of that mode's contributed options. Otherwise,
+    /// opens the cross-mode group view (every option in the
+    /// named group, sectioned by owning mode).
+    ///
+    /// M.9.0 ships the read-only listing form. M.9.1 wires
+    /// per-row navigation + Enter-to-edit; for now edits run
+    /// via the existing `:set` machinery on the cmdline.
+    Customize {
+        name: Option<String>,
+    },
     /// `:<mode-name>` -- toggle a registered mode on the active
     /// buffer (M.5.1; mode-architecture §9.6.1). For minors:
     /// activate if inactive, deactivate if active. For majors:

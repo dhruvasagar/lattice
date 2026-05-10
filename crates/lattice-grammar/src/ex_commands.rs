@@ -64,6 +64,7 @@ pub struct ExBuiltins {
     pub list_modes: ExCommandId,
     pub describe_mode: ExCommandId,
     pub describe_option_resolution: ExCommandId,
+    pub customize: ExCommandId,
     pub hover: ExCommandId,
     pub hover_close: ExCommandId,
     pub help: ExCommandId,
@@ -665,6 +666,40 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let customize = registry.register_ex_command(
+        "ex:customize",
+        "Open the customize buffer (`:customize [name]`). With no \
+         arg, opens the picker listing every registered group + \
+         every mode with at least one customizable option. With \
+         a `<name>-mode` arg, opens the focused view of that \
+         mode's contributions. With a group name (no `-mode` \
+         suffix), opens the cross-mode group view.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::None => Ok(Effect::Customize { name: None }),
+                Args::String(name) => Ok(Effect::Customize {
+                    name: Some(name.to_string()),
+                }),
+                _ => Err(CommandError::BadArgs(
+                    "expected at most one argument".into(),
+                )),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "name",
+                kind: ArgKind::String,
+                doc: "Group name (e.g. `editor`, `lsp`) OR mode name \
+                      ending in `-mode` (e.g. `lsp-completion-mode`).",
+                prompt: "customize:",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let hover = registry.register_ex_command(
         "ex:hover",
         "Open a hover popup at the cursor (`:hover [markdown]`). v1 path: feed text manually; \
@@ -1158,6 +1193,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         list_modes,
         describe_mode,
         describe_option_resolution,
+        customize,
         hover,
         hover_close,
         help,

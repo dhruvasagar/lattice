@@ -1011,12 +1011,30 @@ impl App {
                 inserted_text: a.inserted_text.clone(),
             })
             .collect();
+        // Always publish the generic editor event -- non-LSP
+        // subscribers (renderer, future plugins) see every
+        // edit regardless of `lsp-mode`.
         self.event_bus.publish(Event::DocumentChanged {
             id: snap.id,
-            path,
+            path: path.clone(),
             version: snap.version,
-            edits,
+            edits: edits.clone(),
         });
+        // M.5.5: gate the LSP fan-in at the publish site. Only
+        // emit `LspDocumentChanged` (the typed event the
+        // per-actor fan-in subscribes to) when `lsp-mode` is
+        // active for the active document. With the gate off no
+        // didChange goes to any server; the user's intent
+        // ("don't bother LSP for this buffer") is honoured at
+        // the editor layer rather than per-server.
+        if self.lsp_mode_enabled_for(self.document_buffer_id) {
+            self.event_bus.publish_typed(lattice_lsp::LspDocumentChanged {
+                id: snap.id,
+                path,
+                version: snap.version,
+                edits,
+            });
+        }
         // Slice B.2 part 2: accumulate tree-sitter-shaped edit
         // deltas for the next syntax reparse request.
         // `maybe_reparse_syntax` drains this and ships them to

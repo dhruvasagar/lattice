@@ -1,9 +1,17 @@
-//! Per-actor `DocumentChanged` -> `ActorCmd::RecordEdit` fan-in.
+//! Per-actor `LspDocumentChanged` -> `ActorCmd::RecordEdit` fan-in.
 //!
-//! Subscribes one channel per actor to the editor's event bus
-//! (filter: `EventKind::DocumentChanged`). On every event whose
-//! `path` resolves to a URI the actor cares about, it forwards
-//! one [`ActorCmd::RecordEdit`] per [`AppliedEdit`].
+//! Subscribes one typed channel per actor to the editor's event
+//! bus (M.5.5: `EventBus::subscribe_typed::<LspDocumentChanged>`).
+//! On every event whose `path` resolves to a URI the actor cares
+//! about, it forwards one [`crate::actor::ActorCmd::RecordEdit`]
+//! per [`AppliedEdit`].
+//!
+//! The publisher (App's `publish_document_changed`) only fires
+//! `LspDocumentChanged` when `lsp-mode` is active for the edited
+//! buffer, so the gate happens at the publish site -- fan_in
+//! never sees edits the user gated off via `:lsp-mode`. The
+//! generic `Event::DocumentChanged` keeps firing for non-LSP
+//! subscribers regardless.
 //!
 //! ## Why per-actor and not one shared dispatcher
 //!
@@ -30,7 +38,7 @@
 //! ## Filtering by attached URIs
 //!
 //! The fan-in does *not* know which URIs are attached to which
-//! actor. Instead it forwards every `DocumentChanged` whose
+//! actor. Instead it forwards every `LspDocumentChanged` whose
 //! `path` is `Some(_)` to its actor; the actor's DocSync
 //! warns + skips on URIs it doesn't track. This trades a small
 //! amount of per-event work (one `Uri` build + one mpsc send)
@@ -40,43 +48,36 @@
 use std::sync::Arc;
 
 use lattice_protocol::edit::{Edit, EditKind};
-use lattice_protocol::event::{Event, EventKind};
-use lattice_runtime::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
+use lattice_runtime::{EventBus, SubscriptionId};
 
 use crate::actor::{ServerHandle, uri_from_path};
 use crate::error::LspError;
+use crate::events::LspDocumentChanged;
 use crate::logging::{LogLevel, LogSource};
 
-/// Subscribe `handle` to every `DocumentChanged` event on `bus`
-/// and spawn a tokio task that forwards them as
+/// Subscribe `handle` to every `LspDocumentChanged` event on
+/// `bus` (M.5.5; previously `Event::DocumentChanged`) and spawn
+/// a tokio task that forwards them as
 /// [`crate::actor::ActorCmd::RecordEdit`] commands. Returns the
 /// subscription id; the supervisor must hand this to
 /// [`EventBus::unsubscribe`] when the actor is dropped to keep
 /// the bus's bucket from accumulating dead entries.
 pub fn spawn(handle: ServerHandle, bus: Arc<EventBus>) -> SubscriptionId {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
-    let sub_id = bus.subscribe(
-        EventFilter::kinds(vec![EventKind::DocumentChanged]),
-        SubscriptionTarget::Channel(tx),
-    );
+    let (tx, mut rx) =
+        tokio::sync::mpsc::unbounded_channel::<LspDocumentChanged>();
+    let sub_id = bus.subscribe_typed(tx);
 
     let server_id_arc: Arc<str> = Arc::from(handle.server_id());
     let logger = handle.logger().clone();
 
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
-            let Event::DocumentChanged { path, edits, .. } = event else {
-                // The filter is `DocumentChanged`-only; any other
-                // variant here means the bus's filter contract
-                // changed. Skip rather than panic.
-                continue;
-            };
-            let Some(path) = path else {
+            let Some(path) = event.path else {
                 // Scratch buffer / unsaved doc -- no URI to map.
                 continue;
             };
             let uri = uri_from_path(&path);
-            for ae in edits {
+            for ae in event.edits {
                 let edit = Edit {
                     range: ae.original_range,
                     kind: EditKind::Replace {

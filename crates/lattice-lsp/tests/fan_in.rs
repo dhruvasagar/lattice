@@ -43,8 +43,11 @@ fn caps_with(
     c
 }
 
-fn doc_changed_event(path: PathBuf, edits: Vec<AppliedEdit>) -> Event {
-    Event::DocumentChanged {
+// M.5.5: fan_in subscribes to the typed `LspDocumentChanged`
+// event (gated at the App publish site on `lsp-mode`); these
+// tests publish that directly via `bus.publish_typed`.
+fn doc_changed_event(path: PathBuf, edits: Vec<AppliedEdit>) -> lattice_lsp::LspDocumentChanged {
+    lattice_lsp::LspDocumentChanged {
         id: DocumentId::new(1),
         path: Some(path),
         version: 1,
@@ -93,7 +96,7 @@ async fn end_to_end_publish_emits_did_change_with_correct_payload() {
         applied_insert(1, "b"),
         applied_insert(2, "c"),
     ];
-    bus.publish(doc_changed_event(path, edits));
+    bus.publish_typed(doc_changed_event(path, edits));
 
     // Wait past the actor's 50ms debounce window.
     tokio::time::sleep(Duration::from_millis(120)).await;
@@ -138,7 +141,7 @@ async fn open_doc_precedes_first_edit_on_the_wire() {
     // the same actor cmd_tx (via different paths), so FIFO
     // guarantees didOpen wins on the wire.
     server.handle.open_doc(uri.clone(), "rust", "").unwrap();
-    bus.publish(doc_changed_event(path, vec![applied_insert(0, "x")]));
+    bus.publish_typed(doc_changed_event(path, vec![applied_insert(0, "x")]));
 
     tokio::time::sleep(Duration::from_millis(120)).await;
 
@@ -180,7 +183,7 @@ async fn edit_for_unknown_uri_is_warn_and_skip_not_panic() {
     // Publishing edits should warn and skip; the actor must
     // stay alive.
     let path = PathBuf::from("/tmp/never-opened.rs");
-    bus.publish(doc_changed_event(path, vec![applied_insert(0, "x")]));
+    bus.publish_typed(doc_changed_event(path, vec![applied_insert(0, "x")]));
     tokio::time::sleep(Duration::from_millis(120)).await;
 
     let notes = server.mock.notifications().await;
@@ -211,7 +214,7 @@ async fn event_with_no_path_is_ignored() {
     let bus = Arc::new(EventBus::new());
     let _sub = fan_in::spawn(server.handle.clone(), bus.clone());
 
-    bus.publish(Event::DocumentChanged {
+    bus.publish_typed(lattice_lsp::LspDocumentChanged {
         id: DocumentId::new(1),
         path: None, // scratch buffer
         version: 1,
@@ -242,7 +245,7 @@ async fn many_publishes_during_debounce_coalesce_into_one_did_change() {
 
     // Burst 50 edits with short gaps (each <50ms).
     for i in 0..50u32 {
-        bus.publish(doc_changed_event(
+        bus.publish_typed(doc_changed_event(
             path.clone(),
             vec![applied_insert(i, "x")],
         ));
@@ -294,7 +297,7 @@ async fn shutdown_unsubscribes_fan_in() {
     let path = PathBuf::from("/tmp/x.rs");
     let uri = Uri::from_str("file:///tmp/x.rs").unwrap();
     server.handle.open_doc(uri, "rust", "").unwrap();
-    bus.publish(doc_changed_event(path, vec![applied_insert(0, "x")]));
+    bus.publish_typed(doc_changed_event(path, vec![applied_insert(0, "x")]));
     tokio::time::sleep(Duration::from_millis(120)).await;
 
     let notes = server.mock.notifications().await;

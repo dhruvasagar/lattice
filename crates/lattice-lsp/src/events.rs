@@ -24,6 +24,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use lattice_protocol::event::AppliedEdit;
 use lattice_protocol::ids::DocumentId;
 
 /// Fired after `lsp-mode` activates on a buffer and the
@@ -101,5 +102,33 @@ lattice_protocol::register_event!(
     LspLogPushed,
     "lsp.log-pushed",
     "Fired when LspLogger::log appends a record to a log ring.",
+    "lattice-lsp",
+);
+
+/// Fired when a document buffer changes *and* `lsp-mode` is
+/// active for that buffer (M.5.5). The per-actor fan-in
+/// (`crate::fan_in`) subscribes via
+/// `EventBus::subscribe_typed::<LspDocumentChanged>` and
+/// forwards each [`AppliedEdit`] as an
+/// [`crate::actor::ActorCmd::RecordEdit`].
+///
+/// `path` is `None` for path-less buffers (no URI to map);
+/// fan_in skips those. The event isn't published at all when
+/// `lsp-mode` is inactive, so fan_in never sees edits the user
+/// has gated off.
+#[derive(Debug, Clone)]
+pub struct LspDocumentChanged {
+    pub id: DocumentId,
+    pub path: Option<PathBuf>,
+    pub version: u64,
+    pub edits: Vec<AppliedEdit>,
+}
+
+lattice_protocol::register_event!(
+    LspDocumentChanged,
+    "lsp.document-changed",
+    "Fired on every buffer edit when lsp-mode is active. The \
+     per-actor fan-in turns each AppliedEdit into a didChange \
+     payload bound for attached LSP servers.",
     "lattice-lsp",
 );

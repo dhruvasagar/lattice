@@ -3502,6 +3502,37 @@ mod tests {
     use crate::app::test_helpers::{app_with, seed_diags_at_lines};
 
     #[test]
+    fn lsp_mode_gates_document_changed_typed_event_at_publish_site() {
+        // M.5.5: the LSP fan-in subscribes to
+        // `LspDocumentChanged` (typed bus), and App's
+        // `publish_document_changed` gates the publish_typed
+        // call on `lsp_mode_enabled_for`. This test verifies
+        // the gate at the publish site:
+        // - lsp-mode off → no LspDocumentChanged emitted.
+        // - lsp-mode on  → LspDocumentChanged emitted on edit.
+        let mut a = app_with("xx", 10);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspDocumentChanged>();
+        a.event_bus.subscribe_typed(tx);
+        // Default (no path → lsp-mode off): drive an edit; no
+        // typed event should reach the subscriber.
+        a.apply(Action::Insert("a".into()));
+        assert!(
+            rx.try_recv().is_err(),
+            "lsp-mode off should suppress LspDocumentChanged"
+        );
+        // Activate lsp-mode and edit again -- now the typed
+        // event should publish.
+        a.toggle_mode_by_name("lsp-mode");
+        a.apply(Action::Insert("b".into()));
+        let received = rx.try_recv();
+        assert!(
+            received.is_ok(),
+            "lsp-mode on should emit LspDocumentChanged on edit"
+        );
+    }
+
+    #[test]
     fn lsp_mode_off_gates_request_entry_points_with_info_echo() {
         // M.5.4: `lsp-mode` off means LSP request entry points
         // bail with a discoverable echo (so users don't think

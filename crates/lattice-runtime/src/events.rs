@@ -220,7 +220,15 @@ impl EventBus {
         }
         let before_wild = inner.wildcard.len();
         inner.wildcard.retain(|s| s.id != id);
-        removed || inner.wildcard.len() != before_wild
+        removed |= inner.wildcard.len() != before_wild;
+        // M.5.5: typed-event subscriptions live in their own
+        // bucket; honour the same id-keyed unsubscribe contract.
+        for bucket in inner.typed_subs.values_mut() {
+            let before = bucket.len();
+            bucket.retain(|s| s.id != id);
+            removed |= bucket.len() != before;
+        }
+        removed
     }
 
     /// Fire `event` to every matching subscriber. Channel sinks

@@ -1013,7 +1013,7 @@ mod tests {
         // command itself (smart-resolve).
         let mut a = app_in_command_mode("describe-command");
         a.apply(Action::CommandLineDescribeUnderCursor);
-        let h = a.popup_buffer.as_ref().expect("help should open");
+        let h = a.popup_help().expect("help should open");
         assert!(h.title.contains("ex:describe-command"));
     }
 
@@ -1025,7 +1025,7 @@ mod tests {
         // `arg:name` anchor.
         let mut a = app_in_command_mode("describe-command moti");
         a.apply(Action::CommandLineDescribeUnderCursor);
-        let h = a.popup_buffer.as_ref().expect("help should open");
+        let h = a.popup_help().expect("help should open");
         assert!(h.title.contains("ex:describe-command"));
         // scroll should be set to the arg:name anchor's line.
         let arg_anchor = h.anchors.iter().find(|a| a.name == "arg:name").unwrap();
@@ -1038,7 +1038,7 @@ mod tests {
         // resolves to a known command. Hybrid: describe THAT.
         let mut a = app_in_command_mode("describe-command motion:line-down");
         a.apply(Action::CommandLineDescribeUnderCursor);
-        let h = a.popup_buffer.as_ref().expect("help should open");
+        let h = a.popup_help().expect("help should open");
         assert!(h.title.contains("motion:line-down"));
     }
 

@@ -184,8 +184,6 @@ impl App {
         // -- the second clause stays as the State-A discriminator.
         let popup_has_hover_mode = self
             .popup_buffer
-            .as_ref()
-            .map(|h| h.id)
             .and_then(|id| self.active_modes.get(&id))
             .map(|modes| modes.minors().contains(&crate::modes::HoverMode::mode_id()))
             .unwrap_or(false);
@@ -2049,14 +2047,25 @@ mod tests {
 
     #[test]
     fn entering_command_line_dismisses_open_help() {
-        // Q16: opening `:` dismisses help. The user can only focus
-        // on one thing.
+        // Q16: opening `:` dismisses State-A help popups (active is
+        // still Document; hover-style overlay). State-B popups
+        // (active = Help, focus moved into the popup) survive --
+        // the cmdline is part of the focused popup buffer.
         let mut a = app_with("xx", 10);
-        // Stuff a HelpBuffer directly into the slot (no metadata
-        // seeding needed for this dismiss-on-cmdline test).
+        // Simulate State A: register a popup buffer + set the slot
+        // but leave `active_buffer` on Document.
         let crate::help::HelpContent { buffer, .. } =
             crate::help::HelpContent::from_lines("preexisting", vec!["x".into()]);
-        a.popup_buffer = Some(buffer);
+        let id = buffer.id;
+        a.buffers.insert(crate::buffer_registry::BufferEntry {
+            id,
+            flags: crate::buffers::BufferFlags {
+                listed: false,
+                hidden: true,
+            },
+            data: crate::buffer_registry::BufferData::Help(buffer),
+        });
+        a.popup_buffer = Some(id);
         a.apply(Action::EnterCommandLine);
         assert!(a.popup_buffer.is_none());
     }

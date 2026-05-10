@@ -990,12 +990,10 @@ impl App {
         // M.3.2.c.5: refresh the locals so the renderer + link/
         // anchor lookups see the updated parse.
         self.seed_help_metadata_locals(id, metadata);
-        // Sync the popup hot-path mirror when active.
-        if self.popup_buffer.as_ref().map(|h| h.id) == Some(id)
-            && let Some(reg) = self.buffers.help(id)
-        {
-            self.popup_buffer = Some(reg.clone());
-        }
+        // M.4 (b): the popup hot-path slot is just the id; the
+        // registry copy was updated in place by `*slot = new_buf`
+        // above, so there's nothing further to sync.
+        let _ = id;
     }
 
     /// Drain server-initiated `workspace/configuration` requests.
@@ -3437,7 +3435,7 @@ mod tests {
         a.command_line = "hover documentation".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.popup_buffer.as_ref().expect("hover open");
+        let h = a.popup_help().expect("hover open");
         assert_eq!(h.title, "hover");
         assert!(h.content.as_string().contains("documentation"));
         // State A: focus stays on doc.
@@ -3464,7 +3462,7 @@ mod tests {
         a.command_line = "hover".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.popup_buffer.as_ref().expect("hover open");
+        let h = a.popup_help().expect("hover open");
         assert!(h.content.as_string().contains("empty"));
     }
 
@@ -3549,7 +3547,7 @@ mod tests {
         tx.send(crate::app::HoverOutcome::Body("**bold body**".into()))
             .unwrap();
         a.drain_pending_hover();
-        let h = a.popup_buffer.as_ref().expect("popup");
+        let h = a.popup_help().expect("popup");
         assert!(h.content.as_string().contains("**bold body**"));
         // State A entry: focus still on the doc.
         assert!(matches!(a.active_buffer, BufferKind::Document));
@@ -4835,7 +4833,7 @@ mod tests {
         ))
         .unwrap();
         a.drain_pending_signature_help();
-        let h = a.popup_buffer.as_ref().expect("popup");
+        let h = a.popup_help().expect("popup");
         assert_eq!(h.title, "hover");
         assert!(a.pending_signature_help_token.is_none());
     }
@@ -5189,7 +5187,7 @@ mod tests {
     fn lsp_status_with_no_servers_renders_placeholder() {
         let mut app = app_with("hi\n", 5);
         app.do_lsp_status();
-        let body = app.popup_buffer.as_ref().unwrap().content.as_string();
+        let body = app.popup_help().unwrap().content.as_string();
         assert!(body.contains("0 server"));
         assert!(body.contains("no LSP servers running"));
     }

@@ -204,7 +204,7 @@ impl App {
         // recorded buffer id (in-pane Help / Document / FileTree
         // all live in `self.buffers`); the transient popup-mode
         // Help overlay's id is checked separately.
-        let popup_help_id = self.popup_buffer.as_ref().map(|h| h.id);
+        let popup_help_id = self.popup_buffer;
         let reachable = |e: &PositionEntry| -> bool {
             match e.buffer {
                 BufferKind::Document | BufferKind::FileTree => self.buffers.contains(e.buffer_id),
@@ -252,11 +252,7 @@ impl App {
                 // fall back to the transient popup. Either way the
                 // live cursor lands on `self.cursor` (unified).
                 let buffer_present = self.buffers.help(entry.buffer_id).is_some()
-                    || self
-                        .popup_buffer
-                        .as_ref()
-                        .map(|h| h.id == entry.buffer_id)
-                        .unwrap_or(false);
+                    || self.popup_buffer == Some(entry.buffer_id);
                 if buffer_present {
                     self.cursor = entry.position;
                     self.pane_tree.active_mut().buffer = BufferKind::Help;
@@ -393,7 +389,7 @@ impl App {
         if self.pane_tree.active().buffer == BufferKind::Help {
             return None;
         }
-        let help = self.popup_buffer.as_ref()?;
+        let help = self.popup_help()?;
         let line_count = help.line_count().max(1);
         let buffer_h = buffer_height.max(1);
         let max_h = (buffer_h / 2).max(5).min(20);
@@ -605,11 +601,7 @@ impl App {
     /// the active pane's id.
     pub fn active_buffer_id(&self) -> BufferId {
         match self.active_buffer {
-            BufferKind::Help => self
-                .popup_buffer
-                .as_ref()
-                .map(|h| h.id)
-                .unwrap_or(self.document_buffer_id),
+            BufferKind::Help => self.popup_buffer.unwrap_or(self.document_buffer_id),
             BufferKind::Document | BufferKind::FileTree | BufferKind::Oil => {
                 self.pane_tree.active().buffer_id
             }
@@ -617,8 +609,9 @@ impl App {
     }
 
     /// Cursor of the currently active buffer. Reads `App::cursor`
-    /// when the document is active or `popup_buffer.cursor` when a
-    /// help overlay holds focus. Used by code that records jump
+    /// when the document is active or the popup help buffer's
+    /// cursor (via `popup_help()`) when a help overlay holds
+    /// focus. Used by code that records jump
     /// origins (where `<C-o>` would land if pressed right now)
     /// without needing to know which buffer kind that origin came
     /// from.
@@ -626,8 +619,7 @@ impl App {
         match self.active_buffer {
             BufferKind::Document => self.cursor,
             BufferKind::Help => self
-                .popup_buffer
-                .as_ref()
+                .popup_help()
                 .map(|h| h.cursor)
                 .unwrap_or(self.cursor),
             BufferKind::FileTree => self
@@ -651,8 +643,7 @@ impl App {
     pub fn active_text(&self) -> Buffer {
         match self.active_buffer {
             BufferKind::Help => self
-                .popup_buffer
-                .as_ref()
+                .popup_help()
                 .map(|h| h.content.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
             BufferKind::FileTree => self

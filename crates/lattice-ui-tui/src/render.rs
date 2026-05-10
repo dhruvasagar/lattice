@@ -829,9 +829,10 @@ fn draw_help_overlay(
     app: &App,
     snap: &DocumentSnapshot,
 ) {
-    let Some(help) = app.popup_buffer.as_ref() else {
+    let Some(help) = app.popup_help() else {
         return;
     };
+    let popup_id = app.popup_buffer.expect("popup_help is Some");
     // Tooltip-style sizing: cap to a reasonable max so the popup
     // doesn't dominate the screen. Height auto-fits content (line
     // count + 2 for borders), capped at 20 rows or half the buffer
@@ -883,8 +884,7 @@ fn draw_help_overlay(
     // (Contrast `draw_help_in_pane` below: in-pane mode swaps the
     // pane to the registered help buffer, where pane.buffer_id is
     // the right key.)
-    let render_id = help.id;
-    let (highlights, links) = help_render_data(app, render_id, help);
+    let (highlights, links) = help_render_data(app, popup_id, help);
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -1312,7 +1312,7 @@ fn pane_buffer_matches_active(app: &App, idx: usize) -> bool {
 /// help content. Per-pane status line (drawn separately by
 /// `draw_pane_status_line`) shows the title.
 fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(help) = app.popup_buffer.as_ref() else {
+    let Some(help) = app.popup_help() else {
         return;
     };
     let viewport = area.height as usize;
@@ -1320,10 +1320,10 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
     let lines = help.lines();
     let cursor_line = app.cursor.line as usize;
     // M.3.2.b.2: read help-mode-owned data via buffer-locals.
-    // `app.popup_buffer.id` (construction-time) and the
-    // registered id (= active pane's `buffer_id`) intentionally
-    // differ; locals are keyed by the registered id. See the
-    // comment in `App::open_help_in_pane`.
+    // The popup buffer's own id and the registered id (= active
+    // pane's `buffer_id`) intentionally differ for in-pane help;
+    // locals are keyed by the registered id. See the comment in
+    // `App::open_help_in_pane`.
     let render_id = app.pane_tree.active().buffer_id;
     let (highlights, links) = help_render_data(app, render_id, help);
     let visible: Vec<Line> = lines
@@ -1397,7 +1397,7 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
     let Some(help) = app
         .buffers
         .help(pane.buffer_id)
-        .or(app.popup_buffer.as_ref())
+        .or_else(|| app.popup_help())
     else {
         return;
     };
@@ -1579,8 +1579,7 @@ fn oil_pane_render(
 }
 
 fn help_pane_status(app: &App, _pane: &crate::pane::PaneState) -> String {
-    app.popup_buffer
-        .as_ref()
+    app.popup_help()
         .map(|h| format!("[help] {}", h.title))
         .unwrap_or_else(|| "[help]".to_string())
 }

@@ -283,14 +283,11 @@ impl App {
         // round-trip back to the same document via
         // activate_document early-returns on matching
         // document_buffer_id.
-        if self.popup_buffer.as_ref().map(|h| h.id) != Some(id)
-            && let Some(reg_help) = self.buffers.help(id)
-        {
-            self.popup_buffer = Some(reg_help.clone());
+        if self.popup_buffer != Some(id) && self.buffers.help(id).is_some() {
+            self.popup_buffer = Some(id);
         }
         let (stash_cursor, stash_scroll) = self
-            .popup_buffer
-            .as_ref()
+            .popup_help()
             .map(|h| (h.cursor, h.scroll as u32))
             .unwrap_or((Position::ZERO, 0));
         self.cursor = stash_cursor;
@@ -715,10 +712,10 @@ impl App {
         // if the active pane points at a different help buffer
         // than the one currently mirrored.
         if matches!(pane.buffer, BufferKind::Help)
-            && self.popup_buffer.as_ref().map(|h| h.id) != Some(pane.buffer_id)
-            && let Some(reg) = self.buffers.help(pane.buffer_id)
+            && self.popup_buffer != Some(pane.buffer_id)
+            && self.buffers.help(pane.buffer_id).is_some()
         {
-            self.popup_buffer = Some(reg.clone());
+            self.popup_buffer = Some(pane.buffer_id);
         }
     }
 
@@ -965,14 +962,15 @@ impl App {
         // registry record for archival / cross-pane round-trips.
         match self.active_buffer {
             BufferKind::Help => {
-                if let Some(h) = self.popup_buffer.as_mut() {
-                    h.cursor = cursor;
-                    h.scroll = scroll as usize;
-                    if h.id == pane_id
-                        && let Some(reg) = self.buffers.help_mut(pane_id)
-                    {
-                        *reg = h.clone();
-                    }
+                // M.4 (b): the popup buffer lives in the registry;
+                // mutate it in place there. The hot-path slot is
+                // just an id, so there's nothing to mirror back.
+                if let Some(id) = self.popup_buffer
+                    && id == pane_id
+                    && let Some(reg) = self.buffers.help_mut(pane_id)
+                {
+                    reg.cursor = cursor;
+                    reg.scroll = scroll as usize;
                 }
             }
             BufferKind::FileTree => {
@@ -1191,17 +1189,13 @@ impl App {
         // Clone for the registry record; the active hot-path copy
         // lands on `self.popup_buffer` via `activate_help_in_pane`.
         // Note: `buffer.id` (the construction-time id) and the
-        // registered `id` here are intentionally different. The
-        // mismatch is load-bearing for `activate_help_in_pane`'s
-        // refresh-from-registry logic which fires when
-        // `pane.buffer_id != popup_buffer.id`. Production reader
-        // sites that look up `buffer_locals` use `pane.buffer_id`
-        // (the registered id).
-        let registry_copy = buffer.clone();
+        // registered `id` here are intentionally different.
+        // Production reader sites that look up `buffer_locals` use
+        // the registered id; the construction-time id is discarded.
         self.buffers.insert(BufferEntry {
             id,
             flags: BufferFlags::default(),
-            data: BufferData::Help(registry_copy),
+            data: BufferData::Help(buffer),
         });
         // M.3.1: activate help-mode for this buffer so its
         // ReadOnly = true contribution lands in the resolved
@@ -1211,8 +1205,8 @@ impl App {
         // under the *registered* id (the locals key the renderer
         // and link-follow path resolve against).
         self.seed_help_metadata_locals(id, metadata);
-        // Take ownership of the original for the popup hot-path.
-        self.popup_buffer = Some(buffer);
+        // M.4 (b): popup_buffer is just the registry id.
+        self.popup_buffer = Some(id);
         self.activate_help_in_pane(id);
         id
     }
@@ -1830,7 +1824,7 @@ mod tests {
         a.command_line = "ls".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.popup_buffer.as_ref().expect("buffers help");
+        let h = a.popup_help().expect("buffers help");
         let body = h.content.as_string();
         // Two buffers listed.
         assert!(body.contains("2 open buffer"));
@@ -1923,7 +1917,7 @@ mod tests {
         assert!(matches!(app.active_buffer, BufferKind::Help));
         // Hot-path popup slot mirrors the registry copy.
         assert_eq!(
-            app.popup_buffer.as_ref().unwrap().title,
+            app.popup_help().unwrap().title,
             "test-help"
         );
         // :ls walks the registry; help variants count.
@@ -1943,7 +1937,7 @@ mod tests {
         ));
         assert_eq!(id1, id2, "same title returns same BufferId");
         // Refresh path overwrote the body.
-        let body = app.popup_buffer.as_ref().unwrap().content.as_string();
+        let body = app.popup_help().unwrap().content.as_string();
         assert!(body.contains("refreshed"));
         // Single help entry in the registry.
         assert_eq!(app.buffers.help_ids_sorted().len(), 1);

@@ -778,7 +778,7 @@ mod tests {
         a.command_line = "describe-option tabstop".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.popup_buffer.as_ref().expect("describe-option help");
+        let h = a.popup_help().expect("describe-option help");
         let body = h.content.as_string();
         assert!(body.contains("tabstop"));
         assert!(body.contains("integer"));
@@ -791,7 +791,7 @@ mod tests {
         a.command_line = "options".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.popup_buffer.as_ref().expect("options help");
+        let h = a.popup_help().expect("options help");
         let body = h.content.as_string();
         assert!(body.contains("number"));
         assert!(body.contains("tabstop"));

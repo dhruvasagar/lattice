@@ -103,7 +103,18 @@ pub(super) fn subscribe_all_events(
 pub(super) fn install_help(a: &mut App, h: HelpContent) {
     let HelpContent { buffer, metadata } = h;
     let id = buffer.id;
-    a.popup_buffer = Some(buffer);
+    // M.4 (b): popup buffer lives in the registry like every
+    // other buffer. Test fixture mirrors the production
+    // `open_popup` path with the same unlisted/hidden flags.
+    a.buffers.insert(crate::buffer_registry::BufferEntry {
+        id,
+        flags: crate::buffers::BufferFlags {
+            listed: false,
+            hidden: true,
+        },
+        data: crate::buffer_registry::BufferData::Help(buffer),
+    });
+    a.popup_buffer = Some(id);
     a.active_buffer = BufferKind::Help;
     a.seed_help_metadata_locals(id, metadata);
 }

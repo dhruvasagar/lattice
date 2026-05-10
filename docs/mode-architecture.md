@@ -1983,16 +1983,44 @@ graceful error handling per CLAUDE.md.
     `mirror_typed_option_to_display_mode::<D>` -- `:set list`
     ↔ `:whitespace-show-mode`, `:set cursorline` ↔
     `:current-line-highlight-mode`.
-  - **Deferred to M.7.3:** the renderer's actual painting
-    plumbing for whitespace glyphs + current-line highlight.
-    The option + mode + cascade declarations exist today;
-    the renderer's `option_cache.show_whitespace` /
-    `current_line_bg` reads, theme entries, and per-line
-    decoration emission are the genuinely-new visual work.
+  - **M.7.3 -- renderer painting.** Three sub-slices:
+    - **M.7.3.a foundation.** Five typed glyph options
+      under the Display group
+      (`display.whitespace.tab` / `.trailing` / `.leading` /
+      `.space` / `.eol`), replacing vim's encoded
+      `listchars=...` blob with a destructured surface.
+      Defaults follow emacs `whitespace-mode`: tab + trailing
+      + leading on; space + EOL opt-in. OptionCache extends
+      with seven new fields (`show_whitespace`,
+      `current_line_highlight`, plus 5 `Option<char>` glyphs).
+      Theme adds `whitespace_style`,
+      `whitespace_trailing_style`, `cursor_line_bg`
+      (`Color::Indexed(236)` -- 256-color-safe portable dark
+      gray).
+    - **M.7.3.b whitespace pre-pass.** The renderer's
+      whitespace decoration: walks rendered spans
+      char-by-char, classifies each whitespace byte by
+      position (trailing > tab > leading > space precedence),
+      substitutes the configured glyph with the appropriate
+      style. Splits spans at substitution boundaries so
+      syntax-highlighted spans pass through unchanged on
+      their non-whitespace content. `apply_whitespace_decoration`
+      helper testable in isolation; wired at both render call
+      sites (active + inactive panes) gated on
+      `app.option_cache.show_whitespace`.
+    - **M.7.3.c current-line highlight.** Style-merge
+      approach: walk the cursor row's body spans, OR
+      `theme.cursor_line_bg` into each span's style where
+      the existing bg is unset. Selection wins per-cell.
+      Pads to `buffer_w` so the highlight extends to the
+      pane's right edge. Active pane only (vim-like; inactive
+      panes have conceptual cursors, not visual ones). Gutter
+      + severity cell intentionally not highlighted; future
+      polish can extend.
 
-  Workspace 1383 → 1394 (+11 across M.7.0 / M.7.1 / M.7.2;
-  3 in lattice-mode unit tests, 8 in ui-tui integration
-  tests).
+  Workspace 1383 → 1418 (+35 across M.7.0 / M.7.1 / M.7.2 /
+  M.7.3.a / M.7.3.b / M.7.3.c). The full M.7 family is now
+  green end-to-end.
 - M.8 -- ✅ landed. Three introspection ex-commands matching
   the existing `:describe-option` / `:describe-event`
   shape:

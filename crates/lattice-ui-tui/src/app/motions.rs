@@ -390,11 +390,21 @@ impl App {
             return None;
         }
         let help = self.popup_help()?;
-        let line_count = help.line_count().max(1);
-        let buffer_h = buffer_height.max(1);
-        let max_h = (buffer_h / 2).max(5).min(20);
-        let height = (line_count + 2).min(max_h).max(5);
-        Some(height.saturating_sub(2).max(1))
+        // Single source of truth for popup sizing -- keeps the
+        // renderer's painted viewport and the motion engine's
+        // scroll bounds in lockstep regardless of placement.
+        // Buffer width is unknown here (the caller passes height
+        // only); pass a generous synthetic width since the
+        // helper's height calc doesn't depend on width.
+        let line_count = u16::try_from(help.line_count().max(1)).unwrap_or(u16::MAX);
+        let buffer_h = u16::try_from(buffer_height.max(1)).unwrap_or(u16::MAX);
+        let (_w, height) = lattice_core::ui::popup::popup_outer_size(
+            u16::MAX,
+            buffer_h,
+            line_count,
+            self.popup_placement,
+        );
+        Some(u32::from(height).saturating_sub(2).max(1))
     }
 
     /// Jump the cursor to a viewport-relative line. `H` -> top of view,

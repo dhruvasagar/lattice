@@ -1861,19 +1861,35 @@ mod tests {
     }
 
     #[test]
-    fn help_popup_inner_height_caps_at_twenty() {
-        // 50-line help in a 60-row buffer: popup height clamps at
-        // 20, inner = 18. Motion uses this as the viewport so
-        // ensure_cursor_visible scrolls the popup -- not the full
-        // pane -- when the cursor reaches the bottom row.
+    fn help_popup_inner_height_caps_for_centered_placement() {
+        // M.7.3 follow-up: centered popups (the default; reading
+        // surfaces) get a larger cap than the old 20-row tooltip
+        // bound. 50-line help in a 60-row buffer: max_h =
+        // min(60*3/4, 40) = 40; popup height = 40; inner = 38.
+        // Motion uses this as the viewport so ensure_cursor_visible
+        // scrolls the popup -- not the full pane -- when the
+        // cursor reaches the bottom row.
         let mut a = app_with("xx", 60);
         let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
         install_help(&mut a, HelpContent::from_lines("size", lines));
-        assert_eq!(a.help_popup_inner_height(60), Some(18));
+        assert_eq!(a.help_popup_inner_height(60), Some(38));
         // Confirm `active_pane_content_height` routes through the
-        // popup-inner branch in State B, so the runtime feeds 18
+        // popup-inner branch in State B, so the runtime feeds 38
         // into `set_viewport_height` (not the full 60-row pane).
-        assert_eq!(a.active_pane_content_height(60), 18);
+        assert_eq!(a.active_pane_content_height(60), 38);
+    }
+
+    #[test]
+    fn help_popup_inner_height_caps_at_twenty_for_cursor_anchored() {
+        // Cursor-anchored popups (hover, signature help) keep the
+        // tight tooltip caps: 20-row outer / 18-row inner. Same
+        // 50-line content as the centered test, different
+        // placement → different inner height.
+        let mut a = app_with("xx", 60);
+        let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
+        install_help(&mut a, HelpContent::from_lines("size", lines));
+        a.popup_placement = crate::popup::PopupPlacement::CursorAnchored;
+        assert_eq!(a.help_popup_inner_height(60), Some(18));
     }
 
     #[test]

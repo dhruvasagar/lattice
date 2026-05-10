@@ -834,22 +834,21 @@ fn draw_help_overlay(
         return;
     };
     let popup_id = app.popup_buffer.expect("popup_help is Some");
-    // Tooltip-style sizing: cap to a reasonable max so the popup
-    // doesn't dominate the screen. Height auto-fits content (line
-    // count + 2 for borders), capped at 20 rows or half the buffer
-    // area, whichever is smaller. Width caps at 80 cells, with a
-    // 30-cell minimum for usability.
-    //
-    // The inner height (height - 2 borders) is the popup's motion
-    // viewport. App::help_popup_inner_height computes the same
-    // value for `set_viewport_height`, so motion / scroll /
-    // ensure_cursor_visible match the rows the renderer actually
-    // paints; without that, `j` past the last visible row would
-    // silently advance `cursor.line`.
+    // Sizing routes through `lattice_core::ui::popup::popup_outer_size`
+    // so the renderer + the App's `help_popup_inner_height`
+    // (motion / scroll / ensure_cursor_visible) agree on the
+    // viewport bounds. Centred popups (reading surfaces:
+    // `:help`, `:options`, `:describe-*`, `:apropos`,
+    // `:customize`) get a larger cap (120 wide, 40 tall);
+    // cursor-anchored popups (hover, signature help) keep
+    // tight tooltip caps (80 wide, 20 tall).
     let line_count = help.line_count().max(1) as u16;
-    let max_h = (buffer_area.height / 2).max(5).min(20);
-    let height = (line_count.saturating_add(2)).min(max_h).max(5);
-    let width = (buffer_area.width.saturating_sub(4)).clamp(30, 80);
+    let (width, height) = lattice_core::ui::popup::popup_outer_size(
+        buffer_area.width,
+        buffer_area.height,
+        line_count,
+        app.popup_placement,
+    );
     let popup = position_help_popup(app, snap, buffer_area, width, height);
 
     frame.render_widget(Clear, popup);

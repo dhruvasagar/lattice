@@ -3354,6 +3354,15 @@ impl App {
     /// `]d` / `:diag-next` / `:cnext` -- move the cursor to the
     /// next diagnostic in the active buffer. Wraps to top.
     pub fn do_next_diagnostic(&mut self) {
+        // M.6.3: lsp-diagnostics-mode gate. The diagnostic store
+        // may still hold data (the wire layer keeps writing)
+        // but navigation respects the user-side disable.
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspDiagnosticsMode::mode_id(),
+            "lsp-diagnostics-mode",
+        ) {
+            return;
+        }
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
             self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
             return;
@@ -3384,6 +3393,13 @@ impl App {
     /// `[d` / `:diag-prev` / `:cprev` -- move the cursor to the
     /// previous diagnostic in the active buffer. Wraps to bottom.
     pub fn do_prev_diagnostic(&mut self) {
+        // M.6.3: lsp-diagnostics-mode gate (symmetric to next).
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspDiagnosticsMode::mode_id(),
+            "lsp-diagnostics-mode",
+        ) {
+            return;
+        }
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
             self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
             return;
@@ -6100,6 +6116,11 @@ mod tests {
     #[test]
     fn next_diagnostic_with_no_attachment_echoes_error() {
         let mut app = app_with("hi\n", 5);
+        // M.6.3: gate on lsp-diagnostics-mode runs before the
+        // URI check; activate lsp-mode so the cascade brings
+        // diagnostics-mode up, then the no-URI branch is what
+        // we exercise.
+        app.toggle_mode_by_name("lsp-mode");
         // No buffer_uris mapping -> "no LSP attachment".
         app.do_next_diagnostic();
         let msg = app.last_message.as_ref().expect("expected echo");
@@ -6109,13 +6130,34 @@ mod tests {
     #[test]
     fn next_diagnostic_with_no_diagnostics_echoes_info() {
         let mut app = app_with("hi\n", 5);
-        // Seed an empty layer mapping.
+        // Seed an empty layer mapping + activate lsp-mode (cascade
+        // activates lsp-diagnostics-mode).
         use std::str::FromStr;
         let uri = lattice_lsp::Uri::from_str("file:///tmp/empty.rs").unwrap();
         app.buffer_uris.insert(app.document_buffer_id, uri);
+        app.toggle_mode_by_name("lsp-mode");
         app.do_next_diagnostic();
         let msg = app.last_message.as_ref().expect("expected echo");
         assert!(msg.text.contains("no diagnostics"), "got: {}", msg.text);
+    }
+
+    #[test]
+    fn next_diagnostic_with_lsp_diagnostics_mode_off_echoes_gate() {
+        // M.6.3 contract: `:lsp-diagnostics-mode` off ⇒ the
+        // navigation gate echoes the sub-mode name and bails
+        // before any URI / data lookup.
+        let mut app = app_with("hi\n", 5);
+        seed_diags_at_lines(&mut app, &[0]);
+        // Helper auto-activated lsp-mode + cascade. Disable just
+        // diagnostics-mode.
+        app.toggle_mode_by_name("lsp-diagnostics-mode");
+        app.do_next_diagnostic();
+        let msg = app.last_message.as_ref().expect("gate echo");
+        assert!(
+            msg.text.contains("lsp-diagnostics-mode disabled"),
+            "expected sub-mode gate echo, got: {}",
+            msg.text,
+        );
     }
 
     #[test]

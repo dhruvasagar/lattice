@@ -2659,7 +2659,13 @@ pub(crate) fn severity_for_line(
     _snap: &DocumentSnapshot,
     line_idx: u32,
 ) -> Option<DiagnosticSeverity> {
-    if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+    // M.6.3: gate on `lsp-diagnostics-mode` (which implies
+    // `lsp-mode` -- a sub-mode can't be active without the
+    // umbrella, by M.6.1 cascade). Replaces the umbrella-only
+    // gate so users can `:disable lsp-diagnostics-mode` to
+    // suppress just the visual surface while keeping other
+    // LSP features (hover / completion / nav) live.
+    if !app.lsp_diagnostics_mode_enabled_for(app.document_buffer_id) {
         return None;
     }
     let uri = app.buffer_uri(app.document_buffer_id)?;
@@ -2675,7 +2681,10 @@ pub(crate) fn diagnostics_on_line(
     _snap: &DocumentSnapshot,
     line_idx: u32,
 ) -> Vec<LspDiagnostic> {
-    if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+    // M.6.3: gate on `lsp-diagnostics-mode` (matches
+    // `severity_for_line` -- the inline-underline overlay
+    // and the gutter glyph share the same surface).
+    if !app.lsp_diagnostics_mode_enabled_for(app.document_buffer_id) {
         return Vec::new();
     }
     let Some(uri) = app.buffer_uri(app.document_buffer_id) else {
@@ -3981,6 +3990,39 @@ mod tests {
         );
         // And the modeline LSP segment hides.
         assert_eq!(active_lsp_segment(&app), "");
+    }
+
+    #[test]
+    fn lsp_diagnostics_mode_off_suppresses_glyphs_independently() {
+        // M.6.3: the render-side gate moves from `lsp-mode`
+        // (umbrella) to `lsp-diagnostics-mode` (sub-mode). User
+        // can disable just the diagnostic visual surface while
+        // keeping other LSP features (hover / completion / nav)
+        // active.
+        let mut app = app_with("fn main() {}\n", 5);
+        seed_diagnostic(
+            &mut app,
+            0,
+            0,
+            7,
+            lattice_lsp::DiagnosticSeverity::ERROR,
+            "boom",
+        );
+        // Helper auto-activated lsp-mode (and via cascade,
+        // lsp-diagnostics-mode). Toggle just diagnostics-mode
+        // off; lsp-mode stays on.
+        assert!(app.lsp_mode_enabled_for(app.document_buffer_id));
+        assert!(app.lsp_diagnostics_mode_enabled_for(app.document_buffer_id));
+        app.toggle_mode_by_name("lsp-diagnostics-mode");
+        assert!(app.lsp_mode_enabled_for(app.document_buffer_id));
+        assert!(!app.lsp_diagnostics_mode_enabled_for(app.document_buffer_id));
+        // Glyph suppressed.
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(
+            !row0.contains('■'),
+            "lsp-diagnostics-mode off should suppress glyph; got {row0:?}",
+        );
     }
 
     #[test]

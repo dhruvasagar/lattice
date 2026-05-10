@@ -253,6 +253,14 @@ pub(super) fn seed_diags_at_lines(app: &mut App, lines: &[u32]) {
         version: None,
         diagnostics: std::sync::Arc::from(diags.into_boxed_slice()),
     });
+    // M.6.3: navigation (`:diag-next` / `:diag-prev`) and the
+    // render gates check `lsp-diagnostics-mode`. Activate the
+    // umbrella so the cascade brings every sub-mode up; tests
+    // can override per-test if they want a specific sub-mode
+    // off.
+    if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+        app.toggle_mode_by_name("lsp-mode");
+    }
 }
 
 /// Write a file to a process-unique temp path. Used by

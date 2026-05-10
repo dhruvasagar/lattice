@@ -23,10 +23,7 @@
 //! refactor isn't landed yet -- those modes are deferred to
 //! the slice that ships them.
 
-use lattice_mode::{
-    BufferLocal, CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind,
-    ModeRegistry, OptionOverrideSet, TextMode,
-};
+use lattice_mode::{BufferLocal, ModeId, ModeRegistry, TextMode};
 use lattice_syntax::Lang;
 
 use crate::buffers::BufferKind;
@@ -281,159 +278,17 @@ impl BufferLocal for DocumentFolds {
     }
 }
 
-/// Macro for buffer-kind majors that are read-only (Help,
-/// FileTree). Oil is writable so it gets its own impl.
-macro_rules! read_only_buffer_kind_mode {
-    ($struct_name:ident, $mode_name:literal) => {
-        pub struct $struct_name;
-
-        impl $struct_name {
-            pub fn mode_id() -> ModeId {
-                ModeId::new($mode_name)
-            }
-        }
-
-        impl Mode for $struct_name {
-            fn id(&self) -> ModeId {
-                Self::mode_id()
-            }
-            fn kind(&self) -> ModeKind {
-                ModeKind::Major
-            }
-            fn options(&self) -> OptionOverrideSet {
-                lattice_config::overrides! {
-                    lattice_config::ReadOnly = true,
-                }
-            }
-            fn required_capabilities(&self) -> CapabilitySet {
-                CapabilitySet::empty()
-            }
-            fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-                Ok(())
-            }
-            fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-                Ok(())
-            }
-        }
-    };
-}
-
-read_only_buffer_kind_mode!(FileTreeMode, "file-tree-mode");
-
-/// `help-mode`: a *minor* mode that turns a markdown buffer into a
-/// help buffer (DESIGN.md §5.11). Composes with `markdown-mode`
-/// (the major), which carries the syntax pipeline + motion
-/// semantics. Help-mode adds:
-///
-/// - `ReadOnly = true` (option contribution).
-/// - Link / anchor metadata parsing (today carried on the
-///   `HelpContent` bundle; future: contributed by help-mode's
-///   `on_activate`).
-/// - `<CR>` follow-link dispatch (gated on this minor being
-///   active).
-/// - The `:help` / `:describe-*` / `:apropos` / `:keymap` / etc.
-///   workflow commands (gated on this minor being active).
-///
-/// Decoupling stance (M.4): the popup UI component is buffer-
-/// agnostic. It can render any buffer; help-mode-tagged buffers
-/// just happen to be the only popup content kind today. The
-/// user's display preference (popup / split / tab / minibuffer)
-/// is orthogonal to which mode the buffer carries.
-pub struct HelpMode;
-
-impl HelpMode {
-    pub fn mode_id() -> ModeId {
-        ModeId::new("help-mode")
-    }
-}
-
-impl Mode for HelpMode {
-    fn id(&self) -> ModeId {
-        Self::mode_id()
-    }
-    fn kind(&self) -> ModeKind {
-        ModeKind::Minor
-    }
-    fn options(&self) -> OptionOverrideSet {
-        lattice_config::overrides! {
-            lattice_config::ReadOnly = true,
-        }
-    }
-    fn required_capabilities(&self) -> CapabilitySet {
-        CapabilitySet::empty()
-    }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-}
-
-/// Oil is the editable directory listing -- writable. No
-/// `ReadOnly = true` override.
-pub struct OilMode;
-
-impl OilMode {
-    pub fn mode_id() -> ModeId {
-        ModeId::new("oil-mode")
-    }
-}
-
-impl Mode for OilMode {
-    fn id(&self) -> ModeId {
-        Self::mode_id()
-    }
-    fn kind(&self) -> ModeKind {
-        ModeKind::Major
-    }
-    fn required_capabilities(&self) -> CapabilitySet {
-        CapabilitySet::empty()
-    }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-}
-
-/// M.4 hover-popup unification: the minor mode activated on the
-/// hover popup buffer. Marker mode for v1 -- the only behaviour
-/// gated on it today is the State-A auto-dismiss-on-doc-cursor-
-/// motion in `app/dispatch.rs`. Future minor-mode contributions
-/// (auto-close timer, bound-`<Esc>`-to-dismiss, signature-help
-/// fan-in) layer on without touching the popup-overlay code.
-///
-/// The popup's content is markdown -- the major mode that the App
-/// activates alongside `hover-mode` is `markdown-mode`, so the
-/// renderer's syntax + link extraction treats hover content as
-/// any other markdown buffer.
-pub struct HoverMode;
-
-impl HoverMode {
-    pub fn mode_id() -> ModeId {
-        ModeId::new("hover-mode")
-    }
-}
-
-impl Mode for HoverMode {
-    fn id(&self) -> ModeId {
-        Self::mode_id()
-    }
-    fn kind(&self) -> ModeKind {
-        ModeKind::Minor
-    }
-    fn required_capabilities(&self) -> CapabilitySet {
-        CapabilitySet::empty()
-    }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-}
+// M.4 follow-up: HelpMode / HoverMode / FileTreeMode / OilMode
+// migrated to `lattice-mode::modes` (one file per mode). The
+// dep-inversion that made this possible: layer-input types
+// (`OptionOverride{,Set}`, `OverridePriority`) live in
+// `lattice-config`, `lattice-mode` depends on `lattice-config`,
+// and `Document::modes` was removed from `lattice-core` so the
+// cycle through `lattice-core -> lattice-mode` is gone.
+//
+// Re-exported here so existing `crate::modes::HelpMode` etc.
+// imports keep working during the transition.
+pub use lattice_mode::{FileTreeMode, HelpMode, HoverMode, OilMode};
 
 /// Resolve the default major-mode id for a [`BufferKind`].
 /// `Document` returns `None` because the mode is determined
@@ -469,17 +324,15 @@ pub fn default_minor_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId>
     }
 }
 
-/// Register every TUI-owned mode against `registry`. Includes
-/// majors (`file-tree-mode`, `oil-mode`) and minors (`help-mode`,
-/// `hover-mode`).
-pub fn register_buffer_kind_modes(registry: &mut ModeRegistry) {
-    registry
-        .register(FileTreeMode)
-        .expect("file-tree-mode register");
-    registry.register(OilMode).expect("oil-mode register");
-    // M.4 (Option B): minor modes shipped by the TUI layer.
-    registry.register(HelpMode).expect("help-mode register");
-    registry.register(HoverMode).expect("hover-mode register");
+/// M.4 follow-up: the per-kind modes (HelpMode, HoverMode,
+/// FileTreeMode, OilMode) moved to `lattice_mode::modes` and
+/// register through `lattice_mode::modes::register_foundation_modes`
+/// alongside `TextMode`. This shim is kept as a no-op so existing
+/// `register_buffer_kind_modes` callers don't break; the App's
+/// boot path now calls `register_foundation_modes` directly and
+/// drops this helper in a follow-up.
+pub fn register_buffer_kind_modes(_registry: &mut ModeRegistry) {
+    // intentionally empty
 }
 
 /// Resolve the major-mode id a buffer should activate based
@@ -545,12 +398,15 @@ mod tests {
     }
 
     #[test]
-    fn register_buffer_kind_modes_populates_registry() {
+    fn foundation_register_includes_per_kind_modes() {
+        // M.4 follow-up: per-kind modes register through
+        // `lattice_mode::modes::register_foundation_modes`.
         let mut registry = ModeRegistry::new();
-        register_buffer_kind_modes(&mut registry);
+        lattice_mode::register_foundation_modes(&mut registry);
         assert!(registry.is_registered(HelpMode::mode_id()));
         assert!(registry.is_registered(FileTreeMode::mode_id()));
         assert!(registry.is_registered(OilMode::mode_id()));
+        assert!(registry.is_registered(HoverMode::mode_id()));
     }
 
     #[test]

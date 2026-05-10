@@ -11,7 +11,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use lattice_mode::ActiveModes;
 use lattice_protocol::edit::{Edit, EditKind};
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::Range;
@@ -40,13 +39,14 @@ pub struct Document {
     /// an `apply_edit` cleared a redo entry that contained the saved state,
     /// so we can no longer undo back to disk parity.
     clean_position: Option<usize>,
-    /// Major + ordered minors active on this document. Starts empty
-    /// (no major, no minors) on construction; populated through the
-    /// [`lattice_mode::ModeRegistry`] when modes are activated. M.1
-    /// just carries the field; M.3 lands the major-mode auto-resolution
-    /// that fills it for each buffer kind. See `mode-architecture.md`
-    /// §9.4 for the buffer-side integration story.
-    modes: ActiveModes,
+    // M.4 follow-up: `modes: ActiveModes` removed. The canonical
+    // active-modes map is `App.active_modes: HashMap<BufferId,
+    // ActiveModes>` (M.2.1) -- per-buffer, not per-document, and
+    // lives on the App because mode resolution requires
+    // `lattice-config` access. Removing the field here breaks the
+    // `lattice-core -> lattice-mode` dep, which lets `lattice-mode`
+    // gain a dep on `lattice-config` for typed-option contributions
+    // without forming a cycle. See `docs/mode-architecture.md`.
 }
 
 #[derive(Debug, Default)]
@@ -83,7 +83,6 @@ impl DocumentBuilder {
             // initial buffer (whether empty, from_text, or just-loaded
             // from disk) is by definition the saved state.
             clean_position: Some(0),
-            modes: ActiveModes::new(),
         }
     }
 }
@@ -147,23 +146,6 @@ impl Document {
     pub fn set_selections(&mut self, selections: SelectionSet) {
         self.selections = selections;
         self.version += 1;
-    }
-
-    /// The active modes (major + minors) for this document. Starts
-    /// empty until the [`lattice_mode::ModeRegistry`] activates a
-    /// major (M.3) or a minor (M.5+).
-    pub fn modes(&self) -> &ActiveModes {
-        &self.modes
-    }
-
-    /// Mutable handle for the registry's activation /
-    /// deactivation calls. The registry's `activate_*` /
-    /// `deactivate_*` methods take `&mut ActiveModes`; callers pass
-    /// `doc.modes_mut()`. Direct field mutation is intentionally
-    /// not exposed -- modes go through the registry so capability
-    /// / conflict / lifecycle invariants land.
-    pub fn modes_mut(&mut self) -> &mut ActiveModes {
-        &mut self.modes
     }
 
     pub fn text(&self) -> String {

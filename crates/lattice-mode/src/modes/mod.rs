@@ -1,29 +1,53 @@
-//! Foundation major modes that ship with `lattice-mode`.
+//! Foundation modes that ship with `lattice-mode`.
 //!
-//! These are the modes whose declaration doesn't require any
-//! feature crate (parser, LSP, ...). Other built-in modes live
-//! with their owner crates: language modes in `lattice-grammar`,
-//! help / file-tree / oil modes in `lattice-ui-tui`, LSP log
-//! modes in `lattice-lsp`.
+//! Includes the catch-all [`TextMode`] plus the per-buffer-kind
+//! modes that ship with the editor's built-in buffer model
+//! (help / hover / file-tree / oil). Language modes live in
+//! `lattice-syntax`; LSP log modes live in `lattice-lsp` (where
+//! their feature crate is). The rule of thumb: a mode lives
+//! with the crate that owns its associated feature, unless the
+//! mode is itself foundational (catch-all `text-mode`) or
+//! shared across many features (`hover-mode` covers any
+//! buffer that pops up as a hover annotation).
 //!
-//! All foundation modes self-register at App boot via
+//! All modes registered here self-register at App boot via
 //! [`register_foundation_modes`].
 
+pub mod file_tree;
+pub mod help;
+pub mod hover;
+pub mod oil;
 pub mod text;
 
+pub use file_tree::FileTreeMode;
+pub use help::HelpMode;
+pub use hover::HoverMode;
+pub use oil::OilMode;
 pub use text::TextMode;
 
 use crate::registry::ModeRegistry;
 
-/// Register every foundation major mode against `registry`.
-/// Called from the App's mode-registry boot path before any
-/// buffer is created. Idempotent: re-registration is the
-/// existing `ModeRegistry::register` invariant (panics on
-/// duplicate, but the App calls this once).
+/// Register every foundation mode against `registry`. Called
+/// from the App's mode-registry boot path before any buffer is
+/// created. Idempotent: re-registration is the existing
+/// `ModeRegistry::register` invariant (panics on duplicate, but
+/// the App calls this once).
 pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(TextMode)
         .expect("text-mode must register without conflict");
+    registry
+        .register(FileTreeMode)
+        .expect("file-tree-mode must register without conflict");
+    registry
+        .register(OilMode)
+        .expect("oil-mode must register without conflict");
+    registry
+        .register(HelpMode)
+        .expect("help-mode must register without conflict");
+    registry
+        .register(HoverMode)
+        .expect("hover-mode must register without conflict");
 }
 
 #[cfg(test)]
@@ -35,5 +59,9 @@ mod tests {
         let mut registry = ModeRegistry::new();
         register_foundation_modes(&mut registry);
         assert!(registry.is_registered(TextMode::mode_id()));
+        assert!(registry.is_registered(FileTreeMode::mode_id()));
+        assert!(registry.is_registered(OilMode::mode_id()));
+        assert!(registry.is_registered(HelpMode::mode_id()));
+        assert!(registry.is_registered(HoverMode::mode_id()));
     }
 }

@@ -80,6 +80,15 @@ pub mod loader;
 pub mod option;
 mod option_decl;
 mod option_type;
+// M.4 dep-inversion: layer-input types (`OptionOverride`,
+// `OptionOverrideSet`, `OverridePriority`) live here now.
+// Previously hosted in `lattice-mode` to break a cycle through
+// `lattice-core -> lattice-mode -> lattice-config`; the cycle
+// was retired by removing `Document::modes` from lattice-core.
+// With the cycle gone, the override types belong in lattice-
+// config alongside the resolver and the typed-options layer they
+// override against.
+pub mod overrides;
 mod parse;
 #[cfg(test)]
 mod proc_macro_tests;
@@ -129,14 +138,9 @@ pub use loader::{
 // `Option<T>` survives for the future plugin-adapter path.
 pub use option_decl::{HasGroup, OPTION_DECLS, OptionDecl, OptionDeclMetadata};
 pub use option_type::OptionType;
-// Re-export the layer-input types from lattice-mode at the
-// lattice-config crate root so consumers (modes, plugins,
-// future buffer-local-set machinery) get one canonical import
-// surface for the option system. Definitions live in
-// lattice-mode (per the dependency-cycle rationale documented
-// in lattice-mode::overrides), but ergonomically the user
-// imports them from lattice-config alongside the registry.
-pub use lattice_mode::{OptionOverride, OptionOverrideSet, OverridePriority};
+// Layer-input types live in this crate now (post M.4 dep
+// inversion). Modes pull them in via lattice-mode's re-export.
+pub use overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
 pub use parse::{ParsedSet, parse_set};
 pub use registry::{ConfigError, ConfigRegistry, EventPublisher};
 pub use resolved::ResolvedOptions;

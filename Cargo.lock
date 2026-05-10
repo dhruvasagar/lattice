@@ -760,7 +760,6 @@ dependencies = [
  "lattice-config-macros",
  "lattice-core",
  "lattice-grammar",
- "lattice-mode",
  "lattice-protocol",
  "linkme",
  "smallvec",
@@ -784,7 +783,6 @@ dependencies = [
  "criterion",
  "fancy-regex",
  "insta",
- "lattice-mode",
  "lattice-protocol",
  "memchr",
  "ropey",
@@ -830,6 +828,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "internment",
+ "lattice-config",
  "lattice-protocol",
  "smallvec",
  "thiserror 2.0.18",

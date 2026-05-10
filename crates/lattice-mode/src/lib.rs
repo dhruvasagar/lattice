@@ -60,7 +60,6 @@ pub mod event;
 pub mod locals;
 pub mod mode;
 pub mod modes;
-pub mod overrides;
 pub mod registry;
 
 pub use crate::active::ActiveModes;
@@ -71,6 +70,11 @@ pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
 pub use crate::locals::{BufferLocal, BufferLocals, LocalDescriptor};
 pub use crate::mode::{Mode, ModeId, ModeKind};
-pub use crate::modes::{TextMode, register_foundation_modes};
-pub use crate::overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
+pub use crate::modes::{
+    FileTreeMode, HelpMode, HoverMode, OilMode, TextMode, register_foundation_modes,
+};
+// M.4 dep-inversion: layer-input types live in `lattice-config`
+// now. Re-exported here for compatibility -- callers that
+// imported from `lattice_mode` keep working.
+pub use lattice_config::{OptionOverride, OptionOverrideSet, OverridePriority};
 pub use crate::registry::{ModeRegistry, RegistrationError};

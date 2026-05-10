@@ -36,7 +36,7 @@
 
 use std::any::TypeId;
 
-use lattice_mode::{OptionOverride, OptionOverrideSet, OverridePriority};
+use crate::overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
 
 use crate::resolved::ResolvedOptions;
 

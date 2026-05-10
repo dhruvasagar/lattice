@@ -11,6 +11,12 @@ bitflags = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 lattice-protocol = { path = "../lattice-protocol" }
+# M.4 dep-inversion: modes contribute typed-option overrides
+# (e.g. `Mode::options() -> OptionOverrideSet`); the override
+# types live in `lattice-config`, so `lattice-mode` pulls them
+# in. Cycle through `lattice-core -> lattice-mode` is gone now
+# that `Document::modes` retired.
+lattice-config = { path = "../lattice-config" }
 
 [lints]
 workspace = true

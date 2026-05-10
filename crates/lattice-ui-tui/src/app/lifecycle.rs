@@ -1977,8 +1977,9 @@ mod tests {
 
     #[test]
     fn persistent_lsp_log_level_applies_from_toml_tree() {
+        // M.6.5: canonical `lsp-mode.log-level` key.
         let mut app = app_with("hi\n", 5);
-        let toml_text = "[lsp]\nlog-level = \"debug\"\n";
+        let toml_text = "[lsp-mode]\nlog-level = \"debug\"\n";
         app.lsp_config_tree = toml_text.parse().expect("toml parse");
         app.apply_persistent_lsp_editor_options();
         // Effect: a Debug-level record on an unattached server lands
@@ -2000,14 +2001,62 @@ mod tests {
     }
 
     #[test]
+    fn persistent_lsp_log_level_legacy_key_warns_then_applies() {
+        // M.6.5: legacy `[lsp] log-level` key still works for one
+        // minor version; emits a deprecation warn before applying.
+        let mut app = app_with("hi\n", 5);
+        let toml_text = "[lsp]\nlog-level = \"debug\"\n";
+        app.lsp_config_tree = toml_text.parse().expect("toml parse");
+        app.apply_persistent_lsp_editor_options();
+        let msg = app.last_message.as_ref().expect("deprecation warn");
+        assert_eq!(msg.level, crate::app::EchoLevel::Warn);
+        assert!(
+            msg.text.contains("`lsp.log-level` is deprecated")
+                && msg.text.contains("`lsp-mode.log-level`"),
+            "echo should name old + new keys, got {}",
+            msg.text,
+        );
+        // And the value still applied (one-version compatibility).
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Debug,
+            lattice_lsp::LogSource::Client,
+            "after-legacy-toml",
+        );
+        let recs = app.lsp_logger.snapshot_server(&id);
+        assert!(
+            recs.iter().any(|r| r.message == "after-legacy-toml"),
+            "legacy key should still apply for one minor version",
+        );
+    }
+
+    #[test]
+    fn persistent_lsp_log_level_canonical_wins_over_legacy() {
+        // If both are set, canonical wins (silently -- no deprecation
+        // echo since the user has already migrated; the legacy key
+        // is a leftover).
+        let mut app = app_with("hi\n", 5);
+        let toml_text = "[lsp]\nlog-level = \"trace\"\n[lsp-mode]\nlog-level = \"debug\"\n";
+        app.lsp_config_tree = toml_text.parse().expect("toml parse");
+        app.apply_persistent_lsp_editor_options();
+        // No deprecation echo when canonical is present.
+        assert!(
+            app.last_message.is_none(),
+            "canonical present ⇒ silent; got {:?}",
+            app.last_message,
+        );
+    }
+
+    #[test]
     fn persistent_lsp_log_level_warns_on_unknown_value() {
         let mut app = app_with("hi\n", 5);
-        let toml_text = "[lsp]\nlog-level = \"babble\"\n";
+        let toml_text = "[lsp-mode]\nlog-level = \"babble\"\n";
         app.lsp_config_tree = toml_text.parse().expect("toml parse");
         app.apply_persistent_lsp_editor_options();
         let msg = app.last_message.as_ref().expect("warn echo");
         assert!(
-            msg.text.contains("lsp.log-level") && msg.text.contains("babble"),
+            msg.text.contains("lsp-mode.log-level") && msg.text.contains("babble"),
             "echo should name the key + value, got {}",
             msg.text
         );

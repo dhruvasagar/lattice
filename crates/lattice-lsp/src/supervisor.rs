@@ -260,6 +260,17 @@ impl LspSupervisor {
         &self.configs
     }
 
+    /// True iff at least one configured server's `file_patterns`
+    /// matches `path`. M.5.2 uses this from the App's
+    /// `MajorEntered` hook to decide whether to auto-activate
+    /// `lsp-mode` on the buffer; if no server cares about the
+    /// path, there's nothing to gate on.
+    pub fn has_server_for_path(&self, path: &Path) -> bool {
+        self.configs
+            .iter()
+            .any(|c| matches_any_pattern(path, &c.file_patterns))
+    }
+
     /// Every actor currently running. Used by `:lsp-status`.
     pub fn running_actors(&self) -> Vec<(ActorKey, ServerHandle)> {
         self.actors
@@ -884,6 +895,18 @@ impl LspSupervisorHandle {
     /// Curated config registry (preference-ordered). Cheap clone.
     pub fn configs(&self) -> Vec<Arc<ServerConfig>> {
         self.snapshot.load().configs.clone()
+    }
+
+    /// True iff at least one configured server's `file_patterns`
+    /// matches `path`. M.5.2 uses this from the App's
+    /// `MajorEntered` hook to decide whether to auto-activate
+    /// `lsp-mode` on the buffer.
+    pub fn has_server_for_path(&self, path: &Path) -> bool {
+        self.snapshot
+            .load()
+            .configs
+            .iter()
+            .any(|c| matches_any_pattern(path, &c.file_patterns))
     }
 
     /// Number of currently-attached buffers.

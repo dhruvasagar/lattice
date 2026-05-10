@@ -141,6 +141,58 @@ impl App {
         self.active_modes.insert(buffer_id, active);
         self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
+        // M.5.2: post-activation hook -- if the buffer is now on a
+        // language major with a configured LSP server, auto-
+        // activate `lsp-mode`. Modelled as a synchronous hook
+        // here; converting to an event-bus subscription on
+        // `MajorEntered` is a follow-up once the broader
+        // subscriber API for App-level handlers lands.
+        self.maybe_auto_activate_lsp_mode(buffer_id);
+    }
+
+    /// M.5.2: language-mode auto-activation hook for
+    /// `lsp-mode`. Runs after a major activates; when the active
+    /// buffer's path has a server configured in the LSP registry
+    /// and `lsp-mode` isn't already active, activate it.
+    ///
+    /// Lifecycle for `lsp-mode` (didOpen / didClose) lands in
+    /// M.5.3; for now activation is a state flip (the gate is
+    /// observable but no LSP traffic flows yet).
+    ///
+    /// **Asymmetry by design (mode-architecture §M.5):** there
+    /// is no auto-deactivation hook on `MajorExited`. Active
+    /// minors stay across major-mode swaps -- emacs's "kill all
+    /// local variables" footgun is what we're avoiding. If a
+    /// user wants `lsp-mode` off after a major change, they run
+    /// `:lsp-mode` to toggle.
+    pub(super) fn maybe_auto_activate_lsp_mode(&mut self, buffer_id: BufferId) {
+        if self.lsp_mode_enabled_for(buffer_id) {
+            return;
+        }
+        let path = match self.path_for_buffer(buffer_id) {
+            Some(p) => p,
+            // Scratch buffers with no path can still host LSP
+            // (standalone-server scenarios), but only when the
+            // user explicitly runs `:lsp-mode`. Auto-activation
+            // is path-driven.
+            None => return,
+        };
+        if !self.lsp.has_server_for_path(&path) {
+            return;
+        }
+        self.activate_mode_by_id(buffer_id, lattice_lsp::modes::LspMode::mode_id());
+    }
+
+    /// Best-effort path lookup for `buffer_id`. Returns the
+    /// document's path for Document buffers, `None` otherwise.
+    /// Used by the LSP auto-activation hook above.
+    fn path_for_buffer(&self, buffer_id: BufferId) -> Option<std::path::PathBuf> {
+        if buffer_id == self.document_buffer_id {
+            return self.document.path().map(|p| p.to_path_buf());
+        }
+        self.buffers
+            .document(buffer_id)
+            .and_then(|entry| entry.handle.path().map(|p| p.to_path_buf()))
     }
 
     /// M.5.1: programmatic activation of `mode_id` on `buffer_id`.
@@ -161,10 +213,11 @@ impl App {
             );
             return;
         };
+        let kind = mode.kind();
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
-        let result = match mode.kind() {
+        let result = match kind {
             ModeKind::Major => self.mode_registry.activate_major(
                 &mut active,
                 &mut locals,
@@ -189,6 +242,15 @@ impl App {
         self.active_modes.insert(buffer_id, active);
         self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
+        // M.5.2: when a major activates (whether by direct call,
+        // `:<major-name>` toggle, or buffer-creation path), run
+        // the LSP auto-activation hook. Skipped for minor
+        // activations -- if `lsp-mode` is the one being
+        // activated, the hook would just no-op (already-active
+        // short-circuit).
+        if matches!(kind, ModeKind::Major) {
+            self.maybe_auto_activate_lsp_mode(buffer_id);
+        }
     }
 
     /// M.5.1: programmatic deactivation of `mode_id` on
@@ -407,6 +469,59 @@ mod tests {
         );
         // Minor unaffected by major swap (M.5 design).
         assert!(modes.has_minor(lattice_lsp::modes::LspMode::mode_id()));
+    }
+
+    #[test]
+    fn lsp_mode_auto_activates_on_language_with_configured_server() {
+        // M.5.2: opening a buffer whose path matches a configured
+        // server's `file_patterns` auto-activates `lsp-mode`. The
+        // bundled rust-analyzer config matches `*.rs`.
+        use crate::app::test_helpers::app_with_path;
+        let a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
+        let id = a.pane_tree.active().buffer_id;
+        assert!(
+            a.lsp_mode_enabled_for(id),
+            "lsp-mode should auto-activate on a *.rs buffer with rust-analyzer configured"
+        );
+    }
+
+    #[test]
+    fn lsp_mode_does_not_auto_activate_for_unconfigured_extensions() {
+        // No bundled server matches `*.unknown_ext`, so lsp-mode
+        // should stay inactive even after the major activates.
+        use crate::app::test_helpers::app_with_path;
+        let a = app_with_path("plain text", 5, std::path::PathBuf::from("notes.unknown_ext"));
+        let id = a.pane_tree.active().buffer_id;
+        assert!(
+            !a.lsp_mode_enabled_for(id),
+            "lsp-mode shouldn't auto-activate when no server config matches"
+        );
+    }
+
+    #[test]
+    fn lsp_mode_does_not_auto_activate_for_pathless_scratch_buffers() {
+        // Scratch buffers without a path don't get auto-activation
+        // (path-driven check). Standalone-server use cases require
+        // explicit `:lsp-mode`.
+        let a = app_with("fn main() {}", 5);
+        let id = a.pane_tree.active().buffer_id;
+        assert!(!a.lsp_mode_enabled_for(id));
+    }
+
+    #[test]
+    fn lsp_mode_survives_major_swap() {
+        // M.5 design: major swaps don't touch active minors. Open
+        // a rust file (auto-activates lsp-mode), swap to text-mode,
+        // lsp-mode stays active. User runs `:lsp-mode` to flip off.
+        use crate::app::test_helpers::app_with_path;
+        let mut a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
+        let id = a.pane_tree.active().buffer_id;
+        assert!(a.lsp_mode_enabled_for(id));
+        a.toggle_mode_by_name("text-mode");
+        assert!(
+            a.lsp_mode_enabled_for(id),
+            "lsp-mode should survive major-mode swap (M.5 design)"
+        );
     }
 
     #[test]

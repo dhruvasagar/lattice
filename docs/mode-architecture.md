@@ -1671,7 +1671,7 @@ graceful error handling per CLAUDE.md.
     types -- a future GPUI / web renderer gets its own registry,
     keyed by the same `ModeId`s.
   - **Popup buffers participate in the unified registry.**
-    `open_popup` and `do_open_hover` now register the popup's
+    `open_popup` and `do_open_hover` register the popup's
     `HelpBuffer` in `app.buffers` with
     `BufferFlags { listed: false, hidden: true }` (skipped by
     `:bn` / `:bp` / `:ls`; informational `hidden`), matching the
@@ -1680,15 +1680,18 @@ graceful error handling per CLAUDE.md.
     `buffer_locals` / `resolved_options`; back-to-back popups no
     longer leak stale state. The State-A hover auto-dismiss path
     routes through `dismiss_popup` for a single cleanup edge.
-    `App.popup_buffer`'s type stays `Option<HelpBuffer>` -- the
-    slot is the hot-path mirror, the registry is canonical.
-  - **Deferred**: (a) flipping `App.popup_buffer`'s type from
-    `Option<HelpBuffer>` to `Option<BufferId>` so every reader
-    resolves through `app.buffers.help(id)` -- mechanical but
-    touches ~125 sites including many tests that observe
-    `HelpBuffer` fields directly. (b) The in-pane vs popup
-    display preference for help buffers (today centred-popup is
-    hard-wired in App methods).
+  - **`App.popup_buffer` flips to `Option<BufferId>`.** The
+    HelpBuffer itself lives in `app.buffers`; the slot is just a
+    reference into the registry. Two accessors,
+    `App::popup_help` / `App::popup_help_mut`, resolve the slot
+    through the registry on demand; the field's name and
+    contract stay (popup-content reference, not help-only).
+    Bulk-migrated ~50 reader sites and 8 writer sites; the
+    `:lsp-log` rebuild path drops its hot-path-mirror sync (the
+    registry copy was the only canonical record). The popup is
+    now structurally a normal buffer with one extra reference.
+  - **Deferred**: in-pane vs popup display preference for help
+    buffers (today centred-popup is hard-wired in App methods).
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

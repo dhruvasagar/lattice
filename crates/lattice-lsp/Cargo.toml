@@ -11,6 +11,7 @@ lattice-mode = { path = "../lattice-mode" }
 lattice-config = { path = "../lattice-config" }
 lattice-core = { path = "../lattice-core" }
 lattice-runtime = { path = "../lattice-runtime" }
+lattice-help = { path = "../lattice-help" }
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros", "process", "io-util", "time"] }
 arc-swap = { workspace = true }
 serde = { workspace = true }

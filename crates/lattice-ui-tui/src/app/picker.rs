@@ -44,7 +44,7 @@ impl App {
                 let key = (workspace.clone(), server_id.clone());
                 let buffer_count = self.lsp.buffer_count_for(&key);
                 let caps = handle.capabilities();
-                let cap_summary = crate::help::summarise_capabilities(&caps);
+                let cap_summary = lattice_lsp::help_views::summarise_capabilities(&caps);
                 crate::picker::LspInstanceRow {
                     workspace,
                     server_id,

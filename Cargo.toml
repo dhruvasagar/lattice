@@ -11,6 +11,7 @@ members = [
 	"crates/lattice-syntax",
 	"crates/lattice-snippet",
 	"crates/lattice-runtime",
+	"crates/lattice-help",
 	"crates/lattice-lsp",
 	"crates/lattice-ui-tui",
 	"crates/lattice-cli",

@@ -1,0 +1,15 @@
+[package]
+name = "lattice-help"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+lattice-core = { path = "../lattice-core" }
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-syntax = { path = "../lattice-syntax" }
+lattice-completion = { path = "../lattice-completion" }
+
+[lints]
+workspace = true

@@ -57,7 +57,6 @@ use super::{
     symbol_information_to_row, word_under_cursor, workspace_symbol_to_row,
 };
 use crate::buffers::BufferId;
-use crate::help::HelpContent;
 use lattice_protocol::edit::Edit;
 
 impl App {
@@ -928,7 +927,7 @@ impl App {
         let Some(id) = self.buffers.help_with_title("lsp") else {
             return;
         };
-        let new_buf = crate::help::HelpContent::lsp_global_log(&self.lsp_logger)
+        let new_buf = lattice_lsp::help_views::lsp_global_log_help(&self.lsp_logger)
             .with_markdown_syntax(self.lang_registry.clone());
         self.replace_help_buffer_preserving_cursor(id, new_buf);
     }
@@ -940,7 +939,7 @@ impl App {
             return;
         };
         let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let new_buf = crate::help::HelpContent::lsp_server_log(&self.lsp_logger, &arc)
+        let new_buf = lattice_lsp::help_views::lsp_server_log_help(&self.lsp_logger, &arc)
             .with_markdown_syntax(self.lang_registry.clone());
         self.replace_help_buffer_preserving_cursor(id, new_buf);
     }
@@ -952,7 +951,7 @@ impl App {
             return;
         };
         let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let new_buf = crate::help::HelpContent::lsp_server_trace(&self.lsp_logger, &arc)
+        let new_buf = lattice_lsp::help_views::lsp_server_trace_help(&self.lsp_logger, &arc)
             .with_markdown_syntax(self.lang_registry.clone());
         self.replace_help_buffer_preserving_cursor(id, new_buf);
     }
@@ -3225,7 +3224,7 @@ impl App {
     /// `:lsp-status` -- render every running server in a
     /// help-style buffer.
     pub fn do_lsp_status(&mut self) {
-        let buffer = HelpContent::lsp_status(&self.lsp)
+        let buffer = lattice_lsp::help_views::lsp_status_help(&self.lsp)
             .with_markdown_syntax(self.lang_registry.clone());
         self.open_popup(buffer, crate::popup::PopupPlacement::Centered);
     }
@@ -3310,7 +3309,7 @@ impl App {
     /// when only one instance matches.
     pub(super) fn open_lsp_log_in_pane(&mut self, server_id: &str) {
         let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let buffer = HelpContent::lsp_server_log(&self.lsp_logger, &arc)
+        let buffer = lattice_lsp::help_views::lsp_server_log_help(&self.lsp_logger, &arc)
             .with_markdown_syntax(self.lang_registry.clone());
         self.open_help_in_pane(buffer);
     }
@@ -3320,7 +3319,7 @@ impl App {
     /// independent of opening / closing this buffer.
     pub(super) fn open_lsp_trace_log_in_pane(&mut self, server_id: &str) {
         let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let buffer = HelpContent::lsp_server_trace(&self.lsp_logger, &arc)
+        let buffer = lattice_lsp::help_views::lsp_server_trace_help(&self.lsp_logger, &arc)
             .with_markdown_syntax(self.lang_registry.clone());
         self.open_help_in_pane(buffer);
     }

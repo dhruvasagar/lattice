@@ -803,6 +803,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-help"
+version = "0.1.0"
+dependencies = [
+ "lattice-completion",
+ "lattice-core",
+ "lattice-protocol",
+ "lattice-syntax",
+]
+
+[[package]]
 name = "lattice-lsp"
 version = "0.1.0"
 dependencies = [
@@ -811,6 +821,7 @@ dependencies = [
  "futures",
  "lattice-config",
  "lattice-core",
+ "lattice-help",
  "lattice-mode",
  "lattice-protocol",
  "lattice-runtime",
@@ -897,6 +908,7 @@ dependencies = [
  "lattice-config",
  "lattice-core",
  "lattice-grammar",
+ "lattice-help",
  "lattice-lsp",
  "lattice-mode",
  "lattice-protocol",

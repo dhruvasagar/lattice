@@ -1798,6 +1798,14 @@ fn draw_inactive_document(
         let gutter = render_gutter_for_inactive(&view, pane.cursor.line, buf_line, gutter_w);
         let spans = highlights.get(i as usize).map(Vec::as_slice).unwrap_or(&[]);
         let mut body = render_styled_line(&line_text, spans, buffer_w);
+        // M.7.3.b: whitespace decoration pre-pass for inactive
+        // panes too -- consistency with the active pane.
+        // Same gate as the active path (cache mirror is global,
+        // not per-pane in v1).
+        if view.app.option_cache.show_whitespace {
+            let decoration = WhitespaceDecoration::from_app(view.app);
+            body = apply_whitespace_decoration(body, &line_text, &decoration);
+        }
         if let Some(overlay) = dim_overlay {
             for span in body.iter_mut() {
                 span.style = span.style.patch(overlay);
@@ -2236,6 +2244,15 @@ fn compose_visible_lines_inner(
         // hidden interior.
         let spans = app.highlights_for_buffer_line(line_idx);
         let mut body = render_styled_line(&line_text, spans, buffer_w);
+        // M.7.3.b: whitespace decoration pre-pass. Cheap when
+        // `show_whitespace` is off (single bool check); when
+        // on, walks each rendered span and substitutes glyphs
+        // for tab / trailing / leading / space / EOL per the
+        // typed `display.whitespace.*` options.
+        if app.option_cache.show_whitespace {
+            let decoration = WhitespaceDecoration::from_app(app);
+            body = apply_whitespace_decoration(body, &line_text, &decoration);
+        }
         let line_len = line_text.len();
         // Whether this line begins a closed fold. Used to append the
         // ` ┄ N lines folded` suffix AFTER overlay processing, so
@@ -2693,6 +2710,156 @@ pub(crate) fn diagnostics_on_line(
     app.lsp_diagnostics.diagnostics_on_line(uri, line_idx)
 }
 
+
+/// M.7.3.b parameter bundle for the whitespace-decoration
+/// pre-pass. Per-glyph `Option<char>` -- `None` ⇒ category
+/// disabled. `style_normal` covers tab / leading / mid-text
+/// space / EOL; `style_trailing` covers trailing whitespace
+/// (separated because trailing is a lint signal where the
+/// others are structural).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WhitespaceDecoration {
+    pub tab: Option<char>,
+    pub trailing: Option<char>,
+    pub leading: Option<char>,
+    pub space: Option<char>,
+    pub eol: Option<char>,
+    pub style_normal: TuiStyle,
+    pub style_trailing: TuiStyle,
+}
+
+impl WhitespaceDecoration {
+    /// Build from app + theme. Used at every render-line call
+    /// site that wants whitespace decoration applied -- gating
+    /// on `app.option_cache.show_whitespace` is the caller's
+    /// responsibility.
+    fn from_app(app: &App) -> Self {
+        Self {
+            tab: app.option_cache.whitespace_tab,
+            trailing: app.option_cache.whitespace_trailing,
+            leading: app.option_cache.whitespace_leading,
+            space: app.option_cache.whitespace_space,
+            eol: app.option_cache.whitespace_eol,
+            style_normal: app.theme.whitespace_style,
+            style_trailing: app.theme.whitespace_trailing_style,
+        }
+    }
+
+    /// Quick-test path: every glyph disabled ⇒ no work to do.
+    /// Lets callers skip the post-pass walk when the user has
+    /// turned `whitespace-show-mode` on but configured every
+    /// category to empty (degenerate, but free to handle).
+    fn is_noop(&self) -> bool {
+        self.tab.is_none()
+            && self.trailing.is_none()
+            && self.leading.is_none()
+            && self.space.is_none()
+            && self.eol.is_none()
+    }
+}
+
+/// Classify a single character + its byte-offset within the
+/// line, returning the `(glyph, style)` substitution if any
+/// category fires. Precedence: trailing > tab > leading > space.
+/// Returns `None` to leave the character unchanged.
+fn classify_whitespace(
+    ch: char,
+    pos: usize,
+    first_non_ws: usize,
+    trailing_start: usize,
+    d: &WhitespaceDecoration,
+) -> Option<(char, TuiStyle)> {
+    // Trailing wins: every whitespace byte in `[trailing_start,
+    // line.len())` becomes trailing-marked.
+    if pos >= trailing_start && (ch == ' ' || ch == '\t') {
+        if let Some(g) = d.trailing {
+            return Some((g, d.style_trailing));
+        }
+    }
+    if ch == '\t' {
+        // Tabs anywhere except in the trailing zone (handled
+        // above) get the tab glyph.
+        return d.tab.map(|g| (g, d.style_normal));
+    }
+    if ch == ' ' {
+        if pos < first_non_ws {
+            // Leading non-tab whitespace; emacs's `indentation`.
+            if let Some(g) = d.leading {
+                return Some((g, d.style_normal));
+            }
+        } else if pos < trailing_start {
+            // Mid-text space; emacs's `space-mark`.
+            if let Some(g) = d.space {
+                return Some((g, d.style_normal));
+            }
+        }
+    }
+    None
+}
+
+/// Apply whitespace-glyph substitution to a vector of styled
+/// spans. Walks every char, classifies it via
+/// [`classify_whitespace`], emits glyph-substituted spans where
+/// categories fire and keeps original content otherwise. The
+/// EOL glyph (if configured) appends as a final span after all
+/// content. Output spans are width-equivalent to input spans
+/// (one char in, one char out for substitutions).
+///
+/// The caller passes the original line text (unsubstituted)
+/// for whitespace position classification -- spans hold byte
+/// substrings of `line`, so byte-position tracking across spans
+/// stays consistent with the original.
+pub(crate) fn apply_whitespace_decoration(
+    spans: Vec<Span<'static>>,
+    line: &str,
+    d: &WhitespaceDecoration,
+) -> Vec<Span<'static>> {
+    if d.is_noop() {
+        return spans;
+    }
+    let bytes = line.as_bytes();
+    let first_non_ws = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let trailing_start = bytes
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len());
+    let mut pos = 0usize;
+    for span in spans {
+        let span_style = span.style;
+        let content = span.content.into_owned();
+        let mut accum = String::new();
+        for ch in content.chars() {
+            let ch_len = ch.len_utf8();
+            match classify_whitespace(ch, pos, first_non_ws, trailing_start, d) {
+                Some((glyph, style)) => {
+                    if !accum.is_empty() {
+                        out.push(Span::styled(std::mem::take(&mut accum), span_style));
+                    }
+                    let mut g = String::new();
+                    g.push(glyph);
+                    out.push(Span::styled(g, style));
+                }
+                None => accum.push(ch),
+            }
+            pos += ch_len;
+        }
+        if !accum.is_empty() {
+            out.push(Span::styled(accum, span_style));
+        }
+    }
+    if let Some(eol_glyph) = d.eol {
+        let mut g = String::new();
+        g.push(eol_glyph);
+        out.push(Span::styled(g, d.style_normal));
+    }
+    out
+}
 
 fn render_styled_line(line: &str, spans: &[StyledSpan], max_width: u32) -> Vec<Span<'static>> {
     let mut out: Vec<Span<'static>> = Vec::new();
@@ -3166,6 +3333,201 @@ mod tests {
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    // ---- M.7.3.b: whitespace decoration pre-pass ----
+
+    fn ws_decoration_default() -> WhitespaceDecoration {
+        // Mirrors the emacs-default option set: tab, trailing,
+        // leading on; space + EOL off.
+        WhitespaceDecoration {
+            tab: Some('→'),
+            trailing: Some('·'),
+            leading: Some('·'),
+            space: None,
+            eol: None,
+            style_normal: TuiStyle::default().fg(Color::DarkGray),
+            style_trailing: TuiStyle::default().fg(Color::Red),
+        }
+    }
+
+    fn spans_text(spans: &[Span<'static>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn whitespace_decoration_noop_when_all_disabled() {
+        let mut d = ws_decoration_default();
+        d.tab = None;
+        d.trailing = None;
+        d.leading = None;
+        let line = "  hello \t  ";
+        let input: Vec<Span<'static>> = vec![Span::raw(line.to_string())];
+        let out = apply_whitespace_decoration(input.clone(), line, &d);
+        assert_eq!(spans_text(&out), spans_text(&input));
+    }
+
+    #[test]
+    fn whitespace_decoration_substitutes_tab_glyph() {
+        let d = ws_decoration_default();
+        let line = "abc\tdef";
+        let input = vec![Span::raw(line.to_string())];
+        let out = apply_whitespace_decoration(input, line, &d);
+        let rendered = spans_text(&out);
+        assert!(rendered.contains('→'), "tab glyph missing: {rendered:?}");
+        assert!(!rendered.contains('\t'), "raw tab leaked: {rendered:?}");
+    }
+
+    #[test]
+    fn whitespace_decoration_marks_trailing_in_red() {
+        let d = ws_decoration_default();
+        let line = "hello   ";  // three trailing spaces
+        let input = vec![Span::raw(line.to_string())];
+        let out = apply_whitespace_decoration(input, line, &d);
+        // Trailing dots present.
+        let rendered = spans_text(&out);
+        let dot_count = rendered.chars().filter(|c| *c == '·').count();
+        assert_eq!(dot_count, 3, "expected 3 trailing dots, got {rendered:?}");
+        // Each trailing-glyph span carries the trailing style.
+        let trailing_spans: Vec<_> = out
+            .iter()
+            .filter(|s| s.content.as_ref() == "·")
+            .collect();
+        assert_eq!(trailing_spans.len(), 3);
+        for s in trailing_spans {
+            assert_eq!(s.style.fg, Some(Color::Red), "trailing should be red");
+        }
+    }
+
+    #[test]
+    fn whitespace_decoration_marks_leading_with_normal_style() {
+        let d = ws_decoration_default();
+        let line = "  hello";
+        let input = vec![Span::raw(line.to_string())];
+        let out = apply_whitespace_decoration(input, line, &d);
+        // Two leading dots.
+        let dot_spans: Vec<_> = out
+            .iter()
+            .filter(|s| s.content.as_ref() == "·")
+            .collect();
+        assert_eq!(dot_spans.len(), 2);
+        // Leading uses style_normal (DarkGray), not trailing's red.
+        for s in dot_spans {
+            assert_eq!(s.style.fg, Some(Color::DarkGray));
+        }
+    }
+
+    #[test]
+    fn whitespace_decoration_trailing_wins_over_leading_for_pure_ws_line() {
+        // A line that's nothing but whitespace: trailing
+        // covers the whole range (last_non_ws = 0) and trailing
+        // has higher precedence than leading.
+        let d = ws_decoration_default();
+        let line = "   ";
+        let input = vec![Span::raw(line.to_string())];
+        let out = apply_whitespace_decoration(input, line, &d);
+        let dots: Vec<_> = out
+            .iter()
+            .filter(|s| s.content.as_ref() == "·")
+            .collect();
+        assert_eq!(dots.len(), 3);
+        for s in dots {
+            assert_eq!(
+                s.style.fg,
+                Some(Color::Red),
+                "pure-ws line should be all trailing-marked",
+            );
+        }
+    }
+
+    #[test]
+    fn whitespace_decoration_does_not_mark_mid_text_space_when_disabled() {
+        // `space: None` (default): mid-text spaces stay bare.
+        let d = ws_decoration_default();
+        let line = "a b c";
+        let input = vec![Span::raw(line.to_string())];
+        let out = apply_whitespace_decoration(input, line, &d);
+        let rendered = spans_text(&out);
+        // No dots (no leading / trailing in this line).
+        assert!(!rendered.contains('·'), "should be bare: {rendered:?}");
+        // The bare spaces are preserved.
+        assert!(rendered.contains("a b c"), "got: {rendered:?}");
+    }
+
+    #[test]
+    fn whitespace_decoration_marks_mid_text_space_when_enabled() {
+        let mut d = ws_decoration_default();
+        d.space = Some('·');
+        let line = "a b c";
+        let input = vec![Span::raw(line.to_string())];
+        let out = apply_whitespace_decoration(input, line, &d);
+        let dots = spans_text(&out).chars().filter(|c| *c == '·').count();
+        assert_eq!(dots, 2);
+    }
+
+    #[test]
+    fn whitespace_show_mode_off_produces_no_decoration_in_pipeline() {
+        // Default state: whitespace-show-mode is inactive ⇒
+        // `option_cache.show_whitespace == false` ⇒ pre-pass
+        // is skipped ⇒ rendered body shows raw text.
+        let app = app_with("hello   \n", 5);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(!row0.contains('·'), "no dots when ws-mode off: {row0:?}");
+    }
+
+    #[test]
+    fn whitespace_show_mode_on_produces_trailing_dots_in_pipeline() {
+        // Activate `whitespace-show-mode` (cascade flips
+        // `Whitespace=true`); the renderer's pipeline wires
+        // through the cache and pre-pass kicks in.
+        let mut app = app_with("hello   \n", 5);
+        app.toggle_mode_by_name("whitespace-show-mode");
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(
+            row0.contains("hello") && row0.contains('·'),
+            "ws-mode on should show content + trailing dots: {row0:?}",
+        );
+    }
+
+    #[test]
+    fn whitespace_decoration_appends_eol_glyph_when_enabled() {
+        let mut d = ws_decoration_default();
+        d.eol = Some('¬');
+        let line = "hello";
+        let input = vec![Span::raw(line.to_string())];
+        let out = apply_whitespace_decoration(input, line, &d);
+        let rendered = spans_text(&out);
+        assert!(rendered.ends_with('¬'), "got: {rendered:?}");
+    }
+
+    #[test]
+    fn whitespace_decoration_preserves_syntax_highlight_around_substitutions() {
+        // Two-span input simulating syntax highlight: keyword
+        // span + raw rest. The whitespace pre-pass should keep
+        // the keyword's style on its non-whitespace content
+        // and split out a separate trailing-styled span for the
+        // trailing dots.
+        let kw_style = TuiStyle::default().fg(Color::Yellow);
+        let line = "fn main()  ";
+        let input = vec![
+            Span::styled("fn".to_string(), kw_style),
+            Span::raw(" main()  ".to_string()),
+        ];
+        let d = ws_decoration_default();
+        let out = apply_whitespace_decoration(input, line, &d);
+        // Keyword span survives unchanged.
+        assert!(
+            out.iter().any(|s| s.content.as_ref() == "fn" && s.style.fg == Some(Color::Yellow)),
+            "keyword span lost: {out:?}",
+        );
+        // Two trailing dots present + red.
+        let trailing: Vec<_> = out
+            .iter()
+            .filter(|s| s.content.as_ref() == "·" && s.style.fg == Some(Color::Red))
+            .collect();
+        assert_eq!(trailing.len(), 2);
     }
 
     #[test]

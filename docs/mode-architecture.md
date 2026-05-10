@@ -1616,6 +1616,45 @@ graceful error handling per CLAUDE.md.
     construction sites to seed `BufferLocals` directly instead of
     inspecting the struct fields. Production code is already on
     locals-only; the deferral is purely test-fixture migration.
+- M.4 -- 🟡 partial.
+  - **Per-kind pane dispatch consolidated.** `draw_panes` and
+    `draw_pane_status_line` no longer `match buffer.kind`; the
+    branches live behind `draw_pane_content` and
+    `App::pane_status_label`. Mode-driven dispatch (each major
+    mode contributes its own draw fn) replaces the helper-side
+    matches in a follow-up.
+  - **`option_cache` flows through `ResolvedOptions`.**
+    `rebuild_option_cache` reads via
+    `resolved_option::<D>(active_id)` for every option; mode
+    contributions on the active buffer (e.g. `ReadOnly` from
+    help-mode) propagate to the renderer's hot-path accessors.
+    Cascade re-resolves the active buffer; activation refreshes
+    the cache.
+  - **Per-pane option resolution.** `App::show_line_numbers_for`
+    + `App::relative_line_numbers_for` resolve per-buffer.
+    `FrameView::for_buffer` is the per-pane view used by inactive-
+    pane render paths. Two visible buffers with differing mode
+    stacks render their gutters independently.
+  - **Hover popup unification (Option B).** The popup UI
+    component is buffer-agnostic in intent: any buffer can render
+    in a popup; today's popup content happens to be a help buffer.
+    Help buffers run `markdown-mode` major + `help-mode` minor
+    (the `ReadOnly` + link/anchor/`<CR>`-follow contribution).
+    Hover popups run `markdown-mode` major + `hover-mode` minor
+    (auto-dismiss-on-doc-cursor-motion). The auto-dismiss
+    discriminator now consults `active_modes` for the popup buffer
+    rather than the structural `prev_pane_for_help.is_none()`
+    check. Display preference (popup / split / tab / minibuffer)
+    is orthogonal to which mode the buffer carries -- a buffer
+    can be moved between display strategies without changing its
+    mode.
+  - **Deferred**: replacing the helper-side `match buffer.kind`
+    in `draw_pane_content` / `pane_status_label` with mode-
+    contributed draw fns (each major mode registers a renderer
+    at boot); decoupling `App.help_buffer` slot from the
+    `HelpBuffer` type so any buffer kind can be the popup
+    content; the in-pane vs popup display preference for help
+    buffers (today centred-popup is hard-wired in App methods).
 
 ### 10.1 Why LSP is the right canary (M.5 first among "real" mode work)
 

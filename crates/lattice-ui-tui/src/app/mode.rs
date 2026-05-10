@@ -316,12 +316,28 @@ impl App {
     /// subscribers see the gate flip. Wire-level `didOpen` is
     /// already driven by the `attach_driver` subscribing to
     /// `Event::DocumentOpened` from the file-open path.
+    ///
+    /// M.6.1 cascade: every LSP sub-mode (`lsp-completion-mode`,
+    /// `lsp-diagnostics-mode`, ..., `lsp-nav-mode`) auto-activates
+    /// alongside the umbrella. The sub-mode is a *user-controllable
+    /// disable switch*, not a duplicate capability gate -- the
+    /// wire layer already filters per-server (e.g.
+    /// `handle.capabilities().supports_hover()` before issuing a
+    /// hover request). Auto-activating regardless of capability:
+    /// (a) avoids the async race between `lsp-mode` activation
+    /// (immediate) and `initialize` response (hundreds of ms);
+    /// (b) gives the right user-facing error when a server
+    /// doesn't support a feature ("server doesn't advertise
+    /// hover" rather than "lsp-hover-mode disabled"). Users who
+    /// want a sub-mode permanently off run `:lsp-hover-mode` to
+    /// toggle.
     fn on_lsp_mode_activated(&mut self, buffer_id: BufferId) {
         let path = self.path_for_buffer(buffer_id);
         self.event_bus.publish_typed(lattice_lsp::LspBufferAttached {
             id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
             path,
         });
+        self.activate_lsp_sub_modes_for(buffer_id);
     }
 
     /// M.5.3: lsp-mode deactivated on `buffer_id`. Sends
@@ -332,6 +348,9 @@ impl App {
     /// disable path. The buffer stays open in the editor; only
     /// LSP tracking ends. Server connection persists if other
     /// buffers are still attached.
+    ///
+    /// M.6.1 cascade: every LSP sub-mode deactivates. Symmetric
+    /// to [`Self::on_lsp_mode_activated`]'s cascade.
     fn on_lsp_mode_deactivated(&mut self, buffer_id: BufferId) {
         let path = self.path_for_buffer(buffer_id);
         self.lsp_close_buffer(buffer_id);
@@ -339,6 +358,88 @@ impl App {
             id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
             path,
         });
+        self.deactivate_lsp_sub_modes_for(buffer_id);
+    }
+
+    /// M.6.1: activate every LSP sub-mode whose state is currently
+    /// inactive on `buffer_id`. Idempotent -- already-active
+    /// sub-modes are skipped silently (no echo, no error). Runs
+    /// the registry's `activate_minor` directly rather than
+    /// recursing through [`Self::activate_mode_by_id`] so the
+    /// option-recompute cost is paid once at the end of the
+    /// cascade rather than nine times.
+    fn activate_lsp_sub_modes_for(&mut self, buffer_id: BufferId) {
+        use lattice_lsp::modes::*;
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
+        let sub_mode_ids = [
+            LspCompletionMode::mode_id(),
+            LspDiagnosticsMode::mode_id(),
+            LspHoverMode::mode_id(),
+            LspSignatureMode::mode_id(),
+            LspFormatMode::mode_id(),
+            LspRenameMode::mode_id(),
+            LspSymbolsMode::mode_id(),
+            LspCodeActionMode::mode_id(),
+            LspNavMode::mode_id(),
+        ];
+        for sub_id in sub_mode_ids {
+            if active.has_minor(sub_id) {
+                continue;
+            }
+            // `_` on the registry result -- AlreadyActive (the
+            // only foreseeable error here, given the empty
+            // capability requirements every sub-mode declares)
+            // is the case we just guarded with `has_minor`. Any
+            // other error means a build-config bug
+            // (mode-registry mismatch) we'd surface elsewhere.
+            let _ = self.mode_registry.activate_minor(
+                &mut active,
+                &mut locals,
+                proto_id,
+                sub_id,
+                CapabilitySet::empty(),
+            );
+        }
+        self.active_modes.insert(buffer_id, active);
+        self.buffer_locals.insert(buffer_id, locals);
+        self.recompute_options_for_buffer(buffer_id);
+    }
+
+    /// M.6.1: deactivate every LSP sub-mode currently active on
+    /// `buffer_id`. Symmetric to [`Self::activate_lsp_sub_modes_for`].
+    /// Idempotent -- already-inactive sub-modes are skipped.
+    fn deactivate_lsp_sub_modes_for(&mut self, buffer_id: BufferId) {
+        use lattice_lsp::modes::*;
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
+        let sub_mode_ids = [
+            LspCompletionMode::mode_id(),
+            LspDiagnosticsMode::mode_id(),
+            LspHoverMode::mode_id(),
+            LspSignatureMode::mode_id(),
+            LspFormatMode::mode_id(),
+            LspRenameMode::mode_id(),
+            LspSymbolsMode::mode_id(),
+            LspCodeActionMode::mode_id(),
+            LspNavMode::mode_id(),
+        ];
+        for sub_id in sub_mode_ids {
+            if !active.has_minor(sub_id) {
+                continue;
+            }
+            let _ = self.mode_registry.deactivate_minor(
+                &mut active,
+                &mut locals,
+                proto_id,
+                sub_id,
+            );
+        }
+        self.active_modes.insert(buffer_id, active);
+        self.buffer_locals.insert(buffer_id, locals);
+        self.recompute_options_for_buffer(buffer_id);
     }
 
     /// M.5.1: toggle a mode by name on the active pane's buffer.
@@ -473,6 +574,88 @@ mod tests {
         assert!(a.active_modes.get(&id).unwrap().has_minor(lsp_mode));
         a.toggle_mode_by_name("lsp-mode");
         assert!(!a.lsp_mode_enabled_for(id));
+    }
+
+    #[test]
+    fn activating_lsp_mode_cascades_all_sub_modes_on() {
+        // M.6.1 cascade-on: toggling `:lsp-mode` activates every
+        // LSP sub-mode in one step. The umbrella is the gate;
+        // the sub-modes are user-controllable disable switches
+        // that default to "track the umbrella".
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        a.toggle_mode_by_name("lsp-mode");
+        assert!(a.lsp_mode_enabled_for(id));
+        // All nine sub-modes flipped on.
+        assert!(a.lsp_completion_mode_enabled_for(id));
+        assert!(a.lsp_diagnostics_mode_enabled_for(id));
+        assert!(a.lsp_hover_mode_enabled_for(id));
+        assert!(a.lsp_signature_mode_enabled_for(id));
+        assert!(a.lsp_format_mode_enabled_for(id));
+        assert!(a.lsp_rename_mode_enabled_for(id));
+        assert!(a.lsp_symbols_mode_enabled_for(id));
+        assert!(a.lsp_code_action_mode_enabled_for(id));
+        assert!(a.lsp_nav_mode_enabled_for(id));
+    }
+
+    #[test]
+    fn deactivating_lsp_mode_cascades_all_sub_modes_off() {
+        // M.6.1 cascade-off: toggling `:lsp-mode` off deactivates
+        // every sub-mode atomically.
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        a.toggle_mode_by_name("lsp-mode");
+        assert!(a.lsp_hover_mode_enabled_for(id));
+        a.toggle_mode_by_name("lsp-mode");
+        assert!(!a.lsp_mode_enabled_for(id));
+        // All nine sub-modes flipped off.
+        assert!(!a.lsp_completion_mode_enabled_for(id));
+        assert!(!a.lsp_diagnostics_mode_enabled_for(id));
+        assert!(!a.lsp_hover_mode_enabled_for(id));
+        assert!(!a.lsp_signature_mode_enabled_for(id));
+        assert!(!a.lsp_format_mode_enabled_for(id));
+        assert!(!a.lsp_rename_mode_enabled_for(id));
+        assert!(!a.lsp_symbols_mode_enabled_for(id));
+        assert!(!a.lsp_code_action_mode_enabled_for(id));
+        assert!(!a.lsp_nav_mode_enabled_for(id));
+    }
+
+    #[test]
+    fn user_disabling_a_sub_mode_after_cascade_keeps_others_active() {
+        // M.6.1 contract: cascade-on activates everything; user
+        // can then independently disable one sub-mode and the
+        // others stay on. This is the "disable LSP completion
+        // but keep diagnostics" use case from §4.2.1.
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        a.toggle_mode_by_name("lsp-mode");
+        // Independently disable `lsp-completion-mode`.
+        a.toggle_mode_by_name("lsp-completion-mode");
+        assert!(!a.lsp_completion_mode_enabled_for(id));
+        // Other sub-modes still active.
+        assert!(a.lsp_diagnostics_mode_enabled_for(id));
+        assert!(a.lsp_hover_mode_enabled_for(id));
+        assert!(a.lsp_format_mode_enabled_for(id));
+        // Umbrella still active.
+        assert!(a.lsp_mode_enabled_for(id));
+    }
+
+    #[test]
+    fn re_activating_lsp_mode_after_user_disable_re_cascades_sub_modes_on() {
+        // Edge case: user toggles lsp-mode off, then on again.
+        // The cascade-on should re-activate every sub-mode,
+        // including any the user had previously disabled.
+        // (Toggling the umbrella is the user's "reset to defaults"
+        // gesture.)
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        a.toggle_mode_by_name("lsp-mode");
+        a.toggle_mode_by_name("lsp-hover-mode");
+        assert!(!a.lsp_hover_mode_enabled_for(id));
+        // Cycle the umbrella: cascade-off then cascade-on.
+        a.toggle_mode_by_name("lsp-mode");
+        a.toggle_mode_by_name("lsp-mode");
+        assert!(a.lsp_hover_mode_enabled_for(id));
     }
 
     #[test]

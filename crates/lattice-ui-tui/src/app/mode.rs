@@ -32,6 +32,7 @@
 //! `crate::modes`.
 
 use lattice_grammar::ModalState;
+use lattice_mode::{CapabilitySet, ModeId, ModeKind};
 use lattice_protocol::Event;
 
 use super::{App, BufferId, BufferKind, EchoLevel};
@@ -142,6 +143,135 @@ impl App {
         self.recompute_options_for_buffer(buffer_id);
     }
 
+    /// M.5.1: programmatic activation of `mode_id` on `buffer_id`.
+    /// Used by hooks (auto-activation on `MajorEntered` etc.) and
+    /// by the auto-generated `:<mode-name>` toggle command. The
+    /// registry decides Major-vs-Minor and runs the appropriate
+    /// activation; for majors the previous major is deactivated
+    /// first.
+    ///
+    /// On failure, surfaces an `EchoLevel::Warn` and returns
+    /// without mutating state. Callers that need to know the
+    /// outcome can read `self.active_modes[buffer_id]` after.
+    pub fn activate_mode_by_id(&mut self, buffer_id: BufferId, mode_id: ModeId) {
+        let Some(mode) = self.mode_registry.get(mode_id) else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("mode: `{mode_id}` is not registered"),
+            );
+            return;
+        };
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
+        let result = match mode.kind() {
+            ModeKind::Major => self.mode_registry.activate_major(
+                &mut active,
+                &mut locals,
+                proto_id,
+                mode_id,
+                CapabilitySet::empty(),
+            ),
+            ModeKind::Minor => self.mode_registry.activate_minor(
+                &mut active,
+                &mut locals,
+                proto_id,
+                mode_id,
+                CapabilitySet::empty(),
+            ),
+        };
+        if let Err(e) = result {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("mode: activate({mode_id}) for buffer {} failed: {e}", buffer_id.0),
+            );
+        }
+        self.active_modes.insert(buffer_id, active);
+        self.buffer_locals.insert(buffer_id, locals);
+        self.recompute_options_for_buffer(buffer_id);
+    }
+
+    /// M.5.1: programmatic deactivation of `mode_id` on
+    /// `buffer_id`. Symmetric to [`Self::activate_mode_by_id`].
+    /// Major deactivation leaves the buffer with no active major
+    /// until the next activation; user-facing flows usually flow
+    /// through the toggle command which performs swap rather
+    /// than a bare deactivate.
+    pub fn deactivate_mode_by_id(&mut self, buffer_id: BufferId, mode_id: ModeId) {
+        let Some(mode) = self.mode_registry.get(mode_id) else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("mode: `{mode_id}` is not registered"),
+            );
+            return;
+        };
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
+        let result = match mode.kind() {
+            ModeKind::Major => self.mode_registry.deactivate_major(
+                &mut active,
+                &mut locals,
+                proto_id,
+            ),
+            ModeKind::Minor => self.mode_registry.deactivate_minor(
+                &mut active,
+                &mut locals,
+                proto_id,
+                mode_id,
+            ),
+        };
+        if let Err(e) = result {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("mode: deactivate({mode_id}) for buffer {} failed: {e}", buffer_id.0),
+            );
+        }
+        self.active_modes.insert(buffer_id, active);
+        self.buffer_locals.insert(buffer_id, locals);
+        self.recompute_options_for_buffer(buffer_id);
+    }
+
+    /// M.5.1: toggle a mode by name on the active pane's buffer.
+    /// This is the apply-fn target for the auto-generated
+    /// `:<mode-name>` ex-commands (mode-architecture §9.6.1).
+    /// Toggle semantics:
+    /// - **Minor**: deactivate if active; activate if inactive.
+    /// - **Major**: activate if not currently the major; if it's
+    ///   already the active major, the registry treats this as
+    ///   a *reload* (deactivate then re-activate, per §9.6).
+    ///
+    /// Activating a major that differs from the current major
+    /// performs a swap -- the registry deactivates the previous
+    /// major before activating the new one. Active minors stay
+    /// untouched across the swap (their state lives in
+    /// type-keyed `BufferLocals` owned per-mode; no
+    /// `kill-all-local-variables` semantics).
+    pub fn toggle_mode_by_name(&mut self, name: &str) {
+        let mode_id = ModeId::new(name);
+        let buffer_id = self.active_pane_buffer_id();
+        let Some(mode) = self.mode_registry.get(mode_id) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("mode: `{name}` is not a registered mode"),
+            );
+            return;
+        };
+        let active_now = self
+            .active_modes
+            .get(&buffer_id)
+            .map(|m| m.is_active(mode_id))
+            .unwrap_or(false);
+        match (mode.kind(), active_now) {
+            (ModeKind::Minor, true) => self.deactivate_mode_by_id(buffer_id, mode_id),
+            (ModeKind::Minor, false) => self.activate_mode_by_id(buffer_id, mode_id),
+            // Major: activating an inactive major swaps it in;
+            // re-activating the current major reloads (registry
+            // contract). Either way the call is the same.
+            (ModeKind::Major, _) => self.activate_mode_by_id(buffer_id, mode_id),
+        }
+    }
+
     pub fn modal_label(&self) -> &'static str {
         match self.modal {
             ModalState::Normal => "NORMAL",
@@ -210,6 +340,92 @@ impl App {
                 from: format!("{prior:?}"),
                 to: format!("{state:?}"),
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use crate::app::test_helpers::app_with;
+
+    #[test]
+    fn toggle_minor_mode_by_name_activates_then_deactivates() {
+        // M.5.1: `:lsp-mode` (or any minor name) toggles. First
+        // call activates, second deactivates. The mode is
+        // registered at boot so name lookup succeeds.
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        let lsp_mode = lattice_lsp::modes::LspMode::mode_id();
+        assert!(!a.lsp_mode_enabled_for(id));
+        a.toggle_mode_by_name("lsp-mode");
+        assert!(a.lsp_mode_enabled_for(id));
+        assert!(a.active_modes.get(&id).unwrap().has_minor(lsp_mode));
+        a.toggle_mode_by_name("lsp-mode");
+        assert!(!a.lsp_mode_enabled_for(id));
+    }
+
+    #[test]
+    fn toggle_unknown_mode_name_emits_error_echo() {
+        // Unknown name → error message; no state change.
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        let before_minors_len = a
+            .active_modes
+            .get(&id)
+            .map(|m| m.minors().len())
+            .unwrap_or(0);
+        a.toggle_mode_by_name("definitely-not-a-mode");
+        let msg = a.last_message.as_ref().expect("error echo");
+        assert!(msg.text.contains("not a registered mode"));
+        let after_minors_len = a
+            .active_modes
+            .get(&id)
+            .map(|m| m.minors().len())
+            .unwrap_or(0);
+        assert_eq!(before_minors_len, after_minors_len);
+    }
+
+    #[test]
+    fn toggle_major_mode_by_name_swaps_active_major() {
+        // Major-mode toggle = swap. The buffer starts on the
+        // resolver's pick (text-mode for plain content); flipping
+        // to `markdown-mode` deactivates text-mode and activates
+        // markdown-mode. Active minors stay untouched.
+        let mut a = app_with("# heading", 5);
+        let id = a.pane_tree.active().buffer_id;
+        // Activate a minor first so we can verify it survives.
+        a.toggle_mode_by_name("lsp-mode");
+        assert!(a.lsp_mode_enabled_for(id));
+        // Swap major.
+        a.toggle_mode_by_name("markdown-mode");
+        let modes = a.active_modes.get(&id).expect("modes for buffer");
+        assert_eq!(
+            modes.major(),
+            Some(lattice_syntax::MarkdownMode::mode_id())
+        );
+        // Minor unaffected by major swap (M.5 design).
+        assert!(modes.has_minor(lattice_lsp::modes::LspMode::mode_id()));
+    }
+
+    #[test]
+    fn toggle_command_resolves_through_ex_command_registry() {
+        // M.5.1: the `:<mode-name>` ex-command auto-registered at
+        // boot drives the same toggle. End-to-end through
+        // `apply(Action::ExecuteEx(...))` would be the full flow;
+        // here we verify the registry entry exists with the
+        // expected name (the apply fn is exercised by the tests
+        // above via direct `toggle_mode_by_name`).
+        let a = app_with("hi", 5);
+        // Every registered mode should have a corresponding
+        // ex-command keyword in the registry.
+        for (mode_id, _kind) in a.mode_registry.iter_meta() {
+            let name = mode_id.to_string();
+            assert!(
+                a.registry.id_by_name(&name).is_some(),
+                "no ex-command registered for mode `{name}`"
+            );
         }
     }
 }

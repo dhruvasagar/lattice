@@ -104,6 +104,14 @@ impl ModeRegistry {
         self.modes.get(&id).cloned()
     }
 
+    /// Iterate every registered mode's `(id, kind)`. Used at boot
+    /// by the App to auto-generate toggle ex-commands per mode-
+    /// architecture §9.6.1, and by `:list-modes` (M.8) to render
+    /// the catalogue.
+    pub fn iter_meta(&self) -> impl Iterator<Item = (ModeId, ModeKind)> + '_ {
+        self.modes.iter().map(|(id, mode)| (*id, mode.kind()))
+    }
+
     /// Number of registered modes (any kind).
     pub fn len(&self) -> usize {
         self.modes.len()

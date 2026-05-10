@@ -141,6 +141,20 @@ impl App {
         // looks them up by name -- but registering them populates the
         // registry so `:`-line parsing can route to them.
         let _ex_builtins = lattice_grammar::ex_commands::populate(&mut registry);
+        // M.5.1 (mode-architecture §9.6.1): build the mode registry
+        // first so we can iterate it and register a `:<mode-name>`
+        // toggle ex-command per mode. The mode registry is then
+        // wrapped in `Arc` for the App struct below.
+        let mode_registry = {
+            let mut mr = lattice_mode::ModeRegistry::new();
+            lattice_mode::register_foundation_modes(&mut mr);
+            lattice_syntax::register_language_modes(&mut mr);
+            lattice_lsp::modes::register_lsp_log_modes(&mut mr);
+            crate::modes::register_buffer_kind_modes(&mut mr);
+            mr
+        };
+        register_mode_toggle_commands(&mut registry, &mode_registry);
+        let mode_registry = std::sync::Arc::new(mode_registry);
         // App-side action registrations (slice 8.i; see
         // `docs/8i-approach.md`). Each `CommandKind::Action`
         // entry returns `Effect::AppAction(AppEffect::Foo)`;
@@ -425,14 +439,7 @@ impl App {
             // for the App's lifetime (plugin-driven dynamic
             // registration is M.10 territory and uses a
             // different surface).
-            mode_registry: {
-                let mut registry = lattice_mode::ModeRegistry::new();
-                lattice_mode::register_foundation_modes(&mut registry);
-                lattice_syntax::register_language_modes(&mut registry);
-                lattice_lsp::modes::register_lsp_log_modes(&mut registry);
-                crate::modes::register_buffer_kind_modes(&mut registry);
-                std::sync::Arc::new(registry)
-            },
+            mode_registry,
             pane_render_registry: crate::render::build_pane_render_registry(),
             active_modes: std::collections::HashMap::new(),
             buffer_locals,
@@ -702,5 +709,60 @@ impl App {
             )
         };
         self.set_message(echo_level, body);
+    }
+}
+
+/// M.5.1 (mode-architecture §9.6.1): register a `:<mode-name>`
+/// toggle ex-command for every mode in `mode_registry`. The
+/// command id is the mode name (no `ex:` prefix; the ex-command
+/// resolver tries direct registry-name lookup before alias
+/// expansion, so `:lsp-mode` resolves directly).
+///
+/// Toggle apply-fn returns
+/// [`lattice_grammar::Effect::ToggleMode { mode_name }`]; the
+/// App's effect dispatcher routes that to
+/// [`crate::app::App::toggle_mode_by_name`].
+fn register_mode_toggle_commands(
+    cmd_registry: &mut CommandRegistry,
+    mode_registry: &lattice_mode::ModeRegistry,
+) {
+    use lattice_grammar::args::ArgSpec;
+    use lattice_grammar::registry::{ExCommandSpec, SurfaceForm};
+    use lattice_grammar::{Args, CommandError, Effect};
+    let mut names: Vec<String> = mode_registry
+        .iter_meta()
+        .map(|(id, _kind)| id.to_string())
+        .collect();
+    // Sort for deterministic registration order (HashMap iteration
+    // is hash-randomized; deterministic boot keeps `:describe-*`
+    // and tests stable).
+    names.sort();
+    for name in names {
+        let mode_name = name.clone();
+        let cmd_name = name.clone();
+        cmd_registry.register_ex_command(
+            &cmd_name,
+            "Toggle the mode on the active buffer (auto-generated; \
+             see `:help modes` for the full mode-system overview).",
+            ExCommandSpec {
+                latency_class: lattice_grammar::command::LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Box::new(|s: &str, _bang: bool| {
+                    if s.trim().is_empty() {
+                        Ok(Args::None)
+                    } else {
+                        Err(CommandError::BadArgs(
+                            "mode toggle takes no arguments".into(),
+                        ))
+                    }
+                }),
+                apply: Box::new(move |_ctx| Ok(Effect::ToggleMode {
+                    mode_name: mode_name.clone(),
+                })),
+                args_schema: Vec::<ArgSpec>::new(),
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
     }
 }

@@ -221,6 +221,17 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
             "ex:complete".into(),
         ],
     });
+    r.register(HelpTopic {
+        name: "modes".into(),
+        summary: "Major + minor modes: what they are, how `:<mode-name>` toggles work, \
+                  major-mode swaps, auto-activation hooks, the option-resolution model."
+            .into(),
+        body: HelpTopicBody::Static(include_str!("../../../docs/help/modes.md")),
+        // Bind to the auto-generated `:<mode-name>` commands so
+        // `:describe-command rust-mode` (or any registered mode)
+        // surfaces a "See also: modes" cross-link to the topic.
+        related_command_patterns: vec!["mode".into()],
+    });
     Arc::new(r)
 }
 

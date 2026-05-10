@@ -328,6 +328,18 @@ pub enum Effect {
     /// `.json` file in the project's snippet directory.
     ReloadSnippets,
 
+    /// `:<mode-name>` -- toggle a registered mode on the active
+    /// buffer (M.5.1; mode-architecture §9.6.1). For minors:
+    /// activate if inactive, deactivate if active. For majors:
+    /// activate if not currently the major; reload (deactivate
+    /// then re-activate) if it's already the active major. Mode
+    /// resolution is by name, not id object, because the grammar
+    /// crate stays renderer-agnostic and doesn't depend on
+    /// `lattice-mode`.
+    ToggleMode {
+        mode_name: String,
+    },
+
     /// Free-form App-side effect produced by a `CommandKind::Action`
     /// dispatch. Carries an [`AppEffect`] -- the typed App-side
     /// counterpart to the dispatcher-native variants above. The

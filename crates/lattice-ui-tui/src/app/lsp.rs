@@ -78,6 +78,102 @@ impl App {
             .unwrap_or(false)
     }
 
+    /// M.6.0: is `mode_id` active on `buffer_id`? Generic minor-
+    /// mode accessor used by every M.6 sub-mode reader. Always
+    /// returns `false` when no entry exists for `buffer_id` --
+    /// matches the umbrella accessor's shape.
+    fn minor_mode_enabled_for(
+        &self,
+        buffer_id: BufferId,
+        mode_id: lattice_mode::ModeId,
+    ) -> bool {
+        self.active_modes
+            .get(&buffer_id)
+            .map(|modes| modes.has_minor(mode_id))
+            .unwrap_or(false)
+    }
+
+    /// M.6.0: is `lsp-completion-mode` active on `buffer_id`? Read
+    /// by `do_lsp_completion_request` /
+    /// `do_lsp_insert_completion_request` and the LSP completion
+    /// source filter once M.6.2 / M.6.3 wire the gates.
+    pub fn lsp_completion_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspCompletionMode::mode_id(),
+        )
+    }
+
+    /// M.6.0: is `lsp-diagnostics-mode` active on `buffer_id`?
+    /// Read by the publish-diagnostics paint pipeline and
+    /// `:diag-next` / `:diag-prev` once M.6.3 wires the gate.
+    pub fn lsp_diagnostics_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspDiagnosticsMode::mode_id(),
+        )
+    }
+
+    /// M.6.0: is `lsp-hover-mode` active on `buffer_id`? Read by
+    /// `do_lsp_hover_request` once M.6.2 wires the gate.
+    pub fn lsp_hover_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspHoverMode::mode_id(),
+        )
+    }
+
+    /// M.6.0: is `lsp-signature-mode` active on `buffer_id`?
+    pub fn lsp_signature_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspSignatureMode::mode_id(),
+        )
+    }
+
+    /// M.6.0: is `lsp-format-mode` active on `buffer_id`? Gates
+    /// `:lsp-format` / `:lsp-format-range` and `onTypeFormatting`.
+    pub fn lsp_format_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspFormatMode::mode_id(),
+        )
+    }
+
+    /// M.6.0: is `lsp-rename-mode` active on `buffer_id`?
+    pub fn lsp_rename_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspRenameMode::mode_id(),
+        )
+    }
+
+    /// M.6.0: is `lsp-symbols-mode` active on `buffer_id`? Gates
+    /// `:lsp-symbols` and `:lsp-workspace-symbol`.
+    pub fn lsp_symbols_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspSymbolsMode::mode_id(),
+        )
+    }
+
+    /// M.6.0: is `lsp-code-action-mode` active on `buffer_id`?
+    pub fn lsp_code_action_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspCodeActionMode::mode_id(),
+        )
+    }
+
+    /// M.6.0: is `lsp-nav-mode` active on `buffer_id`? Gates
+    /// definition / declaration / type-def / impl + references.
+    pub fn lsp_nav_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspNavMode::mode_id(),
+        )
+    }
+
     /// M.5.4: shared gate for every LSP request entry point
     /// (hover / definition / completion / format / rename /
     /// code-action / symbols / signature / references). Returns
@@ -89,7 +185,7 @@ impl App {
     ///
     /// The echo level is `Info` (not `Warn`) -- gated state is
     /// expected user-controlled, not a misconfiguration.
-    fn check_lsp_mode_gate(&mut self) -> bool {
+    pub(super) fn check_lsp_mode_gate(&mut self) -> bool {
         if self.lsp_mode_enabled_for(self.document_buffer_id) {
             return true;
         }

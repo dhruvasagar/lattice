@@ -476,6 +476,39 @@ mod tests {
     }
 
     #[test]
+    fn lsp_sub_modes_default_off_and_independently_toggleable() {
+        // M.6.0: each sub-mode accessor returns false on a fresh
+        // buffer; toggling each by name flips only that sub-mode.
+        // (M.6.1 will add capability-driven cascade from
+        // `:lsp-mode` activation -- this test pins the manual-
+        // toggle pathway, which is the v1 escape hatch when a
+        // user wants a sub-mode active independently of the
+        // umbrella's auto-activation logic.)
+        let mut a = app_with("hi", 5);
+        let id = a.pane_tree.active().buffer_id;
+        // All nine sub-modes start off.
+        assert!(!a.lsp_completion_mode_enabled_for(id));
+        assert!(!a.lsp_diagnostics_mode_enabled_for(id));
+        assert!(!a.lsp_hover_mode_enabled_for(id));
+        assert!(!a.lsp_signature_mode_enabled_for(id));
+        assert!(!a.lsp_format_mode_enabled_for(id));
+        assert!(!a.lsp_rename_mode_enabled_for(id));
+        assert!(!a.lsp_symbols_mode_enabled_for(id));
+        assert!(!a.lsp_code_action_mode_enabled_for(id));
+        assert!(!a.lsp_nav_mode_enabled_for(id));
+        // Toggling `lsp-hover-mode` flips its accessor but no
+        // other sub-mode's accessor.
+        a.toggle_mode_by_name("lsp-hover-mode");
+        assert!(a.lsp_hover_mode_enabled_for(id));
+        assert!(!a.lsp_completion_mode_enabled_for(id));
+        assert!(!a.lsp_diagnostics_mode_enabled_for(id));
+        assert!(!a.lsp_format_mode_enabled_for(id));
+        // Round-trip back off.
+        a.toggle_mode_by_name("lsp-hover-mode");
+        assert!(!a.lsp_hover_mode_enabled_for(id));
+    }
+
+    #[test]
     fn toggle_unknown_mode_name_emits_error_echo() {
         // Unknown name → error message; no state change.
         let mut a = app_with("hi", 5);

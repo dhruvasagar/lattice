@@ -4,8 +4,33 @@
 //!   on a buffer, LSP traffic flows: requests are issued,
 //!   diagnostics are applied, document sync runs. When inactive,
 //!   every LSP entry point is a silent no-op for that buffer.
-//!   Activation lifecycle (didOpen / didClose) lands in M.5.3;
-//!   in this slice the mode is a pure marker with no-op hooks.
+//!   Activation lifecycle (didOpen / didClose) wired in M.5.3.
+//!
+//! - LSP **sub-modes** (minors; M.6.0) -- one per LSP feature
+//!   surface. Each is independently toggleable on top of
+//!   `lsp-mode`; the umbrella is the gate, the sub-modes are
+//!   per-feature switches. M.6.0 ships pure declarations +
+//!   registration; M.6.1 wires capability-driven auto-activation
+//!   (when the umbrella turns on, sub-modes whose capability the
+//!   attached server advertises auto-activate); M.6.2/M.6.3 wire
+//!   per-feature gates at the request entry points and the
+//!   diagnostic / completion-source pipelines.
+//!
+//!   The nine sub-modes:
+//!   - `lsp-completion-mode` -- LSP-driven insert-mode completion +
+//!     palette `:complete` issuing.
+//!   - `lsp-diagnostics-mode` -- inline + gutter diagnostic paint;
+//!     `:diag-next` / `:diag-prev` navigation.
+//!   - `lsp-hover-mode` -- `K` hover popup.
+//!   - `lsp-signature-mode` -- auto signature help on `(` / `,`.
+//!   - `lsp-format-mode` -- `:lsp-format` / `:lsp-format-range` +
+//!     `textDocument/onTypeFormatting` + format-on-save.
+//!   - `lsp-rename-mode` -- `:lsp-rename` + workspaceEdit apply.
+//!   - `lsp-symbols-mode` -- `:lsp-symbols`,
+//!     `:lsp-workspace-symbol`.
+//!   - `lsp-code-action-mode` -- `:lsp-code-action`.
+//!   - `lsp-nav-mode` -- go-to definition / declaration / type-def
+//!     / implementation; references.
 //!
 //! - `lsp-log-mode` / `lsp-trace-log-mode` / `lsp-server-log-mode`
 //!   (majors; M.3.0) -- the read-only buffers backing the LSP
@@ -124,7 +149,64 @@ impl Mode for LspMode {
     }
 }
 
-/// Register every LSP log major mode against `registry`.
+/// M.6.0: declare an LSP sub-mode. Each sub-mode is a minor with
+/// no contributed options, no capability requirements, and no-op
+/// lifecycle hooks. The hooks stay no-op even after M.6.1 lands
+/// auto-activation -- the *cascade* (umbrella → sub-modes) lives
+/// on the App, not in `Mode::on_activate` (which only sees a
+/// `ModeContext`, not the LSP servers + capabilities). Sub-modes
+/// are pure markers; the gating logic lives at the request
+/// entry points and the publish-diagnostics / completion-source
+/// sites that consult `App::<feature>_mode_enabled_for`.
+macro_rules! lsp_sub_mode {
+    ($struct_name:ident, $mode_name:literal) => {
+        pub struct $struct_name;
+
+        impl $struct_name {
+            pub fn mode_id() -> ModeId {
+                ModeId::new($mode_name)
+            }
+        }
+
+        impl Mode for $struct_name {
+            fn id(&self) -> ModeId {
+                Self::mode_id()
+            }
+            fn kind(&self) -> ModeKind {
+                ModeKind::Minor
+            }
+            fn options(&self) -> OptionOverrideSet {
+                OptionOverrideSet::default()
+            }
+            fn required_capabilities(&self) -> CapabilitySet {
+                CapabilitySet::empty()
+            }
+            fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+                Ok(())
+            }
+            fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+                Ok(())
+            }
+        }
+    };
+}
+
+lsp_sub_mode!(LspCompletionMode, "lsp-completion-mode");
+lsp_sub_mode!(LspDiagnosticsMode, "lsp-diagnostics-mode");
+lsp_sub_mode!(LspHoverMode, "lsp-hover-mode");
+lsp_sub_mode!(LspSignatureMode, "lsp-signature-mode");
+lsp_sub_mode!(LspFormatMode, "lsp-format-mode");
+lsp_sub_mode!(LspRenameMode, "lsp-rename-mode");
+lsp_sub_mode!(LspSymbolsMode, "lsp-symbols-mode");
+lsp_sub_mode!(LspCodeActionMode, "lsp-code-action-mode");
+lsp_sub_mode!(LspNavMode, "lsp-nav-mode");
+
+/// Register every LSP mode (the three log majors, the umbrella
+/// `lsp-mode` minor, and the nine M.6 sub-mode minors) against
+/// `registry`. The name is kept for backwards compatibility --
+/// any existing call sites continue to compile, and the function
+/// is the single boot-time registration entry point for
+/// everything LSP-related.
 pub fn register_lsp_log_modes(registry: &mut ModeRegistry) {
     registry
         .register(LspLogMode)
@@ -136,6 +218,35 @@ pub fn register_lsp_log_modes(registry: &mut ModeRegistry) {
         .register(LspServerLogMode)
         .expect("lsp-server-log-mode register");
     registry.register(LspMode).expect("lsp-mode register");
+    // M.6.0: nine LSP sub-mode minors. Pure declarations today;
+    // M.6.1+ wires auto-activation + per-feature gating.
+    registry
+        .register(LspCompletionMode)
+        .expect("lsp-completion-mode register");
+    registry
+        .register(LspDiagnosticsMode)
+        .expect("lsp-diagnostics-mode register");
+    registry
+        .register(LspHoverMode)
+        .expect("lsp-hover-mode register");
+    registry
+        .register(LspSignatureMode)
+        .expect("lsp-signature-mode register");
+    registry
+        .register(LspFormatMode)
+        .expect("lsp-format-mode register");
+    registry
+        .register(LspRenameMode)
+        .expect("lsp-rename-mode register");
+    registry
+        .register(LspSymbolsMode)
+        .expect("lsp-symbols-mode register");
+    registry
+        .register(LspCodeActionMode)
+        .expect("lsp-code-action-mode register");
+    registry
+        .register(LspNavMode)
+        .expect("lsp-nav-mode register");
 }
 
 #[cfg(test)]
@@ -149,6 +260,16 @@ mod tests {
             LspTraceLogMode::mode_id(),
             LspServerLogMode::mode_id(),
             LspMode::mode_id(),
+            // M.6.0 sub-modes.
+            LspCompletionMode::mode_id(),
+            LspDiagnosticsMode::mode_id(),
+            LspHoverMode::mode_id(),
+            LspSignatureMode::mode_id(),
+            LspFormatMode::mode_id(),
+            LspRenameMode::mode_id(),
+            LspSymbolsMode::mode_id(),
+            LspCodeActionMode::mode_id(),
+            LspNavMode::mode_id(),
         ];
         for (i, a) in ids.iter().enumerate() {
             for b in &ids[i + 1..] {
@@ -165,6 +286,50 @@ mod tests {
         assert!(registry.is_registered(LspTraceLogMode::mode_id()));
         assert!(registry.is_registered(LspServerLogMode::mode_id()));
         assert!(registry.is_registered(LspMode::mode_id()));
+        // M.6.0 sub-modes are picked up by the same registration
+        // entry point.
+        assert!(registry.is_registered(LspCompletionMode::mode_id()));
+        assert!(registry.is_registered(LspDiagnosticsMode::mode_id()));
+        assert!(registry.is_registered(LspHoverMode::mode_id()));
+        assert!(registry.is_registered(LspSignatureMode::mode_id()));
+        assert!(registry.is_registered(LspFormatMode::mode_id()));
+        assert!(registry.is_registered(LspRenameMode::mode_id()));
+        assert!(registry.is_registered(LspSymbolsMode::mode_id()));
+        assert!(registry.is_registered(LspCodeActionMode::mode_id()));
+        assert!(registry.is_registered(LspNavMode::mode_id()));
+    }
+
+    #[test]
+    fn each_lsp_sub_mode_is_minor_no_caps_no_options() {
+        // M.6.0 invariant: every sub-mode is a pure marker.
+        // Capabilities and option contributions are empty; the
+        // gating logic lives on the App side at the request
+        // entry points + diagnostic / completion-source sites.
+        let modes: Vec<&dyn Mode> = vec![
+            &LspCompletionMode,
+            &LspDiagnosticsMode,
+            &LspHoverMode,
+            &LspSignatureMode,
+            &LspFormatMode,
+            &LspRenameMode,
+            &LspSymbolsMode,
+            &LspCodeActionMode,
+            &LspNavMode,
+        ];
+        for m in modes {
+            assert_eq!(m.kind(), ModeKind::Minor, "{} not minor", m.id());
+            assert_eq!(
+                m.required_capabilities(),
+                CapabilitySet::empty(),
+                "{} declared caps",
+                m.id(),
+            );
+            assert!(
+                m.options().iter().count() == 0,
+                "{} contributed options",
+                m.id(),
+            );
+        }
     }
 
     #[test]

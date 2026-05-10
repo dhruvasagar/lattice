@@ -1690,8 +1690,36 @@ graceful error handling per CLAUDE.md.
     `:lsp-log` rebuild path drops its hot-path-mirror sync (the
     registry copy was the only canonical record). The popup is
     now structurally a normal buffer with one extra reference.
-  - **Deferred**: in-pane vs popup display preference for help
-    buffers (today centred-popup is hard-wired in App methods).
+  - **Generic per-feature display preferences.** New
+    `lattice_core::ui::display` decouples *what* (the buffer)
+    from *where* (the display) for every dedicated-buffer
+    producer.
+    - `BufferDisplay`: `Popup(PopupPlacement) | ActivePane |
+      Split(SplitOrientation)`.
+    - `BufferDisplayCategory`: per-feature *intent* tag
+      (`LspStatus`, `LspLog`, `HelpTopic`, `HelpDescribe`,
+      `HelpApropos`, `HelpList`, `Hover`, `Signature`,
+      `PickerResult`). Multi-choice surfaces (`:diagnostics`,
+      `:references`, `:symbol`, `:Files`, `:buffers`,
+      `:lsp-server-log`) are picker-shaped by design and route
+      their accept destination through `PickerResult`; their
+      picker UI itself isn't a category.
+    - `App::display_buffer(content, category)` is the single
+      dispatch seam; `App::prepare_pane_for_picker_result()` is
+      its picker-accept counterpart. Defaults are coded in via
+      `default_display(category)` and match the prior
+      hard-coded behaviour exactly. User-facing
+      `:set <category>.display = popup|active-pane|split-h|
+      split-v` overrides arrive as a follow-up via the typed-
+      option system.
+    - Retired the unused `App.help_display_mode` field and
+      `lattice_help::HelpDisplayMode` enum -- subsumed by
+      `BufferDisplay` (one enum across LSP, help, hover,
+      signature, picker, ... rather than help-only).
+    - Hover keeps its custom path until a minor-mode-override
+      hook lands (it activates `hover-mode` rather than the
+      default `help-mode` minor); the `Hover` / `Signature`
+      categories are reserved for that migration.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

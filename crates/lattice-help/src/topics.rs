@@ -232,6 +232,14 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
         // surfaces a "See also: modes" cross-link to the topic.
         related_command_patterns: vec!["mode".into()],
     });
+    r.register(HelpTopic {
+        name: "lsp-mode".into(),
+        summary: "Per-buffer gate that controls whether LSP features run \
+                  (auto-activation, toggle, what's gated, programmatic API)."
+            .into(),
+        body: HelpTopicBody::Static(include_str!("../../../docs/help/lsp-mode.md")),
+        related_command_patterns: vec!["lsp".into()],
+    });
     Arc::new(r)
 }
 

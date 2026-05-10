@@ -3533,6 +3533,65 @@ mod tests {
     }
 
     #[test]
+    fn lsp_mode_round_trip_end_to_end() {
+        // M.5.7: end-to-end gate exercise across one buffer's
+        // lifetime. Open a *.rs file (auto-activates lsp-mode
+        // per M.5.2) -> verify the gate is open. Toggle off ->
+        // every observable LSP signal silences (request gate
+        // echoes, document-sync typed event suppressed, render
+        // gate suppresses diagnostics + modeline segment).
+        // Toggle on again -> gate opens, signals resume.
+        use crate::app::test_helpers::app_with_path;
+        let mut a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
+        let id = a.pane_tree.active().buffer_id;
+
+        // Auto-activated on file open via M.5.2.
+        assert!(a.lsp_mode_enabled_for(id), "M.5.2 auto-activation");
+
+        // Subscribe to LspBufferDetached + LspDocumentChanged so
+        // the toggle-off path (M.5.3 detach) and the gated
+        // edit path (M.5.5) are observable end-to-end.
+        let (detach_tx, mut detach_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspBufferDetached>();
+        a.event_bus.subscribe_typed(detach_tx);
+        let (changed_tx, mut changed_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspDocumentChanged>();
+        a.event_bus.subscribe_typed(changed_tx);
+
+        // ---- toggle off: every gate closes. ----
+        a.toggle_mode_by_name("lsp-mode");
+        assert!(!a.lsp_mode_enabled_for(id));
+        // M.5.3 detach event fires.
+        assert!(
+            detach_rx.try_recv().is_ok(),
+            "expected LspBufferDetached on toggle off"
+        );
+        // M.5.4 request gate: hover echoes the gate message.
+        a.apply(Action::LspHoverRequest);
+        let msg = a.last_message.as_ref().expect("gate echo");
+        assert!(
+            msg.text.contains("lsp-mode disabled"),
+            "expected gate echo, got: {}",
+            msg.text
+        );
+        // M.5.5 sync gate: edits don't publish LspDocumentChanged.
+        a.apply(Action::Insert("a".into()));
+        assert!(
+            changed_rx.try_recv().is_err(),
+            "lsp-mode off should suppress LspDocumentChanged"
+        );
+
+        // ---- toggle on: gate opens; signals resume. ----
+        a.toggle_mode_by_name("lsp-mode");
+        assert!(a.lsp_mode_enabled_for(id));
+        a.apply(Action::Insert("b".into()));
+        assert!(
+            changed_rx.try_recv().is_ok(),
+            "lsp-mode on should re-emit LspDocumentChanged"
+        );
+    }
+
+    #[test]
     fn lsp_mode_off_gates_request_entry_points_with_info_echo() {
         // M.5.4: `lsp-mode` off means LSP request entry points
         // bail with a discoverable echo (so users don't think

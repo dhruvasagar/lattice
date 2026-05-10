@@ -13,6 +13,8 @@
 //! hover popups -- hover content's links are typically external
 //! URLs we don't follow internally.
 
+use lattice_config::OptionOverrideSet;
+
 use crate::{CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind};
 
 pub struct HoverMode;
@@ -29,6 +31,19 @@ impl Mode for HoverMode {
     }
     fn kind(&self) -> ModeKind {
         ModeKind::Minor
+    }
+    fn options(&self) -> OptionOverrideSet {
+        // Bug 4: hover popups are width-constrained (cursor-
+        // anchored, capped at ~80 cells); long markdown bodies
+        // need to wrap or they overflow horizontally with
+        // no horizontal scroll path. ReadOnly is implied by the
+        // popup not having user-typed-into semantics, but we
+        // don't contribute it here -- markdown-mode (the major)
+        // doesn't either, and the popup display path doesn't
+        // route edits in. Future polish if needed.
+        lattice_config::overrides! {
+            lattice_config::Wrap = true,
+        }
     }
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
@@ -50,5 +65,13 @@ mod tests {
         assert_eq!(HoverMode.id(), HoverMode::mode_id());
         assert_eq!(HoverMode::mode_id().as_str(), "hover-mode");
         assert_eq!(HoverMode.kind(), ModeKind::Minor);
+    }
+
+    #[test]
+    fn contributes_wrap() {
+        // Bug 4: hover popups are width-constrained; long
+        // markdown bodies need to wrap.
+        let opts = HoverMode.options();
+        assert_eq!(opts.iter().count(), 1, "expected Wrap");
     }
 }

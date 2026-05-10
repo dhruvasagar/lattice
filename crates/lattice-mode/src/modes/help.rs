@@ -38,8 +38,16 @@ impl Mode for HelpMode {
         ModeKind::Minor
     }
     fn options(&self) -> OptionOverrideSet {
+        // Bug 4: long help bodies (markdown paragraphs, doc
+        // comments rendered into popups) should wrap at the
+        // pane / popup width rather than overflow horizontally.
+        // Help-mode contributes `Wrap = true` so any buffer
+        // wearing it -- in-pane help, popup-help, hover --
+        // wraps automatically. The default `Wrap = false`
+        // stays correct for code documents.
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
+            lattice_config::Wrap = true,
         }
     }
     fn required_capabilities(&self) -> CapabilitySet {
@@ -62,6 +70,16 @@ mod tests {
         assert_eq!(HelpMode.id(), HelpMode::mode_id());
         assert_eq!(HelpMode::mode_id().as_str(), "help-mode");
         assert_eq!(HelpMode.kind(), ModeKind::Minor);
+    }
+
+    #[test]
+    fn contributes_read_only_and_wrap() {
+        // Bug 4: help-mode contributes Wrap = true so long
+        // help bodies (markdown paragraphs, doc comments)
+        // wrap at the pane / popup width rather than
+        // overflowing horizontally.
+        let opts = HelpMode.options();
+        assert_eq!(opts.iter().count(), 2, "expected ReadOnly + Wrap");
     }
 
     #[test]

@@ -1849,6 +1849,19 @@ graceful error handling per CLAUDE.md.
   removed from both `Event` and `EventKind`; remaining
   built-in events stay until a follow-up cleanup migrates
   them.
+- M.5.6 -- ✅ landed. Diagnostic rendering gate on
+  `lsp-mode`. Three render sites consult
+  `lsp_mode_enabled_for(active_buffer)` and skip when the
+  gate is closed: `severity_for_line` (gutter glyph),
+  `diagnostics_on_line` (inline underline overlay),
+  `active_lsp_segment` (modeline `[lsp:<server>]` badge).
+  The `DiagnosticsLayer` keeps storing data the
+  supervisor's per-server fan-in pumps in; the renderer
+  pretends none exists for the gated buffer. LSP
+  completion candidate generation was already gated in
+  M.5.4 (insert-mode + explicit `:complete` both
+  short-circuit), so this slice needed no further
+  completion-side code.
 - M.5.5 -- ✅ landed. Document sync gate on `lsp-mode`.
   `lattice-lsp::events::LspDocumentChanged` (typed event,
   `register_event!`-registered) replaces the per-actor

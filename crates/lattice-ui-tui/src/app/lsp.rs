@@ -78,6 +78,28 @@ impl App {
             .unwrap_or(false)
     }
 
+    /// M.5.4: shared gate for every LSP request entry point
+    /// (hover / definition / completion / format / rename /
+    /// code-action / symbols / signature / references). Returns
+    /// `true` when `lsp-mode` is active on the current document;
+    /// callers early-return on `false`. A single echo surfaces
+    /// the gate state so users discover the mode -- silent gates
+    /// are a documented anti-pattern when an editor's defaults
+    /// the user expects (`K`, `gd`) suddenly do nothing.
+    ///
+    /// The echo level is `Info` (not `Warn`) -- gated state is
+    /// expected user-controlled, not a misconfiguration.
+    fn check_lsp_mode_gate(&mut self) -> bool {
+        if self.lsp_mode_enabled_for(self.document_buffer_id) {
+            return true;
+        }
+        self.set_message(
+            EchoLevel::Info,
+            "lsp-mode disabled for this buffer (`:lsp-mode` to enable)".to_string(),
+        );
+        false
+    }
+
     /// `K` (Phase 4.2.b). Send `textDocument/hover` to every LSP
     /// server attached to the active document; the spawned task
     /// awaits the actor's response on the LSP runtime, so the
@@ -105,9 +127,15 @@ impl App {
             return;
         }
         // First K -- fire a fresh hover request. Cancel any
-        // in-flight first.
+        // in-flight first. (Cancel-stale-work runs before the
+        // M.5.4 gate so the prior request's relay loop sees the
+        // flip even when the gate is now closed.)
         if let Some(token) = self.pending_hover_token.take() {
             token.cancel();
+        }
+        // M.5.4: lsp-mode gate.
+        if !self.check_lsp_mode_gate() {
+            return;
         }
 
         // Resolve the active buffer's URI. No URI = no LSP for
@@ -484,6 +512,13 @@ impl App {
     /// are dropped.
     pub(super) fn do_lsp_insert_completion_request(&mut self) {
         const MAX_LSP_ITEMS: usize = 500;
+        // M.5.4: lsp-mode gate. Insert-mode is high-frequency;
+        // we suppress the echo for completion specifically (the
+        // user is typing, not invoking a discrete command) by
+        // checking the mode without firing the gate's echo.
+        if !self.lsp_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
         if let Some(token) = self.pending_insert_completion_lsp_token.take() {
             token.cancel();
         }
@@ -1389,6 +1424,11 @@ impl App {
     /// priority server advertising the trigger; apply the returned
     /// edits as one undo unit.
     pub(super) fn do_lsp_on_type_formatting_request(&mut self, trigger: char) {
+        // M.5.4: lsp-mode gate. Insert-mode trigger; silent
+        // (same shape as completion).
+        if !self.lsp_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
         let Some(uri) = self
             .buffer_uris
             .get(&self.document_buffer_id)
@@ -1464,6 +1504,10 @@ impl App {
     pub(super) fn do_lsp_rename_request(&mut self, new_name: &str) {
         if let Some(token) = self.pending_rename_token.take() {
             token.cancel();
+        }
+        // M.5.4: lsp-mode gate.
+        if !self.check_lsp_mode_gate() {
+            return;
         }
         let Some(uri) = self
             .buffer_uris
@@ -1826,6 +1870,10 @@ impl App {
         }
         // Browse-style; not a tag-intent drill-down.
         self.pending_tag_origin = None;
+        // M.5.4: lsp-mode gate (after cancel-stale-work).
+        if !self.check_lsp_mode_gate() {
+            return;
+        }
         let Some(uri) = self
             .buffer_uris
             .get(&self.document_buffer_id)
@@ -2047,6 +2095,10 @@ impl App {
         }
         // Browse-style; not a tag-intent drill-down.
         self.pending_tag_origin = None;
+        // M.5.4: lsp-mode gate (after cancel-stale-work).
+        if !self.check_lsp_mode_gate() {
+            return;
+        }
         let Some(uri) = self
             .buffer_uris
             .get(&self.document_buffer_id)
@@ -2217,6 +2269,10 @@ impl App {
         if let Some(token) = self.pending_format_token.take() {
             token.cancel();
         }
+        // M.5.4: lsp-mode gate (after cancel-stale-work).
+        if !self.check_lsp_mode_gate() {
+            return;
+        }
         let Some(uri) = self
             .buffer_uris
             .get(&self.document_buffer_id)
@@ -2386,6 +2442,10 @@ impl App {
         }
         // Outline browse; not a tag-intent drill-down.
         self.pending_tag_origin = None;
+        // M.5.4: lsp-mode gate (after cancel-stale-work).
+        if !self.check_lsp_mode_gate() {
+            return;
+        }
         let Some(uri) = self
             .buffer_uris
             .get(&self.document_buffer_id)
@@ -2456,6 +2516,10 @@ impl App {
         }
         // Workspace search browse; not a tag-intent drill-down.
         self.pending_tag_origin = None;
+        // M.5.4: lsp-mode gate (after cancel-stale-work).
+        if !self.check_lsp_mode_gate() {
+            return;
+        }
         // Workspace symbol is workspace-scoped, so we fan out
         // over EVERY server the supervisor has running -- not
         // just servers attached to the current buffer.
@@ -2591,6 +2655,12 @@ impl App {
         if let Some(token) = self.pending_signature_help_token.take() {
             token.cancel();
         }
+        // M.5.4: lsp-mode gate (after cancel-stale-work).
+        // Insert-mode auto-trigger; silent (matches completion /
+        // on-type-format).
+        if !self.lsp_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
         let Some(uri) = self
             .buffer_uris
             .get(&self.document_buffer_id)
@@ -2693,6 +2763,13 @@ impl App {
     pub(super) fn do_lsp_nav_request(&mut self, kind: LspNavKind) {
         if let Some(token) = self.pending_definition_token.take() {
             token.cancel();
+        }
+        // M.5.4: lsp-mode gate (after cancel-stale-work).
+        // Keymap-driven (`gd` / `gD` / `gy` / `gI`); echo so
+        // users find out why nothing happened when lsp-mode is
+        // off.
+        if !self.check_lsp_mode_gate() {
+            return;
         }
         let Some(uri) = self
             .buffer_uris
@@ -2890,6 +2967,10 @@ impl App {
         }
         // Browse-style; not a tag-intent drill-down.
         self.pending_tag_origin = None;
+        // M.5.4: lsp-mode gate (after cancel-stale-work).
+        if !self.check_lsp_mode_gate() {
+            return;
+        }
         let Some(uri) = self
             .buffer_uris
             .get(&self.document_buffer_id)
@@ -3421,6 +3502,26 @@ mod tests {
     use crate::app::test_helpers::{app_with, seed_diags_at_lines};
 
     #[test]
+    fn lsp_mode_off_gates_request_entry_points_with_info_echo() {
+        // M.5.4: `lsp-mode` off means LSP request entry points
+        // bail with a discoverable echo (so users don't think
+        // their bindings are broken). Verified for the
+        // ex-command-driven path; keymap-driven (insert-mode
+        // completion / signature) are silent by design.
+        let mut a = app_with("xx", 10);
+        // Default: no auto-activation (no path).
+        assert!(!a.lsp_mode_enabled_for(a.document_buffer_id));
+        a.apply(Action::LspHoverRequest);
+        let msg = a.last_message.as_ref().expect("gate echo");
+        assert_eq!(msg.level, EchoLevel::Info);
+        assert!(
+            msg.text.contains("lsp-mode disabled"),
+            "expected lsp-mode-disabled echo, got: {}",
+            msg.text
+        );
+    }
+
+    #[test]
     fn lsp_mode_enabled_for_returns_false_by_default() {
         // M.5.0: a freshly-opened buffer has no `lsp-mode`
         // activated yet. Auto-activation lands in M.5.2 via the
@@ -3575,7 +3676,11 @@ mod tests {
     fn lsp_hover_request_with_no_uri_echoes_no_lsp_attached() {
         // Initial document has no path, so no URI mapping; the
         // request should set an info message and not panic.
+        // M.5.4: gate is checked first, so we activate lsp-mode
+        // explicitly to test the URI-bail path the original test
+        // was probing.
         let mut a = app_with("xx", 10);
+        a.toggle_mode_by_name("lsp-mode");
         a.apply(Action::LspHoverRequest);
         let msg = a.last_message.as_ref().expect("echo");
         assert_eq!(msg.level, EchoLevel::Info);
@@ -3772,6 +3877,7 @@ mod tests {
     #[test]
     fn lsp_definition_request_with_no_uri_echoes_no_lsp_attached() {
         let mut a = app_with("xx", 10);
+        a.toggle_mode_by_name("lsp-mode");
         a.apply(Action::LspDefinitionRequest);
         let msg = a.last_message.as_ref().expect("echo");
         assert_eq!(msg.level, EchoLevel::Info);
@@ -3781,6 +3887,7 @@ mod tests {
     #[test]
     fn lsp_declaration_request_routes_through_unified_nav_dispatch() {
         let mut a = app_with("xx", 10);
+        a.toggle_mode_by_name("lsp-mode");
         a.apply(Action::LspDeclarationRequest);
         // No URI mapped, same "no LSP server" guard fires.
         let msg = a.last_message.as_ref().expect("echo");
@@ -3791,6 +3898,7 @@ mod tests {
     #[test]
     fn lsp_type_definition_request_routes_through_unified_nav_dispatch() {
         let mut a = app_with("xx", 10);
+        a.toggle_mode_by_name("lsp-mode");
         a.apply(Action::LspTypeDefinitionRequest);
         let msg = a.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
@@ -3799,6 +3907,7 @@ mod tests {
     #[test]
     fn lsp_implementation_request_routes_through_unified_nav_dispatch() {
         let mut a = app_with("xx", 10);
+        a.toggle_mode_by_name("lsp-mode");
         a.apply(Action::LspImplementationRequest);
         let msg = a.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
@@ -3852,6 +3961,7 @@ mod tests {
     #[test]
     fn lsp_references_request_with_no_uri_echoes_no_lsp_attached() {
         let mut a = app_with("xx", 10);
+        a.toggle_mode_by_name("lsp-mode");
         a.apply(Action::LspReferencesRequest);
         let msg = a.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
@@ -4923,6 +5033,9 @@ mod tests {
         // so a subsequent picker accept (multi-result) pushes
         // the right entry onto the tag stack.
         let mut a = app_with("foo bar\nbaz\n", 10);
+        // M.5.4: gate fires before tag-origin capture; activate
+        // lsp-mode so the request gets that far.
+        a.toggle_mode_by_name("lsp-mode");
         a.cursor = Position::new(0, 1);
         // Manually set a uri so do_lsp_nav_request gets past
         // the "no LSP server" guard.

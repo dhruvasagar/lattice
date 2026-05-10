@@ -1849,6 +1849,24 @@ graceful error handling per CLAUDE.md.
   removed from both `Event` and `EventKind`; remaining
   built-in events stay until a follow-up cleanup migrates
   them.
+- M.5.3.c -- ✅ landed. `:describe-events` ex-command
+  introspection. `Effect::DescribeEvents` /
+  `Effect::DescribeEvent { name }` register as
+  `ex:describe-events` / `ex:describe-event` with
+  user-facing aliases. `App::do_describe_events` walks
+  `EVENT_DESCRIPTORS`, groups by source crate (BTreeMap for
+  stable presentation), sorts entries by name within each
+  group, renders through `display_buffer` under
+  `BufferDisplayCategory::HelpList`. Per-event view
+  (`:describe-event <name>`) routes through
+  `BufferDisplayCategory::HelpDescribe`; unknown names
+  surface a one-line error echo without opening a popup.
+  Each row links via `[name](event:NAME)` -- the
+  `event:` URL scheme is reserved for a future follow-up
+  that hooks `<CR>`-on-link to dispatch
+  `:describe-event NAME`. Tests verify the catalogue lists
+  all three M.5.3.b LSP events grouped under
+  `lattice-lsp`.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

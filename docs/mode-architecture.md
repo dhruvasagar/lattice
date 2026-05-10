@@ -1648,13 +1648,21 @@ graceful error handling per CLAUDE.md.
     is orthogonal to which mode the buffer carries -- a buffer
     can be moved between display strategies without changing its
     mode.
-  - **Deferred**: replacing the helper-side `match buffer.kind`
+  - **Popup slot rename**. `App.help_buffer` -> `App.popup_buffer`.
+    The slot is now named to reflect its popup-generic intent;
+    the field type stays `Option<HelpBuffer>` for one more slice.
+    Recorded as the documented contract: this is the popup's
+    content, not a help-only field.
+  - **Deferred**: (a) replacing the helper-side `match buffer.kind`
     in `draw_pane_content` / `pane_status_label` with mode-
     contributed draw fns (each major mode registers a renderer
-    at boot); decoupling `App.help_buffer` slot from the
-    `HelpBuffer` type so any buffer kind can be the popup
-    content; the in-pane vs popup display preference for help
-    buffers (today centred-popup is hard-wired in App methods).
+    at boot); (b) generalising `App.popup_buffer`'s type from
+    `Option<HelpBuffer>` to `Option<BufferId>` (popup buffers
+    participate in `app.buffers` like every other buffer, with
+    `BufferFlags { listed: false, hidden: true }` for transient
+    popups; dismiss removes them from the registry); (c) the
+    in-pane vs popup display preference for help buffers
+    (today centred-popup is hard-wired in App methods).
 
 ### 10.1 Why LSP is the right canary (M.5 first among "real" mode work)
 

@@ -366,6 +366,42 @@ crate::options! {
     /// pattern matches hundreds of lines, not thousands).
     #[name("picker.grep.max-hits")]
     pub PickerGrepMaxHits: i64 = 2000;
+
+    /// Whether picker MRU (frecency) scoring fires at all.
+    /// `false` disables both the bonus snapshot on
+    /// picker-open and the record-on-accept path -- pickers
+    /// rank by pure match score, ignore prior usage.
+    /// Persistence keeps working independently
+    /// (`picker.mru.persist`); flipping enabled back on
+    /// resumes ranking using whatever's still in the cache.
+    #[name("picker.mru.enabled")]
+    pub PickerMruEnabled: bool = true;
+
+    /// Recency half-life for the frecency formula, in
+    /// **days**. Stored as `i64` so `:set
+    /// picker.mru.recency-half-life-days=14` Just Works
+    /// through the parse-int path; the picker's
+    /// `Duration` machinery converts. Smaller values bias
+    /// strongly toward "today's choices"; larger values
+    /// keep historical usage relevant.
+    #[name("picker.mru.recency-half-life-days")]
+    pub PickerMruRecencyHalfLifeDays: i64 = 7;
+
+    /// Maximum number of MRU entries per (source_id) namespace.
+    /// On insert past this cap the lowest-frecency entry in
+    /// the namespace is evicted (prescient-style). Larger
+    /// values keep long-tail usage history; smaller values
+    /// keep the cache lean.
+    #[name("picker.mru.cap-per-namespace")]
+    pub PickerMruCapPerNamespace: i64 = 1000;
+
+    /// Whether the MRU index persists to disk between runs.
+    /// `false` keeps MRU in-memory only; helpful for ephemeral
+    /// sessions or for users who deliberately want a clean
+    /// slate each launch. Default `true` preserves vertico-
+    /// style "yesterday's picks still float."
+    #[name("picker.mru.persist")]
+    pub PickerMruPersist: bool = true;
 }
 
 // M.2.0c: `CoreOptions` struct and `register_core_options`

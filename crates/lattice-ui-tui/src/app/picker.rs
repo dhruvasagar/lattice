@@ -290,6 +290,14 @@ impl App {
     /// is unacceptable. Slice 14d (event bus + typed options)
     /// can elevate to a debounced background write.
     fn persist_picker_mru_best_effort(&self) {
+        let persist = self
+            .config
+            .get_typed::<lattice_config::core_options::PickerMruPersist>()
+            .map(|b| *b)
+            .unwrap_or(true);
+        if !persist {
+            return;
+        }
         let Some(path) = self.picker_mru_path.as_ref() else {
             return;
         };
@@ -641,20 +649,36 @@ impl App {
     ) {
         let title = source.clone();
         // MRU bonus snapshot -- per-keystroke refilter reads
-        // cached bonuses, not the live MRU HashMap.
+        // cached bonuses, not the live MRU HashMap. Honors
+        // `picker.mru.enabled` (skip bonuses entirely when
+        // off) and `picker.mru.recency-half-life-days`.
+        let mru_enabled = self
+            .config
+            .get_typed::<lattice_config::core_options::PickerMruEnabled>()
+            .map(|b| *b)
+            .unwrap_or(true);
         let now = std::time::SystemTime::now();
-        let bonuses: Vec<f64> = pairs
-            .iter()
-            .map(|(_cand, routing)| match lattice_picker::routing_identity(routing) {
-                Some(id) => self.picker_mru.frecency_bonus(
-                    &source,
-                    &id,
-                    now,
-                    lattice_picker::DEFAULT_HALF_LIFE,
-                ),
-                None => 0.0,
-            })
-            .collect();
+        let half_life = self
+            .config
+            .get_typed::<lattice_config::core_options::PickerMruRecencyHalfLifeDays>()
+            .map(|d| std::time::Duration::from_secs((*d).max(1) as u64 * 24 * 60 * 60))
+            .unwrap_or(lattice_picker::DEFAULT_HALF_LIFE);
+        let bonuses: Vec<f64> = if mru_enabled {
+            pairs
+                .iter()
+                .map(|(_cand, routing)| match lattice_picker::routing_identity(routing) {
+                    Some(id) => self.picker_mru.frecency_bonus(
+                        &source,
+                        &id,
+                        now,
+                        half_life,
+                    ),
+                    None => 0.0,
+                })
+                .collect()
+        } else {
+            vec![0.0; pairs.len()]
+        };
         let mut picker = lattice_picker::Picker::new(
             title,
             Self::picker_source_for(&source),
@@ -844,8 +868,17 @@ impl App {
             // outcome handler echoes an error mid-mutation
             // (e.g. file no longer exists). Identity may be
             // None for drift-prone routing payloads -- the
-            // record call silently skips those.
-            if let Some(identity) = lattice_picker::routing_identity(&routing) {
+            // record call silently skips those. `picker.mru.enabled`
+            // gates the whole path so users who disable MRU
+            // see no recording either.
+            let mru_enabled = self
+                .config
+                .get_typed::<lattice_config::core_options::PickerMruEnabled>()
+                .map(|b| *b)
+                .unwrap_or(true);
+            if mru_enabled
+                && let Some(identity) = lattice_picker::routing_identity(&routing)
+            {
                 self.picker_mru.record(&source_id_owned, &identity);
                 self.persist_picker_mru_best_effort();
             }
@@ -1667,6 +1700,31 @@ mod tests {
             }
         };
         assert_eq!(top, first_id, "previously-accepted file should float to top");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Slice 14d: `picker.mru.enabled = false` short-circuits
+    /// both the bonus snapshot (every candidate gets 0.0) and
+    /// the record-on-accept path. After accepting a row, the
+    /// MRU index is unchanged.
+    #[test]
+    fn picker_mru_enabled_false_skips_record() {
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-mru-off-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("alpha.rs"), "").unwrap();
+        let mut app = app_with("hi\n", 5);
+        app.picker_mru_path = None;
+        // Disable MRU.
+        app.config
+            .parse_and_set_command("picker.mru.enabled=false")
+            .unwrap();
+        app.open_picker("files".into(), vec![tmp.display().to_string()]);
+        let _ = app.picker.as_ref().expect("picker open");
+        app.apply(Action::PickerAccept);
+        // With MRU off, nothing is recorded.
+        assert_eq!(app.picker_mru.len(), 0, "no records when MRU is off");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

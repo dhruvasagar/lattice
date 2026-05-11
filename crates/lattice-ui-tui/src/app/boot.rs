@@ -366,20 +366,43 @@ impl App {
         //   - File present but undecodable / version mismatch:
         //     log a warning and start fresh (losing MRU is
         //     annoying, refusing to boot is worse).
-        let picker_mru_path = lattice_picker::default_persist_path();
+        // Honor `picker.mru.persist` at boot: when disabled,
+        // skip the load step entirely (start fresh) and
+        // clear the path so subsequent saves no-op.
+        let persist = config
+            .get_typed::<lattice_config::core_options::PickerMruPersist>()
+            .map(|b| *b)
+            .unwrap_or(true);
+        let picker_mru_path = if persist {
+            lattice_picker::default_persist_path()
+        } else {
+            None
+        };
+        // Read the cap from config so users who want
+        // long-tail history (or a leaner cache) can tune.
+        let mru_cap = config
+            .get_typed::<lattice_config::core_options::PickerMruCapPerNamespace>()
+            .map(|n| (*n).max(1) as usize)
+            .unwrap_or(lattice_picker::DEFAULT_CAP_PER_NAMESPACE);
         let picker_mru = match &picker_mru_path {
             Some(path) => match lattice_picker::PickerMruIndex::load_from(path) {
-                Ok(Some(idx)) => idx,
-                Ok(None) => lattice_picker::PickerMruIndex::new(),
+                Ok(Some(idx)) => {
+                    // Loaded indexes carry their own cap; we
+                    // don't override mid-life. Future:
+                    // re-cap on config change via the option
+                    // cascade.
+                    idx
+                }
+                Ok(None) => lattice_picker::PickerMruIndex::with_cap(mru_cap),
                 Err(e) => {
                     eprintln!(
                         "lattice: discarding corrupt MRU cache at {}: {e}",
                         path.display(),
                     );
-                    lattice_picker::PickerMruIndex::new()
+                    lattice_picker::PickerMruIndex::with_cap(mru_cap)
                 }
             },
-            None => lattice_picker::PickerMruIndex::new(),
+            None => lattice_picker::PickerMruIndex::with_cap(mru_cap),
         };
         completion_registry.register_generator(
             "gen:picker-sources",

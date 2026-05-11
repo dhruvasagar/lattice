@@ -115,7 +115,7 @@ mod motions;
 mod oil;
 mod operators;
 mod options;
-mod picker;
+pub(crate) mod picker;
 mod popup;
 mod search;
 mod state;

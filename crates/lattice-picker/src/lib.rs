@@ -246,6 +246,14 @@ pub struct Picker {
     /// aborted pick doesn't leave the user on a random previewed
     /// buffer. `None` for non-buffer pickers.
     pub preview_origin: Option<u32>,
+    /// Picker-registry source id that seated this picker. `Some`
+    /// when the picker was seated via the trait-driven path
+    /// (`:picker <source>`); `None` for legacy imperative
+    /// pickers (`:b`, `:lsp-log`, multi-result LSP locations).
+    /// `do_picker_accept` reads this to decide whether to
+    /// delegate accept to the source's `PickerSourceGenerator`
+    /// or fall back to the legacy per-routing dispatch.
+    pub source_id: Option<String>,
 }
 
 impl Picker {
@@ -265,6 +273,7 @@ impl Picker {
             raw: Vec::new(),
             routing_meta: Vec::new(),
             preview_origin: None,
+            source_id: None,
         }
     }
 

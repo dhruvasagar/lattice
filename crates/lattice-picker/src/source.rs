@@ -40,7 +40,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use lattice_completion::candidate::RawCandidate;
-use lattice_grammar::args::{Args, ArgSpec};
+use lattice_grammar::args::ArgSpec;
 use tokio::sync::mpsc;
 
 use crate::RoutingPayload;
@@ -91,7 +91,32 @@ impl PickerSourceSpec {
 /// wins).
 #[derive(Debug, Default)]
 pub struct PickerRegistry {
-    sources: HashMap<&'static str, PickerSourceSpec>,
+    sources: HashMap<&'static str, RegistryEntry>,
+}
+
+/// Registry entry: either metadata-only (slice 12 path,
+/// retained for tab-completion of source ids whose generator
+/// isn't yet wired) or metadata + generator (the canonical
+/// slice 13 path -- dispatch resolves the generator from
+/// here).
+///
+/// Metadata-only entries land while the App still owns the
+/// imperative `open_*_picker` dispatch table; full
+/// generator entries flow through the trait-driven path. As
+/// each source migrates to a `PickerSourceGenerator` impl
+/// the registry transitions from metadata-only to full.
+pub struct RegistryEntry {
+    pub spec: PickerSourceSpec,
+    pub generator: Option<std::sync::Arc<dyn PickerSourceGenerator>>,
+}
+
+impl std::fmt::Debug for RegistryEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegistryEntry")
+            .field("spec", &self.spec.id)
+            .field("has_generator", &self.generator.is_some())
+            .finish()
+    }
 }
 
 impl PickerRegistry {
@@ -99,12 +124,55 @@ impl PickerRegistry {
         Self::default()
     }
 
+    /// Register a metadata-only entry. Used for sources whose
+    /// imperative App-side `open_*_picker` method still drives
+    /// dispatch (slice 12 path). Migrates to
+    /// [`Self::register_generator`] when the source's
+    /// `PickerSourceGenerator` impl lands.
     pub fn register(&mut self, spec: PickerSourceSpec) {
-        self.sources.insert(spec.id, spec);
+        let id = spec.id;
+        self.sources
+            .insert(id, RegistryEntry { spec, generator: None });
+    }
+
+    /// Register a source with both metadata and a generator
+    /// trait object. The spec is read from `generator.spec()`
+    /// so callers don't repeat themselves. Canonical path for
+    /// fully trait-driven sources.
+    pub fn register_generator(
+        &mut self,
+        generator: std::sync::Arc<dyn PickerSourceGenerator>,
+    ) {
+        let spec = generator.spec().clone();
+        let id = spec.id;
+        self.sources.insert(
+            id,
+            RegistryEntry {
+                spec,
+                generator: Some(generator),
+            },
+        );
     }
 
     pub fn get(&self, id: &str) -> Option<&PickerSourceSpec> {
+        self.sources.get(id).map(|e| &e.spec)
+    }
+
+    /// Borrow the full registry entry (metadata + generator
+    /// slot). Used by the dispatcher to fetch both pieces at
+    /// once during the migration window.
+    pub fn entry(&self, id: &str) -> Option<&RegistryEntry> {
         self.sources.get(id)
+    }
+
+    /// Look up the registered generator for a source id.
+    /// `None` if the id isn't registered, or if it's a
+    /// metadata-only entry (slice 12 / pre-migration source).
+    pub fn generator(
+        &self,
+        id: &str,
+    ) -> Option<&std::sync::Arc<dyn PickerSourceGenerator>> {
+        self.sources.get(id).and_then(|e| e.generator.as_ref())
     }
 
     /// Walk every registered source in id-sorted order.
@@ -113,7 +181,7 @@ impl PickerRegistry {
     pub fn iter(&self) -> impl Iterator<Item = (&'static str, &PickerSourceSpec)> + '_ {
         let mut ids: Vec<&'static str> = self.sources.keys().copied().collect();
         ids.sort_unstable();
-        ids.into_iter().map(move |id| (id, &self.sources[id]))
+        ids.into_iter().map(move |id| (id, &self.sources[id].spec))
     }
 
     pub fn ids(&self) -> impl Iterator<Item = &'static str> + '_ {
@@ -219,10 +287,17 @@ pub trait PickerSourceGenerator: Send + Sync {
     /// one was required, args validation failure) return
     /// `Err`; the host echoes the error and leaves the
     /// picker closed.
+    ///
+    /// `args` is the tokens the user typed after the source
+    /// id (`:picker files /tmp/foo` -> `&["/tmp/foo"]`).
+    /// Sources interpret them against their declared
+    /// [`PickerSourceSpec::args_schema`]; the grammar layer
+    /// doesn't pre-validate because per-source arg shapes
+    /// vary too much.
     fn init(
         &self,
         ctx: &PickerContext<'_>,
-        args: &Args,
+        args: &[String],
     ) -> SourceResult<PickerInitResult>;
 
     /// Translate the user's chosen routing payload into a
@@ -312,7 +387,7 @@ mod tests {
         fn init(
             &self,
             _ctx: &PickerContext<'_>,
-            _args: &Args,
+            _args: &[String],
         ) -> SourceResult<PickerInitResult> {
             Ok(PickerInitResult::Inline(Vec::new()))
         }

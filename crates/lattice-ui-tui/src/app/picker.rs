@@ -31,6 +31,214 @@ use crate::buffers::BufferId;
 use super::{App, EchoLevel};
 
 impl App {
+    /// Build the snapshot the picker primitive hands to source
+    /// generators on each `:picker <source>` invocation.
+    /// Caller holds `snap` for the duration of the synchronous
+    /// `init` call -- the returned `PickerContext` borrows from
+    /// both `self` and `snap`.
+    ///
+    /// Owned vec fields (`buffers`, `marks`, `registers`,
+    /// `position_history`) translate from the App's richer
+    /// types into the picker's renderer-agnostic views in this
+    /// single pass. Total allocation is O(N) over each at
+    /// trivial sizes (<100 buffers, <26 marks, <40 registers,
+    /// <100 history entries).
+    pub fn build_picker_context<'a>(
+        &'a self,
+        snap: &'a lattice_runtime::DocumentSnapshot,
+    ) -> lattice_picker::PickerContext<'a> {
+        use lattice_picker::{
+            ActiveBufferSnapshot, BufferEntry, PickerContext, PositionEntry, PositionSource,
+        };
+
+        let active_id = self.active_pane_buffer_id();
+        let path: Option<&std::path::Path> = snap.path.as_ref().map(|p| p.as_path());
+        let language = Some(lattice_syntax::Lang::detect_from_path(path).label());
+        // Selection: the most recent visual-mode range. While in
+        // Command mode (the only state from which `:picker ...` can
+        // fire) the cursor is not in Visual, so `last_visual`
+        // captures the prior selection -- exactly what `:grep`
+        // would want as its default pattern when invoked after
+        // selecting a word.
+        let selection = self
+            .last_visual
+            .as_ref()
+            .map(|v| (v.anchor, v.head));
+
+        let active_buffer = ActiveBufferSnapshot {
+            buffer_id: active_id.0,
+            path,
+            language,
+            cursor: self.cursor,
+            selection,
+            buffer: &snap.buffer,
+        };
+
+        let workspace_root = self.picker_workspace_root_path(snap);
+
+        // Buffer registry -> picker BufferEntry view.
+        let buffers: Vec<BufferEntry> = self
+            .buffers
+            .iter()
+            .map(|entry| picker_buffer_entry(entry, &self.buffer_locals))
+            .collect();
+
+        // Marks: HashMap<char, Position> -> Vec<(char, Position)>.
+        let mut marks: Vec<(char, lattice_protocol::Position)> =
+            self.marks.iter().map(|(c, p)| (*c, *p)).collect();
+        marks.sort_by_key(|(c, _)| *c);
+
+        // Registers: unnamed + named, both as (name, preview).
+        let mut registers: Vec<(String, String)> = Vec::new();
+        if let Some(r) = &self.unnamed_register {
+            registers.push(("\"".into(), super::preview_register(&r.content)));
+        }
+        let mut named: Vec<(super::Register, String)> = self
+            .registers
+            .iter()
+            .map(|(k, v)| (*k, super::preview_register(&v.content)))
+            .collect();
+        named.sort_by_key(|(k, _)| match k {
+            super::Register::Named(c) => format!("a{c}"),
+            super::Register::Numbered(n) => format!("b{n}"),
+            super::Register::System => "z+".into(),
+            _ => "z".into(),
+        });
+        for (key, preview) in named {
+            let name = match key {
+                super::Register::Named(c) => c.to_string(),
+                super::Register::Numbered(n) => n.to_string(),
+                super::Register::System => "+".into(),
+                _ => "?".into(),
+            };
+            registers.push((name, preview));
+        }
+
+        // Position history: translate from the App's richer
+        // PositionEntry (which carries BufferKind) into the
+        // picker's renderer-agnostic view.
+        let position_history: Vec<PositionEntry> = self
+            .position_history
+            .iter()
+            .map(|e| PositionEntry {
+                buffer_id: e.buffer_id.0,
+                line: e.position.line,
+                col: e.position.byte,
+                source: match e.source {
+                    super::PositionSource::AutoJump => PositionSource::AutoJump,
+                    super::PositionSource::ExplicitMark => PositionSource::ExplicitMark,
+                    super::PositionSource::PluginPush => PositionSource::PluginPush,
+                    super::PositionSource::NamedMark(c) => PositionSource::NamedMark(c),
+                },
+            })
+            .collect();
+
+        PickerContext {
+            active_buffer,
+            workspace_root,
+            recent_files: &self.recent_files,
+            position_history,
+            buffers,
+            marks,
+            registers,
+        }
+    }
+
+    /// Translate a picker source's typed outcome into App-state
+    /// mutation. Single dispatch site -- adding a new outcome
+    /// variant requires editing exactly this match.
+    pub(super) fn apply_picker_outcome(
+        &mut self,
+        outcome: lattice_picker::PickerAcceptOutcome,
+    ) {
+        use lattice_picker::PickerAcceptOutcome::*;
+        match outcome {
+            OpenFile { path } => {
+                self.prepare_pane_for_picker_result();
+                self.do_edit(Some(path), false);
+            }
+            SwitchBuffer { buffer_id } => {
+                let id = BufferId(buffer_id);
+                if id != self.active_pane_buffer_id() {
+                    self.prepare_pane_for_picker_result();
+                    self.activate_buffer(id);
+                }
+            }
+            JumpInBuffer { buffer_id, line, col } => {
+                self.push_position_history(self.cursor, super::PositionSource::PluginPush);
+                let id = BufferId(buffer_id);
+                if id != self.active_pane_buffer_id() {
+                    self.prepare_pane_for_picker_result();
+                    self.activate_buffer(id);
+                }
+                let snap = self.document.snapshot();
+                let line = line.min(super::last_addressable_line(&snap.buffer));
+                let len = super::line_byte_len(&snap.buffer, line);
+                let col = col.min(len);
+                self.cursor = lattice_protocol::Position::new(line, col);
+            }
+            JumpToLocation { path, line, col } => {
+                self.prepare_pane_for_picker_result();
+                self.jump_to_file_line_col(&path, line, col);
+            }
+            OpenLspLog { server_id } => self.open_lsp_log_in_pane(&server_id),
+            OpenLspTraceLog { server_id } => self.open_lsp_trace_log_in_pane(&server_id),
+            NoOp => {}
+            // Outcome variants whose first emitting source lands
+            // with a later P.x slice. Each migration wires its
+            // own translation; until then the host echoes a
+            // clear "not yet wired" message so a misrouted
+            // outcome surfaces loudly in development.
+            JumpToMark { name } => self.set_message(
+                EchoLevel::Error,
+                format!("picker: JumpToMark `{name}` not yet wired (lands with marks picker)"),
+            ),
+            InvokeCommand { id, .. } => self.set_message(
+                EchoLevel::Error,
+                format!("picker: InvokeCommand `{id}` not yet wired (lands with command palette)"),
+            ),
+            PasteRegister { name } => self.set_message(
+                EchoLevel::Error,
+                format!("picker: PasteRegister `{name}` not yet wired (lands with registers picker)"),
+            ),
+            ExpandSnippet { id } => self.set_message(
+                EchoLevel::Error,
+                format!("picker: ExpandSnippet `{id}` not yet wired (lands with snippets picker)"),
+            ),
+            ApplyLspCodeAction { handle, index } => self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "picker: ApplyLspCodeAction handle={handle} idx={index} \
+                     not yet wired (lands with LSP picker migration)"
+                ),
+            ),
+            ApplyLspCompletion { index } => self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "picker: ApplyLspCompletion idx={index} \
+                     not yet wired (lands with LSP picker migration)"
+                ),
+            ),
+        }
+    }
+
+    /// Best-effort workspace root for picker sources.
+    /// Active document's parent if it has one; current working
+    /// directory otherwise; `.` if cwd resolution fails.
+    /// Returned owned so the context's `workspace_root` field
+    /// has a stable home regardless of fallback.
+    fn picker_workspace_root_path(
+        &self,
+        snap: &lattice_runtime::DocumentSnapshot,
+    ) -> std::path::PathBuf {
+        if let Some(arc) = snap.path.as_ref()
+            && let Some(parent) = arc.parent()
+        {
+            return parent.to_path_buf();
+        }
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    }
+
     /// Snapshot of every running LSP actor as picker rows.
     /// Built by reading the supervisor's `ArcSwap<SupervisorSnapshot>`,
     /// so the read is wait-free; the previous `try_lock`
@@ -209,22 +417,23 @@ impl App {
     /// activation becomes the real switch; on dismiss, the
     /// pane reverts to whatever buffer was active when the
     /// picker opened.
-    /// `:picker <source> [args]` -- canonical entry point that
-    /// dispatches by source id against the host's
-    /// `picker_registry`. Slice 12 wires the metadata-only
-    /// registry; slice 13 (the `PickerSourceGenerator` trait)
-    /// will collapse this `match source.as_str()` table into
-    /// registry-driven dispatch. Until then the table makes the
-    /// source/handler binding explicit and audit-able.
+    /// `:picker <source> [args]` -- canonical entry point.
+    /// Looks the source up in `picker_registry`, fetches its
+    /// `PickerSourceGenerator`, builds a `PickerContext`, and
+    /// dispatches `gen.init(...)`. Inline results seat the
+    /// picker immediately; async / streaming variants are
+    /// rejected with a clear echo until the first async source
+    /// (P.8 / P.9 LSP-flavored or `:picker grep`) migrates and
+    /// wires the spawn path.
     ///
-    /// Unknown source ids surface as an error echo listing the
-    /// registered ids so the user can recover without `:apropos`.
+    /// Unknown source ids surface an error echo listing every
+    /// registered id so the user can recover without `:apropos`.
     pub(super) fn open_picker(&mut self, source: String, args: Vec<String>) {
-        // Registry lookup first: catches typos before we hit the
-        // dispatch table. The two should agree -- if they ever
-        // diverge (registered without handler, or vice versa) the
-        // mismatch surfaces as a distinct echo below.
-        if self.picker_registry.get(&source).is_none() {
+        // Resolve generator from the registry. A registered
+        // entry without a generator (metadata-only legacy
+        // shape) surfaces a distinct echo so the drift is
+        // visible.
+        let Some(entry) = self.picker_registry.entry(&source) else {
             let known: Vec<&str> = self.picker_registry.ids().collect();
             let msg = if known.is_empty() {
                 format!("picker: unknown source `{source}` (no sources registered)")
@@ -236,23 +445,86 @@ impl App {
             };
             self.set_message(EchoLevel::Error, msg);
             return;
-        }
-        match source.as_str() {
-            "files" => {
-                let root = args.first().map(std::path::PathBuf::from);
-                self.open_file_picker(root);
+        };
+        let Some(generator) = entry.generator.clone() else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("picker: source `{source}` has no generator wired"),
+            );
+            return;
+        };
+
+        // Sync prelude: build the context against a fresh
+        // snapshot, call init, drop the borrow.
+        let snap = self.document.snapshot();
+        let ctx = self.build_picker_context(&snap);
+        let init_result = match generator.init(&ctx, &args) {
+            Ok(r) => r,
+            Err(e) => {
+                self.set_message(EchoLevel::Info, e);
+                return;
             }
-            "recent" => self.open_recent_files_picker(),
-            "buffers" => self.open_buffer_picker(),
-            other => {
-                // Registered metadata but no dispatch arm -- guard
-                // against drift between boot.rs's registry and this
-                // table.
+        };
+        drop(ctx);
+        drop(snap);
+
+        match init_result {
+            lattice_picker::PickerInitResult::Inline(pairs) => {
+                let title = source.clone();
+                let mut picker = lattice_picker::Picker::new(
+                    title,
+                    Self::picker_source_for(&source),
+                    Self::picker_action_for(&source),
+                );
+                picker.set_raw_candidates_with_routing(pairs);
+                // Stamp the source id so accept can resolve the
+                // generator and call `gen.accept(...)` instead
+                // of running the legacy per-routing dispatch.
+                picker.source_id = Some(source.clone());
+                // Preserve the buffer-switcher's preview-origin
+                // ergonomics: when the source is `buffers` the
+                // picker stashes the active buffer id so dismiss
+                // can restore it (alternate-buffer convention).
+                if source == "buffers" {
+                    picker.preview_origin = Some(self.active_pane_buffer_id().0);
+                }
+                self.picker = Some(picker);
+                // Active-pane preview for buffer switcher.
+                if source == "buffers" {
+                    self.preview_picker_selection();
+                }
+            }
+            lattice_picker::PickerInitResult::Future(_)
+            | lattice_picker::PickerInitResult::Stream(_) => {
                 self.set_message(
                     EchoLevel::Error,
-                    format!("picker: source `{other}` registered but no handler wired"),
+                    format!(
+                        "picker: async / streaming sources not yet wired (source `{source}` returned a Future / Stream)"
+                    ),
                 );
             }
+        }
+    }
+
+    /// Translate a first-party source id into the
+    /// `PickerSource` tag the picker primitive stores. The
+    /// tag is mostly informational today (refresh paths read
+    /// it); slice 13d will retire it entirely once every
+    /// source registers as a trait object.
+    fn picker_source_for(source: &str) -> lattice_picker::PickerSource {
+        match source {
+            "buffers" => lattice_picker::PickerSource::Buffers,
+            _ => lattice_picker::PickerSource::Files,
+        }
+    }
+
+    /// Translate a first-party source id into the
+    /// `PickerAction` tag. Retires alongside `picker_source_for`
+    /// once the trait-driven path is the only one.
+    fn picker_action_for(source: &str) -> lattice_picker::PickerAction {
+        match source {
+            "buffers" => lattice_picker::PickerAction::SwitchToBuffer,
+            _ => lattice_picker::PickerAction::OpenFile,
         }
     }
 
@@ -475,6 +747,31 @@ impl App {
                 return;
             }
         };
+        // Trait-driven path: when the picker was seated via
+        // `:picker <source>` (slice 13), the source id is
+        // stamped on the Picker. Resolve the generator, call
+        // its `accept`, and translate the typed outcome.
+        if let Some(source_id) = picker.source_id.as_deref()
+            && let Some(generator) = self.picker_registry.generator(source_id).cloned()
+        {
+            let snap = self.document.snapshot();
+            let ctx = self.build_picker_context(&snap);
+            let outcome = match generator.accept(&ctx, &routing) {
+                Ok(o) => o,
+                Err(e) => {
+                    self.set_message(EchoLevel::Error, e);
+                    return;
+                }
+            };
+            drop(ctx);
+            drop(snap);
+            self.apply_picker_outcome(outcome);
+            return;
+        }
+        // Legacy imperative path: `:b`, `:lsp-log`, multi-
+        // result LSP locations, completion / code-action
+        // pickers. Each routing variant has its own arm.
+        // Migration to the trait-driven path is per-source.
         match routing {
             lattice_picker::RoutingPayload::Buffer { id: raw_id } => {
                 let id = BufferId(raw_id);
@@ -563,6 +860,63 @@ impl App {
     }
 }
 
+/// Translate a host-side [`crate::buffer_registry::BufferEntry`]
+/// into the picker's renderer-agnostic [`lattice_picker::BufferEntry`].
+/// Pure function on the input + buffer-locals map; called by
+/// [`App::build_picker_context`] for every registry entry.
+fn picker_buffer_entry(
+    entry: &crate::buffer_registry::BufferEntry,
+    buffer_locals: &std::collections::HashMap<BufferId, lattice_mode::BufferLocals>,
+) -> lattice_picker::BufferEntry {
+    let id = entry.id.0;
+    let (kind_label, path, title, dirty) = match &entry.data {
+        BufferData::Document(d) => {
+            let path = d.handle.path().map(std::path::PathBuf::from);
+            let title = path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "[no name]".to_string());
+            ("doc".to_string(), path, title, d.handle.dirty())
+        }
+        BufferData::FileTree(_) => {
+            let root = buffer_locals
+                .get(&entry.id)
+                .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
+                .map(|r| r.0.clone());
+            let title = root
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "[no root]".to_string());
+            ("tree".to_string(), root, title, false)
+        }
+        BufferData::Help(h) => (
+            "help".to_string(),
+            None,
+            h.title.clone(),
+            false,
+        ),
+        BufferData::Oil(_) => {
+            let dir = buffer_locals
+                .get(&entry.id)
+                .and_then(|locals| locals.get::<crate::modes::OilDir>())
+                .map(|d| d.0.clone());
+            let title = dir
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "[no dir]".to_string());
+            ("oil".to_string(), dir, title, false)
+        }
+    };
+    lattice_picker::BufferEntry {
+        id,
+        kind_label,
+        path,
+        title,
+        dirty,
+    }
+}
+
 /// Hard cap on the file-picker walker's emitted entry count.
 /// At this scale the host's fuzzy matcher stays well inside the
 /// per-keystroke frame budget; larger trees fall back to ripgrep-
@@ -581,7 +935,7 @@ const FILE_PICKER_MAX_ENTRIES: usize = 5000;
 /// as gaps in the listing); the picker UX prefers "some results"
 /// over a hard failure when the workspace has a permission
 /// pocket somewhere.
-pub(super) fn walk_files_for_picker(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+pub(crate) fn walk_files_for_picker(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     const IGNORE_DIRS: &[&str] = &[".git", "target", "node_modules", "dist", ".cache"];
     let mut out: Vec<std::path::PathBuf> = Vec::new();
     let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];

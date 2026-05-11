@@ -34,9 +34,18 @@ use lattice_protocol::Position;
 /// own clones.
 pub struct PickerContext<'a> {
     pub active_buffer: ActiveBufferSnapshot<'a>,
-    pub workspace_root: &'a Path,
+    /// Best-effort workspace root: active document's parent
+    /// when one exists, else current directory, else `.`.
+    /// Owned because cwd resolution is fallible and the
+    /// fallback PathBuf needs somewhere stable to live.
+    pub workspace_root: PathBuf,
     pub recent_files: &'a [PathBuf],
-    pub position_history: &'a [PositionEntry],
+    /// Position-history ring, translated from the App's richer
+    /// `PositionEntry` (which carries `BufferKind`) to this
+    /// crate's picker-friendly view. Owned vec because the
+    /// translation step produces fresh entries -- consistent
+    /// with `buffers` / `marks` / `registers` below.
+    pub position_history: Vec<PositionEntry>,
     pub buffers: Vec<BufferEntry>,
     pub marks: Vec<(char, Position)>,
     /// Registers as `(name, preview)` pairs. The preview is the

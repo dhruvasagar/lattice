@@ -340,16 +340,123 @@ impl PickerSourceGenerator for LinesSource {
     }
 }
 
-/// Convenience: build the four first-party source
-/// generators as `Arc<dyn PickerSourceGenerator>` ready to
-/// register against a `PickerRegistry`. Used by `App::new` to
-/// boot the registry.
+/// `:picker jumps`. Walks `ctx.position_history` (unified
+/// jump-list + mark-ring per §5.1.1) and emits one row per
+/// entry, newest first. Accept emits `JumpInBuffer` so the
+/// host's apply translator handles "activate buffer +
+/// position cursor" uniformly. MRU is correctly absent for
+/// these rows -- `routing_identity` returns `None` for
+/// `JumpInBuffer` because coordinates drift.
+pub struct JumpsSource {
+    pub spec: PickerSourceSpec,
+}
+
+impl JumpsSource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                "jumps",
+                "Position-history ring (unified jump list + mark ring). Newest first; `<CR>` jumps to that entry.",
+            ),
+        }
+    }
+}
+
+impl Default for JumpsSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PickerSourceGenerator for JumpsSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(
+        &self,
+        ctx: &PickerContext<'_>,
+        _args: &[String],
+    ) -> SourceResult<PickerInitResult> {
+        if ctx.position_history.is_empty() {
+            return Err("jumps: position history is empty".into());
+        }
+        // Walk newest-first. The ring stores oldest-first
+        // (push appends to the end) so reverse iteration is
+        // the user-facing default.
+        let pairs = ctx
+            .position_history
+            .iter()
+            .rev()
+            .map(|entry| {
+                let source_tag = match entry.source {
+                    lattice_picker::PositionSource::AutoJump => "auto".to_string(),
+                    lattice_picker::PositionSource::ExplicitMark => "mark".to_string(),
+                    lattice_picker::PositionSource::PluginPush => "plugin".to_string(),
+                    lattice_picker::PositionSource::NamedMark(c) => format!("'{c}"),
+                };
+                // Resolve buffer_id to a display label via the
+                // buffers snapshot; fall back to the raw id when
+                // the buffer is no longer in the registry.
+                let buf_label = ctx
+                    .buffers
+                    .iter()
+                    .find(|b| b.id == entry.buffer_id)
+                    .map(|b| {
+                        b.path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| b.title.clone())
+                    })
+                    .unwrap_or_else(|| format!("#{}", entry.buffer_id));
+                let display = format!(
+                    "[{source_tag:6}] {buf_label}:{}:{}",
+                    entry.line + 1,
+                    entry.col + 1,
+                );
+                let cand = RawCandidate::plain(display, CandidateKind::Plain);
+                (
+                    cand,
+                    RoutingPayload::JumpInBuffer {
+                        buffer_id: entry.buffer_id,
+                        line: entry.line,
+                        col: entry.col,
+                    },
+                )
+            })
+            .collect();
+        Ok(PickerInitResult::Inline(pairs))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
+                Ok(PickerAcceptOutcome::JumpInBuffer {
+                    buffer_id: *buffer_id,
+                    line: *line,
+                    col: *col,
+                })
+            }
+            other => Err(format!("jumps: unexpected routing payload {other:?}")),
+        }
+    }
+}
+
+/// Convenience: build the first-party source generators as
+/// `Arc<dyn PickerSourceGenerator>` ready to register against
+/// a `PickerRegistry`. Used by `App::new` to boot the
+/// registry.
 pub fn first_party_generators() -> Vec<Arc<dyn PickerSourceGenerator>> {
     vec![
         Arc::new(FilesSource::new()),
         Arc::new(RecentFilesSource::new()),
         Arc::new(BuffersSource::new()),
         Arc::new(LinesSource::new()),
+        Arc::new(JumpsSource::new()),
     ]
 }
 
@@ -456,7 +563,59 @@ mod tests {
     fn first_party_generators_returns_all_built_in_sources() {
         let generators = first_party_generators();
         let ids: Vec<&'static str> = generators.iter().map(|g| g.spec().id).collect();
-        assert_eq!(ids, vec!["files", "recent", "buffers", "lines"]);
+        assert_eq!(ids, vec!["files", "recent", "buffers", "lines", "jumps"]);
+    }
+
+    /// P.6: jumps source returns `Err` when the position
+    /// history is empty -- a fresh App has nothing to walk
+    /// yet so the picker stays closed with a clean echo.
+    #[test]
+    fn jumps_source_empty_history_errors() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = JumpsSource::new();
+        let err = source.init(&ctx, &[]).unwrap_err();
+        assert!(err.contains("position history is empty"), "got {err}");
+    }
+
+    /// P.6: synthesise a couple of position-history entries
+    /// (the App's ring is private at this layer but the
+    /// PickerContext carries an owned vec we can substitute
+    /// for the test). Confirm the source emits newest-first
+    /// with the appropriate source tags + `JumpInBuffer`
+    /// routing.
+    #[test]
+    fn jumps_source_emits_newest_first_with_source_tags() {
+        use lattice_picker::{PositionEntry, PositionSource};
+
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let mut ctx = app.build_picker_context(&snap);
+        ctx.position_history = vec![
+            PositionEntry { buffer_id: 1, line: 0, col: 0, source: PositionSource::AutoJump },
+            PositionEntry { buffer_id: 1, line: 5, col: 2, source: PositionSource::NamedMark('a') },
+            PositionEntry { buffer_id: 2, line: 10, col: 0, source: PositionSource::PluginPush },
+        ];
+        let source = JumpsSource::new();
+        let result = source.init(&ctx, &[]).expect("inline");
+        let PickerInitResult::Inline(pairs) = result else {
+            panic!("expected Inline");
+        };
+        assert_eq!(pairs.len(), 3);
+        // Newest first: plugin (line 10) leads.
+        match &pairs[0].1 {
+            RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
+                assert_eq!(*buffer_id, 2);
+                assert_eq!(*line, 10);
+                assert_eq!(*col, 0);
+            }
+            other => panic!("expected JumpInBuffer, got {other:?}"),
+        }
+        // The named-mark row carries `'a` in its source tag.
+        assert!(pairs[1].0.display.contains("'a"), "{}", pairs[1].0.display);
+        // The auto row carries `auto`.
+        assert!(pairs[2].0.display.contains("auto"), "{}", pairs[2].0.display);
     }
 
     /// P.3: lines source emits one row per addressable line

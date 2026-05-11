@@ -1506,7 +1506,7 @@ mod tests {
         // Built-in registry seeds the first-party sources;
         // PickerRegistry::iter is id-sorted so popup order is
         // stable. Each new source migration extends this list.
-        assert_eq!(ids, vec!["buffers", "files", "lines", "recent"]);
+        assert_eq!(ids, vec!["buffers", "files", "jumps", "lines", "recent"]);
         // Sanity: matches what the registry itself reports.
         let registry_ids: Vec<&'static str> = app.picker_registry.ids().collect();
         let mut expected: Vec<String> = registry_ids.iter().map(|s| s.to_string()).collect();

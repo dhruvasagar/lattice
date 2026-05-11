@@ -33,7 +33,7 @@ pub struct SnippetMeta {
 
 /// Per-language store. Snippets index by every prefix they
 /// register (multi-prefix snippets register under each).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SnippetRegistry {
     /// `language -> { prefix -> snippet }`. v1 is per-language;
     /// scope-expression filtering (e.g. `source.markdown.injection.rust`)

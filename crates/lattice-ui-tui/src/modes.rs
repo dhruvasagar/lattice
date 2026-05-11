@@ -282,6 +282,10 @@ pub fn auto_activated_minors_for_buffer_kind(kind: BufferKind) -> Vec<ModeId> {
             // Document; contributes the buffer-words source to
             // the popup's `ActiveCompletionSources` cache.
             lattice_mode::BufferWordsMode::mode_id(),
+            // CSM.5: snippet-completion-mode owns the snippet
+            // completion source; contributes through the same
+            // cache.
+            lattice_snippet::SnippetCompletionMode::mode_id(),
         ],
         // Read-only kinds: nothing to add. (`help-mode` /
         // `oil-mode` / `file-tree-mode` are already activated

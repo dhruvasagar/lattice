@@ -1298,12 +1298,23 @@ pub struct App {
     /// at startup from bundled / user / project paths via
     /// `lattice-snippet::load`; the `gen:snippet` source
     /// consults it per-popup-trigger.
-    pub snippet_registry: lattice_snippet::SnippetRegistry,
+    /// CSM.5: held as `Arc<ArcSwap<...>>` so the mode-captured
+    /// handle stays valid across `:reload-snippets`. Source reads
+    /// load the current snapshot via `.load()` (wait-free); the
+    /// reload path swaps the inner via `.store()` so the mode's
+    /// next produce sees the fresh data.
+    pub snippet_registry: std::sync::Arc<arc_swap::ArcSwap<lattice_snippet::SnippetRegistry>>,
     /// Sidecar metadata for snippet candidates in the active
     /// insert-completion popup. Indexed by the candidate's
     /// `CandidateData::Extension { payload }` (u32 LE) --
     /// same shape as `insert_completion_lsp_meta` for the
     /// LSP source.
+    /// CSM.5: retired. Snippet candidates now carry their stable
+    /// `name` in the `Extension::payload` field; the accept path
+    /// re-resolves the body via `App.snippet_registry.by_name`.
+    /// Field kept as an empty Vec for one slice so callers that
+    /// haven't migrated still compile; field deletion in a
+    /// follow-up cleanup slice.
     pub insert_completion_snippet_meta: Vec<SnippetCandidateMeta>,
     /// Per-session accept-count map for the insert-mode
     /// completion popup (Phase 4.2.g.5). Each accepted candidate

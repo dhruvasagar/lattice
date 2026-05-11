@@ -230,11 +230,14 @@ pub struct InsertContextSnapshot {
     pub query: String,
     pub trigger: CompletionTrigger,
     pub case_sensitive: bool,
+    /// Active buffer's language id (CSM.5). See
+    /// [`InsertContext::language`].
+    pub language: String,
 }
 
 impl InsertContextSnapshot {
-    /// Take an owned snapshot of `ctx`. Cheap -- only the
-    /// `query` string clones; the other fields are `Copy`.
+    /// Take an owned snapshot of `ctx`. Cheap -- `query` and
+    /// `language` clone; the other fields are `Copy`.
     pub fn from_context(ctx: &InsertContext<'_>) -> Self {
         Self {
             cursor: ctx.cursor,
@@ -242,6 +245,7 @@ impl InsertContextSnapshot {
             query: ctx.query.to_string(),
             trigger: ctx.trigger.clone(),
             case_sensitive: ctx.case_sensitive,
+            language: ctx.language.to_string(),
         }
     }
 }
@@ -302,6 +306,7 @@ mod tests {
             query: "",
             trigger: &CompletionTrigger::Manual,
             case_sensitive: false,
+            language: "",
         };
         let src = EchoSync {
             id: SourceId::new("gen:echo"),
@@ -369,6 +374,7 @@ mod tests {
             query: "",
             trigger: &CompletionTrigger::Manual,
             case_sensitive: false,
+            language: "",
         };
         let snap = InsertContextSnapshot::from_context(&ctx);
         let mut fut = src.produce_async(snap, sink, CancellationToken::never());
@@ -389,12 +395,14 @@ mod tests {
             query: "foo",
             trigger: &CompletionTrigger::IdentifierThreshold,
             case_sensitive: true,
+            language: "rust",
         };
         let snap = InsertContextSnapshot::from_context(&ctx);
         assert_eq!(snap.cursor, Position::new(2, 7));
         assert_eq!(snap.anchor, Position::new(2, 4));
         assert_eq!(snap.query, "foo");
         assert_eq!(snap.case_sensitive, true);
+        assert_eq!(snap.language, "rust");
         assert!(matches!(
             snap.trigger,
             CompletionTrigger::IdentifierThreshold

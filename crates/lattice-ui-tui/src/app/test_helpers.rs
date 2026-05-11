@@ -310,7 +310,11 @@ pub(super) fn install_snippet(
     body: &str,
 ) {
     let parsed = lattice_snippet::parse::parse(body).unwrap();
-    a.snippet_registry.insert(
+    // CSM.5: snippet_registry is `Arc<ArcSwap<...>>`. Clone the
+    // current snapshot, mutate the copy, store. Cheap for test
+    // scale; production reload swaps the inner the same way.
+    let mut next = (**a.snippet_registry.load()).clone();
+    next.insert(
         language,
         lattice_snippet::Snippet {
             name: name.into(),
@@ -320,6 +324,8 @@ pub(super) fn install_snippet(
             scope: String::new(),
         },
     );
+    a.snippet_registry
+        .store(std::sync::Arc::new(next));
 }
 
 /// Build a unique temp directory for tests that touch the

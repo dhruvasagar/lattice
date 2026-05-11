@@ -36,6 +36,7 @@
 
 pub mod active;
 pub mod load;
+pub mod modes;
 pub mod parse;
 pub mod registry;
 pub mod render;
@@ -44,6 +45,10 @@ pub mod variables;
 
 pub use crate::active::{ActiveSnippet, TabstopGroup};
 pub use crate::load::{LoadError, load_pack, load_pack_from_str};
+pub use crate::modes::{
+    SNIPPET_COMPLETION_SOURCE_ID, SNIPPET_PAYLOAD_KIND_ID, SnippetCompletionMode,
+    SnippetCompletionSource, register_snippet_modes,
+};
 pub use crate::parse::{ParseError, parse};
 pub use crate::registry::{Snippet, SnippetMeta, SnippetRegistry};
 pub use crate::render::{RenderedSnippet, TabstopRange};

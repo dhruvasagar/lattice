@@ -894,6 +894,12 @@ dependencies = [
 name = "lattice-snippet"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
+ "lattice-completion",
+ "lattice-config",
+ "lattice-core",
+ "lattice-mode",
+ "lattice-protocol",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

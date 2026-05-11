@@ -2303,6 +2303,53 @@ graceful error handling per CLAUDE.md.
   path" renamed to "populates via mode-contributed source."
   Workspace 2568 stable (3 tests updated in-place; no net
   count change).
+- CSM.5 -- ✅ landed (second source migration -- snippet).
+  `SnippetCompletionMode` + `SnippetCompletionSource` in
+  `lattice-snippet::modes` (feature crate placement -- the
+  "feature crate owns its mode" rule holds here because
+  `lattice-snippet` is a leaf in the dep graph; adding
+  `lattice-mode` + `lattice-completion` + `lattice-config`
+  upstream deps is cycle-free).
+  `App.snippet_registry` migrates from bare `SnippetRegistry`
+  to `Arc<arc_swap::ArcSwap<SnippetRegistry>>` so the mode
+  + source keep their captured handle valid across
+  `:reload-snippets`. Read sites switch to `.load()`;
+  `:reload-snippets` swaps via `.store()`. `SnippetRegistry`
+  gains `Clone` (needed for test-time mutate-and-store).
+  `InsertContext` + `InsertContextSnapshot` gain a
+  `language: &'a str` / `String` field (CSM.4 buffer-words
+  didn't need it; CSM.5 snippet does for the
+  `matching_prefix(language, query)` lookup). Host populates
+  from `active_language_id()` at popup-open time.
+  Contribution shape:
+
+      CompletionSourceContribution {
+          id: "gen:snippet",
+          default_priority: 150,
+          auto_trigger: true,
+          trigger_chars: [],
+          popup_filter_chord: None,  // snippets read best
+                                     // alongside prose -- no
+                                     // dedicated chord per §12
+          kind: Sync(Arc::new(SnippetCompletionSource { ... })),
+      }
+
+  Snippet candidates carry the snippet's stable `name` as
+  the `Extension::payload` bytes (UTF-8). `App::snippet_meta_for`
+  retired the sidecar-index lookup; it now decodes the name
+  from the payload and resolves the body via
+  `SnippetRegistry::by_name`. The
+  `App.insert_completion_snippet_meta` sidecar is no longer
+  populated (left as an empty Vec for one slice; deletion
+  follows in a cleanup pass).
+  Auto-activates on Document via
+  `auto_activated_minors_for_buffer_kind`. Hardcoded snippet
+  branch in `populate_insert_completion_sync` retired.
+  Tests: one CSM.4 cache-content test updated to assert
+  both buffer-words + snippet contributions at boot. The
+  snippet-trigger test reworked to query `snippet_meta_for`
+  via the candidate's payload instead of poking the sidecar.
+  Workspace 2568 → 2571.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

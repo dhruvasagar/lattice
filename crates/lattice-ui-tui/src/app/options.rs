@@ -1440,7 +1440,7 @@ mod tests {
         let mut a = app_with("", 10);
         a.do_reload_snippets();
         // Idle; registry stays empty. Message echoed at Info.
-        assert_eq!(a.snippet_registry.len(), 0);
+        assert_eq!(a.snippet_registry.load().len(), 0);
     }
 
     #[test]
@@ -1468,15 +1468,15 @@ mod tests {
         a.snippet_dirs.push(dir.clone());
         a.do_reload_snippets();
         // 2 snippets registered total (one per language).
-        assert_eq!(a.snippet_registry.len(), 2);
-        assert!(!a.snippet_registry.lookup("rust", "for").is_empty());
-        assert!(!a.snippet_registry.lookup("*", "any").is_empty());
+        assert_eq!(a.snippet_registry.load().len(), 2);
+        assert!(!a.snippet_registry.load().lookup("rust", "for").is_empty());
+        assert!(!a.snippet_registry.load().lookup("*", "any").is_empty());
         // Global snippets are visible from any language --
         // `lookup` walks the per-language slot then `*`.
-        assert!(!a.snippet_registry.lookup("rust", "any").is_empty());
+        assert!(!a.snippet_registry.load().lookup("rust", "any").is_empty());
         // A rust-only snippet should NOT be visible from a
         // different language slot.
-        assert!(a.snippet_registry.lookup("python", "for").is_empty());
+        assert!(a.snippet_registry.load().lookup("python", "for").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

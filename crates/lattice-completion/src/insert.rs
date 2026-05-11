@@ -107,6 +107,13 @@ pub struct InsertContext<'a> {
     /// Whether matching should be case-sensitive. Default
     /// matcher honours this.
     pub case_sensitive: bool,
+    /// CSM.5: active buffer's language id (e.g. `"rust"`,
+    /// `"markdown"`). The snippet source filters its registry
+    /// by language; tree-sitter / LSP / dictionary sources may
+    /// branch on it too. Empty string when no language is
+    /// detected (plain-text buffer); sources should treat
+    /// empty + the literal `"*"` as the catch-all bucket.
+    pub language: &'a str,
 }
 
 /// One side popup showing the focused candidate's full
@@ -829,6 +836,7 @@ mod tests {
             query,
             trigger: CONTEXT_TRIGGER,
             case_sensitive: false,
+            language: "",
         }
     }
 

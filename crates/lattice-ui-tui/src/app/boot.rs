@@ -141,6 +141,17 @@ impl App {
         // looks them up by name -- but registering them populates the
         // registry so `:`-line parsing can route to them.
         let _ex_builtins = lattice_grammar::ex_commands::populate(&mut registry);
+        // CSM.5: shared snippet-registry handle. Built before
+        // the mode registry so `register_snippet_modes` can
+        // capture a clone of the outer Arc -- the same outer
+        // Arc the App field below holds. `:reload-snippets`
+        // updates the inner via `.store()`; the mode + source
+        // see the fresh data on the next produce().
+        let snippet_registry_handle: std::sync::Arc<
+            arc_swap::ArcSwap<lattice_snippet::SnippetRegistry>,
+        > = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+            lattice_snippet::SnippetRegistry::new(),
+        ));
         // M.5.1 (mode-architecture §9.6.1): build the mode registry
         // first so we can iterate it and register a `:<mode-name>`
         // toggle ex-command per mode. The mode registry is then
@@ -152,6 +163,10 @@ impl App {
             lattice_lsp::modes::register_lsp_log_modes(&mut mr);
             lattice_oil::register_oil_modes(&mut mr);
             lattice_file_tree::register_file_tree_modes(&mut mr);
+            lattice_snippet::register_snippet_modes(
+                &mut mr,
+                snippet_registry_handle.clone(),
+            );
             crate::modes::register_buffer_kind_modes(&mut mr);
             mr
         };
@@ -497,7 +512,7 @@ impl App {
             pending_insert_completion_lsp_token: None,
             pending_completion_resolve_rx: None,
             pending_completion_resolve_token: None,
-            snippet_registry: lattice_snippet::SnippetRegistry::new(),
+            snippet_registry: snippet_registry_handle,
             insert_completion_snippet_meta: Vec::new(),
             completion_accept_freq: std::collections::HashMap::new(),
             path_completion_cache: None,

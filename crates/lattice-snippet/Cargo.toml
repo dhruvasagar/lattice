@@ -6,9 +6,20 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+arc-swap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# CSM.5: lattice-snippet owns `SnippetCompletionMode` (the
+# `Mode` adapter) + `SnippetCompletionSource` (the
+# `SyncCompletionSource` impl). Neither lattice-mode nor
+# lattice-completion depend on lattice-snippet, so the new
+# edges are cycle-free.
+lattice-mode = { path = "../lattice-mode" }
+lattice-completion = { path = "../lattice-completion" }
+lattice-config = { path = "../lattice-config" }
+lattice-core = { path = "../lattice-core" }
+lattice-protocol = { path = "../lattice-protocol" }
 
 [lints]
 workspace = true

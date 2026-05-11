@@ -110,13 +110,15 @@ impl App {
             return;
         }
         let language = self.active_language_id();
-        let snippet = self
-            .snippet_registry
-            .lookup(&language, &prefix)
-            .first()
-            .cloned()
-            .or_else(|| self.snippet_registry.lookup("*", &prefix).first().cloned())
-            .cloned();
+        let snippet = {
+            let registry = self.snippet_registry.load();
+            registry
+                .lookup(&language, &prefix)
+                .first()
+                .copied()
+                .or_else(|| registry.lookup("*", &prefix).first().copied())
+                .cloned()
+        };
         let Some(snippet) = snippet else {
             self.set_message(
                 EchoLevel::Info,
@@ -216,7 +218,7 @@ impl App {
                 }
             }
         }
-        self.snippet_registry = next;
+        self.snippet_registry.store(std::sync::Arc::new(next));
         if errors.is_empty() {
             self.set_message(
                 EchoLevel::Info,
@@ -311,6 +313,7 @@ impl App {
             self.refilter_insert_completion(state);
             return;
         }
+        let language = self.active_language_id();
         let ctx = lattice_completion::InsertContext {
             buffer,
             cursor: state.cursor,
@@ -318,12 +321,12 @@ impl App {
             query: &state.query,
             trigger,
             case_sensitive: false,
+            language: &language,
         };
         // Resolve the active language's effective config once;
         // both sync sources (buffer-words, snippet) gate emit on
         // it. The global default (no override) returns
         // `sources = None` -> every source contributes.
-        let language = self.active_language_id();
         let effective = self.effective_completion_for(&language);
         let mut raw: Vec<lattice_completion::RawCandidate> = Vec::new();
         // CSM.3: read mode-contributed sources from the cached
@@ -354,57 +357,15 @@ impl App {
                 // CSM.8 wires the LSP source through this branch.
             }
         }
-        // CSM.4: buffer-words is now contributed via
-        // `buffer-words-mode` (read from
-        // `ActiveCompletionSources` above). The legacy
-        // hardcoded call is retired; the cache-driven path
-        // populates the popup. Tests pin behaviour parity.
-        // Source 2: snippets (Phase 4.2.g.4). Resolve the
-        // active language so per-language snippets surface
-        // ahead of any-language `*` packs. Snippet meta lives
-        // in a sidecar; the candidate's Extension payload
-        // points at the meta-vec index.
-        self.insert_completion_snippet_meta.clear();
-        let snippet_id = lattice_completion::SourceId::new(
-            lattice_completion::SNIPPET_SOURCE_ID,
-        );
-        let snippet_matches: Vec<&lattice_snippet::Snippet> =
-            if effective.source_enabled(&snippet_id) {
-                self.snippet_registry.matching_prefix(&language, &state.query)
-            } else {
-                Vec::new()
-            };
-        for snip in snippet_matches {
-            let idx = self.insert_completion_snippet_meta.len() as u32;
-            let prefix = snip
-                .prefixes
-                .first()
-                .cloned()
-                .unwrap_or_else(|| snip.name.clone());
-            let display = match snip.description.as_deref() {
-                Some(d) if !d.is_empty() => format!("{prefix}  {d}"),
-                _ => prefix.clone(),
-            };
-            let mut cand = lattice_completion::RawCandidate::plain(
-                prefix.clone(),
-                lattice_completion::CandidateKind::Plain,
-            )
-            .with_source(lattice_completion::SourceId::new(
-                lattice_completion::SNIPPET_SOURCE_ID,
-            ));
-            cand.display = display;
-            cand.data = lattice_completion::CandidateData::Extension {
-                kind_id: SNIPPET_COMPLETION_KIND_ID,
-                payload: idx.to_le_bytes().to_vec(),
-            };
-            raw.push(cand);
-            self.insert_completion_snippet_meta.push(SnippetCandidateMeta {
-                name: snip.name.clone(),
-                prefix,
-                description: snip.description.clone(),
-                body: snip.body.clone(),
-            });
-        }
+        // CSM.4/CSM.5: buffer-words + snippet completion sources
+        // are now contributed via their respective minor modes
+        // (read from `ActiveCompletionSources` above). The
+        // legacy hardcoded calls are retired; the cache-driven
+        // path populates the popup. The snippet sidecar that
+        // used to hold (name, prefix, description, body) tuples
+        // is gone -- candidate payloads carry the snippet's
+        // name; the accept path resolves the body via
+        // `SnippetRegistry::by_name` (see `snippet_meta_for`).
         // Source 3: tree-sitter local symbols (Phase 4.2.g.6
         // (1/2)). Walks the buffer's syntax tree per popup-
         // trigger; emits definition-position identifiers
@@ -952,11 +913,12 @@ impl App {
         // intent matches expected behaviour.
         let freq_key = (item.raw.text.clone(), item.raw.kind);
         *self.completion_accept_freq.entry(freq_key).or_insert(0) += 1;
-        // Snippet (sync source) path -- snippet meta sidecar
-        // points at a fully-parsed body.
-        if let Some(meta) = self.snippet_meta_for(&item).cloned() {
+        // CSM.5: snippet (sync source) path. `snippet_meta_for`
+        // now decodes the payload as a snippet name and looks up
+        // the body in `App.snippet_registry`; no sidecar to
+        // clear afterwards.
+        if let Some(meta) = self.snippet_meta_for(&item) {
             self.expand_snippet(&meta.body, state.anchor);
-            self.insert_completion_snippet_meta.clear();
             self.insert_completion_lsp_meta.clear();
             return;
         }
@@ -997,12 +959,10 @@ impl App {
                         self.apply_lsp_completion_accept(meta, state.anchor);
                     }
                 }
-                self.insert_completion_snippet_meta.clear();
                 self.insert_completion_lsp_meta.clear();
                 return;
             }
             self.apply_lsp_completion_accept(meta, state.anchor);
-            self.insert_completion_snippet_meta.clear();
             self.insert_completion_lsp_meta.clear();
             return;
         }
@@ -1021,7 +981,6 @@ impl App {
                 );
             }
         }
-        self.insert_completion_snippet_meta.clear();
         self.insert_completion_lsp_meta.clear();
     }
 
@@ -1315,13 +1274,15 @@ impl App {
         ctx
     }
 
-    /// Look up the snippet meta sidecar entry for a candidate,
-    /// when it's a snippet-sourced one. Returns `None` for
-    /// non-snippet candidates.
+    /// CSM.5: resolve a candidate's snippet metadata by decoding
+    /// the payload (snippet name) and looking up in
+    /// `App.snippet_registry`. Replaces the old sidecar-indexed
+    /// path -- snippet candidates now carry their stable name
+    /// rather than a vec-index that breaks on refilter.
     pub(super) fn snippet_meta_for(
         &self,
         candidate: &lattice_completion::RenderedCandidate,
-    ) -> Option<&SnippetCandidateMeta> {
+    ) -> Option<SnippetCandidateMeta> {
         let lattice_completion::CandidateData::Extension { kind_id, payload } =
             &candidate.raw.data
         else {
@@ -1330,16 +1291,20 @@ impl App {
         if *kind_id != SNIPPET_COMPLETION_KIND_ID {
             return None;
         }
-        if payload.len() != 4 {
-            return None;
-        }
-        let idx = u32::from_le_bytes([
-            payload[0],
-            payload[1],
-            payload[2],
-            payload[3],
-        ]) as usize;
-        self.insert_completion_snippet_meta.get(idx)
+        let name = std::str::from_utf8(payload).ok()?;
+        let registry = self.snippet_registry.load();
+        let snip = registry.by_name(name)?;
+        let prefix = snip
+            .prefixes
+            .first()
+            .cloned()
+            .unwrap_or_else(|| snip.name.clone());
+        Some(SnippetCandidateMeta {
+            name: snip.name.clone(),
+            prefix,
+            description: snip.description.clone(),
+            body: snip.body.clone(),
+        })
     }
 
     /// Expand a parsed snippet body at the popup's anchor.
@@ -1777,12 +1742,17 @@ mod tests {
         a.do_completion_trigger();
         let state = a.insert_completion.as_ref().expect("popup open");
         // `for-loop` snippet appears as a candidate. The
-        // candidate's text is the prefix; the meta sidecar
-        // carries the parsed body for the accept path.
-        assert!(state.rendered.iter().any(|r| r.raw.text == "for"));
-        // Sidecar populated -- one snippet candidate registered.
-        assert_eq!(a.insert_completion_snippet_meta.len(), 1);
-        assert_eq!(a.insert_completion_snippet_meta[0].name, "for-loop");
+        // candidate's text is the prefix; CSM.5 carries the
+        // snippet's stable name in the `Extension::payload`
+        // bytes, the accept path resolves the body via
+        // `snippet_meta_for` -> `SnippetRegistry::by_name`.
+        let cand = state
+            .rendered
+            .iter()
+            .find(|r| r.raw.text == "for")
+            .expect("snippet candidate present");
+        let meta = a.snippet_meta_for(cand).expect("snippet meta resolves");
+        assert_eq!(meta.name, "for-loop");
     }
 
     #[test]
@@ -2381,24 +2351,36 @@ mod tests {
 
     // ---- CSM.3: ActiveCompletionSources cache ----
 
-    /// CSM.4: buffer-words-mode auto-activates on Document so
-    /// the cache contains its contribution at boot.
+    /// CSM.4/CSM.5: source-contributing modes auto-activate on
+    /// Document. The cache seeds with buffer-words and snippet
+    /// contributions at boot; future migrations (tree-sitter
+    /// CSM.6, path CSM.7, LSP CSM.8) extend the set.
     #[test]
-    fn active_completion_sources_seeded_with_buffer_words_at_boot() {
+    fn active_completion_sources_seeded_with_default_modes_at_boot() {
         let a = app_with("alpha bravo", 10);
         let cache = a
             .buffer_locals
             .get(&a.document_buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .expect("cache should be seeded at boot");
-        assert_eq!(
-            cache.0.len(),
-            1,
-            "only buffer-words-mode contributes a source today; got {:?}",
-            cache.0.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
-        );
-        assert_eq!(cache.0[0].id.as_str(), "gen:buffer-words");
-        assert_eq!(cache.0[0].popup_filter_chord, Some('b'));
+        let ids: Vec<_> = cache.0.iter().map(|c| c.id.as_str().to_string()).collect();
+        assert!(ids.contains(&"gen:buffer-words".to_string()), "got {ids:?}");
+        assert!(ids.contains(&"gen:snippet".to_string()), "got {ids:?}");
+        let buffer_words = cache
+            .0
+            .iter()
+            .find(|c| c.id.as_str() == "gen:buffer-words")
+            .unwrap();
+        assert_eq!(buffer_words.popup_filter_chord, Some('b'));
+        let snippet = cache
+            .0
+            .iter()
+            .find(|c| c.id.as_str() == "gen:snippet")
+            .unwrap();
+        // Snippets have no dedicated filter chord per §12 (read
+        // best alongside prose; filtering to snippets-only is
+        // rare).
+        assert!(snippet.popup_filter_chord.is_none());
     }
 
     /// CSM.4: triggering the popup populates candidates via

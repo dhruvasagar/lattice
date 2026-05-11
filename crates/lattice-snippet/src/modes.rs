@@ -197,6 +197,8 @@ mod tests {
             case_sensitive: false,
             language: "rust",
             tree_sitter_symbols: &[],
+            path_context: false,
+            buffer_dir: None,
         };
         let candidates = source.produce(&ctx);
         assert_eq!(candidates.len(), 1);

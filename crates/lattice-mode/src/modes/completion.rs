@@ -35,7 +35,8 @@
 use std::sync::Arc;
 
 use lattice_completion::{
-    BufferWordsSource, CompletionSourceContribution, CompletionSourceKind, SourceId,
+    BufferWordsSource, CompletionSourceContribution, CompletionSourceKind, PathCompletionSource,
+    SourceId,
 };
 use lattice_config::OptionOverrideSet;
 
@@ -121,6 +122,73 @@ impl Mode for BufferWordsMode {
             trigger_chars: Vec::new(),
             popup_filter_chord: Some('b'),
             kind: CompletionSourceKind::Sync(Arc::new(BufferWordsSource::new())),
+        }]
+    }
+    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        Ok(())
+    }
+    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        Ok(())
+    }
+}
+
+/// CSM.7 (insert-completion.md §12 fourth source migration):
+/// `path-completion-mode` -- contributes the path-completion
+/// source. Auto-activates on writable buffer kinds; the
+/// source self-suppresses outside string scopes (gated by
+/// `ctx.path_context` which the host sets from its tree-sitter
+/// scope detection). `popup_filter_chord = Some('f')` ⇒
+/// `<C-f>` inside `completion-popup-mode` narrows the popup
+/// to filesystem entries only.
+///
+/// Same placement note as `BufferWordsMode`: ideal location
+/// would be `lattice-completion::modes` per the "feature
+/// crate owns its mode" rule, but the
+/// `lattice-mode -> lattice-completion` dep direction forces
+/// the thin `Mode` adapter to live in `lattice-mode`; the
+/// underlying `PathCompletionSource` stays in
+/// `lattice-completion::path`.
+pub struct PathCompletionMode;
+
+impl PathCompletionMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("path-completion-mode")
+    }
+}
+
+impl Mode for PathCompletionMode {
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
+    fn options(&self) -> OptionOverrideSet {
+        OptionOverrideSet::default()
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
+        vec![CompletionSourceContribution {
+            id: SourceId::new(lattice_completion::PATH_SOURCE_ID),
+            // 90 per insert-completion.md §3.4. The source self-
+            // suppresses outside string scopes via
+            // `ctx.path_context`; when active, paths sort below
+            // buffer-words (100) and snippet (150) but above
+            // tree-sitter symbols (80) because they're the
+            // user's typed-context-correct candidates.
+            default_priority: 90,
+            // The historic behaviour treats `<C-x><C-f>` (vim
+            // file-name completion) as the explicit trigger;
+            // CSM.K2 makes `<C-f>` the in-popup filter chord.
+            // No trigger char in the host-fired flow today --
+            // the source fires via the context's
+            // `path_context` flag, not by trigger char.
+            auto_trigger: true,
+            trigger_chars: vec!['/'],
+            popup_filter_chord: Some('f'),
+            kind: CompletionSourceKind::Sync(Arc::new(PathCompletionSource)),
         }]
     }
     fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {

@@ -236,6 +236,12 @@ pub struct InsertContextSnapshot {
     /// Pre-computed tree-sitter symbols (CSM.6). See
     /// [`InsertContext::tree_sitter_symbols`].
     pub tree_sitter_symbols: Vec<String>,
+    /// Cursor sits inside a string scope (CSM.7). See
+    /// [`InsertContext::path_context`].
+    pub path_context: bool,
+    /// Base directory for path-source filesystem walks (CSM.7).
+    /// See [`InsertContext::buffer_dir`].
+    pub buffer_dir: Option<std::path::PathBuf>,
 }
 
 impl InsertContextSnapshot {
@@ -251,6 +257,8 @@ impl InsertContextSnapshot {
             case_sensitive: ctx.case_sensitive,
             language: ctx.language.to_string(),
             tree_sitter_symbols: ctx.tree_sitter_symbols.to_vec(),
+            path_context: ctx.path_context,
+            buffer_dir: ctx.buffer_dir.map(|p| p.to_path_buf()),
         }
     }
 }
@@ -313,6 +321,8 @@ mod tests {
             case_sensitive: false,
             language: "",
             tree_sitter_symbols: &[],
+            path_context: false,
+            buffer_dir: None,
         };
         let src = EchoSync {
             id: SourceId::new("gen:echo"),
@@ -382,6 +392,8 @@ mod tests {
             case_sensitive: false,
             language: "",
             tree_sitter_symbols: &[],
+            path_context: false,
+            buffer_dir: None,
         };
         let snap = InsertContextSnapshot::from_context(&ctx);
         let mut fut = src.produce_async(snap, sink, CancellationToken::never());
@@ -404,6 +416,8 @@ mod tests {
             case_sensitive: true,
             language: "rust",
             tree_sitter_symbols: &[],
+            path_context: false,
+            buffer_dir: None,
         };
         let snap = InsertContextSnapshot::from_context(&ctx);
         assert_eq!(snap.cursor, Position::new(2, 7));

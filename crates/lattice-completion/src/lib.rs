@@ -26,6 +26,7 @@ pub mod builtins;
 pub mod cache;
 pub mod candidate;
 pub mod insert;
+pub mod path;
 pub mod pipeline;
 pub mod registry;
 pub mod slot;
@@ -50,6 +51,7 @@ pub use crate::registry::{
     RegisteredGenerator, RegisteredMatcher, RegisteredRanker,
 };
 pub use crate::slot::{CommandLineSlot, current_slot};
+pub use crate::path::PathCompletionSource;
 pub use crate::source::{
     AsyncCompletionSource, CandidateSink, CompletionSourceContribution, CompletionSourceKind,
     InsertContextSnapshot, SyncCompletionSource,

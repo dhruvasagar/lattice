@@ -40,6 +40,7 @@ pub mod text;
 
 pub use completion::{
     ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode,
+    PathCompletionMode,
 };
 pub use display::{
     CurrentLineHighlightMode, LineNumbersMode, ReadOnlyMode, RelativeLineNumbersMode,
@@ -90,6 +91,11 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(BufferWordsMode)
         .expect("buffer-words-mode must register without conflict");
+    // CSM.7: path-completion-mode -- contributes filesystem-
+    // entry candidates inside string scopes.
+    registry
+        .register(PathCompletionMode)
+        .expect("path-completion-mode must register without conflict");
     // M.7.0: display minor modes -- user-toggleable wrappers
     // around typed display options.
     registry
@@ -131,6 +137,7 @@ mod tests {
         assert!(registry.is_registered(CompletionMode::mode_id()));
         assert!(registry.is_registered(CompletionPopupMode::mode_id()));
         assert!(registry.is_registered(BufferWordsMode::mode_id()));
+        assert!(registry.is_registered(PathCompletionMode::mode_id()));
         // M.7.0 display minors.
         assert!(registry.is_registered(LineNumbersMode::mode_id()));
         assert!(registry.is_registered(RelativeLineNumbersMode::mode_id()));

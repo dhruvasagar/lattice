@@ -123,6 +123,21 @@ pub struct InsertContext<'a> {
     /// populate / refilter; the tree-sitter source iterates
     /// this slice without re-traversing the tree.
     pub tree_sitter_symbols: &'a [String],
+    /// CSM.7: true when the cursor sits inside a string scope
+    /// (host-detected via the active buffer's tree-sitter
+    /// parse). The path source produces candidates only when
+    /// this is true -- outside a string literal, file-name
+    /// completion would interleave with prose / code and
+    /// surprise the user. Defaults to `false`; the host sets
+    /// it from `App.completion_in_path_context`.
+    pub path_context: bool,
+    /// CSM.7: pre-resolved base directory for the path source's
+    /// filesystem walk. The host computes this from the active
+    /// document's parent (or `std::env::current_dir()` for
+    /// unsaved buffers); the source joins relative path
+    /// segments onto it. `None` when no usable base resolved
+    /// (the source skips the walk in that case).
+    pub buffer_dir: Option<&'a std::path::Path>,
 }
 
 /// One side popup showing the focused candidate's full
@@ -847,6 +862,8 @@ mod tests {
             case_sensitive: false,
             language: "",
             tree_sitter_symbols: &[],
+            path_context: false,
+            buffer_dir: None,
         }
     }
 

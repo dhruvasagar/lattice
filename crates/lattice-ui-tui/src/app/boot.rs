@@ -515,7 +515,6 @@ impl App {
             snippet_registry: snippet_registry_handle,
             insert_completion_snippet_meta: Vec::new(),
             completion_accept_freq: std::collections::HashMap::new(),
-            path_completion_cache: None,
             pending_config_structural_sections: std::collections::BTreeMap::new(),
             per_language_completion: lattice_completion::per_language_defaults(),
             completion_in_path_context: false,

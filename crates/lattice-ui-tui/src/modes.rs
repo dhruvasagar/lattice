@@ -291,6 +291,10 @@ pub fn auto_activated_minors_for_buffer_kind(kind: BufferKind) -> Vec<ModeId> {
             // pre-walks `collect_symbols()` once per populate
             // and threads via `ctx.tree_sitter_symbols`).
             lattice_syntax::TreeSitterCompletionMode::mode_id(),
+            // CSM.7: path-completion-mode owns the path source;
+            // self-suppresses outside string scopes via
+            // `ctx.path_context`.
+            lattice_mode::PathCompletionMode::mode_id(),
         ],
         // Read-only kinds: nothing to add. (`help-mode` /
         // `oil-mode` / `file-tree-mode` are already activated

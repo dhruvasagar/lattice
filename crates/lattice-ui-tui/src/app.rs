@@ -1361,15 +1361,6 @@ pub struct App {
     /// `populate_insert_completion_sync` (path source only;
     /// other sync sources skip).
     pub completion_in_path_context: bool,
-    /// Single-entry cache for path-completion's `read_dir` walk
-    /// (audit slice 5 / H5). The popup re-fires on every Insert
-    /// keystroke inside a string literal; without the cache the
-    /// directory walk runs from scratch every time, thrashing
-    /// any large or network-mounted dir. Keyed by directory
-    /// path + mtime so any external change invalidates on the
-    /// next call. Single entry because users typically navigate
-    /// one dir at a time; LRU is overkill for v1.
-    path_completion_cache: Option<PathCompletionCache>,
     /// Live snippet expansion. `Some` while a snippet is
     /// active and `<Tab>` / `<S-Tab>` navigate placeholders.
     /// Dropped on `$0` consumption / `<Esc>` / cursor moving
@@ -1500,26 +1491,6 @@ pub struct CompletionState {
     pub original_line: String,
 }
 
-
-/// One cached `read_dir` walk for path completion. Hot path:
-/// each Insert keystroke inside a string literal re-fires
-/// `populate_path_completion`; with this cache, consecutive
-/// keystrokes for the same directory pay one `metadata()` call
-/// (mtime check) instead of a full directory walk.
-#[derive(Debug, Clone)]
-pub(crate) struct PathCompletionCache {
-    /// Directory the entries were read from. Cache hits require
-    /// equality (exact path).
-    pub(crate) dir: std::path::PathBuf,
-    /// Modified-time of `dir` at the moment of the read. Cache
-    /// hits require this to still match what the OS reports
-    /// (cheap stat call); mismatch falls through to a fresh
-    /// `read_dir`.
-    pub(crate) mtime: Option<std::time::SystemTime>,
-    /// `(name, is_dir)` per entry. Sorted by `name` so popup
-    /// emission is deterministic without re-sorting.
-    pub(crate) entries: Vec<(String, bool)>,
-}
 
 /// One contiguous fold range in a document buffer.
 ///

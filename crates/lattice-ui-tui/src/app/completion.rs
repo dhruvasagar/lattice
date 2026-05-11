@@ -40,9 +40,8 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use super::{
-    App, EchoLevel, PathCompletionCache, SNIPPET_COMPLETION_KIND_ID,
-    SnippetCandidateMeta, dedup_rendered_by_text, is_path_byte, is_word_char_byte,
-    lsp_position_to_app_byte, word_under_cursor,
+    App, EchoLevel, SNIPPET_COMPLETION_KIND_ID, SnippetCandidateMeta, dedup_rendered_by_text,
+    is_path_byte, is_word_char_byte, lsp_position_to_app_byte, word_under_cursor,
 };
 
 /// Effective insert-completion config for a given language.
@@ -299,20 +298,6 @@ impl App {
         buffer: &Buffer,
         trigger: &lattice_completion::CompletionTrigger,
     ) {
-        // Path-completion mode: when the cursor sits inside a
-        // string literal AND the language enables `gen:path`,
-        // the popup is path-only -- buffer-words / snippet /
-        // tree-sitter would emit non-filename candidates that
-        // confuse the experience (e.g., a buffer word matching
-        // partway through a filename). Spec §3.4 has
-        // `suppress_in = ["string", "comment"]` covering this
-        // for the other sources; until that knob is enforced,
-        // the path-context branch enforces the same effect.
-        if self.completion_in_path_context {
-            self.populate_path_completion(state);
-            self.refilter_insert_completion(state);
-            return;
-        }
         let language = self.active_language_id();
         // CSM.6: pre-compute tree-sitter symbols once. The
         // tree-sitter source iterates this slice via
@@ -322,6 +307,17 @@ impl App {
             .document_syntax_for(self.document_buffer_id)
             .map(|s| s.snapshot().collect_symbols())
             .unwrap_or_default();
+        // CSM.7: resolve the path source's base directory once
+        // (the buffer's parent dir or `cwd` fallback). The path
+        // source joins relative segments onto this; absolute
+        // partial paths bypass it.
+        let buffer_dir_owned: Option<std::path::PathBuf> = {
+            let snap = self.document.snapshot();
+            snap.path
+                .as_ref()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                .or_else(|| std::env::current_dir().ok())
+        };
         let ctx = lattice_completion::InsertContext {
             buffer,
             cursor: state.cursor,
@@ -331,6 +327,8 @@ impl App {
             case_sensitive: false,
             language: &language,
             tree_sitter_symbols: &tree_sitter_symbols,
+            path_context: self.completion_in_path_context,
+            buffer_dir: buffer_dir_owned.as_deref(),
         };
         // Resolve the active language's effective config once;
         // both sync sources (buffer-words, snippet) gate emit on
@@ -354,6 +352,17 @@ impl App {
         {
             for contribution in &active_sources.0 {
                 if !effective.source_enabled(&contribution.id) {
+                    continue;
+                }
+                // CSM.7: inside a string scope the path source
+                // owns the popup -- non-path contributions
+                // would interleave buffer-words / snippets /
+                // tree-sitter symbols with filenames, which
+                // surprises the user. Suppress them at the
+                // loop level.
+                if ctx.path_context
+                    && contribution.id.as_str() != lattice_completion::PATH_SOURCE_ID
+                {
                     continue;
                 }
                 if let lattice_completion::CompletionSourceKind::Sync(src) =
@@ -387,151 +396,6 @@ impl App {
         self.refilter_insert_completion(state);
     }
 
-    /// Path-completion sync producer (Phase 4.2.g.6 (2/2)).
-    /// Walks the directory referenced by the partial path
-    /// the user has typed inside the active string literal and
-    /// emits one candidate per filesystem entry (capped at 200,
-    /// hidden / ignored entries skipped, directories carry a
-    /// trailing `/`). Resolves relative paths against the
-    /// active document's parent directory; falls back to
-    /// `std::env::current_dir()` for unsaved buffers.
-    fn populate_path_completion(
-        &mut self,
-        state: &mut lattice_completion::InsertCompletionState,
-    ) {
-        const MAX_ENTRIES: usize = 200;
-        // Hardcoded ignore set for v1; `.gitignore` integration
-        // queues for a follow-up (needs the `ignore` crate +
-        // the workspace-root resolution we already do for the
-        // config loader).
-        const IGNORE_NAMES: &[&str] = &[".git", "node_modules", "target", "dist"];
-
-        let snap = self.document.snapshot();
-        let line_text = snap.buffer.line(state.cursor.line).unwrap_or_default();
-        let line_bytes = line_text.as_bytes();
-        let cursor_in_line = (state.cursor.byte as usize).min(line_bytes.len());
-        // Walk back over path bytes (NOT stopping at `/`) to
-        // recover the full partial path the user has typed
-        // inside the string literal. The trigger anchor stops
-        // at `/` so the popup-supplied filename only replaces
-        // the tail; here we want the full thing so we know
-        // *which* directory to walk.
-        let mut path_start = cursor_in_line;
-        while path_start > 0 {
-            let b = line_bytes[path_start - 1];
-            if b == b'/' || is_path_byte(b) {
-                path_start -= 1;
-            } else {
-                break;
-            }
-        }
-        let partial: &str = &line_text[path_start..cursor_in_line];
-        // Split partial at the last `/` (boundary between dir
-        // and the filename prefix).
-        let dir_part = match partial.rfind('/') {
-            Some(i) => &partial[..=i], // keep trailing slash
-            None => "",
-        };
-        let base_dir: std::path::PathBuf = if dir_part.starts_with('/') {
-            std::path::PathBuf::from(dir_part)
-        } else {
-            let buffer_dir = snap
-                .path
-                .as_ref()
-                .and_then(|p| p.parent().map(|p| p.to_path_buf()));
-            let base = buffer_dir
-                .or_else(|| std::env::current_dir().ok())
-                .unwrap_or_else(|| std::path::PathBuf::from("."));
-            if dir_part.is_empty() {
-                base
-            } else {
-                base.join(dir_part)
-            }
-        };
-
-        // Cache check: re-use the previous read_dir if the
-        // directory's mtime hasn't changed. The popup re-fires on
-        // every Insert keystroke; without this cache the
-        // consecutive keystrokes for the same dir each pay a
-        // full read_dir + per-entry file_type() walk. With it,
-        // each keystroke past the first pays one metadata()
-        // call. Audit slice 5 / H5.
-        let current_mtime = std::fs::metadata(&base_dir)
-            .ok()
-            .and_then(|m| m.modified().ok());
-        let cache_hit = self
-            .path_completion_cache
-            .as_ref()
-            .filter(|c| c.dir == base_dir && c.mtime == current_mtime);
-        let entries: Vec<(String, bool)> = match cache_hit {
-            Some(c) => c.entries.clone(),
-            None => {
-                let read = match std::fs::read_dir(&base_dir) {
-                    Ok(it) => it,
-                    Err(_) => {
-                        // Directory unreadable / missing; popup
-                        // stays empty + the cache is invalidated
-                        // so a later mtime-bump triggers a fresh
-                        // read.
-                        self.path_completion_cache = None;
-                        return;
-                    }
-                };
-                let mut entries: Vec<(String, bool)> = read
-                    .flatten()
-                    .filter_map(|entry| {
-                        entry
-                            .file_name()
-                            .to_str()
-                            .map(|name| {
-                                let is_dir = entry
-                                    .file_type()
-                                    .map(|t| t.is_dir())
-                                    .unwrap_or(false);
-                                (name.to_string(), is_dir)
-                            })
-                    })
-                    .collect();
-                entries.sort_by(|a, b| a.0.cmp(&b.0));
-                self.path_completion_cache = Some(PathCompletionCache {
-                    dir: base_dir.clone(),
-                    mtime: current_mtime,
-                    entries: entries.clone(),
-                });
-                entries
-            }
-        };
-        let path_id = lattice_completion::SourceId::new(
-            lattice_completion::PATH_SOURCE_ID,
-        );
-        let mut emitted = 0;
-        for (name, is_dir) in entries {
-            if emitted >= MAX_ENTRIES {
-                break;
-            }
-            if name.starts_with('.') {
-                // Skip hidden entries by default. The user can
-                // type `.` and the popup will re-trigger to
-                // show them once `auto_trigger` lands.
-                continue;
-            }
-            if IGNORE_NAMES.contains(&name.as_str()) {
-                continue;
-            }
-            let (text, kind) = if is_dir {
-                (
-                    format!("{name}/"),
-                    lattice_completion::CandidateKind::Directory,
-                )
-            } else {
-                (name, lattice_completion::CandidateKind::File)
-            };
-            let cand = lattice_completion::RawCandidate::plain(text, kind)
-                .with_source(path_id.clone());
-            state.raw.push(cand);
-            emitted += 1;
-        }
-    }
 
     /// Re-run matcher + ranker over `state.raw` against the
     /// current `state.query`. Called every time the query
@@ -2343,6 +2207,7 @@ mod tests {
             ids.contains(&"gen:tree-sitter-symbol".to_string()),
             "got {ids:?}",
         );
+        assert!(ids.contains(&"gen:path".to_string()), "got {ids:?}");
         let buffer_words = cache
             .0
             .iter()
@@ -2362,6 +2227,12 @@ mod tests {
             .find(|c| c.id.as_str() == "gen:tree-sitter-symbol")
             .unwrap();
         assert_eq!(tree_sitter.popup_filter_chord, Some('t'));
+        let path = cache
+            .0
+            .iter()
+            .find(|c| c.id.as_str() == "gen:path")
+            .unwrap();
+        assert_eq!(path.popup_filter_chord, Some('f'));
     }
 
     /// CSM.4: triggering the popup populates candidates via

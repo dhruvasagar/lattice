@@ -72,7 +72,7 @@ pub use crate::locals::{BufferLocal, BufferLocals, LocalDescriptor};
 pub use crate::mode::{Mode, ModeId, ModeKind};
 pub use crate::modes::{
     ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode, HelpMode,
-    HoverMode, TextMode, register_foundation_modes,
+    HoverMode, PathCompletionMode, TextMode, register_foundation_modes,
 };
 // M.4 dep-inversion: layer-input types live in `lattice-config`
 // now. Re-exported here for compatibility -- callers that

@@ -2391,6 +2391,50 @@ graceful error handling per CLAUDE.md.
   Some('t')`. Workspace 2571 stable (tests updated in-place;
   no net count change yet -- per-source unit tests in
   lattice-syntax follow with the source's lib-test).
+- CSM.7 -- ✅ landed (fourth source migration -- path).
+  `PathCompletionSource` in `lattice-completion::path` (new
+  module). `PathCompletionMode` adapter in
+  `lattice-mode::modes::completion` (same dep-cycle pragma
+  as `BufferWordsMode` -- the underlying source lives in
+  `lattice-completion`; the thin `Mode` adapter sits in
+  `lattice-mode`).
+  `InsertContext` + `InsertContextSnapshot` gain two fields:
+  `path_context: bool` (set from
+  `App.completion_in_path_context` -- host's tree-sitter
+  scope detection) and `buffer_dir: Option<&Path>` (pre-
+  resolved base directory: active doc's parent or
+  `std::env::current_dir()` fallback). Source self-suppresses
+  when `path_context == false` -- read-only of the flag, no
+  side effects.
+  Contribution shape:
+
+      CompletionSourceContribution {
+          id: "gen:path",
+          default_priority: 90,
+          auto_trigger: true,
+          trigger_chars: ['/'],
+          popup_filter_chord: Some('f'),
+          kind: Sync(Arc::new(PathCompletionSource)),
+      }
+
+  `<C-f>` inside `completion-popup-mode` (CSM.K2) will
+  narrow the popup to filesystem entries only.
+  Cache-reader loop in `populate_insert_completion_sync`
+  gains a path-context guard: when `ctx.path_context ==
+  true`, non-`gen:path` contributions are skipped. Other
+  sources stay stateless; the loop owns the suppression.
+  `populate_path_completion` retired (~140 lines).
+  `App.path_completion_cache` + `PathCompletionCache` struct
+  retired -- the host-side cache was a perf optimization for
+  the hardcoded path; the new source has no cache for v1.
+  Profile and re-add as source-internal `Mutex<Option<...>>`
+  if keystroke budget regresses.
+  Tests: dotfile-filter test that exercised the host's
+  removed path branch now drives through the new source
+  (same fixture; the source filters dotfiles + the
+  `IGNORE_NAMES` set). CSM.4/5/6 boot-cache test extends
+  to assert path contribution + `popup_filter_chord =
+  Some('f')`. Workspace 2571 → 2574.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

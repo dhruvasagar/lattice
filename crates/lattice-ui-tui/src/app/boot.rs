@@ -251,6 +251,39 @@ impl App {
             "Every registered option name + (when applicable) its enumerated values.",
             lattice_config::OptionsGenerator::new(config.clone()),
         );
+        // App-state completion sources for the various `:describe-*`
+        // / `:customize` / `:lsp-*` commands. Each generator captures
+        // the slice of state it needs; names are stable so
+        // `ArgSpec::completion` references stay in sync.
+        completion_registry.register_generator(
+            "gen:modes",
+            "Every registered mode (major + minor); used by `:describe-mode <Tab>`.",
+            crate::host_generators::ModesGenerator {
+                registry: Arc::downgrade(&mode_registry),
+            },
+        );
+        completion_registry.register_generator(
+            "gen:events",
+            "Every typed event registered via `register_event!`; used by `:describe-event <Tab>`.",
+            crate::host_generators::EventsGenerator,
+        );
+        completion_registry.register_generator(
+            "gen:log-levels",
+            "The five log levels (`error`/`warn`/`info`/`debug`/`trace`); used by `:lsp-log-level <Tab>`.",
+            crate::host_generators::LogLevelsGenerator,
+        );
+        completion_registry.register_generator(
+            "gen:lsp-servers",
+            "Currently running LSP server ids; used by `:lsp-log <Tab>` / `:lsp-restart <Tab>` / etc.",
+            crate::host_generators::LspServersGenerator { lsp: lsp.clone() },
+        );
+        completion_registry.register_generator(
+            "gen:customize",
+            "Group names + mode names; used by `:customize <Tab>`.",
+            crate::host_generators::CustomizeNamesGenerator {
+                registry: Arc::downgrade(&mode_registry),
+            },
+        );
         // One `LangRegistry` per App, shared between the document
         // buffer's `Syntax` and every `HelpBuffer` we'll spin up
         // for `:describe-*` / `:apropos` / `:keymap` (markdown

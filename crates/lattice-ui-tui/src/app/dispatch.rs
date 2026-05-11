@@ -2498,8 +2498,12 @@ mod tests {
         let mut a = app_with("hi", 5);
         let _buf = a.document_buffer_id;
 
-        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
-            .expect("mode_registry uniquely held");
+        // `make_mut` clones the registry if any `Weak` /
+        // shared `Arc` is outstanding (the boot path hands
+        // `Weak<ModeRegistry>` to the host-state completion
+        // generators). Cheap because every entry is an
+        // `Arc<dyn Mode>` — the clone is shallow.
+        let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
         let mode_id = registry
             .register(TestLocalsMode::new())
             .expect("register");
@@ -2528,8 +2532,12 @@ mod tests {
     fn mode_on_deactivate_removes_buffer_local() {
         let mut a = app_with("hi", 5);
 
-        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
-            .expect("mode_registry uniquely held");
+        // `make_mut` clones the registry if any `Weak` /
+        // shared `Arc` is outstanding (the boot path hands
+        // `Weak<ModeRegistry>` to the host-state completion
+        // generators). Cheap because every entry is an
+        // `Arc<dyn Mode>` — the clone is shallow.
+        let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
         let mode_id = registry
             .register(TestLocalsMode::new())
             .expect("register");
@@ -2573,8 +2581,12 @@ mod tests {
         // here independently.
         let mut active = lattice_mode::ActiveModes::new();
         let mut a = app_with("hi", 5);
-        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
-            .expect("mode_registry uniquely held");
+        // `make_mut` clones the registry if any `Weak` /
+        // shared `Arc` is outstanding (the boot path hands
+        // `Weak<ModeRegistry>` to the host-state completion
+        // generators). Cheap because every entry is an
+        // `Arc<dyn Mode>` — the clone is shallow.
+        let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
         let mode_id = registry
             .register(TestLocalsMode::new())
             .expect("register");

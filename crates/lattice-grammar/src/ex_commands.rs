@@ -594,7 +594,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Registered event name (e.g. `lsp.buffer-attached`).",
                 prompt: "event:",
                 default: ArgDefault::Required,
-                completion: None,
+                completion: Some("gen:events"),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -635,7 +635,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Registered mode name (e.g. `lsp-mode`, `text-mode`).",
                 prompt: "mode:",
                 default: ArgDefault::Required,
-                completion: None,
+                completion: Some("gen:modes"),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -734,7 +734,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                       ending in `-mode` (e.g. `lsp-completion-mode`).",
                 prompt: "customize:",
                 default: ArgDefault::None,
-                completion: None,
+                completion: Some("gen:customize"),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -801,7 +801,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Server id (e.g. `rust`, `python`). Absent = subsystem-wide log.",
                 prompt: "server:",
                 default: ArgDefault::None,
-                completion: None,
+                completion: Some("gen:lsp-servers"),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -828,7 +828,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Server id to toggle trace on.",
                 prompt: "server:",
                 default: ArgDefault::None,
-                completion: None,
+                completion: Some("gen:lsp-servers"),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -854,7 +854,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Server id (e.g. `rust`). Absent = picker over every running instance.",
                 prompt: "server:",
                 default: ArgDefault::None,
-                completion: None,
+                completion: Some("gen:lsp-servers"),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -907,7 +907,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Server id to restart.",
                 prompt: "server:",
                 default: ArgDefault::None,
-                completion: None,
+                completion: Some("gen:lsp-servers"),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -939,10 +939,15 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             args_schema: vec![ArgSpec {
                 name: "spec",
                 kind: ArgKind::String,
+                // Single-token completion lands the level form
+                // (`info`, `debug`, ...). The two-token
+                // `<server> <level>` form parses correctly at
+                // submit; v1 ships completion for the common
+                // (subsystem-wide) shape.
                 doc: "Either a level (`error`/`warn`/`info`/`debug`/`trace`) for the subsystem default, or `<server> <level>` for a per-server override.",
                 prompt: "[server] level:",
                 default: ArgDefault::None,
-                completion: None,
+                completion: Some("gen:log-levels"),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -968,7 +973,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Server id whose ring to clear. Absent = subsystem-wide.",
                 prompt: "server:",
                 default: ArgDefault::None,
-                completion: None,
+                completion: Some("gen:lsp-servers"),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1803,5 +1808,70 @@ mod tests {
             assert_eq!(spec.args_schema.len(), 1);
             assert_eq!(spec.args_schema[0].completion, Some("gen:options"));
         }
+    }
+
+    #[test]
+    fn introspection_commands_advertise_completion_sources() {
+        // Every `:describe-*` / `:customize` / `:lsp-*` command
+        // that consumes a registry-like arg must advertise a
+        // completion source so `<Tab>` returns candidates. Source
+        // names are stable; the boot path registers a generator
+        // per name in `lattice-ui-tui::host_generators`.
+        let (registry, ex, _) = fixture();
+        let cases: &[(crate::ExCommandId, &str)] = &[
+            (ex.describe_command, "gen:commands"),
+            (ex.describe_event, "gen:events"),
+            (ex.describe_mode, "gen:modes"),
+            (ex.describe_option, "gen:options"),
+            (ex.describe_option_resolution, "gen:options"),
+            (ex.customize, "gen:customize"),
+        ];
+        for (id, expected) in cases {
+            let cmd = registry.lookup(id.0).unwrap();
+            let spec = registry.ex_command_spec(id.0).unwrap();
+            assert_eq!(
+                spec.args_schema[0].completion,
+                Some(*expected),
+                "{} should complete against {expected}",
+                cmd.name
+            );
+        }
+    }
+
+    #[test]
+    fn lsp_admin_commands_complete_against_server_ids() {
+        // `:lsp-log`, `:lsp-trace`, `:lsp-trace-log`,
+        // `:lsp-restart`, `:lsp-log-clear` all take a server-id
+        // argument; each must offer `gen:lsp-servers` so `<Tab>`
+        // surfaces the currently-running set.
+        let (registry, ex, _) = fixture();
+        let cases: &[crate::ExCommandId] = &[
+            ex.lsp_log,
+            ex.lsp_trace,
+            ex.lsp_restart,
+            ex.lsp_log_clear,
+        ];
+        for id in cases {
+            let cmd = registry.lookup(id.0).unwrap();
+            let spec = registry.ex_command_spec(id.0).unwrap();
+            assert_eq!(
+                spec.args_schema[0].completion,
+                Some("gen:lsp-servers"),
+                "{} should complete against gen:lsp-servers",
+                cmd.name
+            );
+        }
+        // `:lsp-log-level` completes against the level palette
+        // (subsystem-wide common form). The two-token
+        // `<server> <level>` form parses correctly at submit; only
+        // the first token gets candidates today.
+        let cmd = registry.lookup(ex.lsp_log_level.0).unwrap();
+        let spec = registry.ex_command_spec(ex.lsp_log_level.0).unwrap();
+        assert_eq!(
+            spec.args_schema[0].completion,
+            Some("gen:log-levels"),
+            "{} should complete against gen:log-levels",
+            cmd.name
+        );
     }
 }

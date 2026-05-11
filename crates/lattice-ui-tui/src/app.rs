@@ -2744,6 +2744,32 @@ mod tests {
     }
 
     #[test]
+    fn every_advertised_completion_source_resolves_at_boot() {
+        // Every `ArgSpec::completion = Some(...)` declared in
+        // `lattice_grammar::ex_commands` must resolve to a
+        // generator registered at App boot. Otherwise typing
+        // `<Tab>` on that arg silently produces no candidates --
+        // the bug class that motivated this slice.
+        let a = app_with("hi", 5);
+        for name in a.registry.names() {
+            let id = a.registry.id_by_name(name).unwrap();
+            let Some(spec) = a.registry.ex_command_spec(id) else {
+                continue;
+            };
+            for arg in &spec.args_schema {
+                if let Some(source) = arg.completion {
+                    assert!(
+                        a.completion_registry.generator_by_name(source).is_some(),
+                        "{name}'s arg `{}` advertises completion source `{source}` \
+                         but no generator with that name is registered at boot",
+                        arg.name,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn modal_label_reports_state() {
         let mut a = app_with("", 10);
         assert_eq!(a.modal_label(), "NORMAL");

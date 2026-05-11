@@ -57,6 +57,13 @@ pub enum RegistrationError {
 /// buffer carries its own (M.3 lands the field on `Document`).
 /// Activation methods take `&mut ActiveModes` so the registry
 /// can mutate the caller's set after validation succeeds.
+///
+/// `Clone` is cheap: each entry is an `Arc<dyn Mode>` so the
+/// HashMap clone is shallow over the values. Used by tests that
+/// need to register a test-only mode post-boot via
+/// `Arc::make_mut(&mut app.mode_registry)`; production code
+/// constructs the registry once at boot and never clones.
+#[derive(Clone)]
 pub struct ModeRegistry {
     modes: HashMap<ModeId, Arc<dyn Mode>>,
 }

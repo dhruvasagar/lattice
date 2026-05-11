@@ -1105,8 +1105,8 @@ mod tests {
     fn recompute_options_overlays_active_mode_contributions() {
         let mut a = app_with("hi", 5);
         let buf = a.document_buffer_id;
-        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
-            .expect("mode_registry should be uniquely held in test setup");
+        // See dispatch.rs notes for `make_mut` vs `get_mut`.
+        let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
         let mode_id = registry
             .register(OptionContributingMode::new())
             .expect("register");
@@ -1135,8 +1135,8 @@ mod tests {
     fn buffer_local_override_beats_mode_contribution() {
         let mut a = app_with("hi", 5);
         let buf = a.document_buffer_id;
-        let registry = std::sync::Arc::get_mut(&mut a.mode_registry)
-            .expect("mode_registry uniquely held");
+        // See dispatch.rs notes for `make_mut` vs `get_mut`.
+        let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
         let mode_id = registry
             .register(OptionContributingMode::new())
             .expect("register");

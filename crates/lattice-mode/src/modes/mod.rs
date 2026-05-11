@@ -38,7 +38,9 @@ pub mod help;
 pub mod hover;
 pub mod text;
 
-pub use completion::{ActiveCompletionSources, CompletionMode, CompletionPopupMode};
+pub use completion::{
+    ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode,
+};
 pub use display::{
     CurrentLineHighlightMode, LineNumbersMode, ReadOnlyMode, RelativeLineNumbersMode,
     WhitespaceShowMode, WrapMode,
@@ -80,6 +82,14 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(CompletionPopupMode)
         .expect("completion-popup-mode must register without conflict");
+    // CSM.4: buffer-words-mode -- first source-contributing
+    // mode. Auto-activates on writable kinds via
+    // `auto_activated_minors_for_buffer_kind`; the popup's
+    // all-sources view and `<C-b>` filter both consume its
+    // contribution.
+    registry
+        .register(BufferWordsMode)
+        .expect("buffer-words-mode must register without conflict");
     // M.7.0: display minor modes -- user-toggleable wrappers
     // around typed display options.
     registry
@@ -120,6 +130,7 @@ mod tests {
         assert!(registry.is_registered(HoverMode::mode_id()));
         assert!(registry.is_registered(CompletionMode::mode_id()));
         assert!(registry.is_registered(CompletionPopupMode::mode_id()));
+        assert!(registry.is_registered(BufferWordsMode::mode_id()));
         // M.7.0 display minors.
         assert!(registry.is_registered(LineNumbersMode::mode_id()));
         assert!(registry.is_registered(RelativeLineNumbersMode::mode_id()));

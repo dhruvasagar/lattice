@@ -2278,6 +2278,31 @@ graceful error handling per CLAUDE.md.
   inactive on Help, gate blocks trigger when inactive,
   the two modes track independently); `<C-x><C-o>` test
   inverted to assert no-binding. Workspace 2563 → 2568.
+- CSM.4 -- ✅ landed (first source migration).
+  `BufferWordsMode` minor in `lattice-mode::modes::completion`
+  (placement note: ideally `lattice-completion::modes` but
+  dep-cycle through CSM.1's `Mode::completion_sources()`
+  return type forces the thin `Mode` adapter to live here;
+  the underlying `BufferWordsSource` stays in
+  `lattice-completion::insert`). Contributes one
+  `CompletionSourceContribution` with `id =
+  "gen:buffer-words"`, `default_priority = 100`,
+  `popup_filter_chord = Some('b')`,
+  `kind = Sync(Arc::new(BufferWordsSource::new()))`.
+  `BufferWordsSource` gains an `impl SyncCompletionSource`
+  alongside its legacy `InsertSource` impl (parity during
+  the migration; the latter retires when every source has
+  moved). Auto-activates on Document via
+  `auto_activated_minors_for_buffer_kind`. The hardcoded
+  buffer-words call in `populate_insert_completion_sync` is
+  removed -- the cache-driven path (CSM.3) is the sole
+  population route now.
+  Three CSM.3 tests updated to reflect the cache being
+  non-empty by default (boot now seeds `gen:buffer-words`);
+  the test that previously asserted "fallback to hardcoded
+  path" renamed to "populates via mode-contributed source."
+  Workspace 2568 stable (3 tests updated in-place; no net
+  count change).
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

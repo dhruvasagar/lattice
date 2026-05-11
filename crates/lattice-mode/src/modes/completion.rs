@@ -32,7 +32,11 @@
 //! reversing direction would require `Mode` itself to live in
 //! completion.
 
-use lattice_completion::CompletionSourceContribution;
+use std::sync::Arc;
+
+use lattice_completion::{
+    BufferWordsSource, CompletionSourceContribution, CompletionSourceKind, SourceId,
+};
 use lattice_config::OptionOverrideSet;
 
 use crate::{
@@ -62,6 +66,62 @@ impl Mode for CompletionMode {
     }
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
+    }
+    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        Ok(())
+    }
+    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        Ok(())
+    }
+}
+
+/// CSM.4 (insert-completion.md §12 first source migration):
+/// `buffer-words-mode` -- contributes the buffer-words
+/// completion source. Auto-activates on writable buffer kinds
+/// (Document) so the popup's all-sources view shows words
+/// scraped from the active buffer's text. `popup_filter_chord =
+/// Some('b')` ⇒ `<C-b>` inside `completion-popup-mode` narrows
+/// the popup to buffer-words only.
+///
+/// Placement: lives in `lattice-mode::modes::completion`
+/// alongside `CompletionMode`. Ideal location would be
+/// `lattice-completion::modes` (the "feature crate owns its
+/// mode" rule), but `Mode` is defined in `lattice-mode` and the
+/// dep direction is `lattice-mode` → `lattice-completion`
+/// (CSM.1); the `Mode` impl can't live in `lattice-completion`
+/// without a cycle. The source struct (`BufferWordsSource`)
+/// stays in `lattice-completion::insert` where it belongs;
+/// only the thin `Mode` adapter sits here.
+pub struct BufferWordsMode;
+
+impl BufferWordsMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("buffer-words-mode")
+    }
+}
+
+impl Mode for BufferWordsMode {
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
+    fn options(&self) -> OptionOverrideSet {
+        OptionOverrideSet::default()
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
+        vec![CompletionSourceContribution {
+            id: SourceId::new(BufferWordsSource::ID),
+            default_priority: 100,
+            auto_trigger: true,
+            trigger_chars: Vec::new(),
+            popup_filter_chord: Some('b'),
+            kind: CompletionSourceKind::Sync(Arc::new(BufferWordsSource::new())),
+        }]
     }
     fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
         Ok(())

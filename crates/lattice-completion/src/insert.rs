@@ -757,6 +757,18 @@ impl InsertSource for BufferWordsSource {
     }
 }
 
+/// CSM.4: the new mode-driven trait surface. Same `produce()`
+/// body as the legacy `InsertSource` impl; carried as a peer
+/// during the migration so the existing hardcoded path keeps
+/// working while the mode-contributed path lights up. The
+/// hardcoded call will retire once every source has migrated
+/// (CSM.8 wraps it up).
+impl crate::source::SyncCompletionSource for BufferWordsSource {
+    fn produce(&self, ctx: &InsertContext<'_>) -> Vec<RawCandidate> {
+        <Self as InsertSource>::produce(self, ctx)
+    }
+}
+
 /// Walk `text` yielding contiguous identifier-character runs
 /// (alphanumeric + `_`). Allocation-free; iteration cost is
 /// linear in `text.len()`.

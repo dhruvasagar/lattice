@@ -276,7 +276,13 @@ pub fn default_minor_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId>
 /// chord is a silent no-op there.
 pub fn auto_activated_minors_for_buffer_kind(kind: BufferKind) -> Vec<ModeId> {
     match kind {
-        BufferKind::Document => vec![lattice_mode::CompletionMode::mode_id()],
+        BufferKind::Document => vec![
+            lattice_mode::CompletionMode::mode_id(),
+            // CSM.4: buffer-words-mode auto-activates on every
+            // Document; contributes the buffer-words source to
+            // the popup's `ActiveCompletionSources` cache.
+            lattice_mode::BufferWordsMode::mode_id(),
+        ],
         // Read-only kinds: nothing to add. (`help-mode` /
         // `oil-mode` / `file-tree-mode` are already activated
         // via their major's default-minor path.)

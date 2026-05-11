@@ -354,14 +354,11 @@ impl App {
                 // CSM.8 wires the LSP source through this branch.
             }
         }
-        // Source 1: buffer-words.
-        let buffer_words_id = lattice_completion::SourceId::new(
-            lattice_completion::BufferWordsSource::ID,
-        );
-        if effective.source_enabled(&buffer_words_id) {
-            let buffer_words = lattice_completion::BufferWordsSource::new();
-            raw.extend(lattice_completion::InsertSource::produce(&buffer_words, &ctx));
-        }
+        // CSM.4: buffer-words is now contributed via
+        // `buffer-words-mode` (read from
+        // `ActiveCompletionSources` above). The legacy
+        // hardcoded call is retired; the cache-driven path
+        // populates the popup. Tests pin behaviour parity.
         // Source 2: snippets (Phase 4.2.g.4). Resolve the
         // active language so per-language snippets surface
         // ahead of any-language `*` packs. Snippet meta lives
@@ -2384,56 +2381,51 @@ mod tests {
 
     // ---- CSM.3: ActiveCompletionSources cache ----
 
-    /// At rest (no mode-contributing source yet), the
-    /// `ActiveCompletionSources` cache is seeded but empty. The
-    /// reader path in `populate_insert_completion_sync` walks
-    /// nothing; the existing hardcoded calls (buffer-words /
-    /// snippet / tree-sitter) populate the popup as before.
+    /// CSM.4: buffer-words-mode auto-activates on Document so
+    /// the cache contains its contribution at boot.
     #[test]
-    fn active_completion_sources_seeded_empty_at_boot() {
+    fn active_completion_sources_seeded_with_buffer_words_at_boot() {
         let a = app_with("alpha bravo", 10);
         let cache = a
             .buffer_locals
             .get(&a.document_buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .expect("cache should be seeded at boot");
-        assert!(cache.0.is_empty(), "no mode contributes a source yet");
+        assert_eq!(
+            cache.0.len(),
+            1,
+            "only buffer-words-mode contributes a source today; got {:?}",
+            cache.0.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        );
+        assert_eq!(cache.0[0].id.as_str(), "gen:buffer-words");
+        assert_eq!(cache.0[0].popup_filter_chord, Some('b'));
     }
 
-    /// CSM.4 -- CSM.8 land one source-contributing mode at a
-    /// time; until then the cache is empty and the hardcoded
-    /// path keeps the popup populated. Pin behavior parity:
-    /// triggering the popup with the cache empty still produces
-    /// buffer-words candidates.
+    /// CSM.4: triggering the popup populates candidates via
+    /// the mode-contributed `buffer-words` source through the
+    /// cache reader. No hardcoded call path anymore -- the
+    /// only way candidates show up is via the
+    /// `ActiveCompletionSources` walk.
     #[test]
-    fn empty_cache_falls_through_to_hardcoded_sources() {
+    fn buffer_words_populates_via_mode_contributed_source() {
         let mut a = app_with("alpha bravo charlie ", 10);
         a.modal = ModalState::Insert;
         a.cursor = Position::new(0, 20);
-        // Cache is empty (CSM.4 hasn't migrated buffer-words
-        // yet).
-        let cache_size = a
-            .buffer_locals
-            .get(&a.document_buffer_id)
-            .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
-            .map(|c| c.0.len())
-            .unwrap_or(0);
-        assert_eq!(cache_size, 0);
         a.do_completion_trigger();
         let state = a.insert_completion.as_ref().expect("popup open");
         let labels: Vec<String> =
             state.rendered.iter().map(|c| c.raw.text.clone()).collect();
         assert!(
             labels.contains(&"alpha".to_string()),
-            "buffer-words fallback path should still populate",
+            "buffer-words should populate via the mode-contributed path; \
+             got candidates: {labels:?}",
         );
     }
 
-    /// The cache recomputes on mode transitions -- recompute
-    /// after activating a synthetic source-contributing mode
-    /// produces a populated cache. CSM.4+ exercise this with
-    /// real contributing modes; here we use a test-only stub
-    /// to pin the wiring.
+    /// The cache recomputes on mode transitions -- registering
+    /// and activating a synthetic source-contributing mode adds
+    /// its contribution to the cache (alongside the auto-active
+    /// buffer-words contribution).
     #[test]
     fn active_completion_sources_recomputes_after_activation() {
         use lattice_completion::{
@@ -2481,13 +2473,24 @@ mod tests {
         let buffer_id = a.document_buffer_id;
         a.activate_mode_by_id(buffer_id, mode_id);
 
+        // CSM.4: buffer-words-mode contributes too, so the
+        // cache holds two entries -- the auto-active
+        // `gen:buffer-words` plus the freshly-activated
+        // `gen:stub-csm3`.
         let cache = a
             .buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .expect("cache present");
-        assert_eq!(cache.0.len(), 1, "stub mode's source should be cached");
-        assert_eq!(cache.0[0].id.as_str(), "gen:stub-csm3");
+        let ids: Vec<_> = cache.0.iter().map(|c| c.id.as_str().to_string()).collect();
+        assert!(
+            ids.contains(&"gen:buffer-words".to_string()),
+            "buffer-words contribution should remain; got {ids:?}",
+        );
+        assert!(
+            ids.contains(&"gen:stub-csm3".to_string()),
+            "stub mode's source should be cached; got {ids:?}",
+        );
 
         a.deactivate_mode_by_id(buffer_id, mode_id);
         let cache = a
@@ -2495,7 +2498,13 @@ mod tests {
             .get(&buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .expect("cache present");
-        assert!(cache.0.is_empty(), "cache should clear after deactivation");
+        let ids: Vec<_> = cache.0.iter().map(|c| c.id.as_str().to_string()).collect();
+        assert!(
+            !ids.contains(&"gen:stub-csm3".to_string()),
+            "stub source should drop after deactivation; got {ids:?}",
+        );
+        // buffer-words remains (its mode is still active).
+        assert!(ids.contains(&"gen:buffer-words".to_string()));
     }
 
     /// `completion_popup_active()` reads the mode-active state,

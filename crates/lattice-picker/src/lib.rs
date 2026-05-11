@@ -134,6 +134,15 @@ pub enum RoutingPayload {
     /// variant because `(line, col)` drift as the buffer is
     /// edited; a stale identity would mis-rank candidates.
     JumpInBuffer { buffer_id: u32, line: u32, col: u32 },
+    /// Invoke an ex-command by stable id. Emitted by the
+    /// command palette (`:picker commands`); the host resolves
+    /// `id` against its `CommandRegistry`, builds a
+    /// `CommandInvocation`, and routes through the same
+    /// dispatcher the `:` line uses. `args` carries any
+    /// pre-supplied positional arguments (the command palette
+    /// today emits `Args::None`; future "pick a thing, then
+    /// run a command on it" flows will carry richer values).
+    InvokeCommand { id: String, args: lattice_grammar::args::Args },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves

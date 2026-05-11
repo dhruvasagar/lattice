@@ -115,9 +115,11 @@ fn build_lsp_subsystem(
 /// register themselves through dedicated
 /// `register_picker_sources` entry points once their
 /// generator impls land.
-fn built_in_picker_registry() -> lattice_picker::PickerRegistry {
+fn built_in_picker_registry(
+    command_registry: Arc<lattice_grammar::CommandRegistry>,
+) -> lattice_picker::PickerRegistry {
     let mut reg = lattice_picker::PickerRegistry::new();
-    for generator in crate::picker_sources::first_party_generators() {
+    for generator in crate::picker_sources::first_party_generators(command_registry) {
         reg.register_generator(generator);
     }
     reg
@@ -333,11 +335,16 @@ impl App {
         // Feature crates (lattice-lsp, lattice-snippet, ...) will
         // eventually register their sources through dedicated
         // entry points before this point; slice 13 of the picker
-        // design adds the trait that makes that possible. Today's
-        // built-in set covers the three sources the dispatch
-        // table currently handles (`files`, `recent`, `buffers`).
+        // design adds the trait that makes that possible.
+        //
+        // Wrap the command registry in `Arc` early so picker
+        // sources that capture it (CommandsSource) can clone
+        // here. The `let registry = Arc::new(registry);` below
+        // -- now redundant after this move -- is the original
+        // wrap-point preserved for downstream reuse.
+        let registry = Arc::new(registry);
         let picker_registry: Arc<lattice_picker::PickerRegistry> =
-            Arc::new(built_in_picker_registry());
+            Arc::new(built_in_picker_registry(registry.clone()));
         completion_registry.register_generator(
             "gen:picker-sources",
             "Every source id registered with the `PickerRegistry`; \
@@ -383,9 +390,9 @@ impl App {
         // Hand the document to the actor (DESIGN.md §5.7). After
         // this call the only way to read or mutate it is through
         // the returned `DocumentHandle` -- the App holds no other
-        // reference. The registry moves into an `Arc` so the
-        // actor and the App share it without lifetime gymnastics.
-        let registry = Arc::new(registry);
+        // reference. The registry is already `Arc<...>` (wrapped
+        // earlier so picker sources that capture it could clone
+        // their share); we just hand the actor a clone here.
         let document = spawn_document(document, registry.clone());
         let snapshot_cache = document.snapshot_cache();
         let document_buffer_id = BufferId::next();

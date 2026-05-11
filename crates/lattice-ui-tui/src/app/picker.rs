@@ -193,10 +193,20 @@ impl App {
                 EchoLevel::Error,
                 format!("picker: JumpToMark `{name}` not yet wired (lands with marks picker)"),
             ),
-            InvokeCommand { id, .. } => self.set_message(
-                EchoLevel::Error,
-                format!("picker: InvokeCommand `{id}` not yet wired (lands with command palette)"),
-            ),
+            InvokeCommand { id, .. } => {
+                // Strip the `ex:` registration prefix so the parser
+                // sees the user-facing command word. The parser
+                // accepts the canonical id as well, but the alias
+                // is what `:apropos` / `:describe-command` would
+                // show, so we route through it for consistency.
+                // Args are intentionally ignored at this layer
+                // today: the command palette emits `Args::None`,
+                // and future "pick a thing, then run a command on
+                // it" flows can serialize args into the
+                // execute_ex_line string.
+                let user_facing = id.strip_prefix("ex:").unwrap_or(&id).to_string();
+                self.execute_ex_line(&user_facing);
+            }
             PasteRegister { name } => self.set_message(
                 EchoLevel::Error,
                 format!("picker: PasteRegister `{name}` not yet wired (lands with registers picker)"),
@@ -873,6 +883,14 @@ impl App {
                     },
                 );
             }
+            lattice_picker::RoutingPayload::InvokeCommand { id, args } => {
+                // Reachability-guard for the same reason as
+                // `JumpInBuffer`: trait-driven sources set
+                // `source_id` and intercept above.
+                self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::InvokeCommand { id, args },
+                );
+            }
         }
     }
 }
@@ -1506,7 +1524,10 @@ mod tests {
         // Built-in registry seeds the first-party sources;
         // PickerRegistry::iter is id-sorted so popup order is
         // stable. Each new source migration extends this list.
-        assert_eq!(ids, vec!["buffers", "files", "jumps", "lines", "recent"]);
+        assert_eq!(
+            ids,
+            vec!["buffers", "commands", "files", "jumps", "lines", "recent"]
+        );
         // Sanity: matches what the registry itself reports.
         let registry_ids: Vec<&'static str> = app.picker_registry.ids().collect();
         let mut expected: Vec<String> = registry_ids.iter().map(|s| s.to_string()).collect();

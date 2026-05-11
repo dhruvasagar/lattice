@@ -12,6 +12,9 @@
 use std::sync::Arc;
 
 use lattice_completion::{CandidateKind, RawCandidate};
+use lattice_grammar::CommandRegistry;
+use lattice_grammar::args::Args;
+use lattice_grammar::command::CommandKind;
 use lattice_picker::{
     PickerAcceptOutcome, PickerContext, PickerInitResult, PickerSourceGenerator,
     PickerSourceSpec, RoutingPayload, SourceResult,
@@ -446,17 +449,134 @@ impl PickerSourceGenerator for JumpsSource {
     }
 }
 
+/// `:picker commands`. Walks the App's `CommandRegistry`
+/// and emits one row per registered ex-command (motions,
+/// operators, etc. are not user-invocable through this
+/// surface and stay out). Captures an `Arc<CommandRegistry>`
+/// at construction time -- the registry doesn't live on
+/// `PickerContext` because it's static App-wide state, not
+/// per-invocation snapshot data.
+pub struct CommandsSource {
+    pub spec: PickerSourceSpec,
+    pub registry: Arc<CommandRegistry>,
+}
+
+impl CommandsSource {
+    pub fn new(registry: Arc<CommandRegistry>) -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                "commands",
+                "Ex-command palette. Walks the CommandRegistry; `<CR>` invokes the chosen command.",
+            ),
+            registry,
+        }
+    }
+}
+
+impl PickerSourceGenerator for CommandsSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(
+        &self,
+        _ctx: &PickerContext<'_>,
+        _args: &[String],
+    ) -> SourceResult<PickerInitResult> {
+        // Walk registry names, keep ex-commands, project to
+        // (user-facing, canonical, doc). The user-facing name
+        // strips the `ex:` registration prefix where one exists
+        // (mode-toggle ex-commands like `buffer-words-mode`
+        // register without it).
+        let mut rows: Vec<(String, String, String)> = self
+            .registry
+            .names()
+            .filter_map(|canonical| {
+                let spec = self.registry.lookup_by_name(canonical)?;
+                if !matches!(spec.kind, CommandKind::ExCommand) {
+                    return None;
+                }
+                let user_facing = canonical
+                    .strip_prefix("ex:")
+                    .unwrap_or(canonical)
+                    .to_string();
+                Some((user_facing, canonical.to_string(), spec.doc.clone()))
+            })
+            .collect();
+        // Sort by user-facing name so the popup matches the
+        // alphabetic order users see.
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        if rows.is_empty() {
+            return Err("commands: no ex-commands registered".into());
+        }
+        // Right-pad the name column so doc text aligns
+        // across rows. Width adapts to the longest user-facing
+        // name.
+        let name_width = rows.iter().map(|(uf, _, _)| uf.len()).max().unwrap_or(0);
+        let pairs = rows
+            .into_iter()
+            .map(|(user_facing, canonical, doc)| {
+                let one_line_doc: String = doc
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(120)
+                    .collect();
+                let display = format!(
+                    "{:<width$}  {}",
+                    user_facing,
+                    one_line_doc,
+                    width = name_width,
+                );
+                let mut cand = RawCandidate::plain(user_facing, CandidateKind::Plain);
+                cand.display = display;
+                (
+                    cand,
+                    RoutingPayload::InvokeCommand {
+                        id: canonical,
+                        args: Args::None,
+                    },
+                )
+            })
+            .collect();
+        Ok(PickerInitResult::Inline(pairs))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::InvokeCommand { id, args } => {
+                Ok(PickerAcceptOutcome::InvokeCommand {
+                    id: id.clone(),
+                    args: args.clone(),
+                })
+            }
+            other => Err(format!("commands: unexpected routing payload {other:?}")),
+        }
+    }
+}
+
 /// Convenience: build the first-party source generators as
 /// `Arc<dyn PickerSourceGenerator>` ready to register against
 /// a `PickerRegistry`. Used by `App::new` to boot the
-/// registry.
-pub fn first_party_generators() -> Vec<Arc<dyn PickerSourceGenerator>> {
+/// registry. Sources that need App-wide state captured at
+/// construction (e.g. `CommandsSource` -> `CommandRegistry`)
+/// take the relevant `Arc` here so the trait surface stays
+/// state-handle-free.
+pub fn first_party_generators(
+    command_registry: Arc<CommandRegistry>,
+) -> Vec<Arc<dyn PickerSourceGenerator>> {
     vec![
         Arc::new(FilesSource::new()),
         Arc::new(RecentFilesSource::new()),
         Arc::new(BuffersSource::new()),
         Arc::new(LinesSource::new()),
         Arc::new(JumpsSource::new()),
+        Arc::new(CommandsSource::new(command_registry)),
     ]
 }
 
@@ -561,9 +681,13 @@ mod tests {
 
     #[test]
     fn first_party_generators_returns_all_built_in_sources() {
-        let generators = first_party_generators();
+        let app = app_with("hi\n", 5);
+        let generators = first_party_generators(app.registry.clone());
         let ids: Vec<&'static str> = generators.iter().map(|g| g.spec().id).collect();
-        assert_eq!(ids, vec!["files", "recent", "buffers", "lines", "jumps"]);
+        assert_eq!(
+            ids,
+            vec!["files", "recent", "buffers", "lines", "jumps", "commands"]
+        );
     }
 
     /// P.6: jumps source returns `Err` when the position
@@ -577,6 +701,72 @@ mod tests {
         let source = JumpsSource::new();
         let err = source.init(&ctx, &[]).unwrap_err();
         assert!(err.contains("position history is empty"), "got {err}");
+    }
+
+    /// P.7: commands source emits one row per registered
+    /// ex-command, sorted, with `InvokeCommand` routing
+    /// payloads that strip the `ex:` registration prefix
+    /// (kept as the canonical id) while displaying the
+    /// user-facing alias the popup matches against.
+    #[test]
+    fn commands_source_emits_ex_commands_only() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = CommandsSource::new(app.registry.clone());
+        let result = source.init(&ctx, &[]).expect("inline");
+        let PickerInitResult::Inline(pairs) = result else {
+            panic!("expected Inline");
+        };
+        assert!(!pairs.is_empty(), "should have at least one command");
+        // Every row routes through InvokeCommand carrying the
+        // canonical `ex:`-prefixed registration name.
+        for (cand, routing) in &pairs {
+            match routing {
+                RoutingPayload::InvokeCommand { id, .. } => {
+                    // Routing payload carries the canonical
+                    // registration name verbatim (with `ex:`
+                    // prefix where the command uses one, bare
+                    // otherwise -- mode toggles like
+                    // `buffer-words-mode` register without).
+                    assert!(!id.is_empty());
+                }
+                other => panic!("expected InvokeCommand, got {other:?}"),
+            }
+            // Display text strips any `ex:` prefix so the popup
+            // matches what the user would type at `:`.
+            assert!(!cand.text.starts_with("ex:"), "got {}", cand.text);
+        }
+        // Sorted: alphabetic by user-facing name.
+        let texts: Vec<&str> = pairs.iter().map(|(c, _)| c.text.as_str()).collect();
+        let mut sorted = texts.clone();
+        sorted.sort();
+        assert_eq!(texts, sorted);
+    }
+
+    /// P.7: accept on `InvokeCommand` routing returns the
+    /// matching outcome, carrying the canonical id +
+    /// supplied args verbatim.
+    #[test]
+    fn commands_source_accept_translates_invoke_command() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = CommandsSource::new(app.registry.clone());
+        let routing = RoutingPayload::InvokeCommand {
+            id: "ex:write".into(),
+            args: Args::None,
+        };
+        let outcome = source.accept(&ctx, &routing).expect("ok");
+        match outcome {
+            PickerAcceptOutcome::InvokeCommand { id, args } => {
+                assert_eq!(id, "ex:write");
+                assert!(matches!(args, Args::None));
+            }
+            other => panic!("expected InvokeCommand, got {other:?}"),
+        }
+        let bad = RoutingPayload::OpenFile { path: "/tmp/x".into() };
+        assert!(source.accept(&ctx, &bad).is_err());
     }
 
     /// P.6: synthesise a couple of position-history entries

@@ -37,12 +37,12 @@ impl FilesSource {
         Self {
             spec: PickerSourceSpec {
                 id: "files",
-                doc: "Workspace file picker. Walks the current root (or supplied path) and emits one row per regular file.",
+                doc: "File picker rooted at the current working directory (recursive). Pass an explicit path to override.",
                 args_hint: "[root]",
                 args_schema: vec![ArgSpec {
                     name: "root",
                     kind: ArgKind::String,
-                    doc: "Directory to walk. Absent = current document's parent / cwd.",
+                    doc: "Directory to walk recursively. Absent = current working directory.",
                     prompt: "root:",
                     default: ArgDefault::None,
                     completion: Some("gen:files"),
@@ -65,13 +65,23 @@ impl PickerSourceGenerator for FilesSource {
 
     fn init(
         &self,
-        ctx: &PickerContext<'_>,
+        _ctx: &PickerContext<'_>,
         args: &[String],
     ) -> SourceResult<PickerInitResult> {
-        let root: std::path::PathBuf = args
-            .first()
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| ctx.workspace_root.to_path_buf());
+        // Default to the process's current working directory
+        // (recursive). This matches what users typically
+        // expect from `:files` -- the same root `:e` paths
+        // resolve against. Earlier slices defaulted to the
+        // active document's parent dir which behaved
+        // unintuitively for projects spread across many
+        // subdirectories. Users who want a different root
+        // pass it explicitly: `:picker files <path>`.
+        let root: std::path::PathBuf = match args.first() {
+            Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+            _ => std::env::current_dir().map_err(|e| {
+                format!("files: failed to read current directory: {e}")
+            })?,
+        };
         let canonical_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
         let entries = crate::app::picker::walk_files_for_picker(&canonical_root);
         if entries.is_empty() {

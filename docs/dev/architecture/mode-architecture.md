@@ -2222,6 +2222,33 @@ graceful error handling per CLAUDE.md.
   `app/completion.rs` against the field (they run mid-apply,
   before the sync tail). 7 new tests (3 in lattice-mode, 4
   in lattice-ui-tui). Workspace 2551 → 2558.
+- CSM.3 -- ✅ landed.
+  `ActiveCompletionSources(Vec<CompletionSourceContribution>)`
+  buffer-local newtype in `lattice-mode::modes::completion`
+  (owner_mode = `"completion-mode"`). New
+  `App::recompute_active_completion_sources_for(buffer_id)`
+  walks `active_modes[buffer_id]`, calls
+  `mode.completion_sources()` on each, stores the merged
+  list into the cache. Wired into every mode-transition
+  site -- `activate_buffer_kind_modes`,
+  `activate_mode_by_id`, `deactivate_mode_by_id`, and
+  `sync_completion_mode_activation` -- so the cache stays
+  in lockstep with `active_modes`. Cost is amortised at
+  mode-transition rate, not keystroke rate.
+  `populate_insert_completion_sync` reads the cache and
+  invokes each contributed Sync source's `produce()` before
+  the v1 hardcoded calls; cache is empty in practice today
+  (no mode contributes yet -- CSM.4 lights up the first
+  one), so the hardcoded path keeps the popup populated.
+  Per-language `EffectiveCompletionConfig.source_enabled`
+  still gates each contribution.
+  Two existing tests updated to filter their descriptor
+  assertions on the owner mode (CSM.3's `completion-mode`-
+  owned local coexists with `help-mode` / `file-tree-mode`
+  locals on the same buffer). 5 new tests (2 in
+  lattice-mode for the buffer-local trait shape, 3 in
+  lattice-ui-tui for the recompute + reader + fallback
+  path). Workspace 2558 → 2563.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

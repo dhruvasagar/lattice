@@ -282,6 +282,51 @@ impl App {
         }
     }
 
+    /// CSM.3 (insert-completion.md §12.4): recompute the
+    /// `ActiveCompletionSources` buffer-local for `buffer` by
+    /// walking `active_modes[buffer]` and calling
+    /// `mode.completion_sources()` on each. Aggregator reads
+    /// the cached result on the popup-open / refilter path; this
+    /// runs at mode-transition rate, not keystroke rate, so the
+    /// allocation cost is amortised away from the hot path.
+    ///
+    /// Empty in practice today -- no mode contributes a source
+    /// yet. CSM.4 (`buffer-words-mode`) is the first slice that
+    /// lights up the cache; CSM.5 -- CSM.8 add the rest. Until
+    /// then, `populate_insert_completion_sync` reads the cache,
+    /// finds it empty, and falls through to the v1 hardcoded
+    /// calls -- proving the read path works without changing
+    /// behaviour.
+    pub fn recompute_active_completion_sources_for(
+        &mut self,
+        buffer: crate::buffers::BufferId,
+    ) {
+        let mut merged: Vec<lattice_completion::CompletionSourceContribution> = Vec::new();
+        if let Some(modes_snapshot) = self.active_modes.get(&buffer).cloned() {
+            if let Some(major_id) = modes_snapshot.major()
+                && let Some(major) = self.mode_registry.get(major_id)
+            {
+                merged.extend(major.completion_sources());
+            }
+            for &minor_id in modes_snapshot.minors() {
+                if let Some(minor) = self.mode_registry.get(minor_id) {
+                    merged.extend(minor.completion_sources());
+                }
+            }
+        }
+        // Always seed -- empty is meaningful ("this buffer has
+        // zero contributed sources"). Absent vs empty would be
+        // equivalent to the reader, but the always-seed shape
+        // keeps `:describe-buffer` honest: a buffer where the
+        // popup *could* open but doesn't have any active sources
+        // shows up with a count of 0, rather than just looking
+        // like the cache hasn't run yet.
+        self.buffer_locals
+            .entry(buffer)
+            .or_default()
+            .insert(lattice_mode::ActiveCompletionSources(merged));
+    }
+
     /// Read a resolved option's value for `buffer`. Returns the
     /// option's bootstrap default if the cache for `buffer`
     /// hasn't been recomputed yet (transient state during boot

@@ -2345,14 +2345,24 @@ mod tests {
         a.do_open_file_tree(Some(tmp.clone()));
         let tree_id = a.active_pane_buffer_id();
         let locals = a.buffer_locals.get(&tree_id).unwrap();
-        let descriptors: Vec<_> = locals.iter_descriptors().collect();
-        assert!(descriptors.len() >= 3);
-        for d in &descriptors {
-            assert_eq!(d.owner_mode, "file-tree-mode");
+        // file-tree-mode-owned locals (root / entries /
+        // nerd-fonts). Other locals (e.g.
+        // `ActiveCompletionSources` from CSM.3) may coexist on
+        // the same buffer; the file-tree subset must still be
+        // namespaced correctly.
+        let tree_descriptors: Vec<_> = locals
+            .iter_descriptors()
+            .filter(|d| d.owner_mode == "file-tree-mode")
+            .collect();
+        assert!(
+            tree_descriptors.len() >= 3,
+            "file-tree-mode should seed root/entries/nerd-fonts, got {tree_descriptors:?}",
+        );
+        for d in &tree_descriptors {
             assert!(
                 d.name.starts_with("file-tree-mode."),
-                "name {:?} should be namespaced under file-tree-mode",
-                d.name
+                "file-tree-mode local name {:?} should be namespaced under file-tree-mode",
+                d.name,
             );
         }
         let _ = std::fs::remove_dir_all(&tmp);

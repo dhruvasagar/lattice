@@ -141,6 +141,10 @@ impl App {
         self.active_modes.insert(buffer_id, active);
         self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
+        // CSM.3: keep `ActiveCompletionSources` in lockstep with
+        // the active-modes set. Empty in practice until CSM.4
+        // ships the first source-contributing mode.
+        self.recompute_active_completion_sources_for(buffer_id);
         // M.5.2: post-activation hook -- if the buffer is now on a
         // language major with a configured LSP server, auto-
         // activate `lsp-mode`. Modelled as a synchronous hook
@@ -242,6 +246,7 @@ impl App {
         self.active_modes.insert(buffer_id, active);
         self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
+        self.recompute_active_completion_sources_for(buffer_id);
         // M.5.2: when a major activates (whether by direct call,
         // `:<major-name>` toggle, or buffer-creation path), run
         // the LSP auto-activation hook. Skipped for minor
@@ -301,6 +306,7 @@ impl App {
         self.active_modes.insert(buffer_id, active);
         self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
+        self.recompute_active_completion_sources_for(buffer_id);
         // M.5.3: lsp-mode deactivate side-effect -- send didClose
         // to attached servers (`lsp_close_buffer` already does
         // this for the bdelete path) and emit

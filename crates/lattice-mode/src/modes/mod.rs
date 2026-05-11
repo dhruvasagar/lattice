@@ -38,7 +38,7 @@ pub mod help;
 pub mod hover;
 pub mod text;
 
-pub use completion::CompletionMode;
+pub use completion::{ActiveCompletionSources, CompletionMode};
 pub use display::{
     CurrentLineHighlightMode, LineNumbersMode, ReadOnlyMode, RelativeLineNumbersMode,
     WhitespaceShowMode, WrapMode,

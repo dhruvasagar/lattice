@@ -643,6 +643,12 @@ impl App {
         }
         self.active_modes.insert(buffer_id, active);
         self.buffer_locals.insert(buffer_id, locals);
+        // CSM.3: completion-mode itself doesn't contribute sources
+        // (it consumes them), but a transition into / out of
+        // completion-mode is still a mode-set change for the
+        // buffer -- recompute the active-sources cache so the
+        // engine reads a coherent snapshot.
+        self.recompute_active_completion_sources_for(buffer_id);
     }
 
     /// Re-derive `App.theme`'s renderer-specific [`Style`] values

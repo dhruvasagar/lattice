@@ -39,9 +39,12 @@
 //! of the mode so the gate is mode-driven rather than
 //! state-driven.
 
+use lattice_completion::CompletionSourceContribution;
 use lattice_config::OptionOverrideSet;
 
-use crate::{CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind};
+use crate::{
+    BufferLocal, CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind,
+};
 
 /// The completion popup's engine minor. See module docs.
 pub struct CompletionMode;
@@ -86,6 +89,38 @@ impl Mode for CompletionMode {
     }
 }
 
+/// CSM.3 (insert-completion.md §12.4): cached active completion-
+/// source set for a buffer. The host
+/// (`App::recompute_active_completion_sources_for`) recomputes
+/// this on every mode-activation / -deactivation transition by
+/// walking `active_modes` and calling
+/// `mode.completion_sources()` on each. The aggregator reads
+/// the cache on the popup-open / refilter path -- O(1) buffer-
+/// local lookup, never a walk over every active mode per
+/// keystroke.
+///
+/// `OWNER_MODE` is `"completion-mode"` because the engine mode
+/// is what consumes the cache; the cache is meaningless when
+/// `completion-mode` is inactive (no popup is open). Sources
+/// are *contributed* by other minors (`lsp-completion-mode`,
+/// `buffer-words-mode`, ...); the cache merges their
+/// contributions for the engine to consume.
+#[derive(Debug, Clone, Default)]
+pub struct ActiveCompletionSources(pub Vec<CompletionSourceContribution>);
+
+impl BufferLocal for ActiveCompletionSources {
+    const NAME: &'static str = "completion-mode.active-sources";
+    const DOC: &'static str =
+        "Cached active insert-completion source set for this \
+         buffer. Recomputed on every mode-activation / \
+         -deactivation transition; read by the aggregator on \
+         the popup-open / refilter path.";
+    const OWNER_MODE: &'static str = "completion-mode";
+    fn describe(&self) -> String {
+        format!("{} source(s)", self.0.len())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +161,28 @@ mod tests {
         // contributor. Sources come from other minors
         // (`lsp-completion-mode`, `buffer-words-mode`, ...).
         assert!(CompletionMode.completion_sources().is_empty());
+    }
+
+    #[test]
+    fn active_completion_sources_describes_count() {
+        // The buffer-local's `describe()` is what
+        // `:describe-buffer`'s descriptor surface renders.
+        let empty = ActiveCompletionSources::default();
+        assert_eq!(empty.describe(), "0 source(s)");
+    }
+
+    #[test]
+    fn active_completion_sources_is_a_buffer_local() {
+        // Trait shape check: the type satisfies BufferLocal so
+        // it can be stored in BufferLocals and surfaced through
+        // `iter_descriptors`. CSM.4 -- CSM.8 verify the
+        // production read path lights up under each migrated
+        // source.
+        let mut locals = BufferLocals::new();
+        locals.insert(ActiveCompletionSources(Vec::new()));
+        assert!(locals.get::<ActiveCompletionSources>().is_some());
+        let d = locals.iter_descriptors().next().expect("descriptor");
+        assert_eq!(d.name, "completion-mode.active-sources");
+        assert_eq!(d.owner_mode, "completion-mode");
     }
 }

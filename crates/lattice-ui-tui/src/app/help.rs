@@ -2267,15 +2267,25 @@ mod tests {
         let help = crate::help::HelpContent::from_lines("t", vec!["body".into()]);
         let help_id = a.open_help_in_pane(help);
         let locals = a.buffer_locals.get(&help_id).unwrap();
-        // Every seeded local should claim help-mode as its owner.
-        let descriptors: Vec<_> = locals.iter_descriptors().collect();
-        assert!(!descriptors.is_empty());
-        for d in &descriptors {
-            assert_eq!(d.owner_mode, "help-mode");
+        // Help-mode-owned locals (links / anchors / highlights)
+        // all live under the help-mode namespace. Other locals
+        // (e.g. `ActiveCompletionSources` owned by
+        // completion-mode -- CSM.3) may coexist on the same
+        // buffer; the help-mode subset must still be namespaced
+        // correctly.
+        let help_descriptors: Vec<_> = locals
+            .iter_descriptors()
+            .filter(|d| d.owner_mode == "help-mode")
+            .collect();
+        assert!(
+            !help_descriptors.is_empty(),
+            "help-mode-owned locals should be seeded",
+        );
+        for d in &help_descriptors {
             assert!(
                 d.name.starts_with("help-mode."),
-                "name {:?} should be namespaced under help-mode",
-                d.name
+                "help-mode local name {:?} should be namespaced under help-mode",
+                d.name,
             );
         }
     }

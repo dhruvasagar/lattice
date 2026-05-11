@@ -8,6 +8,9 @@ license.workspace = true
 [dependencies]
 lattice-completion = { path = "../lattice-completion" }
 lattice-grammar = { path = "../lattice-grammar" }
+lattice-core = { path = "../lattice-core" }
+lattice-protocol = { path = "../lattice-protocol" }
+tokio = { workspace = true, features = ["sync"] }
 
 [lints]
 workspace = true

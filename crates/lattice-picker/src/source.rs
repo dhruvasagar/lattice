@@ -36,8 +36,16 @@
 //! `register`, `get`, `iter`. Nothing host-specific leaks in.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
-use lattice_grammar::args::ArgSpec;
+use lattice_completion::candidate::RawCandidate;
+use lattice_grammar::args::{Args, ArgSpec};
+use tokio::sync::mpsc;
+
+use crate::RoutingPayload;
+use crate::context::PickerContext;
+use crate::outcome::PickerAcceptOutcome;
 
 /// Static metadata describing one picker source.
 ///
@@ -123,6 +131,112 @@ impl PickerRegistry {
     }
 }
 
+/// Source-side fallible result. Errors are user-facing
+/// strings the host echoes verbatim. Wrapping in
+/// `Result<...,String>` rather than a typed error keeps the
+/// WIT mirror (Phase 7) trivial -- plugin-emitted errors
+/// cross the boundary as strings.
+pub type SourceResult<T> = Result<T, String>;
+
+/// One batch of `(candidate, routing payload)` pairs from a
+/// source. Identical shape across all three init flavors;
+/// the host's seat / append paths use it uniformly.
+pub type CandidateBatch = Vec<(RawCandidate, RoutingPayload)>;
+
+/// One-shot async future a source returns when the
+/// candidate set requires off-thread work (LSP request,
+/// large directory walk, etc.). `'static + Send` because
+/// the source extracted everything it needs from the
+/// context during the synchronous `init` call and moved it
+/// into the closure.
+pub type CandidateFuture =
+    Pin<Box<dyn Future<Output = SourceResult<CandidateBatch>> + Send>>;
+
+/// Streaming source channel. Sources spawn a producer task
+/// during `init` and return the receiver; the host pumps
+/// each batch into the picker incrementally so the popup
+/// updates as results arrive (live-grep, future
+/// live-LSP-completion).
+pub type CandidateStream = mpsc::UnboundedReceiver<SourceResult<CandidateBatch>>;
+
+/// Three init shapes covering every Phase 4-8 picker
+/// pattern. The choice is per-invocation -- a single source
+/// can return different shapes depending on args (e.g. a
+/// future grep source could `Inline` an empty result on
+/// empty pattern, `Stream` otherwise).
+pub enum PickerInitResult {
+    /// Sync sources (files, recent, lines, marks, registers,
+    /// jumps, commands, snippets, tree-sitter outline).
+    Inline(CandidateBatch),
+    /// One-shot async (LSP references / definitions /
+    /// symbols / code actions / diagnostics snapshot).
+    Future(CandidateFuture),
+    /// Multi-batch streaming (live-grep subprocess, future
+    /// live LSP completion).
+    Stream(CandidateStream),
+}
+
+impl std::fmt::Debug for PickerInitResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PickerInitResult::Inline(batch) => f
+                .debug_struct("Inline")
+                .field("len", &batch.len())
+                .finish(),
+            PickerInitResult::Future(_) => f.debug_struct("Future").finish_non_exhaustive(),
+            PickerInitResult::Stream(_) => f.debug_struct("Stream").finish_non_exhaustive(),
+        }
+    }
+}
+
+/// Source generators implement this trait. Registered into
+/// [`PickerRegistry`] at boot; the `:picker <source>`
+/// dispatcher looks up by `spec().id` and calls `init` to
+/// obtain candidates, then `accept` to translate the user's
+/// chosen routing payload into a typed outcome.
+///
+/// **Lifetime story.** `init` and `accept` borrow `&self`
+/// (so the generator must be `Sync`) and the
+/// `PickerContext<'_>` for the duration of the synchronous
+/// call. The borrow is released the moment the method
+/// returns; any captured async work owns its own clones
+/// (extract URIs, positions, Arc handles, etc. into the
+/// closure during the sync prelude).
+///
+/// **Send + Sync.** The registry stores generators as
+/// `Arc<dyn PickerSourceGenerator>` and shares them across
+/// the App + tokio task threads. Both bounds are required.
+pub trait PickerSourceGenerator: Send + Sync {
+    /// Generator metadata. Returned by reference so the
+    /// registry can stamp it into `:describe-picker` /
+    /// `:picker <Tab>` listings without cloning.
+    fn spec(&self) -> &PickerSourceSpec;
+
+    /// Build the candidate set. Sync prelude: read what's
+    /// needed from `ctx`, clone into async captures if
+    /// necessary, return the appropriate `PickerInitResult`
+    /// variant. Synchronous errors (no active buffer when
+    /// one was required, args validation failure) return
+    /// `Err`; the host echoes the error and leaves the
+    /// picker closed.
+    fn init(
+        &self,
+        ctx: &PickerContext<'_>,
+        args: &Args,
+    ) -> SourceResult<PickerInitResult>;
+
+    /// Translate the user's chosen routing payload into a
+    /// typed `PickerAcceptOutcome` the host applies. The
+    /// generator owns the mapping from its emitted
+    /// routing-payload variant(s) to outcome(s); mismatch
+    /// returns `Err`, which the host echoes.
+    fn accept(
+        &self,
+        ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome>;
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -179,5 +293,73 @@ mod tests {
         reg.register(spec("mu"));
         let ids: Vec<&'static str> = reg.ids().collect();
         assert_eq!(ids, vec!["alpha", "mu", "zeta"]);
+    }
+
+    /// Slice 13a: a no-op test generator that confirms the
+    /// trait is object-safe (storable as `Arc<dyn ...>`) and
+    /// the `init` / `accept` calling convention compiles. The
+    /// generator returns an empty inline batch and a NoOp
+    /// outcome; real sources land in slice 13c.
+    struct TestGenerator {
+        spec: PickerSourceSpec,
+    }
+
+    impl PickerSourceGenerator for TestGenerator {
+        fn spec(&self) -> &PickerSourceSpec {
+            &self.spec
+        }
+
+        fn init(
+            &self,
+            _ctx: &PickerContext<'_>,
+            _args: &Args,
+        ) -> SourceResult<PickerInitResult> {
+            Ok(PickerInitResult::Inline(Vec::new()))
+        }
+
+        fn accept(
+            &self,
+            _ctx: &PickerContext<'_>,
+            _routing: &RoutingPayload,
+        ) -> SourceResult<PickerAcceptOutcome> {
+            Ok(PickerAcceptOutcome::NoOp)
+        }
+    }
+
+    /// Trait-object usability check. If this compiles, the
+    /// trait is object-safe and the registry can hold it.
+    #[test]
+    fn picker_source_generator_is_object_safe() {
+        use std::sync::Arc;
+
+        let g: Arc<dyn PickerSourceGenerator> = Arc::new(TestGenerator {
+            spec: PickerSourceSpec::no_args("test", "test generator"),
+        });
+        assert_eq!(g.spec().id, "test");
+    }
+
+    /// `PickerInitResult` Debug doesn't leak the future /
+    /// stream internals -- guards against accidental
+    /// `Debug` bounds creeping in on `CandidateFuture`.
+    #[test]
+    fn picker_init_result_debug_is_terse() {
+        let inline: PickerInitResult = PickerInitResult::Inline(Vec::new());
+        let d = format!("{inline:?}");
+        assert!(d.contains("Inline"));
+        assert!(d.contains("len: 0"));
+    }
+
+    /// Stream + future variant smoke: confirm they at least
+    /// construct + Debug without panicking.
+    #[test]
+    fn picker_init_result_stream_and_future_construct() {
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let s = PickerInitResult::Stream(rx);
+        assert!(format!("{s:?}").contains("Stream"));
+
+        let f: PickerInitResult = PickerInitResult::Future(Box::pin(async {
+            Ok::<CandidateBatch, String>(Vec::new())
+        }));
+        assert!(format!("{f:?}").contains("Future"));
     }
 }

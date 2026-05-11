@@ -45,9 +45,18 @@
 //! design that the registry, source generators, and MRU
 //! pipeline will land on top of this data model.
 
+pub mod context;
+pub mod outcome;
 pub mod source;
 
-pub use source::{PickerRegistry, PickerSourceSpec};
+pub use context::{
+    ActiveBufferSnapshot, BufferEntry, PickerContext, PositionEntry, PositionSource,
+};
+pub use outcome::PickerAcceptOutcome;
+pub use source::{
+    CandidateBatch, CandidateFuture, CandidateStream, PickerInitResult, PickerRegistry,
+    PickerSourceGenerator, PickerSourceSpec, SourceResult,
+};
 
 use std::path::PathBuf;
 

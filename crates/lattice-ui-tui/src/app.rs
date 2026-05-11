@@ -1061,6 +1061,13 @@ pub struct App {
     /// entry; the navigation action chooses both direction and filter.
     pub position_history: Vec<PositionEntry>,
     pub position_history_cursor: usize,
+    /// P.2: MRU list of canonical paths the user has opened via
+    /// `:edit` (or any path that flowed through `do_edit`).
+    /// Newest first; dedup keeps a single entry per path. Capped
+    /// at `MAX_RECENT_FILES`. Surfaces in `:recent` (the
+    /// recent-files picker) and as input to per-language /
+    /// per-workspace history features later.
+    pub recent_files: Vec<std::path::PathBuf>,
     /// Vim-style tag stack (DESIGN.md §5.1.1 follow-up). Distinct
     /// from the jump list: every "drill-down" navigation
     /// (`gd` / `gD` / `gy` / `gI` and their multi-result picker

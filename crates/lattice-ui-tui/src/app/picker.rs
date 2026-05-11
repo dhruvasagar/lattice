@@ -264,6 +264,44 @@ impl App {
         self.picker = Some(picker);
     }
 
+    /// P.2: `:recent` -- open the recent-files picker. Walks
+    /// `App.recent_files` (MRU, newest first); each row routes
+    /// through `RoutingPayload::OpenFile`. Display is the
+    /// canonical absolute path so the user can distinguish
+    /// same-name files from different roots. Empty MRU echoes
+    /// "no recent files."
+    pub(super) fn open_recent_files_picker(&mut self) {
+        if self.recent_files.is_empty() {
+            self.set_message(EchoLevel::Info, "no recent files".to_string());
+            return;
+        }
+        let items: Vec<(
+            lattice_completion::RawCandidate,
+            crate::picker::RoutingPayload,
+        )> = self
+            .recent_files
+            .iter()
+            .map(|p| {
+                let display = p.display().to_string();
+                let cand = lattice_completion::RawCandidate::plain(
+                    display,
+                    lattice_completion::CandidateKind::Plain,
+                );
+                (
+                    cand,
+                    crate::picker::RoutingPayload::OpenFile { path: p.clone() },
+                )
+            })
+            .collect();
+        let mut picker = crate::picker::Picker::new(
+            "recent",
+            crate::picker::PickerSource::Files,
+            crate::picker::PickerAction::OpenFile,
+        );
+        picker.set_raw_candidates_with_routing(items);
+        self.picker = Some(picker);
+    }
+
     pub(super) fn open_buffer_picker(&mut self) {
         let active = self.active_pane_buffer_id();
         let mut p = crate::picker::Picker::new(
@@ -898,6 +936,80 @@ mod tests {
         assert!(app.picker.is_none());
         let msg = app.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no files"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// P.2: `push_recent_file` keeps MRU order (newest first),
+    /// dedups repeats, and caps at the configured ceiling. The
+    /// canonicalised path is what lands in the list, so
+    /// re-pushing the same path collapses to one entry.
+    #[test]
+    fn push_recent_file_is_mru_and_dedupes() {
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-recent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let a_path = tmp.join("a.rs");
+        let b_path = tmp.join("b.rs");
+        let c_path = tmp.join("c.rs");
+        std::fs::write(&a_path, "").unwrap();
+        std::fs::write(&b_path, "").unwrap();
+        std::fs::write(&c_path, "").unwrap();
+        let mut app = app_with("hi\n", 5);
+        app.push_recent_file(&a_path);
+        app.push_recent_file(&b_path);
+        app.push_recent_file(&c_path);
+        // Newest first.
+        let canon_a = std::fs::canonicalize(&a_path).unwrap();
+        let canon_b = std::fs::canonicalize(&b_path).unwrap();
+        let canon_c = std::fs::canonicalize(&c_path).unwrap();
+        assert_eq!(app.recent_files, vec![canon_c.clone(), canon_b.clone(), canon_a.clone()]);
+        // Re-pushing `a` floats it to the front and drops the
+        // older occurrence -- list length stays at 3.
+        app.push_recent_file(&a_path);
+        assert_eq!(app.recent_files, vec![canon_a, canon_c, canon_b]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// P.2: empty MRU echoes "no recent files" and leaves the
+    /// picker closed.
+    #[test]
+    fn open_recent_files_picker_empty_echoes() {
+        let mut app = app_with("hi\n", 5);
+        app.open_recent_files_picker();
+        assert!(app.picker.is_none());
+        let msg = app.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no recent files"));
+    }
+
+    /// P.2: each recent-files row carries an `OpenFile { path }`
+    /// routing payload pointing to the (canonicalised) path the
+    /// user previously `:edit`ed, in MRU order.
+    #[test]
+    fn open_recent_files_picker_seeds_open_file_routing() {
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-recent-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let alpha = tmp.join("alpha.rs");
+        let beta = tmp.join("beta.rs");
+        std::fs::write(&alpha, "").unwrap();
+        std::fs::write(&beta, "").unwrap();
+        let mut app = app_with("hi\n", 5);
+        app.push_recent_file(&alpha);
+        app.push_recent_file(&beta);
+        app.open_recent_files_picker();
+        let p = app.picker.as_ref().expect("picker open");
+        assert_eq!(p.candidates.len(), 2);
+        // First candidate (selected) routes to the freshly-pushed
+        // `beta` -- newest first.
+        let first = p.selected_candidate().expect("selected");
+        match p.routing_for(first).expect("routing") {
+            crate::picker::RoutingPayload::OpenFile { path } => {
+                assert_eq!(path, &std::fs::canonicalize(&beta).unwrap());
+            }
+            other => panic!("expected OpenFile, got {other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

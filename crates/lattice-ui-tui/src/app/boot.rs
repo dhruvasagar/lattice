@@ -473,6 +473,7 @@ impl App {
             pending_register: None,
             position_history: Vec::new(),
             position_history_cursor: 0,
+            recent_files: Vec::new(),
             tag_stack: Vec::new(),
             pending_tag_origin: None,
             macros: HashMap::new(),

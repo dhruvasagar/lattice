@@ -481,6 +481,7 @@ impl App {
                     format!("\"{}\" (already open)", target.display()),
                 );
             }
+            self.push_recent_file(&target);
             return;
         }
         // Brand-new file: open a fresh actor and register it.
@@ -550,6 +551,24 @@ impl App {
         // Event-driven LSP attach.
         self.publish_document_opened_for_active();
         self.set_message(EchoLevel::Info, format!("\"{}\" opened", target.display()));
+        self.push_recent_file(&target);
+    }
+
+    /// P.2: push `path` onto the MRU `recent_files` list -- newest
+    /// first, deduped, capped at [`MAX_RECENT_FILES`]. Canonicalises
+    /// when possible so a path opened twice with different casing /
+    /// symlink routings still collapses to one entry. Called from
+    /// every `:edit` success branch.
+    pub(super) fn push_recent_file(&mut self, path: &std::path::Path) {
+        const MAX_RECENT_FILES: usize = 50;
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        // Drop any existing occurrence so the freshly-pushed entry
+        // floats to the front.
+        self.recent_files.retain(|p| p != &canonical);
+        self.recent_files.insert(0, canonical);
+        if self.recent_files.len() > MAX_RECENT_FILES {
+            self.recent_files.truncate(MAX_RECENT_FILES);
+        }
     }
 
     /// `:w[rite] [path]` -- save the active buffer to disk. Oil

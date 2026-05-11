@@ -179,6 +179,11 @@ pub enum Effect {
     OpenFilePicker {
         root: Option<std::path::PathBuf>,
     },
+    /// `:recent` -- open the recent-files picker. Walks
+    /// `App.recent_files` (MRU, newest first); accept opens the
+    /// chosen path through the same `OpenFile` routing as
+    /// `:files`. Empty MRU echoes "no recent files."
+    OpenRecentFilesPicker,
     /// `:bd[elete][!]` -- close the active document buffer.
     /// `force = true` discards unsaved changes.
     BufferDelete {

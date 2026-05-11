@@ -484,6 +484,19 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let _recent_files_picker = registry.register_ex_command(
+        "ex:recent",
+        "Open the recent-files picker (`:recent`). Walks the MRU list of `:edit`ed paths; `<CR>` edits the chosen file.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::OpenRecentFilesPicker)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let file_tree = registry.register_ex_command(
         "ex:filetree",
         "Open a file-tree buffer (`:Filetree [path]`). Absent = current dir.",

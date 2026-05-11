@@ -338,12 +338,59 @@ impl Picker {
     /// `routing_meta.len()` in length; mismatched lengths reset
     /// to zero-bonus so the picker stays in a sane state if a
     /// caller miscounts (mostly a guardrail for tests).
+    ///
+    /// Callers that already have both pairs + bonuses in hand
+    /// should prefer
+    /// [`Self::set_raw_candidates_with_routing_and_bonuses`] --
+    /// it sets all three vecs and refilters once, vs. this
+    /// path which leaves a wasted refilter behind from the
+    /// preceding `set_raw_candidates_with_routing` call.
     pub fn set_mru_bonuses(&mut self, bonuses: Vec<f64>) {
         if bonuses.len() != self.routing_meta.len() {
             self.mru_bonuses = vec![0.0; self.routing_meta.len()];
         } else {
             self.mru_bonuses = bonuses;
         }
+        self.refilter();
+    }
+
+    /// Single-pass seat: mutate `raw` + `routing_meta` +
+    /// `mru_bonuses` and refilter exactly once. The
+    /// fast-path replacement for the
+    /// `set_raw_candidates_with_routing` + `set_mru_bonuses`
+    /// pair the host's trait-driven seat path used before
+    /// this method existed -- which refiltered twice, with
+    /// the first pass entirely wasted because the bonuses
+    /// were about to replace the same data.
+    ///
+    /// Mismatched-length bonuses zero out (same guardrail as
+    /// [`Self::set_mru_bonuses`]). Legacy callers that don't
+    /// have bonuses yet keep using `set_raw_candidates_with_routing`
+    /// + `set_mru_bonuses`; the new method is opt-in.
+    pub fn set_raw_candidates_with_routing_and_bonuses(
+        &mut self,
+        items: Vec<(RawCandidate, RoutingPayload)>,
+        bonuses: Vec<f64>,
+    ) {
+        let mut raw: Vec<RawCandidate> = Vec::with_capacity(items.len());
+        let mut routing: Vec<RoutingPayload> = Vec::with_capacity(items.len());
+        for (mut cand, payload) in items {
+            let idx = routing.len() as u32;
+            cand.data = CandidateData::Extension {
+                kind_id: PICKER_ROUTING_KIND_ID,
+                payload: idx.to_le_bytes().to_vec(),
+            };
+            raw.push(cand);
+            routing.push(payload);
+        }
+        let bonuses = if bonuses.len() == raw.len() {
+            bonuses
+        } else {
+            vec![0.0; raw.len()]
+        };
+        self.raw = raw;
+        self.routing_meta = routing;
+        self.mru_bonuses = bonuses;
         self.refilter();
     }
 

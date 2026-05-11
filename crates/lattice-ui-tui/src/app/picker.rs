@@ -695,8 +695,8 @@ impl App {
             Self::picker_source_for(&source),
             Self::picker_action_for(&source),
         );
-        picker.set_raw_candidates_with_routing(pairs);
-        picker.set_mru_bonuses(bonuses);
+        // Single-pass seat: one refilter instead of two.
+        picker.set_raw_candidates_with_routing_and_bonuses(pairs, bonuses);
         picker.source_id = Some(source.clone());
         if source == "buffers" {
             picker.preview_origin = Some(self.active_pane_buffer_id().0);
@@ -1722,7 +1722,10 @@ mod tests {
         std::fs::write(tmp.join("beta.rs"), "").unwrap();
         let mut app = app_with("hi\n", 5);
         // Disable persistence -- we don't want this test
-        // touching the user's real cache.
+        // touching the user's real cache. Also clear any
+        // pre-loaded entries from disk so the assertions
+        // measure deltas, not absolute counts.
+        app.picker_mru.clear();
         app.picker_mru_path = None;
         // Open the files picker and accept the alphabetically-
         // first candidate (alpha.rs sorts before beta.rs in
@@ -1821,7 +1824,12 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("alpha.rs"), "").unwrap();
         let mut app = app_with("hi\n", 5);
+        // Start from an empty MRU regardless of what's on the
+        // user's disk cache; we measure the delta caused by
+        // the accept, not the absolute count.
+        app.picker_mru.clear();
         app.picker_mru_path = None;
+        let before = app.picker_mru.len();
         // Disable MRU.
         app.config
             .parse_and_set_command("picker.mru.enabled=false")
@@ -1829,8 +1837,12 @@ mod tests {
         app.open_picker("files".into(), vec![tmp.display().to_string()]);
         let _ = app.picker.as_ref().expect("picker open");
         app.apply(Action::PickerAccept);
-        // With MRU off, nothing is recorded.
-        assert_eq!(app.picker_mru.len(), 0, "no records when MRU is off");
+        // With MRU off, the accept must not add a record.
+        assert_eq!(
+            app.picker_mru.len(),
+            before,
+            "accept with MRU off must not change the index"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

@@ -84,8 +84,7 @@ fn seated_picker(n: usize) -> Picker {
     let mru = build_mru(n, SystemTime::now());
     let bonuses = compute_bonuses(&mru, &pairs, SystemTime::now());
     let mut picker = Picker::new("files", PickerSource::Files, PickerAction::OpenFile);
-    picker.set_raw_candidates_with_routing(pairs);
-    picker.set_mru_bonuses(bonuses);
+    picker.set_raw_candidates_with_routing_and_bonuses(pairs, bonuses);
     picker
 }
 
@@ -110,8 +109,9 @@ fn open_inline(c: &mut Criterion) {
                         PickerSource::Files,
                         PickerAction::OpenFile,
                     );
-                    picker.set_raw_candidates_with_routing(pairs);
-                    picker.set_mru_bonuses(bonuses);
+                    // Single-pass seat (one refilter); matches
+                    // the host's trait-driven open path.
+                    picker.set_raw_candidates_with_routing_and_bonuses(pairs, bonuses);
                     black_box(picker);
                 },
             );

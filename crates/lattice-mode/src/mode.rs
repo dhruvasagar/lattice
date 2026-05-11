@@ -116,6 +116,28 @@ pub trait Mode: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// Insert-mode completion sources this mode contributes while
+    /// active on a buffer. Empty by default; minors that own a
+    /// completion source (`lsp-completion-mode`,
+    /// `snippet-completion-mode`, `buffer-words-mode`,
+    /// `tree-sitter-completion-mode`, `path-completion-mode`,
+    /// plugin sources) override.
+    ///
+    /// The host resolves and caches the active source set per
+    /// buffer at mode-activation / -deactivation transitions (see
+    /// `insert-completion.md` §12.4); the keystroke-frequency
+    /// refilter pays an O(1) buffer-local lookup, never a walk
+    /// over every active mode. Implementations are therefore
+    /// allowed to allocate inside this method -- it runs at mode-
+    /// transition rate, not keystroke rate.
+    ///
+    /// CSM.1 lands the trait method (default empty); CSM.4 --
+    /// CSM.8 migrate the existing hardcoded sources into mode
+    /// contributions, one source at a time.
+    fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution> {
+        Vec::new()
+    }
+
     /// Capabilities the mode requires. Validated at activation;
     /// missing capability ⇒
     /// [`ModeActivationError::MissingCapability`], never silent
@@ -190,5 +212,70 @@ mod tests {
     #[test]
     fn mode_id_display_is_the_name() {
         assert_eq!(format!("{}", ModeId::new("lsp-mode")), "lsp-mode");
+    }
+
+    /// A bare `Mode` impl that doesn't override
+    /// `completion_sources()` gets the default empty list. Mode
+    /// crates that don't own a completion source (the majority --
+    /// `text-mode`, `rust-mode`, `file-tree-mode`, etc.) rely on
+    /// this default and never see the completion machinery.
+    #[test]
+    fn completion_sources_defaults_to_empty() {
+        struct BareMode;
+        impl Mode for BareMode {
+            fn id(&self) -> ModeId {
+                ModeId::new("bare-mode")
+            }
+            fn kind(&self) -> ModeKind {
+                ModeKind::Minor
+            }
+        }
+        assert!(BareMode.completion_sources().is_empty());
+    }
+
+    /// A mode that DOES contribute a source returns it through
+    /// the new trait method. CSM.4 -- CSM.8 will replace the
+    /// stub source with the real `Sync`/`AsyncCompletionSource`
+    /// impls from each owning crate.
+    #[test]
+    fn mode_can_contribute_a_completion_source() {
+        use lattice_completion::{
+            CompletionSourceContribution, CompletionSourceKind, RawCandidate, SyncCompletionSource,
+            candidate::CandidateKind,
+        };
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct StubSource;
+        impl SyncCompletionSource for StubSource {
+            fn produce(
+                &self,
+                _ctx: &lattice_completion::InsertContext<'_>,
+            ) -> Vec<RawCandidate> {
+                vec![RawCandidate::plain("stub", CandidateKind::Plain)]
+            }
+        }
+        struct StubMode;
+        impl Mode for StubMode {
+            fn id(&self) -> ModeId {
+                ModeId::new("stub-mode")
+            }
+            fn kind(&self) -> ModeKind {
+                ModeKind::Minor
+            }
+            fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
+                vec![CompletionSourceContribution {
+                    id: lattice_completion::SourceId::new("gen:stub"),
+                    default_priority: 100,
+                    auto_trigger: true,
+                    trigger_chars: Vec::new(),
+                    kind: CompletionSourceKind::Sync(Arc::new(StubSource)),
+                }]
+            }
+        }
+        let sources = StubMode.completion_sources();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id.as_str(), "gen:stub");
+        assert_eq!(sources[0].kind.kind_label(), "sync");
     }
 }

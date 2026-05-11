@@ -17,6 +17,13 @@ lattice-protocol = { path = "../lattice-protocol" }
 # in. Cycle through `lattice-core -> lattice-mode` is gone now
 # that `Document::modes` retired.
 lattice-config = { path = "../lattice-config" }
+# CSM.1 (insert-completion.md §12): modes contribute completion
+# sources via `Mode::completion_sources() ->
+# Vec<CompletionSourceContribution>`. The contribution type +
+# trait surface live in `lattice-completion`. Edge already exists
+# transitively (lattice-config -> lattice-completion); the direct
+# dep just makes the import path explicit.
+lattice-completion = { path = "../lattice-completion" }
 
 [lints]
 workspace = true

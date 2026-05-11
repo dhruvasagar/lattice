@@ -850,6 +850,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "internment",
+ "lattice-completion",
  "lattice-config",
  "lattice-protocol",
  "smallvec",

@@ -1552,7 +1552,68 @@ cached-active-sources path against today's hardcoded path,
 asserts the regression budget is under 5% on a 200-candidate
 popup refilter.
 
-### 12.10 Open questions
+### 12.10 Crate layout
+
+The redesign places the trait surface and the built-in sources
+that have no cross-crate dependencies in `lattice-completion`;
+feature-owned sources live with the crate that owns the
+feature; `lattice-ui-tui` holds only the orchestration that
+needs App state. Concretely:
+
+**`lattice-completion`** -- the engine + traits + cross-cutting
+sources:
+
+- New module `source` -- `CompletionSourceContribution`,
+  `CompletionSourceKind`, `SyncCompletionSource`,
+  `AsyncCompletionSource`, `CandidateSink`,
+  `InsertContextSnapshot`.
+- New module `modes` -- `completion-mode` (engine minor),
+  `buffer-words-mode` (CSM.4), `path-completion-mode`
+  (CSM.7), `ActiveCompletionSources` buffer-local
+  newtype, the `register_completion_modes` boot helper.
+- Existing surface: `InsertCompletionState`, the fuzzy
+  matcher, the ranker, `PerLanguageOverrides`,
+  `BufferWordsSource` (consumed by `buffer-words-mode`).
+- **No tokio dep.** Async sources hand back a generic
+  `Future` via `Pin<Box<...>>`; the host runs it on its
+  own runtime. Keeps the crate WASM-plugin-targetable.
+
+**Feature-owned modes** -- each lives with the crate that owns
+its feature, per the "a mode lives with its feature" rule:
+
+- `lattice-snippet::modes::SnippetCompletionMode` +
+  `SnippetCompletionSource` (CSM.5).
+- `lattice-syntax::modes::TreeSitterCompletionMode` +
+  `TreeSitterSymbolSource` (CSM.6).
+- `lattice-lsp::completion::LspCompletionSource`;
+  `LspCompletionMode` already lives in
+  `lattice-lsp::modes`. CSM.8 connects them.
+
+**`lattice-ui-tui`** -- orchestration only, App-state-bound:
+
+- `App.insert_completion: Option<InsertCompletionState>`
+  ownership + the per-frame mailbox drain that merges
+  async-source pushes into `state.raw`.
+- `completion-mode` activation/deactivation on popup
+  open / close (`do_completion_trigger` /
+  `do_completion_cancel`).
+- The `ActiveCompletionSources` recompute hook -- runs on
+  every `active_modes` transition for a buffer; writes
+  the cached source list back into the buffer-local.
+- The popup renderer (cursor-anchored layout, columns,
+  match-face painting).
+- The popup keymap routing layer
+  (`COMPLETION_POPUP_LAYER`).
+- `effective_completion_for(language)` (per-language TOML
+  filter), since it reads typed options off `App.config`.
+
+After CSM.8 lands, the TUI crate no longer references
+`lsp_types::CompletionItem` directly -- it drains
+`RawCandidate`s like every other source. `lsp-completion`-shaped
+host code (~200 lines today in `app/lsp.rs`) collapses
+into the same drain path the sync sources use.
+
+### 12.11 Open questions
 
 1. **Source contribution mutability post-activation.** A mode
    today contributes a static `OptionOverrideSet`. Should

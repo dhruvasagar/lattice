@@ -29,6 +29,7 @@ pub mod insert;
 pub mod pipeline;
 pub mod registry;
 pub mod slot;
+pub mod source;
 pub mod traits;
 
 pub use crate::builtins::{CompletionBuiltins, populate};
@@ -49,6 +50,10 @@ pub use crate::registry::{
     RegisteredGenerator, RegisteredMatcher, RegisteredRanker,
 };
 pub use crate::slot::{CommandLineSlot, current_slot};
+pub use crate::source::{
+    AsyncCompletionSource, CandidateSink, CompletionSourceContribution, CompletionSourceKind,
+    InsertContextSnapshot, SyncCompletionSource,
+};
 pub use crate::traits::{
     CandidateAnnotator, CandidateGenerator, CandidateMatcher, CandidateRanker, GenerateContext,
 };

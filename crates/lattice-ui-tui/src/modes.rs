@@ -268,6 +268,22 @@ pub fn default_minor_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId>
     }
 }
 
+/// CSM.K1 (insert-completion.md §12): additional minor modes
+/// the App activates alongside the buffer's major + the kind's
+/// `default_minor`. Today: `completion-mode` on writable kinds
+/// (Document) so `<C-Space>` opens the popup; read-only kinds
+/// (Help, FileTree, Oil) don't activate it, so the trigger
+/// chord is a silent no-op there.
+pub fn auto_activated_minors_for_buffer_kind(kind: BufferKind) -> Vec<ModeId> {
+    match kind {
+        BufferKind::Document => vec![lattice_mode::CompletionMode::mode_id()],
+        // Read-only kinds: nothing to add. (`help-mode` /
+        // `oil-mode` / `file-tree-mode` are already activated
+        // via their major's default-minor path.)
+        BufferKind::Help | BufferKind::FileTree | BufferKind::Oil => Vec::new(),
+    }
+}
+
 /// M.4 follow-up: the per-kind modes (HelpMode, HoverMode,
 /// FileTreeMode, OilMode) moved to `lattice_mode::modes` and
 /// register through `lattice_mode::modes::register_foundation_modes`

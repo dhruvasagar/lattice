@@ -80,6 +80,22 @@ pub struct CompletionSourceContribution {
     /// threshold or manual." The LSP source populates this from
     /// `completionProvider.triggerCharacters` at activation.
     pub trigger_chars: Vec<char>,
+    /// CSM.K1 (insert-completion.md §12): single-char filter
+    /// chord inside `completion-popup-mode`. `Some('o')` ⇒
+    /// `<C-o>` while the popup is live narrows the rendered
+    /// candidate set to *only* this source's contributions
+    /// (mnemonic: o for omni → LSP). `None` ⇒ no dedicated
+    /// chord; the source still participates in the unfiltered
+    /// all-sources view + any TOML allowlist.
+    ///
+    /// CSM.K2 wires the binding -- `completion-popup-mode`'s
+    /// keymap walks `ActiveCompletionSources` at push time and
+    /// registers `<C-?>` for every contribution whose
+    /// `popup_filter_chord` is `Some`. Until then this field
+    /// is plumbing: CSM.4 -- CSM.8 fill it in for each migrated
+    /// source so CSM.K2 can ship one slice's worth of behavior
+    /// at a time.
+    pub popup_filter_chord: Option<char>,
     /// The actual producer -- sync or async.
     pub kind: CompletionSourceKind,
 }
@@ -91,6 +107,7 @@ impl fmt::Debug for CompletionSourceContribution {
             .field("default_priority", &self.default_priority)
             .field("auto_trigger", &self.auto_trigger)
             .field("trigger_chars", &self.trigger_chars)
+            .field("popup_filter_chord", &self.popup_filter_chord)
             .field("kind", &self.kind.kind_label())
             .finish()
     }
@@ -303,6 +320,7 @@ mod tests {
             default_priority: 100,
             auto_trigger: true,
             trigger_chars: vec!['.'],
+            popup_filter_chord: Some('e'),
             kind: CompletionSourceKind::Sync(Arc::new(EchoSync {
                 id: SourceId::new("gen:echo"),
                 items: vec!["x".into()],

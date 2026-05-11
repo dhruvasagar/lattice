@@ -138,6 +138,28 @@ impl App {
                 );
             }
         }
+        // CSM.K1: auto-activate `completion-mode` on writable
+        // kinds so `<C-Space>` opens the popup. Read-only kinds
+        // return an empty Vec from
+        // `auto_activated_minors_for_buffer_kind`; trigger is a
+        // silent no-op there.
+        for minor_id in crate::modes::auto_activated_minors_for_buffer_kind(kind) {
+            if let Err(e) = self.mode_registry.activate_minor(
+                &mut active,
+                &mut locals,
+                proto_id,
+                minor_id,
+                lattice_mode::CapabilitySet::empty(),
+            ) {
+                self.set_message(
+                    EchoLevel::Warn,
+                    format!(
+                        "mode: activate_minor({}) for buffer {} failed: {}",
+                        minor_id, buffer_id.0, e,
+                    ),
+                );
+            }
+        }
         self.active_modes.insert(buffer_id, active);
         self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);

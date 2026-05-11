@@ -71,7 +71,7 @@ pub use crate::event::ModeEvent;
 pub use crate::locals::{BufferLocal, BufferLocals, LocalDescriptor};
 pub use crate::mode::{Mode, ModeId, ModeKind};
 pub use crate::modes::{
-    ActiveCompletionSources, CompletionMode, HelpMode, HoverMode, TextMode,
+    ActiveCompletionSources, CompletionMode, CompletionPopupMode, HelpMode, HoverMode, TextMode,
     register_foundation_modes,
 };
 // M.4 dep-inversion: layer-input types live in `lattice-config`

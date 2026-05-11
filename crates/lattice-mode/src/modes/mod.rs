@@ -38,7 +38,7 @@ pub mod help;
 pub mod hover;
 pub mod text;
 
-pub use completion::{ActiveCompletionSources, CompletionMode};
+pub use completion::{ActiveCompletionSources, CompletionMode, CompletionPopupMode};
 pub use display::{
     CurrentLineHighlightMode, LineNumbersMode, ReadOnlyMode, RelativeLineNumbersMode,
     WhitespaceShowMode, WrapMode,
@@ -68,13 +68,18 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(HoverMode)
         .expect("hover-mode must register without conflict");
-    // CSM.2 (insert-completion.md §12.3): the engine mode the
-    // host activates while the insert-completion popup is open.
-    // Marker mode; the keymap-overlay sync + active-source
-    // resolver read its activation state.
+    // CSM.K1 (insert-completion.md §12): the two-mode split.
+    // `completion-mode` is the persistent gate (auto-active on
+    // writable buffers); `completion-popup-mode` is the
+    // transient popup-active marker the keymap-overlay sync
+    // tracks. Both are marker minors today; the host owns
+    // activation lifecycle.
     registry
         .register(CompletionMode)
         .expect("completion-mode must register without conflict");
+    registry
+        .register(CompletionPopupMode)
+        .expect("completion-popup-mode must register without conflict");
     // M.7.0: display minor modes -- user-toggleable wrappers
     // around typed display options.
     registry
@@ -114,6 +119,7 @@ mod tests {
         assert!(registry.is_registered(HelpMode::mode_id()));
         assert!(registry.is_registered(HoverMode::mode_id()));
         assert!(registry.is_registered(CompletionMode::mode_id()));
+        assert!(registry.is_registered(CompletionPopupMode::mode_id()));
         // M.7.0 display minors.
         assert!(registry.is_registered(LineNumbersMode::mode_id()));
         assert!(registry.is_registered(RelativeLineNumbersMode::mode_id()));

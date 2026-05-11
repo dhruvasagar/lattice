@@ -163,14 +163,11 @@ pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
         CommandInvocation::of(actions.completion_trigger),
         source(),
     );
-    // <C-x><C-o> -- omni-completion (a.k.a. CompletionTrigger).
-    handle.bind(
-        layer,
-        mode,
-        &[lit(KeyChord::ctrl('x')), lit(KeyChord::ctrl('o'))],
-        CommandInvocation::of(actions.completion_trigger),
-        source(),
-    );
+    // CSM.K1: `<C-x><C-o>` (vim omni-completion) retired.
+    // `<C-Space>` is the sole popup-open trigger; per-source
+    // filter chords live inside `completion-popup-mode` (CSM.K2).
+    // `<C-x><C-s>` (snippet-expand-at-cursor) is independent of
+    // the popup family and stays.
     // <C-x><C-s> -- direct snippet expansion.
     handle.bind(
         layer,
@@ -663,20 +660,20 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_x_then_ctrl_o_resolves_to_completion_trigger() {
-        // Slice 8.i.4.b: `<C-x><C-o>` resolves through the
-        // partial_chord prefix.
+    fn ctrl_x_then_ctrl_o_no_longer_binds() {
+        // CSM.K1: `<C-x><C-o>` (vim omni-completion alias)
+        // retired. The chord falls through to the dispatcher
+        // with no Invoke; `<C-Space>` is the sole popup trigger.
         let h = populated_handle();
-        let a = shared_actions();
         let r = dispatch_insert(
             &h,
             &ev(KeyCode::Char('o'), KeyModifiers::CONTROL),
             &[KeyChord::ctrl('x')],
         );
-        match r {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_trigger),
-            other => panic!("expected Invoke(completion_trigger), got {other:?}"),
-        }
+        assert!(
+            !matches!(r, Action::Invoke(_)),
+            "<C-x><C-o> should no longer resolve to an Invoke; got {r:?}",
+        );
     }
 
     #[test]

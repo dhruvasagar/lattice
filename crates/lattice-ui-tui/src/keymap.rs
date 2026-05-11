@@ -415,10 +415,13 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: Insert, chord: "<BS>", doc: "Delete char to the left" },
         keymap_entry! { mode: Insert, chord: "<CR>", doc: "Insert newline" },
         keymap_entry! { mode: Insert, chord: "<Tab>", doc: "Insert tab character" },
-        // ---- Insert-mode completion (Phase 4.2.g.1) ----
+        // ---- Insert-mode completion (Phase 4.2.g.1; CSM.K1
+        // retired the `<C-x><C-o>` alias -- `<C-Space>` is the
+        // sole popup trigger; per-source filter chords live
+        // inside `completion-popup-mode`, contributed via each
+        // source mode's `popup_filter_chord` field).
         keymap_entry! { mode: Insert, chord: "<C-Space>", doc: "Manual completion trigger -- opens the popup with sources matching the prefix at the cursor" },
-        keymap_entry! { mode: Insert, chord: "<C-x>", doc: "Pending: vim's expansion-prefix family (`<C-x><C-o>` -> completion; future siblings: snippet / filename / etc.)" },
-        keymap_entry! { mode: AfterCtrlX, chord: "<C-x><C-o>", doc: "Manual completion trigger -- vim's omni-completion (alias of <C-Space>)" },
+        keymap_entry! { mode: Insert, chord: "<C-x>", doc: "Pending: vim's expansion-prefix family. `<C-x><C-s>` (snippet-expand-at-cursor) is the only live chord today." },
         // Completion-popup minor mode -- bindings active only
         // while `App.insert_completion.is_some()`. Override
         // Insert-mode + Normal-mode meanings (notably <C-d>)

@@ -571,12 +571,14 @@ impl App {
         let want_snippet = self.active_snippet.is_some();
         let have_popup = self.completion_popup_layer.is_some();
         let have_snippet = self.snippet_layer.is_some();
-        // CSM.2: `completion-mode` minor reflects popup state.
-        // The mode is the architectural gate; the keymap-overlay
-        // push / pop is the same diff applied to the keymap-
-        // registry side. Reconcile both here so the two stay in
-        // lockstep.
-        self.sync_completion_mode_activation(want_popup);
+        // CSM.K1: `completion-popup-mode` minor reflects popup
+        // state (formerly `completion-mode` in CSM.2 -- renamed
+        // for the two-mode split where `completion-mode` is now
+        // the persistent buffer-participation gate). The
+        // keymap-overlay push / pop is the same diff applied to
+        // the keymap-registry side; reconcile both here so the
+        // two stay in lockstep.
+        self.sync_completion_popup_mode_activation(want_popup);
         if want_popup == have_popup && want_snippet == have_snippet {
             return;
         }
@@ -606,22 +608,22 @@ impl App {
         }
     }
 
-    /// CSM.2: bring `completion-mode`'s activation state on the
-    /// active document buffer in line with `want_popup`. Called
-    /// from `sync_keymap_overlays` so the mode tracks the popup
-    /// open / close transitions without each
-    /// `self.insert_completion = ...` site having to know about
-    /// the mode.
+    /// CSM.K1: bring `completion-popup-mode`'s activation state
+    /// on the active document buffer in line with `want_popup`.
+    /// Called from `sync_keymap_overlays` so the transient
+    /// popup-mode tracks the popup open / close transitions
+    /// without each `self.insert_completion = ...` site having
+    /// to know about it.
     ///
     /// Per-buffer scope: the popup belongs to the document the
     /// user is typing in. v1 has a single document buffer
     /// (`self.document_buffer_id`); multi-document support
     /// activates this mode on whichever doc owns the popup at
     /// open time when that lands. Deactivation is symmetric.
-    fn sync_completion_mode_activation(&mut self, want_popup: bool) {
+    fn sync_completion_popup_mode_activation(&mut self, want_popup: bool) {
         let buffer_id = self.document_buffer_id;
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mode_id = lattice_mode::CompletionMode::mode_id();
+        let mode_id = lattice_mode::CompletionPopupMode::mode_id();
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
         let currently = active.has_minor(mode_id);
@@ -643,11 +645,13 @@ impl App {
         }
         self.active_modes.insert(buffer_id, active);
         self.buffer_locals.insert(buffer_id, locals);
-        // CSM.3: completion-mode itself doesn't contribute sources
-        // (it consumes them), but a transition into / out of
-        // completion-mode is still a mode-set change for the
-        // buffer -- recompute the active-sources cache so the
-        // engine reads a coherent snapshot.
+        // CSM.3: a transition into / out of completion-popup-mode
+        // is a mode-set change for the buffer -- recompute the
+        // active-sources cache so the engine reads a coherent
+        // snapshot. (completion-popup-mode itself doesn't
+        // contribute sources; the recompute walks all active
+        // modes, so future source-contributing minors that
+        // toggle alongside still get picked up.)
         self.recompute_active_completion_sources_for(buffer_id);
     }
 

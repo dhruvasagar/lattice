@@ -1,43 +1,36 @@
-//! `completion-mode` -- minor mode activated on the document
-//! buffer while an Insert-mode completion popup is open
-//! (insert-completion.md §12). Two responsibilities:
+//! Completion-mode pair (insert-completion.md §12).
 //!
-//! - **Gate the popup-layer chord overlay.** The host's
-//!   `sync_keymap_overlays` pushes / pops the
-//!   `"completion-popup"` keymap layer based on whether this
-//!   mode is active. Same shape `hover-mode` /
-//!   `active-snippet-mode` use; replaces the imperative
-//!   `App.insert_completion.is_some()` flag the v1 wiring
-//!   gated on (CSM.2).
+//! The completion machinery surfaces through two minors with
+//! different lifecycles:
 //!
-//! - **Act as the engine's active marker for source
-//!   resolution.** Sources are contributed by *other* minors
-//!   (`lsp-completion-mode`, `buffer-words-mode`,
-//!   `snippet-completion-mode`, ...). `completion-mode` is
-//!   the engine surface that consumes them; the
-//!   `ActiveCompletionSources` cache (CSM.3) only matters
-//!   when this mode is active because that's the only state
-//!   in which the popup is consuming candidates.
+//! - **`completion-mode`** -- "this buffer participates in
+//!   insert-mode completion." Auto-activates on writable buffer
+//!   kinds (Document) at buffer creation; stays active for the
+//!   buffer's lifetime. Acts as the gate `do_completion_trigger`
+//!   checks before opening the popup -- read-only kinds (Help,
+//!   FileTree, Oil) never activate it, so `<C-Space>` in those
+//!   buffers is a silent no-op.
 //!
-//! Placement: in `lattice-mode::modes` alongside `HelpMode` /
-//! `HoverMode` because:
+//! - **`completion-popup-mode`** -- transient. Active iff the
+//!   candidate popup is live. Owns the popup-internal keymap
+//!   (`<C-n>` / `<C-p>` / `<C-y>` / `<Tab>` / `<CR>` / `<Esc>` /
+//!   `<C-e>` / `<C-d>` / `<C-Space>` / `<C-f>` / `<C-b>` plus
+//!   the per-source filter chords from CSM.K2). Replaces the
+//!   imperative `App.insert_completion.is_some()` flag the v1
+//!   wiring gated on (CSM.2's original `completion-mode`).
 //!
-//! - `lattice-completion` can't host the mode without
-//!   creating a dep cycle (`lattice-mode` already depends on
-//!   `lattice-completion` per CSM.1 for the
-//!   `CompletionSourceContribution` return type on
-//!   `Mode::completion_sources()`).
-//! - The mode is a *framework* minor -- it has no feature
-//!   crate to live with. Same rationale `hover-mode` uses for
-//!   sitting here despite being consumed by LSP hover, the
-//!   lattice-grammar palette, and any future "show some
-//!   markdown in a popup" caller.
+//! Both modes own no contributed options today. The pairing
+//! mirrors `lsp-mode` (umbrella, persistent) + the LSP sub-modes
+//! (per-feature, persistent) -- here the lifecycle distinction
+//! is "persistent on writable buffers" vs "transient with the
+//! popup."
 //!
-//! v1 behavior is marker-only -- empty options, empty
-//! lifecycle. The host owns activation / deactivation and the
-//! keymap-overlay sync; CSM.2 only formalises the existence
-//! of the mode so the gate is mode-driven rather than
-//! state-driven.
+//! Placement: in `lattice-mode::modes` (not `lattice-completion`)
+//! to avoid a dep cycle -- `lattice-mode` already depends on
+//! `lattice-completion` for the `CompletionSourceContribution`
+//! return type on `Mode::completion_sources()` (CSM.1), so
+//! reversing direction would require `Mode` itself to live in
+//! completion.
 
 use lattice_completion::CompletionSourceContribution;
 use lattice_config::OptionOverrideSet;
@@ -46,7 +39,9 @@ use crate::{
     BufferLocal, CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind,
 };
 
-/// The completion popup's engine minor. See module docs.
+/// The "buffer participates in insert-mode completion" marker.
+/// Auto-activates on writable kinds at buffer creation. See
+/// module docs.
 pub struct CompletionMode;
 
 impl CompletionMode {
@@ -63,28 +58,45 @@ impl Mode for CompletionMode {
         ModeKind::Minor
     }
     fn options(&self) -> OptionOverrideSet {
-        // No contributed options today. A future
-        // `completion.popup-anchor` / `completion.docs-side`
-        // could live here once the renderer surface stabilises.
         OptionOverrideSet::default()
     }
     fn required_capabilities(&self) -> CapabilitySet {
-        // Marker mode -- nothing to require.
         CapabilitySet::empty()
     }
     fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        // The popup's `InsertCompletionState` lives on the App
-        // (`App.insert_completion`); the host populates it before
-        // calling `activate_minor` for this mode. Nothing to do
-        // here -- the mode being active is the signal the keymap
-        // overlay + active-source resolver read.
         Ok(())
     }
     fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        // Symmetric: the host drops `App.insert_completion`
-        // before calling `deactivate_minor`. The mode going
-        // inactive is the signal the keymap overlay pops the
-        // `"completion-popup"` layer in `sync_keymap_overlays`.
+        Ok(())
+    }
+}
+
+/// The popup-is-live transient minor. See module docs.
+pub struct CompletionPopupMode;
+
+impl CompletionPopupMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("completion-popup-mode")
+    }
+}
+
+impl Mode for CompletionPopupMode {
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
+    fn options(&self) -> OptionOverrideSet {
+        OptionOverrideSet::default()
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        Ok(())
+    }
+    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
         Ok(())
     }
 }
@@ -99,12 +111,10 @@ impl Mode for CompletionMode {
 /// local lookup, never a walk over every active mode per
 /// keystroke.
 ///
-/// `OWNER_MODE` is `"completion-mode"` because the engine mode
-/// is what consumes the cache; the cache is meaningless when
-/// `completion-mode` is inactive (no popup is open). Sources
-/// are *contributed* by other minors (`lsp-completion-mode`,
-/// `buffer-words-mode`, ...); the cache merges their
-/// contributions for the engine to consume.
+/// `OWNER_MODE` is `"completion-mode"` because that's the
+/// persistent gate; the cache is meaningless when
+/// `completion-mode` is inactive (read-only buffers never
+/// trigger the popup, never need the cache).
 #[derive(Debug, Clone, Default)]
 pub struct ActiveCompletionSources(pub Vec<CompletionSourceContribution>);
 
@@ -135,14 +145,27 @@ mod tests {
     }
 
     #[test]
-    fn completion_mode_registers_and_activates() {
+    fn completion_popup_mode_is_a_minor() {
+        assert_eq!(CompletionPopupMode.kind(), ModeKind::Minor);
+        assert_eq!(CompletionPopupMode.id(), CompletionPopupMode::mode_id());
+        assert_eq!(
+            CompletionPopupMode::mode_id().as_str(),
+            "completion-popup-mode",
+        );
+    }
+
+    #[test]
+    fn both_modes_register_and_activate() {
         let mut registry = ModeRegistry::new();
         registry
             .register(CompletionMode)
             .expect("register completion-mode");
+        registry
+            .register(CompletionPopupMode)
+            .expect("register completion-popup-mode");
         let mut active = ActiveModes::new();
         let mut locals = BufferLocals::new();
-        let events = registry
+        registry
             .activate_minor(
                 &mut active,
                 &mut locals,
@@ -151,33 +174,36 @@ mod tests {
                 CapabilitySet::empty(),
             )
             .expect("activate completion-mode");
+        registry
+            .activate_minor(
+                &mut active,
+                &mut locals,
+                BufferId::new(0),
+                CompletionPopupMode::mode_id(),
+                CapabilitySet::empty(),
+            )
+            .expect("activate completion-popup-mode");
         assert!(active.has_minor(CompletionMode::mode_id()));
-        assert!(!events.is_empty(), "MinorActivated event should fire");
+        assert!(active.has_minor(CompletionPopupMode::mode_id()));
     }
 
     #[test]
-    fn completion_mode_default_completion_sources_is_empty() {
-        // `completion-mode` is the engine, not a source-
-        // contributor. Sources come from other minors
-        // (`lsp-completion-mode`, `buffer-words-mode`, ...).
+    fn both_modes_default_completion_sources_is_empty() {
+        // Neither mode is a source-contributor. Sources come
+        // from feature-owned minors (`lsp-completion-mode`,
+        // `buffer-words-mode`, ...).
         assert!(CompletionMode.completion_sources().is_empty());
+        assert!(CompletionPopupMode.completion_sources().is_empty());
     }
 
     #[test]
     fn active_completion_sources_describes_count() {
-        // The buffer-local's `describe()` is what
-        // `:describe-buffer`'s descriptor surface renders.
         let empty = ActiveCompletionSources::default();
         assert_eq!(empty.describe(), "0 source(s)");
     }
 
     #[test]
     fn active_completion_sources_is_a_buffer_local() {
-        // Trait shape check: the type satisfies BufferLocal so
-        // it can be stored in BufferLocals and surfaced through
-        // `iter_descriptors`. CSM.4 -- CSM.8 verify the
-        // production read path lights up under each migrated
-        // source.
         let mut locals = BufferLocals::new();
         locals.insert(ActiveCompletionSources(Vec::new()));
         assert!(locals.get::<ActiveCompletionSources>().is_some());

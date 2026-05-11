@@ -269,6 +269,7 @@ mod tests {
                     default_priority: 100,
                     auto_trigger: true,
                     trigger_chars: Vec::new(),
+                    popup_filter_chord: None,
                     kind: CompletionSourceKind::Sync(Arc::new(StubSource)),
                 }]
             }

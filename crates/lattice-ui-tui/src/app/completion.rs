@@ -723,6 +723,15 @@ impl App {
             // EchoLevel::Info clutter.
             return;
         }
+        // CSM.K1: gate on `completion-mode` being active on the
+        // active document buffer. The mode auto-activates on
+        // writable kinds at buffer creation; read-only kinds
+        // (Help, FileTree, Oil) never activate it, so `<C-Space>`
+        // is a silent no-op there. Same shape as
+        // `lsp-completion-mode` gating LSP fan-out.
+        if !self.completion_mode_active_for(self.document_buffer_id) {
+            return;
+        }
         let snap = self.document.snapshot();
         let buffer = &snap.buffer;
         let line_text = buffer.line(self.cursor.line).unwrap_or_default();
@@ -2303,6 +2312,76 @@ mod tests {
         );
     }
 
+    // ---- CSM.K1: completion-mode / completion-popup-mode pair ----
+
+    /// `completion-mode` auto-activates on the initial Document
+    /// buffer so `<C-Space>` works out-of-the-box.
+    #[test]
+    fn completion_mode_auto_active_on_document_buffer() {
+        let a = app_with("hi", 5);
+        assert!(
+            a.completion_mode_active_for(a.document_buffer_id),
+            "completion-mode should be auto-active on the initial Document",
+        );
+    }
+
+    /// Read-only buffer kinds (Help here) don't auto-activate
+    /// `completion-mode`; `<C-Space>` is a silent no-op there.
+    #[test]
+    fn completion_mode_not_active_on_help_buffer() {
+        let mut a = app_with("hi", 5);
+        let help = crate::help::HelpContent::from_lines("t", vec!["body".into()]);
+        let help_id = a.open_help_in_pane(help);
+        assert!(
+            !a.completion_mode_active_for(help_id),
+            "completion-mode should be inactive on Help buffers",
+        );
+    }
+
+    /// Trigger gate: `do_completion_trigger` no-ops when
+    /// `completion-mode` is inactive on the active document.
+    #[test]
+    fn completion_trigger_noop_when_completion_mode_inactive() {
+        use lattice_grammar::ModalState;
+        let mut a = app_with("alpha bravo charlie ", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 20);
+        // Force-deactivate completion-mode so the gate kicks in.
+        let buffer_id = a.document_buffer_id;
+        a.deactivate_mode_by_id(buffer_id, lattice_mode::CompletionMode::mode_id());
+        assert!(!a.completion_mode_active_for(buffer_id));
+        a.do_completion_trigger();
+        assert!(
+            a.insert_completion.is_none(),
+            "popup should not open when completion-mode is inactive",
+        );
+    }
+
+    /// `completion-popup-mode` (the transient) tracks popup state
+    /// independently from `completion-mode` (the persistent
+    /// gate). Both modes coexist while the popup is open.
+    #[test]
+    fn completion_popup_mode_distinct_from_completion_mode() {
+        use lattice_grammar::ModalState;
+        let mut a = app_with("alpha bravo charlie ", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 20);
+        let buffer_id = a.document_buffer_id;
+        // completion-mode is on (auto-activated); popup-mode is
+        // off (no popup open yet).
+        assert!(a.completion_mode_active_for(buffer_id));
+        assert!(!a.completion_popup_mode_active_for(buffer_id));
+        a.apply(Action::CompletionTrigger);
+        // Both on once the popup opens.
+        assert!(a.completion_mode_active_for(buffer_id));
+        assert!(a.completion_popup_mode_active_for(buffer_id));
+        a.apply(Action::CompletionCancel);
+        // completion-mode stays on (persistent); popup-mode
+        // deactivates (transient).
+        assert!(a.completion_mode_active_for(buffer_id));
+        assert!(!a.completion_popup_mode_active_for(buffer_id));
+    }
+
     // ---- CSM.3: ActiveCompletionSources cache ----
 
     /// At rest (no mode-contributing source yet), the
@@ -2390,6 +2469,7 @@ mod tests {
                     default_priority: 50,
                     auto_trigger: true,
                     trigger_chars: Vec::new(),
+                    popup_filter_chord: None,
                     kind: CompletionSourceKind::Sync(Arc::new(StubSource)),
                 }]
             }

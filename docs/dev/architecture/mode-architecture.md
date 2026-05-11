@@ -2249,6 +2249,35 @@ graceful error handling per CLAUDE.md.
   lattice-mode for the buffer-local trait shape, 3 in
   lattice-ui-tui for the recompute + reader + fallback
   path). Workspace 2558 → 2563.
+- CSM.K1 -- ✅ landed (insert-completion.md §12 two-mode split).
+  Renamed CSM.2's `completion-mode` → `completion-popup-mode`
+  (the transient popup-live marker; what the keymap-overlay
+  sync tracks). New `completion-mode` born as a marker minor
+  that auto-activates on writable buffer kinds (Document
+  only today) via
+  `auto_activated_minors_for_buffer_kind(BufferKind)`. The
+  popup-trigger gate in `do_completion_trigger` checks
+  `completion-mode` activation; read-only buffers (Help,
+  FileTree, Oil) silently no-op on `<C-Space>`.
+  `<C-x><C-o>` Insert-mode binding (vim omni-completion
+  alias) retired -- `<C-Space>` is the sole popup trigger.
+  Per-source filter chords (`<C-o>` / `<C-f>` / `<C-l>` /
+  `<C-k>` / `<C-s>` / `<C-r>` / `<C-b>` / `<C-t>`) live
+  inside `completion-popup-mode` from CSM.K2 onward.
+  New `popup_filter_chord: Option<char>` field on
+  `CompletionSourceContribution`; defaults to `None`,
+  populated by source migrations CSM.4 onward (each
+  contributor advertises its single-char chord). Renamed
+  `App::completion_mode_active_for` is now genuinely about
+  the persistent gate; new
+  `App::completion_popup_mode_active_for` reads the
+  transient. `App::completion_popup_active()` shorthand
+  unchanged in name but now delegates to the popup-mode
+  reader.
+  Tests: 5 new in lattice-ui-tui (auto-active on Document,
+  inactive on Help, gate blocks trigger when inactive,
+  the two modes track independently); `<C-x><C-o>` test
+  inverted to assert no-binding. Workspace 2563 → 2568.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

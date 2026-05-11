@@ -2327,20 +2327,24 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_x_ctrl_o_resolves_to_completion_trigger() {
+    fn ctrl_x_ctrl_o_no_longer_invokes() {
+        // CSM.K1: `<C-x><C-o>` (vim omni-completion alias)
+        // retired. `<C-Space>` is the sole popup trigger; the
+        // chord is unbound now (the dispatcher returns
+        // something other than `Invoke`).
         let (_, b) = fixture();
-        let a = shared_actions();
-        match translate(
+        let r = translate(
             ctx_partial(
                 ModalState::Insert,
                 &[crate::chord::KeyChord::ctrl('x')],
                 &b,
             ),
             ctrl(KeyCode::Char('o')),
-        ) {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_trigger),
-            other => panic!("expected Invoke(completion_trigger), got {other:?}"),
-        }
+        );
+        assert!(
+            !matches!(r, Action::Invoke(_)),
+            "<C-x><C-o> should no longer resolve to an Invoke; got {r:?}",
+        );
     }
 
     #[test]

@@ -111,7 +111,19 @@ impl App {
     pub(super) fn do_oil_follow(&mut self) {
         let active_id = self.active_pane_buffer_id();
         let Some(oil) = self.buffers.oil(active_id) else { return; };
-        let Some(entry) = oil.entry_at_cursor().cloned() else { return; };
+        // BUG FIX: read entry by the App's hot-path cursor line,
+        // NOT `oil.entry_at_cursor()`. The OilBuffer's own
+        // `cursor` field is vestigial state -- never synced to
+        // `app.cursor` when the user moves with `j`/`k` -- so
+        // `entry_at_cursor` always returned row 0. Mirror the
+        // file-tree handler's pattern: index snapshot entries
+        // by `self.cursor.line` directly. The vestigial
+        // OilBuffer::cursor stays for now (M.3.2.c.5 deferred
+        // struct-field cleanup).
+        let idx = self.cursor.line as usize;
+        let Some(entry) = oil.snapshot_entries().get(idx).cloned() else {
+            return;
+        };
         // M.3.2.c.5: read dir through buffer_locals exclusively.
         // The struct field stays as vestigial for tests.
         let Some(dir) = self

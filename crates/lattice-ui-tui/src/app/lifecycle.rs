@@ -2729,6 +2729,62 @@ mod tests {
     }
 
     #[test]
+    fn oil_follow_uses_app_cursor_not_oil_internal_cursor() {
+        // Regression: `<CR>` in an oil buffer used to always
+        // open the first row's item regardless of where the
+        // user had moved with `j` / `k`. Root cause: the
+        // OilBuffer's own `cursor` field is never synced to
+        // `app.cursor`; `entry_at_cursor()` read the stale
+        // internal field and always indexed snapshot[0]. The
+        // fix routes through `self.cursor.line` (the App's
+        // hot-path cursor, same surface the user moves).
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-oil-follow-cursor-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("tmp");
+        // Three files: alpha.txt, beta.txt, gamma.txt. Listed
+        // alphabetically.
+        std::fs::write(tmp.join("alpha.txt"), "a").expect("a");
+        std::fs::write(tmp.join("beta.txt"), "b").expect("b");
+        std::fs::write(tmp.join("gamma.txt"), "g").expect("g");
+
+        let mut a = app_with("hi", 5);
+        a.do_open_oil(Some(tmp.clone()));
+        let oil_id = a.active_pane_buffer_id();
+        // Snapshot order: alpha, beta, gamma.
+        let names: Vec<String> = a
+            .buffers
+            .oil(oil_id)
+            .map(|o| o.snapshot_entries().iter().map(|e| e.name.clone()).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            names,
+            vec!["alpha.txt".to_string(), "beta.txt".into(), "gamma.txt".into()],
+        );
+
+        // Move the cursor to row 2 (gamma.txt). Pre-fix: follow
+        // would open alpha.txt regardless.
+        a.cursor.line = 2;
+        a.cursor.byte = 0;
+        a.do_oil_follow();
+
+        // Follow on a file routes through `do_edit`, which
+        // opens the file as a Document. The active buffer's
+        // path should be gamma.txt, not alpha.txt.
+        assert_eq!(a.active_buffer, BufferKind::Document);
+        let active_path = a.document.path().map(|p| p.to_path_buf());
+        assert_eq!(
+            active_path,
+            Some(tmp.join("gamma.txt")),
+            "follow should have opened the file under the App's cursor",
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn oil_navigate_into_subdir_replaces_listing() {
         let tmp = std::env::temp_dir().join(format!(
             "lattice-oil-nav-test-{}",

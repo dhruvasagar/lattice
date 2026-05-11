@@ -255,6 +255,41 @@ impl App {
         locals.insert(crate::modes::HelpHighlights(highlights));
     }
 
+    /// M.3.2.c.5: read the parsed `[label](url)` links seeded into
+    /// the active popup's buffer-locals. Returns `None` when no
+    /// popup is open or the locals slot was not seeded.
+    pub fn popup_help_links(&self) -> Option<&[crate::help::HelpLink]> {
+        let id = self.popup_buffer?;
+        self.buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::HelpLinks>())
+            .map(|h| h.0.as_slice())
+    }
+
+    /// M.3.2.c.5: read the named anchors (heading slugs +
+    /// introspection-recorded anchors) seeded into the active
+    /// popup's buffer-locals. Returns `None` when no popup is
+    /// open or the locals slot was not seeded.
+    pub fn popup_help_anchors(&self) -> Option<&[crate::help::HelpAnchor]> {
+        let id = self.popup_buffer?;
+        self.buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::HelpAnchors>())
+            .map(|h| h.0.as_slice())
+    }
+
+    /// M.3.2.c.5: read the pre-computed per-line markdown highlight
+    /// spans seeded into the active popup's buffer-locals. Returns
+    /// `None` when no popup is open or the locals slot was not
+    /// seeded.
+    pub fn popup_help_highlights(&self) -> Option<&[Vec<lattice_syntax::StyledSpan>]> {
+        let id = self.popup_buffer?;
+        self.buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::HelpHighlights>())
+            .map(|h| h.0.as_slice())
+    }
+
     /// Update the popup's placement in place. No-op when no popup
     /// is currently open. Used by callers that want to flip
     /// between cursor-anchored and centred mid-popup (e.g. hover

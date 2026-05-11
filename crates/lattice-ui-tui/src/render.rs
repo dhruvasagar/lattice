@@ -3799,7 +3799,7 @@ mod tests {
         )
         .with_markdown_syntax(registry);
         let lines = h.lines();
-        let spans = render_help_line(&lines[0], &h.highlights[0]);
+        let spans = render_help_line(&lines[0], &h.metadata.highlights[0]);
         let any_styled = spans
             .iter()
             .any(|sp| sp.style != ratatui::style::Style::default());

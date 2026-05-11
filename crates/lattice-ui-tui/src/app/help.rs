@@ -1403,7 +1403,8 @@ mod tests {
             "body should contain the file path label: {body}"
         );
         // The HelpLink target carries the URL's resolved type.
-        let has_source = h.links.iter().any(|l| {
+        let links = a.popup_help_links().expect("help links seeded");
+        let has_source = links.iter().any(|l| {
             matches!(&l.target, crate::help::HelpLinkTarget::Source { path, .. }
                 if path.to_string_lossy().contains("ex_commands.rs"))
         });
@@ -1424,15 +1425,15 @@ mod tests {
         a.command_line = "describe-command ex:quit".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.popup_help().unwrap();
-        let source_link = h
-            .links
+        let _ = a.popup_help().unwrap();
+        let links = a.popup_help_links().expect("help links seeded");
+        let source_link = links
             .iter()
             .find(|l| matches!(l.target, crate::help::HelpLinkTarget::Source { .. }));
         assert!(
             source_link.is_some(),
             "expected at least one HelpLink with Source target; got {:?}",
-            h.links
+            links
         );
     }
 
@@ -1444,17 +1445,16 @@ mod tests {
         a.command_line = "describe-command ex:apropos".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.popup_help().unwrap();
+        let _ = a.popup_help().unwrap();
         // ex:apropos has one arg "pattern" -- expect "args" plus "arg:pattern".
+        let anchors = a.popup_help_anchors().expect("help anchors seeded");
         assert!(
-            h.anchors.iter().any(|a| a.name == "args"),
-            "expected 'args' anchor, got {:?}",
-            h.anchors
+            anchors.iter().any(|a| a.name == "args"),
+            "expected 'args' anchor, got {anchors:?}"
         );
         assert!(
-            h.anchors.iter().any(|a| a.name == "arg:pattern"),
-            "expected 'arg:pattern' anchor, got {:?}",
-            h.anchors
+            anchors.iter().any(|a| a.name == "arg:pattern"),
+            "expected 'arg:pattern' anchor, got {anchors:?}"
         );
     }
 
@@ -1467,11 +1467,11 @@ mod tests {
         a.command_line = "describe-command ex:quit".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.popup_help().unwrap();
+        let _ = a.popup_help().unwrap();
+        let anchors = a.popup_help_anchors().expect("help anchors seeded");
         assert!(
-            h.anchors.iter().all(|a| a.name == "latency"),
-            "ex:quit has no args; only the latency anchor is expected: {:?}",
-            h.anchors,
+            anchors.iter().all(|a| a.name == "latency"),
+            "ex:quit has no args; only the latency anchor is expected: {anchors:?}",
         );
     }
 
@@ -1483,10 +1483,10 @@ mod tests {
         a.command_line = "describe-command ex:apropos".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.popup_help().unwrap();
-        let lines = h.lines();
-        let args_anchor = h.anchors.iter().find(|a| a.name == "args").unwrap();
-        let arg_anchor = h.anchors.iter().find(|a| a.name == "arg:pattern").unwrap();
+        let lines = a.popup_help().unwrap().lines();
+        let anchors = a.popup_help_anchors().expect("help anchors seeded");
+        let args_anchor = anchors.iter().find(|a| a.name == "args").unwrap();
+        let arg_anchor = anchors.iter().find(|a| a.name == "arg:pattern").unwrap();
         assert_eq!(lines[args_anchor.line as usize], "Arguments:");
         assert!(lines[arg_anchor.line as usize].contains("pattern"));
     }
@@ -1525,7 +1525,8 @@ mod tests {
             body.contains("keymap.rs"),
             "describe-key output missing source label: {body}"
         );
-        let has_source = h.links.iter().any(|l| {
+        let links = a.popup_help_links().expect("help links seeded");
+        let has_source = links.iter().any(|l| {
             matches!(&l.target, crate::help::HelpLinkTarget::Source { path, .. }
                 if path.to_string_lossy().contains("keymap.rs"))
         });
@@ -1552,7 +1553,8 @@ mod tests {
             "expected `motion:line-down` label: {body}"
         );
         // The Command target carries the canonical command name.
-        let has_cmd_link = h.links.iter().any(|l| {
+        let links = a.popup_help_links().expect("help links seeded");
+        let has_cmd_link = links.iter().any(|l| {
             matches!(&l.target, crate::help::HelpLinkTarget::Command(c) if c == "motion:line-down")
         });
         assert!(has_cmd_link, "expected Command(motion:line-down) link");
@@ -1570,9 +1572,9 @@ mod tests {
         a.command_line = "describe-key j".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.popup_help().unwrap();
-        let source_links: Vec<_> = h
-            .links
+        let _ = a.popup_help().unwrap();
+        let links = a.popup_help_links().expect("help links seeded");
+        let source_links: Vec<_> = links
             .iter()
             .filter(|l| matches!(l.target, crate::help::HelpLinkTarget::Source { .. }))
             .collect();
@@ -1581,7 +1583,7 @@ mod tests {
             2,
             "expected 2 source links (one per binding); got {}: {:?}",
             source_links.len(),
-            h.links
+            links
         );
         // Each link should point at a distinct line in keymap.rs.
         let mut lines: Vec<u32> = source_links
@@ -1773,9 +1775,10 @@ mod tests {
         a.command_line = "describe-command ex:buffers".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.popup_help().expect("describe-command open");
+        let _ = a.popup_help().expect("describe-command open");
+        let links = a.popup_help_links().expect("help links seeded");
         assert!(
-            h.links
+            links
                 .iter()
                 .any(|l| matches!(&l.target, crate::help::HelpLinkTarget::Topic(name) if name == "buffers")),
             "expected `Topic(buffers)` link"
@@ -1790,9 +1793,10 @@ mod tests {
         a.command_line = "describe-command ex:buffers".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.popup_help().expect("describe open");
-        let link = h
-            .links
+        let _ = a.popup_help().expect("describe open");
+        let link = a
+            .popup_help_links()
+            .expect("help links seeded")
             .iter()
             .find(|l| matches!(&l.target, crate::help::HelpLinkTarget::Topic(_)))
             .expect("topic link present")
@@ -1814,11 +1818,12 @@ mod tests {
         a.command_line = "help languages".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let h = a.popup_help().expect("languages help open");
+        let _ = a.popup_help().expect("languages help open");
         // Find the anchor link to "#1-tree-sitter-core" (which the
         // languages topic ships in its quick-reference table).
-        let link = h
-            .links
+        let link = a
+            .popup_help_links()
+            .expect("help links seeded")
             .iter()
             .find(|l| {
                 matches!(
@@ -1828,8 +1833,9 @@ mod tests {
             })
             .expect("anchor link to #1-tree-sitter-core present")
             .clone();
-        let target_anchor_line = h
-            .anchors
+        let target_anchor_line = a
+            .popup_help_anchors()
+            .expect("help anchors seeded")
             .iter()
             .find(|a| a.name == "1-tree-sitter-core")
             .expect("anchor generated for `## 1. Tree-sitter, core`")

@@ -73,22 +73,12 @@ pub mod topics;
 /// `Buffer` -- search, motions, syntax highlighting (once a help
 /// major mode + tree-sitter grammar lands).
 ///
-/// Clone is cheap-ish: the rope clones in O(1), but the markdown
-/// highlight `Vec<Vec<StyledSpan>>` allocates per-line. Used by
-/// the registry-mirrored hot-path (`App::open_help_in_pane`) so
-/// the durable record and the active hot-path slot stay in sync
-/// at pane-switch boundaries.
-/// M.3.2.c.5 (partial): the data fields `links` / `anchors` /
-/// `highlights` remain present for now. Production code paths
-/// flip to read them through `buffer_locals` (mirrored at
-/// construction sites via `App::seed_help_metadata_locals`); the
-/// vestigial struct fields keep ~70 unit tests that construct
-/// `HelpBuffer` directly compiling without rewrites. The
-/// fields' visible-to-the-renderer fallback paths are removed
-/// in this slice -- production reads exclusively via locals --
-/// so the in-struct state is now pure test-fixture leftover.
-/// Final retirement of the fields waits until the test sites
-/// migrate to seeding `BufferLocals` directly.
+/// M.3.2.c.5: per-buffer help metadata (`links`, `anchors`,
+/// `highlights`) lives on the adjacent [`HelpMetadata`] -- the
+/// App seeds it into `buffer_locals[id]` at popup-open time so
+/// help-mode-owned per-buffer state has a single source of
+/// truth. `HelpBuffer` is now the slim viewport + cursor state;
+/// the metadata travels alongside it inside [`HelpContent`].
 #[derive(Clone)]
 pub struct HelpBuffer {
     /// Stable id assigned at creation. Position-history entries
@@ -111,16 +101,6 @@ pub struct HelpBuffer {
     /// cursor is rendered at the screen translation of this
     /// position.
     pub cursor: Position,
-    /// Vestigial: `[label](url)` markdown links. Production reads
-    /// route through `buffer_locals`; this field remains for
-    /// tests that construct via `HelpBuffer::from_lines` and
-    /// inspect parser output without going through the App seam.
-    pub links: Vec<HelpLink>,
-    /// Vestigial: named anchors. See `links` for the production
-    /// vs. test split.
-    pub anchors: Vec<HelpAnchor>,
-    /// Vestigial: pre-computed per-line markdown highlight spans.
-    pub highlights: Vec<Vec<lattice_syntax::StyledSpan>>,
 }
 
 /// Named scroll target inside a help buffer's content.
@@ -165,25 +145,38 @@ pub struct HelpContent {
 impl HelpContent {
     /// Builder-style override: enrich the metadata's `highlights`
     /// via the markdown grammar. Cheap when the registry doesn't
-    /// have markdown registered (silent no-op). Also mirrors the
-    /// computed spans onto the vestigial buffer field so any
-    /// HelpBuffer-direct test path observes the same value.
+    /// have markdown registered (silent no-op).
     pub fn with_markdown_syntax(mut self, registry: Arc<LangRegistry>) -> Self {
-        let highlights = compute_markdown_highlights(&self.buffer, registry);
-        self.metadata.highlights = highlights.clone();
-        self.buffer.highlights = highlights;
+        self.metadata.highlights = compute_markdown_highlights(&self.buffer, registry);
         self
+    }
+
+    /// Scroll to a named anchor in the metadata. Returns true if
+    /// the anchor was found and the buffer's `scroll` advanced.
+    /// Reads `metadata.anchors` (the canonical owner of help
+    /// per-buffer state per M.3.2.c.5); production code paths
+    /// scroll through this method or, when working from a registry
+    /// slot, by looking up `HelpAnchors` in `buffer_locals`.
+    pub fn scroll_to_anchor(&mut self, name: &str) -> bool {
+        if let Some(line) = anchor_line(&self.metadata.anchors, name) {
+            self.buffer.scroll = line as usize;
+            true
+        } else {
+            false
+        }
     }
 }
 
 // Deref pattern: `HelpContent` is a transient construction value
-// composed of (slim buffer, parsed metadata). Tests + a handful
-// of legacy call sites still treat it like a `HelpBuffer`
-// (`content.cursor`, `content.line_count()`, `content.scroll_to_anchor`,
-// ...). Forwarding through `Deref` keeps those call sites clean
-// without copying every method onto `HelpContent`. Production
-// callers reach the metadata via `content.metadata` directly;
-// the App's `open_popup` consumes the whole struct by value.
+// composed of (slim buffer, parsed metadata). Call sites that work
+// with the buffer state (`content.cursor`, `content.line_count()`,
+// `content.move_cursor(...)`, ...) forward through `Deref` to
+// `HelpBuffer`. Methods that need *metadata* (`scroll_to_anchor`)
+// live on `HelpContent` directly so they can read
+// `self.metadata.anchors` -- the canonical owner per M.3.2.c.5.
+// Production callers reach the metadata via `content.metadata`
+// directly; the App's `open_popup` consumes the whole struct by
+// value and seeds the metadata into `buffer_locals[id]`.
 impl std::ops::Deref for HelpContent {
     type Target = HelpBuffer;
     fn deref(&self) -> &HelpBuffer {
@@ -221,11 +214,6 @@ pub fn parse_help_lines_and_anchors(
     if !text.is_empty() {
         let _ = buffer.apply_edit(&Edit::insert(Position::ZERO, text));
     }
-    let metadata = HelpMetadata {
-        links: links.clone(),
-        anchors: anchors.clone(),
-        highlights: Vec::new(),
-    };
     HelpContent {
         buffer: HelpBuffer {
             id: BufferId::next(),
@@ -233,14 +221,12 @@ pub fn parse_help_lines_and_anchors(
             content: buffer,
             scroll: 0,
             cursor: Position::ZERO,
-            // Vestigial mirror -- populated for tests that read
-            // these fields directly. Production reads route through
-            // `HelpContent::metadata` -> `buffer_locals`.
+        },
+        metadata: HelpMetadata {
             links,
             anchors,
             highlights: Vec::new(),
         },
-        metadata,
     }
 }
 
@@ -326,35 +312,6 @@ impl HelpContent {
 }
 
 impl HelpBuffer {
-    /// Find the link whose label range contains `pos`. Reads
-    /// the vestigial `links` field; production callers go
-    /// through `buffer_locals[id].get::<HelpLinks>()` instead.
-    pub fn link_at(&self, pos: Position) -> Option<&HelpLink> {
-        link_at(&self.links, pos)
-    }
-
-    /// Scroll to a named anchor. Reads the vestigial `anchors`
-    /// field; production callers go through
-    /// `buffer_locals[id].get::<HelpAnchors>()` instead.
-    pub fn scroll_to_anchor(&mut self, name: &str) -> bool {
-        if let Some(line) = anchor_line(&self.anchors, name) {
-            self.scroll = line as usize;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Test-only convenience: enrich vestigial `highlights` via
-    /// the markdown grammar. Production callers should chain
-    /// [`HelpContent::with_markdown_syntax`] instead so the
-    /// highlights also land on the parsed metadata that gets
-    /// seeded into `buffer_locals`.
-    pub fn with_markdown_syntax(mut self, registry: Arc<LangRegistry>) -> Self {
-        self.highlights = compute_markdown_highlights(&self, registry);
-        self
-    }
-
     /// Number of visible content lines (the popup renderer uses this
     /// to clamp scroll). Equivalent to `content.line_count()`.
     pub fn line_count(&self) -> u32 {
@@ -835,8 +792,8 @@ mod tests {
                 line: 0,
             }],
         );
-        assert_eq!(h.anchors.len(), 1);
-        assert_eq!(h.anchors[0].name, "section:foo");
+        assert_eq!(h.metadata.anchors.len(), 1);
+        assert_eq!(h.metadata.anchors[0].name, "section:foo");
     }
 
     #[test]
@@ -864,7 +821,7 @@ mod tests {
     #[test]
     fn from_lines_creates_buffer_without_anchors() {
         let h = HelpContent::from_lines("t", vec!["x".into()]);
-        assert!(h.anchors.is_empty());
+        assert!(h.metadata.anchors.is_empty());
     }
 
     #[test]
@@ -880,7 +837,7 @@ mod tests {
     fn empty_lines_yield_empty_buffer() {
         let h = HelpContent::from_lines("t", vec![]);
         assert_eq!(h.line_count(), 1); // empty buffer reports one empty line
-        assert!(h.links.is_empty());
+        assert!(h.metadata.links.is_empty());
     }
 
     #[test]
@@ -1083,14 +1040,14 @@ mod tests {
             .with_markdown_syntax(registry);
         // Line 0 (the heading) should carry a Heading1 span.
         assert!(
-            h.highlights
+            h.metadata.highlights
                 .first()
                 .map(|spans| spans
                     .iter()
                     .any(|sp| sp.style == lattice_syntax::Style::Heading1))
                 .unwrap_or(false),
             "expected Heading1 span on heading line, got {:?}",
-            h.highlights.first()
+            h.metadata.highlights.first()
         );
     }
 
@@ -1113,6 +1070,7 @@ mod tests {
         // Line 1: fenced rust code -- should carry Keyword spans
         // (`fn`) once the rust injection runs.
         let line1_has_styled = h
+            .metadata
             .highlights
             .get(1)
             .map(|spans| !spans.is_empty())
@@ -1120,11 +1078,12 @@ mod tests {
         assert!(
             line1_has_styled,
             "expected highlights on fenced rust line, got {:?}",
-            h.highlights.get(1)
+            h.metadata.highlights.get(1)
         );
         // Line 4: inline `buf` -- should carry MarkupRaw or
         // similar.
         let line4_has_styled = h
+            .metadata
             .highlights
             .get(4)
             .map(|spans| !spans.is_empty())
@@ -1132,7 +1091,7 @@ mod tests {
         assert!(
             line4_has_styled,
             "expected highlights on inline-code line, got {:?}",
-            h.highlights.get(4)
+            h.metadata.highlights.get(4)
         );
     }
 
@@ -1147,7 +1106,7 @@ mod tests {
             "- supports hover: true".to_string(),
         ];
         let h = HelpContent::from_lines("lsp-status", lines).with_markdown_syntax(registry);
-        let h1 = h.highlights[0]
+        let h1 = h.metadata.highlights[0]
             .iter()
             .any(|sp| sp.style == lattice_syntax::Style::Heading1);
         // tree-sitter-md tags every heading with the same `markup.heading`
@@ -1155,14 +1114,14 @@ mod tests {
         // uniformly, so `##` shows up the same as `#`. Acceptable for
         // v1 -- improving heading-level differentiation requires a
         // grammar query update or per-level capture extraction.
-        let h2 = h.highlights[2]
+        let h2 = h.metadata.highlights[2]
             .iter()
             .any(|sp| sp.style == lattice_syntax::Style::Heading1);
-        assert!(h1, "line 0 (# heading): {:?}", h.highlights[0]);
-        assert!(h2, "line 2 (## heading): {:?}", h.highlights[2]);
+        assert!(h1, "line 0 (# heading): {:?}", h.metadata.highlights[0]);
+        assert!(h2, "line 2 (## heading): {:?}", h.metadata.highlights[2]);
         // inline code on line 3 -- look for any Markup-family span
         // (MarkupRaw) covering the backticked range.
-        let has_raw = h.highlights[3].iter().any(|sp| {
+        let has_raw = h.metadata.highlights[3].iter().any(|sp| {
             matches!(
                 sp.style,
                 lattice_syntax::Style::MarkupRaw
@@ -1173,7 +1132,7 @@ mod tests {
         assert!(
             has_raw,
             "expected inline-code style on `/home/foo`, got {:?}",
-            h.highlights[3]
+            h.metadata.highlights[3]
         );
     }
 
@@ -1182,7 +1141,7 @@ mod tests {
         // The fallback path -- no registry means no highlights, but
         // the buffer still works.
         let h = HelpContent::from_lines("t", vec!["# title".into()]);
-        assert!(h.highlights.is_empty());
+        assert!(h.metadata.highlights.is_empty());
         assert_eq!(h.content.line_count(), 1);
     }
 
@@ -1286,8 +1245,8 @@ mod tests {
             "t",
             vec!["see [Section 1](#1-tree-sitter-core) for details".into()],
         );
-        assert_eq!(h.links.len(), 1);
-        match &h.links[0].target {
+        assert_eq!(h.metadata.links.len(), 1);
+        match &h.metadata.links[0].target {
             HelpLinkTarget::Anchor(slug) => assert_eq!(slug, "1-tree-sitter-core"),
             other => panic!("expected Anchor target, got {other:?}"),
         }

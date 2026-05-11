@@ -1027,9 +1027,11 @@ mod tests {
         a.apply(Action::CommandLineDescribeUnderCursor);
         let h = a.popup_help().expect("help should open");
         assert!(h.title.contains("ex:describe-command"));
+        let scroll = h.scroll;
         // scroll should be set to the arg:name anchor's line.
-        let arg_anchor = h.anchors.iter().find(|a| a.name == "arg:name").unwrap();
-        assert_eq!(h.scroll, arg_anchor.line as usize);
+        let anchors = a.popup_help_anchors().expect("help anchors seeded");
+        let arg_anchor = anchors.iter().find(|a| a.name == "arg:name").unwrap();
+        assert_eq!(scroll, arg_anchor.line as usize);
     }
 
     #[test]

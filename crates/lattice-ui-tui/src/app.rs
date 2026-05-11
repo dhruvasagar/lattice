@@ -3830,12 +3830,12 @@ mod tests {
 
     #[test]
     fn renderer_reads_help_data_through_buffer_locals() {
-        // M.3.2.b.2: prove the renderer reads through
-        // `buffer_locals` rather than the HelpBuffer's struct
-        // fields. We open a help buffer, then mutate its
-        // BufferLocals to a different value than what's in
-        // the struct fields. The renderer should reflect the
-        // local-side value.
+        // M.3.2.c.5: BufferLocals are the canonical owner of help
+        // per-buffer state -- the HelpBuffer struct no longer
+        // carries `links` / `anchors` / `highlights` fields. Open
+        // a help buffer (which seeds two parsed links into
+        // locals), then mutate the locals; readers must reflect
+        // the mutation since there's no struct-field fallback.
         let mut a = app_with("hi", 5);
         let help = crate::help::HelpContent::from_lines(
             "test-render",
@@ -3843,9 +3843,6 @@ mod tests {
         );
         let help_id = a.open_help_in_pane(help);
 
-        // The buffer registers via `seed_help_locals` with two
-        // links. We replace the locals with one synthetic link
-        // and confirm the renderer's data path sees ONE.
         let synthetic = crate::modes::HelpLinks(vec![crate::help::HelpLink {
             range: lattice_protocol::position::Range::new(
                 lattice_protocol::position::Position::ZERO,
@@ -3858,28 +3855,17 @@ mod tests {
             .expect("locals seeded")
             .insert(synthetic);
 
-        // Lookup via the registered id (= `help_id` returned
-        // by `open_help_in_pane`). The popup hot-path slot
-        // tracks the *registered* id post-flip, so `popup_help()`
-        // resolves through the same registry entry locals are
-        // keyed under.
-        let help_buf = a.popup_help().expect("popup_buffer set");
+        let _ = a.popup_help().expect("popup_buffer set");
         let locals = a
             .buffer_locals
             .get(&help_id)
             .expect("locals seeded by open_help_in_pane");
         let from_locals = locals.get::<crate::modes::HelpLinks>().unwrap();
-        // The locals reflect the synthetic value we inserted,
-        // not the original 2 links from the source markdown.
         assert_eq!(from_locals.0.len(), 1);
         assert_eq!(
             from_locals.0[0].target,
             crate::help::HelpLinkTarget::Unresolved("synthetic".into())
         );
-        // The struct fields still carry the original 2 links
-        // (M.3.2.b.2 keeps the fields as fallback; M.3.2.c
-        // removes them).
-        assert_eq!(help_buf.links.len(), 2);
     }
 
     // ---- M.3.2.c.2: file-tree-mode locals seeded + readers ----

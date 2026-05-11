@@ -29,15 +29,15 @@ use lattice_syntax::Lang;
 use crate::buffers::BufferKind;
 use crate::help::{HelpAnchor, HelpLink};
 
-// ---- M.3.2.b.1: help-mode buffer-locals ----
+// ---- M.3.2.c.5: help-mode buffer-locals ----
 //
 // Three newtypes carrying the per-buffer mode-internal data
-// help-mode owns. Currently mirrored alongside the existing
-// `HelpBuffer.links` / `.anchors` / `.highlights` fields;
-// M.3.2.b.2 flips readers to these locals and removes the
-// per-variant fields. Each newtype's `OWNER_MODE` is
-// `"help-mode"` so `:describe-buffer` attributes them
-// correctly.
+// help-mode owns. Canonical owner of help per-buffer state per
+// M.3.2.c.5 -- the `HelpBuffer` struct no longer holds these
+// fields; the App seeds them into `buffer_locals[id]` at
+// popup-open time via `seed_help_metadata_locals`. Each
+// newtype's `OWNER_MODE` is `"help-mode"` so
+// `:describe-buffer` attributes them correctly.
 
 /// Help buffer's parsed `[label](url)` markdown links.
 #[derive(Debug, Clone)]

@@ -42,6 +42,23 @@ use crate::popup::PopupPlacement;
 
 use super::{App, PositionSource, PrevPaneState};
 
+/// One frame of in-popup navigation history. Captured by
+/// [`App::snapshot_current_popup`] before [`App::swap_popup_content`]
+/// overwrites the buffer; popped by [`App::pop_popup_back`] when the
+/// user presses `<C-o>` from inside the popup. Carries everything
+/// needed to fully restore the prior view: title, rope, cursor,
+/// scroll, placement, and the link / anchor / highlight metadata
+/// that backs the renderer + follow-link reader.
+#[derive(Debug, Clone)]
+pub struct PopupSnapshot {
+    pub title: String,
+    pub content: lattice_core::Buffer,
+    pub cursor: lattice_protocol::position::Position,
+    pub scroll: u32,
+    pub metadata: HelpMetadata,
+    pub placement: PopupPlacement,
+}
+
 impl App {
     /// Open a popup with `content` as its body at the requested
     /// `placement`. The popup focuses in: subsequent vim-grammar
@@ -58,6 +75,26 @@ impl App {
     /// so the renderer + link-follow / anchor-jump readers route
     /// uniformly through buffer_locals (M.3.2.c.5).
     pub(crate) fn open_popup(&mut self, content: HelpContent, placement: PopupPlacement) {
+        // Two paths into a popup, distinguished by `active_buffer`:
+        //
+        // - From outside Help (`Document` / `Oil` / `FileTree`):
+        //   fresh top-level popup. Drop any prior back-stack so
+        //   stale frames from a closed help session don't
+        //   accumulate.
+        // - From within Help: the user just followed a help link
+        //   (`[foo](mode:foo)` / `command:` / `help:` etc.). Reuse
+        //   the *same* popup buffer by swapping its content in
+        //   place; snapshot the prior state onto `popup_back_stack`
+        //   so `<C-o>` walks back to it without leaving the
+        //   popup.
+        if matches!(self.active_buffer, BufferKind::Help) && self.popup_buffer.is_some() {
+            if let Some(snap) = self.snapshot_current_popup() {
+                self.popup_back_stack.push(snap);
+            }
+            self.swap_popup_content(content, placement);
+            return;
+        }
+        self.popup_back_stack.clear();
         let HelpContent { buffer, metadata } = content;
         let buffer_id = buffer.id;
         // Drop any previous popup buffer cleanly before adopting
@@ -300,6 +337,91 @@ impl App {
         }
     }
 
+    /// Snapshot the current popup's content + cursor + metadata so
+    /// it can be restored later by `<C-o>`. Returns `None` if no
+    /// popup is open or the registry entry has been torn down.
+    pub(super) fn snapshot_current_popup(&self) -> Option<PopupSnapshot> {
+        let id = self.popup_buffer?;
+        let buf = self.buffers.help(id)?;
+        let locals = self.buffer_locals.get(&id)?;
+        let metadata = HelpMetadata {
+            links: locals
+                .get::<crate::modes::HelpLinks>()
+                .map(|h| h.0.clone())
+                .unwrap_or_default(),
+            anchors: locals
+                .get::<crate::modes::HelpAnchors>()
+                .map(|h| h.0.clone())
+                .unwrap_or_default(),
+            highlights: locals
+                .get::<crate::modes::HelpHighlights>()
+                .map(|h| h.0.clone())
+                .unwrap_or_default(),
+        };
+        Some(PopupSnapshot {
+            title: buf.title.clone(),
+            content: buf.content.clone(),
+            cursor: self.cursor,
+            scroll: self.scroll,
+            metadata,
+            placement: self.popup_placement,
+        })
+    }
+
+    /// Swap `content` into the existing popup buffer in place. Reuses
+    /// the current `popup_buffer` id so position-history entries,
+    /// marks, and cross-buffer features keep working coherently
+    /// across in-popup navigation. Updates the buffer's rope,
+    /// title, cursor, scroll, placement, and the
+    /// `links`/`anchors`/`highlights` buffer-locals.
+    pub(super) fn swap_popup_content(
+        &mut self,
+        content: HelpContent,
+        placement: PopupPlacement,
+    ) {
+        let Some(id) = self.popup_buffer else {
+            return;
+        };
+        let HelpContent { buffer: new_buf, metadata } = content;
+        // Update the registered HelpBuffer in place. We retain `id`
+        // (the existing popup's id) -- not `new_buf.id` -- so every
+        // outer-state slot keyed on the popup id stays coherent.
+        if let Some(existing) = self.buffers.help_mut(id) {
+            existing.title = new_buf.title;
+            existing.content = new_buf.content;
+            existing.scroll = 0;
+            existing.cursor = lattice_protocol::position::Position::ZERO;
+        }
+        self.cursor = lattice_protocol::position::Position::ZERO;
+        self.scroll = 0;
+        self.popup_placement = placement;
+        self.seed_help_metadata_locals(id, metadata);
+    }
+
+    /// Restore the most recent snapshot from `popup_back_stack` into
+    /// the active popup. Returns `true` if a frame was popped and
+    /// applied; `false` when the stack was empty (caller falls
+    /// through to whatever default `<C-o>` behaviour applies).
+    pub(crate) fn pop_popup_back(&mut self) -> bool {
+        let Some(snap) = self.popup_back_stack.pop() else {
+            return false;
+        };
+        let Some(id) = self.popup_buffer else {
+            return false;
+        };
+        if let Some(existing) = self.buffers.help_mut(id) {
+            existing.title = snap.title;
+            existing.content = snap.content;
+            existing.scroll = snap.scroll as usize;
+            existing.cursor = snap.cursor;
+        }
+        self.cursor = snap.cursor;
+        self.scroll = snap.scroll;
+        self.popup_placement = snap.placement;
+        self.seed_help_metadata_locals(id, snap.metadata);
+        true
+    }
+
     /// Read-side accessor for the renderer: the active popup's
     /// placement, or `None` when no popup is open.
     pub fn popup_placement(&self) -> Option<PopupPlacement> {
@@ -313,6 +435,7 @@ impl App {
     pub(crate) fn dismiss_popup(&mut self) {
         self.dismiss_stale_popup_registry();
         self.popup_buffer = None;
+        self.popup_back_stack.clear();
         self.popup_placement = PopupPlacement::default();
         // Restore pre-popup state if focus had moved into it
         // (State B for hover; in-pane mode for `:lsp-log` etc.).
@@ -426,19 +549,22 @@ mod tests {
     }
 
     #[test]
-    fn back_to_back_popups_do_not_leak_registry_entries() {
-        // M.4 (b): opening a second popup over an already-open one
-        // dismisses the prior buffer's registry entry rather than
-        // leaving it dangling. The registry only ever holds the
-        // active popup at a time.
+    fn back_to_back_popups_reuse_the_same_buffer() {
+        // Opening a second popup while one is already open swaps
+        // the content in place rather than allocating a fresh
+        // buffer. Jump-list / marks / search state keyed by the
+        // popup id stay coherent across in-popup navigation; the
+        // registry never holds more than one popup at a time.
         let mut a = app_with("hello", 10);
         a.do_lsp_status();
         let first_id = a.popup_buffer.expect("first popup open");
-        a.do_lsp_status(); // re-runs, allocates a fresh popup
+        a.do_lsp_status();
         let second_id = a.popup_buffer.expect("second popup open");
-        assert_ne!(first_id, second_id);
-        assert!(a.buffers.get(first_id).is_none(), "stale entry leaked");
-        assert!(a.buffers.get(second_id).is_some());
+        assert_eq!(first_id, second_id, "popup id should be reused on in-Help reopen");
+        assert!(a.buffers.get(first_id).is_some(), "popup buffer survives the swap");
+        // The prior frame is recorded on the back-stack so `<C-o>`
+        // can restore it.
+        assert_eq!(a.popup_back_stack.len(), 1);
     }
 
     #[test]

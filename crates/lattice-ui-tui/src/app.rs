@@ -1218,6 +1218,17 @@ pub struct App {
     /// by [`lattice_core::ui::display::BufferDisplayCategory`];
     /// callers route through [`Self::display_buffer`].
     pub popup_buffer: Option<crate::buffers::BufferId>,
+    /// LIFO stack of snapshots taken every time the popup's content
+    /// gets swapped in place by a help → help link follow (e.g.
+    /// `:describe-buffer` → click `[text-mode](mode:text-mode)` →
+    /// `:describe-mode text-mode`). One popup buffer is reused
+    /// across the navigation so jump-list / marks / search /
+    /// register state stay coherent; this stack records what was
+    /// in the buffer before each swap so `<C-o>` from inside the
+    /// popup can restore the prior frame without leaving Help.
+    /// Drained on `dismiss_popup`; reset whenever a fresh top-
+    /// level popup opens from outside Help.
+    pub popup_back_stack: Vec<crate::app::popup::PopupSnapshot>,
     /// Pane state captured before activating help -- used by
     /// `dismiss_popup` to restore the user to whatever buffer +
     /// cursor + scroll they came from. Set by both display

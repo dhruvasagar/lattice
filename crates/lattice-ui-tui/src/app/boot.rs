@@ -486,6 +486,7 @@ impl App {
             command_history_cursor: None,
             command_history_pending: None,
             popup_buffer: None,
+            popup_back_stack: Vec::new(),
             prev_pane_for_help: None,
             popup_placement: crate::popup::PopupPlacement::default(),
             completion_registry,

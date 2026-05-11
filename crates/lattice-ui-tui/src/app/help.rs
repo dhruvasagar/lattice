@@ -43,7 +43,7 @@ use super::{
     App, BufferKind, EchoLevel, PositionSource, PrevPaneState, line_byte_len,
     resolve_command_name_or_alias,
 };
-use crate::help::{HelpContent, command_link, key_link};
+use crate::help::{HelpContent, command_link, key_link, mode_link};
 
 impl App {
     /// `:help [topic]` (DESIGN.md §5.11). With no topic the index
@@ -177,6 +177,30 @@ impl App {
             self.show_line_numbers(),
             self.relative_line_numbers()
         ));
+        // Active modes on the document buffer. Each mode name is a
+        // clickable `[name](mode:name)` link -- follow-link routes to
+        // `:describe-mode <name>` and pushes position history so
+        // `<C-o>` walks back to this view.
+        lines.push(String::new());
+        lines.push("## Active modes".to_string());
+        let active = self.active_modes.get(&self.document_buffer_id);
+        let major = active.and_then(|a| a.major());
+        let minors: Vec<_> = active
+            .map(|a| a.minors().to_vec())
+            .unwrap_or_default();
+        if let Some(major) = major {
+            lines.push(format!("- major: {}", mode_link(major.as_str())));
+        } else {
+            lines.push("- major: (none)".to_string());
+        }
+        if minors.is_empty() {
+            lines.push("- minors: (none)".to_string());
+        } else {
+            lines.push(format!("- minors ({}):", minors.len()));
+            for id in minors {
+                lines.push(format!("    - {}", mode_link(id.as_str())));
+            }
+        }
         self.display_buffer(
             HelpContent::from_lines("describe-buffer", lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
@@ -1252,13 +1276,14 @@ impl App {
         let prev_help_cursor = cursor;
         match target {
             crate::help::HelpLinkTarget::Command(name) => {
-                // Help -> help transition: record where we were in
-                // the *current* help buffer so `<C-o>` brings us
-                // back to it. The subsequent `do_describe_command`
-                // replaces `popup_buffer`, so the entry's
-                // `buffer_id` becomes "stale" -- the unified ring
-                // walker filters those out (see `do_walk_history`).
-                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
+                // Help → help link: `do_describe_command` swaps
+                // the existing popup's content in place (see
+                // `open_popup`'s Help-active branch) and pushes a
+                // frame onto `popup_back_stack`. `<C-o>` walks the
+                // back-stack so we deliberately skip the outer
+                // `push_position_history` -- otherwise the user
+                // gets a wasted `<C-o>` step on a dedup entry
+                // pointing at the link cursor in the new content.
                 self.do_describe_command(&name, None);
             }
             crate::help::HelpLinkTarget::Execute(cmdline) => {
@@ -1266,25 +1291,31 @@ impl App {
                 // the user had typed it. Used by picker-style help
                 // buffers (e.g. `:lsp-server-log`) where each row
                 // dispatches the underlying ex-command on Enter.
-                // Push history so `<C-o>` walks back into the
-                // picker.
+                // The cmdline may navigate outside Help (e.g. open
+                // a file), so push position-history for outer
+                // `<C-o>` continuity.
                 self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
                 self.execute_ex_line(&cmdline);
             }
             crate::help::HelpLinkTarget::Chord(chord) => {
-                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
+                // Same content-swap path as Command -- skip the
+                // outer push; back-stack handles `<C-o>`.
                 self.do_describe_key(&chord);
             }
             crate::help::HelpLinkTarget::Topic(name) => {
-                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
                 self.do_open_help_topic(Some(&name));
             }
             crate::help::HelpLinkTarget::Customize(name) => {
-                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
                 self.do_customize(Some(&name));
             }
             crate::help::HelpLinkTarget::CustomizeEdit(name) => {
                 self.do_customize_edit(&name);
+            }
+            crate::help::HelpLinkTarget::Mode(name) => {
+                // `[label](mode:NAME)` -- describe the mode. Same
+                // content-swap path as Command/Topic; the popup
+                // back-stack handles `<C-o>`.
+                self.do_describe_mode(&name);
             }
             crate::help::HelpLinkTarget::Anchor(slug) => {
                 // Intra-doc jump: scroll the *current* help buffer to
@@ -1701,6 +1732,109 @@ mod tests {
         assert!(body.contains("cursor:"));
         assert!(body.contains("dirty:"));
         assert!(body.contains("line count:"));
+    }
+
+    #[test]
+    fn describe_buffer_lists_active_modes_as_links() {
+        // The "Active modes" section names the buffer's major +
+        // every minor; each name renders as a `(mode:NAME)` link so
+        // `<CR>` routes to `:describe-mode NAME`.
+        let mut a = app_with("hello", 10);
+        a.command_line = "describe-buffer".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let _ = a.popup_help().expect("help view should open");
+        let body = a.popup_help().unwrap().content.as_string();
+        assert!(body.contains("Active modes"), "section missing: {body}");
+        // Default plain-text buffer activates `text-mode` as major.
+        let links = a.popup_help_links().expect("help links seeded");
+        let has_major_mode_link = links.iter().any(|l| matches!(
+            &l.target,
+            crate::help::HelpLinkTarget::Mode(name) if name == "text-mode"
+        ));
+        assert!(
+            has_major_mode_link,
+            "expected a `mode:text-mode` link in describe-buffer; got {links:?}"
+        );
+    }
+
+    #[test]
+    fn describe_buffer_mode_link_follows_to_describe_mode() {
+        // Click on a mode-link inside `:describe-buffer` and the
+        // popup re-renders as `:describe-mode <name>` (the title
+        // changes; the body now describes the mode). The popup
+        // buffer id is reused -- the content swaps in place so
+        // jump-list / marks / search state keyed on the popup
+        // stay coherent across in-popup navigation.
+        let mut a = app_with("hello", 10);
+        a.command_line = "describe-buffer".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let initial_id = a.popup_buffer.expect("describe-buffer should open");
+        let link = a
+            .popup_help_links()
+            .expect("help links seeded")
+            .iter()
+            .find(|l| matches!(
+                &l.target,
+                crate::help::HelpLinkTarget::Mode(name) if name == "text-mode"
+            ))
+            .expect("text-mode link present")
+            .clone();
+        a.cursor = link.range.start;
+        a.apply(Action::FollowLink);
+        let h = a.popup_help().expect("popup should still be open");
+        assert_eq!(h.title, "describe-mode text-mode");
+        assert!(h.content.as_string().contains("text-mode"));
+        assert_eq!(
+            a.popup_buffer,
+            Some(initial_id),
+            "popup buffer id should be reused across in-popup navigation",
+        );
+    }
+
+    #[test]
+    fn ctrl_o_after_mode_link_returns_to_describe_buffer() {
+        // The user's requested behaviour: `<C-o>` after following a
+        // mode link must walk back into the popup (not bail to the
+        // document). The position-history push in
+        // `do_help_follow_link` plus the registry-keep that
+        // `open_popup` performs while `active_buffer == Help` make
+        // the previous popup buffer reachable for the jump-history
+        // walker.
+        let mut a = app_with("hello", 10);
+        a.command_line = "describe-buffer".into();
+        a.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let _ = a.popup_help().expect("describe-buffer should open");
+        let link = a
+            .popup_help_links()
+            .expect("help links seeded")
+            .iter()
+            .find(|l| matches!(
+                &l.target,
+                crate::help::HelpLinkTarget::Mode(name) if name == "text-mode"
+            ))
+            .expect("text-mode link present")
+            .clone();
+        a.cursor = link.range.start;
+        a.apply(Action::FollowLink);
+        assert_eq!(
+            a.popup_help().unwrap().title,
+            "describe-mode text-mode",
+            "follow-link should have opened describe-mode",
+        );
+        a.apply(Action::JumpHistoryBack);
+        let h = a.popup_help().expect("popup should still be open after <C-o>");
+        assert_eq!(
+            h.title, "describe-buffer",
+            "<C-o> should restore the originating describe-buffer popup",
+        );
+        assert_eq!(
+            a.active_buffer,
+            BufferKind::Help,
+            "user should remain within the popup, not bail to the document",
+        );
     }
 
     #[test]

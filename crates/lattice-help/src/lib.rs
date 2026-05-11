@@ -471,6 +471,12 @@ pub enum HelpLinkTarget {
     /// machinery, so validation, cascade, and event-bus
     /// publishing all run unchanged.
     CustomizeEdit(String),
+    /// `[label](mode:NAME)` -- re-dispatches `:describe-mode NAME`.
+    /// Used by `:describe-buffer` (the "modes active here" section)
+    /// so each mode name in the list is clickable; follow-link
+    /// pushes a position-history entry so `<C-o>` walks back into
+    /// the originating help buffer.
+    Mode(String),
     /// `[[…]]` whose payload didn't match a known scheme. Preserved
     /// verbatim for forward-compat -- a plugin / future scheme can
     /// inspect the raw payload.
@@ -500,6 +506,13 @@ pub fn source_link(file_line: &str) -> String {
 /// `:describe-*` cross-references.
 pub fn topic_link(name: &str) -> String {
     format!("[{name}](help:{name})")
+}
+
+/// Helper for help-content formatters. Renders a mode link in
+/// standard markdown form: `[name](mode:name)`. Used by
+/// `:describe-buffer` (the "modes active here" section).
+pub fn mode_link(name: &str) -> String {
+    format!("[{name}](mode:{name})")
 }
 
 /// Strip every `[label](url)` markdown link in `text` down to just
@@ -651,6 +664,8 @@ fn classify_link_url(url: &str) -> HelpLinkTarget {
         HelpLinkTarget::CustomizeEdit(rest.to_string())
     } else if let Some(rest) = url.strip_prefix("customize:") {
         HelpLinkTarget::Customize(rest.to_string())
+    } else if let Some(rest) = url.strip_prefix("mode:") {
+        HelpLinkTarget::Mode(rest.to_string())
     } else if let Some(rest) = url.strip_prefix('#') {
         // Markdown intra-document anchor (`[label](#slug)`). Matches
         // the GitHub-style slug auto-generated from headings by

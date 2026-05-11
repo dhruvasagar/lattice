@@ -146,6 +146,20 @@ impl App {
     /// On the first Ctrl-O from end-of-ring, also snapshot the current
     /// cursor as AutoJump so a subsequent Ctrl-I can return to it.
     pub(super) fn do_jump_history(&mut self, delta: i32) {
+        // In-popup `<C-o>` first walks the popup's back-stack so the
+        // user stays within the popup chain (`:describe-buffer` →
+        // mode link → `:describe-mode foo` → `<C-o>` returns to
+        // `:describe-buffer` without flipping out of Help). Only
+        // after the back-stack is empty does `<C-o>` fall through
+        // to the outer position-history walk.
+        if delta < 0
+            && matches!(self.active_buffer, BufferKind::Help)
+            && self.popup_buffer.is_some()
+            && !self.popup_back_stack.is_empty()
+            && self.pop_popup_back()
+        {
+            return;
+        }
         if delta < 0
             && self.position_history_cursor == self.position_history.len()
             && self.position_history.iter().any(|e| e.is_jump())

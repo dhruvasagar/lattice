@@ -253,6 +253,25 @@ impl App {
         }
     }
 
+    /// Write the MRU index to its configured path. Best-
+    /// effort: persistence may be disabled (no cache dir) or
+    /// fail mid-write (full disk, permission denied). On
+    /// failure we `eprintln!` once and continue -- losing one
+    /// accept's persistence is annoying, blocking the accept
+    /// is unacceptable. Slice 14d (event bus + typed options)
+    /// can elevate to a debounced background write.
+    fn persist_picker_mru_best_effort(&self) {
+        let Some(path) = self.picker_mru_path.as_ref() else {
+            return;
+        };
+        if let Err(e) = self.picker_mru.save_to(path) {
+            eprintln!(
+                "lattice: failed to persist picker MRU at {}: {e}",
+                path.display(),
+            );
+        }
+    }
+
     /// Best-effort workspace root for picker sources.
     /// Active document's parent if it has one; current working
     /// directory otherwise; `.` if cwd resolution fails.
@@ -502,12 +521,37 @@ impl App {
         match init_result {
             lattice_picker::PickerInitResult::Inline(pairs) => {
                 let title = source.clone();
+                // MRU bonus snapshot: derive identity per
+                // routing payload, look up in the index,
+                // compute frecency. Drops missing entries to
+                // 0.0 silently -- a routing-payload variant
+                // that returns None from `routing_identity`
+                // never participates in MRU. Snapshot happens
+                // once at open; refilter reads from cached
+                // bonuses on every keystroke (HashMap-free
+                // hot path).
+                let now = std::time::SystemTime::now();
+                let bonuses: Vec<f64> = pairs
+                    .iter()
+                    .map(|(_cand, routing)| {
+                        match lattice_picker::routing_identity(routing) {
+                            Some(id) => self.picker_mru.frecency_bonus(
+                                &source,
+                                &id,
+                                now,
+                                lattice_picker::DEFAULT_HALF_LIFE,
+                            ),
+                            None => 0.0,
+                        }
+                    })
+                    .collect();
                 let mut picker = lattice_picker::Picker::new(
                     title,
                     Self::picker_source_for(&source),
                     Self::picker_action_for(&source),
                 );
                 picker.set_raw_candidates_with_routing(pairs);
+                picker.set_mru_bonuses(bonuses);
                 // Stamp the source id so accept can resolve the
                 // generator and call `gen.accept(...)` instead
                 // of running the legacy per-routing dispatch.
@@ -785,6 +829,7 @@ impl App {
         if let Some(source_id) = picker.source_id.as_deref()
             && let Some(generator) = self.picker_registry.generator(source_id).cloned()
         {
+            let source_id_owned = source_id.to_string();
             let snap = self.document.snapshot();
             let ctx = self.build_picker_context(&snap);
             let outcome = match generator.accept(&ctx, &routing) {
@@ -796,6 +841,16 @@ impl App {
             };
             drop(ctx);
             drop(snap);
+            // Record MRU before applying the outcome so the
+            // identity captures the user's choice even if the
+            // outcome handler echoes an error mid-mutation
+            // (e.g. file no longer exists). Identity may be
+            // None for drift-prone routing payloads -- the
+            // record call silently skips those.
+            if let Some(identity) = lattice_picker::routing_identity(&routing) {
+                self.picker_mru.record(&source_id_owned, &identity);
+                self.persist_picker_mru_best_effort();
+            }
             self.apply_picker_outcome(outcome);
             return;
         }
@@ -1628,6 +1683,59 @@ mod tests {
         assert!(app.picker.is_none());
         assert_eq!(app.cursor.line, 1);
         assert_eq!(app.cursor.byte, 0);
+    }
+
+    /// Slice 14c: accepting a candidate records it in
+    /// `picker_mru`; the next open observes a non-zero
+    /// frecency bonus for that identity, and -- with two
+    /// otherwise-equivalent rows -- floats the recorded one
+    /// to the top of the popup.
+    #[test]
+    fn picker_mru_floats_previously_accepted_to_top() {
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-mru-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("alpha.rs"), "").unwrap();
+        std::fs::write(tmp.join("beta.rs"), "").unwrap();
+        let mut app = app_with("hi\n", 5);
+        // Disable persistence -- we don't want this test
+        // touching the user's real cache.
+        app.picker_mru_path = None;
+        // Open the files picker and accept the alphabetically-
+        // first candidate (alpha.rs sorts before beta.rs in
+        // walker output, but order depends on read_dir so use
+        // whichever the picker surfaces).
+        app.open_picker("files".into(), vec![tmp.display().to_string()]);
+        let first_id = {
+            let p = app.picker.as_ref().expect("picker open");
+            let c = p.selected_candidate().expect("first selected");
+            match p.routing_for(c).expect("routing") {
+                lattice_picker::RoutingPayload::OpenFile { path } => path.clone(),
+                other => panic!("expected OpenFile, got {other:?}"),
+            }
+        };
+        app.apply(Action::PickerAccept);
+        assert!(app.picker.is_none());
+        // The MRU should now have one entry under `files`.
+        let identity = format!("file:{}", first_id.display());
+        assert!(
+            app.picker_mru.lookup("files", &identity).is_some(),
+            "expected MRU entry for {identity}"
+        );
+        // Re-open the picker. The accepted file should now
+        // float to the top (MRU bonus > 0 vs 0 for the other).
+        app.open_picker("files".into(), vec![tmp.display().to_string()]);
+        let top = {
+            let p = app.picker.as_ref().expect("picker open");
+            let c = p.selected_candidate().expect("top selected");
+            match p.routing_for(c).expect("routing") {
+                lattice_picker::RoutingPayload::OpenFile { path } => path.clone(),
+                other => panic!("expected OpenFile, got {other:?}"),
+            }
+        };
+        assert_eq!(top, first_id, "previously-accepted file should float to top");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// Slice 12: an unknown source id surfaces an error echo

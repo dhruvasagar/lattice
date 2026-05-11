@@ -1402,6 +1402,22 @@ pub struct App {
     /// registry alive past the App. Mirror of the
     /// `Arc<ModeRegistry>` pattern used by `gen:modes`.
     pub picker_registry: Arc<lattice_picker::PickerRegistry>,
+    /// Picker MRU index. Loaded from
+    /// `$XDG_CACHE_HOME/lattice/picker-mru.bincode` at boot
+    /// (best-effort -- corruption / version-mismatch silently
+    /// discards and starts fresh per `docs/dev/architecture/picker.md`
+    /// § 9.3). `open_picker` reads via `frecency_bonus` on
+    /// each candidate; `do_picker_accept` records on the
+    /// chosen row and best-effort persists. Single-threaded
+    /// host today; if plugin sources ever need shared access
+    /// this becomes `Arc<RwLock<...>>` -- the trait surface
+    /// already supports that move.
+    pub picker_mru: lattice_picker::PickerMruIndex,
+    /// Resolved persistence path for the MRU cache.
+    /// `Some(path)` when `dirs::cache_dir()` returned a usable
+    /// path at boot; `None` disables persistence (in-memory
+    /// only -- sandboxed runs, headless test fixtures).
+    pub picker_mru_path: Option<std::path::PathBuf>,
     /// True while a buffer activation is in *preview* mode --
     /// driven by the picker's `select_next` / `select_prev`
     /// hooks. Activate paths gate position-history pushes on

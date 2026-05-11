@@ -345,6 +345,29 @@ impl App {
         let registry = Arc::new(registry);
         let picker_registry: Arc<lattice_picker::PickerRegistry> =
             Arc::new(built_in_picker_registry(registry.clone()));
+        // MRU cache load. Failure modes:
+        //   - `default_persist_path` returns None: persistence
+        //     disabled (sandboxed run); start with empty index.
+        //   - Path resolves but file missing: fresh install;
+        //     start with empty index.
+        //   - File present but undecodable / version mismatch:
+        //     log a warning and start fresh (losing MRU is
+        //     annoying, refusing to boot is worse).
+        let picker_mru_path = lattice_picker::default_persist_path();
+        let picker_mru = match &picker_mru_path {
+            Some(path) => match lattice_picker::PickerMruIndex::load_from(path) {
+                Ok(Some(idx)) => idx,
+                Ok(None) => lattice_picker::PickerMruIndex::new(),
+                Err(e) => {
+                    eprintln!(
+                        "lattice: discarding corrupt MRU cache at {}: {e}",
+                        path.display(),
+                    );
+                    lattice_picker::PickerMruIndex::new()
+                }
+            },
+            None => lattice_picker::PickerMruIndex::new(),
+        };
         completion_registry.register_generator(
             "gen:picker-sources",
             "Every source id registered with the `PickerRegistry`; \
@@ -576,6 +599,8 @@ impl App {
             snippet_dirs: Vec::new(),
             picker: None,
             picker_registry: picker_registry.clone(),
+            picker_mru,
+            picker_mru_path,
             previewing: false,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             auto_submit_after_chord: false,

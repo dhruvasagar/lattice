@@ -345,6 +345,29 @@ crate::options! {
     pub WhitespaceEol: String = String::new();
 }
 
+// ---- Picker group: file finder / command palette / grep ----
+
+crate::options! {
+    group = crate::Picker;
+
+    /// Backend binary `:picker grep` shells out to. `"auto"`
+    /// picks the first available of `rg`, `ag`, `grep` in
+    /// PATH at invocation time. Explicit names (`"rg"`,
+    /// `"ag"`, `"grep"`) force a specific binary and surface
+    /// an error if it's not on PATH. Future plugin-shipped
+    /// backends can register additional names; the matching
+    /// logic lives in `lattice_ui_tui::picker_sources::grep`.
+    #[name("picker.grep.backend")]
+    pub PickerGrepBackend: String = String::from("auto");
+
+    /// Maximum number of grep hits to surface in one
+    /// `:picker grep` invocation. Bounds memory + render
+    /// time on huge codebases; users hit this rarely (typical
+    /// pattern matches hundreds of lines, not thousands).
+    #[name("picker.grep.max-hits")]
+    pub PickerGrepMaxHits: i64 = 2000;
+}
+
 // M.2.0c: `CoreOptions` struct and `register_core_options`
 // helper retired. Built-in options self-register via the
 // macro-generated `register_fn` thunks (`OPTION_DECLS` linkme

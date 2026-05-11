@@ -1613,7 +1613,7 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                "buffers", "commands", "files", "jumps", "lines",
+                "buffers", "commands", "files", "grep", "jumps", "lines",
                 "marks", "recent", "registers",
             ]
         );

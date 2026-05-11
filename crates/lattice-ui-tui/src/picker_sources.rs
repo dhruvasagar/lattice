@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use lattice_completion::{CandidateKind, RawCandidate};
+use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::args::Args;
 use lattice_grammar::command::CommandKind;
@@ -697,15 +698,284 @@ impl PickerSourceGenerator for MarksSource {
     }
 }
 
+/// `:picker grep <pattern>`. Shells out to a configurable
+/// backend (`rg`, `ag`, `grep`, or `auto`-detected at
+/// invocation time) and walks its output line-by-line.
+///
+/// Sync subprocess for v1 (matches Files / Recent design --
+/// users invoke explicitly; brief wait is acceptable). The
+/// `:picker grep` ergonomic equivalent of vertico-buffer
+/// live-grep with prescient ranking ships once the async
+/// init seat path lands; until then this is the simplest
+/// path that respects the configurable-backend requirement.
+///
+/// Captures `Arc<ConfigRegistry>` at construction so the
+/// backend choice is read at every invocation (lets the user
+/// `:set picker.grep.backend = "ag"` mid-session and see
+/// it take effect on the next `:picker grep`).
+pub struct GrepSource {
+    pub spec: PickerSourceSpec,
+    pub config: Arc<ConfigRegistry>,
+}
+
+impl GrepSource {
+    pub fn new(config: Arc<ConfigRegistry>) -> Self {
+        use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec};
+        Self {
+            spec: PickerSourceSpec {
+                id: "grep",
+                doc: "Recursive text search via the configured backend (`rg`/`ag`/`grep`). `<CR>` jumps to the chosen hit.",
+                args_hint: "<pattern>",
+                args_schema: vec![ArgSpec {
+                    name: "pattern",
+                    kind: ArgKind::String,
+                    doc: "Pattern to search for. Backend determines regex syntax.",
+                    prompt: "pattern:",
+                    default: ArgDefault::Required,
+                    completion: None,
+                }],
+            },
+            config,
+        }
+    }
+}
+
+impl PickerSourceGenerator for GrepSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(
+        &self,
+        ctx: &PickerContext<'_>,
+        args: &[String],
+    ) -> SourceResult<PickerInitResult> {
+        let pattern = args.first().filter(|s| !s.is_empty()).ok_or_else(|| {
+            "grep: pattern required (e.g. `:picker grep TODO`)".to_string()
+        })?;
+        let backend_choice = self
+            .config
+            .get_typed::<lattice_config::core_options::PickerGrepBackend>()
+            .map(|s| (*s).clone())
+            .unwrap_or_else(|| "auto".to_string());
+        let max_hits = self
+            .config
+            .get_typed::<lattice_config::core_options::PickerGrepMaxHits>()
+            .map(|n| *n as usize)
+            .unwrap_or(2000)
+            .max(1);
+        let root = ctx.workspace_root.to_path_buf();
+        let resolved = resolve_grep_backend(&backend_choice)?;
+        let hits = run_grep(&resolved, pattern, &root, max_hits)?;
+        if hits.is_empty() {
+            return Err(format!("grep: no hits for `{pattern}`"));
+        }
+        let pairs = hits
+            .into_iter()
+            .map(|hit| {
+                let display = format!(
+                    "{}:{}:{}  {}",
+                    hit.path.display(),
+                    hit.line + 1,
+                    hit.col + 1,
+                    hit.preview.trim_start(),
+                );
+                let cand = RawCandidate::plain(display, CandidateKind::Plain);
+                (
+                    cand,
+                    RoutingPayload::LspLocation {
+                        path: hit.path,
+                        line: hit.line,
+                        col: hit.col,
+                    },
+                )
+            })
+            .collect();
+        Ok(PickerInitResult::Inline(pairs))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::LspLocation { path, line, col } => {
+                Ok(PickerAcceptOutcome::JumpToLocation {
+                    path: path.clone(),
+                    line: *line,
+                    col: *col,
+                })
+            }
+            other => Err(format!("grep: unexpected routing payload {other:?}")),
+        }
+    }
+}
+
+/// One grep hit -- path + 0-based LSP-flavored line + 0-based
+/// utf-8 byte column + the matching line's text (preview).
+struct GrepHit {
+    path: std::path::PathBuf,
+    line: u32,
+    col: u32,
+    preview: String,
+}
+
+/// Picks the grep binary from the user's `picker.grep.backend`
+/// option. `"auto"` walks rg / ag / grep, returning the first
+/// on PATH. Explicit names check that single binary; missing
+/// returns `Err` so the user can re-configure.
+fn resolve_grep_backend(choice: &str) -> SourceResult<String> {
+    fn on_path(name: &str) -> bool {
+        std::env::var_os("PATH")
+            .map(|p| {
+                std::env::split_paths(&p).any(|dir| {
+                    let bin = dir.join(name);
+                    bin.is_file()
+                })
+            })
+            .unwrap_or(false)
+    }
+    if choice == "auto" {
+        for candidate in ["rg", "ag", "grep"] {
+            if on_path(candidate) {
+                return Ok(candidate.to_string());
+            }
+        }
+        return Err(
+            "grep: no backend on PATH (tried rg, ag, grep). \
+             Set `picker.grep.backend` to a binary name."
+                .into(),
+        );
+    }
+    if on_path(choice) {
+        Ok(choice.to_string())
+    } else {
+        Err(format!(
+            "grep: backend `{choice}` not found on PATH \
+             (configured via `picker.grep.backend`)"
+        ))
+    }
+}
+
+/// Run `binary <pattern> <root>` with backend-appropriate
+/// args and parse the output. Output formats:
+/// - rg: `path:line:col:text`
+/// - ag: `path:line:col:text`
+/// - grep: `path:line:text` (no column; fall back to 0)
+fn run_grep(
+    binary: &str,
+    pattern: &str,
+    root: &std::path::Path,
+    max_hits: usize,
+) -> SourceResult<Vec<GrepHit>> {
+    let mut cmd = std::process::Command::new(binary);
+    match binary {
+        "rg" => {
+            cmd.args(["--no-heading", "--line-number", "--column", "--color=never"]);
+        }
+        "ag" => {
+            cmd.args(["--noheading", "--column", "--nocolor"]);
+        }
+        "grep" => {
+            cmd.args(["-rnH"]);
+        }
+        _ => {
+            // Custom backend; assume an rg-compatible flag set.
+            cmd.args(["--line-number", "--column"]);
+        }
+    }
+    cmd.arg(pattern).arg(root);
+    let output = cmd.output().map_err(|e| {
+        format!("grep: spawning `{binary}` failed: {e}")
+    })?;
+    if !output.status.success() && output.stdout.is_empty() {
+        // Some backends (`grep`, `rg`) return non-zero on
+        // "no hits". Only treat as error when stderr has a
+        // real message AND stdout is empty.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.trim().is_empty() {
+            return Err(format!("grep: `{binary}` failed: {stderr}"));
+        }
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut hits = Vec::new();
+    for raw_line in stdout.lines() {
+        if hits.len() >= max_hits {
+            break;
+        }
+        if let Some(hit) = parse_grep_line(binary, raw_line) {
+            hits.push(hit);
+        }
+    }
+    Ok(hits)
+}
+
+/// Parse one output line. `path:line:col:text` for rg/ag,
+/// `path:line:text` for grep. Path may itself contain colons
+/// (Windows drive letters, or files with `:` in name); we
+/// scan left-to-right for the first numeric `line` segment
+/// and key off that rather than splitting blindly on colons.
+fn parse_grep_line(binary: &str, raw: &str) -> Option<GrepHit> {
+    let with_column = matches!(binary, "rg" | "ag") || binary.contains("rg");
+    // Collect colon positions left-to-right; we'll walk pairs
+    // looking for the first all-digits chunk between two
+    // colons -- that's the line number, and everything before
+    // is the path.
+    let colon_idxs: Vec<usize> = raw
+        .bytes()
+        .enumerate()
+        .filter_map(|(i, b)| (b == b':').then_some(i))
+        .collect();
+    for window in colon_idxs.windows(2) {
+        let line_chunk = &raw[window[0] + 1..window[1]];
+        if line_chunk.bytes().all(|b| b.is_ascii_digit()) && !line_chunk.is_empty() {
+            let line: u32 = line_chunk.parse().ok()?;
+            let path = &raw[..window[0]];
+            if with_column {
+                // Need a column next: look for another colon
+                // after `window[1]` whose chunk between is all
+                // digits.
+                let after_line = window[1];
+                let next_colon = colon_idxs.iter().find(|&&i| i > after_line)?;
+                let col_chunk = &raw[after_line + 1..*next_colon];
+                if col_chunk.bytes().all(|b| b.is_ascii_digit()) && !col_chunk.is_empty()
+                {
+                    let col: u32 = col_chunk.parse().ok()?;
+                    let preview = raw[*next_colon + 1..].to_string();
+                    return Some(GrepHit {
+                        path: std::path::PathBuf::from(path),
+                        line: line.saturating_sub(1),
+                        col: col.saturating_sub(1),
+                        preview,
+                    });
+                }
+                continue;
+            }
+            // grep: path:line:text -- preview is everything
+            // after the line's trailing colon.
+            let preview = raw[window[1] + 1..].to_string();
+            return Some(GrepHit {
+                path: std::path::PathBuf::from(path),
+                line: line.saturating_sub(1),
+                col: 0,
+                preview,
+            });
+        }
+    }
+    None
+}
+
 /// Convenience: build the first-party source generators as
 /// `Arc<dyn PickerSourceGenerator>` ready to register against
 /// a `PickerRegistry`. Used by `App::new` to boot the
 /// registry. Sources that need App-wide state captured at
-/// construction (e.g. `CommandsSource` -> `CommandRegistry`)
-/// take the relevant `Arc` here so the trait surface stays
-/// state-handle-free.
+/// construction (e.g. `CommandsSource` -> `CommandRegistry`,
+/// `GrepSource` -> `ConfigRegistry`) take the relevant `Arc`
+/// here so the trait surface stays state-handle-free.
 pub fn first_party_generators(
     command_registry: Arc<CommandRegistry>,
+    config: Arc<ConfigRegistry>,
 ) -> Vec<Arc<dyn PickerSourceGenerator>> {
     vec![
         Arc::new(FilesSource::new()),
@@ -716,6 +986,7 @@ pub fn first_party_generators(
         Arc::new(CommandsSource::new(command_registry)),
         Arc::new(RegistersSource::new()),
         Arc::new(MarksSource::new()),
+        Arc::new(GrepSource::new(config)),
     ]
 }
 
@@ -821,13 +1092,14 @@ mod tests {
     #[test]
     fn first_party_generators_returns_all_built_in_sources() {
         let app = app_with("hi\n", 5);
-        let generators = first_party_generators(app.registry.clone());
+        let generators =
+            first_party_generators(app.registry.clone(), app.config.clone());
         let ids: Vec<&'static str> = generators.iter().map(|g| g.spec().id).collect();
         assert_eq!(
             ids,
             vec![
                 "files", "recent", "buffers", "lines", "jumps",
-                "commands", "registers", "marks",
+                "commands", "registers", "marks", "grep",
             ]
         );
     }
@@ -966,6 +1238,67 @@ mod tests {
         }
         let bad = RoutingPayload::OpenFile { path: "/tmp/x".into() };
         assert!(source.accept(&ctx, &bad).is_err());
+    }
+
+    /// P.8: parse_grep_line correctly extracts (path, line,
+    /// col, preview) from rg / ag output (the
+    /// `path:line:col:text` format).
+    #[test]
+    fn parse_grep_line_rg_format() {
+        let hit = parse_grep_line("rg", "/tmp/foo.rs:42:7:    let x = 1;").unwrap();
+        assert_eq!(hit.path, std::path::PathBuf::from("/tmp/foo.rs"));
+        assert_eq!(hit.line, 41); // 0-based
+        assert_eq!(hit.col, 6); // 0-based
+        assert_eq!(hit.preview, "    let x = 1;");
+    }
+
+    /// P.8: parse_grep_line for plain grep output
+    /// (`path:line:text` -- no column).
+    #[test]
+    fn parse_grep_line_grep_format() {
+        let hit = parse_grep_line("grep", "/tmp/bar.py:5:def fn():").unwrap();
+        assert_eq!(hit.path, std::path::PathBuf::from("/tmp/bar.py"));
+        assert_eq!(hit.line, 4);
+        assert_eq!(hit.col, 0); // grep doesn't carry column
+        assert_eq!(hit.preview, "def fn():");
+    }
+
+    /// P.8: pattern arg is required; bare `:picker grep`
+    /// surfaces an error rather than running with no
+    /// filter (which would dump every file in the workspace).
+    #[test]
+    fn grep_source_requires_pattern() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = GrepSource::new(app.config.clone());
+        let err = source.init(&ctx, &[]).unwrap_err();
+        assert!(err.contains("pattern required"), "got {err}");
+        let err = source.init(&ctx, &[String::new()]).unwrap_err();
+        assert!(err.contains("pattern required"), "got {err}");
+    }
+
+    /// P.8: explicit `picker.grep.backend = "definitely-not-a-binary"`
+    /// surfaces an actionable error before any subprocess
+    /// is spawned.
+    #[test]
+    fn grep_source_unknown_backend_errors() {
+        let app = app_with("hi\n", 5);
+        app.config
+            .parse_and_set_command("picker.grep.backend=definitely-not-a-binary")
+            .unwrap();
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = GrepSource::new(app.config.clone());
+        let err = source.init(&ctx, &["TODO".to_string()]).unwrap_err();
+        assert!(
+            err.contains("definitely-not-a-binary"),
+            "got {err}"
+        );
+        assert!(
+            err.contains("not found on PATH"),
+            "got {err}"
+        );
     }
 
     /// P.5: marks source returns `Err` when no marks set.

@@ -20,5 +20,12 @@ dirs = { workspace = true }
 # direct dep.
 linkme = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "picker"
+harness = false
+
 [lints]
 workspace = true

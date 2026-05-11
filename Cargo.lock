@@ -892,6 +892,7 @@ name = "lattice-picker"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "criterion",
  "dirs",
  "lattice-completion",
  "lattice-core",

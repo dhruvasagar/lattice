@@ -78,11 +78,16 @@ pub trait OptionType: Sized + Clone + Send + Sync + 'static {
 
 impl OptionType for bool {
     fn parse(s: &str) -> Result<bool, String> {
+        // Accept the legacy `on`/`off` / `1`/`yes` / `0`/`no`
+        // forms so existing config files keep parsing; the
+        // user-facing surface (error message, completion)
+        // advertises only `true`/`false` to keep the typing
+        // surface minimal.
         match s {
-            "on" | "true" | "1" | "yes" => Ok(true),
-            "off" | "false" | "0" | "no" => Ok(false),
+            "true" | "on" | "1" | "yes" => Ok(true),
+            "false" | "off" | "0" | "no" => Ok(false),
             other => Err(format!(
-                "expected boolean (`on`/`off`/`true`/`false`), got `{other}`"
+                "expected boolean (`true`/`false`), got `{other}`"
             )),
         }
     }
@@ -102,9 +107,13 @@ impl OptionType for bool {
     }
 
     fn enumerate() -> Option<Vec<&'static str>> {
-        // Order matches the existing `gen:options` value-completion
-        // list so :set foo=<Tab> shows the same candidates.
-        Some(vec!["on", "off", "true", "false"])
+        // `:set foo=<Tab>` shows only the canonical forms.
+        // The parser still accepts `on`/`off`/`1`/`0`/`yes`/`no`
+        // for back-compat with hand-written config files, but
+        // surfacing four equivalent forms in completion was
+        // confusing -- the popup pretended each was a distinct
+        // value.
+        Some(vec!["true", "false"])
     }
 
     fn name_forms(canonical: &str) -> Vec<String> {

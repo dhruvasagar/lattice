@@ -135,10 +135,15 @@ mod tests {
         };
         let out = g.generate(&ctx);
         let texts: Vec<&str> = out.iter().map(|c| c.text.as_str()).collect();
-        assert!(texts.contains(&"number=on"));
-        assert!(texts.contains(&"number=off"));
+        // Bool completion advertises only the canonical
+        // `true`/`false` forms. The parser still accepts
+        // `on`/`off`/`1`/`0`/`yes`/`no` for back-compat with
+        // hand-written config files.
+        assert_eq!(texts.len(), 2, "expected 2 candidates, got {texts:?}");
         assert!(texts.contains(&"number=true"));
         assert!(texts.contains(&"number=false"));
+        assert!(!texts.contains(&"number=on"));
+        assert!(!texts.contains(&"number=off"));
     }
 
     #[test]

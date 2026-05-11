@@ -14,12 +14,43 @@ use std::sync::Arc;
 use lattice_completion::{CandidateKind, RawCandidate};
 use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistry;
-use lattice_grammar::args::Args;
+use lattice_grammar::args::{ArgDefault, ArgSpec, Args};
 use lattice_grammar::command::CommandKind;
 use lattice_picker::{
     PickerAcceptOutcome, PickerContext, PickerInitResult, PickerSourceGenerator,
     PickerSourceSpec, RoutingPayload, SourceResult,
 };
+
+/// Format an ex-command's `args_schema` as the marginalia
+/// args hint -- emacs-style `<arg>` for required, `[<arg>]`
+/// for optional. Empty for no-arg commands. Used by
+/// `:picker commands` to fill the args column.
+fn format_args_hint(schema: &[ArgSpec]) -> String {
+    schema
+        .iter()
+        .map(|arg| match arg.default {
+            ArgDefault::Required => format!("<{}>", arg.name),
+            _ => format!("[<{}>]", arg.name),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Clip `s` to at most `width` chars; longer strings get a
+/// trailing ellipsis so the user knows truncation happened.
+/// Cheap (single chars().count() walk) and stable across
+/// utf-8 multi-byte characters.
+fn clip_to(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if s.chars().count() <= width {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(width.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
 
 /// `:picker files [root]`. Walks `root` (or the workspace
 /// root from the context) and emits one row per regular file
@@ -494,12 +525,21 @@ impl PickerSourceGenerator for CommandsSource {
         _ctx: &PickerContext<'_>,
         _args: &[String],
     ) -> SourceResult<PickerInitResult> {
-        // Walk registry names, keep ex-commands, project to
-        // (user-facing, canonical, doc). The user-facing name
-        // strips the `ex:` registration prefix where one exists
-        // (mode-toggle ex-commands like `buffer-words-mode`
-        // register without it).
-        let mut rows: Vec<(String, String, String)> = self
+        // Walk registry names, keep ex-commands, project to a
+        // row carrying every marginalia column. Emacs
+        // `marginalia.el`-style: name | args-hint | doc |
+        // latency-tag, all right-padded to align across rows.
+        // Mode-toggle ex-commands like `buffer-words-mode`
+        // register without the `ex:` prefix; the projection
+        // handles both.
+        struct Row {
+            user_facing: String,
+            canonical: String,
+            args_hint: String,
+            doc: String,
+            latency: &'static str,
+        }
+        let mut rows: Vec<Row> = self
             .registry
             .names()
             .filter_map(|canonical| {
@@ -511,41 +551,67 @@ impl PickerSourceGenerator for CommandsSource {
                     .strip_prefix("ex:")
                     .unwrap_or(canonical)
                     .to_string();
-                Some((user_facing, canonical.to_string(), spec.doc.clone()))
-            })
-            .collect();
-        // Sort by user-facing name so the popup matches the
-        // alphabetic order users see.
-        rows.sort_by(|a, b| a.0.cmp(&b.0));
-        if rows.is_empty() {
-            return Err("commands: no ex-commands registered".into());
-        }
-        // Right-pad the name column so doc text aligns
-        // across rows. Width adapts to the longest user-facing
-        // name.
-        let name_width = rows.iter().map(|(uf, _, _)| uf.len()).max().unwrap_or(0);
-        let pairs = rows
-            .into_iter()
-            .map(|(user_facing, canonical, doc)| {
-                let one_line_doc: String = doc
+                let args_hint = format_args_hint(&spec.args_schema);
+                let one_line_doc: String = spec
+                    .doc
                     .lines()
                     .next()
                     .unwrap_or("")
                     .chars()
-                    .take(120)
+                    .take(80)
                     .collect();
-                let display = format!(
-                    "{:<width$}  {}",
+                Some(Row {
                     user_facing,
-                    one_line_doc,
-                    width = name_width,
+                    canonical: canonical.to_string(),
+                    args_hint,
+                    doc: one_line_doc,
+                    latency: spec.latency_class.label(),
+                })
+            })
+            .collect();
+        // Sort by user-facing name so the popup matches the
+        // alphabetic order users see.
+        rows.sort_by(|a, b| a.user_facing.cmp(&b.user_facing));
+        if rows.is_empty() {
+            return Err("commands: no ex-commands registered".into());
+        }
+        // Per-column widths adapt to the longest row in each
+        // column. Args column caps at 20 chars so a command
+        // with many args doesn't push the doc column off the
+        // visible width. Latency tag width is the fixed
+        // `[background]` length (12 incl. brackets) so the
+        // right edge stays stable.
+        let name_width = rows.iter().map(|r| r.user_facing.len()).max().unwrap_or(0);
+        let args_width = rows
+            .iter()
+            .map(|r| r.args_hint.len())
+            .max()
+            .unwrap_or(0)
+            .min(20);
+        const LATENCY_TAG_WIDTH: usize = 12;
+        let pairs = rows
+            .into_iter()
+            .map(|row| {
+                let args_clipped = clip_to(&row.args_hint, args_width);
+                let tag = format!("[{}]", row.latency);
+                let display = format!(
+                    "{:<name$}  {:<args$}  {:<doc_max$}  {:>tag_w$}",
+                    row.user_facing,
+                    args_clipped,
+                    row.doc,
+                    tag,
+                    name = name_width,
+                    args = args_width,
+                    doc_max = 60,
+                    tag_w = LATENCY_TAG_WIDTH,
                 );
-                let mut cand = RawCandidate::plain(user_facing, CandidateKind::Plain);
+                let mut cand =
+                    RawCandidate::plain(row.user_facing.clone(), CandidateKind::Plain);
                 cand.display = display;
                 (
                     cand,
                     RoutingPayload::InvokeCommand {
-                        id: canonical,
+                        id: row.canonical,
                         args: Args::None,
                     },
                 )
@@ -1271,6 +1337,70 @@ mod tests {
         let mut sorted = texts.clone();
         sorted.sort();
         assert_eq!(texts, sorted);
+    }
+
+    /// Marginalia: command rows carry args-hint + doc +
+    /// latency tag columns. Confirms the new layout by
+    /// finding `write` (a known ex-command) and checking
+    /// the display string contains its args hint
+    /// `[<path>]` plus a `[display]`/`[reflex]`/`[background]`
+    /// tag and a non-empty doc segment.
+    #[test]
+    fn commands_source_display_carries_marginalia_columns() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = CommandsSource::new(app.registry.clone());
+        let result = source.init(&ctx, &[]).expect("inline");
+        let PickerInitResult::Inline(pairs) = result else {
+            panic!("expected Inline");
+        };
+        let write_row = pairs
+            .iter()
+            .find(|(c, _)| c.text == "write")
+            .expect("write command row");
+        let display = &write_row.0.display;
+        // Marginalia: args hint for `:write` is `[<path>]` (optional).
+        assert!(
+            display.contains("[<path>]"),
+            "expected args hint in marginalia, got `{display}`"
+        );
+        // Latency tag: `:write` is `Display`-class.
+        assert!(
+            display.contains("[display]"),
+            "expected latency tag in marginalia, got `{display}`"
+        );
+        // Doc segment is non-empty.
+        assert!(
+            display.contains("Write"),
+            "expected doc text in display, got `{display}`"
+        );
+    }
+
+    /// Helper smoke: `format_args_hint` matches the
+    /// emacs-style `<arg>` / `[<arg>]` convention.
+    #[test]
+    fn format_args_hint_renders_required_vs_optional() {
+        use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec};
+        let required = ArgSpec {
+            name: "path",
+            kind: ArgKind::String,
+            doc: "",
+            prompt: "",
+            default: ArgDefault::Required,
+            completion: None,
+        };
+        let optional = ArgSpec {
+            default: ArgDefault::None,
+            ..required.clone()
+        };
+        assert_eq!(format_args_hint(&[required.clone()]), "<path>");
+        assert_eq!(format_args_hint(&[optional.clone()]), "[<path>]");
+        assert_eq!(
+            format_args_hint(&[required, optional]),
+            "<path> [<path>]"
+        );
+        assert_eq!(format_args_hint(&[]), "");
     }
 
     /// P.7: accept on `InvokeCommand` routing returns the

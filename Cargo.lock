@@ -897,6 +897,7 @@ dependencies = [
  "lattice-core",
  "lattice-grammar",
  "lattice-protocol",
+ "linkme",
  "serde",
  "tokio",
 ]

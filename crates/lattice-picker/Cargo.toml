@@ -14,6 +14,11 @@ tokio = { workspace = true, features = ["sync"] }
 serde = { workspace = true, features = ["derive"] }
 bincode = { version = "2", features = ["serde"] }
 dirs = { workspace = true }
+# `register_event!` expands to a `#[linkme::distributed_slice]`
+# attribute and the proc-macro path can't route through
+# re-exports -- caller crates must declare `linkme` as a
+# direct dep.
+linkme = { workspace = true }
 
 [lints]
 workspace = true

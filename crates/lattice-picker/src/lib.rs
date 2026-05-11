@@ -46,6 +46,7 @@
 //! pipeline will land on top of this data model.
 
 pub mod context;
+pub mod events;
 pub mod mru;
 pub mod outcome;
 pub mod source;

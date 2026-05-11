@@ -555,6 +555,17 @@ impl App {
         drop(ctx);
         drop(snap);
 
+        // Publish the picker-opened typed event. Plugins
+        // (Phase 7+) can subscribe to react to source-
+        // specific opens; today there are no first-party
+        // subscribers, but the surface is introspectable
+        // via `:describe-events`.
+        self.event_bus
+            .publish_typed(lattice_picker::events::PickerOpened {
+                source_id: source.clone(),
+                ts: std::time::SystemTime::now(),
+            });
+
         match init_result {
             lattice_picker::PickerInitResult::Inline(pairs) => {
                 self.seat_picker_from_pairs(source, pairs);
@@ -789,6 +800,18 @@ impl App {
         let Some(picker) = self.picker.take() else {
             return;
         };
+        // Publish the dismiss event for subscribers tracking
+        // open-without-accept sessions. Source id may be
+        // absent for legacy imperative pickers (`:b`,
+        // multi-result LSP locations); skip the publish in
+        // that case rather than emit a misleading default.
+        if let Some(source_id) = picker.source_id.as_deref() {
+            self.event_bus
+                .publish_typed(lattice_picker::events::PickerDismissed {
+                    source_id: source_id.to_string(),
+                    ts: std::time::SystemTime::now(),
+                });
+        }
         if let Some(origin_raw) = picker.preview_origin {
             let origin = BufferId(origin_raw);
             if origin != self.active_pane_buffer_id() {
@@ -876,12 +899,29 @@ impl App {
                 .get_typed::<lattice_config::core_options::PickerMruEnabled>()
                 .map(|b| *b)
                 .unwrap_or(true);
+            let identity = lattice_picker::routing_identity(&routing);
             if mru_enabled
-                && let Some(identity) = lattice_picker::routing_identity(&routing)
+                && let Some(identity) = identity.as_deref()
             {
-                self.picker_mru.record(&source_id_owned, &identity);
+                self.picker_mru.record(&source_id_owned, identity);
                 self.persist_picker_mru_best_effort();
             }
+            // Publish the typed accept event AFTER the MRU
+            // record so subscribers walking the event see a
+            // consistent "this is what just happened + the
+            // index is already up to date" snapshot.
+            // Plugin subscribers (Phase 7+) and future
+            // telemetry hooks subscribe to this; the MRU
+            // record stays on the direct path because it's
+            // load-bearing for the very next picker-open and
+            // bus delivery is queue-deferred.
+            self.event_bus
+                .publish_typed(lattice_picker::events::PickerAccepted {
+                    source_id: source_id_owned.clone(),
+                    identity,
+                    routing_payload_path: routing_payload_path(&routing),
+                    ts: std::time::SystemTime::now(),
+                });
             self.apply_picker_outcome(outcome);
             return;
         }
@@ -1014,6 +1054,23 @@ impl App {
                 );
             }
         }
+    }
+}
+
+/// Extract a path from a routing payload when one is
+/// directly carried, otherwise `None`. Used by the picker-
+/// accepted event publish so subscribers that care about
+/// the path (telemetry, recent-file logs, plugin hooks)
+/// don't have to repeat the routing-payload match.
+fn routing_payload_path(
+    payload: &lattice_picker::RoutingPayload,
+) -> Option<std::path::PathBuf> {
+    match payload {
+        lattice_picker::RoutingPayload::OpenFile { path }
+        | lattice_picker::RoutingPayload::LspLocation { path, .. } => {
+            Some(path.clone())
+        }
+        _ => None,
     }
 }
 
@@ -1701,6 +1758,55 @@ mod tests {
         };
         assert_eq!(top, first_id, "previously-accepted file should float to top");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Slice 14d events: accepting a candidate publishes a
+    /// `PickerAccepted` typed event on the §5.10 bus.
+    /// Subscribers (the MRU index today; plugin telemetry
+    /// hooks tomorrow) receive a synchronous fan-out with
+    /// `source_id`, `identity`, and `ts` populated.
+    #[test]
+    fn picker_accept_publishes_typed_event() {
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-evt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("alpha.rs"), "").unwrap();
+        let mut app = app_with("hi\n", 5);
+        app.picker_mru_path = None;
+        // Subscribe before firing the picker.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<
+            lattice_picker::events::PickerAccepted,
+        >();
+        app.event_bus.subscribe_typed(tx);
+        app.open_picker("files".into(), vec![tmp.display().to_string()]);
+        let _ = app.picker.as_ref().expect("picker open");
+        app.apply(Action::PickerAccept);
+        // The event lands synchronously through the bus's
+        // forwarder closures; try_recv should see it.
+        let evt = rx.try_recv().expect("PickerAccepted should fire");
+        assert_eq!(evt.source_id, "files");
+        assert!(evt.identity.as_deref().unwrap().starts_with("file:"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Slice 14d events: a successful `:picker <source>`
+    /// seat publishes `PickerOpened` for subscribers
+    /// (telemetry, plugin hooks). Sources that error in
+    /// `init` skip the publish because the picker never
+    /// actually opens.
+    #[test]
+    fn picker_open_publishes_typed_event() {
+        let mut app = app_with("hi\n", 5);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<
+            lattice_picker::events::PickerOpened,
+        >();
+        app.event_bus.subscribe_typed(tx);
+        // `:picker buffers` always seats (the App's
+        // BufferRegistry has at least the active doc).
+        app.open_picker("buffers".into(), Vec::new());
+        let evt = rx.try_recv().expect("PickerOpened should fire");
+        assert_eq!(evt.source_id, "buffers");
     }
 
     /// Slice 14d: `picker.mru.enabled = false` short-circuits

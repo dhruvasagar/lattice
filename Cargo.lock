@@ -872,6 +872,7 @@ name = "lattice-picker"
 version = "0.1.0"
 dependencies = [
  "lattice-completion",
+ "lattice-grammar",
 ]
 
 [[package]]

@@ -105,6 +105,44 @@ fn build_lsp_subsystem(
     (handle, diagnostics, logger, apply_edit_rx, configuration_rx)
 }
 
+/// Boot-time registration of the first-party picker sources the
+/// `:picker <source>` ex-command dispatches to. Slice 12 of the
+/// picker design (`docs/dev/architecture/picker.md`) keeps this
+/// table small and metadata-only -- the App still owns the
+/// `source_id -> open_*_picker` dispatch table. Slice 13 (the
+/// `PickerSourceGenerator` trait) elevates registration to carry
+/// generator trait objects, at which point feature crates will
+/// register their own sources here through dedicated
+/// `register_picker_sources` entry points.
+fn built_in_picker_registry() -> lattice_picker::PickerRegistry {
+    use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec};
+    use lattice_picker::{PickerRegistry, PickerSourceSpec};
+
+    let mut reg = PickerRegistry::new();
+    reg.register(PickerSourceSpec {
+        id: "files",
+        doc: "Workspace file picker. Walks the current root (or supplied path) and emits one row per regular file.",
+        args_hint: "[root]",
+        args_schema: vec![ArgSpec {
+            name: "root",
+            kind: ArgKind::String,
+            doc: "Directory to walk. Absent = current document's parent / cwd.",
+            prompt: "root:",
+            default: ArgDefault::None,
+            completion: Some("gen:files"),
+        }],
+    });
+    reg.register(PickerSourceSpec::no_args(
+        "recent",
+        "Recently-edited files (MRU). Walks `App.recent_files`; accept edits the chosen path.",
+    ));
+    reg.register(PickerSourceSpec::no_args(
+        "buffers",
+        "Live buffer switcher. Walks every entry in BufferRegistry; accept activates the chosen buffer.",
+    ));
+    reg
+}
+
 impl App {
     pub fn new(document: Document) -> Self {
         // LSP subsystem: build once + extract shared handles so
@@ -531,6 +569,7 @@ impl App {
             active_snippet: None,
             snippet_dirs: Vec::new(),
             picker: None,
+            picker_registry: built_in_picker_registry(),
             previewing: false,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             auto_submit_after_chord: false,

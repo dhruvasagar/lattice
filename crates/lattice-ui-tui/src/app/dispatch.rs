@@ -1159,6 +1159,7 @@ impl App {
             Effect::OpenBufferPicker => self.open_buffer_picker(),
             Effect::OpenFilePicker { root } => self.open_file_picker(root),
             Effect::OpenRecentFilesPicker => self.open_recent_files_picker(),
+            Effect::OpenPicker { source, args } => self.open_picker(source, args),
             Effect::BufferDelete { force } => self.do_buffer_delete(force),
             Effect::OpenFileTree { root } => self.do_open_file_tree(root),
             Effect::CloseFileTree => self.dismiss_file_tree(),
@@ -1406,6 +1407,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::OpenBufferPicker
         | Effect::OpenFilePicker { .. }
         | Effect::OpenRecentFilesPicker
+        | Effect::OpenPicker { .. }
         | Effect::BufferDelete { .. }
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
@@ -1479,6 +1481,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::OpenBufferPicker
         | Effect::OpenFilePicker { .. }
         | Effect::OpenRecentFilesPicker
+        | Effect::OpenPicker { .. }
         | Effect::BufferDelete { .. }
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree

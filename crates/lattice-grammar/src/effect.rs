@@ -184,6 +184,19 @@ pub enum Effect {
     /// chosen path through the same `OpenFile` routing as
     /// `:files`. Empty MRU echoes "no recent files."
     OpenRecentFilesPicker,
+    /// `:picker <source> [args...]` -- canonical picker entry
+    /// point. Dispatches by `source` against the host's
+    /// `PickerRegistry`. Unknown source ids surface as a
+    /// host-side error echo; per-source arg shape is opaque to
+    /// the grammar (the host re-parses `args` against the
+    /// resolved source's `args_schema`). Short per-source
+    /// aliases like `:files`, `:recent`, `:b` stay registered
+    /// for vim muscle-memory and emit the same canonical
+    /// effect under the hood once their migration lands.
+    OpenPicker {
+        source: String,
+        args: Vec<String>,
+    },
     /// `:bd[elete][!]` -- close the active document buffer.
     /// `force = true` discards unsaved changes.
     BufferDelete {

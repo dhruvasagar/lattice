@@ -209,6 +209,53 @@ impl App {
     /// activation becomes the real switch; on dismiss, the
     /// pane reverts to whatever buffer was active when the
     /// picker opened.
+    /// `:picker <source> [args]` -- canonical entry point that
+    /// dispatches by source id against the host's
+    /// `picker_registry`. Slice 12 wires the metadata-only
+    /// registry; slice 13 (the `PickerSourceGenerator` trait)
+    /// will collapse this `match source.as_str()` table into
+    /// registry-driven dispatch. Until then the table makes the
+    /// source/handler binding explicit and audit-able.
+    ///
+    /// Unknown source ids surface as an error echo listing the
+    /// registered ids so the user can recover without `:apropos`.
+    pub(super) fn open_picker(&mut self, source: String, args: Vec<String>) {
+        // Registry lookup first: catches typos before we hit the
+        // dispatch table. The two should agree -- if they ever
+        // diverge (registered without handler, or vice versa) the
+        // mismatch surfaces as a distinct echo below.
+        if self.picker_registry.get(&source).is_none() {
+            let known: Vec<&str> = self.picker_registry.ids().collect();
+            let msg = if known.is_empty() {
+                format!("picker: unknown source `{source}` (no sources registered)")
+            } else {
+                format!(
+                    "picker: unknown source `{source}` (known: {})",
+                    known.join(", ")
+                )
+            };
+            self.set_message(EchoLevel::Error, msg);
+            return;
+        }
+        match source.as_str() {
+            "files" => {
+                let root = args.first().map(std::path::PathBuf::from);
+                self.open_file_picker(root);
+            }
+            "recent" => self.open_recent_files_picker(),
+            "buffers" => self.open_buffer_picker(),
+            other => {
+                // Registered metadata but no dispatch arm -- guard
+                // against drift between boot.rs's registry and this
+                // table.
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("picker: source `{other}` registered but no handler wired"),
+                );
+            }
+        }
+    }
+
     /// `:files [root]` -- open the workspace file picker.
     /// Resolves `root` the same way `:Filetree` does (explicit
     /// path > current document parent > cwd). Walks the tree
@@ -1011,5 +1058,76 @@ mod tests {
             other => panic!("expected OpenFile, got {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Slice 12: built-in registry seeds the well-known sources so
+    /// `:picker <Tab>` (and downstream slice-13 tests) can rely on
+    /// them being present.
+    #[test]
+    fn boot_registers_builtin_picker_sources() {
+        let app = app_with("hi\n", 5);
+        let ids: Vec<&'static str> = app.picker_registry.ids().collect();
+        assert!(ids.contains(&"files"));
+        assert!(ids.contains(&"recent"));
+        assert!(ids.contains(&"buffers"));
+    }
+
+    /// Slice 12: `:picker files` routes through the registry +
+    /// dispatch table and seeds the same picker shape `:files`
+    /// does today (every row routes to `OpenFile`).
+    #[test]
+    fn open_picker_files_seeds_open_file_routing() {
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-picker-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.rs"), "").unwrap();
+        let mut app = app_with("hi\n", 5);
+        app.open_picker("files".into(), vec![tmp.display().to_string()]);
+        let p = app.picker.as_ref().expect("picker open");
+        assert!(!p.candidates.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Slice 12: `:picker buffers` shares the buffer-switcher
+    /// shape `:b` produces -- candidates per registry entry.
+    #[test]
+    fn open_picker_buffers_opens_buffer_switcher() {
+        let mut app = app_with("hi\n", 5);
+        app.open_picker("buffers".into(), Vec::new());
+        let p = app.picker.as_ref().expect("picker open");
+        assert!(!p.candidates.is_empty());
+    }
+
+    /// Slice 12: empty MRU `:picker recent` echoes the same
+    /// message `:recent` does (closed picker, info echo).
+    #[test]
+    fn open_picker_recent_with_empty_mru_echoes() {
+        let mut app = app_with("hi\n", 5);
+        app.open_picker("recent".into(), Vec::new());
+        assert!(app.picker.is_none());
+        let msg = app.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no recent files"));
+    }
+
+    /// Slice 12: an unknown source id surfaces an error echo
+    /// listing every known id so the user can recover without
+    /// `:apropos`.
+    #[test]
+    fn open_picker_unknown_source_echoes_with_known_ids() {
+        let mut app = app_with("hi\n", 5);
+        app.open_picker("nope".into(), Vec::new());
+        assert!(app.picker.is_none());
+        let msg = app.last_message.as_ref().expect("echo");
+        assert!(
+            msg.text.contains("unknown source `nope`"),
+            "missing unknown-source prefix: {}",
+            msg.text
+        );
+        assert!(
+            msg.text.contains("files") && msg.text.contains("recent"),
+            "missing known-ids listing: {}",
+            msg.text
+        );
     }
 }

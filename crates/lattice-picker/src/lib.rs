@@ -45,6 +45,10 @@
 //! design that the registry, source generators, and MRU
 //! pipeline will land on top of this data model.
 
+pub mod source;
+
+pub use source::{PickerRegistry, PickerSourceSpec};
+
 use std::path::PathBuf;
 
 use lattice_completion::{

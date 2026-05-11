@@ -1388,6 +1388,14 @@ pub struct App {
     /// modal handlers; render takes precedence over completion +
     /// hover popups.
     pub picker: Option<lattice_picker::Picker>,
+    /// Metadata registry of every picker source the
+    /// `:picker <source>` ex-command can dispatch to. Populated
+    /// at boot with first-party source specs; feature crates
+    /// (LSP, snippets) add their sources through dedicated
+    /// `register_picker_sources` entry points. The plugin host
+    /// will feed WIT-imported sources into the same registry
+    /// (Phase 7+). See `docs/dev/architecture/picker.md`.
+    pub picker_registry: lattice_picker::PickerRegistry,
     /// True while a buffer activation is in *preview* mode --
     /// driven by the picker's `select_next` / `select_prev`
     /// hooks. Activate paths gate position-history pushes on

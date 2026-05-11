@@ -497,6 +497,50 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let _picker = registry.register_ex_command(
+        "ex:picker",
+        "Open a picker over the named source (`:picker <source> [args...]`). \
+         Source ids come from the host's `PickerRegistry` -- type `<Tab>` after \
+         `:picker ` to list them. Short aliases like `:files`, `:recent`, `:b` \
+         dispatch through the same machinery.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_picker_args),
+            apply: Box::new(|ctx| {
+                // `parse_picker_args` always produces an `Args::List`
+                // with `source` at index 0 + raw arg tokens after.
+                let list = ctx.args.as_list().ok_or_else(|| {
+                    CommandError::BadArgs("picker: expected list args".into())
+                })?;
+                let source = list
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| CommandError::BadArgs("picker: source missing".into()))?
+                    .to_string();
+                let args: Vec<String> = list[1..]
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect();
+                Ok(Effect::OpenPicker { source, args })
+            }),
+            args_schema: vec![ArgSpec {
+                name: "source",
+                kind: ArgKind::String,
+                doc: "Picker source id (`files`, `recent`, `buffers`, ...).",
+                prompt: "source:",
+                default: ArgDefault::Required,
+                // Source-id completion lands in the follow-up slice
+                // that wires a `gen:picker-sources` generator
+                // against the App's shared PickerRegistry handle.
+                // Until then `:picker <Tab>` shows no candidates --
+                // the dispatch path itself still works.
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let file_tree = registry.register_ex_command(
         "ex:filetree",
         "Open a file-tree buffer (`:Filetree [path]`). Absent = current dir.",
@@ -1336,6 +1380,31 @@ fn parse_required_string(rest: &str, _bang: bool) -> GrammarResult<Args> {
     }
 }
 
+/// `:picker <source> [args...]` parser. First whitespace-delimited
+/// token is the source id; the rest pass through as `Raw` values
+/// the App's source-specific handler re-interprets against the
+/// resolved [`PickerSourceSpec::args_schema`]. The grammar stays
+/// agnostic of which sources exist and what args they take --
+/// validation happens host-side against the registry.
+fn parse_picker_args(rest: &str, _bang: bool) -> GrammarResult<Args> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        return Err(CommandError::BadArgs(
+            "picker source required (e.g. `:picker files`)".into(),
+        ));
+    }
+    let mut tokens = trimmed.split_whitespace();
+    let source = tokens
+        .next()
+        .expect("non-empty after trim guarantees at least one token");
+    let mut values: Vec<ArgValue> = Vec::with_capacity(1);
+    values.push(ArgValue::String(source.to_string()));
+    for tok in tokens {
+        values.push(ArgValue::Raw(tok.to_string()));
+    }
+    Ok(Args::List(values))
+}
+
 /// `:substitute` and `:global` enter through the `:`-line parser's
 /// delimiter detection, not through the generic keyword path -- their
 /// args come pre-parsed as `Args::List`. These stubs guard against a
@@ -1821,6 +1890,67 @@ mod tests {
         match parse_optional_path("foo.rs", false).unwrap() {
             Args::String(s) => assert_eq!(s, "foo.rs"),
             other => panic!("unexpected args: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_picker_args_splits_source_then_raw_tokens() {
+        // Empty input rejects -- source is required.
+        assert!(matches!(
+            parse_picker_args("", false),
+            Err(CommandError::BadArgs(_))
+        ));
+        assert!(matches!(
+            parse_picker_args("   ", false),
+            Err(CommandError::BadArgs(_))
+        ));
+        // Just a source id -> single-element list with String source.
+        match parse_picker_args("files", false).unwrap() {
+            Args::List(v) => {
+                assert_eq!(v.len(), 1);
+                assert_eq!(v[0].as_str(), Some("files"));
+                assert!(matches!(v[0], ArgValue::String(_)));
+            }
+            other => panic!("unexpected args: {other:?}"),
+        }
+        // Source + rest -> first is String source, rest are Raw tokens
+        // the App handler will re-interpret per source-specific shape.
+        match parse_picker_args("files  /tmp/a  /tmp/b", false).unwrap() {
+            Args::List(v) => {
+                assert_eq!(v.len(), 3);
+                assert_eq!(v[0].as_str(), Some("files"));
+                assert!(matches!(v[0], ArgValue::String(_)));
+                assert_eq!(v[1].as_str(), Some("/tmp/a"));
+                assert!(matches!(v[1], ArgValue::Raw(_)));
+                assert_eq!(v[2].as_str(), Some("/tmp/b"));
+                assert!(matches!(v[2], ArgValue::Raw(_)));
+            }
+            other => panic!("unexpected args: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn picker_command_applies_into_open_picker_effect() {
+        let (registry, _ex, mut doc) = fixture();
+        let picker_id = registry
+            .id_by_name("ex:picker")
+            .expect("ex:picker must be registered");
+        let args = parse_picker_args("files /tmp/a", false).unwrap();
+        let inv = CommandInvocation::of(picker_id).with_args(args);
+        let eff = execute(
+            &registry,
+            &mut doc,
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        match eff {
+            Effect::OpenPicker { source, args } => {
+                assert_eq!(source, "files");
+                assert_eq!(args, vec!["/tmp/a".to_string()]);
+            }
+            other => panic!("expected Effect::OpenPicker, got {other:?}"),
         }
     }
 

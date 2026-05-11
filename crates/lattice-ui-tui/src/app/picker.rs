@@ -189,10 +189,15 @@ impl App {
             // own translation; until then the host echoes a
             // clear "not yet wired" message so a misrouted
             // outcome surfaces loudly in development.
-            JumpToMark { name } => self.set_message(
-                EchoLevel::Error,
-                format!("picker: JumpToMark `{name}` not yet wired (lands with marks picker)"),
-            ),
+            JumpToMark { name } => {
+                // Reuse the existing keyboard-driven mark-jump
+                // path so cursor placement, position-history
+                // push, and "mark not set" error all match the
+                // `` ` `` motion's behavior. `exact = true`
+                // mirrors vim's back-tick semantics (jump to
+                // the recorded byte, not just the line).
+                self.do_jump_mark(name, true);
+            }
             InvokeCommand { id, .. } => {
                 // Strip the `ex:` registration prefix so the parser
                 // sees the user-facing command word. The parser
@@ -912,6 +917,11 @@ impl App {
                     lattice_picker::PickerAcceptOutcome::PasteRegister { name },
                 );
             }
+            lattice_picker::RoutingPayload::JumpToMark { name } => {
+                self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::JumpToMark { name },
+                );
+            }
         }
     }
 }
@@ -1547,7 +1557,10 @@ mod tests {
         // stable. Each new source migration extends this list.
         assert_eq!(
             ids,
-            vec!["buffers", "commands", "files", "jumps", "lines", "recent", "registers"]
+            vec![
+                "buffers", "commands", "files", "jumps", "lines",
+                "marks", "recent", "registers",
+            ]
         );
         // Sanity: matches what the registry itself reports.
         let registry_ids: Vec<&'static str> = app.picker_registry.ids().collect();

@@ -630,6 +630,73 @@ impl PickerSourceGenerator for RegistersSource {
     }
 }
 
+/// `:picker marks`. Walks `ctx.marks` (sorted by name in
+/// `build_picker_context`) and emits one row per set mark.
+/// Accept emits `JumpToMark { name }` which the host
+/// resolves through `do_jump_mark` -- same path the `` ` ``
+/// motion uses, so cursor placement + position-history push
+/// match keyboard-driven behavior. MRU will key on
+/// `mark:<name>` automatically when slice 14 lands.
+pub struct MarksSource {
+    pub spec: PickerSourceSpec,
+}
+
+impl MarksSource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                "marks",
+                "Vim-style marks. `<CR>` jumps to the mark via the same path as `` ` ``.",
+            ),
+        }
+    }
+}
+
+impl Default for MarksSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PickerSourceGenerator for MarksSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(
+        &self,
+        ctx: &PickerContext<'_>,
+        _args: &[String],
+    ) -> SourceResult<PickerInitResult> {
+        if ctx.marks.is_empty() {
+            return Err("marks: no marks set".into());
+        }
+        let pairs = ctx
+            .marks
+            .iter()
+            .map(|(name, pos)| {
+                let display = format!("'{name:<2} {}:{}", pos.line + 1, pos.byte + 1);
+                let cand = RawCandidate::plain(display, CandidateKind::Plain);
+                (cand, RoutingPayload::JumpToMark { name: *name })
+            })
+            .collect();
+        Ok(PickerInitResult::Inline(pairs))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::JumpToMark { name } => {
+                Ok(PickerAcceptOutcome::JumpToMark { name: *name })
+            }
+            other => Err(format!("marks: unexpected routing payload {other:?}")),
+        }
+    }
+}
+
 /// Convenience: build the first-party source generators as
 /// `Arc<dyn PickerSourceGenerator>` ready to register against
 /// a `PickerRegistry`. Used by `App::new` to boot the
@@ -648,6 +715,7 @@ pub fn first_party_generators(
         Arc::new(JumpsSource::new()),
         Arc::new(CommandsSource::new(command_registry)),
         Arc::new(RegistersSource::new()),
+        Arc::new(MarksSource::new()),
     ]
 }
 
@@ -757,7 +825,10 @@ mod tests {
         let ids: Vec<&'static str> = generators.iter().map(|g| g.spec().id).collect();
         assert_eq!(
             ids,
-            vec!["files", "recent", "buffers", "lines", "jumps", "commands", "registers"]
+            vec![
+                "files", "recent", "buffers", "lines", "jumps",
+                "commands", "registers", "marks",
+            ]
         );
     }
 
@@ -892,6 +963,62 @@ mod tests {
         match source.accept(&ctx, &routing).expect("ok") {
             PickerAcceptOutcome::PasteRegister { name } => assert_eq!(name, 'a'),
             other => panic!("expected PasteRegister outcome, got {other:?}"),
+        }
+        let bad = RoutingPayload::OpenFile { path: "/tmp/x".into() };
+        assert!(source.accept(&ctx, &bad).is_err());
+    }
+
+    /// P.5: marks source returns `Err` when no marks set.
+    #[test]
+    fn marks_source_empty_errors() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = MarksSource::new();
+        let err = source.init(&ctx, &[]).unwrap_err();
+        assert!(err.contains("no marks set"), "got {err}");
+    }
+
+    /// P.5: synthesise marks on the context, confirm rows
+    /// route through `JumpToMark` and display the line:col.
+    #[test]
+    fn marks_source_emits_jump_to_mark_routing() {
+        use lattice_protocol::Position;
+
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let mut ctx = app.build_picker_context(&snap);
+        ctx.marks = vec![
+            ('a', Position::new(2, 0)),
+            ('b', Position::new(5, 3)),
+        ];
+        let source = MarksSource::new();
+        let result = source.init(&ctx, &[]).expect("inline");
+        let PickerInitResult::Inline(pairs) = result else {
+            panic!("expected Inline");
+        };
+        assert_eq!(pairs.len(), 2);
+        match &pairs[0].1 {
+            RoutingPayload::JumpToMark { name } => assert_eq!(*name, 'a'),
+            other => panic!("expected JumpToMark, got {other:?}"),
+        }
+        // Display carries 1-based line:col.
+        assert!(pairs[0].0.display.contains("3:1"), "got {}", pairs[0].0.display);
+        assert!(pairs[1].0.display.contains("6:4"), "got {}", pairs[1].0.display);
+    }
+
+    /// P.5: accept on a `JumpToMark` routing returns the
+    /// matching outcome verbatim.
+    #[test]
+    fn marks_source_accept_translates_jump_to_mark() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = MarksSource::new();
+        let routing = RoutingPayload::JumpToMark { name: 'm' };
+        match source.accept(&ctx, &routing).expect("ok") {
+            PickerAcceptOutcome::JumpToMark { name } => assert_eq!(name, 'm'),
+            other => panic!("expected JumpToMark outcome, got {other:?}"),
         }
         let bad = RoutingPayload::OpenFile { path: "/tmp/x".into() };
         assert!(source.accept(&ctx, &bad).is_err());

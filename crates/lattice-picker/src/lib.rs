@@ -151,6 +151,13 @@ pub enum RoutingPayload {
     /// path so charwise / linewise / blockwise distinction is
     /// honored.
     PasteRegister { name: char },
+    /// Jump to a named mark (`mX`). Emitted by `:picker marks`.
+    /// The host resolves the mark to a position via its
+    /// existing `do_jump_mark` path so the cursor placement +
+    /// position-history push match the keyboard-driven
+    /// behavior. `name` carries a stable identity, so MRU
+    /// will record `mark:<name>` once slice 14 lands.
+    JumpToMark { name: char },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves

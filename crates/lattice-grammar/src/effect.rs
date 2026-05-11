@@ -169,6 +169,16 @@ pub enum Effect {
     /// the picker via `:b <prefix>` once that wiring lands; for now
     /// the no-arg form is the entry point.
     OpenBufferPicker,
+    /// `:files [root]` -- open the workspace file picker. Walks
+    /// `root` (or the current document's parent / cwd when
+    /// absent) recursively; rows are filesystem paths the user
+    /// can fuzzy-match. Accept opens the chosen path via the
+    /// `:edit` path (re-uses oil/file-tree for directories).
+    /// Skips known ignore dirs (`.git`, `target`, `node_modules`,
+    /// `dist`, `.cache`) and dotfiles by default.
+    OpenFilePicker {
+        root: Option<std::path::PathBuf>,
+    },
     /// `:bd[elete][!]` -- close the active document buffer.
     /// `force = true` discards unsaved changes.
     BufferDelete {

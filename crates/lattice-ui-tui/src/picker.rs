@@ -107,6 +107,12 @@ pub enum RoutingPayload {
     /// `PickerAction::AcceptLspCodeAction` -- numeric index into
     /// the host's `pending_code_action_items` snapshot.
     LspCodeAction { index: u32 },
+    /// `PickerAction::OpenFile` -- canonical filesystem path the
+    /// accept dispatch hands to `App::do_edit(Some(path),
+    /// false)`. Used by the file picker (`:files`) and the
+    /// recent-files picker; directories defer to oil/file-tree
+    /// the same way `:e DIR` does.
+    OpenFile { path: PathBuf },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves
@@ -138,6 +144,11 @@ pub enum PickerSource {
     /// `<rel-path>:<line>:<col>  <line preview>` so the user
     /// sees a ripgrep-style row.
     LspLocations,
+    /// Workspace file walk -- `:files` and `:recent`. Each row
+    /// is one filesystem path; accept hands it to
+    /// `App::do_edit`. Caller seeds the candidate list (the
+    /// picker stays renderer-agnostic).
+    Files,
 }
 
 /// What `<CR>` does to the selected candidate. Variants stay
@@ -176,6 +187,11 @@ pub enum PickerAction {
     /// then applies its WorkspaceEdit / executeCommand.
     /// Used by `:code-actions` (Phase 4.3).
     AcceptLspCodeAction,
+    /// Accept the focused row's
+    /// [`RoutingPayload::OpenFile`] -- pass the path to
+    /// `App::do_edit(Some(path), false)`. File picker
+    /// (`:files`) and recent-files picker share this action.
+    OpenFile,
 }
 
 /// One open vertico-style picker. Lives on `App.picker` while

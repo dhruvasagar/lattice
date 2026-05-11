@@ -456,6 +456,34 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let _files_picker = registry.register_ex_command(
+        "ex:files",
+        "Open the workspace file picker (`:files [root]`). Type to filter; `<CR>` to edit.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| {
+                let root = match &ctx.args {
+                    Args::String(p) if !p.is_empty() => {
+                        Some(std::path::PathBuf::from(p.as_str()))
+                    }
+                    _ => None,
+                };
+                Ok(Effect::OpenFilePicker { root })
+            }),
+            args_schema: vec![ArgSpec {
+                name: "root",
+                kind: ArgKind::String,
+                doc: "Directory to walk. Absent = current document's parent / cwd.",
+                prompt: "root:",
+                default: ArgDefault::None,
+                completion: Some("gen:files"),
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let file_tree = registry.register_ex_command(
         "ex:filetree",
         "Open a file-tree buffer (`:Filetree [path]`). Absent = current dir.",

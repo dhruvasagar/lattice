@@ -662,7 +662,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Registered option name (e.g. `number`, `tabstop`).",
                 prompt: "option:",
                 default: ArgDefault::Required,
-                completion: None,
+                completion: Some("gen:options"),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1787,6 +1787,21 @@ mod tests {
         match parse_required_string("number", false).unwrap() {
             Args::String(s) => assert_eq!(s, "number"),
             other => panic!("unexpected args: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn option_describing_commands_complete_against_gen_options() {
+        // `:describe-option NAME` and `:describe-option-resolution
+        // NAME` both consume a typed-option name; both must offer
+        // the same completion source so the user gets the same
+        // candidates after `<Tab>` regardless of which command
+        // they typed.
+        let (registry, ex, _) = fixture();
+        for id in [ex.describe_option, ex.describe_option_resolution] {
+            let spec = registry.ex_command_spec(id.0).unwrap();
+            assert_eq!(spec.args_schema.len(), 1);
+            assert_eq!(spec.args_schema[0].completion, Some("gen:options"));
         }
     }
 }

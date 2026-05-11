@@ -1973,7 +1973,8 @@ fn draw_oil_pane(
     if is_active && area.height > 0 && area.width > 0 {
         let row_off = (app.cursor.line as usize).saturating_sub(app.scroll as usize);
         let row_off = row_off.min(area.height.saturating_sub(1) as usize);
-        let icon_width = if nerd_fonts { 2 } else { 0 };
+        // Both nerd-font and BMP fallback glyphs occupy 2 cells.
+        let icon_width = 2;
         let col_off = (app.cursor.byte as usize + icon_width).min(area.width.saturating_sub(1) as usize);
         frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
     }

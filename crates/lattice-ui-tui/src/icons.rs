@@ -69,9 +69,10 @@ mod tests {
     }
 
     #[test]
-    fn nerd_fonts_false_returns_empty_glyph_for_dir() {
-        let (glyph, _) = icon_for_entry(&PathBuf::from("src"), true, false, &theme());
-        assert_eq!(glyph, "");
+    fn nerd_fonts_false_returns_bmp_glyph_for_dir() {
+        let (glyph, style) = icon_for_entry(&PathBuf::from("src"), true, false, &theme());
+        assert_eq!(glyph, "▸ ");
+        assert_eq!(style, theme().file_tree_dir_style);
     }
 
     #[test]
@@ -132,9 +133,21 @@ mod tests {
     }
 
     #[test]
-    fn nerd_fonts_false_returns_empty_glyph_for_file() {
-        let (glyph, _) = icon_for_entry(&PathBuf::from("main.rs"), false, false, &theme());
-        assert_eq!(glyph, "");
+    fn nerd_fonts_false_returns_bmp_glyph_for_file() {
+        // Source code (incl. `.rs`) falls into the default bucket
+        // → middle dot. Colour still discriminates by language.
+        let (glyph, style) = icon_for_entry(&PathBuf::from("main.rs"), false, false, &theme());
+        assert_eq!(glyph, "· ");
+        assert_eq!(style.fg, Some(Color::from_u32(0xDEA584)));
+    }
+
+    #[test]
+    fn nerd_fonts_false_picks_per_family_glyph() {
+        assert_eq!(icon_for_entry(&PathBuf::from("Cargo.toml"), false, false, &theme()).0, "◆ ");
+        assert_eq!(icon_for_entry(&PathBuf::from("README.md"), false, false, &theme()).0, "≡ ");
+        assert_eq!(icon_for_entry(&PathBuf::from("logo.png"), false, false, &theme()).0, "◇ ");
+        assert_eq!(icon_for_entry(&PathBuf::from("dist.zip"), false, false, &theme()).0, "■ ");
+        assert_eq!(icon_for_entry(&PathBuf::from("song.mp3"), false, false, &theme()).0, "♪ ");
     }
 
     #[test]

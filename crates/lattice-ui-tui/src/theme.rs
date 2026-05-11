@@ -53,7 +53,11 @@ pub struct Theme {
     pub file_tree_hidden_style: Style,
     /// Base style for regular file entries.
     pub file_tree_file_style: Style,
-    /// Whether to use nerd-font glyphs. When false, icons module returns empty glyphs.
+    /// Whether to render file-type icons as Nerd Fonts v3 glyphs.
+    /// When false, the icons module emits the BMP-block fallback
+    /// palette (◆ ≡ ◇ ■ ♪ ▶ ·) that works in every modern monospace
+    /// font. Synced from the `ui.nerd_fonts` typed option in
+    /// `App::sync_theme_from_config`.
     pub nerd_fonts: bool,
 
     // ---- Diagnostics (Phase 4.1.d.iii) ---------------------
@@ -129,7 +133,10 @@ impl Default for Theme {
             file_tree_dir_style: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
             file_tree_hidden_style: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
             file_tree_file_style: Style::new(),
-            nerd_fonts: true,
+            // Default to the BMP fallback so the first frame works
+            // in any terminal font. Users on a Nerd-Font-patched
+            // terminal opt in via `:set ui.nerd_fonts on`.
+            nerd_fonts: false,
             // M.7.3: whitespace + current-line defaults.
             whitespace_style: Style::new()
                 .fg(Color::DarkGray)

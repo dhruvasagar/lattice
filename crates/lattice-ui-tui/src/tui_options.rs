@@ -78,6 +78,18 @@ lattice_config::options! {
     #[name("ui.statusline_inactive_fg")]
     #[validate(validate_color)]
     pub UiStatuslineInactiveFg: String = String::from("darkgray");
+
+    /// Whether to render file-type icons as Nerd Fonts v3 glyphs.
+    ///
+    /// `true` -- expects a Nerd Font (FiraCode Nerd Font, JetBrains
+    /// Mono Nerd Font, Hack Nerd Font, ...) configured as the
+    /// terminal font; produces the rich per-language icon set.
+    ///
+    /// `false` (default) -- renders a BMP-block fallback palette
+    /// (◆ ≡ ◇ ■ ♪ ▶ ·) that works in every modern monospace font.
+    /// Pick this if you see `?` boxes in the file tree / oil.
+    #[name("ui.nerd_fonts")]
+    pub UiNerdFonts: bool = false;
 }
 
 #[cfg(test)]
@@ -98,6 +110,19 @@ mod tests {
             r.get_typed::<UiStatuslineInactiveFg>().unwrap().as_str(),
             "darkgray"
         );
+        // BMP fallback is the default so the first frame renders
+        // in any terminal font.
+        assert!(!*r.get_typed::<UiNerdFonts>().unwrap());
+    }
+
+    #[test]
+    fn nerd_fonts_flag_parses_on_off() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        r.parse_and_set_command("ui.nerd_fonts=on").unwrap();
+        assert!(*r.get_typed::<UiNerdFonts>().unwrap());
+        r.parse_and_set_command("ui.nerd_fonts=off").unwrap();
+        assert!(!*r.get_typed::<UiNerdFonts>().unwrap());
     }
 
     #[test]

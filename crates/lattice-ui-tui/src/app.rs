@@ -4714,6 +4714,43 @@ mod tests {
     }
 
     #[test]
+    fn set_ui_nerd_fonts_rerenders_open_file_tree() {
+        // Regression for the bug where toggling `ui.nerd_fonts`
+        // updated the theme but left existing file-tree ropes
+        // rendering the old palette. The rope embeds the icon
+        // glyphs, so a palette flip must re-render every open
+        // tree -- otherwise the user keeps seeing `?` boxes (or
+        // BMP fallbacks) until they reopen the tree.
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-tree-nerd-rerender-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(tmp.join("main.rs"), "").unwrap();
+
+        let mut a = app_with("hi", 5);
+        a.do_open_file_tree(Some(tmp.clone()));
+        let tree_id = a.active_pane_buffer_id();
+
+        // Default is BMP fallback -- the rope should contain
+        // the source-code middle-dot, not the nerd-font rust
+        // glyph.
+        let body = a.buffers.file_tree(tree_id).unwrap().content.as_string();
+        assert!(body.contains("· main.rs"), "expected BMP fallback in rope, got: {body}");
+        assert!(!body.contains("󱘗 "), "nerd-font glyph leaked into default rope: {body}");
+
+        // Flip the typed option via the same path `:set` takes.
+        // The change handler must re-render every open tree
+        // against the new palette.
+        submit_ex(&mut a, "set ui.nerd_fonts=on");
+
+        let body = a.buffers.file_tree(tree_id).unwrap().content.as_string();
+        assert!(body.contains("󱘗 main.rs"), "expected nerd-font glyph post-toggle, got: {body}");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn follow_link_reads_link_from_buffer_locals() {
         // M.3.2.c.1: prove `do_help_follow_link` reads the
         // link data from `buffer_locals` (canonical), not the

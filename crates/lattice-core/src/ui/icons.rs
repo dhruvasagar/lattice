@@ -1,15 +1,23 @@
 //! Renderer-agnostic file-type icon resolver (DESIGN.md §5.6.7).
 //!
-//! Returns a Nerd Fonts v3 glyph + a renderer-neutral [`IconColor`]
-//! for any file or directory path. The glyph is plain text -- the
-//! `lattice-file-tree` render path embeds it directly in the rope so
-//! the model stays usable from any renderer. The colour is mapped
-//! to the renderer's native style at draw time (ratatui `Color`,
-//! GPUI `Hsla`, etc.).
+//! Returns a glyph + renderer-neutral [`IconColor`] for any file or
+//! directory path. The glyph is plain text -- the `lattice-file-tree`
+//! render path embeds it directly in the rope so the model stays
+//! usable from any renderer. The colour is mapped to the renderer's
+//! native style at draw time (ratatui `Color`, GPUI `Hsla`, etc.).
 //!
-//! Resolution order: exact filename → extension → default. When
-//! `nerd_fonts` is false the glyph is `""` and only the colour
-//! carries visual differentiation.
+//! Two glyph palettes, picked by the `nerd_fonts` argument:
+//!
+//! - `nerd_fonts == true` -- Nerd Fonts v3 glyphs (Private Use Area
+//!   codepoints, require a patched font installed in the terminal).
+//! - `nerd_fonts == false` -- BMP-block fallback (Geometric Shapes,
+//!   Misc Symbols). These render in any modern monospace font --
+//!   DejaVu, JetBrains Mono, Fira, Cascadia, Consolas -- without
+//!   needing a special install. Same six-bucket categorisation
+//!   colour-tinted by language so a `.rs` and a `.py` still look
+//!   different at a glance.
+//!
+//! Resolution order: exact filename → extension → default.
 
 use std::path::Path;
 
@@ -34,11 +42,12 @@ pub enum IconColor {
 ///
 /// `is_dir` selects the directory branch (folder glyph regardless
 /// of name); for files the lookup falls through name → extension →
-/// default. `nerd_fonts == false` returns an empty glyph with the
-/// colour still resolved so the renderer can still tint by type.
+/// default. `nerd_fonts == false` returns a BMP-block fallback
+/// glyph (◆ ≡ ◇ ■ ♪ ▶ · -- one per file family) with the colour
+/// still resolved per type.
 pub fn entry_visual(path: &Path, is_dir: bool, nerd_fonts: bool) -> (&'static str, IconColor) {
     if is_dir {
-        let glyph = if nerd_fonts { "󰉋 " } else { "" };
+        let glyph = if nerd_fonts { "󰉋 " } else { "▸ " };
         return (glyph, IconColor::Blue);
     }
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -46,7 +55,85 @@ pub fn entry_visual(path: &Path, is_dir: bool, nerd_fonts: bool) -> (&'static st
     if nerd_fonts {
         nerd_glyph_and_color(name, ext)
     } else {
-        ("", ext_color(name, ext))
+        (ascii_glyph(name, ext), ext_color(name, ext))
+    }
+}
+
+/// BMP-block fallback glyph for a file by name + extension. One of
+/// six family buckets (config, document, image, archive, audio/video,
+/// executable) plus a default middle-dot for source code and
+/// everything else. All glyphs are 2 cells wide (one BMP char + a
+/// trailing space) so they align with the nerd-font palette.
+fn ascii_glyph(name: &str, ext: &str) -> &'static str {
+    // Filenames that read as a manifest/build/config first, no
+    // matter what extension they nominally carry. Mirrors the
+    // explicit-name branch in `nerd_glyph_and_color` so the two
+    // palettes stay in lockstep.
+    match name {
+        "Cargo.toml" | "Cargo.lock"
+        | "package.json" | "package-lock.json"
+        | "tsconfig.json" | "tsconfig.base.json" | "tsconfig.build.json"
+        | "jsconfig.json"
+        | "pyproject.toml" | "Pipfile" | "Pipfile.lock" | "setup.py" | "setup.cfg"
+        | "requirements.txt" | "requirements-dev.txt" | "requirements-test.txt"
+        | "Gemfile" | "Gemfile.lock" | "Rakefile"
+        | "go.mod" | "go.sum" | "go.work"
+        | "Brewfile" | "Brewfile.lock.json"
+        | "Justfile" | "justfile"
+        | "Makefile" | "makefile" | "GNUmakefile" | "BSDmakefile" | "Makefile.am"
+        | "CMakeLists.txt"
+        | "Dockerfile" | "dockerfile" | "Containerfile" | "containerfile"
+        | "docker-compose.yml" | "docker-compose.yaml"
+        | "compose.yml" | "compose.yaml"
+        | ".dockerignore" | ".gitignore" | ".gitattributes" | ".gitmodules"
+        | ".gitconfig" | ".gitmessage"
+        | ".editorconfig" | ".env" | ".envrc"
+        | ".npmrc" | ".nvmrc" | ".node-version"
+        | ".eslintrc" | ".eslintrc.json" | ".eslintrc.js" | ".eslintrc.yml" | ".eslintrc.cjs"
+        | ".prettierrc" | ".prettierrc.json" | ".prettierrc.js" | ".prettierrc.yml"
+        | "Procfile" | "MANIFEST.in" | "uv.lock" => return "◆ ",
+        "LICENSE" | "LICENCE" | "LICENSE.txt" | "LICENCE.txt"
+        | "LICENSE.md" | "LICENCE.md" => return "≡ ",
+        _ => {}
+    }
+    match ext {
+        // Config / manifest
+        "toml" | "yaml" | "yml" | "json" | "jsonc" | "json5"
+        | "ini" | "cfg" | "conf" | "config" | "properties" | "prop" | "rc"
+        | "env" | "envrc" | "dotenv"
+        | "tf" | "tfvars" | "hcl" | "nix"
+        | "lock" => "◆ ",
+        // Document / prose
+        "md" | "mdx" | "markdown"
+        | "rst" | "txt" | "text"
+        | "adoc" | "asciidoc" | "org"
+        | "man" | "roff" | "groff"
+        | "pdf" | "doc" | "docx" | "odt" | "rtf"
+        | "xls" | "xlsx" | "ods" | "numbers"
+        | "ppt" | "pptx" | "odp" | "keynote"
+        | "tex" | "ltx" | "sty" | "bib" | "cls"
+        | "ipynb" | "csv" | "tsv" => "≡ ",
+        // Image / vector
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp"
+        | "tiff" | "tif" | "ico" | "svg" | "svgz"
+        | "heic" | "heif" | "avif" | "psd" | "xcf"
+        | "ai" | "eps" | "sketch" | "fig" | "figma" => "◇ ",
+        // Archive / packaged binary
+        "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst"
+        | "lz4" | "7z" | "rar" | "iso" | "cab"
+        | "deb" | "rpm" | "pkg" | "apk" | "snap" => "■ ",
+        // Audio + video share the music-note marker -- they read
+        // as "media" in this fallback palette.
+        "mp3" | "ogg" | "flac" | "wav" | "m4a" | "aac"
+        | "wma" | "opus" | "aiff"
+        | "mp4" | "mkv" | "avi" | "mov" | "wmv" | "flv"
+        | "webm" | "m4v" | "ogv" => "♪ ",
+        // Executable / installable
+        "exe" | "msi" | "app" => "▶ ",
+        // Source code, dotfiles, and anything not categorised
+        // above. Colour still discriminates language thanks to
+        // `ext_color`.
+        _ => "· ",
     }
 }
 
@@ -351,9 +438,31 @@ mod tests {
     }
 
     #[test]
-    fn nerd_fonts_false_returns_empty_glyph_for_dir() {
-        let (glyph, _) = entry_visual(&PathBuf::from("src"), true, false);
-        assert_eq!(glyph, "");
+    fn nerd_fonts_false_returns_bmp_glyph_for_dir() {
+        let (glyph, color) = entry_visual(&PathBuf::from("src"), true, false);
+        assert_eq!(glyph, "▸ ");
+        assert_eq!(color, IconColor::Blue);
+    }
+
+    #[test]
+    fn nerd_fonts_false_picks_glyph_by_file_family() {
+        // Config family
+        assert_eq!(entry_visual(&PathBuf::from("Cargo.toml"), false, false).0, "◆ ");
+        assert_eq!(entry_visual(&PathBuf::from("config.yaml"), false, false).0, "◆ ");
+        // Document family
+        assert_eq!(entry_visual(&PathBuf::from("README.md"), false, false).0, "≡ ");
+        assert_eq!(entry_visual(&PathBuf::from("LICENSE"), false, false).0, "≡ ");
+        // Image family
+        assert_eq!(entry_visual(&PathBuf::from("logo.png"), false, false).0, "◇ ");
+        // Archive family
+        assert_eq!(entry_visual(&PathBuf::from("dist.zip"), false, false).0, "■ ");
+        // Media family
+        assert_eq!(entry_visual(&PathBuf::from("song.mp3"), false, false).0, "♪ ");
+        assert_eq!(entry_visual(&PathBuf::from("clip.mp4"), false, false).0, "♪ ");
+        // Source code + everything else → middle dot
+        assert_eq!(entry_visual(&PathBuf::from("main.rs"), false, false).0, "· ");
+        assert_eq!(entry_visual(&PathBuf::from("script.py"), false, false).0, "· ");
+        assert_eq!(entry_visual(&PathBuf::from(".gitignore"), false, false).0, "◆ ");
     }
 
     #[test]

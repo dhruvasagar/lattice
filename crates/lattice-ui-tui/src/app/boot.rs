@@ -573,13 +573,17 @@ impl App {
     /// canonical primitives in config.
     pub fn sync_theme_from_config(&mut self) {
         use crate::tui_options::{
-            UiDimInactive, UiSeparator, UiSeparatorColor, UiStatuslineActiveFg,
-            UiStatuslineInactiveFg,
+            UiDimInactive, UiNerdFonts, UiSeparator, UiSeparatorColor,
+            UiStatuslineActiveFg, UiStatuslineInactiveFg,
         };
         use ratatui::style::Style;
         // ui.dim_inactive -- bool flag projected directly.
         self.theme.dim_inactive_panes =
             *self.config.get_typed::<UiDimInactive>().expect("UiDimInactive");
+        // ui.nerd_fonts -- selects the icon glyph palette
+        // (nerd-font Private Use codepoints vs. BMP fallback).
+        self.theme.nerd_fonts =
+            *self.config.get_typed::<UiNerdFonts>().expect("UiNerdFonts");
         // ui.separator -- one-character glyph for the vertical
         // pane divider. Validated to len==1 at parse; fall back to
         // the default if a forged value sneaks through.

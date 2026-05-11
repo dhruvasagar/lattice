@@ -257,10 +257,11 @@ fn read_dir_sorted(root: &Path) -> std::io::Result<Vec<(PathBuf, bool)>> {
 /// Serialise the entry list to a [`Buffer`]. Each row is
 /// `<indent><marker><icon><name>` where `<marker>` is `▾ ` for an
 /// expanded dir, `▸ ` for a collapsed dir, and `  ` for a file.
-/// Indent is two spaces per `depth`. When `nerd_fonts` is true the
-/// icon glyph from `lattice_core::ui::icons::glyph_for_entry` is
-/// inserted between the marker and the name; when false the icon
-/// is `""`.
+/// Indent is two spaces per `depth`. The `<icon>` glyph comes from
+/// `lattice_core::ui::icons::glyph_for_entry` -- nerd-fonts when
+/// `nerd_fonts` is true, the BMP-block fallback palette otherwise.
+/// Both palettes occupy two cells, so column geometry is the same
+/// either way.
 pub fn render_to_buffer(entries: &[FileTreeEntry], nerd_fonts: bool) -> Buffer {
     use lattice_core::ui::icons::glyph_for_entry;
     let mut text = String::new();
@@ -360,7 +361,7 @@ mod tests {
         let body = buf.content.as_string();
         assert!(body.contains("a.txt"));
         // File row is the second; depth 1 = 2 spaces of indent + 2
-        // spaces for the file marker (nerd_fonts=false means icon="").
+        // spaces for the file marker + the 2-cell BMP icon.
         assert!(body.lines().nth(1).unwrap().starts_with("    "));
         std::fs::remove_dir_all(dir).ok();
     }
@@ -396,12 +397,14 @@ mod tests {
     }
 
     #[test]
-    fn render_no_icon_when_nerd_fonts_disabled() {
+    fn render_uses_bmp_fallback_when_nerd_fonts_disabled() {
         let dir = temp_dir();
         std::fs::write(dir.join("main.rs"), "x").unwrap();
         let (buf, _) = FileTreeBuffer::open(&dir, false).unwrap();
         let body = buf.content.as_string();
-        assert!(!body.contains("󱘗 "), "unexpected glyph when nerd_fonts=false");
+        assert!(!body.contains("󱘗 "), "nerd-font glyph leaked into nerd_fonts=false body: {body}");
+        // Source-code default bucket = middle-dot.
+        assert!(body.contains("· main.rs"), "expected BMP fallback for main.rs, got: {body}");
         std::fs::remove_dir_all(dir).ok();
     }
 }

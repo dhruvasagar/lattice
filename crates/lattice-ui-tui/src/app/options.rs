@@ -448,6 +448,17 @@ impl App {
             }
             n if n.starts_with("ui.") => {
                 self.sync_theme_from_config();
+                if n == "ui.nerd_fonts" {
+                    // The file-tree rope embeds the icon glyphs, so
+                    // a palette flip must re-render every existing
+                    // tree. Oil rebuilds its rope without icons; its
+                    // renderer reads the toggle each frame and needs
+                    // no rope-side refresh.
+                    let nerd_fonts = self.theme.nerd_fonts;
+                    for id in self.buffers.file_tree_ids() {
+                        self.set_file_tree_nerd_fonts(id, nerd_fonts);
+                    }
+                }
             }
             _ => {}
         }

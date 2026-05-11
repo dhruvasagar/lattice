@@ -1387,7 +1387,7 @@ pub struct App {
     /// [`crate::input::translate`] before falling through to the
     /// modal handlers; render takes precedence over completion +
     /// hover popups.
-    pub picker: Option<crate::picker::Picker>,
+    pub picker: Option<lattice_picker::Picker>,
     /// True while a buffer activation is in *preview* mode --
     /// driven by the picker's `select_next` / `select_prev`
     /// hooks. Activate paths gate position-history pushes on
@@ -3426,10 +3426,10 @@ mod tests {
         // Open + dismiss a picker. We don't need real candidates;
         // a non-Some picker dismiss already takes the picker
         // first. Simulate by setting picker Some.
-        let mut p = crate::picker::Picker::new(
+        let mut p = lattice_picker::Picker::new(
             "test",
-            crate::picker::PickerSource::LspLocations,
-            crate::picker::PickerAction::JumpToLspLocation,
+            lattice_picker::PickerSource::LspLocations,
+            lattice_picker::PickerAction::JumpToLspLocation,
         );
         p.set_lsp_locations(Vec::new());
         a.picker = Some(p);

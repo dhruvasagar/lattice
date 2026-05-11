@@ -27,7 +27,7 @@
 //!
 //! ## Renderer-agnostic by design
 //!
-//! This module is the **data model** for pickers; it owns no
+//! This crate is the **data model** for pickers; it owns no
 //! rendering code and no host-specific imports beyond
 //! `lattice-completion`'s candidate shape. Hosts (the TUI
 //! renderer today; the GPUI / web renderers later) read picker
@@ -41,11 +41,9 @@
 //! from the supervisor. Both paths feed [`Picker::set_raw_candidates`]
 //! (the only entry point that mutates `raw`).
 //!
-//! When a second renderer needs the picker the natural move is
-//! to extract this module into a sibling crate (e.g.
-//! `lattice-picker`); the only dependency to carry across is
-//! `lattice-completion`. No file-by-file edits required because
-//! every coupling already lives in the host.
+//! See `docs/dev/architecture/picker.md` for the trait-surface
+//! design that the registry, source generators, and MRU
+//! pipeline will land on top of this data model.
 
 use std::path::PathBuf;
 

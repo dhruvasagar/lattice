@@ -1,0 +1,12 @@
+[package]
+name = "lattice-picker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+lattice-completion = { path = "../lattice-completion" }
+
+[lints]
+workspace = true

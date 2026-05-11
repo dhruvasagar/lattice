@@ -806,7 +806,7 @@ fn candidate_to_line<'a>(
 /// Draw the help buffer (DESIGN.md §5.11) as a centred popup. Popup
 /// is the v1 display strategy; multi-buffer support brings split /
 /// Vertico-style picker prompt (DESIGN.md §5.9.7) drawn in the
-/// cmdline row when a [`crate::picker::Picker`] is open. Format:
+/// cmdline row when a [`lattice_picker::Picker`] is open. Format:
 /// `<title>> <query>` -- the title stands in for the `:` prompt
 /// so the user knows what they're picking, and `query` is the
 /// live filter they're typing. Sits at the screen bottom; the

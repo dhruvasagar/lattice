@@ -293,7 +293,7 @@ fn translate_command_chord_capture(event: KeyEvent) -> Action {
     }
 }
 
-/// Picker-overlay key router. See [`crate::picker::Picker`] for
+/// Picker-overlay key router. See [`lattice_picker::Picker`] for
 /// the data shape. Reserved keys (Esc / CR / BS / arrows /
 /// Ctrl-{n,p,c}) drive the picker's intrinsic actions; printable
 /// chars append to the query; everything else is swallowed.

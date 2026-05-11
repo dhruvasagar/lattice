@@ -11,6 +11,7 @@ lattice-mode = { path = "../lattice-mode" }
 lattice-core = { path = "../lattice-core" }
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-completion = { path = "../lattice-completion" }
+lattice-picker = { path = "../lattice-picker" }
 lattice-config = { path = "../lattice-config" }
 lattice-snippet = { path = "../lattice-snippet" }
 lattice-syntax = { path = "../lattice-syntax" }

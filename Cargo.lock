@@ -868,6 +868,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-picker"
+version = "0.1.0"
+dependencies = [
+ "lattice-completion",
+]
+
+[[package]]
 name = "lattice-protocol"
 version = "0.1.0"
 dependencies = [
@@ -944,6 +951,7 @@ dependencies = [
  "lattice-lsp",
  "lattice-mode",
  "lattice-oil",
+ "lattice-picker",
  "lattice-protocol",
  "lattice-runtime",
  "lattice-snippet",

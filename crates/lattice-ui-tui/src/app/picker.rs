@@ -21,9 +21,9 @@
 //!   buffer-picker candidate set from the registry).
 //!
 //! What does NOT live here: the `Picker` type, matcher
-//! engine, candidate scoring -- those are owned by
-//! `crate::picker`. This module is App's *workflow* layer
-//! above that.
+//! engine, candidate scoring -- those live in the sibling
+//! `lattice-picker` crate. This module is App's *workflow*
+//! layer above that.
 
 use crate::buffer_registry::{BufferData, BufferRegistry};
 use crate::buffers::BufferId;
@@ -36,7 +36,7 @@ impl App {
     /// so the read is wait-free; the previous `try_lock`
     /// fall-through (degrade to empty if supervisor was
     /// busy) is gone -- the snapshot is always readable.
-    fn snapshot_lsp_instances(&mut self) -> Vec<crate::picker::LspInstanceRow> {
+    fn snapshot_lsp_instances(&mut self) -> Vec<lattice_picker::LspInstanceRow> {
         let actors = self.lsp.running_actors();
         actors
             .into_iter()
@@ -45,7 +45,7 @@ impl App {
                 let buffer_count = self.lsp.buffer_count_for(&key);
                 let caps = handle.capabilities();
                 let cap_summary = lattice_lsp::help_views::summarise_capabilities(&caps);
-                crate::picker::LspInstanceRow {
+                lattice_picker::LspInstanceRow {
                     workspace,
                     server_id,
                     buffer_count,
@@ -72,7 +72,7 @@ impl App {
         }
         let mut file_cache: std::collections::HashMap<std::path::PathBuf, Vec<String>> =
             std::collections::HashMap::new();
-        let rows: Vec<crate::picker::LspLocationRow> = locations
+        let rows: Vec<lattice_picker::LspLocationRow> = locations
             .iter()
             .filter_map(|loc| {
                 let path = lattice_lsp::actor::uri_to_path(&loc.uri)?;
@@ -90,7 +90,7 @@ impl App {
                     &line_text,
                     loc.range.start.character,
                 );
-                Some(crate::picker::LspLocationRow {
+                Some(lattice_picker::LspLocationRow {
                     path,
                     line,
                     col,
@@ -106,10 +106,10 @@ impl App {
             );
             return;
         }
-        let mut p = crate::picker::Picker::new(
+        let mut p = lattice_picker::Picker::new(
             title,
-            crate::picker::PickerSource::LspLocations,
-            crate::picker::PickerAction::JumpToLspLocation,
+            lattice_picker::PickerSource::LspLocations,
+            lattice_picker::PickerAction::JumpToLspLocation,
         );
         p.set_lsp_locations(rows);
         self.picker = Some(p);
@@ -125,7 +125,7 @@ impl App {
         &mut self,
         title: &str,
         prefilter: Option<String>,
-        on_accept: crate::picker::PickerAction,
+        on_accept: lattice_picker::PickerAction,
     ) {
         let rows = self.snapshot_lsp_instances();
         if rows.is_empty() {
@@ -146,7 +146,7 @@ impl App {
         // candidate set to exactly one row, skip the picker and
         // open the buffer directly. Vim-style "do what I mean"
         // (e.g. `:lsp-log rust` with one rust workspace).
-        let matches: Vec<&crate::picker::LspInstanceRow> = rows
+        let matches: Vec<&lattice_picker::LspInstanceRow> = rows
             .iter()
             .filter(|r| {
                 effective
@@ -157,17 +157,17 @@ impl App {
         if matches.len() == 1 {
             let server_id = matches[0].server_id.clone();
             match on_accept {
-                crate::picker::PickerAction::OpenLspLog => {
+                lattice_picker::PickerAction::OpenLspLog => {
                     self.open_lsp_log_in_pane(&server_id)
                 }
-                crate::picker::PickerAction::OpenLspTraceLog => {
+                lattice_picker::PickerAction::OpenLspTraceLog => {
                     self.open_lsp_trace_log_in_pane(&server_id)
                 }
-                crate::picker::PickerAction::SwitchToBuffer
-                | crate::picker::PickerAction::JumpToLspLocation
-                | crate::picker::PickerAction::AcceptLspCompletion
-                | crate::picker::PickerAction::AcceptLspCodeAction
-                | crate::picker::PickerAction::OpenFile => {}
+                lattice_picker::PickerAction::SwitchToBuffer
+                | lattice_picker::PickerAction::JumpToLspLocation
+                | lattice_picker::PickerAction::AcceptLspCompletion
+                | lattice_picker::PickerAction::AcceptLspCodeAction
+                | lattice_picker::PickerAction::OpenFile => {}
             }
             return;
         }
@@ -185,9 +185,9 @@ impl App {
             );
             return;
         }
-        let mut p = crate::picker::Picker::new(
+        let mut p = lattice_picker::Picker::new(
             title,
-            crate::picker::PickerSource::LspInstances {
+            lattice_picker::PickerSource::LspInstances {
                 prefilter: effective,
             },
             on_accept,
@@ -241,7 +241,7 @@ impl App {
         }
         let mut items: Vec<(
             lattice_completion::RawCandidate,
-            crate::picker::RoutingPayload,
+            lattice_picker::RoutingPayload,
         )> = Vec::with_capacity(entries.len());
         for abs in entries {
             let rel = abs
@@ -253,12 +253,12 @@ impl App {
                 display,
                 lattice_completion::CandidateKind::Plain,
             );
-            items.push((cand, crate::picker::RoutingPayload::OpenFile { path: abs }));
+            items.push((cand, lattice_picker::RoutingPayload::OpenFile { path: abs }));
         }
-        let mut picker = crate::picker::Picker::new(
+        let mut picker = lattice_picker::Picker::new(
             format!("files: {}", canonical_root.display()),
-            crate::picker::PickerSource::Files,
-            crate::picker::PickerAction::OpenFile,
+            lattice_picker::PickerSource::Files,
+            lattice_picker::PickerAction::OpenFile,
         );
         picker.set_raw_candidates_with_routing(items);
         self.picker = Some(picker);
@@ -277,7 +277,7 @@ impl App {
         }
         let items: Vec<(
             lattice_completion::RawCandidate,
-            crate::picker::RoutingPayload,
+            lattice_picker::RoutingPayload,
         )> = self
             .recent_files
             .iter()
@@ -289,14 +289,14 @@ impl App {
                 );
                 (
                     cand,
-                    crate::picker::RoutingPayload::OpenFile { path: p.clone() },
+                    lattice_picker::RoutingPayload::OpenFile { path: p.clone() },
                 )
             })
             .collect();
-        let mut picker = crate::picker::Picker::new(
+        let mut picker = lattice_picker::Picker::new(
             "recent",
-            crate::picker::PickerSource::Files,
-            crate::picker::PickerAction::OpenFile,
+            lattice_picker::PickerSource::Files,
+            lattice_picker::PickerAction::OpenFile,
         );
         picker.set_raw_candidates_with_routing(items);
         self.picker = Some(picker);
@@ -304,10 +304,10 @@ impl App {
 
     pub(super) fn open_buffer_picker(&mut self) {
         let active = self.active_pane_buffer_id();
-        let mut p = crate::picker::Picker::new(
+        let mut p = lattice_picker::Picker::new(
             "buffers",
-            crate::picker::PickerSource::Buffers,
-            crate::picker::PickerAction::SwitchToBuffer,
+            lattice_picker::PickerSource::Buffers,
+            lattice_picker::PickerAction::SwitchToBuffer,
         );
         // Host-side candidate build (the picker module is
         // renderer-agnostic and doesn't import `BufferRegistry`).
@@ -329,7 +329,7 @@ impl App {
     }
 
     /// If the picker is open and its action is
-    /// [`crate::picker::PickerAction::SwitchToBuffer`], activate
+    /// [`lattice_picker::PickerAction::SwitchToBuffer`], activate
     /// the currently-selected candidate's buffer in the active
     /// pane *as a preview* -- no position-history push, no
     /// commit. Called after every selection change while a buffer
@@ -338,13 +338,13 @@ impl App {
         let Some(picker) = self.picker.as_ref() else {
             return;
         };
-        if !matches!(picker.on_accept, crate::picker::PickerAction::SwitchToBuffer) {
+        if !matches!(picker.on_accept, lattice_picker::PickerAction::SwitchToBuffer) {
             return;
         }
         let Some(c) = picker.selected_candidate() else {
             return;
         };
-        let Some(crate::picker::RoutingPayload::Buffer { id: raw_id }) =
+        let Some(lattice_picker::RoutingPayload::Buffer { id: raw_id }) =
             picker.routing_for(c)
         else {
             return;
@@ -385,7 +385,7 @@ impl App {
 
     /// Apply `Action::PickerAccept` -- run the picker's stored
     /// action against the selected candidate, then dismiss.
-    /// For [`crate::picker::PickerAction::SwitchToBuffer`] the
+    /// For [`lattice_picker::PickerAction::SwitchToBuffer`] the
     /// preview-activated buffer is already on screen; the accept
     /// path just commits (clears preview tracking) without
     /// re-activating, so the position history sees ONE entry for
@@ -429,7 +429,7 @@ impl App {
             }
         };
         match routing {
-            crate::picker::RoutingPayload::Buffer { id: raw_id } => {
+            lattice_picker::RoutingPayload::Buffer { id: raw_id } => {
                 let id = BufferId(raw_id);
                 // Already on the target via preview; no additional
                 // action needed beyond letting the picker drop.
@@ -443,12 +443,12 @@ impl App {
                     self.activate_buffer(id);
                 }
             }
-            crate::picker::RoutingPayload::LspInstance { server_id, .. } => {
+            lattice_picker::RoutingPayload::LspInstance { server_id, .. } => {
                 match picker.on_accept {
-                    crate::picker::PickerAction::OpenLspLog => {
+                    lattice_picker::PickerAction::OpenLspLog => {
                         self.open_lsp_log_in_pane(&server_id);
                     }
-                    crate::picker::PickerAction::OpenLspTraceLog => {
+                    lattice_picker::PickerAction::OpenLspTraceLog => {
                         self.open_lsp_trace_log_in_pane(&server_id);
                     }
                     _ => {
@@ -460,7 +460,7 @@ impl App {
                     }
                 }
             }
-            crate::picker::RoutingPayload::LspLocation { path, line, col } => {
+            lattice_picker::RoutingPayload::LspLocation { path, line, col } => {
                 // If this picker came from a tag-intent nav
                 // (`gd` / `gD` / `gy` / `gI` multi-result),
                 // push the captured pre-jump origin onto the
@@ -478,7 +478,7 @@ impl App {
                 self.prepare_pane_for_picker_result();
                 self.jump_to_file_line_col(&path, line, col);
             }
-            crate::picker::RoutingPayload::LspCompletion { index } => {
+            lattice_picker::RoutingPayload::LspCompletion { index } => {
                 let Some(items) = self.pending_completion_items.take() else {
                     return;
                 };
@@ -491,7 +491,7 @@ impl App {
                 };
                 self.apply_lsp_completion_item(&item);
             }
-            crate::picker::RoutingPayload::LspCodeAction { index } => {
+            lattice_picker::RoutingPayload::LspCodeAction { index } => {
                 let Some(items) = self.pending_code_action_items.take() else {
                     return;
                 };
@@ -505,7 +505,7 @@ impl App {
                 };
                 self.apply_lsp_code_action(row, handle);
             }
-            crate::picker::RoutingPayload::OpenFile { path } => {
+            lattice_picker::RoutingPayload::OpenFile { path } => {
                 // M.4: honour `BufferDisplayCategory::PickerResult`
                 // for the destination pane (same hook the
                 // LspLocation arm uses).
@@ -601,7 +601,7 @@ pub(super) fn raw_buffer_candidates(
     registry: &BufferRegistry,
     buffer_locals: &std::collections::HashMap<BufferId, lattice_mode::BufferLocals>,
     active: BufferId,
-) -> Vec<(lattice_completion::RawCandidate, crate::picker::RoutingPayload)> {
+) -> Vec<(lattice_completion::RawCandidate, lattice_picker::RoutingPayload)> {
     let mut ids = registry.sorted_ids();
     ids.sort_by_key(|id| (*id == active, *id));
     let mut out = Vec::with_capacity(ids.len());
@@ -666,7 +666,7 @@ pub(super) fn raw_buffer_candidates(
             lattice_completion::CandidateKind::Buffer,
         );
         raw.display = format!("{body:<60} {kind_label}");
-        out.push((raw, crate::picker::RoutingPayload::Buffer { id: id.0 }));
+        out.push((raw, lattice_picker::RoutingPayload::Buffer { id: id.0 }));
     }
     out
 }
@@ -914,7 +914,7 @@ mod tests {
         for cand in &p.candidates {
             let routing = p.routing_for(cand).expect("routing");
             match routing {
-                crate::picker::RoutingPayload::OpenFile { path } => {
+                lattice_picker::RoutingPayload::OpenFile { path } => {
                     assert!(path.starts_with(std::fs::canonicalize(&tmp).unwrap()));
                 }
                 other => panic!("expected OpenFile, got {other:?}"),
@@ -1005,7 +1005,7 @@ mod tests {
         // `beta` -- newest first.
         let first = p.selected_candidate().expect("selected");
         match p.routing_for(first).expect("routing") {
-            crate::picker::RoutingPayload::OpenFile { path } => {
+            lattice_picker::RoutingPayload::OpenFile { path } => {
                 assert_eq!(path, &std::fs::canonicalize(&beta).unwrap());
             }
             other => panic!("expected OpenFile, got {other:?}"),

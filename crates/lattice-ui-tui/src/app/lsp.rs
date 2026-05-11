@@ -2254,7 +2254,7 @@ impl App {
                 let total = items.len();
                 let pairs: Vec<(
                     lattice_completion::RawCandidate,
-                    crate::picker::RoutingPayload,
+                    lattice_picker::RoutingPayload,
                 )> = items
                     .iter()
                     .enumerate()
@@ -2266,7 +2266,7 @@ impl App {
                         c.display = format!("{} {}", item.kind_glyph, item.title);
                         (
                             c,
-                            crate::picker::RoutingPayload::LspCodeAction {
+                            lattice_picker::RoutingPayload::LspCodeAction {
                                 index: i as u32,
                             },
                         )
@@ -2275,10 +2275,10 @@ impl App {
                 let handle = self.first_code_action_handle();
                 self.pending_code_action_items = Some(items);
                 self.pending_code_action_handle = handle;
-                let mut p = crate::picker::Picker::new(
+                let mut p = lattice_picker::Picker::new(
                     format!("code-actions ({total})"),
-                    crate::picker::PickerSource::LspLocations,
-                    crate::picker::PickerAction::AcceptLspCodeAction,
+                    lattice_picker::PickerSource::LspLocations,
+                    lattice_picker::PickerAction::AcceptLspCodeAction,
                 );
                 p.set_raw_candidates_with_routing(pairs);
                 self.picker = Some(p);
@@ -2435,7 +2435,7 @@ impl App {
                 let total = items.len();
                 let pairs: Vec<(
                     lattice_completion::RawCandidate,
-                    crate::picker::RoutingPayload,
+                    lattice_picker::RoutingPayload,
                 )> = items
                     .iter()
                     .enumerate()
@@ -2450,17 +2450,17 @@ impl App {
                         };
                         (
                             c,
-                            crate::picker::RoutingPayload::LspCompletion {
+                            lattice_picker::RoutingPayload::LspCompletion {
                                 index: i as u32,
                             },
                         )
                     })
                     .collect();
                 self.pending_completion_items = Some(items);
-                let mut p = crate::picker::Picker::new(
+                let mut p = lattice_picker::Picker::new(
                     format!("complete ({total})"),
-                    crate::picker::PickerSource::LspLocations,
-                    crate::picker::PickerAction::AcceptLspCompletion,
+                    lattice_picker::PickerSource::LspLocations,
+                    lattice_picker::PickerAction::AcceptLspCompletion,
                 );
                 p.set_raw_candidates_with_routing(pairs);
                 self.picker = Some(p);
@@ -2841,7 +2841,7 @@ impl App {
                     self.set_message(EchoLevel::Info, "no symbols".to_string());
                     return;
                 }
-                let picker_rows: Vec<crate::picker::LspLocationRow> = rows
+                let picker_rows: Vec<lattice_picker::LspLocationRow> = rows
                     .into_iter()
                     .map(|r| {
                         let indent = "  ".repeat(r.depth as usize);
@@ -2850,7 +2850,7 @@ impl App {
                         } else {
                             format!("{indent}{} {}", r.kind_glyph, r.name)
                         };
-                        crate::picker::LspLocationRow {
+                        lattice_picker::LspLocationRow {
                             path: r.path,
                             line: r.line,
                             col: r.col,
@@ -2859,10 +2859,10 @@ impl App {
                         }
                     })
                     .collect();
-                let mut p = crate::picker::Picker::new(
+                let mut p = lattice_picker::Picker::new(
                     title,
-                    crate::picker::PickerSource::LspLocations,
-                    crate::picker::PickerAction::JumpToLspLocation,
+                    lattice_picker::PickerSource::LspLocations,
+                    lattice_picker::PickerAction::JumpToLspLocation,
                 );
                 p.set_lsp_locations(picker_rows);
                 self.picker = Some(p);
@@ -3390,7 +3390,7 @@ impl App {
             self.set_message(EchoLevel::Info, "no diagnostics".to_string());
             return;
         }
-        let mut rows: Vec<crate::picker::LspLocationRow> = Vec::new();
+        let mut rows: Vec<lattice_picker::LspLocationRow> = Vec::new();
         for (uri, diags) in snapshot {
             let path = match lattice_lsp::actor::uri_to_path(&uri) {
                 Some(p) => p,
@@ -3404,7 +3404,7 @@ impl App {
                     Some(lattice_lsp::DiagnosticSeverity::HINT) => "[H]",
                     _ => "[?]",
                 };
-                rows.push(crate::picker::LspLocationRow {
+                rows.push(lattice_picker::LspLocationRow {
                     path: path.clone(),
                     line: d.range.start.line,
                     col: d.range.start.character,
@@ -3418,10 +3418,10 @@ impl App {
             return;
         }
         let total = rows.len();
-        let mut p = crate::picker::Picker::new(
+        let mut p = lattice_picker::Picker::new(
             format!("diagnostics ({total})"),
-            crate::picker::PickerSource::LspLocations,
-            crate::picker::PickerAction::JumpToLspLocation,
+            lattice_picker::PickerSource::LspLocations,
+            lattice_picker::PickerAction::JumpToLspLocation,
         );
         p.set_lsp_locations(rows);
         self.picker = Some(p);
@@ -3513,7 +3513,7 @@ impl App {
         self.open_lsp_picker(
             "lsp-log",
             server_id.map(|s| s.to_string()),
-            crate::picker::PickerAction::OpenLspLog,
+            lattice_picker::PickerAction::OpenLspLog,
         );
     }
 
@@ -3527,7 +3527,7 @@ impl App {
         self.open_lsp_picker(
             "lsp-trace-log",
             server_id.map(|s| s.to_string()),
-            crate::picker::PickerAction::OpenLspTraceLog,
+            lattice_picker::PickerAction::OpenLspTraceLog,
         );
     }
 
@@ -3584,7 +3584,7 @@ impl App {
         self.open_lsp_picker(
             "lsp-server-log",
             None,
-            crate::picker::PickerAction::OpenLspLog,
+            lattice_picker::PickerAction::OpenLspLog,
         );
     }
 
@@ -4461,18 +4461,18 @@ mod tests {
         assert_eq!(picker.title, "references: foo");
         assert!(matches!(
             picker.source,
-            crate::picker::PickerSource::LspLocations
+            lattice_picker::PickerSource::LspLocations
         ));
         assert!(matches!(
             picker.on_accept,
-            crate::picker::PickerAction::JumpToLspLocation
+            lattice_picker::PickerAction::JumpToLspLocation
         ));
         // The candidate's typed routing payload carries the
         // jump target -- post-4.2.g.7 this replaces the prior
         // tab-encoded `text` parsing.
         let c = picker.selected_candidate().expect("one row");
         let routing = picker.routing_for(c).expect("routing payload set");
-        let crate::picker::RoutingPayload::LspLocation { path, line, .. } = routing else {
+        let lattice_picker::RoutingPayload::LspLocation { path, line, .. } = routing else {
             panic!("expected LspLocation routing, got {routing:?}");
         };
         assert_eq!(*path, std::path::PathBuf::from("/tmp/notarealfile.rs"));
@@ -4740,7 +4740,7 @@ mod tests {
         assert!(picker.title.starts_with("code-actions"));
         assert!(matches!(
             picker.on_accept,
-            crate::picker::PickerAction::AcceptLspCodeAction
+            lattice_picker::PickerAction::AcceptLspCodeAction
         ));
         assert_eq!(picker.candidates.len(), 1);
         let display = &picker.candidates[0].raw.display;
@@ -5387,7 +5387,7 @@ mod tests {
         assert!(picker.title.starts_with("complete"));
         assert!(matches!(
             picker.on_accept,
-            crate::picker::PickerAction::AcceptLspCompletion
+            lattice_picker::PickerAction::AcceptLspCompletion
         ));
         assert_eq!(picker.candidates.len(), 1);
         // Display carries kind glyph + label + detail.
@@ -5401,7 +5401,7 @@ mod tests {
             .routing_for(&picker.candidates[0])
             .expect("routing payload set");
         match routing {
-            crate::picker::RoutingPayload::LspCompletion { index } => {
+            lattice_picker::RoutingPayload::LspCompletion { index } => {
                 assert_eq!(*index, 0);
             }
             other => panic!("expected LspCompletion routing, got {other:?}"),
@@ -5628,7 +5628,7 @@ mod tests {
         assert_eq!(picker.candidates.len(), 2);
         assert!(matches!(
             picker.on_accept,
-            crate::picker::PickerAction::JumpToLspLocation
+            lattice_picker::PickerAction::JumpToLspLocation
         ));
         // Cursor should NOT have moved (no auto-jump).
         assert_eq!(a.cursor.line, 0);
@@ -6347,11 +6347,11 @@ mod tests {
         assert!(picker.title.starts_with("diagnostics"));
         assert!(matches!(
             picker.source,
-            crate::picker::PickerSource::LspLocations
+            lattice_picker::PickerSource::LspLocations
         ));
         assert!(matches!(
             picker.on_accept,
-            crate::picker::PickerAction::JumpToLspLocation
+            lattice_picker::PickerAction::JumpToLspLocation
         ));
         // Two diagnostic rows.
         assert_eq!(picker.candidates.len(), 2);

@@ -54,8 +54,8 @@ pub use context::{
     ActiveBufferSnapshot, BufferEntry, PickerContext, PositionEntry, PositionSource,
 };
 pub use mru::{
-    DEFAULT_CAP_PER_NAMESPACE, DEFAULT_HALF_LIFE, MruEntry, MruKey, PickerMruIndex,
-    bonus_of, routing_identity,
+    DEFAULT_CAP_PER_NAMESPACE, DEFAULT_HALF_LIFE, MruEntry, MruKey, MruPersistError,
+    PickerMruIndex, bonus_of, default_persist_path, routing_identity,
 };
 pub use outcome::PickerAcceptOutcome;
 pub use source::{

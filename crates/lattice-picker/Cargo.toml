@@ -11,6 +11,9 @@ lattice-grammar = { path = "../lattice-grammar" }
 lattice-core = { path = "../lattice-core" }
 lattice-protocol = { path = "../lattice-protocol" }
 tokio = { workspace = true, features = ["sync"] }
+serde = { workspace = true, features = ["derive"] }
+bincode = { version = "2", features = ["serde"] }
+dirs = { workspace = true }
 
 [lints]
 workspace = true

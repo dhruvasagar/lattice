@@ -42,7 +42,10 @@
 //! wrapper around `entries` + a schema version byte.
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime};
+use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
 
 use crate::RoutingPayload;
 
@@ -211,6 +214,154 @@ impl PickerMruIndex {
             })
             .map(|(k, _)| k.clone())
     }
+
+    /// Encode + write the index to `path`. Atomic at the
+    /// filesystem level: writes to `<path>.tmp` first then
+    /// renames into place so a crash mid-write never leaves a
+    /// truncated cache. Errors surface as `Err(_)` for the
+    /// host to log + retry on the next accept.
+    pub fn save_to(&self, path: &Path) -> Result<(), MruPersistError> {
+        let persisted = self.to_persisted();
+        let bytes = bincode::serde::encode_to_vec(&persisted, bincode::config::standard())
+            .map_err(MruPersistError::Encode)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(MruPersistError::Io)?;
+        }
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, &bytes).map_err(MruPersistError::Io)?;
+        std::fs::rename(&tmp, path).map_err(MruPersistError::Io)?;
+        Ok(())
+    }
+
+    /// Read + decode an index from `path`. Returns `Ok(None)`
+    /// when the file doesn't exist (fresh install). Returns
+    /// `Err` for IO or decode failures so the host can decide
+    /// whether to discard + start fresh or surface the error.
+    /// The default boot policy (slice 14c) is "discard +
+    /// start fresh" -- losing MRU is annoying, refusing to
+    /// boot is worse.
+    pub fn load_from(path: &Path) -> Result<Option<Self>, MruPersistError> {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(MruPersistError::Io(e)),
+        };
+        let (persisted, _): (PersistedIndex, usize) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
+                .map_err(MruPersistError::Decode)?;
+        if persisted.version != PERSIST_VERSION {
+            return Err(MruPersistError::VersionMismatch {
+                expected: PERSIST_VERSION,
+                found: persisted.version,
+            });
+        }
+        Ok(Some(Self::from_persisted(persisted)))
+    }
+
+    fn to_persisted(&self) -> PersistedIndex {
+        PersistedIndex {
+            version: PERSIST_VERSION,
+            cap_per_namespace: self.cap_per_namespace as u32,
+            entries: self
+                .entries
+                .iter()
+                .map(|(k, e)| PersistedEntry {
+                    source_id: k.0.clone(),
+                    identity: k.1.clone(),
+                    last_used_unix_seconds: e
+                        .last_used
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                    use_count: e.use_count,
+                })
+                .collect(),
+        }
+    }
+
+    fn from_persisted(persisted: PersistedIndex) -> Self {
+        let entries: HashMap<MruKey, MruEntry> = persisted
+            .entries
+            .into_iter()
+            .map(|p| {
+                (
+                    (p.source_id, p.identity),
+                    MruEntry {
+                        last_used: UNIX_EPOCH + Duration::from_secs(p.last_used_unix_seconds),
+                        use_count: p.use_count,
+                    },
+                )
+            })
+            .collect();
+        Self {
+            entries,
+            cap_per_namespace: persisted.cap_per_namespace as usize,
+        }
+    }
+}
+
+/// Schema version stamped on the on-disk cache. Bump when
+/// the `PersistedIndex` shape changes incompatibly; loaders
+/// that see a different version surface
+/// `MruPersistError::VersionMismatch` and the host's boot
+/// policy discards + starts fresh.
+const PERSIST_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedIndex {
+    version: u32,
+    cap_per_namespace: u32,
+    entries: Vec<PersistedEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedEntry {
+    source_id: String,
+    identity: String,
+    /// Seconds since UNIX epoch. SystemTime isn't directly
+    /// serde-serializable; this is the platform-neutral
+    /// substitute. Pre-1970 entries clamp to 0.
+    last_used_unix_seconds: u64,
+    use_count: u32,
+}
+
+/// Errors from MRU index persistence. The host (slice 14c)
+/// decides whether to discard + start fresh, retry, or surface
+/// to the user. Default policy: discard on `VersionMismatch` /
+/// `Decode`; log + retry on `Io` (write); never block boot.
+#[derive(Debug)]
+pub enum MruPersistError {
+    Io(std::io::Error),
+    Encode(bincode::error::EncodeError),
+    Decode(bincode::error::DecodeError),
+    VersionMismatch { expected: u32, found: u32 },
+}
+
+impl std::fmt::Display for MruPersistError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "MRU index io error: {e}"),
+            Self::Encode(e) => write!(f, "MRU index encode error: {e}"),
+            Self::Decode(e) => write!(f, "MRU index decode error: {e}"),
+            Self::VersionMismatch { expected, found } => write!(
+                f,
+                "MRU index version mismatch: expected v{expected}, found v{found}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MruPersistError {}
+
+/// Default path the host's boot uses for the MRU cache.
+/// `$XDG_CACHE_HOME/lattice/picker-mru.bincode` falling back
+/// to `$HOME/.cache/lattice/picker-mru.bincode` on Linux /
+/// the platform-appropriate cache dir elsewhere. Returns
+/// `None` when no cache directory can be resolved (e.g.
+/// sandboxed embedded runs); the host treats this as
+/// "persistence disabled" and runs MRU in-memory only.
+pub fn default_persist_path() -> Option<std::path::PathBuf> {
+    dirs::cache_dir().map(|d| d.join("lattice").join("picker-mru.bincode"))
 }
 
 /// Frecency bonus calculation. Pure function on the entry +
@@ -410,5 +561,86 @@ mod tests {
         mru.record("commands", "y");
         mru.clear();
         assert!(mru.is_empty());
+    }
+
+    /// 14b: save + load round-trip preserves every entry's
+    /// source / identity / use_count, and a reload-then-bonus
+    /// computation matches what the original index returned.
+    /// Allows ±1s tolerance on `last_used` since the on-disk
+    /// shape is second-granularity.
+    #[test]
+    fn persist_round_trip_preserves_entries() {
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-mru-rt-{}.bincode", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(6_000_000);
+        let mut original = PickerMruIndex::new();
+        original.record_at("files", "file:/tmp/a", now);
+        original.record_at("files", "file:/tmp/a", now + Duration::from_secs(30));
+        original.record_at("commands", "cmd:ex:write", now);
+        original.save_to(&tmp).expect("save");
+        let loaded =
+            PickerMruIndex::load_from(&tmp).expect("load").expect("file exists");
+        assert_eq!(loaded.len(), 2);
+        let a = loaded.lookup("files", "file:/tmp/a").expect("a");
+        assert_eq!(a.use_count, 2);
+        let w = loaded.lookup("commands", "cmd:ex:write").expect("w");
+        assert_eq!(w.use_count, 1);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// 14b: a missing file (fresh install) returns `Ok(None)`
+    /// rather than `Err` so the boot path can fall through to
+    /// "start with an empty index" without special-casing.
+    #[test]
+    fn load_missing_file_returns_none() {
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-mru-nope-{}.bincode", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        let result = PickerMruIndex::load_from(&tmp).expect("ok");
+        assert!(result.is_none());
+    }
+
+    /// 14b: a corrupt cache surfaces `Err(Decode)` so the
+    /// boot policy can discard + start fresh.
+    #[test]
+    fn load_corrupt_file_returns_err() {
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-mru-bad-{}.bincode", std::process::id()));
+        std::fs::write(&tmp, b"definitely not bincode").expect("write");
+        let err = PickerMruIndex::load_from(&tmp).unwrap_err();
+        assert!(matches!(err, MruPersistError::Decode(_)));
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// 14b: save uses a tmp-and-rename pattern so the cache
+    /// file is never truncated. After a successful save the
+    /// `.tmp` sidecar should be gone.
+    #[test]
+    fn save_atomicity_leaves_no_tmp_sidecar() {
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-mru-atom-{}.bincode", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(tmp.with_extension("tmp"));
+        let mut mru = PickerMruIndex::new();
+        mru.record("files", "x");
+        mru.save_to(&tmp).expect("save");
+        assert!(tmp.exists());
+        assert!(!tmp.with_extension("tmp").exists());
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// 14b: default_persist_path returns a path under the
+    /// platform's cache dir (when one exists). Not asserting
+    /// exact path because that varies per platform; just that
+    /// the file name is right.
+    #[test]
+    fn default_persist_path_targets_picker_mru_file() {
+        if let Some(path) = default_persist_path() {
+            assert_eq!(
+                path.file_name().and_then(|s| s.to_str()),
+                Some("picker-mru.bincode")
+            );
+        }
     }
 }

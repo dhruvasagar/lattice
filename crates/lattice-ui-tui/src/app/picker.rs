@@ -507,7 +507,7 @@ impl App {
     ///
     /// Unknown source ids surface an error echo listing every
     /// registered id so the user can recover without `:apropos`.
-    pub(super) fn open_picker(&mut self, source: String, args: Vec<String>) {
+    pub(crate) fn open_picker(&mut self, source: String, args: Vec<String>) {
         // Resolve generator from the registry. A registered
         // entry without a generator (metadata-only legacy
         // shape) surfaces a distinct echo so the drift is
@@ -549,64 +549,126 @@ impl App {
 
         match init_result {
             lattice_picker::PickerInitResult::Inline(pairs) => {
-                let title = source.clone();
-                // MRU bonus snapshot: derive identity per
-                // routing payload, look up in the index,
-                // compute frecency. Drops missing entries to
-                // 0.0 silently -- a routing-payload variant
-                // that returns None from `routing_identity`
-                // never participates in MRU. Snapshot happens
-                // once at open; refilter reads from cached
-                // bonuses on every keystroke (HashMap-free
-                // hot path).
-                let now = std::time::SystemTime::now();
-                let bonuses: Vec<f64> = pairs
-                    .iter()
-                    .map(|(_cand, routing)| {
-                        match lattice_picker::routing_identity(routing) {
-                            Some(id) => self.picker_mru.frecency_bonus(
-                                &source,
-                                &id,
-                                now,
-                                lattice_picker::DEFAULT_HALF_LIFE,
-                            ),
-                            None => 0.0,
-                        }
-                    })
-                    .collect();
-                let mut picker = lattice_picker::Picker::new(
-                    title,
-                    Self::picker_source_for(&source),
-                    Self::picker_action_for(&source),
-                );
-                picker.set_raw_candidates_with_routing(pairs);
-                picker.set_mru_bonuses(bonuses);
-                // Stamp the source id so accept can resolve the
-                // generator and call `gen.accept(...)` instead
-                // of running the legacy per-routing dispatch.
-                picker.source_id = Some(source.clone());
-                // Preserve the buffer-switcher's preview-origin
-                // ergonomics: when the source is `buffers` the
-                // picker stashes the active buffer id so dismiss
-                // can restore it (alternate-buffer convention).
-                if source == "buffers" {
-                    picker.preview_origin = Some(self.active_pane_buffer_id().0);
-                }
-                self.picker = Some(picker);
-                // Active-pane preview for buffer switcher.
-                if source == "buffers" {
-                    self.preview_picker_selection();
-                }
+                self.seat_picker_from_pairs(source, pairs);
             }
-            lattice_picker::PickerInitResult::Future(_)
-            | lattice_picker::PickerInitResult::Stream(_) => {
+            lattice_picker::PickerInitResult::Future(fut) => {
+                // Cancel any prior in-flight init -- vim-style
+                // "do what I last said". The previous future
+                // may still resolve in the background; the
+                // cancel token tells the spawn closure to drop
+                // the result without sending.
+                if let Some(prev) = self.pending_picker_init.take() {
+                    prev.cancel.cancel();
+                }
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let cancel = lattice_protocol::CancellationToken::new();
+                let cancel_clone = cancel.clone();
+                crate::runtime::spawn_on_lsp_runtime(async move {
+                    let result = fut.await;
+                    if !cancel_clone.is_cancelled() {
+                        let _ = tx.send(result);
+                    }
+                });
+                self.pending_picker_init = Some(crate::app::PendingPickerInit {
+                    source_id: source.clone(),
+                    generator: generator.clone(),
+                    rx,
+                    cancel,
+                });
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("picker: {source}... (loading)"),
+                );
+            }
+            lattice_picker::PickerInitResult::Stream(_) => {
+                // Streaming sources land once the seat-on-batch
+                // pump arrives. Today: error out cleanly --
+                // single-batch streams could be flattened into
+                // Inline anyway.
                 self.set_message(
                     EchoLevel::Error,
                     format!(
-                        "picker: async / streaming sources not yet wired (source `{source}` returned a Future / Stream)"
+                        "picker: streaming sources not yet wired (source `{source}` returned a Stream)"
                     ),
                 );
             }
+        }
+    }
+
+    /// Drain the pending async picker init, if any. Called
+    /// from the main loop tick. Pumps the channel that the
+    /// spawned future writes to; once a result arrives the
+    /// picker is seated through the same path Inline init
+    /// uses (so MRU snapshot + preview ergonomics behave
+    /// identically). Empty channel = future still pending;
+    /// closed channel = task dropped without sending (the
+    /// cancel path took it).
+    pub(crate) fn drain_pending_picker_init(&mut self) {
+        let Some(pending) = self.pending_picker_init.as_mut() else {
+            return;
+        };
+        let result = match pending.rx.try_recv() {
+            Ok(r) => r,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return,
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                // Task ended without sending (cancelled or
+                // panicked). Drop the pending and move on.
+                self.pending_picker_init = None;
+                return;
+            }
+        };
+        let pending = self.pending_picker_init.take().expect("guarded above");
+        match result {
+            Ok(pairs) => {
+                self.seat_picker_from_pairs(pending.source_id, pairs);
+            }
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("picker: {e}"));
+            }
+        }
+    }
+
+    /// Seat `pairs` into a freshly-constructed picker for
+    /// `source`. Shared by sync (Inline) and async (Future)
+    /// init paths so MRU bonus snapshot + source-id stamping
+    /// + buffer-switcher preview ergonomics behave
+    /// identically regardless of how the candidates were
+    /// produced.
+    fn seat_picker_from_pairs(
+        &mut self,
+        source: String,
+        pairs: lattice_picker::CandidateBatch,
+    ) {
+        let title = source.clone();
+        // MRU bonus snapshot -- per-keystroke refilter reads
+        // cached bonuses, not the live MRU HashMap.
+        let now = std::time::SystemTime::now();
+        let bonuses: Vec<f64> = pairs
+            .iter()
+            .map(|(_cand, routing)| match lattice_picker::routing_identity(routing) {
+                Some(id) => self.picker_mru.frecency_bonus(
+                    &source,
+                    &id,
+                    now,
+                    lattice_picker::DEFAULT_HALF_LIFE,
+                ),
+                None => 0.0,
+            })
+            .collect();
+        let mut picker = lattice_picker::Picker::new(
+            title,
+            Self::picker_source_for(&source),
+            Self::picker_action_for(&source),
+        );
+        picker.set_raw_candidates_with_routing(pairs);
+        picker.set_mru_bonuses(bonuses);
+        picker.source_id = Some(source.clone());
+        if source == "buffers" {
+            picker.preview_origin = Some(self.active_pane_buffer_id().0);
+        }
+        self.picker = Some(picker);
+        if source == "buffers" {
+            self.preview_picker_selection();
         }
     }
 

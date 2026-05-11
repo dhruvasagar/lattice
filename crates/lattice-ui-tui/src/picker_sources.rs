@@ -1406,6 +1406,104 @@ mod tests {
         );
     }
 
+    /// Slice 14d: a test-only source that returns
+    /// `PickerInitResult::Future` so the async-init seat
+    /// path is exercised end-to-end. The future resolves
+    /// after a single tokio yield; the host's
+    /// `drain_pending_picker_init` pumps the channel and
+    /// seats the picker.
+    struct DelayedFutureSource {
+        spec: PickerSourceSpec,
+    }
+
+    impl DelayedFutureSource {
+        fn new() -> Self {
+            Self {
+                spec: PickerSourceSpec::no_args(
+                    "delayed-test",
+                    "Test-only async source that resolves to one OpenFile candidate.",
+                ),
+            }
+        }
+    }
+
+    impl PickerSourceGenerator for DelayedFutureSource {
+        fn spec(&self) -> &PickerSourceSpec {
+            &self.spec
+        }
+
+        fn init(
+            &self,
+            _ctx: &PickerContext<'_>,
+            _args: &[String],
+        ) -> SourceResult<PickerInitResult> {
+            let fut = Box::pin(async move {
+                // One yield so the future genuinely defers
+                // -- mirrors a real LSP request that resolves
+                // after a network round-trip.
+                tokio::task::yield_now().await;
+                let cand = RawCandidate::plain(
+                    String::from("test-result"),
+                    CandidateKind::Plain,
+                );
+                Ok(vec![(
+                    cand,
+                    RoutingPayload::OpenFile {
+                        path: "/tmp/lattice-test-future".into(),
+                    },
+                )])
+            });
+            Ok(PickerInitResult::Future(fut))
+        }
+
+        fn accept(
+            &self,
+            _ctx: &PickerContext<'_>,
+            _routing: &RoutingPayload,
+        ) -> SourceResult<PickerAcceptOutcome> {
+            Ok(PickerAcceptOutcome::NoOp)
+        }
+    }
+
+    /// Slice 14d: `:picker <source>` against a Future-returning
+    /// source spawns the future, queues the result via mpsc,
+    /// and seats the picker after the host's drain runs.
+    /// Confirms the spawn + try_recv + seat_picker_from_pairs
+    /// path works end-to-end.
+    #[test]
+    fn async_init_seat_path_pumps_future_result_into_picker() {
+        use std::time::Duration;
+
+        let mut app = app_with("hi\n", 5);
+        // Build a fresh registry with the test source. We
+        // can't mutate the App's shared registry (other Arcs
+        // exist), so replace it wholesale.
+        let mut reg = lattice_picker::PickerRegistry::new();
+        let source: Arc<dyn PickerSourceGenerator> =
+            Arc::new(DelayedFutureSource::new());
+        reg.register_generator(source);
+        app.picker_registry = Arc::new(reg);
+        // Fire the picker. Init returns Future; the picker
+        // should NOT seat synchronously.
+        app.open_picker("delayed-test".into(), Vec::new());
+        assert!(app.picker.is_none(), "picker shouldn't seat sync on Future");
+        assert!(app.pending_picker_init.is_some(), "pending should be set");
+        // Pump the drain. The future needs at least one tokio
+        // poll to resolve -- we give the spawned task a
+        // chance to land by sleeping briefly.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            app.drain_pending_picker_init();
+            if app.picker.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let p = app.picker.as_ref().expect("picker seated after drain");
+        assert_eq!(p.candidates.len(), 1);
+        assert_eq!(p.source_id.as_deref(), Some("delayed-test"));
+    }
+
     /// P.9: outline source returns `Err` when the active
     /// buffer has no tree-sitter symbols (plain text, or a
     /// language without a `symbols.scm` query).

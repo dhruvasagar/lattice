@@ -232,6 +232,12 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // (Phase 4.2.g.3). Update the focused candidate's
         // metadata + the docs popup body in place.
         app.drain_pending_completion_resolve();
+        // Drain async picker init futures (slice 14d). When a
+        // source returns `PickerInitResult::Future`, the
+        // resolved batch lands here; the picker seats with the
+        // results, same code path as inline. Cheap on an idle
+        // channel (try_recv -> Empty).
+        app.drain_pending_picker_init();
         // Drain queued Event::LspLogPushed events (Phase 4) and
         // refresh any open log / trace buffers from the logger
         // snapshot. Cheap on an idle channel; cheap when no log

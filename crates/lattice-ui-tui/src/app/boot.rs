@@ -614,6 +614,7 @@ impl App {
             picker_registry: picker_registry.clone(),
             picker_mru,
             picker_mru_path,
+            pending_picker_init: None,
             previewing: false,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             auto_submit_after_chord: false,

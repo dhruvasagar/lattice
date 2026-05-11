@@ -656,6 +656,20 @@ pub struct LastSearch {
     pub direction: SearchDirection,
 }
 
+/// In-flight async picker init. The future from
+/// `PickerSourceGenerator::init` is spawned on the LSP
+/// runtime; its resolved batch lands here via `rx`. The
+/// `cancel` token lets a subsequent `:picker <source>` drop
+/// the predecessor before it completes.
+pub struct PendingPickerInit {
+    pub source_id: String,
+    pub generator: std::sync::Arc<dyn lattice_picker::PickerSourceGenerator>,
+    pub rx: tokio::sync::mpsc::UnboundedReceiver<
+        lattice_picker::SourceResult<lattice_picker::CandidateBatch>,
+    >,
+    pub cancel: lattice_protocol::CancellationToken,
+}
+
 /// The unnamed register's payload. v1 uses a single global slot; the
 /// full vim register zoo (`"a-z`, `"+`, `"*`, etc.) lands later.
 #[derive(Debug, Clone)]
@@ -1418,6 +1432,16 @@ pub struct App {
     /// path at boot; `None` disables persistence (in-memory
     /// only -- sandboxed runs, headless test fixtures).
     pub picker_mru_path: Option<std::path::PathBuf>,
+    /// `Some` while an async picker source's `init` future is
+    /// in-flight. Holds the spawned-task channel handle + the
+    /// generator + the source id; the main loop's
+    /// `drain_pending_picker_init` pumps the channel and seats
+    /// the picker once results arrive.
+    ///
+    /// A second `:picker <source>` invocation while one is
+    /// pending cancels the predecessor (`cancel.cancel()`) and
+    /// replaces this slot -- vim-style "do what I last said."
+    pub pending_picker_init: Option<crate::app::PendingPickerInit>,
     /// True while a buffer activation is in *preview* mode --
     /// driven by the picker's `select_next` / `select_prev`
     /// hooks. Activate paths gate position-history pushes on

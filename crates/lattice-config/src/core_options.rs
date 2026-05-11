@@ -30,6 +30,23 @@ use lattice_core::FoldMethod;
 
 // Validators referenced by `#[validate(...)]` on the options
 // below. Plain Rust functions; the macro just records the path.
+fn validate_log_level(s: &String) -> Result<(), String> {
+    match s.as_str() {
+        "error" | "warn" | "info" | "debug" | "trace" => Ok(()),
+        other => Err(format!(
+            "lsp.log_level must be one of `error`/`warn`/`info`/`debug`/`trace`, got `{other}`"
+        )),
+    }
+}
+
+fn validate_log_capacity(i: &i64) -> Result<(), String> {
+    if *i < 0 {
+        Err(format!("lsp.log_capacity must be >= 0, got {i}"))
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_tabstop(i: &i64) -> Result<(), String> {
     if (1..=32).contains(i) {
         Ok(())
@@ -402,6 +419,37 @@ crate::options! {
     /// style "yesterday's picks still float."
     #[name("picker.mru.persist")]
     pub PickerMruPersist: bool = true;
+}
+
+// ---- LSP group: log + trace knobs ----
+
+crate::options! {
+    group = crate::Lsp;
+
+    /// Default LSP log-record minimum level at startup.
+    /// Accepted values: `error` / `warn` / `info` / `debug`
+    /// / `trace`. The runtime `:lsp-log-level` command
+    /// adjusts this live; this option sets the boot value.
+    ///
+    /// 4.4.o: seeded into `LspLogger::new` so users who
+    /// always run with debug-level LSP traces don't have to
+    /// `:set` it post-boot.
+    #[name("lsp.log_level")]
+    #[validate(validate_log_level)]
+    pub LspLogLevel: String = String::from("info");
+
+    /// Per-server log ring capacity at boot. Each LSP server
+    /// gets its own bounded ring; smaller values shed older
+    /// records sooner. `0` is allowed (drops every record at
+    /// the ring boundary -- useful for tests / sandboxed
+    /// runs) but typically users keep the 10k default.
+    ///
+    /// 4.4.o: the runtime path
+    /// (`LspLogger::set_default_capacity`) stays for live
+    /// resizing; this option just seeds the boot value.
+    #[name("lsp.log_capacity")]
+    #[validate(validate_log_capacity)]
+    pub LspLogCapacity: i64 = 10_000;
 }
 
 // M.2.0c: `CoreOptions` struct and `register_core_options`

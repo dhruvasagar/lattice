@@ -296,6 +296,25 @@ impl App {
         // `init_from_linkme()` call boots them all; idempotent
         // if called again.
         config.init_from_linkme();
+        // 4.4.o: seed the LSP logger from typed-options
+        // defaults. `lsp.log_level` + `lsp.log_capacity` set
+        // the boot values; the runtime `:lsp-log-level` /
+        // `:lsp-trace` paths still adjust live. Invalid
+        // values were filtered by the option validators
+        // before they hit the registry; we treat any miss
+        // here as "use the built-in default the logger
+        // already has."
+        if let Some(level_str) =
+            config.get_typed::<lattice_config::core_options::LspLogLevel>()
+            && let Some(level) = lattice_lsp::LogLevel::parse(&level_str)
+        {
+            lsp_logger.set_default_level(level);
+        }
+        if let Some(cap) =
+            config.get_typed::<lattice_config::core_options::LspLogCapacity>()
+        {
+            lsp_logger.set_default_capacity((*cap).max(0) as usize);
+        }
         // `gen:options` -- completion source for `:set <Tab>` and
         // `:set name=<Tab>`. Wired to the same `ConfigRegistry` the
         // `:set` parser consults so completions never drift from

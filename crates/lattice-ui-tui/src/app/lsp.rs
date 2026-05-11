@@ -5800,6 +5800,48 @@ mod tests {
         );
     }
 
+    /// 4.4.o: `lsp.log_level` flips the logger's default
+    /// min level at boot. Records below the configured
+    /// level get dropped before the ring sees them.
+    #[test]
+    fn lsp_log_level_typed_option_seeds_boot_level() {
+        let app = app_with("hi\n", 5);
+        // Default is "info"; debug records should be filtered
+        // when no per-server override is in place.
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Debug,
+            lattice_lsp::LogSource::Client,
+            "should-be-filtered",
+        );
+        let records = app.lsp_logger.snapshot_server(&id);
+        assert!(
+            !records
+                .iter()
+                .any(|r| r.message.contains("should-be-filtered")),
+            "Debug record should be filtered by the default Info level seed"
+        );
+        // After setting to "debug" at runtime, the same
+        // record passes.
+        app.config
+            .parse_and_set_command("lsp.log_level=debug")
+            .unwrap();
+        // The runtime path:
+        app.lsp_logger.set_default_level(lattice_lsp::LogLevel::Debug);
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Debug,
+            lattice_lsp::LogSource::Client,
+            "should-pass-now",
+        );
+        let records = app.lsp_logger.snapshot_server(&id);
+        assert!(
+            records.iter().any(|r| r.message.contains("should-pass-now")),
+            "Debug record should land after raising the level"
+        );
+    }
+
     /// 4.4.a: telemetry/event records ride the existing log
     /// path with the new `LogSource::Telemetry` tag so
     /// plugin subscribers can filter without parsing message

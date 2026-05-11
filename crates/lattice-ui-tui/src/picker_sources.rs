@@ -560,6 +560,76 @@ impl PickerSourceGenerator for CommandsSource {
     }
 }
 
+/// `:picker registers`. Walks `ctx.registers` (`(name,
+/// preview)` pairs already prepared by the host's
+/// `build_picker_context`) and emits one row per register.
+/// Accept emits `PasteRegister { name }`; the host routes
+/// through `do_paste` with the chosen register pre-selected.
+pub struct RegistersSource {
+    pub spec: PickerSourceSpec,
+}
+
+impl RegistersSource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                "registers",
+                "Vim-style registers (unnamed, numbered, named). `<CR>` pastes the chosen register at the cursor.",
+            ),
+        }
+    }
+}
+
+impl Default for RegistersSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PickerSourceGenerator for RegistersSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(
+        &self,
+        ctx: &PickerContext<'_>,
+        _args: &[String],
+    ) -> SourceResult<PickerInitResult> {
+        if ctx.registers.is_empty() {
+            return Err("registers: no registers set".into());
+        }
+        let pairs = ctx
+            .registers
+            .iter()
+            .filter_map(|(name, preview)| {
+                // Pick the first char of the name as the routing
+                // key. Names are always one char today; future
+                // multi-char keys (vim doesn't have any) would
+                // need a richer routing variant.
+                let ch = name.chars().next()?;
+                let display = format!("\"{name:<2} {preview}");
+                let cand = RawCandidate::plain(display, CandidateKind::Plain);
+                Some((cand, RoutingPayload::PasteRegister { name: ch }))
+            })
+            .collect();
+        Ok(PickerInitResult::Inline(pairs))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::PasteRegister { name } => {
+                Ok(PickerAcceptOutcome::PasteRegister { name: *name })
+            }
+            other => Err(format!("registers: unexpected routing payload {other:?}")),
+        }
+    }
+}
+
 /// Convenience: build the first-party source generators as
 /// `Arc<dyn PickerSourceGenerator>` ready to register against
 /// a `PickerRegistry`. Used by `App::new` to boot the
@@ -577,6 +647,7 @@ pub fn first_party_generators(
         Arc::new(LinesSource::new()),
         Arc::new(JumpsSource::new()),
         Arc::new(CommandsSource::new(command_registry)),
+        Arc::new(RegistersSource::new()),
     ]
 }
 
@@ -686,7 +757,7 @@ mod tests {
         let ids: Vec<&'static str> = generators.iter().map(|g| g.spec().id).collect();
         assert_eq!(
             ids,
-            vec!["files", "recent", "buffers", "lines", "jumps", "commands"]
+            vec!["files", "recent", "buffers", "lines", "jumps", "commands", "registers"]
         );
     }
 
@@ -764,6 +835,63 @@ mod tests {
                 assert!(matches!(args, Args::None));
             }
             other => panic!("expected InvokeCommand, got {other:?}"),
+        }
+        let bad = RoutingPayload::OpenFile { path: "/tmp/x".into() };
+        assert!(source.accept(&ctx, &bad).is_err());
+    }
+
+    /// P.4: registers source returns `Err` when the context
+    /// has no registers (empty `ctx.registers`).
+    #[test]
+    fn registers_source_empty_errors() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = RegistersSource::new();
+        let err = source.init(&ctx, &[]).unwrap_err();
+        assert!(err.contains("no registers set"), "got {err}");
+    }
+
+    /// P.4: synthesise a couple of register entries on the
+    /// context and confirm rows route through
+    /// `PasteRegister`.
+    #[test]
+    fn registers_source_emits_paste_routing() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let mut ctx = app.build_picker_context(&snap);
+        ctx.registers = vec![
+            ("\"".into(), "hello".into()),
+            ("a".into(), "world".into()),
+        ];
+        let source = RegistersSource::new();
+        let result = source.init(&ctx, &[]).expect("inline");
+        let PickerInitResult::Inline(pairs) = result else {
+            panic!("expected Inline");
+        };
+        assert_eq!(pairs.len(), 2);
+        match &pairs[0].1 {
+            RoutingPayload::PasteRegister { name } => assert_eq!(*name, '"'),
+            other => panic!("expected PasteRegister, got {other:?}"),
+        }
+        match &pairs[1].1 {
+            RoutingPayload::PasteRegister { name } => assert_eq!(*name, 'a'),
+            other => panic!("expected PasteRegister, got {other:?}"),
+        }
+    }
+
+    /// P.4: accept on a `PasteRegister` routing returns the
+    /// matching outcome; mismatched routing errors.
+    #[test]
+    fn registers_source_accept_translates_paste_register() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = RegistersSource::new();
+        let routing = RoutingPayload::PasteRegister { name: 'a' };
+        match source.accept(&ctx, &routing).expect("ok") {
+            PickerAcceptOutcome::PasteRegister { name } => assert_eq!(name, 'a'),
+            other => panic!("expected PasteRegister outcome, got {other:?}"),
         }
         let bad = RoutingPayload::OpenFile { path: "/tmp/x".into() };
         assert!(source.accept(&ctx, &bad).is_err());

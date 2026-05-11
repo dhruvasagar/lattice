@@ -143,6 +143,14 @@ pub enum RoutingPayload {
     /// today emits `Args::None`; future "pick a thing, then
     /// run a command on it" flows will carry richer values).
     InvokeCommand { id: String, args: lattice_grammar::args::Args },
+    /// Paste a named register's contents at the cursor.
+    /// Emitted by `:picker registers`; `name` is the single-
+    /// char register identifier (`a`..`z`, `0`..`9`, `+`,
+    /// `"`, etc.). The host's `apply_picker_outcome::PasteRegister`
+    /// arm sets the pending register and runs the normal paste
+    /// path so charwise / linewise / blockwise distinction is
+    /// honored.
+    PasteRegister { name: char },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves

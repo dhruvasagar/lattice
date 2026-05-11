@@ -207,10 +207,26 @@ impl App {
                 let user_facing = id.strip_prefix("ex:").unwrap_or(&id).to_string();
                 self.execute_ex_line(&user_facing);
             }
-            PasteRegister { name } => self.set_message(
-                EchoLevel::Error,
-                format!("picker: PasteRegister `{name}` not yet wired (lands with registers picker)"),
-            ),
+            PasteRegister { name } => {
+                // Stash the chosen register on `pending_register`
+                // so `do_paste` picks it up the same way `"<X>p`
+                // does in Normal mode. `do_paste(false)` is the
+                // `p` (paste-after) flavor; the picker doesn't
+                // distinguish before/after today, matching the
+                // simplest user expectation. Charwise / linewise /
+                // blockwise routing flows through the existing
+                // paste path. Invalid register names (`_`,
+                // unknown chars) echo without panicking.
+                if let Some(reg) = lattice_grammar::register::Register::from_input_char(name) {
+                    self.pending_register = Some(reg);
+                    self.do_paste(false);
+                } else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: register `{name}` is not pasteable"),
+                    );
+                }
+            }
             ExpandSnippet { id } => self.set_message(
                 EchoLevel::Error,
                 format!("picker: ExpandSnippet `{id}` not yet wired (lands with snippets picker)"),
@@ -891,6 +907,11 @@ impl App {
                     lattice_picker::PickerAcceptOutcome::InvokeCommand { id, args },
                 );
             }
+            lattice_picker::RoutingPayload::PasteRegister { name } => {
+                self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::PasteRegister { name },
+                );
+            }
         }
     }
 }
@@ -1526,7 +1547,7 @@ mod tests {
         // stable. Each new source migration extends this list.
         assert_eq!(
             ids,
-            vec!["buffers", "commands", "files", "jumps", "lines", "recent"]
+            vec!["buffers", "commands", "files", "jumps", "lines", "recent", "registers"]
         );
         // Sanity: matches what the registry itself reports.
         let registry_ids: Vec<&'static str> = app.picker_registry.ids().collect();

@@ -46,11 +46,16 @@
 //! pipeline will land on top of this data model.
 
 pub mod context;
+pub mod mru;
 pub mod outcome;
 pub mod source;
 
 pub use context::{
     ActiveBufferSnapshot, BufferEntry, PickerContext, PositionEntry, PositionSource,
+};
+pub use mru::{
+    DEFAULT_CAP_PER_NAMESPACE, DEFAULT_HALF_LIFE, MruEntry, MruKey, PickerMruIndex,
+    bonus_of, routing_identity,
 };
 pub use outcome::PickerAcceptOutcome;
 pub use source::{
@@ -288,6 +293,14 @@ pub struct Picker {
     /// delegate accept to the source's `PickerSourceGenerator`
     /// or fall back to the legacy per-routing dispatch.
     pub source_id: Option<String>,
+    /// Frecency bonus per candidate, parallel to
+    /// `routing_meta`. Snapshotted host-side at picker-open by
+    /// looking each candidate's `routing_identity` up in the
+    /// `PickerMruIndex`; refilter combines `match_score + bonus`
+    /// when ranking. Empty (slice 12 / non-trait pickers) means
+    /// "no MRU contribution"; the combine path treats it as 0.0
+    /// for every candidate.
+    mru_bonuses: Vec<f64>,
 }
 
 impl Picker {
@@ -308,7 +321,42 @@ impl Picker {
             routing_meta: Vec::new(),
             preview_origin: None,
             source_id: None,
+            mru_bonuses: Vec::new(),
         }
+    }
+
+    /// Stamp the parallel `mru_bonuses` vec the matcher reads
+    /// during refilter. Must be called after
+    /// [`Self::set_raw_candidates_with_routing`] and must match
+    /// `routing_meta.len()` in length; mismatched lengths reset
+    /// to zero-bonus so the picker stays in a sane state if a
+    /// caller miscounts (mostly a guardrail for tests).
+    pub fn set_mru_bonuses(&mut self, bonuses: Vec<f64>) {
+        if bonuses.len() != self.routing_meta.len() {
+            self.mru_bonuses = vec![0.0; self.routing_meta.len()];
+        } else {
+            self.mru_bonuses = bonuses;
+        }
+        self.refilter();
+    }
+
+    /// Borrow the candidate's MRU bonus by its routing-payload
+    /// index. Returns 0.0 for candidates without a registered
+    /// bonus (slice 12 pickers, legacy LSP pickers, anything
+    /// pre-MRU-snapshot). Public so the refilter path can read
+    /// it; not intended for downstream callers.
+    pub fn mru_bonus_for(&self, candidate: &RenderedCandidate) -> f64 {
+        let CandidateData::Extension { kind_id, payload } = &candidate.raw.data else {
+            return 0.0;
+        };
+        if *kind_id != PICKER_ROUTING_KIND_ID {
+            return 0.0;
+        }
+        if payload.len() != 4 {
+            return 0.0;
+        }
+        let idx = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
+        self.mru_bonuses.get(idx).copied().unwrap_or(0.0)
     }
 
     /// Replace the raw candidate list. Host-built (e.g. the TUI
@@ -417,19 +465,37 @@ impl Picker {
     /// the buffer switcher depend on this -- alternate-buffer
     /// floats to the top via insertion order).
     pub fn refilter(&mut self) {
-        let mut scored: Vec<(RawCandidate, MatchScore, Vec<std::ops::Range<usize>>)> =
-            Vec::new();
+        // Score = match (0..1000) + mru_bonus (0..~110 typical).
+        // Bonus sits below the tier delta between match tiers
+        // (200 between FUZZY_LOW and SUBSTRING) so it functions
+        // as a within-tier tie-breaker rather than a tier
+        // override. The matcher's stable string score still
+        // dominates; MRU floats recently-used candidates within
+        // their tier.
+        let mut scored: Vec<(
+            RawCandidate,
+            MatchScore,
+            Vec<std::ops::Range<usize>>,
+            f64,
+        )> = Vec::new();
         for raw in &self.raw {
             if let Some((score, ranges)) = fuzzy_match(&self.query, &raw.display) {
-                scored.push((raw.clone(), score, ranges));
+                let bonus = bonus_for_raw(raw, &self.mru_bonuses);
+                scored.push((raw.clone(), score, ranges, bonus));
             }
         }
-        // Stable sort by score descending -- equal-score
-        // candidates retain insertion order.
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        // Stable sort by combined score descending. Equal-
+        // combined-score candidates retain insertion order so
+        // host-supplied ordering (alternate-buffer-to-bottom
+        // float, jumps newest-first) still works.
+        scored.sort_by(|a, b| {
+            let ka = a.1.get() as f64 + a.3;
+            let kb = b.1.get() as f64 + b.3;
+            kb.partial_cmp(&ka).unwrap_or(std::cmp::Ordering::Equal)
+        });
         self.candidates = scored
             .into_iter()
-            .map(|(raw, score, match_ranges)| RenderedCandidate {
+            .map(|(raw, score, match_ranges, _bonus)| RenderedCandidate {
                 raw,
                 score,
                 match_ranges,
@@ -484,6 +550,25 @@ impl Picker {
     pub fn selected_candidate(&self) -> Option<&RenderedCandidate> {
         self.candidates.get(self.selected)
     }
+}
+
+/// Resolve the MRU bonus stamped on `raw` against the parallel
+/// `bonuses` slice. Returns 0.0 for candidates without an MRU
+/// routing payload (non-picker `RawCandidate`s, or pickers
+/// seated before the bonuses vec was populated). Pure helper
+/// so the hot-path refilter inlines it.
+fn bonus_for_raw(raw: &RawCandidate, bonuses: &[f64]) -> f64 {
+    let CandidateData::Extension { kind_id, payload } = &raw.data else {
+        return 0.0;
+    };
+    if *kind_id != PICKER_ROUTING_KIND_ID {
+        return 0.0;
+    }
+    if payload.len() != 4 {
+        return 0.0;
+    }
+    let idx = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
+    bonuses.get(idx).copied().unwrap_or(0.0)
 }
 
 /// One row of the LSP-instance source. The picker host (App)
@@ -823,5 +908,65 @@ mod tests {
         p.append_query('z');
         assert!(p.candidates.is_empty());
         assert!(p.selected_candidate().is_none());
+    }
+
+    /// Slice 14a: MRU bonuses tilt ranking within a match
+    /// tier. Two candidates with equal match scores -- the one
+    /// with the higher bonus floats to the top.
+    #[test]
+    fn mru_bonus_breaks_match_score_ties() {
+        let pairs = vec![
+            (
+                {
+                    let mut r = RawCandidate::plain(String::from("alpha"), CandidateKind::Plain);
+                    r.display = "alpha-file".into();
+                    r
+                },
+                RoutingPayload::OpenFile { path: PathBuf::from("/tmp/alpha") },
+            ),
+            (
+                {
+                    let mut r = RawCandidate::plain(String::from("beta"), CandidateKind::Plain);
+                    r.display = "beta-file".into();
+                    r
+                },
+                RoutingPayload::OpenFile { path: PathBuf::from("/tmp/beta") },
+            ),
+        ];
+        let mut p =
+            Picker::new("files", PickerSource::Files, PickerAction::OpenFile);
+        p.set_raw_candidates_with_routing(pairs);
+        // Empty-query match scores are uniform so the tie-
+        // breaker is the MRU bonus alone.
+        p.set_mru_bonuses(vec![0.0, 50.0]);
+        // beta gets the higher bonus and floats above alpha.
+        assert_eq!(p.candidates.len(), 2);
+        assert!(p.candidates[0].raw.display.contains("beta"));
+        assert!(p.candidates[1].raw.display.contains("alpha"));
+    }
+
+    /// Slice 14a: mismatched-length bonuses are clamped to all-
+    /// zeros rather than panicking on out-of-range access.
+    /// Defensive guard for tests / future async-init paths
+    /// that might race the bonus snapshot.
+    #[test]
+    fn mru_bonus_length_mismatch_zeroes_out() {
+        let pairs = vec![(
+            {
+                let mut r = RawCandidate::plain(String::from("only"), CandidateKind::Plain);
+                r.display = "only-file".into();
+                r
+            },
+            RoutingPayload::OpenFile { path: PathBuf::from("/tmp/only") },
+        )];
+        let mut p =
+            Picker::new("files", PickerSource::Files, PickerAction::OpenFile);
+        p.set_raw_candidates_with_routing(pairs);
+        // 2 bonuses for 1 candidate -- mismatch.
+        p.set_mru_bonuses(vec![10.0, 20.0]);
+        // Refilter still produces the one candidate, with 0.0
+        // bonus (since the mismatch reset to zeros).
+        assert_eq!(p.candidates.len(), 1);
+        assert_eq!(p.mru_bonus_for(&p.candidates[0]), 0.0);
     }
 }

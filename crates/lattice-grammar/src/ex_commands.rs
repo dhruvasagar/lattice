@@ -531,12 +531,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Picker source id (`files`, `recent`, `buffers`, ...).",
                 prompt: "source:",
                 default: ArgDefault::Required,
-                // Source-id completion lands in the follow-up slice
-                // that wires a `gen:picker-sources` generator
-                // against the App's shared PickerRegistry handle.
-                // Until then `:picker <Tab>` shows no candidates --
-                // the dispatch path itself still works.
-                completion: None,
+                // `gen:picker-sources` walks the App's
+                // `picker_registry` (Arc-shared, captured Weakly
+                // by the generator) and emits one candidate per
+                // registered source id. Adding a new picker source
+                // surfaces in `:picker <Tab>` automatically.
+                completion: Some("gen:picker-sources"),
             }],
             surface_form: SurfaceForm::Keyword,
         },

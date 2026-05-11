@@ -98,6 +98,41 @@ impl CandidateGenerator for LogLevelsGenerator {
     }
 }
 
+/// `gen:picker-sources` -- one candidate per source id registered
+/// with the host's [`PickerRegistry`](lattice_picker::PickerRegistry).
+/// Drives `:picker <Tab>` completion; the registry's contents
+/// dictate the candidate set, so feature crates that register new
+/// picker sources automatically surface in the popup.
+///
+/// Holds a [`Weak`] (mirror of [`ModesGenerator`]) so the App can
+/// still take ownership of the registry on shutdown / replacement;
+/// dropped-registry yields an empty candidate set rather than a
+/// panic.
+pub struct PickerSourcesGenerator {
+    pub registry: Weak<lattice_picker::PickerRegistry>,
+}
+
+impl CandidateGenerator for PickerSourcesGenerator {
+    fn generate(&self, _ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
+        let Some(registry) = self.registry.upgrade() else {
+            return Vec::new();
+        };
+        // PickerRegistry::iter is id-sorted already; mirror its
+        // order in the candidate list so popup ordering stays
+        // stable across runs.
+        registry
+            .iter()
+            .map(|(id, _spec)| RawCandidate {
+                text: id.to_string(),
+                display: id.to_string(),
+                kind: CandidateKind::Plain,
+                data: CandidateData::Plain,
+                source: None,
+            })
+            .collect()
+    }
+}
+
 /// `gen:lsp-servers` -- one candidate per currently running LSP
 /// server id. Reads through the supervisor's wait-free snapshot
 /// (`ArcSwap`-backed) so completion never blocks on the supervisor

@@ -1110,6 +1110,68 @@ mod tests {
         assert!(msg.text.contains("no recent files"));
     }
 
+    /// Slice 3c: the `gen:picker-sources` completion generator
+    /// emits one candidate per source registered with the App's
+    /// `picker_registry`. Confirms the Weak<PickerRegistry>
+    /// plumbing is wired correctly end-to-end -- the generator
+    /// can read the registry the App owns and yields the
+    /// expected id-sorted set.
+    #[test]
+    fn gen_picker_sources_emits_candidate_per_registered_source() {
+        let app = app_with("hi\n", 5);
+        let generator = app
+            .completion_registry
+            .generator_by_name("gen:picker-sources")
+            .expect("gen:picker-sources must be registered at boot");
+        let snap = app.document.snapshot();
+        let ctx = lattice_completion::GenerateContext {
+            prefix: "",
+            buffer: &snap.buffer,
+            registry: &app.registry,
+            case_sensitive: false,
+        };
+        let candidates = generator.inner.generate(&ctx);
+        let ids: Vec<String> = candidates.iter().map(|c| c.text.clone()).collect();
+        // Built-in registry seeds these three; iter() is id-sorted so
+        // the popup order is stable.
+        assert_eq!(ids, vec!["buffers", "files", "recent"]);
+        // Sanity: matches what the registry itself reports.
+        let registry_ids: Vec<&'static str> = app.picker_registry.ids().collect();
+        let mut expected: Vec<String> = registry_ids.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+        assert_eq!(ids, expected);
+    }
+
+    /// Slice 3c: dropping the Arc<PickerRegistry> (simulating
+    /// App teardown) makes the generator's Weak upgrade fail,
+    /// and the generator returns an empty candidate set rather
+    /// than panicking. Same discipline as `gen:modes`.
+    #[test]
+    fn gen_picker_sources_handles_dropped_registry_gracefully() {
+        use std::sync::{Arc, Weak};
+
+        let reg: Arc<lattice_picker::PickerRegistry> =
+            Arc::new(lattice_picker::PickerRegistry::new());
+        let weak: Weak<lattice_picker::PickerRegistry> = Arc::downgrade(&reg);
+        drop(reg);
+        let generator =
+            crate::host_generators::PickerSourcesGenerator { registry: weak };
+        // Build a minimal GenerateContext via an App fixture --
+        // we just need a real Buffer + CommandRegistry.
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = lattice_completion::GenerateContext {
+            prefix: "",
+            buffer: &snap.buffer,
+            registry: &app.registry,
+            case_sensitive: false,
+        };
+        let candidates = lattice_completion::traits::CandidateGenerator::generate(
+            &generator, &ctx,
+        );
+        assert!(candidates.is_empty());
+    }
+
     /// Slice 12: an unknown source id surfaces an error echo
     /// listing every known id so the user can recover without
     /// `:apropos`.

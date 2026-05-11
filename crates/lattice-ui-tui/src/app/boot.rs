@@ -347,6 +347,25 @@ impl App {
                 registry: Arc::downgrade(&mode_registry),
             },
         );
+        // Picker source registry: built here so the
+        // `gen:picker-sources` completion generator can capture a
+        // Weak handle that survives every subsequent boot step.
+        // Feature crates (lattice-lsp, lattice-snippet, ...) will
+        // eventually register their sources through dedicated
+        // entry points before this point; slice 13 of the picker
+        // design adds the trait that makes that possible. Today's
+        // built-in set covers the three sources the dispatch
+        // table currently handles (`files`, `recent`, `buffers`).
+        let picker_registry: Arc<lattice_picker::PickerRegistry> =
+            Arc::new(built_in_picker_registry());
+        completion_registry.register_generator(
+            "gen:picker-sources",
+            "Every source id registered with the `PickerRegistry`; \
+             drives `:picker <Tab>` completion.",
+            crate::host_generators::PickerSourcesGenerator {
+                registry: Arc::downgrade(&picker_registry),
+            },
+        );
         // One `LangRegistry` per App, shared between the document
         // buffer's `Syntax` and every `HelpBuffer` we'll spin up
         // for `:describe-*` / `:apropos` / `:keymap` (markdown
@@ -569,7 +588,7 @@ impl App {
             active_snippet: None,
             snippet_dirs: Vec::new(),
             picker: None,
-            picker_registry: built_in_picker_registry(),
+            picker_registry: picker_registry.clone(),
             previewing: false,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             auto_submit_after_chord: false,

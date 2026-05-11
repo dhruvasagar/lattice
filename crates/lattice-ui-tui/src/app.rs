@@ -1395,7 +1395,13 @@ pub struct App {
     /// `register_picker_sources` entry points. The plugin host
     /// will feed WIT-imported sources into the same registry
     /// (Phase 7+). See `docs/dev/architecture/picker.md`.
-    pub picker_registry: lattice_picker::PickerRegistry,
+    ///
+    /// Held as `Arc<...>` so the `gen:picker-sources` completion
+    /// generator can capture a `Weak<PickerRegistry>` and walk
+    /// the source list on every keystroke without keeping the
+    /// registry alive past the App. Mirror of the
+    /// `Arc<ModeRegistry>` pattern used by `gen:modes`.
+    pub picker_registry: Arc<lattice_picker::PickerRegistry>,
     /// True while a buffer activation is in *preview* mode --
     /// driven by the picker's `select_next` / `select_prev`
     /// hooks. Activate paths gate position-history pushes on

@@ -1075,11 +1075,17 @@ fn handle_server_notification(
             );
         }
         "telemetry/event" => {
+            // 4.4.a: distinct LogSource so plugin subscribers
+            // on the typed event bus can filter
+            // `source == "telemetry"` instead of parsing
+            // free-form log text. Payload rides as the
+            // compacted-JSON message tail; subscribers that
+            // need structured access parse the suffix.
             logger.log(
                 Some(server_id),
                 LogLevel::Debug,
-                LogSource::Client,
-                format!("telemetry/event: {}", compact_params(&n.params)),
+                LogSource::Telemetry,
+                compact_params(&n.params),
             );
         }
         "textDocument/publishDiagnostics" => {

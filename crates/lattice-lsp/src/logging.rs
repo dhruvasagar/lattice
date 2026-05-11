@@ -140,6 +140,13 @@ impl LogLevel {
 /// Where a log record originated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LogSource {
+    /// LSP `telemetry/event` notification (spec §3.16). Routed
+    /// here in 4.4.a so plugin subscribers can filter on
+    /// `source == "telemetry"` rather than parsing free-form
+    /// log-message text. Payload still goes through the
+    /// shared `LspLogPushed.message` String -- plugin code
+    /// that needs structured JSON can parse the suffix.
+    Telemetry,
     /// Lattice-side (handshake start / done, supervisor restart,
     /// shutdown sequence, decode failures, capability gating).
     Client,
@@ -163,6 +170,7 @@ impl LogSource {
             LogSource::LspMessage => "log",
             LogSource::LspShowMessage => "show",
             LogSource::Trace => "trace",
+            LogSource::Telemetry => "telemetry",
         }
     }
 }

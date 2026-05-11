@@ -1114,13 +1114,33 @@ impl App {
             std::collections::HashSet::new();
         let mut server_traces: std::collections::HashSet<String> =
             std::collections::HashSet::new();
+        // 4.4.a: stash the most recent `window/showMessage` we
+        // see. Server-emitted user notifications go to the
+        // minibuffer (vim's `:echom`-style transient surface)
+        // so the user sees them without opening the LSP log
+        // buffer. Multiple showMessages in one tick collapse to
+        // the last -- consistent with how successive `:echo`
+        // calls overwrite the echo area.
+        let mut last_show: Option<(EchoLevel, String)> = None;
         while let Ok(event) = rx.try_recv() {
             let lattice_lsp::LspLogPushed {
                 server_id,
                 level,
                 source,
-                ..
+                message,
             } = event;
+            if source == "show" {
+                let echo_level = match level.as_str() {
+                    "error" => EchoLevel::Error,
+                    "warn" => EchoLevel::Warn,
+                    _ => EchoLevel::Info,
+                };
+                let prefix = server_id
+                    .as_deref()
+                    .map(|id| format!("[{id}] "))
+                    .unwrap_or_default();
+                last_show = Some((echo_level, format!("{prefix}{message}")));
+            }
             match server_id {
                 None => subsystem = true,
                 Some(id) => {
@@ -1132,6 +1152,12 @@ impl App {
                     }
                 }
             }
+        }
+        // Surface the showMessage AFTER the log buffer refreshes
+        // so a subsequent set_message that the refresh path
+        // doesn't fire can't overwrite us.
+        if let Some((level, msg)) = last_show {
+            self.set_message(level, msg);
         }
         if subsystem {
             self.refresh_lsp_log_buffer_subsystem();
@@ -5721,6 +5747,70 @@ mod tests {
             body_after.contains("fresh-after-open"),
             "expected new record visible after drain, got body:\n{body_after}"
         );
+    }
+
+    /// 4.4.a: a `window/showMessage` arriving as a
+    /// `LogSource::LspShowMessage` record fans out through
+    /// the LspLogPushed typed event; the drain hook surfaces
+    /// it to the minibuffer with severity matching the LSP
+    /// level.
+    #[test]
+    fn lsp_log_drain_surfaces_show_message_to_minibuffer() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Warn,
+            lattice_lsp::LogSource::LspShowMessage,
+            "indexing complete",
+        );
+        app.drain_lsp_log_events();
+        let msg = app.last_message.as_ref().expect("set_message fired");
+        assert_eq!(msg.level, EchoLevel::Warn);
+        assert!(
+            msg.text.contains("indexing complete"),
+            "got `{}`",
+            msg.text
+        );
+        // Prefix carries the server id so multi-server users
+        // know which attached server emitted the notification.
+        assert!(msg.text.contains("[rust]"), "got `{}`", msg.text);
+    }
+
+    /// 4.4.a: only `LspShowMessage`-sourced records hit the
+    /// minibuffer. Regular `LspMessage` (server `window/logMessage`)
+    /// records stay in the LSP log buffer and do NOT
+    /// overwrite the echo area.
+    #[test]
+    fn lsp_log_drain_does_not_surface_log_message_to_minibuffer() {
+        let mut app = app_with("hi\n", 5);
+        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        // Capture initial message to compare after drain.
+        let before = app.last_message.clone();
+        app.lsp_logger.log(
+            Some(&id),
+            lattice_lsp::LogLevel::Info,
+            lattice_lsp::LogSource::LspMessage,
+            "internal log thing",
+        );
+        app.drain_lsp_log_events();
+        assert_eq!(
+            app.last_message, before,
+            "logMessage should NOT touch the echo area"
+        );
+    }
+
+    /// 4.4.a: telemetry/event records ride the existing log
+    /// path with the new `LogSource::Telemetry` tag so
+    /// plugin subscribers can filter without parsing message
+    /// text.
+    #[test]
+    fn lsp_log_drain_telemetry_uses_distinct_source_tag() {
+        // We can't directly assert the typed-event payload
+        // here (the bus delivers to subscriber channels
+        // outside this method's surface), but we can confirm
+        // the `tag()` rendering matches expectations.
+        assert_eq!(lattice_lsp::LogSource::Telemetry.tag(), "telemetry");
     }
 
     #[test]

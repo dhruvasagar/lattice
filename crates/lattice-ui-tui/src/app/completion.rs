@@ -2224,4 +2224,79 @@ mod tests {
         assert_eq!(a.completion_accept_freq.get(&key).copied(), Some(5));
     }
 
+    // ---- CSM.2: completion-mode tracks popup state ----
+
+    /// Triggering the completion popup activates `completion-mode`
+    /// on the document buffer. The mode is the architectural gate
+    /// the keymap-overlay + active-source resolver read.
+    #[test]
+    fn completion_mode_activates_when_popup_opens() {
+        let mut a = app_with("alpha bravo charlie ", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 20);
+        assert!(
+            !a.completion_popup_active(),
+            "mode should be inactive before popup opens",
+        );
+        a.apply(Action::CompletionTrigger);
+        assert!(
+            a.completion_popup_active(),
+            "mode should be active after popup opens",
+        );
+    }
+
+    /// Cancelling the popup deactivates `completion-mode`.
+    #[test]
+    fn completion_mode_deactivates_after_cancel() {
+        let mut a = app_with("alpha bravo charlie ", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 20);
+        a.apply(Action::CompletionTrigger);
+        assert!(a.completion_popup_active());
+        a.apply(Action::CompletionCancel);
+        assert!(
+            !a.completion_popup_active(),
+            "mode should deactivate on cancel",
+        );
+    }
+
+    /// Accepting the popup deactivates `completion-mode`.
+    #[test]
+    fn completion_mode_deactivates_after_accept() {
+        let mut a = app_with("alpha bravo charlie ", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 20);
+        a.apply(Action::CompletionTrigger);
+        assert!(a.completion_popup_active());
+        a.apply(Action::CompletionAccept);
+        assert!(
+            !a.completion_popup_active(),
+            "mode should deactivate on accept",
+        );
+    }
+
+    /// `completion_popup_active()` reads the mode-active state,
+    /// not the `insert_completion` field. With the field manually
+    /// nulled (test-only foot-gun -- production code uses
+    /// `do_completion_cancel`), the mode stays active until the
+    /// next reconcile. This pins the gate's source-of-truth
+    /// inversion: external readers see the mode, not the state.
+    #[test]
+    fn completion_popup_active_reads_mode_not_state_field() {
+        let mut a = app_with("alpha bravo charlie ", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 20);
+        a.apply(Action::CompletionTrigger);
+        assert!(a.completion_popup_active());
+        // Manually drop the popup state (skipping the reconcile).
+        a.insert_completion = None;
+        // Mode is still active because nothing's run
+        // `sync_keymap_overlays` between the manual drop and the
+        // read. External readers see "popup is active" until the
+        // next dispatch tail.
+        assert!(a.completion_popup_active());
+        // Reconcile brings mode + state back into lockstep.
+        a.sync_keymap_overlays();
+        assert!(!a.completion_popup_active());
+    }
 }

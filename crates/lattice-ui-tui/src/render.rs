@@ -254,7 +254,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // Anchored at the cursor; floats over the buffer; doesn't
     // claim the cmdline row (so echoes can still appear).
     // Painted last so it sits on top of any pane-area widgets.
-    if app.insert_completion.is_some() {
+    if app.completion_popup_active() {
         draw_insert_completion_popup(frame, chunks[0], app, snap);
         // Side documentation popup (Phase 4.2.g.3) -- only
         // rendered when the user has flipped it on with

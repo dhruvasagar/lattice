@@ -325,7 +325,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         completion_open: app.completion_state.is_some(),
                         chord_capture: app.chord_capture_active(),
                         picker_open: app.picker.is_some(),
-                        insert_completion_open: app.insert_completion.is_some(),
+                        insert_completion_open: app.completion_popup_active(),
                         snippet_active: app.active_snippet.is_some(),
                         keymap: &app.keymap,
                         partial_chord: &app.partial_chord,

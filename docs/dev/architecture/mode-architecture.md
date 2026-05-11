@@ -2188,6 +2188,40 @@ graceful error handling per CLAUDE.md.
   (per-server subtables like `[lsp.rust-analyzer]`);
   editor-side options owned by the `lsp-mode` minor live
   under `lsp-mode.*`. Workspace 1390 → 1392 (+2 new tests).
+- CSM.1 -- ✅ landed (insert-completion.md §12 first slice).
+  Mode-driven completion-source trait surface in
+  `lattice-completion::source`:
+  `CompletionSourceContribution` + `CompletionSourceKind`
+  (Sync / Async) + `SyncCompletionSource` /
+  `AsyncCompletionSource` traits + `CandidateSink` +
+  `InsertContextSnapshot`. `Mode::completion_sources()`
+  default method added to the trait. No production code
+  references these types yet (CSM.4 -- CSM.8 migrate sources
+  one at a time). `lattice-mode` gains a direct
+  `lattice-completion` dep; edge already existed transitively
+  through `lattice-config`.
+- CSM.2 -- ✅ landed.
+  `CompletionMode` minor added to
+  `lattice-mode::modes::completion`, registered in
+  `register_foundation_modes` alongside `HelpMode` /
+  `HoverMode`. Placement is in the foundation crate (not
+  `lattice-completion`) to avoid a dep cycle:
+  `lattice-mode` already depends on `lattice-completion` for
+  the contribution type; reversing direction would require
+  the `Mode` trait to live in completion.
+  `sync_keymap_overlays` reconciles mode-active state with
+  `App.insert_completion.is_some()` on every command tail --
+  the same chokepoint that already manages the popup keymap
+  layer; no need to thread changes through every popup
+  open / close site. Added `App::completion_popup_active()`
+  + `App::completion_mode_active_for(buffer_id)` as the
+  architectural source of truth for "popup is open."
+  Migrated production gate reads in `render.rs`, `runtime.rs`
+  (TranslateContext setup), and `test_helpers.rs` to the new
+  reader; left state-content reads in `app/edit.rs` and
+  `app/completion.rs` against the field (they run mid-apply,
+  before the sync tail). 7 new tests (3 in lattice-mode, 4
+  in lattice-ui-tui). Workspace 2551 → 2558.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

@@ -628,6 +628,12 @@ impl App {
             // refilters the candidate set against the new query
             // or dismisses the popup (if the user moved past the
             // word boundary).
+            // State-content read (not a gate read): we're inside
+            // an `apply` body; `sync_keymap_overlays` runs at the
+            // tail, so the mode-active state isn't yet in sync
+            // with the popup state field. The refresh check
+            // genuinely wants "is there popup state to refresh,"
+            // which is exactly what the field tracks.
             if self.insert_completion.is_some() {
                 self.maybe_refresh_insert_completion_after_edit();
             }

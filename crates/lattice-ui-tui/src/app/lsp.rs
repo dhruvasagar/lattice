@@ -93,6 +93,28 @@ impl App {
             .unwrap_or(false)
     }
 
+    /// CSM.2 (insert-completion.md §12): is `completion-mode`
+    /// active on `buffer_id`? Architectural answer to "is the
+    /// insert-completion popup live on this buffer." Tests +
+    /// production code asking the popup-state question should
+    /// read through this method rather than poking
+    /// `App.insert_completion.is_some()` directly -- the field
+    /// is the popup's *content*; the mode is the *gate*.
+    pub fn completion_mode_active_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_mode::CompletionMode::mode_id(),
+        )
+    }
+
+    /// Shorthand: is the insert-completion popup live on the
+    /// active document buffer? The popup is anchored to the doc
+    /// the user is typing in; v1 has a single
+    /// `self.document_buffer_id`.
+    pub fn completion_popup_active(&self) -> bool {
+        self.completion_mode_active_for(self.document_buffer_id)
+    }
+
     /// M.6.0: is `lsp-completion-mode` active on `buffer_id`? Read
     /// by `do_lsp_completion_request` /
     /// `do_lsp_insert_completion_request` and the LSP completion

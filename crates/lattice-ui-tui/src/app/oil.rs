@@ -172,13 +172,35 @@ impl App {
         match self.active_buffer {
             BufferKind::Oil => {
                 let id = self.active_pane_buffer_id();
-                if let Some(oil) = self.buffers.oil_mut(id) {
-                    if let Err(e) = oil.navigate_up() {
+                let nav_result = self
+                    .buffers
+                    .oil_mut(id)
+                    .map(|oil| oil.navigate_up());
+                match nav_result {
+                    Some(Err(e)) => {
                         self.set_message(EchoLevel::Error, format!("oil navigate up: {e}"));
                         return;
                     }
-                    self.cursor = Position::ZERO;
-                    self.scroll = 0;
+                    Some(Ok(_)) => {
+                        // BUG FIX: re-mirror the OilDir buffer-
+                        // local with the new (post-navigate)
+                        // dir. Without this, the next `<CR>` on
+                        // a file reads the stale dir and joins
+                        // with the new entry's name, producing
+                        // a path that points at a non-existent
+                        // file (or the wrong one). The
+                        // navigate-INTO path does the same
+                        // re-mirror; this is the symmetric fix.
+                        if let Some(o) = self.buffers.oil(id) {
+                            let new_dir = o.dir.clone();
+                            if let Some(locals) = self.buffer_locals.get_mut(&id) {
+                                locals.insert(crate::modes::OilDir(new_dir));
+                            }
+                        }
+                        self.cursor = Position::ZERO;
+                        self.scroll = 0;
+                    }
+                    None => {}
                 }
             }
             BufferKind::FileTree => {

@@ -2729,6 +2729,125 @@ mod tests {
     }
 
     #[test]
+    fn oil_navigate_up_re_mirrors_dir_into_buffer_locals() {
+        // Regression: pressing `-` inside an oil buffer
+        // updated OilBuffer::dir but didn't re-mirror the
+        // `OilDir` buffer-local. The next `<CR>` on a file
+        // would read the stale `OilDir`, join with the new
+        // entry's name, and produce a path that doesn't
+        // exist.
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-oil-nav-up-mirror-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).expect("sub");
+        std::fs::write(tmp.join("a.txt"), "a").expect("a");
+        std::fs::write(tmp.join("sub/inside.txt"), "i").expect("inside");
+
+        let mut a = app_with("hi", 5);
+        // Open oil rooted at the subdir.
+        a.do_open_oil(Some(tmp.join("sub")));
+        let oil_id = a.active_pane_buffer_id();
+        // Verify initial OilDir mirror.
+        assert_eq!(
+            a.buffer_locals
+                .get(&oil_id)
+                .and_then(|l| l.get::<crate::modes::OilDir>())
+                .map(|d| d.0.clone())
+                .unwrap_or_default(),
+            tmp.join("sub"),
+        );
+        // Navigate up.
+        a.do_oil_navigate_up();
+        // OilBuffer::dir is now tmp.
+        let oil_dir = a.buffers.oil(oil_id).map(|o| o.dir.clone()).unwrap_or_default();
+        assert_eq!(oil_dir, tmp);
+        // The buffer-local mirror must also be `tmp`, not the
+        // stale `tmp/sub`.
+        let mirrored = a
+            .buffer_locals
+            .get(&oil_id)
+            .and_then(|l| l.get::<crate::modes::OilDir>())
+            .map(|d| d.0.clone())
+            .unwrap_or_default();
+        assert_eq!(
+            mirrored, tmp,
+            "buffer-local OilDir should reflect the post-navigate dir",
+        );
+
+        // Sanity: open the file at row 0 (which should be
+        // a.txt -- the first file alphabetically). The
+        // resolved path uses the buffer-local OilDir; if
+        // stale, the path is wrong and `do_edit` opens
+        // something that doesn't exist (or worse, the wrong
+        // file).
+        a.cursor.line = 0;
+        a.cursor.byte = 0;
+        // Find a.txt's row (dirs come first; "sub" is dir, then "a.txt").
+        let names: Vec<String> = a
+            .buffers
+            .oil(oil_id)
+            .map(|o| o.snapshot_entries().iter().map(|e| e.name.clone()).collect())
+            .unwrap_or_default();
+        let a_txt_row = names.iter().position(|n| n == "a.txt").expect("a.txt in listing");
+        a.cursor.line = a_txt_row as u32;
+        a.do_oil_follow();
+        let opened = a.document.path().map(|p| p.to_path_buf());
+        assert_eq!(opened, Some(tmp.join("a.txt")));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn oil_navigate_into_then_open_file_uses_correct_subdir_path() {
+        // Companion regression: after `<CR>` on a subdir,
+        // pressing `<CR>` on a file inside that subdir must
+        // open `<parent>/<subdir>/<file>`, not
+        // `<parent>/<file>` or similar.
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-oil-nav-into-then-open-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).expect("sub");
+        std::fs::write(tmp.join("sub/inside.txt"), "i").expect("inside");
+
+        let mut a = app_with("hi", 5);
+        a.do_open_oil(Some(tmp.clone()));
+        let oil_id = a.active_pane_buffer_id();
+        // Find `sub` (dirs first; should be row 0).
+        let names: Vec<String> = a
+            .buffers
+            .oil(oil_id)
+            .map(|o| o.snapshot_entries().iter().map(|e| e.name.clone()).collect())
+            .unwrap_or_default();
+        let sub_row = names.iter().position(|n| n == "sub").expect("sub in listing");
+        a.cursor.line = sub_row as u32;
+        a.cursor.byte = 0;
+        a.do_oil_follow();
+        // Now in oil rooted at tmp/sub.
+        let dir_after = a.buffers.oil(oil_id).map(|o| o.dir.clone()).unwrap_or_default();
+        assert_eq!(dir_after, tmp.join("sub"));
+        // Listing should show `inside.txt` at row 0.
+        let names_after: Vec<String> = a
+            .buffers
+            .oil(oil_id)
+            .map(|o| o.snapshot_entries().iter().map(|e| e.name.clone()).collect())
+            .unwrap_or_default();
+        let inside_row = names_after
+            .iter()
+            .position(|n| n == "inside.txt")
+            .expect("inside.txt in listing");
+        a.cursor.line = inside_row as u32;
+        a.do_oil_follow();
+        let opened = a.document.path().map(|p| p.to_path_buf());
+        assert_eq!(opened, Some(tmp.join("sub/inside.txt")));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn oil_follow_uses_app_cursor_not_oil_internal_cursor() {
         // Regression: `<CR>` in an oil buffer used to always
         // open the first row's item regardless of where the

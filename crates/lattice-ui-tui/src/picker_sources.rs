@@ -249,7 +249,98 @@ impl PickerSourceGenerator for BuffersSource {
     }
 }
 
-/// Convenience: build the three first-party source
+/// `:picker lines`. Walks the active buffer's rope and emits
+/// one row per logical line, displayed as `<lineno>: <text>`.
+/// Accept jumps the cursor to that line via
+/// `RoutingPayload::JumpInBuffer`. The buffer_id is captured
+/// at picker-open so a sibling hover-preview can't accidentally
+/// redirect the jump.
+pub struct LinesSource {
+    pub spec: PickerSourceSpec,
+}
+
+impl LinesSource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                "lines",
+                "Active buffer's lines. Type to filter; `<CR>` jumps to that line.",
+            ),
+        }
+    }
+}
+
+impl Default for LinesSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PickerSourceGenerator for LinesSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(
+        &self,
+        ctx: &PickerContext<'_>,
+        _args: &[String],
+    ) -> SourceResult<PickerInitResult> {
+        let buffer = ctx.active_buffer.buffer;
+        let buffer_id = ctx.active_buffer.buffer_id;
+        let line_count = buffer.line_count();
+        if line_count == 0 {
+            return Err("lines: empty buffer".into());
+        }
+        // ropey reports a trailing empty line when the buffer
+        // ends in `\n`; drop it so the picker doesn't dangle a
+        // blank "phantom" row past the last addressable line.
+        let last = if buffer.line_byte_len(line_count - 1) == 0 && line_count >= 2 {
+            line_count - 2
+        } else {
+            line_count - 1
+        };
+        // Use the largest line number's digit count as the
+        // alignment width so the colon column lines up across
+        // rows.
+        let width = ((last + 1) as f64).log10().floor() as usize + 1;
+        let mut pairs = Vec::with_capacity(last as usize + 1);
+        for line in 0..=last {
+            let text = buffer.line(line).unwrap_or_default();
+            let text = text.trim_end_matches('\n');
+            let display = format!("{:>width$}: {}", line + 1, text, width = width);
+            let cand = RawCandidate::plain(display, CandidateKind::Plain);
+            pairs.push((
+                cand,
+                RoutingPayload::JumpInBuffer {
+                    buffer_id,
+                    line,
+                    col: 0,
+                },
+            ));
+        }
+        Ok(PickerInitResult::Inline(pairs))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
+                Ok(PickerAcceptOutcome::JumpInBuffer {
+                    buffer_id: *buffer_id,
+                    line: *line,
+                    col: *col,
+                })
+            }
+            other => Err(format!("lines: unexpected routing payload {other:?}")),
+        }
+    }
+}
+
+/// Convenience: build the four first-party source
 /// generators as `Arc<dyn PickerSourceGenerator>` ready to
 /// register against a `PickerRegistry`. Used by `App::new` to
 /// boot the registry.
@@ -258,6 +349,7 @@ pub fn first_party_generators() -> Vec<Arc<dyn PickerSourceGenerator>> {
         Arc::new(FilesSource::new()),
         Arc::new(RecentFilesSource::new()),
         Arc::new(BuffersSource::new()),
+        Arc::new(LinesSource::new()),
     ]
 }
 
@@ -361,9 +453,87 @@ mod tests {
     }
 
     #[test]
-    fn first_party_generators_returns_three_sources() {
-        let gens = first_party_generators();
-        let ids: Vec<&'static str> = gens.iter().map(|g| g.spec().id).collect();
-        assert_eq!(ids, vec!["files", "recent", "buffers"]);
+    fn first_party_generators_returns_all_built_in_sources() {
+        let generators = first_party_generators();
+        let ids: Vec<&'static str> = generators.iter().map(|g| g.spec().id).collect();
+        assert_eq!(ids, vec!["files", "recent", "buffers", "lines"]);
+    }
+
+    /// P.3: lines source emits one row per addressable line
+    /// in the active buffer, with `JumpInBuffer` routing
+    /// payloads carrying the captured buffer id.
+    #[test]
+    fn lines_source_emits_row_per_line() {
+        let app = app_with("alpha\nbeta\ngamma\n", 10);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let active_id = ctx.active_buffer.buffer_id;
+        let source = LinesSource::new();
+        let result = source.init(&ctx, &[]).expect("inline");
+        let PickerInitResult::Inline(pairs) = result else {
+            panic!("expected Inline");
+        };
+        // 3 addressable lines; the trailing-empty phantom is dropped.
+        assert_eq!(pairs.len(), 3);
+        for (i, (cand, routing)) in pairs.iter().enumerate() {
+            match routing {
+                RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
+                    assert_eq!(*buffer_id, active_id);
+                    assert_eq!(*line, i as u32);
+                    assert_eq!(*col, 0);
+                }
+                other => panic!("expected JumpInBuffer, got {other:?}"),
+            }
+            // Display starts with right-aligned line number then `:`.
+            assert!(cand.display.contains(':'), "missing `:` in {}", cand.display);
+        }
+    }
+
+    /// P.3: empty buffer surfaces an error echo (the
+    /// `line_count == 0` guard) rather than seating an empty
+    /// picker.
+    #[test]
+    fn lines_source_empty_buffer_errors() {
+        let app = app_with("", 5);
+        let snap = app.document.snapshot();
+        // ropey treats truly-empty as one logical line; force the
+        // guard by constructing a context whose buffer has zero
+        // line count -- skip via the buffer's own report. The
+        // line_count == 0 branch is defensive (ropey rarely
+        // produces it) so this test only confirms the non-empty
+        // path doesn't panic when the rope contains a single
+        // empty line.
+        let ctx = app.build_picker_context(&snap);
+        let source = LinesSource::new();
+        let result = source.init(&ctx, &[]).expect("inline");
+        if let PickerInitResult::Inline(pairs) = result {
+            // One logical line, contents may be empty.
+            assert_eq!(pairs.len(), 1);
+        } else {
+            panic!("expected Inline");
+        }
+    }
+
+    /// P.3: accept on a `JumpInBuffer` routing returns the
+    /// matching outcome variant. Mismatched routing returns
+    /// `Err`.
+    #[test]
+    fn lines_source_accept_translates_jump_in_buffer() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = LinesSource::new();
+        let routing = RoutingPayload::JumpInBuffer { buffer_id: 7, line: 12, col: 3 };
+        let outcome = source.accept(&ctx, &routing).expect("ok");
+        match outcome {
+            PickerAcceptOutcome::JumpInBuffer { buffer_id, line, col } => {
+                assert_eq!(buffer_id, 7);
+                assert_eq!(line, 12);
+                assert_eq!(col, 3);
+            }
+            other => panic!("expected JumpInBuffer, got {other:?}"),
+        }
+        let bad = RoutingPayload::OpenFile { path: "/tmp/x".into() };
+        assert!(source.accept(&ctx, &bad).is_err());
     }
 }

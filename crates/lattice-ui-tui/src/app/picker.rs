@@ -856,6 +856,23 @@ impl App {
                 self.prepare_pane_for_picker_result();
                 self.do_edit(Some(path), false);
             }
+            lattice_picker::RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
+                // Legacy fallback only fires when a picker without
+                // a `source_id` emits JumpInBuffer. Today's
+                // emitters all set `source_id` (trait-driven path
+                // intercepts before reaching here), so this arm
+                // is reachability-guard only -- if it ever does
+                // fire, route it through the same outcome
+                // translator the trait path uses so the behavior
+                // doesn't diverge.
+                self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::JumpInBuffer {
+                        buffer_id,
+                        line,
+                        col,
+                    },
+                );
+            }
         }
     }
 }
@@ -1486,9 +1503,10 @@ mod tests {
         };
         let candidates = generator.inner.generate(&ctx);
         let ids: Vec<String> = candidates.iter().map(|c| c.text.clone()).collect();
-        // Built-in registry seeds these three; iter() is id-sorted so
-        // the popup order is stable.
-        assert_eq!(ids, vec!["buffers", "files", "recent"]);
+        // Built-in registry seeds the first-party sources;
+        // PickerRegistry::iter is id-sorted so popup order is
+        // stable. Each new source migration extends this list.
+        assert_eq!(ids, vec!["buffers", "files", "lines", "recent"]);
         // Sanity: matches what the registry itself reports.
         let registry_ids: Vec<&'static str> = app.picker_registry.ids().collect();
         let mut expected: Vec<String> = registry_ids.iter().map(|s| s.to_string()).collect();
@@ -1524,6 +1542,37 @@ mod tests {
             &generator, &ctx,
         );
         assert!(candidates.is_empty());
+    }
+
+    /// P.3: end-to-end `:picker lines` -- dispatch routes
+    /// through `LinesSource::init` (trait-driven path) and
+    /// seats a picker stamped with `source_id: Some("lines")`.
+    /// The candidates count matches the active buffer's line
+    /// count (sans phantom trailing newline).
+    #[test]
+    fn open_picker_lines_seeds_one_row_per_line() {
+        let mut app = app_with("alpha\nbeta\ngamma\n", 10);
+        app.open_picker("lines".into(), Vec::new());
+        let p = app.picker.as_ref().expect("picker open");
+        assert_eq!(p.candidates.len(), 3);
+        assert_eq!(p.source_id.as_deref(), Some("lines"));
+    }
+
+    /// P.3: accepting a row from the lines picker routes
+    /// through `LinesSource::accept` -> `JumpInBuffer`
+    /// outcome -> `apply_picker_outcome` and moves the cursor
+    /// to the chosen line.
+    #[test]
+    fn open_picker_lines_accept_jumps_cursor() {
+        let mut app = app_with("alpha\nbeta\ngamma\n", 10);
+        app.open_picker("lines".into(), Vec::new());
+        // Move selection to the second row (beta, line index 1)
+        // and accept.
+        app.apply(Action::PickerSelectNext);
+        app.apply(Action::PickerAccept);
+        assert!(app.picker.is_none());
+        assert_eq!(app.cursor.line, 1);
+        assert_eq!(app.cursor.byte, 0);
     }
 
     /// Slice 12: an unknown source id surfaces an error echo

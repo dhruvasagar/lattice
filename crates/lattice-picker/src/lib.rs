@@ -124,6 +124,16 @@ pub enum RoutingPayload {
     /// recent-files picker; directories defer to oil/file-tree
     /// the same way `:e DIR` does.
     OpenFile { path: PathBuf },
+    /// `PickerAction::JumpInBuffer` -- jump to `(line, col)` in
+    /// an already-registered buffer. Captured at picker-open
+    /// time so the destination is stable even if the user
+    /// arrowed through another picker's hover-preview.
+    /// Emitted by `:picker lines`, `:picker jumps` (for entries
+    /// pointing at currently-open buffers), and -- once
+    /// migrated -- `:picker marks`. MRU returns `None` for this
+    /// variant because `(line, col)` drift as the buffer is
+    /// edited; a stale identity would mis-rank candidates.
+    JumpInBuffer { buffer_id: u32, line: u32, col: u32 },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves

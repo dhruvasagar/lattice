@@ -456,22 +456,29 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // `:files [root]` and `:recent` are short aliases for
+    // `:picker files [root]` / `:picker recent`. They emit
+    // the canonical `Effect::OpenPicker` so they go through
+    // the same trait-driven dispatch + MRU pipeline; the
+    // separate ex-command surface exists only for vim
+    // muscle memory.
     let _files_picker = registry.register_ex_command(
         "ex:files",
-        "Open the workspace file picker (`:files [root]`). Type to filter; `<CR>` to edit.",
+        "Open the workspace file picker (`:files [root]`). Alias for `:picker files [root]`.",
         ExCommandSpec {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_optional_path),
             apply: Box::new(|ctx| {
-                let root = match &ctx.args {
-                    Args::String(p) if !p.is_empty() => {
-                        Some(std::path::PathBuf::from(p.as_str()))
-                    }
-                    _ => None,
+                let args: Vec<String> = match &ctx.args {
+                    Args::String(p) if !p.is_empty() => vec![p.clone()],
+                    _ => Vec::new(),
                 };
-                Ok(Effect::OpenFilePicker { root })
+                Ok(Effect::OpenPicker {
+                    source: "files".into(),
+                    args,
+                })
             }),
             args_schema: vec![ArgSpec {
                 name: "root",
@@ -486,13 +493,16 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
     );
     let _recent_files_picker = registry.register_ex_command(
         "ex:recent",
-        "Open the recent-files picker (`:recent`). Walks the MRU list of `:edit`ed paths; `<CR>` edits the chosen file.",
+        "Open the recent-files picker (`:recent`). Alias for `:picker recent`.",
         ExCommandSpec {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::OpenRecentFilesPicker)),
+            apply: Box::new(|_| Ok(Effect::OpenPicker {
+                source: "recent".into(),
+                args: Vec::new(),
+            })),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },

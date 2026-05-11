@@ -169,30 +169,15 @@ pub enum Effect {
     /// the picker via `:b <prefix>` once that wiring lands; for now
     /// the no-arg form is the entry point.
     OpenBufferPicker,
-    /// `:files [root]` -- open the workspace file picker. Walks
-    /// `root` (or the current document's parent / cwd when
-    /// absent) recursively; rows are filesystem paths the user
-    /// can fuzzy-match. Accept opens the chosen path via the
-    /// `:edit` path (re-uses oil/file-tree for directories).
-    /// Skips known ignore dirs (`.git`, `target`, `node_modules`,
-    /// `dist`, `.cache`) and dotfiles by default.
-    OpenFilePicker {
-        root: Option<std::path::PathBuf>,
-    },
-    /// `:recent` -- open the recent-files picker. Walks
-    /// `App.recent_files` (MRU, newest first); accept opens the
-    /// chosen path through the same `OpenFile` routing as
-    /// `:files`. Empty MRU echoes "no recent files."
-    OpenRecentFilesPicker,
     /// `:picker <source> [args...]` -- canonical picker entry
     /// point. Dispatches by `source` against the host's
     /// `PickerRegistry`. Unknown source ids surface as a
     /// host-side error echo; per-source arg shape is opaque to
     /// the grammar (the host re-parses `args` against the
     /// resolved source's `args_schema`). Short per-source
-    /// aliases like `:files`, `:recent`, `:b` stay registered
-    /// for vim muscle-memory and emit the same canonical
-    /// effect under the hood once their migration lands.
+    /// aliases like `:files`, `:recent` emit this same effect
+    /// with the appropriate `source` set so the trait-driven
+    /// dispatch + MRU pipeline runs uniformly.
     OpenPicker {
         source: String,
         args: Vec<String>,

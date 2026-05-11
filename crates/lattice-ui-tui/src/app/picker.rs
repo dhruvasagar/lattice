@@ -632,99 +632,6 @@ impl App {
         }
     }
 
-    /// `:files [root]` -- open the workspace file picker.
-    /// Resolves `root` the same way `:Filetree` does (explicit
-    /// path > current document parent > cwd). Walks the tree
-    /// up to `FILE_PICKER_MAX_ENTRIES`, skipping the ignore set
-    /// (`.git`, `target`, `node_modules`, `dist`, `.cache`) and
-    /// dotfiles. Each row is a relative path; accept hands the
-    /// absolute path to `do_edit`.
-    pub(super) fn open_file_picker(&mut self, root: Option<std::path::PathBuf>) {
-        let root = match root {
-            Some(p) => p,
-            None => match self.document.path().and_then(|p| p.parent().map(Into::into)) {
-                Some(parent) => parent,
-                None => match std::env::current_dir() {
-                    Ok(p) => p,
-                    Err(e) => {
-                        self.set_message(EchoLevel::Error, format!("cwd error: {e}"));
-                        return;
-                    }
-                },
-            },
-        };
-        let canonical_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
-        let entries = walk_files_for_picker(&canonical_root);
-        if entries.is_empty() {
-            self.set_message(
-                EchoLevel::Info,
-                format!("files: no files under {}", canonical_root.display()),
-            );
-            return;
-        }
-        let mut items: Vec<(
-            lattice_completion::RawCandidate,
-            lattice_picker::RoutingPayload,
-        )> = Vec::with_capacity(entries.len());
-        for abs in entries {
-            let rel = abs
-                .strip_prefix(&canonical_root)
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|_| abs.clone());
-            let display = rel.display().to_string();
-            let cand = lattice_completion::RawCandidate::plain(
-                display,
-                lattice_completion::CandidateKind::Plain,
-            );
-            items.push((cand, lattice_picker::RoutingPayload::OpenFile { path: abs }));
-        }
-        let mut picker = lattice_picker::Picker::new(
-            format!("files: {}", canonical_root.display()),
-            lattice_picker::PickerSource::Files,
-            lattice_picker::PickerAction::OpenFile,
-        );
-        picker.set_raw_candidates_with_routing(items);
-        self.picker = Some(picker);
-    }
-
-    /// P.2: `:recent` -- open the recent-files picker. Walks
-    /// `App.recent_files` (MRU, newest first); each row routes
-    /// through `RoutingPayload::OpenFile`. Display is the
-    /// canonical absolute path so the user can distinguish
-    /// same-name files from different roots. Empty MRU echoes
-    /// "no recent files."
-    pub(super) fn open_recent_files_picker(&mut self) {
-        if self.recent_files.is_empty() {
-            self.set_message(EchoLevel::Info, "no recent files".to_string());
-            return;
-        }
-        let items: Vec<(
-            lattice_completion::RawCandidate,
-            lattice_picker::RoutingPayload,
-        )> = self
-            .recent_files
-            .iter()
-            .map(|p| {
-                let display = p.display().to_string();
-                let cand = lattice_completion::RawCandidate::plain(
-                    display,
-                    lattice_completion::CandidateKind::Plain,
-                );
-                (
-                    cand,
-                    lattice_picker::RoutingPayload::OpenFile { path: p.clone() },
-                )
-            })
-            .collect();
-        let mut picker = lattice_picker::Picker::new(
-            "recent",
-            lattice_picker::PickerSource::Files,
-            lattice_picker::PickerAction::OpenFile,
-        );
-        picker.set_raw_candidates_with_routing(items);
-        self.picker = Some(picker);
-    }
-
     pub(super) fn open_buffer_picker(&mut self) {
         let active = self.active_pane_buffer_id();
         let mut p = lattice_picker::Picker::new(
@@ -1450,51 +1357,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// P.1: `open_file_picker` seeds a picker whose every row
-    /// carries an `OpenFile { path }` routing payload pointing
-    /// to a real file under the supplied root.
-    #[test]
-    fn open_file_picker_seeds_open_file_routing() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-files-open-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::fs::write(tmp.join("alpha.rs"), "fn alpha() {}\n").unwrap();
-        std::fs::write(tmp.join("beta.rs"), "fn beta() {}\n").unwrap();
-        let mut app = app_with("hi\n", 5);
-        app.open_file_picker(Some(tmp.clone()));
-        let p = app.picker.as_ref().expect("picker open");
-        assert_eq!(p.candidates.len(), 2);
-        // Every candidate routes to an `OpenFile` payload
-        // pointing under `tmp`.
-        for cand in &p.candidates {
-            let routing = p.routing_for(cand).expect("routing");
-            match routing {
-                lattice_picker::RoutingPayload::OpenFile { path } => {
-                    assert!(path.starts_with(std::fs::canonicalize(&tmp).unwrap()));
-                }
-                other => panic!("expected OpenFile, got {other:?}"),
-            }
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    /// P.1: empty workspace echoes "no files" and leaves the
-    /// picker closed.
-    #[test]
-    fn open_file_picker_empty_root_echoes() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-files-empty-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        let mut app = app_with("hi\n", 5);
-        app.open_file_picker(Some(tmp.clone()));
-        assert!(app.picker.is_none());
-        let msg = app.last_message.as_ref().expect("echo");
-        assert!(msg.text.contains("no files"));
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
     /// P.2: `push_recent_file` keeps MRU order (newest first),
     /// dedups repeats, and caps at the configured ceiling. The
     /// canonicalised path is what lands in the list, so
@@ -1524,48 +1386,6 @@ mod tests {
         // older occurrence -- list length stays at 3.
         app.push_recent_file(&a_path);
         assert_eq!(app.recent_files, vec![canon_a, canon_c, canon_b]);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    /// P.2: empty MRU echoes "no recent files" and leaves the
-    /// picker closed.
-    #[test]
-    fn open_recent_files_picker_empty_echoes() {
-        let mut app = app_with("hi\n", 5);
-        app.open_recent_files_picker();
-        assert!(app.picker.is_none());
-        let msg = app.last_message.as_ref().expect("echo");
-        assert!(msg.text.contains("no recent files"));
-    }
-
-    /// P.2: each recent-files row carries an `OpenFile { path }`
-    /// routing payload pointing to the (canonicalised) path the
-    /// user previously `:edit`ed, in MRU order.
-    #[test]
-    fn open_recent_files_picker_seeds_open_file_routing() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-recent-seed-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        let alpha = tmp.join("alpha.rs");
-        let beta = tmp.join("beta.rs");
-        std::fs::write(&alpha, "").unwrap();
-        std::fs::write(&beta, "").unwrap();
-        let mut app = app_with("hi\n", 5);
-        app.push_recent_file(&alpha);
-        app.push_recent_file(&beta);
-        app.open_recent_files_picker();
-        let p = app.picker.as_ref().expect("picker open");
-        assert_eq!(p.candidates.len(), 2);
-        // First candidate (selected) routes to the freshly-pushed
-        // `beta` -- newest first.
-        let first = p.selected_candidate().expect("selected");
-        match p.routing_for(first).expect("routing") {
-            lattice_picker::RoutingPayload::OpenFile { path } => {
-                assert_eq!(path, &std::fs::canonicalize(&beta).unwrap());
-            }
-            other => panic!("expected OpenFile, got {other:?}"),
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

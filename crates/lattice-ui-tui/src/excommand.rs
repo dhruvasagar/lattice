@@ -371,6 +371,13 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("bdelete", "ex:bdelete"),
     ("b", "ex:buffer-picker"),
     ("buffer-picker", "ex:buffer-picker"),
+    // Picker entry points (Phase 4.x picker work). `:picker
+    // <source>` is the canonical surface; the per-source
+    // aliases (`:files`, `:recent`) ship for vim muscle
+    // memory and route through their dedicated effect.
+    ("picker", "ex:picker"),
+    ("files", "ex:files"),
+    ("recent", "ex:recent"),
     ("Tree", "ex:filetree"),
     ("tree", "ex:filetree"),
     ("Filetree", "ex:filetree"),
@@ -1211,6 +1218,27 @@ mod tests {
             assert!(
                 r.id_by_name(canonical).is_some(),
                 "alias `{short}` -> `{canonical}` not registered"
+            );
+        }
+    }
+
+    /// Regression: every picker entry-point ex-command is
+    /// invocable through its user-facing name. The grammar
+    /// registers the canonical `ex:*` form; without an alias
+    /// row the parser rejects `:picker` / `:files` /
+    /// `:recent` as "unknown command". This walks the
+    /// expected user-facing surface end-to-end through `parse`
+    /// so a missing alias row surfaces in CI rather than at
+    /// runtime.
+    #[test]
+    fn picker_commands_resolve_through_user_facing_names() {
+        let r = fixture();
+        for line in ["picker files", "files", "recent"] {
+            let result = parse(line, &r);
+            assert!(
+                result.is_ok(),
+                "expected `:{line}` to parse, got {:?}",
+                result.err()
             );
         }
     }

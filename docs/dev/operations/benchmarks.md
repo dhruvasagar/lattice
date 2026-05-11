@@ -501,63 +501,84 @@ write; `bonus_of` is the frecency math kernel.
 
 | Bench                                  | Time         | Floor / Target | Notes                                                                                                                       |
 |----------------------------------------|--------------|----------------|-----------------------------------------------------------------------------------------------------------------------------|
-| `picker::open_inline/100`              | ~30 µs       | ~25 µs / <500 µs   | Build candidates + bonus snapshot + refilter (empty query) for a 100-candidate picker. Buffer-switcher scale.                |
-| `picker::open_inline/500`              | ~100 µs      | ~80 µs / <1 ms     | LSP-symbols / outline scale.                                                                                                |
-| `picker::open_inline/5000`             | ~700 µs      | ~600 µs / <5 ms    | Worst-case file-picker walker output. Sub-frame even at 120Hz.                                                              |
-| `picker::refilter/n=500,query=""`      | ~50 µs       | ~40 µs / <500 µs   | Empty-query refilter on 500 candidates. No filtering, just rank+sort.                                                       |
-| `picker::refilter/n=500,query="f"`     | ~80 µs       | ~70 µs / <500 µs   | Single-char substring filter.                                                                                               |
-| `picker::refilter/n=500,query="file_"` | ~150 µs      | ~130 µs / <500 µs  | 5-char query against a substring-matching candidate set.                                                                    |
-| `picker::refilter/n=5000,query=""`     | ~500 µs      | ~400 µs / <2 ms    | Empty-query rank+sort dominates here.                                                                                       |
-| `picker::refilter/n=5000,query="f"`    | ~800 µs      | ~700 µs / <2 ms    |                                                                                                                             |
-| `picker::refilter/n=5000,query="file_"`| **~1.5 ms**  | ~1.4 ms / <2 ms    | Worst-case substring scan + full-match rank at 5000 candidates. Slightly above the sub-frame target at 120Hz (8.3 ms). v1 substring matcher is unoptimized; the matcher graduation slice will tighten this. |
-| `picker::mru_snapshot/100`             | ~10 µs       | ~9 µs / <100 µs    | O(N) HashMap-lookup pass. Runs once per picker-open.                                                                        |
-| `picker::mru_snapshot/500`             | ~55 µs       | ~50 µs / <500 µs   |                                                                                                                             |
-| `picker::mru_snapshot/5000`            | ~520 µs      | ~500 µs / <2 ms    | At 5000 candidates the snapshot cost is dominated by HashMap probes; cap-per-namespace bounds the cost in practice (most entries lookup-miss to 0.0). |
-| `picker::mru_record/100`               | **~1 µs**    | ~900 ns / <10 µs   | Single accept: HashMap insert + cap-check. Steady-state cost; the user feels none of it.                                    |
-| `picker::mru_record/1000`              | ~65 µs       | ~50 µs / <500 µs   | At-cap insert: the eviction path runs through `lowest_frecency_in_namespace` (linear scan + frecency compute per entry). Rare in practice (only fires when a namespace hits its 1000-entry ceiling). |
-| `picker::bonus_of`                     | **~22 ns**   | ~20 ns / <100 ns   | Frecency formula kernel. Called once per candidate during snapshot; this floor is what sets the snapshot's per-entry cost.  |
+| `picker::open_inline/100`              | **34.9 µs**  | ~30 µs / <500 µs   | Build candidates + bonus snapshot + 2× refilter for a 100-candidate picker (set_raw_candidates_with_routing and set_mru_bonuses each refilter). Buffer-switcher scale.                |
+| `picker::open_inline/500`              | **163.5 µs** | ~150 µs / <1 ms    | LSP-symbols / outline scale.                                                                                                |
+| `picker::open_inline/5000`             | **3.10 ms**  | ~2.5 ms / <8 ms    | Worst-case file-picker walker output (5000 candidates). Two refilter passes dominate; the seat-path optimization noted in "Headroom" below collapses them to one and roughly halves this. |
+| `picker::refilter/n=500,query=""`      | **56.8 µs**  | ~50 µs / <500 µs   | Empty-query refilter on 500 candidates. No filtering, just rank+sort.                                                       |
+| `picker::refilter/n=500,query="f"`     | **120.6 µs** | ~110 µs / <500 µs  | Single-char substring filter -- the match-range walk dominates over the trivial empty-query bypass.                          |
+| `picker::refilter/n=500,query="file_"` | **132.9 µs** | ~120 µs / <500 µs  | 5-char query against a substring-matching candidate set.                                                                    |
+| `picker::refilter/n=5000,query=""`     | **1.50 ms**  | ~1.4 ms / <2 ms    | Empty-query rank+sort dominates here; every candidate passes the (no-op) filter.                                            |
+| `picker::refilter/n=5000,query="f"`    | **1.35 ms**  | ~1.3 ms / <2 ms    | Substring filter rejects nothing (every path contains `f`); cost is matcher walk × N.                                       |
+| `picker::refilter/n=5000,query="file_"`| **1.51 ms**  | ~1.4 ms / <2 ms    | Worst-case substring scan + full-match rank at 5000 candidates. Consumes ~18% of the 8.3ms frame budget at 120Hz; tightening levers in "Headroom" below. |
+| `picker::mru_snapshot/100`             | **11.1 µs**  | ~10 µs / <100 µs   | O(N) HashMap-lookup pass. Runs once per picker-open.                                                                        |
+| `picker::mru_snapshot/500`             | **59.3 µs**  | ~55 µs / <500 µs   |                                                                                                                             |
+| `picker::mru_snapshot/5000`            | **529.7 µs** | ~500 µs / <2 ms    | At 5000 candidates the snapshot cost is dominated by HashMap probes; cap-per-namespace bounds the cost in practice (most entries lookup-miss to 0.0). |
+| `picker::mru_record/100`               | **1.01 µs**  | ~1 µs / <10 µs     | Single accept: HashMap insert + cap-check. Steady-state cost; the user feels none of it.                                    |
+| `picker::mru_record/1000`              | **63.6 µs**  | ~60 µs / <500 µs   | At-cap insert: the eviction path runs through `lowest_frecency_in_namespace` (linear scan + frecency compute per entry). Rare in practice (only fires when a namespace hits its 1000-entry ceiling). |
+| `picker::bonus_of`                     | **22.4 ns**  | ~20 ns / <100 ns   | Frecency formula kernel. Called once per candidate during snapshot; this floor is what sets the snapshot's per-entry cost.  |
+
+Measured on the workstation listed in [§ Environment](#environment),
+release profile, criterion default sample size = 100.
+Numbers are mean point estimates; criterion ranges (lower /
+upper) are within ±5 % at this sample size.
 
 ### Why these targets
 
 - **`refilter` sub-frame.** Per CLAUDE.md paramount goal #1
   (sub-frame keystroke-to-glyph), the refilter pass runs
-  per-keystroke. At 60Hz the frame budget is 16ms; at 120Hz
-  it's 8.3ms. The 5000-candidate worst case at ~1.5ms
+  per-keystroke. At 60Hz the frame budget is 16 ms; at 120Hz
+  it's 8.3 ms. The 5000-candidate worst case at ~1.5 ms
   leaves ample headroom on both, and the typical case
-  (100-500 candidates) is well under 100µs.
+  (100-500 candidates) is well under 200µs.
 - **`open_inline` headroom.** Picker open is user-invoked
   (`:picker <source>`), not per-keystroke. The 5000-entry
-  case at ~700µs is invisible to the user.
+  case at ~3.1 ms is below user-perception threshold
+  (~100 ms for "instant"); the double-refilter inefficiency
+  is the only thing keeping it above 2 ms.
 - **`mru_record` per-accept.** A user can't accept faster
   than ~5/sec by typing `<CR>` repeatedly. Even the at-cap
-  eviction path at 65µs is invisible. The steady-state ~1µs
-  cost is below noise.
+  eviction path at 64 µs is invisible. The steady-state
+  ~1 µs cost is below noise.
 - **`bonus_of` per-candidate.** The frecency math runs once
-  per candidate during snapshot. At 22ns × 5000 = 110µs --
-  matches the snapshot bench. If `bonus_of` ever regresses
-  past 100ns the snapshot bench will catch it before the
-  user notices.
+  per candidate during snapshot. At 22 ns × 5000 = 110 µs --
+  reasonable correspondence with the 530 µs snapshot bench
+  (the difference is HashMap-probe overhead). If `bonus_of`
+  ever regresses past 100 ns the snapshot bench will catch
+  it before the user notices.
 
 ### Headroom notes
 
-The `refilter/n=5000` worst case is at ~1.5ms today --
-inside the sub-frame budget but consumes ~20% of the 8.3ms
-frame budget alone. Two known levers if this needs to
-tighten:
+Two known cost spots and the levers to fix them when v1's
+workload outgrows them:
 
-1. **Matcher graduation.** The v1 substring matcher walks
-   the full display string per candidate. The pipeline-
-   driven matcher (`lattice-completion` full vertico stack)
-   short-circuits prefix / boundary tiers and would cut the
-   5000-candidate cost roughly in half.
-2. **Snapshot caching.** Today every keystroke calls
-   `refilter` against the full `raw` slice. A two-stage
-   pipeline (cache the survivor set of the previous query;
-   incremental filter only when the user adds a char) is the
-   standard prescient trick; lets a 5-char query refilter
-   against ~50 candidates instead of 5000.
+1. **`open_inline` double-refilter.** Today
+   `set_raw_candidates_with_routing` calls `refilter()`
+   internally, then `set_mru_bonuses` calls it again --
+   so the seat path refilters twice. At N=5000 that's
+   roughly half the 3.1 ms cost. The fix is a single
+   `set_candidates_with_routing_and_bonuses(pairs,
+   bonuses)` method that mutates the three vecs and
+   refilters once. Mechanical; deferred because no user
+   path is bound on it today.
+2. **`refilter/n=5000` worst case at ~1.5 ms.** Inside the
+   sub-frame budget but consumes ~18 % of the 8.3 ms
+   frame budget alone. Two tightening levers:
+   - **Matcher graduation.** The v1 substring matcher
+     walks the full display string per candidate. The
+     pipeline-driven matcher (`lattice-completion` full
+     vertico stack) short-circuits prefix / boundary
+     tiers and would cut the 5000-candidate cost roughly
+     in half.
+   - **Survivor-set caching.** Today every keystroke calls
+     `refilter` against the full `raw` slice. A two-stage
+     pipeline (cache the survivor set of the previous
+     query; incremental filter only when the user adds a
+     char) is the standard prescient trick; lets a 5-char
+     query refilter against ~50 candidates instead of
+     5000.
 
-Neither is needed at v1's typical workloads (<500 candidates).
+Neither lever is needed at v1's typical workloads
+(<500 candidates) where `refilter` is well under 200 µs.
 
 ---
 

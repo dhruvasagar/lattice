@@ -192,7 +192,7 @@ pub trait AsyncCompletionSource: Send + Sync + fmt::Debug {
 
 /// Host-supplied mailbox an [`AsyncCompletionSource`] pushes
 /// candidates into. The host's `lattice-ui-tui` impl wraps a
-/// `tokio::sync::mpsc::UnboundedSender<RawCandidate>` so the
+/// `tokio::sync::mpsc::UnboundedSender<SinkEvent>` so the
 /// per-frame drain merges async-source pushes into
 /// `InsertCompletionState::raw`; a WASM-plugin host wraps
 /// whatever its runtime provides.
@@ -203,6 +203,17 @@ pub trait AsyncCompletionSource: Send + Sync + fmt::Debug {
 /// stop.
 pub trait CandidateSink: Send + Sync {
     fn push(&self, candidate: RawCandidate);
+    /// CSM.8b: async source signals that the result set is
+    /// server-truncated and the host should re-fire on
+    /// subsequent keystrokes (LSP `isIncomplete: true`).
+    /// Default impl is a no-op so sources that don't need
+    /// the signal (snippets, plugins with bounded result
+    /// sets) don't have to care. The LSP source calls this
+    /// once per `produce_async` invocation when any server
+    /// reported `isIncomplete`.
+    fn mark_incomplete(&self) {
+        // default: no-op
+    }
 }
 
 /// Owned snapshot of `InsertContext` for crossing the
@@ -242,6 +253,19 @@ pub struct InsertContextSnapshot {
     /// Base directory for path-source filesystem walks (CSM.7).
     /// See [`InsertContext::buffer_dir`].
     pub buffer_dir: Option<std::path::PathBuf>,
+    /// CSM.8b: generic buffer URI as a string. Populated by
+    /// the host when the active buffer maps to a filesystem
+    /// (or virtual) URI; `None` for scratch / unsaved
+    /// buffers. The LSP source parses it back via
+    /// `lsp_types::Uri::from_str`.
+    pub uri: Option<String>,
+    /// CSM.8b: pre-computed LSP position
+    /// (line, character) in UTF-16 encoding. Populated by
+    /// the host when an LSP server is attached and the
+    /// buffer's URI is known. The source uses it directly
+    /// to build `lsp_types::Position`; sources that need a
+    /// different encoding ignore this.
+    pub lsp_position: Option<(u32, u32)>,
 }
 
 impl InsertContextSnapshot {
@@ -259,6 +283,8 @@ impl InsertContextSnapshot {
             tree_sitter_symbols: ctx.tree_sitter_symbols.to_vec(),
             path_context: ctx.path_context,
             buffer_dir: ctx.buffer_dir.map(|p| p.to_path_buf()),
+            uri: ctx.uri.map(|s| s.to_string()),
+            lsp_position: ctx.lsp_position,
         }
     }
 }
@@ -323,6 +349,8 @@ mod tests {
             tree_sitter_symbols: &[],
             path_context: false,
             buffer_dir: None,
+            uri: None,
+            lsp_position: None,
         };
         let src = EchoSync {
             id: SourceId::new("gen:echo"),
@@ -394,6 +422,8 @@ mod tests {
             tree_sitter_symbols: &[],
             path_context: false,
             buffer_dir: None,
+            uri: None,
+            lsp_position: None,
         };
         let snap = InsertContextSnapshot::from_context(&ctx);
         let mut fut = src.produce_async(snap, sink, CancellationToken::never());
@@ -418,6 +448,8 @@ mod tests {
             tree_sitter_symbols: &[],
             path_context: false,
             buffer_dir: None,
+            uri: None,
+            lsp_position: None,
         };
         let snap = InsertContextSnapshot::from_context(&ctx);
         assert_eq!(snap.cursor, Position::new(2, 7));

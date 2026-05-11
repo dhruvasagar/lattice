@@ -156,6 +156,13 @@ pub struct ActionIds {
     pub completion_docs_scroll_down: CommandId,
     pub completion_docs_scroll_up: CommandId,
     pub completion_accept_then_insert: CommandId,
+    /// CSM.K2: restrict the popup to a single completion source.
+    /// Args::String(source_id), e.g. `"gen:buffer-words"`. Bound
+    /// to popup-mode filter chords (`<C-b>`, `<C-o>`, `<C-f>`,
+    /// `<C-t>`, ...).
+    pub completion_filter_to_source: CommandId,
+    /// CSM.K2: clear the active source filter (`<C-Space>`).
+    pub completion_filter_clear: CommandId,
     /// Slice 8.i.4.e: active-snippet overlay actions
     /// (registered into a minor-mode layer pushed when a
     /// snippet activates; popped on exit).
@@ -820,6 +827,24 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
                 }
             }),
         ),
+        completion_filter_to_source: register_action(
+            registry,
+            "action:completion-filter-to-source",
+            "Completion-popup filter chord: restrict candidates to a single source (Args::String = source-id).",
+            captured_string_action(|id| {
+                if id.is_empty() {
+                    None
+                } else {
+                    Some(AppEffect::CompletionFilterToSource(id))
+                }
+            }),
+        ),
+        completion_filter_clear: register_simple(
+            registry,
+            "action:completion-filter-clear",
+            "Completion-popup `<C-Space>`: clear the active source filter.",
+            AppEffect::CompletionFilterClear,
+        ),
         snippet_next_placeholder: register_simple(
             registry,
             "action:snippet-next-placeholder",
@@ -885,6 +910,29 @@ fn captured_char_action(
                 _ => return Ok(Effect::None),
             };
             Ok(match decide(c) {
+                Some(eff) => Effect::AppAction(eff),
+                None => Effect::None,
+            })
+        }),
+        args_schema: vec![],
+    }
+}
+
+/// Helper for captured-string actions (CSM.K2 filter chords).
+/// Reads `Args::String(s)` and hands the owned `String` to
+/// `decide`. Behaves identically to `captured_char_action`
+/// otherwise -- mismatched args / `None` decisions are
+/// `Effect::None` so any in-flight pending state is dropped.
+fn captured_string_action(
+    decide: impl Fn(String) -> Option<AppEffect> + Send + Sync + 'static,
+) -> ActionSpec {
+    ActionSpec {
+        apply: Box::new(move |ctx| {
+            let s = match &ctx.args {
+                Args::String(s) => s.clone(),
+                _ => return Ok(Effect::None),
+            };
+            Ok(match decide(s) {
                 Some(eff) => Effect::AppAction(eff),
                 None => Effect::None,
             })
@@ -1047,6 +1095,8 @@ mod tests {
             (ids.completion_docs_scroll_down, "action:completion-docs-scroll-down"),
             (ids.completion_docs_scroll_up, "action:completion-docs-scroll-up"),
             (ids.completion_accept_then_insert, "action:completion-accept-then-insert"),
+            (ids.completion_filter_to_source, "action:completion-filter-to-source"),
+            (ids.completion_filter_clear, "action:completion-filter-clear"),
             (ids.snippet_next_placeholder, "action:snippet-next-placeholder"),
             (ids.snippet_prev_placeholder, "action:snippet-prev-placeholder"),
             (ids.snippet_leave, "action:snippet-leave"),

@@ -342,26 +342,126 @@ fn draw_insert_completion_popup(
         height,
     };
     frame.render_widget(Clear, popup);
+    // CSM.K2: reserve the bottom row for a filter-chord hint
+    // whenever the popup has at least 2 rows. The hint surfaces
+    // the per-source filter chords (unfiltered) or the active
+    // source + `<C-Space>` clear (filtered).
+    let footer_rows: u16 = if popup.height >= 2 { 1 } else { 0 };
+    let candidate_rows = popup.height.saturating_sub(footer_rows) as usize;
     // Window the visible slice so the selected row stays on
     // screen. Selected sticks at the top band when reachable;
     // scrolls down when the selection passes the visible-row
     // count.
-    let visible_count = popup.height as usize;
-    let scroll = if state.selected < visible_count {
+    let scroll = if state.selected < candidate_rows {
         0
     } else {
-        state.selected + 1 - visible_count
+        state.selected + 1 - candidate_rows
     };
     let lines: Vec<Line> = state
         .rendered
         .iter()
         .enumerate()
         .skip(scroll)
-        .take(visible_count)
+        .take(candidate_rows)
         .map(|(i, c)| insert_candidate_line(c, i == state.selected, popup.width))
         .collect();
+    let candidate_area = Rect {
+        x: popup.x,
+        y: popup.y,
+        width: popup.width,
+        height: candidate_rows as u16,
+    };
     let para = Paragraph::new(lines);
-    frame.render_widget(para, popup);
+    frame.render_widget(para, candidate_area);
+    if footer_rows > 0 {
+        let footer_area = Rect {
+            x: popup.x,
+            y: popup.y + candidate_rows as u16,
+            width: popup.width,
+            height: footer_rows,
+        };
+        let footer = insert_completion_footer_line(state, footer_area.width);
+        frame.render_widget(Paragraph::new(footer), footer_area);
+    }
+}
+
+/// CSM.K2: filter-chord hint rendered as the popup's bottom
+/// row. Unfiltered: a compact chord menu pruned to the chords
+/// that actually have candidates in `state.raw`. Filtered:
+/// `source: <id>  [<C-Space> all]` so the user can tell which
+/// source is active and how to clear it.
+fn insert_completion_footer_line(
+    state: &lattice_completion::InsertCompletionState,
+    width: u16,
+) -> Line<'static> {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::Span;
+    if let Some(active) = state.source_filter.as_ref() {
+        let label = source_display_label(active.as_str());
+        let text = format!(" source: {label}  <C-Space> all ");
+        let text = clip_to_width(&text, width);
+        return Line::from(Span::styled(
+            text,
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+    }
+    let sources_present: std::collections::BTreeSet<&str> = state
+        .raw
+        .iter()
+        .filter_map(|r| r.source.as_ref().map(|s| s.as_str()))
+        .collect();
+    let mut parts: Vec<&str> = Vec::new();
+    // Chord order matches the popup-layer keymap (CSM.K2):
+    // <C-b> buffer, <C-o> lsp, <C-f> path, <C-t> ts, <C-s> snippet.
+    if sources_present.contains(lattice_completion::insert::BufferWordsSource::ID) {
+        parts.push("<C-b> buf");
+    }
+    if sources_present.contains(lattice_completion::insert::LSP_COMPLETION_SOURCE_ID) {
+        parts.push("<C-o> lsp");
+    }
+    if sources_present.contains(lattice_completion::insert::PATH_SOURCE_ID) {
+        parts.push("<C-f> path");
+    }
+    if sources_present.contains(lattice_completion::insert::TREE_SITTER_SYMBOL_SOURCE_ID) {
+        parts.push("<C-t> ts");
+    }
+    if sources_present.contains(lattice_completion::insert::SNIPPET_SOURCE_ID) {
+        parts.push("<C-s> snip");
+    }
+    let text = if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" {} ", parts.join("  "))
+    };
+    let text = clip_to_width(&text, width);
+    Line::from(Span::styled(
+        text,
+        Style::default().add_modifier(Modifier::DIM),
+    ))
+}
+
+fn source_display_label(id: &str) -> &'static str {
+    match id {
+        "gen:buffer-words" => "buffer-words",
+        "gen:lsp-completion" => "lsp",
+        "gen:path" => "path",
+        "gen:tree-sitter-symbol" => "tree-sitter",
+        "gen:snippet" => "snippet",
+        _ => "source",
+    }
+}
+
+fn clip_to_width(s: &str, width: u16) -> String {
+    let w = width as usize;
+    if s.chars().count() <= w {
+        let mut out = s.to_string();
+        while out.chars().count() < w {
+            out.push(' ');
+        }
+        out
+    } else {
+        s.chars().take(w).collect()
+    }
 }
 
 /// **Insert-mode completion docs side popup** (Phase

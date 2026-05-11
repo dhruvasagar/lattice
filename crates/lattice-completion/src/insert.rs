@@ -138,6 +138,18 @@ pub struct InsertContext<'a> {
     /// segments onto it. `None` when no usable base resolved
     /// (the source skips the walk in that case).
     pub buffer_dir: Option<&'a std::path::Path>,
+    /// CSM.8b: generic buffer URI as a string (e.g.
+    /// `file:///path/to/file.rs`). `None` for scratch / unsaved
+    /// buffers. The LSP source parses it back into an
+    /// `lsp_types::Uri`; other sources ignore.
+    pub uri: Option<&'a str>,
+    /// CSM.8b: pre-computed LSP position (line, character) in
+    /// UTF-16 encoding. Populated when the host has an LSP
+    /// server attached and the URI is known; the LSP source
+    /// uses it to build `lsp_types::Position` without
+    /// re-running the conversion. `None` when LSP isn't
+    /// applicable to this buffer.
+    pub lsp_position: Option<(u32, u32)>,
 }
 
 /// One side popup showing the focused candidate's full
@@ -199,6 +211,13 @@ pub struct InsertCompletionState {
     /// time. The host uses this to decide whether to re-fire
     /// LSP on each keystroke.
     pub lsp_incomplete: bool,
+    /// CSM.K2: active filter -- narrows `rendered` to
+    /// candidates whose `source` matches this id. `None` ⇒
+    /// unfiltered (every source contributes). Set by the
+    /// per-source filter chords inside `completion-popup-mode`
+    /// (`<C-b>` / `<C-o>` / `<C-f>` / `<C-t>` / …); cleared by
+    /// `<C-Space>` while the popup is live (or any retrigger).
+    pub source_filter: Option<SourceId>,
 }
 
 impl InsertCompletionState {
@@ -223,6 +242,7 @@ impl InsertCompletionState {
             user_picked: false,
             doc_popup: None,
             lsp_incomplete: false,
+            source_filter: None,
         }
     }
 
@@ -864,6 +884,8 @@ mod tests {
             tree_sitter_symbols: &[],
             path_context: false,
             buffer_dir: None,
+            uri: None,
+            lsp_position: None,
         }
     }
 

@@ -457,6 +457,15 @@ pub enum AppEffect {
     /// Active-snippet overlay: exit the snippet (`<Esc>`).
     /// Promoted from `Action::SnippetLeave` in slice 8.i.4.e.
     SnippetLeave,
+    /// Completion-popup overlay: restrict candidates to a single
+    /// source. The string is the `SourceId` (e.g.
+    /// `"gen:buffer-words"`, `"gen:lsp-completion"`). Bound to
+    /// the popup-mode filter chords (`<C-b>`, `<C-o>`, `<C-f>`,
+    /// `<C-t>`, ...) introduced in CSM.K2.
+    CompletionFilterToSource(String),
+    /// Completion-popup overlay: clear the active source filter
+    /// (`<C-Space>`). Restores the mixed merged candidate list.
+    CompletionFilterClear,
 }
 
 #[cfg(test)]

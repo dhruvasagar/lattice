@@ -457,6 +457,10 @@ impl App {
             Action::CompletionToggleDocs => self.do_completion_toggle_docs(),
             Action::CompletionDocsScrollDown => self.do_completion_docs_scroll_down(),
             Action::CompletionDocsScrollUp => self.do_completion_docs_scroll_up(),
+            Action::CompletionFilterToSource(id) => {
+                self.do_completion_filter_to_source(id);
+            }
+            Action::CompletionFilterClear => self.do_completion_filter_clear(),
             Action::CompletionAcceptThenInsert(c) => {
                 self.do_completion_accept_then_insert(c);
             }
@@ -1323,6 +1327,10 @@ impl App {
             AppEffect::CompletionToggleDocs => self.apply(Action::CompletionToggleDocs),
             AppEffect::CompletionDocsScrollDown => self.apply(Action::CompletionDocsScrollDown),
             AppEffect::CompletionDocsScrollUp => self.apply(Action::CompletionDocsScrollUp),
+            AppEffect::CompletionFilterToSource(id) => {
+                self.apply(Action::CompletionFilterToSource(id))
+            }
+            AppEffect::CompletionFilterClear => self.apply(Action::CompletionFilterClear),
             AppEffect::CompletionAcceptThenInsert(c) => {
                 self.apply(Action::CompletionAcceptThenInsert(c))
             }

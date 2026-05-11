@@ -2474,40 +2474,67 @@ mod tests {
         }
     }
 
+    /// CSM.K2: inside the popup `<C-f>` is the path filter
+    /// chord (was docs-scroll-down before; that moved to
+    /// `PageDown`).
     #[test]
-    fn popup_open_ctrl_f_pages_docs_down() {
+    fn popup_open_ctrl_f_filters_to_path() {
+        use lattice_grammar::args::Args;
         let (_, b) = fixture();
         let a = shared_actions();
         let r = translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('f')));
         match r {
             Action::Invoke(inv) => {
-                assert_eq!(inv.command, a.completion_docs_scroll_down)
+                assert_eq!(inv.command, a.completion_filter_to_source);
+                match inv.args {
+                    Args::String(s) => {
+                        assert_eq!(s, lattice_completion::insert::PATH_SOURCE_ID)
+                    }
+                    other => panic!("expected Args::String, got {other:?}"),
+                }
             }
-            other => panic!("expected Invoke(completion_docs_scroll_down), got {other:?}"),
+            other => panic!(
+                "expected Invoke(completion_filter_to_source, \"gen:path\"), got {other:?}"
+            ),
         }
     }
 
+    /// CSM.K2: inside the popup `<C-b>` is the buffer-words
+    /// filter chord (was docs-scroll-up; moved to `PageUp`).
     #[test]
-    fn popup_open_ctrl_b_pages_docs_up() {
+    fn popup_open_ctrl_b_filters_to_buffer_words() {
+        use lattice_grammar::args::Args;
         let (_, b) = fixture();
         let a = shared_actions();
         let r = translate(ctx_insert_completion(&b), ctrl(KeyCode::Char('b')));
         match r {
             Action::Invoke(inv) => {
-                assert_eq!(inv.command, a.completion_docs_scroll_up)
+                assert_eq!(inv.command, a.completion_filter_to_source);
+                match inv.args {
+                    Args::String(s) => assert_eq!(
+                        s,
+                        lattice_completion::insert::BufferWordsSource::ID
+                    ),
+                    other => panic!("expected Args::String, got {other:?}"),
+                }
             }
-            other => panic!("expected Invoke(completion_docs_scroll_up), got {other:?}"),
+            other => panic!(
+                "expected Invoke(completion_filter_to_source, \"gen:buffer-words\"), got {other:?}"
+            ),
         }
     }
 
+    /// CSM.K2: inside the popup `<C-Space>` clears the active
+    /// source filter (was re-trigger before; the re-trigger
+    /// binding lives one layer down on base Insert).
     #[test]
-    fn popup_open_ctrl_space_re_triggers() {
+    fn popup_open_ctrl_space_clears_filter() {
         let (_, b) = fixture();
         let a = shared_actions();
         let r = translate(ctx_insert_completion(&b), ctrl(KeyCode::Char(' ')));
         match r {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_trigger),
-            other => panic!("expected Invoke(completion_trigger), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.completion_filter_clear),
+            other => panic!("expected Invoke(completion_filter_clear), got {other:?}"),
         }
     }
 

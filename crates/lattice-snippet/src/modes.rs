@@ -199,6 +199,8 @@ mod tests {
             tree_sitter_symbols: &[],
             path_context: false,
             buffer_dir: None,
+            uri: None,
+            lsp_position: None,
         };
         let candidates = source.produce(&ctx);
         assert_eq!(candidates.len(), 1);

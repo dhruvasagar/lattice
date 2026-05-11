@@ -245,11 +245,16 @@ pub fn completion_popup_layer_bindings(
         &[lit_special(SpecialKey::Esc)],
         actions.completion_cancel_and_exit_insert,
     );
+    // CSM.K2: inside the popup, `<C-Space>` clears the active
+    // source filter (mirrors vim's "show everything again"
+    // intent). The unfiltered insert-mode trigger lives one
+    // layer down (base insert keymap) and is shadowed while
+    // the popup is open.
     bind_invocation(
         &mut trie,
         layer,
         &[lit(KeyChord::ctrl(' '))],
-        actions.completion_trigger,
+        actions.completion_filter_clear,
     );
     bind_invocation(
         &mut trie,
@@ -257,17 +262,64 @@ pub fn completion_popup_layer_bindings(
         &[lit(KeyChord::ctrl('d'))],
         actions.completion_toggle_docs,
     );
+    // CSM.K2: docs-scroll moved off `<C-f>`/`<C-b>` (those now
+    // act as filter chords -- path / buffer-words). Docs scroll
+    // is on PageDown / PageUp, which mirrors the page-wise
+    // semantics without colliding with the chord namespace.
     bind_invocation(
         &mut trie,
         layer,
-        &[lit(KeyChord::ctrl('f'))],
+        &[lit_special(SpecialKey::PageDown)],
         actions.completion_docs_scroll_down,
     );
     bind_invocation(
         &mut trie,
         layer,
-        &[lit(KeyChord::ctrl('b'))],
+        &[lit_special(SpecialKey::PageUp)],
         actions.completion_docs_scroll_up,
+    );
+    // CSM.K2: single-key filter chords inside the popup. Each
+    // chord targets a specific completion source -- the static
+    // `Args::String(SourceId)` payload is folded into the bound
+    // invocation, so a single action covers every source.
+    use lattice_completion::insert::{
+        BufferWordsSource, LSP_COMPLETION_SOURCE_ID, PATH_SOURCE_ID,
+        SNIPPET_SOURCE_ID, TREE_SITTER_SYMBOL_SOURCE_ID,
+    };
+    bind_invocation_with_string(
+        &mut trie,
+        layer,
+        &[lit(KeyChord::ctrl('b'))],
+        actions.completion_filter_to_source,
+        BufferWordsSource::ID,
+    );
+    bind_invocation_with_string(
+        &mut trie,
+        layer,
+        &[lit(KeyChord::ctrl('o'))],
+        actions.completion_filter_to_source,
+        LSP_COMPLETION_SOURCE_ID,
+    );
+    bind_invocation_with_string(
+        &mut trie,
+        layer,
+        &[lit(KeyChord::ctrl('f'))],
+        actions.completion_filter_to_source,
+        PATH_SOURCE_ID,
+    );
+    bind_invocation_with_string(
+        &mut trie,
+        layer,
+        &[lit(KeyChord::ctrl('t'))],
+        actions.completion_filter_to_source,
+        TREE_SITTER_SYMBOL_SOURCE_ID,
+    );
+    bind_invocation_with_string(
+        &mut trie,
+        layer,
+        &[lit(KeyChord::ctrl('s'))],
+        actions.completion_filter_to_source,
+        SNIPPET_SOURCE_ID,
     );
     // Char wildcard: any bare printable -> commit-or-insert. The
     // dispatcher folds the captured char into the typed
@@ -468,6 +520,25 @@ fn bind_invocation(
         source(),
         layer,
     ));
+    trie.insert(path, bound);
+}
+
+/// CSM.K2: like `bind_invocation` but folds a constant
+/// `Args::String(...)` payload into the bound invocation.
+/// Used by the popup-mode filter chords (`<C-b>` ->
+/// `completion-filter-to-source("gen:buffer-words")`, etc.)
+/// so the `captured_string_action` helper can dispatch to the
+/// right `AppEffect` without a separate action per source.
+fn bind_invocation_with_string(
+    trie: &mut KeymapTrie,
+    layer: KeymapLayer,
+    path: &[ChordPattern],
+    command: CommandId,
+    payload: &str,
+) {
+    let inv = CommandInvocation::of(command)
+        .with_args(lattice_grammar::Args::String(payload.to_string()));
+    let bound = Arc::new(BoundCommand::from_invocation(inv, source(), layer));
     trie.insert(path, bound);
 }
 
@@ -809,6 +880,96 @@ mod tests {
                 assert!(matches!(inv.args, Args::Char('a')));
             }
             other => panic!("expected Invoke(completion_accept_then_insert, Char('a')), got {other:?}"),
+        }
+    }
+
+    /// CSM.K2: `<C-b>` inside the popup filters to
+    /// `gen:buffer-words` (Args::String payload). The previous
+    /// docs-scroll-up binding has been moved to `PageUp`.
+    #[test]
+    fn popup_ctrl_b_filters_to_buffer_words() {
+        use lattice_grammar::args::Args;
+        let h = populated_handle_with_popup();
+        let a = shared_actions();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            &[],
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.completion_filter_to_source);
+                match inv.args {
+                    Args::String(s) => assert_eq!(
+                        s,
+                        lattice_completion::insert::BufferWordsSource::ID
+                    ),
+                    other => panic!("expected Args::String, got {other:?}"),
+                }
+            }
+            other => panic!(
+                "expected Invoke(completion_filter_to_source, \"gen:buffer-words\"), got {other:?}"
+            ),
+        }
+    }
+
+    /// CSM.K2: `<C-o>` filters to LSP.
+    #[test]
+    fn popup_ctrl_o_filters_to_lsp() {
+        use lattice_grammar::args::Args;
+        let h = populated_handle_with_popup();
+        let a = shared_actions();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            &[],
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.completion_filter_to_source);
+                match inv.args {
+                    Args::String(s) => {
+                        assert_eq!(s, lattice_completion::insert::LSP_COMPLETION_SOURCE_ID)
+                    }
+                    other => panic!("expected Args::String, got {other:?}"),
+                }
+            }
+            other => panic!("expected Invoke(completion_filter_to_source, lsp), got {other:?}"),
+        }
+    }
+
+    /// CSM.K2: `<C-Space>` inside the popup clears the active
+    /// source filter (replaces the legacy
+    /// `completion_trigger` binding on this layer).
+    #[test]
+    fn popup_ctrl_space_clears_filter() {
+        let h = populated_handle_with_popup();
+        let a = shared_actions();
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char(' '), KeyModifiers::CONTROL),
+            &[],
+        );
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.completion_filter_clear);
+            }
+            other => panic!("expected Invoke(completion_filter_clear), got {other:?}"),
+        }
+    }
+
+    /// CSM.K2: docs-scroll moved off `<C-f>`/`<C-b>` (now filter
+    /// chords) to `PageDown` / `PageUp`.
+    #[test]
+    fn popup_page_down_scrolls_docs() {
+        let h = populated_handle_with_popup();
+        let a = shared_actions();
+        let r = dispatch_insert(&h, &ev(KeyCode::PageDown, KeyModifiers::NONE), &[]);
+        match r {
+            Action::Invoke(inv) => {
+                assert_eq!(inv.command, a.completion_docs_scroll_down)
+            }
+            other => panic!("expected Invoke(completion_docs_scroll_down), got {other:?}"),
         }
     }
 

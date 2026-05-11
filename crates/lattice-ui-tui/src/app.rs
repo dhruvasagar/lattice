@@ -384,6 +384,15 @@ pub enum Action {
     /// Scroll the docs side popup backward (`<C-b>` inside
     /// the completion-popup minor mode).
     CompletionDocsScrollUp,
+    /// Restrict the popup to a single completion source.
+    /// String is the `SourceId` (e.g. `"gen:buffer-words"`).
+    /// Bound to the popup-mode filter chords introduced in
+    /// CSM.K2 (`<C-b>` buffer, `<C-o>` lsp, `<C-f>` path,
+    /// `<C-t>` tree-sitter, ...).
+    CompletionFilterToSource(String),
+    /// Clear the active source filter (`<C-Space>`). Restores
+    /// the mixed merged candidate list.
+    CompletionFilterClear,
     /// Insert-mode character key while the completion popup
     /// is open (Phase 4.2.g.7 commit-char polish). The App's
     /// handler decides at apply time:
@@ -1263,17 +1272,6 @@ pub struct App {
     /// keymap layer while it's `Some`. Behavioural spec lives in
     /// [`docs/dev/architecture/insert-completion.md`](../../docs/dev/architecture/insert-completion.md).
     pub insert_completion: Option<lattice_completion::InsertCompletionState>,
-    /// Sidecar metadata for LSP-sourced candidates in the
-    /// active insert-completion popup. Indexed by the
-    /// candidate's `CandidateData::Extension { payload }`
-    /// (which carries a `u32` little-endian index into this
-    /// vec). Holds everything the accept / docs / commit-char
-    /// paths need that doesn't fit into `RawCandidate.text`:
-    /// `insertText`, `additionalTextEdits`, `kind` glyph,
-    /// `documentation`, etc. v1 of the typed-routing-payload
-    /// pattern (#19) -- the picker's bespoke `text`-stuffing
-    /// follows the same approach when 4.2.g.5 lands.
-    pub insert_completion_lsp_meta: Vec<LspCompletionMeta>,
     /// Receiver for in-flight LSP insert-completion responses.
     /// Drained per-frame; the drain merges new items into
     /// `insert_completion.raw` and refilters.
@@ -1561,57 +1559,16 @@ pub enum ReferencesOutcome {
     NoServers,
 }
 
-/// LSP-sourced insert-completion candidate metadata. Sidecar
-/// to the `RawCandidate` -- the candidate carries
-/// `CandidateData::Extension { kind_id: LSP_COMPLETION_KIND_ID,
-/// payload: u32_le_bytes }` pointing at this struct's index in
-/// `App.insert_completion_lsp_meta`. The accept / docs / commit-
-/// char / additional-edits paths read the metadata via that
-/// index.
-///
-/// Why a sidecar (rather than another `CandidateData` variant):
-/// `lattice-completion` doesn't depend on `lsp-types` and we
-/// don't want to add the dep just for this. The sidecar stays
-/// in the host crate where lsp-types is already in scope.
-#[derive(Debug, Clone)]
-pub struct LspCompletionMeta {
-    pub label: String,
-    pub insert_text: String,
-    pub filter_text: Option<String>,
-    pub sort_text: Option<String>,
-    pub detail: Option<String>,
-    pub documentation: Option<String>,
-    pub kind: Option<lsp_types::CompletionItemKind>,
-    pub deprecated: bool,
-    pub preselect: bool,
-    pub commit_characters: Vec<char>,
-    pub additional_text_edits: Vec<lsp_types::TextEdit>,
-    pub command: Option<lsp_types::Command>,
-    pub insert_text_format: lsp_types::InsertTextFormat,
-    /// Range to replace, when the LSP item carries `textEdit.range`.
-    /// Populated host-side at request time (the popup's anchor /
-    /// cursor become the replace bounds when this is None).
-    pub replace_range: Option<lsp_types::Range>,
-    /// Server that produced the item. Resolve / executeCommand
-    /// route back to the same server. Empty when the item came
-    /// from a non-LSP source (shouldn't happen in practice but
-    /// guard anyway).
-    pub server_id: std::sync::Arc<str>,
-    /// Original `CompletionItem` from the server, preserved
-    /// verbatim so `completionItem/resolve` round-trips it
-    /// unchanged. Servers use the `data` field as an opaque
-    /// blob; mutating any field would break resolve.
-    pub original_item: lsp_types::CompletionItem,
-    /// True once `completionItem/resolve` has filled in the
-    /// missing fields. Subsequent docs-popup focuses don't
-    /// re-fire the resolve.
-    pub resolved: bool,
-}
-
-/// `Extension::kind_id` discriminant for LSP-sourced candidates.
-/// Values 0-99 reserved for first-party host data; plugins use
-/// 1000+.
-pub const LSP_COMPLETION_KIND_ID: u32 = 1;
+/// CSM.8b: `LspCompletionMeta` + `LSP_COMPLETION_KIND_ID`
+/// moved into `lattice-lsp::completion` so the type lives in
+/// the crate that owns lsp-types. The host imports them via
+/// this re-export -- candidate payloads carry the serde-
+/// encoded form directly (`encode_meta` / `decode_meta`) so
+/// the parallel `App.insert_completion_lsp_meta` sidecar is
+/// gone; the candidate IS the metadata.
+pub use lattice_lsp::completion::{
+    LSP_COMPLETION_KIND_ID, LspCompletionMeta, decode_meta, encode_meta,
+};
 /// `Extension::kind_id` discriminant for snippet-sourced
 /// candidates (Phase 4.2.g.4). Sidecar metadata lives in
 /// `App.insert_completion_snippet_meta`.
@@ -1630,11 +1587,12 @@ pub struct SnippetCandidateMeta {
 }
 
 /// Drain payload for `completionItem/resolve` (Phase
-/// 4.2.g.3). Carries the meta-vec index alongside the
-/// resolved item so the drain can update the right entry
-/// in `App.insert_completion_lsp_meta` when several resolves
-/// fire in sequence (selection change → cancel prior →
-/// fire new).
+/// 4.2.g.3). CSM.8b.5: `meta_index` is now the index of the
+/// fired candidate within state.raw's LSP-row sequence; the
+/// drain decodes that row's payload, applies the resolved
+/// fields, re-encodes in place. Multiple resolves in flight
+/// (selection change → cancel prior → fire new) cancel via
+/// the supplied token.
 #[derive(Debug, Clone)]
 pub struct CompletionResolveOutcome {
     pub meta_index: usize,
@@ -1644,11 +1602,15 @@ pub struct CompletionResolveOutcome {
 /// Drain payload for the async LSP insert-completion source.
 /// Replaces (rather than appends to) the current LSP slice of
 /// `state.raw` -- previous items get pruned by the drain so the
-/// popup reflects the freshest server response.
+/// popup reflects the freshest server response. CSM.8b: each
+/// `RawCandidate`'s `CandidateData::Extension` payload carries
+/// the serde-encoded `LspCompletionMeta`; the drain decodes
+/// to populate the sidecar mirror while it still exists
+/// (CSM.8b.4/5 retire the mirror).
 #[derive(Debug, Clone)]
 pub enum InsertCompletionLspOutcome {
     Items {
-        items: Vec<LspCompletionMeta>,
+        candidates: Vec<lattice_completion::RawCandidate>,
         is_incomplete: bool,
     },
     NoServers,
@@ -3663,20 +3625,7 @@ mod tests {
             cursor,
             query,
         );
-        let payload = (a.insert_completion_lsp_meta.len() as u32).to_le_bytes().to_vec();
-        let mut raw = lattice_completion::RawCandidate::plain(
-            text,
-            lattice_completion::CandidateKind::Plain,
-        )
-        .with_source(lattice_completion::SourceId::new(
-            lattice_completion::LSP_COMPLETION_SOURCE_ID,
-        ));
-        raw.data = lattice_completion::CandidateData::Extension {
-            kind_id: LSP_COMPLETION_KIND_ID,
-            payload,
-        };
-        state.raw.push(raw);
-        a.insert_completion_lsp_meta.push(LspCompletionMeta {
+        let meta = LspCompletionMeta {
             label: text.to_string(),
             insert_text: text.to_string(),
             filter_text: None,
@@ -3691,13 +3640,26 @@ mod tests {
             command: None,
             insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
-            server_id: std::sync::Arc::from("test-server"),
+            server_id: "test-server".to_string(),
             original_item: lsp_types::CompletionItem::new_simple(
                 text.to_string(),
                 String::new(),
             ),
             resolved: false,
-        });
+        };
+        let payload = lattice_lsp::completion::encode_meta(&meta);
+        let mut raw = lattice_completion::RawCandidate::plain(
+            text,
+            lattice_completion::CandidateKind::Plain,
+        )
+        .with_source(lattice_completion::SourceId::new(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID,
+        ));
+        raw.data = lattice_completion::CandidateData::Extension {
+            kind_id: LSP_COMPLETION_KIND_ID,
+            payload,
+        };
+        state.raw.push(raw);
         a.refilter_insert_completion(&mut state);
         a.insert_completion = Some(state);
     }
@@ -4283,25 +4245,7 @@ mod tests {
             Position::ZERO,
             String::new(),
         );
-        let mut raw = lattice_completion::RawCandidate::plain(
-            "foo",
-            lattice_completion::CandidateKind::Plain,
-        );
-        raw.display = "foo".into();
-        raw.data = lattice_completion::CandidateData::Extension {
-            kind_id: super::LSP_COMPLETION_KIND_ID,
-            payload: 0u32.to_le_bytes().to_vec(),
-        };
-        let scored = lattice_completion::ScoredCandidate {
-            raw,
-            score: lattice_completion::MatchScore(100),
-            match_ranges: Vec::new(),
-        };
-        state
-            .rendered
-            .push(lattice_completion::RenderedCandidate::from_scored(scored));
-        a.insert_completion = Some(state);
-        a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
+        let meta = super::LspCompletionMeta {
             label: "foo".into(),
             insert_text: "foo".into(),
             filter_text: None,
@@ -4316,10 +4260,30 @@ mod tests {
             command: None,
             insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
-            server_id: std::sync::Arc::from("test-server"),
+            server_id: "test-server".to_string(),
             original_item: lsp_types::CompletionItem::default(),
             resolved: true,
-        });
+        };
+        let mut raw = lattice_completion::RawCandidate::plain(
+            "foo",
+            lattice_completion::CandidateKind::Plain,
+        );
+        raw.display = "foo".into();
+        raw.data = lattice_completion::CandidateData::Extension {
+            kind_id: super::LSP_COMPLETION_KIND_ID,
+            payload: lattice_lsp::completion::encode_meta(&meta),
+        };
+        let scored = lattice_completion::ScoredCandidate {
+            raw,
+            score: lattice_completion::MatchScore(100),
+            match_ranges: Vec::new(),
+        };
+        state
+            .rendered
+            .push(lattice_completion::RenderedCandidate::from_scored(scored));
+        // CSM.8b.5: candidate payload IS the meta -- no sidecar push.
+        let _ = meta;
+        a.insert_completion = Some(state);
         a.do_completion_toggle_docs();
         let body = a
             .insert_completion

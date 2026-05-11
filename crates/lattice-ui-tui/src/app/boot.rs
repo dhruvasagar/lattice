@@ -517,7 +517,6 @@ impl App {
             completion_registry,
             completion_state: None,
             insert_completion: None,
-            insert_completion_lsp_meta: Vec::new(),
             pending_insert_completion_lsp_rx: None,
             pending_insert_completion_lsp_token: None,
             pending_completion_resolve_rx: None,

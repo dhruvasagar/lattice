@@ -59,6 +59,52 @@ use super::{
 use crate::buffers::BufferId;
 use lattice_protocol::edit::Edit;
 
+/// CSM.8b.3: host-side [`lattice_completion::CandidateSink`]
+/// impl that buffers each `produce_async` push into a single
+/// batch. The aggregator spawns the source's future, awaits
+/// it, then drains the sink onto the existing
+/// `InsertCompletionLspOutcome::Items` channel -- the drain
+/// path keeps its "replace prior LSP slice" semantics
+/// untouched. `is_incomplete` rides on
+/// [`lattice_completion::CandidateSink::mark_incomplete`].
+struct BatchingSink {
+    items: std::sync::Mutex<Vec<lattice_completion::RawCandidate>>,
+    is_incomplete: std::sync::atomic::AtomicBool,
+}
+
+impl BatchingSink {
+    fn new() -> Self {
+        Self {
+            items: std::sync::Mutex::new(Vec::new()),
+            is_incomplete: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Take the buffered candidate set and the incomplete
+    /// flag. Called by the spawn wrapper after the future
+    /// resolves.
+    fn drain(&self) -> (Vec<lattice_completion::RawCandidate>, bool) {
+        let items = std::mem::take(&mut *self.items.lock().expect("BatchingSink mutex"));
+        let is_incomplete = self
+            .is_incomplete
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (items, is_incomplete)
+    }
+}
+
+impl lattice_completion::CandidateSink for BatchingSink {
+    fn push(&self, candidate: lattice_completion::RawCandidate) {
+        self.items
+            .lock()
+            .expect("BatchingSink mutex")
+            .push(candidate);
+    }
+    fn mark_incomplete(&self) {
+        self.is_incomplete
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 impl App {
     /// M.5.0: is `lsp-mode` active for `buffer_id`? Every LSP
     /// entry point (hover, completion, diagnostics-render,
@@ -598,22 +644,42 @@ impl App {
         }
         let original = meta.original_item.clone();
         let server_id = meta.server_id.clone();
-        // Index of this meta entry, computed by walking the
-        // sidecar.
-        let lattice_completion::CandidateData::Extension { payload, .. } =
-            &cand.raw.data
+        // CSM.8b: index of this meta entry within state.raw's
+        // LSP-row sequence. The drain populates the parallel
+        // sidecar in the same order, so this lookup hits the
+        // matching meta. Match on full payload bytes since two
+        // distinct items will always serialise differently (the
+        // produce_async dedup happens up-stream).
+        let candidate_payload = match &cand.raw.data {
+            lattice_completion::CandidateData::Extension { payload, .. } => {
+                payload.clone()
+            }
+            _ => return,
+        };
+        let Some(state_ref) = self.insert_completion.as_ref() else {
+            return;
+        };
+        let Some(meta_index) = state_ref
+            .raw
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.data,
+                    lattice_completion::CandidateData::Extension {
+                        kind_id: LSP_COMPLETION_KIND_ID,
+                        ..
+                    }
+                )
+            })
+            .position(|r| match &r.data {
+                lattice_completion::CandidateData::Extension { payload, .. } => {
+                    payload == &candidate_payload
+                }
+                _ => false,
+            })
         else {
             return;
         };
-        if payload.len() != 4 {
-            return;
-        }
-        let meta_index = u32::from_le_bytes([
-            payload[0],
-            payload[1],
-            payload[2],
-            payload[3],
-        ]) as usize;
         // Resolve URI to find the originating server handle.
         let Some(uri) = self
             .buffer_uris
@@ -674,7 +740,6 @@ impl App {
     /// architecture-doc strategy. Items beyond `MAX_LSP_ITEMS`
     /// are dropped.
     pub(super) fn do_lsp_insert_completion_request(&mut self) {
-        const MAX_LSP_ITEMS: usize = 500;
         // M.6.2: lsp-completion-mode gate (umbrella implied by
         // M.6.1 cascade: sub-mode can't be on without umbrella).
         // Insert-mode is high-frequency; silent on bail (the user
@@ -713,161 +778,86 @@ impl App {
             Some(p) => p,
             None => return,
         };
-        // Pull the trigger context out of the popup state so the
-        // LSP request faithfully reports `triggerKind`.
-        let (lsp_trigger_kind, lsp_trigger_char) = match self
-            .insert_completion
-            .as_ref()
-            .map(|s| s.trigger.clone())
-        {
-            Some(lattice_completion::CompletionTrigger::TriggerChar(c)) => (
-                lsp_types::CompletionTriggerKind::TRIGGER_CHARACTER,
-                Some(c.to_string()),
-            ),
-            Some(lattice_completion::CompletionTrigger::IncompleteRefresh) => (
-                lsp_types::CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS,
-                None,
-            ),
-            _ => (lsp_types::CompletionTriggerKind::INVOKED, None),
+        // CSM.8b.3: pre-check "no servers attached" synchronously
+        // so the existing popup-empty-close gate fires without
+        // waiting on a no-op async round-trip.
+        if self.lsp.servers_for(&uri).is_empty() {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<InsertCompletionLspOutcome>();
+            self.pending_insert_completion_lsp_rx = Some(rx);
+            self.pending_insert_completion_lsp_token = None;
+            let _ = tx.send(InsertCompletionLspOutcome::NoServers);
+            return;
+        }
+        // CSM.8b.3: dispatch through the cached `LspCompletionSource`
+        // (contributed by `lsp-completion-mode`) instead of the
+        // bespoke inline fan-out. The source's `produce_async`
+        // owns the multi-server fan-out + dedup + per-item
+        // payload encode; this method just gates, builds the
+        // snapshot, and bridges the sink output onto the
+        // existing channel.
+        let Some(state) = self.insert_completion.as_ref() else {
+            return;
+        };
+        let trigger = state.trigger.clone();
+        let cursor = state.cursor;
+        let anchor = state.anchor;
+        let query = state.query.clone();
+        let source = self
+            .buffer_locals
+            .get(&self.document_buffer_id)
+            .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
+            .and_then(|s| {
+                s.0.iter().find_map(|c| match &c.kind {
+                    lattice_completion::CompletionSourceKind::Async(src) if c.id == lsp_id => {
+                        Some(src.clone())
+                    }
+                    _ => None,
+                })
+            });
+        let Some(source) = source else {
+            // Mode active but cache hasn't seeded the source yet
+            // -- shouldn't happen in practice (M.6.1 cascade
+            // recomputes). Silent bail.
+            return;
+        };
+        let ctx_snapshot = lattice_completion::InsertContextSnapshot {
+            cursor,
+            anchor,
+            query,
+            trigger,
+            case_sensitive: false,
+            language: language.clone(),
+            tree_sitter_symbols: Vec::new(),
+            path_context: false,
+            buffer_dir: None,
+            uri: Some(uri.as_str().to_string()),
+            lsp_position: Some((lsp_position.line, lsp_position.character)),
         };
         let (tx, rx) =
             tokio::sync::mpsc::unbounded_channel::<InsertCompletionLspOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_insert_completion_lsp_rx = Some(rx);
         self.pending_insert_completion_lsp_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let sink = std::sync::Arc::new(BatchingSink::new());
+        let sink_for_fut = sink.clone();
+        let token_for_fut = token.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
-            if handles.is_empty() {
-                let _ = tx.send(InsertCompletionLspOutcome::NoServers);
-                return;
-            }
-            let mut all: Vec<LspCompletionMeta> = Vec::new();
-            let mut any_incomplete = false;
-            let mut seen_keys: std::collections::HashSet<(String, String)> =
-                std::collections::HashSet::new();
-            for handle in handles {
-                if token.is_cancelled() {
-                    return;
-                }
-                if !handle.capabilities().supports_completion() {
-                    continue;
-                }
-                let params = lsp_types::CompletionParams {
-                    text_document_position: lsp_types::TextDocumentPositionParams {
-                        text_document: lsp_types::TextDocumentIdentifier {
-                            uri: uri.clone(),
-                        },
-                        position: lsp_position,
-                    },
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                    context: Some(lsp_types::CompletionContext {
-                        trigger_kind: lsp_trigger_kind,
-                        trigger_character: lsp_trigger_char.clone(),
-                    }),
-                };
-                let Ok(Some(resp)) = handle.completion(params, token.clone()).await
-                else {
-                    continue;
-                };
-                let (items, is_incomplete) = match resp {
-                    lsp_types::CompletionResponse::Array(items) => (items, false),
-                    lsp_types::CompletionResponse::List(list) => {
-                        (list.items, list.is_incomplete)
-                    }
-                };
-                if is_incomplete {
-                    any_incomplete = true;
-                }
-                for ci in items {
-                    let kind = ci.kind;
-                    let label = ci.label.clone();
-                    let kind_tag = kind
-                        .map(|k| format!("{k:?}"))
-                        .unwrap_or_else(|| "none".to_string());
-                    let key = (label.clone(), kind_tag);
-                    if !seen_keys.insert(key) {
-                        continue;
-                    }
-                    let deprecated = ci
-                        .tags
-                        .as_ref()
-                        .map(|t| t.contains(&lsp_types::CompletionItemTag::DEPRECATED))
-                        .unwrap_or(false)
-                        || ci.deprecated.unwrap_or(false);
-                    // Insert text resolution: textEdit.newText >
-                    // insertText > label.
-                    let (insert_text, replace_range) = match ci.text_edit.as_ref() {
-                        Some(lsp_types::CompletionTextEdit::Edit(te)) => {
-                            (te.new_text.clone(), Some(te.range))
-                        }
-                        Some(lsp_types::CompletionTextEdit::InsertAndReplace(ir)) => {
-                            (ir.new_text.clone(), Some(ir.replace))
-                        }
-                        None => {
-                            (ci.insert_text.clone().unwrap_or_else(|| label.clone()), None)
-                        }
-                    };
-                    let documentation = ci.documentation.as_ref().map(|d| match d {
-                        lsp_types::Documentation::String(s) => s.clone(),
-                        lsp_types::Documentation::MarkupContent(mc) => {
-                            mc.value.clone()
-                        }
-                    });
-                    let commit_characters = ci
-                        .commit_characters
-                        .as_ref()
-                        .map(|chars| {
-                            chars
-                                .iter()
-                                .filter_map(|s| s.chars().next())
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    all.push(LspCompletionMeta {
-                        label,
-                        insert_text,
-                        filter_text: ci.filter_text.clone(),
-                        sort_text: ci.sort_text.clone(),
-                        detail: ci.detail.clone(),
-                        documentation,
-                        kind,
-                        deprecated,
-                        preselect: ci.preselect.unwrap_or(false),
-                        commit_characters,
-                        additional_text_edits: ci
-                            .additional_text_edits
-                            .clone()
-                            .unwrap_or_default(),
-                        command: ci.command.clone(),
-                        insert_text_format: ci
-                            .insert_text_format
-                            .unwrap_or(lsp_types::InsertTextFormat::PLAIN_TEXT),
-                        replace_range,
-                        server_id: std::sync::Arc::from(handle.server_id()),
-                        original_item: ci,
-                        resolved: false,
-                    });
-                    if all.len() >= MAX_LSP_ITEMS {
-                        break;
-                    }
-                }
-                if all.len() >= MAX_LSP_ITEMS {
-                    break;
-                }
-            }
+            let fut = source.produce_async(ctx_snapshot, sink_for_fut, token_for_fut);
+            fut.await;
+            let (candidates, is_incomplete) = sink.drain();
             let _ = tx.send(InsertCompletionLspOutcome::Items {
-                items: all,
-                is_incomplete: any_incomplete,
+                candidates,
+                is_incomplete,
             });
         });
     }
 
-    /// Drain queued `completionItem/resolve` responses -- fill
-    /// in the meta entry, update the docs-popup body when the
-    /// resolved item is the popup's currently-focused one.
+    /// Drain queued `completionItem/resolve` responses --
+    /// decode the matching candidate's payload, apply the
+    /// resolved fields, re-encode in place, then refresh the
+    /// docs-popup body when the resolved item is the popup's
+    /// currently-focused one. CSM.8b.5: state.raw is the
+    /// source of truth; no parallel sidecar to keep in sync.
     pub fn drain_pending_completion_resolve(&mut self) {
         let Some(mut rx) = self.pending_completion_resolve_rx.take() else {
             return;
@@ -881,14 +871,39 @@ impl App {
             return;
         };
         self.pending_completion_resolve_token = None;
-        // Fill the meta entry with the resolved fields.
-        let Some(meta) = self
-            .insert_completion_lsp_meta
-            .get_mut(outcome.meta_index)
-        else {
+        let Some(state) = self.insert_completion.as_mut() else {
             return;
         };
+        // Find the n-th LSP row in state.raw (n = outcome.meta_index).
+        let target_raw_idx = state
+            .raw
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                matches!(
+                    r.data,
+                    lattice_completion::CandidateData::Extension {
+                        kind_id: LSP_COMPLETION_KIND_ID,
+                        ..
+                    }
+                )
+            })
+            .nth(outcome.meta_index)
+            .map(|(idx, _)| idx);
+        let Some(target_raw_idx) = target_raw_idx else {
+            return;
+        };
+        // Decode → apply → re-encode.
         let resolved = outcome.resolved;
+        let mut meta = match &state.raw[target_raw_idx].data {
+            lattice_completion::CandidateData::Extension { payload, .. } => {
+                match lattice_lsp::completion::decode_meta(payload) {
+                    Some(m) => m,
+                    None => return,
+                }
+            }
+            _ => return,
+        };
         if let Some(d) = resolved.documentation.as_ref() {
             let body = match d {
                 lsp_types::Documentation::String(s) => s.clone(),
@@ -906,45 +921,51 @@ impl App {
             meta.command = Some(cmd);
         }
         meta.resolved = true;
-        // Refresh the docs popup body when this resolve was for
-        // the currently-focused candidate.
-        let Some(state) = self.insert_completion.as_mut() else {
-            return;
+        let new_payload = lattice_lsp::completion::encode_meta(&meta);
+        state.raw[target_raw_idx].data = lattice_completion::CandidateData::Extension {
+            kind_id: LSP_COMPLETION_KIND_ID,
+            payload: new_payload.clone(),
         };
+        // Refresh the docs popup body when this resolve was for
+        // the currently-focused candidate. Match by payload bytes
+        // since state.rendered's order differs from state.raw's
+        // and we already have the fresh payload here.
         let Some(doc_popup) = state.doc_popup.as_mut() else {
             return;
         };
         let Some(cand) = state.rendered.get(state.selected) else {
             return;
         };
-        let payload = match &cand.raw.data {
-            lattice_completion::CandidateData::Extension { payload, .. } => payload,
+        // The selection's payload was the pre-resolve form; we
+        // just rewrote state.raw[target_raw_idx], so the
+        // selection still references the OLD payload via
+        // state.rendered. Match by the pre-resolve payload of
+        // state.raw[target_raw_idx] -- which equalled the
+        // selection's payload before the rewrite. After the
+        // rewrite we lost that reference, so we instead match
+        // by the encoded original_item (which doesn't change
+        // through resolve -- servers preserve it).
+        let cand_payload = match &cand.raw.data {
+            lattice_completion::CandidateData::Extension { payload, .. } => {
+                payload.clone()
+            }
             _ => return,
         };
-        if payload.len() != 4 {
-            return;
-        }
-        let active_idx = u32::from_le_bytes([
-            payload[0],
-            payload[1],
-            payload[2],
-            payload[3],
-        ]) as usize;
-        if active_idx != outcome.meta_index {
+        let cand_original = lattice_lsp::completion::decode_meta(&cand_payload)
+            .map(|m| m.original_item)
+            .unwrap_or_default();
+        // Compare original_items (LSP servers don't mutate them
+        // across resolve).
+        if cand_original != meta.original_item {
             return;
         }
         // Build the body from the freshly-resolved meta.
-        let detail = self
-            .insert_completion_lsp_meta
-            .get(outcome.meta_index)
-            .and_then(|m| m.detail.clone())
+        let detail = meta
+            .detail
+            .clone()
             .filter(|s| !s.is_empty())
             .map(|s| format!("```\n{s}\n```"));
-        let docs = self
-            .insert_completion_lsp_meta
-            .get(outcome.meta_index)
-            .and_then(|m| m.documentation.clone())
-            .filter(|s| !s.is_empty());
+        let docs = meta.documentation.clone().filter(|s| !s.is_empty());
         doc_popup.body = match (detail, docs) {
             (Some(d), Some(b)) => Some(format!("{d}\n\n{b}")),
             (Some(d), None) => Some(d),
@@ -973,7 +994,6 @@ impl App {
         self.pending_insert_completion_lsp_token = None;
         let Some(state) = self.insert_completion.as_mut() else {
             // Popup closed before the response arrived; drop it.
-            self.insert_completion_lsp_meta.clear();
             return;
         };
         match outcome {
@@ -981,10 +1001,10 @@ impl App {
                 // Nothing to merge; sync sources stand alone.
             }
             InsertCompletionLspOutcome::Items {
-                items,
+                candidates,
                 is_incomplete,
             } => {
-                // Drop any prior LSP rows from raw + meta.
+                // Drop any prior LSP rows from raw.
                 state.raw.retain(|c| {
                     !matches!(
                         c.data,
@@ -994,32 +1014,21 @@ impl App {
                         }
                     )
                 });
-                self.insert_completion_lsp_meta.clear();
-                // Append fresh items.
-                for (i, meta) in items.into_iter().enumerate() {
-                    let display = match meta.detail.as_ref() {
-                        Some(d) => format!("{}  {}", meta.label, d),
-                        None => meta.label.clone(),
-                    };
-                    let match_text = meta
-                        .filter_text
-                        .clone()
-                        .unwrap_or_else(|| meta.label.clone());
-                    let payload = (i as u32).to_le_bytes().to_vec();
-                    let mut raw = lattice_completion::RawCandidate::plain(
-                        match_text,
-                        lattice_completion::CandidateKind::Plain,
-                    )
-                    .with_source(lattice_completion::SourceId::new(
-                        lattice_completion::LSP_COMPLETION_SOURCE_ID,
-                    ));
-                    raw.display = display;
-                    raw.data = lattice_completion::CandidateData::Extension {
-                        kind_id: LSP_COMPLETION_KIND_ID,
-                        payload,
-                    };
-                    state.raw.push(raw);
-                    self.insert_completion_lsp_meta.push(meta);
+                // CSM.8b.5: candidates arrive pre-built by
+                // `LspCompletionSource::produce_async` with the
+                // full `LspCompletionMeta` serde-encoded into the
+                // `Extension` payload. State.raw IS the source
+                // of truth -- no parallel sidecar.
+                for raw in candidates.into_iter() {
+                    if matches!(
+                        raw.data,
+                        lattice_completion::CandidateData::Extension {
+                            kind_id: LSP_COMPLETION_KIND_ID,
+                            ..
+                        }
+                    ) {
+                        state.raw.push(raw);
+                    }
                 }
                 state.lsp_incomplete = is_incomplete;
             }
@@ -1080,7 +1089,6 @@ impl App {
         if state.rendered.is_empty() {
             // No matches after merge -- close the popup.
             self.insert_completion = None;
-            self.insert_completion_lsp_meta.clear();
         }
     }
 
@@ -1418,14 +1426,24 @@ impl App {
         });
     }
 
-    /// Look up the LSP metadata for a candidate via its
-    /// `CandidateData::Extension` payload. Returns `None` for
-    /// non-LSP candidates (buffer-words / future sync sources)
-    /// or when the index is out of range.
+    /// Decode the LSP metadata directly from a candidate's
+    /// `CandidateData::Extension` payload (CSM.8b: the candidate
+    /// IS the metadata; no sidecar lookup). Returns `None` for
+    /// non-LSP candidates (buffer-words / snippet / path /
+    /// tree-sitter rows whose payload kind id is something else)
+    /// or when the payload doesn't decode (stale wire format).
+    ///
+    /// Owned return type: the candidate's payload bytes are
+    /// the source of truth, and `decode_meta` produces a
+    /// fresh `LspCompletionMeta` per call. Callers that read
+    /// many fields can clone the result into a local; the
+    /// per-frame docs / glyph / commit-char hot paths still
+    /// stay well inside the frame budget (serde_json decode
+    /// of a typical LSP item is microseconds).
     pub(crate) fn lsp_completion_meta_for(
         &self,
         candidate: &lattice_completion::RenderedCandidate,
-    ) -> Option<&LspCompletionMeta> {
+    ) -> Option<LspCompletionMeta> {
         let lattice_completion::CandidateData::Extension {
             kind_id,
             payload,
@@ -1436,16 +1454,7 @@ impl App {
         if *kind_id != LSP_COMPLETION_KIND_ID {
             return None;
         }
-        if payload.len() != 4 {
-            return None;
-        }
-        let idx = u32::from_le_bytes([
-            payload[0],
-            payload[1],
-            payload[2],
-            payload[3],
-        ]) as usize;
-        self.insert_completion_lsp_meta.get(idx)
+        lattice_lsp::completion::decode_meta(payload)
     }
 
     /// Look up the current URI of a buffer. None for buffers
@@ -3739,6 +3748,36 @@ mod tests {
     use crate::app::*;
     use crate::app::test_helpers::{app_with, seed_diags_at_lines};
 
+    /// CSM.8b.3 test helper: pack a `LspCompletionMeta` into the
+    /// `RawCandidate` shape `produce_async` emits -- display +
+    /// match-text derived from label/detail/filter_text, payload
+    /// is the serde-encoded meta. Mirrors the construction the
+    /// production source does in `lattice-lsp::completion`.
+    fn lsp_meta_candidate(meta: lattice_lsp::completion::LspCompletionMeta) -> lattice_completion::RawCandidate {
+        let display = match meta.detail.as_ref() {
+            Some(d) => format!("{}  {}", meta.label, d),
+            None => meta.label.clone(),
+        };
+        let match_text = meta
+            .filter_text
+            .clone()
+            .unwrap_or_else(|| meta.label.clone());
+        let payload = lattice_lsp::completion::encode_meta(&meta);
+        let mut raw = lattice_completion::RawCandidate::plain(
+            match_text,
+            lattice_completion::CandidateKind::Plain,
+        )
+        .with_source(lattice_completion::SourceId::new(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID,
+        ));
+        raw.display = display;
+        raw.data = lattice_completion::CandidateData::Extension {
+            kind_id: LSP_COMPLETION_KIND_ID,
+            payload,
+        };
+        raw
+    }
+
     #[test]
     fn lsp_mode_gates_document_changed_typed_event_at_publish_site() {
         // M.5.5: the LSP fan-in subscribes to
@@ -4896,8 +4935,8 @@ mod tests {
         a.pending_insert_completion_lsp_token =
             Some(lattice_protocol::CancellationToken::new());
         tx.send(super::InsertCompletionLspOutcome::Items {
-            items: vec![
-                super::LspCompletionMeta {
+            candidates: vec![
+                lsp_meta_candidate(super::LspCompletionMeta {
                     label: "foo".into(),
                     insert_text: "foo".into(),
                     filter_text: None,
@@ -4912,11 +4951,11 @@ mod tests {
                     command: None,
                     insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
                     replace_range: None,
-                    server_id: std::sync::Arc::from("test-server"),
+                    server_id: "test-server".to_string(),
                     original_item: lsp_types::CompletionItem::default(),
                     resolved: false,
-                },
-                super::LspCompletionMeta {
+                }),
+                lsp_meta_candidate(super::LspCompletionMeta {
                     label: "foobar".into(),
                     insert_text: "foobar".into(),
                     filter_text: None,
@@ -4931,10 +4970,10 @@ mod tests {
                     command: None,
                     insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
                     replace_range: None,
-                    server_id: std::sync::Arc::from("test-server"),
+                    server_id: "test-server".to_string(),
                     original_item: lsp_types::CompletionItem::default(),
                     resolved: false,
-                },
+                }),
             ],
             is_incomplete: false,
         })
@@ -4949,8 +4988,24 @@ mod tests {
             .collect();
         assert!(labels.iter().any(|l| l.starts_with("foo")));
         assert!(labels.iter().any(|l| l.starts_with("foobar")));
-        // Sidecar meta is populated.
-        assert_eq!(a.insert_completion_lsp_meta.len(), 2);
+        // CSM.8b.5: state.raw is the source of truth. Two LSP
+        // rows present, each carrying their own payload-encoded
+        // meta.
+        let state = a.insert_completion.as_ref().expect("popup");
+        let lsp_rows = state
+            .raw
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.data,
+                    lattice_completion::CandidateData::Extension {
+                        kind_id: LSP_COMPLETION_KIND_ID,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(lsp_rows, 2);
     }
 
     #[test]
@@ -4983,7 +5038,7 @@ mod tests {
             command: None,
             insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
-            server_id: std::sync::Arc::from("test-server"),
+            server_id: "test-server".to_string(),
             original_item: lsp_types::CompletionItem::default(),
             resolved: false,
         };
@@ -4995,12 +5050,14 @@ mod tests {
         a.pending_insert_completion_lsp_token =
             Some(lattice_protocol::CancellationToken::new());
         tx1.send(super::InsertCompletionLspOutcome::Items {
-            items: vec![mk_item("alpha"), mk_item("alphabet")],
+            candidates: vec![
+                lsp_meta_candidate(mk_item("alpha")),
+                lsp_meta_candidate(mk_item("alphabet")),
+            ],
             is_incomplete: false,
         })
         .unwrap();
         a.drain_pending_insert_completion_lsp();
-        assert_eq!(a.insert_completion_lsp_meta.len(), 2);
         let pre = a
             .insert_completion
             .as_ref()
@@ -5016,13 +5073,25 @@ mod tests {
         a.pending_insert_completion_lsp_token =
             Some(lattice_protocol::CancellationToken::new());
         tx2.send(super::InsertCompletionLspOutcome::Items {
-            items: vec![mk_item("beta")],
+            candidates: vec![lsp_meta_candidate(mk_item("beta"))],
             is_incomplete: false,
         })
         .unwrap();
         a.drain_pending_insert_completion_lsp();
-        assert_eq!(a.insert_completion_lsp_meta.len(), 1);
-        assert_eq!(a.insert_completion_lsp_meta[0].label, "beta");
+        let state = a.insert_completion.as_ref().expect("popup");
+        let lsp_rows: Vec<_> = state
+            .raw
+            .iter()
+            .filter_map(|r| match &r.data {
+                lattice_completion::CandidateData::Extension {
+                    kind_id: LSP_COMPLETION_KIND_ID,
+                    payload,
+                } => lattice_lsp::completion::decode_meta(payload),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lsp_rows.len(), 1);
+        assert_eq!(lsp_rows[0].label, "beta");
     }
 
     #[test]
@@ -5054,14 +5123,34 @@ mod tests {
             Position::ZERO,
             String::new(),
         );
+        let meta = super::LspCompletionMeta {
+            label: "foo".into(),
+            insert_text: "foo".into(),
+            filter_text: None,
+            sort_text: None,
+            detail: None,
+            documentation: None,
+            kind: None,
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: Vec::new(),
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            replace_range: None,
+            server_id: "test-server".to_string(),
+            original_item: lsp_types::CompletionItem::default(),
+            resolved: false,
+        };
         let mut raw = lattice_completion::RawCandidate::plain(
             "foo",
             lattice_completion::CandidateKind::Plain,
         );
         raw.data = lattice_completion::CandidateData::Extension {
             kind_id: super::LSP_COMPLETION_KIND_ID,
-            payload: 0u32.to_le_bytes().to_vec(),
+            payload: lattice_lsp::completion::encode_meta(&meta),
         };
+        state.raw.push(raw.clone());
         state
             .rendered
             .push(lattice_completion::RenderedCandidate::from_scored(
@@ -5078,26 +5167,9 @@ mod tests {
             body: None,
             scroll: 5, // verify scroll resets on body refresh
         });
+        // CSM.8b.5: meta lives in candidate payload already.
+        let _ = meta;
         a.insert_completion = Some(state);
-        a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
-            label: "foo".into(),
-            insert_text: "foo".into(),
-            filter_text: None,
-            sort_text: None,
-            detail: None,
-            documentation: None,
-            kind: None,
-            deprecated: false,
-            preselect: false,
-            commit_characters: Vec::new(),
-            additional_text_edits: Vec::new(),
-            command: None,
-            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
-            replace_range: None,
-            server_id: std::sync::Arc::from("test-server"),
-            original_item: lsp_types::CompletionItem::default(),
-            resolved: false,
-        });
         // Push a resolve outcome that fills documentation.
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
             super::CompletionResolveOutcome,
@@ -5117,17 +5189,20 @@ mod tests {
         })
         .unwrap();
         a.drain_pending_completion_resolve();
-        // Meta updated.
-        let meta = &a.insert_completion_lsp_meta[0];
-        assert!(meta.resolved);
-        assert_eq!(meta.detail.as_deref(), Some("fn foo() -> i32"));
-        assert_eq!(meta.documentation.as_deref(), Some("Returns 42."));
+        // CSM.8b.5: candidate payload (the source of truth) is
+        // re-encoded in place with the resolved fields.
+        let state = a.insert_completion.as_ref().expect("popup");
+        let payload = match &state.raw[0].data {
+            lattice_completion::CandidateData::Extension { payload, .. } => payload.clone(),
+            _ => panic!("expected Extension payload"),
+        };
+        let updated =
+            lattice_lsp::completion::decode_meta(&payload).expect("decode");
+        assert!(updated.resolved);
+        assert_eq!(updated.detail.as_deref(), Some("fn foo() -> i32"));
+        assert_eq!(updated.documentation.as_deref(), Some("Returns 42."));
         // Doc popup body refreshed; scroll reset to 0.
-        let popup = a
-            .insert_completion
-            .as_ref()
-            .and_then(|s| s.doc_popup.as_ref())
-            .expect("popup");
+        let popup = state.doc_popup.as_ref().expect("popup");
         assert_eq!(popup.scroll, 0);
         let body = popup.body.as_deref().unwrap_or("");
         assert!(body.contains("fn foo() -> i32"));
@@ -5136,8 +5211,8 @@ mod tests {
 
     #[test]
     fn drain_pending_completion_resolve_drops_stale_index_after_selection_moved() {
-        // Resolve arrives for meta[0] but selection has moved
-        // to meta[1]. The meta still updates (so a future
+        // Resolve arrives for the c0 candidate but selection has
+        // moved to c1. The c0 payload still updates (so a future
         // refocus uses the cached docs) but the doc popup body
         // doesn't change.
         let mut a = app_with("xx", 10);
@@ -5147,15 +5222,40 @@ mod tests {
             Position::ZERO,
             String::new(),
         );
-        for i in 0..2u32 {
+        let mk_meta = |label: &str| super::LspCompletionMeta {
+            label: label.into(),
+            insert_text: label.into(),
+            filter_text: None,
+            sort_text: None,
+            detail: None,
+            documentation: None,
+            kind: None,
+            deprecated: false,
+            preselect: false,
+            commit_characters: Vec::new(),
+            additional_text_edits: Vec::new(),
+            command: None,
+            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            replace_range: None,
+            server_id: "test-server".to_string(),
+            original_item: {
+                let mut ci = lsp_types::CompletionItem::default();
+                ci.label = label.into();
+                ci
+            },
+            resolved: false,
+        };
+        for label in ["c0", "c1"] {
+            let meta = mk_meta(label);
             let mut raw = lattice_completion::RawCandidate::plain(
-                format!("c{i}"),
+                label,
                 lattice_completion::CandidateKind::Plain,
             );
             raw.data = lattice_completion::CandidateData::Extension {
                 kind_id: super::LSP_COMPLETION_KIND_ID,
-                payload: i.to_le_bytes().to_vec(),
+                payload: lattice_lsp::completion::encode_meta(&meta),
             };
+            state.raw.push(raw.clone());
             state.rendered.push(
                 lattice_completion::RenderedCandidate::from_scored(
                     lattice_completion::ScoredCandidate {
@@ -5166,34 +5266,13 @@ mod tests {
                 ),
             );
         }
-        state.selected = 1; // user moved past meta[0]
+        state.selected = 1; // user moved past c0
         state.doc_popup = Some(lattice_completion::DocPopupState {
             for_index: 1,
             body: Some("for c1".into()),
             scroll: 0,
         });
         a.insert_completion = Some(state);
-        for i in 0..2 {
-            a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
-                label: format!("c{i}"),
-                insert_text: format!("c{i}"),
-                filter_text: None,
-                sort_text: None,
-                detail: None,
-                documentation: None,
-                kind: None,
-                deprecated: false,
-                preselect: false,
-                commit_characters: Vec::new(),
-                additional_text_edits: Vec::new(),
-                command: None,
-                insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
-                replace_range: None,
-                server_id: std::sync::Arc::from("test-server"),
-                original_item: lsp_types::CompletionItem::default(),
-                resolved: false,
-            });
-        }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
             super::CompletionResolveOutcome,
         >();
@@ -5211,46 +5290,28 @@ mod tests {
         })
         .unwrap();
         a.drain_pending_completion_resolve();
-        // Meta[0] updated.
-        assert!(a.insert_completion_lsp_meta[0].resolved);
-        assert!(
-            a.insert_completion_lsp_meta[0]
-                .documentation
-                .as_deref()
-                == Some("stale")
-        );
-        // Doc popup body unchanged (still pointing at meta[1]).
-        let body = a
-            .insert_completion
-            .as_ref()
-            .and_then(|s| s.doc_popup.as_ref())
-            .and_then(|d| d.body.clone());
+        // c0's payload updated.
+        let state = a.insert_completion.as_ref().expect("popup");
+        let c0_payload = match &state.raw[0].data {
+            lattice_completion::CandidateData::Extension { payload, .. } => payload.clone(),
+            _ => panic!("expected Extension"),
+        };
+        let c0_meta =
+            lattice_lsp::completion::decode_meta(&c0_payload).expect("decode");
+        assert!(c0_meta.resolved);
+        assert_eq!(c0_meta.documentation.as_deref(), Some("stale"));
+        // Doc popup body unchanged (still pointing at c1).
+        let body = state.doc_popup.as_ref().and_then(|d| d.body.clone());
         assert_eq!(body.as_deref(), Some("for c1"));
     }
 
     #[test]
-    fn lsp_completion_meta_for_resolves_extension_payload_index() {
-        let mut a = app_with("xx", 10);
-        a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
-            label: "first".into(),
-            insert_text: "first".into(),
-            filter_text: None,
-            sort_text: None,
-            detail: None,
-            documentation: None,
-            kind: None,
-            deprecated: false,
-            preselect: false,
-            commit_characters: Vec::new(),
-            additional_text_edits: Vec::new(),
-            command: None,
-            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
-            replace_range: None,
-            server_id: std::sync::Arc::from("test-server"),
-            original_item: lsp_types::CompletionItem::default(),
-            resolved: false,
-        });
-        a.insert_completion_lsp_meta.push(super::LspCompletionMeta {
+    fn lsp_completion_meta_for_decodes_payload() {
+        // CSM.8b: the candidate carries the encoded meta in its
+        // own payload; `lsp_completion_meta_for` decodes it
+        // directly with no sidecar lookup.
+        let a = app_with("xx", 10);
+        let meta = super::LspCompletionMeta {
             label: "second".into(),
             insert_text: "second".into(),
             filter_text: None,
@@ -5265,18 +5326,17 @@ mod tests {
             command: None,
             insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
-            server_id: std::sync::Arc::from("test-server"),
+            server_id: "test-server".to_string(),
             original_item: lsp_types::CompletionItem::default(),
             resolved: false,
-        });
-        // Build a candidate pointing at index 1.
+        };
         let mut raw = lattice_completion::RawCandidate::plain(
             "second",
             lattice_completion::CandidateKind::Plain,
         );
         raw.data = lattice_completion::CandidateData::Extension {
             kind_id: super::LSP_COMPLETION_KIND_ID,
-            payload: 1u32.to_le_bytes().to_vec(),
+            payload: lattice_lsp::completion::encode_meta(&meta),
         };
         let scored = lattice_completion::ScoredCandidate {
             raw,
@@ -5285,10 +5345,10 @@ mod tests {
         };
         let rendered =
             lattice_completion::RenderedCandidate::from_scored(scored);
-        let meta = a
+        let decoded = a
             .lsp_completion_meta_for(&rendered)
             .expect("meta resolves");
-        assert_eq!(meta.label, "second");
+        assert_eq!(decoded.label, "second");
     }
 
     #[test]
@@ -6082,27 +6142,7 @@ mod tests {
             Position::new(2, 3),
             "for".into(),
         );
-        let mut raw = lattice_completion::RawCandidate::plain(
-            "for",
-            lattice_completion::CandidateKind::Plain,
-        )
-        .with_source(lattice_completion::SourceId::new(
-            lattice_completion::LSP_COMPLETION_SOURCE_ID,
-        ));
-        raw.data = lattice_completion::CandidateData::Extension {
-            kind_id: LSP_COMPLETION_KIND_ID,
-            payload: 0u32.to_le_bytes().to_vec(),
-        };
-        state.raw.push(raw.clone());
-        state.rendered.push(lattice_completion::RenderedCandidate::from_scored(
-            lattice_completion::ScoredCandidate {
-                raw,
-                score: lattice_completion::MatchScore(100),
-                match_ranges: Vec::new(),
-            },
-        ));
-        a.insert_completion = Some(state);
-        a.insert_completion_lsp_meta.push(LspCompletionMeta {
+        let meta = LspCompletionMeta {
             label: "for-loop".into(),
             // Snippet body with one tabstop -- expand_snippet_with_lsp_edits
             // sets up the active snippet, focuses $1.
@@ -6125,10 +6165,32 @@ mod tests {
             command: None,
             insert_text_format: lsp_types::InsertTextFormat::SNIPPET,
             replace_range: None,
-            server_id: std::sync::Arc::from("test-server"),
+            server_id: "test-server".to_string(),
             original_item: lsp_types::CompletionItem::default(),
             resolved: true,
-        });
+        };
+        let mut raw = lattice_completion::RawCandidate::plain(
+            "for",
+            lattice_completion::CandidateKind::Plain,
+        )
+        .with_source(lattice_completion::SourceId::new(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID,
+        ));
+        raw.data = lattice_completion::CandidateData::Extension {
+            kind_id: LSP_COMPLETION_KIND_ID,
+            payload: lattice_lsp::completion::encode_meta(&meta),
+        };
+        state.raw.push(raw.clone());
+        state.rendered.push(lattice_completion::RenderedCandidate::from_scored(
+            lattice_completion::ScoredCandidate {
+                raw,
+                score: lattice_completion::MatchScore(100),
+                match_ranges: Vec::new(),
+            },
+        ));
+        // CSM.8b.5: meta lives in candidate payload already.
+        let _ = meta;
+        a.insert_completion = Some(state);
         a.do_completion_accept();
         // After accept: line 0 has the auto-import, line 2
         // (now line 3 after the import inserted a newline,

@@ -2478,6 +2478,158 @@ graceful error handling per CLAUDE.md.
   `gen:lsp-completion` with `popup_filter_chord =
   Some('o')` + `kind: async` after. Workspace 2574 →
   2575.
+- CSM.K2 -- ✅ landed (filter-in-popup wiring).
+  New `source_filter: Option<SourceId>` on
+  `InsertCompletionState` (initialised `None` in
+  `open()`). `refilter_insert_completion` consults it
+  before the matcher: candidates whose
+  `RawCandidate.source` doesn't match are dropped from
+  the rendered list. The full `state.raw` survives so
+  `<C-Space>` (clear) can restore the mixed list
+  without re-triggering. Two new `AppEffect` variants
+  (`CompletionFilterToSource(String)`,
+  `CompletionFilterClear`) flow through the standard
+  apply chain into new app methods
+  `do_completion_filter_to_source` /
+  `do_completion_filter_clear`. The grammar action
+  surface gains `action:completion-filter-to-source`
+  (Args::String payload, dispatched via a new
+  `captured_string_action` helper mirroring the
+  `captured_char_action` pattern) plus
+  `action:completion-filter-clear` (no-args). A new
+  `bind_invocation_with_string` keymap helper folds a
+  constant `Args::String(source-id)` into the bound
+  invocation so a single action covers every source --
+  five static chord bindings inside
+  `completion_popup_layer_bindings`:
+  `<C-b>` → `gen:buffer-words`,
+  `<C-o>` → `gen:lsp-completion`,
+  `<C-f>` → `gen:path`,
+  `<C-t>` → `gen:tree-sitter-symbol`,
+  `<C-s>` → `gen:snippet`.
+  `<C-Space>` inside the popup layer rebound from
+  `completion-trigger` → `completion-filter-clear`
+  (re-trigger continues to live one layer down on the
+  base Insert keymap, naturally surfacing when the
+  popup isn't active). Docs-scroll bindings moved off
+  `<C-f>`/`<C-b>` (those are now filter chords) to
+  `PageDown`/`PageUp` -- page-wise semantics without
+  the chord-namespace collision.
+  Renderer: `draw_insert_completion_popup` reserves
+  the bottom row of the popup as a filter-chord hint
+  via the new `insert_completion_footer_line` helper.
+  Unfiltered hint is a pruned chord menu showing only
+  the chords whose source has candidates in
+  `state.raw` (compact: `<C-b> buf  <C-o> lsp  ...`).
+  Filtered hint is `source: <label>  <C-Space> all`
+  so the user can see which source is active and how
+  to clear. Both lines render dimmed.
+  Tests: 2 in `app::completion`
+  (`completion_filter_to_source_narrows_rendered_list`
+  asserts state.rendered drops the non-matching source
+  while state.raw is preserved;
+  `completion_filter_clear_restores_full_list`
+  asserts the round-trip); 4 in `keymap_insert`
+  (`<C-b>`, `<C-o>` filter-chord dispatch with
+  Args::String payload, `<C-Space>` clear,
+  `PageDown` docs-scroll); 3 in `input` retasked
+  (`<C-f>`/`<C-b>` filter dispatch via translate,
+  `<C-Space>` clear). Workspace 2575 → 2581
+  (+6 net new; 3 in input were retargeted from the
+  retired docs-scroll/re-trigger assertions).
+- CSM.8b -- ✅ landed (full LSP async migration:
+  candidate IS the metadata; sidecar retired).
+  Five sub-slices ship together:
+  - **CSM.8b.1** -- `LspCompletionMeta` +
+    `LSP_COMPLETION_KIND_ID` relocated from
+    `lattice-ui-tui::app` to `lattice-lsp::completion`
+    (re-exported by the host as
+    `app::LspCompletionMeta` / `LSP_COMPLETION_KIND_ID`
+    so existing imports keep working). The struct
+    gains `Serialize + Deserialize` derives;
+    `server_id` changes from `Arc<str>` to `String`
+    for serde-friendliness. New `encode_meta` /
+    `decode_meta` helpers round-trip via JSON
+    (`serde_json`). Two new round-trip tests in
+    `lattice-lsp::completion`.
+  - **CSM.8b.2** -- `LspCompletionSource::produce_async`
+    body populated. Multi-server fan-out + dedup on
+    `(label, kind)` + `MAX_LSP_ITEMS=500` cap +
+    cancellation honored at await points; each item
+    becomes one `RawCandidate` whose
+    `CandidateData::Extension::payload` is
+    `encode_meta(&LspCompletionMeta)`. Trigger kind
+    derived from `ctx.trigger`. URI + UTF-16 position
+    read from new `InsertContextSnapshot` fields
+    (`uri: Option<String>`,
+    `lsp_position: Option<(u32, u32)>`); the LSP
+    source parses the URI back via
+    `lsp_types::Uri::from_str` and builds a
+    `Position` from the line/character pair. New
+    `CandidateSink::mark_incomplete()` trait method
+    (default no-op) carries the `isIncomplete: true`
+    signal from source to host.
+  - **CSM.8b.3** -- aggregator drives the source. New
+    `BatchingSink` in `app::lsp` buffers
+    `produce_async` pushes into a single
+    `InsertCompletionLspOutcome::Items {
+    candidates: Vec<RawCandidate>, is_incomplete }`
+    message on the existing channel; the spawn
+    wrapper awaits the future, drains the sink,
+    sends one message. The drain consumes the new
+    shape; legacy `do_lsp_insert_completion_request`
+    body collapses from ~200 lines to a thin
+    "find LSP source in cache → snapshot → spawn"
+    function. Cancellation, mode gate, path-context
+    suppression, and per-language allowlist all
+    stay host-side (they're host responsibilities,
+    not source concerns).
+  - **CSM.8b.4** -- `App::lsp_completion_meta_for`
+    decodes from the candidate's own payload via
+    `lattice_lsp::completion::decode_meta`; returns
+    owned `Option<LspCompletionMeta>` instead of
+    `Option<&LspCompletionMeta>`. All ~10 callers
+    keep working (most already cloned the borrowed
+    result). The resolve fire site computes
+    `meta_index` by counting LSP rows in
+    `state.raw` up to (and not including) the
+    focused candidate -- payload-bytes match
+    rather than the legacy 4-byte index parse.
+  - **CSM.8b.5** -- `App.insert_completion_lsp_meta`
+    field deleted. Resolve drain now finds the
+    target LSP row by indexing into `state.raw`'s
+    filtered LSP slice, decodes its payload,
+    applies the resolved fields, re-encodes via
+    `encode_meta`, writes back to
+    `state.raw[idx].data` in place. Docs popup
+    body refresh after resolve compares the
+    focused candidate's `original_item` (which LSP
+    servers preserve across resolve) against the
+    just-resolved meta so a moved selection
+    doesn't get its body overwritten. Every push /
+    clear of the sidecar across `app.rs`,
+    `app/completion.rs`, `app/lsp.rs`,
+    `app/boot.rs`, `app/test_helpers.rs`,
+    `render.rs`, and three test fixtures removed.
+  Each candidate is now self-describing: the
+  payload IS the source of truth, parallel writes
+  are gone, the candidate / metadata can't drift,
+  and future plugin completion sources slot into
+  the same shape without ever needing a host-side
+  sidecar of their own. Decoding cost in the
+  per-frame docs / glyph / commit-char hot paths
+  is microseconds (serde_json over a ~1-2 KB blob);
+  well inside the frame budget.
+  Tests: 2 new in `lattice-lsp::completion` (encode
+  / decode round-trip; garbage payload returns
+  `None`). Multiple existing test fixtures
+  rewritten to use the new
+  `encode_meta(&meta)`-backed payload shape and
+  the helper `lsp_meta_candidate(meta)` in
+  `app::lsp::tests`. Workspace 2581 → 2583
+  (+2 net new; sidecar-write / sidecar-read
+  assertions in 6 existing tests rewritten in
+  place to read decoded payload).
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

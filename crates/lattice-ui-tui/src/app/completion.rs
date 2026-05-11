@@ -318,6 +318,21 @@ impl App {
                 .and_then(|p| p.parent().map(|p| p.to_path_buf()))
                 .or_else(|| std::env::current_dir().ok())
         };
+        // CSM.8b: pre-compute the LSP-side URI + position once;
+        // the LSP source reads them from the snapshot rather
+        // than threading them through its own struct. Both are
+        // `None` for scratch buffers (no URI mapping) or when
+        // the cursor's UTF-16 position can't be derived (out-
+        // of-range -- shouldn't happen in practice).
+        let uri_string: Option<String> = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .map(|u| u.as_str().to_string());
+        let lsp_position_pair: Option<(u32, u32)> = {
+            let snap = self.document.snapshot();
+            crate::app::app_to_lsp_position(&snap.buffer, self.cursor)
+                .map(|p| (p.line, p.character))
+        };
         let ctx = lattice_completion::InsertContext {
             buffer,
             cursor: state.cursor,
@@ -329,6 +344,8 @@ impl App {
             tree_sitter_symbols: &tree_sitter_symbols,
             path_context: self.completion_in_path_context,
             buffer_dir: buffer_dir_owned.as_deref(),
+            uri: uri_string.as_deref(),
+            lsp_position: lsp_position_pair,
         };
         // Resolve the active language's effective config once;
         // both sync sources (buffer-words, snippet) gate emit on
@@ -406,9 +423,17 @@ impl App {
         state: &mut lattice_completion::InsertCompletionState,
     ) {
         let matcher = lattice_completion::FuzzyInsertMatcher::new();
+        // CSM.K2: when `source_filter` is set, narrow the raw
+        // pool to candidates from that source before matcher /
+        // ranker run. `None` ⇒ unfiltered (every source).
+        let source_filter = state.source_filter.clone();
         let mut scored: Vec<lattice_completion::ScoredCandidate> = state
             .raw
             .iter()
+            .filter(|raw| match source_filter.as_ref() {
+                Some(id) => raw.source.as_ref() == Some(id),
+                None => true,
+            })
             .filter_map(|raw| {
                 lattice_completion::CandidateMatcher::matches(
                     &matcher,
@@ -756,13 +781,12 @@ impl App {
         // clear afterwards.
         if let Some(meta) = self.snippet_meta_for(&item) {
             self.expand_snippet(&meta.body, state.anchor);
-            self.insert_completion_lsp_meta.clear();
             return;
         }
         // LSP path: typed metadata + additionalTextEdits
         // coalesce with the main edit. When the LSP item is
         // snippet-flavoured, route through the engine.
-        if let Some(meta) = self.lsp_completion_meta_for(&item).cloned() {
+        if let Some(meta) = self.lsp_completion_meta_for(&item) {
             if matches!(
                 meta.insert_text_format,
                 lsp_types::InsertTextFormat::SNIPPET
@@ -796,11 +820,9 @@ impl App {
                         self.apply_lsp_completion_accept(meta, state.anchor);
                     }
                 }
-                self.insert_completion_lsp_meta.clear();
-                return;
+                    return;
             }
             self.apply_lsp_completion_accept(meta, state.anchor);
-            self.insert_completion_lsp_meta.clear();
             return;
         }
         // Sync-source path: simple replace.
@@ -818,7 +840,6 @@ impl App {
                 );
             }
         }
-        self.insert_completion_lsp_meta.clear();
     }
 
     /// `<C-d>` inside the completion-popup minor mode.
@@ -915,7 +936,7 @@ impl App {
             return false;
         };
         for h in self.lsp.servers_for(uri) {
-            if h.server_id() == &*meta.server_id {
+            if h.server_id() == meta.server_id.as_str() {
                 return h.capabilities().completion_resolve_provider();
             }
         }
@@ -968,9 +989,20 @@ impl App {
         // and feed it into the ranker's closure.
         let ranker = lattice_completion::InsertRanker::new();
         let matcher = lattice_completion::FuzzyInsertMatcher::new();
+        // CSM.K2: honour the active source filter here too --
+        // this is the LSP-aware refilter path that runs on
+        // async-response drains; it must agree with
+        // `refilter_insert_completion`'s filter logic so the
+        // popup stays consistent when LSP candidates arrive
+        // mid-filter.
+        let source_filter = state.source_filter.clone();
         let mut scored: Vec<lattice_completion::ScoredCandidate> = state
             .raw
             .iter()
+            .filter(|raw| match source_filter.as_ref() {
+                Some(id) => raw.source.as_ref() == Some(id),
+                None => true,
+            })
             .filter_map(|raw| {
                 lattice_completion::CandidateMatcher::matches(
                     &matcher,
@@ -1046,6 +1078,35 @@ impl App {
     pub fn do_completion_cancel(&mut self) {
         self.insert_completion = None;
         self.completion_in_path_context = false;
+    }
+
+    /// CSM.K2: restrict the open completion popup to a single
+    /// source. `id` is the `SourceId` as a raw string (e.g.
+    /// `"gen:buffer-words"`, `"gen:lsp-completion"`). When the
+    /// referenced source has no candidates in the current
+    /// `state.raw`, refilter yields an empty rendered list --
+    /// the popup stays open so the user can switch chords or
+    /// clear the filter without losing the trigger context.
+    pub fn do_completion_filter_to_source(&mut self, id: String) {
+        let Some(mut state) = self.insert_completion.take() else {
+            return;
+        };
+        state.source_filter = Some(lattice_completion::SourceId::new(id));
+        self.refilter_insert_completion(&mut state);
+        self.insert_completion = Some(state);
+        self.refresh_docs_popup_for_selection();
+    }
+
+    /// CSM.K2: clear the active source filter (`<C-Space>`).
+    /// Restores the mixed merged candidate list.
+    pub fn do_completion_filter_clear(&mut self) {
+        let Some(mut state) = self.insert_completion.take() else {
+            return;
+        };
+        state.source_filter = None;
+        self.refilter_insert_completion(&mut state);
+        self.insert_completion = Some(state);
+        self.refresh_docs_popup_for_selection();
     }
 
     /// When the focused candidate changes (next / prev /
@@ -2407,5 +2468,95 @@ mod tests {
         // Reconcile brings mode + state back into lockstep.
         a.sync_keymap_overlays();
         assert!(!a.completion_popup_active());
+    }
+
+    /// CSM.K2: `do_completion_filter_to_source` narrows the
+    /// rendered list to candidates whose `source` matches the
+    /// supplied id. The other source's candidates stay in
+    /// `state.raw` so a subsequent `do_completion_filter_clear`
+    /// can restore them.
+    #[test]
+    fn completion_filter_to_source_narrows_rendered_list() {
+        let mut a = app_with("", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 0);
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        );
+        state.raw.push(
+            lattice_completion::RawCandidate::plain(
+                "from_words",
+                lattice_completion::CandidateKind::Plain,
+            )
+            .with_source(lattice_completion::SourceId::new(
+                lattice_completion::BufferWordsSource::ID,
+            )),
+        );
+        state.raw.push(
+            lattice_completion::RawCandidate::plain(
+                "from_lsp",
+                lattice_completion::CandidateKind::Plain,
+            )
+            .with_source(lattice_completion::SourceId::new(
+                lattice_completion::LSP_COMPLETION_SOURCE_ID,
+            )),
+        );
+        a.refilter_insert_completion(&mut state);
+        assert_eq!(state.rendered.len(), 2);
+        a.insert_completion = Some(state);
+        a.do_completion_filter_to_source(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID.to_string(),
+        );
+        let s = a.insert_completion.as_ref().unwrap();
+        assert_eq!(s.rendered.len(), 1);
+        assert_eq!(s.rendered[0].raw.text, "from_lsp");
+        // Both raw rows survive so `clear` can restore them.
+        assert_eq!(s.raw.len(), 2);
+    }
+
+    /// CSM.K2: `do_completion_filter_clear` removes the active
+    /// filter and refilters against the full raw pool.
+    #[test]
+    fn completion_filter_clear_restores_full_list() {
+        let mut a = app_with("", 10);
+        a.modal = ModalState::Insert;
+        a.cursor = Position::new(0, 0);
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        );
+        state.raw.push(
+            lattice_completion::RawCandidate::plain(
+                "from_words",
+                lattice_completion::CandidateKind::Plain,
+            )
+            .with_source(lattice_completion::SourceId::new(
+                lattice_completion::BufferWordsSource::ID,
+            )),
+        );
+        state.raw.push(
+            lattice_completion::RawCandidate::plain(
+                "from_lsp",
+                lattice_completion::CandidateKind::Plain,
+            )
+            .with_source(lattice_completion::SourceId::new(
+                lattice_completion::LSP_COMPLETION_SOURCE_ID,
+            )),
+        );
+        state.source_filter = Some(lattice_completion::SourceId::new(
+            lattice_completion::LSP_COMPLETION_SOURCE_ID,
+        ));
+        a.refilter_insert_completion(&mut state);
+        assert_eq!(state.rendered.len(), 1);
+        a.insert_completion = Some(state);
+        a.do_completion_filter_clear();
+        let s = a.insert_completion.as_ref().unwrap();
+        assert!(s.source_filter.is_none());
+        assert_eq!(s.rendered.len(), 2);
     }
 }

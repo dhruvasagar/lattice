@@ -188,6 +188,8 @@ mod tests {
             tree_sitter_symbols: &[],
             path_context: false,
             buffer_dir: Some(std::path::Path::new(".")),
+            uri: None,
+            lsp_position: None,
         };
         assert!(PathCompletionSource.produce(&ctx).is_empty());
     }
@@ -211,6 +213,8 @@ mod tests {
             tree_sitter_symbols: &[],
             path_context: true,
             buffer_dir: Some(&tmp),
+            uri: None,
+            lsp_position: None,
         };
         let candidates = PathCompletionSource.produce(&ctx);
         let labels: Vec<_> = candidates.iter().map(|c| c.display.clone()).collect();
@@ -239,6 +243,8 @@ mod tests {
             tree_sitter_symbols: &[],
             path_context: true,
             buffer_dir: Some(&tmp),
+            uri: None,
+            lsp_position: None,
         };
         let candidates = PathCompletionSource.produce(&ctx);
         let labels: Vec<_> = candidates.iter().map(|c| c.display.clone()).collect();

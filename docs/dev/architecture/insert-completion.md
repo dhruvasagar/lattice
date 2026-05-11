@@ -1517,13 +1517,39 @@ attributable.
 | **CSM.5** | `snippet-completion-mode` in `lattice-snippet`. Same migration shape as CSM.4. The snippet metadata sidecar (`insert_completion_snippet_meta`) stays host-side -- the source emits candidates with `CandidateData::Extension` payloads; the host's accept path resolves them as before. | `lattice-snippet`, `lattice-ui-tui` |
 | **CSM.6** | `tree-sitter-completion-mode` in `lattice-syntax`. Migrate `collect_symbols` walk into the source's `produce()`. | `lattice-syntax`, `lattice-ui-tui` |
 | **CSM.7** | `path-completion-mode` in `lattice-completion`. Migrate the path-context branch (`completion_in_path_context` stays as the host's scope-detect flag; the mode auto-suppresses outside string scopes by reading the flag through the context snapshot). | `lattice-completion`, `lattice-ui-tui` |
-| **CSM.8** | `LspCompletionSource` in `lattice-lsp::completion`. `LspCompletionMode::completion_sources()` returns it. Remove the bespoke `do_lsp_insert_completion_request` body -- the aggregator's async-spawn path covers it. `App::lsp_completion_mode_enabled_for` becomes a deprecated alias of the generic "is mode active" lookup. | `lattice-lsp`, `lattice-ui-tui` |
+| **CSM.8a** | `LspCompletionSource` surface + `LspCompletionMode` registration; `produce_async` is a placeholder no-op. The mode is source-contributing and shows up in the active-sources cache; CSM.K2's filter-chord palette wires `<C-o>` to it. Production fan-out still lives in `lattice-ui-tui::app::lsp::do_lsp_insert_completion_request`. | `lattice-lsp`, `lattice-ui-tui` |
+| **CSM.8b** | Full migration. `LspCompletionMeta` + `LSP_COMPLETION_KIND_ID` relocate into `lattice-lsp::completion` with `encode_meta` / `decode_meta` helpers. `produce_async` body populated with the multi-server fan-out (dedup + cancellation + `MAX_LSP_ITEMS`). Aggregator (`do_lsp_insert_completion_request`) collapses to a thin "find Async source in cache + snapshot + spawn" function, bridged through a host-side `BatchingSink`. `App::lsp_completion_meta_for` decodes from the candidate's own payload; the `App.insert_completion_lsp_meta` sidecar field is gone. Resolve drain re-encodes the resolved meta directly into `state.raw[idx].data`. The candidate IS the metadata. | `lattice-completion`, `lattice-lsp`, `lattice-ui-tui` |
 | **CSM.9** | Plugin reservation: the WIT surface (Phase 7 prereq) defines `mode.completion-sources -> list<completion-source>` so a WASM plugin can contribute. No actual plugin -- this slice just locks the WIT shape so the host-side runtime can target it. | `wit/`, `lattice-mode` |
 
 Slice ordering: foundation (CSM.1) → engine mode (CSM.2) → cache
 (CSM.3) → migrate sources cheapest-first (CSM.4 → CSM.7) → LSP
 last (CSM.8) → plugin reservation (CSM.9). Each later slice
 inherits the parity tests of every earlier slice.
+
+**UX inserts (K-series).** The mode-split + popup-mode filter
+UX rides alongside the source migrations:
+
+- **CSM.K1** -- two-mode split. `completion-mode` (persistent
+  gate, auto-active on writable buffer kinds) +
+  `completion-popup-mode` (transient, popup-live). The
+  popup-trigger gate checks `completion-mode`; the
+  popup-mode is what the keymap-overlay sync tracks. Source
+  contributions gain `popup_filter_chord: Option<char>`
+  (each source advertises its single-char chord).
+- **CSM.K2** -- filter-in-popup wiring. `<C-b>`/`<C-o>`/
+  `<C-f>`/`<C-t>`/`<C-s>` inside `completion-popup-mode`
+  restrict the rendered candidates to the matching source;
+  `<C-Space>` clears the filter. Implemented as a single
+  `action:completion-filter-to-source` (Args::String payload
+  per binding via `bind_invocation_with_string`) plus
+  `action:completion-filter-clear`. Refilter consults
+  `InsertCompletionState.source_filter: Option<SourceId>`
+  before the matcher; `state.raw` is preserved so the
+  filter is reversible. Docs-scroll relocated from
+  `<C-f>`/`<C-b>` to `PageDown`/`PageUp`. Popup footer
+  renders a chord-hint line (pruned to chords with
+  candidates when unfiltered; `source: <label> <C-Space> all`
+  when filtered).
 
 ### 12.9 Performance posture
 

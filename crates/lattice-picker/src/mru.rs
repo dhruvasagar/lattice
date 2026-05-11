@@ -396,6 +396,7 @@ pub fn routing_identity(payload: &RoutingPayload) -> Option<String> {
         RoutingPayload::InvokeCommand { id, .. } => Some(format!("cmd:{id}")),
         RoutingPayload::PasteRegister { name } => Some(format!("reg:{name}")),
         RoutingPayload::JumpToMark { name } => Some(format!("mark:{name}")),
+        RoutingPayload::ExpandSnippet { id } => Some(format!("snip:{id}")),
         // No stable identity for these -- coordinates drift,
         // indices are per-request, LSP-instance entries are
         // ephemeral.

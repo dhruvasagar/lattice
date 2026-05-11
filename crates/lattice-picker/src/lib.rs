@@ -163,6 +163,12 @@ pub enum RoutingPayload {
     /// behavior. `name` carries a stable identity, so MRU
     /// will record `mark:<name>` once slice 14 lands.
     JumpToMark { name: char },
+    /// Expand a snippet by name at the cursor. Emitted by
+    /// `:picker snippets`. The host resolves the body through
+    /// `SnippetRegistry::by_name` and routes through the
+    /// existing `:snippet-expand` path. MRU keys on
+    /// `snip:<name>`.
+    ExpandSnippet { id: String },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves

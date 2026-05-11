@@ -38,6 +38,7 @@ pub mod active;
 pub mod load;
 pub mod modes;
 pub mod parse;
+pub mod picker_sources;
 pub mod registry;
 pub mod render;
 pub mod token;

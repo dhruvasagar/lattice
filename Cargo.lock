@@ -934,6 +934,7 @@ dependencies = [
  "lattice-config",
  "lattice-core",
  "lattice-mode",
+ "lattice-picker",
  "lattice-protocol",
  "serde",
  "serde_json",

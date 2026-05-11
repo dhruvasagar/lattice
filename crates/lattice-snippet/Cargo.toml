@@ -20,6 +20,12 @@ lattice-completion = { path = "../lattice-completion" }
 lattice-config = { path = "../lattice-config" }
 lattice-core = { path = "../lattice-core" }
 lattice-protocol = { path = "../lattice-protocol" }
+# P.10: lattice-snippet hosts `SnippetsSource` (the
+# `:picker snippets` generator) so the feature-crate
+# registration pattern -- "sources live where their state
+# lives" -- holds at this seam. Cycle-free: lattice-picker
+# doesn't depend back on lattice-snippet.
+lattice-picker = { path = "../lattice-picker" }
 
 [lints]
 workspace = true

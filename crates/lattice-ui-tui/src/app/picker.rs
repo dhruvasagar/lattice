@@ -232,10 +232,28 @@ impl App {
                     );
                 }
             }
-            ExpandSnippet { id } => self.set_message(
-                EchoLevel::Error,
-                format!("picker: ExpandSnippet `{id}` not yet wired (lands with snippets picker)"),
-            ),
+            ExpandSnippet { id } => {
+                // Look up snippet by name (cross-language --
+                // `by_name` indexes the full registry). If found,
+                // splice the body into the buffer at the current
+                // cursor through the existing `expand_snippet`
+                // path so tab-stop tracking + mark plumbing
+                // match `:snippet-expand` and the `<C-x><C-s>`
+                // chord.
+                let snippet = self
+                    .snippet_registry
+                    .load()
+                    .by_name(&id)
+                    .cloned();
+                let Some(snippet) = snippet else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: no snippet named `{id}`"),
+                    );
+                    return;
+                };
+                self.expand_snippet(&snippet.body, self.cursor);
+            }
             ApplyLspCodeAction { handle, index } => self.set_message(
                 EchoLevel::Error,
                 format!(
@@ -977,6 +995,11 @@ impl App {
                     lattice_picker::PickerAcceptOutcome::JumpToMark { name },
                 );
             }
+            lattice_picker::RoutingPayload::ExpandSnippet { id } => {
+                self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::ExpandSnippet { id },
+                );
+            }
         }
     }
 }
@@ -1614,7 +1637,7 @@ mod tests {
             ids,
             vec![
                 "buffers", "commands", "files", "grep", "jumps", "lines",
-                "marks", "recent", "registers",
+                "marks", "recent", "registers", "snippets",
             ]
         );
         // Sanity: matches what the registry itself reports.
@@ -1683,6 +1706,22 @@ mod tests {
         assert!(app.picker.is_none());
         assert_eq!(app.cursor.line, 1);
         assert_eq!(app.cursor.byte, 0);
+    }
+
+    /// P.10: `:picker snippets` against an empty registry
+    /// echoes the source's no-snippets message and leaves
+    /// the picker closed (fresh-boot fixture has no snippets
+    /// loaded). Confirms the feature-crate registration
+    /// pattern -- lattice-snippet's
+    /// `picker_sources::register` -- wires through to App
+    /// dispatch correctly.
+    #[test]
+    fn open_picker_snippets_empty_registry_echoes() {
+        let mut app = app_with("hi\n", 5);
+        app.open_picker("snippets".into(), Vec::new());
+        assert!(app.picker.is_none());
+        let msg = app.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("no snippets registered"), "got `{}`", msg.text);
     }
 
     /// Slice 14c: accepting a candidate records it in

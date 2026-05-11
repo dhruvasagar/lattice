@@ -118,11 +118,19 @@ fn build_lsp_subsystem(
 fn built_in_picker_registry(
     command_registry: Arc<lattice_grammar::CommandRegistry>,
     config: Arc<lattice_config::ConfigRegistry>,
+    snippet_registry: Arc<arc_swap::ArcSwap<lattice_snippet::SnippetRegistry>>,
 ) -> lattice_picker::PickerRegistry {
     let mut reg = lattice_picker::PickerRegistry::new();
+    // Host-near first-party sources.
     for generator in crate::picker_sources::first_party_generators(command_registry, config) {
         reg.register_generator(generator);
     }
+    // Feature-crate sources -- each crate owns its source impl
+    // + a `register_picker_sources` entry point so feature
+    // state stays where it lives. Cycle-free: lattice-picker
+    // doesn't depend on lattice-snippet (or any feature
+    // crate); the host wires the dependency direction here.
+    lattice_snippet::picker_sources::register(&mut reg, snippet_registry);
     reg
 }
 
@@ -345,7 +353,11 @@ impl App {
         // wrap-point preserved for downstream reuse.
         let registry = Arc::new(registry);
         let picker_registry: Arc<lattice_picker::PickerRegistry> =
-            Arc::new(built_in_picker_registry(registry.clone(), config.clone()));
+            Arc::new(built_in_picker_registry(
+                registry.clone(),
+                config.clone(),
+                snippet_registry_handle.clone(),
+            ));
         // MRU cache load. Failure modes:
         //   - `default_persist_path` returns None: persistence
         //     disabled (sandboxed run); start with empty index.

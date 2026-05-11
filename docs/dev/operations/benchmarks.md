@@ -501,9 +501,9 @@ write; `bonus_of` is the frecency math kernel.
 
 | Bench                                  | Time         | Floor / Target | Notes                                                                                                                       |
 |----------------------------------------|--------------|----------------|-----------------------------------------------------------------------------------------------------------------------------|
-| `picker::open_inline/100`              | **34.9 µs**  | ~30 µs / <500 µs   | Build candidates + bonus snapshot + 2× refilter for a 100-candidate picker (set_raw_candidates_with_routing and set_mru_bonuses each refilter). Buffer-switcher scale.                |
-| `picker::open_inline/500`              | **163.5 µs** | ~150 µs / <1 ms    | LSP-symbols / outline scale.                                                                                                |
-| `picker::open_inline/5000`             | **3.10 ms**  | ~2.5 ms / <8 ms    | Worst-case file-picker walker output (5000 candidates). Two refilter passes dominate; the seat-path optimization noted in "Headroom" below collapses them to one and roughly halves this. |
+| `picker::open_inline/100`              | **28.1 µs**  | ~25 µs / <500 µs   | Build candidates + bonus snapshot + single-pass seat. Buffer-switcher scale.                                                |
+| `picker::open_inline/500`              | **132.5 µs** | ~125 µs / <1 ms    | LSP-symbols / outline scale.                                                                                                |
+| `picker::open_inline/5000`             | **2.80 ms**  | ~2.5 ms / <8 ms    | Worst-case file-picker walker output (5000 candidates). One refilter pass over the full candidate set is the dominant cost; matcher graduation (substring → 5-tier fuzzy) is the lever if this needs to tighten further. |
 | `picker::refilter/n=500,query=""`      | **56.8 µs**  | ~50 µs / <500 µs   | Empty-query refilter on 500 candidates. No filtering, just rank+sort.                                                       |
 | `picker::refilter/n=500,query="f"`     | **120.6 µs** | ~110 µs / <500 µs  | Single-char substring filter -- the match-range walk dominates over the trivial empty-query bypass.                          |
 | `picker::refilter/n=500,query="file_"` | **132.9 µs** | ~120 µs / <500 µs  | 5-char query against a substring-matching candidate set.                                                                    |
@@ -548,37 +548,31 @@ upper) are within ±5 % at this sample size.
 
 ### Headroom notes
 
-Two known cost spots and the levers to fix them when v1's
-workload outgrows them:
+The `refilter/n=5000` worst case is at ~1.5 ms today --
+inside the sub-frame budget but consumes ~18 % of the
+8.3 ms frame budget alone. Two tightening levers if this
+ever needs more headroom:
 
-1. **`open_inline` double-refilter.** Today
-   `set_raw_candidates_with_routing` calls `refilter()`
-   internally, then `set_mru_bonuses` calls it again --
-   so the seat path refilters twice. At N=5000 that's
-   roughly half the 3.1 ms cost. The fix is a single
-   `set_candidates_with_routing_and_bonuses(pairs,
-   bonuses)` method that mutates the three vecs and
-   refilters once. Mechanical; deferred because no user
-   path is bound on it today.
-2. **`refilter/n=5000` worst case at ~1.5 ms.** Inside the
-   sub-frame budget but consumes ~18 % of the 8.3 ms
-   frame budget alone. Two tightening levers:
-   - **Matcher graduation.** The v1 substring matcher
-     walks the full display string per candidate. The
-     pipeline-driven matcher (`lattice-completion` full
-     vertico stack) short-circuits prefix / boundary
-     tiers and would cut the 5000-candidate cost roughly
-     in half.
-   - **Survivor-set caching.** Today every keystroke calls
-     `refilter` against the full `raw` slice. A two-stage
-     pipeline (cache the survivor set of the previous
-     query; incremental filter only when the user adds a
-     char) is the standard prescient trick; lets a 5-char
-     query refilter against ~50 candidates instead of
-     5000.
+- **Matcher graduation.** The v1 substring matcher walks
+  the full display string per candidate. The pipeline-
+  driven matcher (`lattice-completion` full vertico stack)
+  short-circuits prefix / boundary tiers and would cut the
+  5000-candidate cost roughly in half.
+- **Survivor-set caching.** Today every keystroke calls
+  `refilter` against the full `raw` slice. A two-stage
+  pipeline (cache the survivor set of the previous query;
+  incremental filter only when the user adds a char) is
+  the standard prescient trick; lets a 5-char query
+  refilter against ~50 candidates instead of 5000.
 
 Neither lever is needed at v1's typical workloads
 (<500 candidates) where `refilter` is well under 200 µs.
+
+The previously-listed `open_inline` double-refilter cost
+(prior revision of this section) was collapsed by the
+`set_raw_candidates_with_routing_and_bonuses` single-pass
+seat method -- numbers above reflect the post-collapse
+state.
 
 ---
 

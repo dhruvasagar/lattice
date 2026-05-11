@@ -50,6 +50,7 @@ pub mod apply_edit;
 pub mod attach_driver;
 pub mod capabilities;
 pub mod codec;
+pub mod completion;
 pub mod config;
 pub mod configuration;
 pub mod diagnostics;

@@ -2188,10 +2188,53 @@ mod tests {
 
     // ---- CSM.3: ActiveCompletionSources cache ----
 
-    /// CSM.4/CSM.5/CSM.6: source-contributing modes auto-
-    /// activate on Document. The cache seeds with buffer-words,
-    /// snippet, and tree-sitter contributions at boot; future
-    /// migrations (path CSM.7, LSP CSM.8) extend the set.
+    /// CSM.8a: the LSP completion source rides on the M.6.1
+    /// cascade -- it does NOT auto-activate on Document at
+    /// boot. The cache is empty for `gen:lsp-completion` until
+    /// `lsp-mode` activates on the buffer; toggling
+    /// `lsp-mode` on (via the auto-generated `:lsp-mode`
+    /// command or its programmatic equivalent) attaches every
+    /// LSP sub-mode including `lsp-completion-mode`, which the
+    /// recompute hook picks up.
+    #[test]
+    fn lsp_completion_source_activates_on_lsp_mode_cascade() {
+        let mut a = app_with("hi", 5);
+        let buffer_id = a.document_buffer_id;
+        let pre_ids: Vec<_> = a
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
+            .map(|c| c.0.iter().map(|c| c.id.as_str().to_string()).collect())
+            .unwrap_or_default();
+        assert!(
+            !pre_ids.contains(&"gen:lsp-completion".to_string()),
+            "pre-cascade cache should not contain LSP: {pre_ids:?}",
+        );
+        a.toggle_mode_by_name("lsp-mode");
+        let cache = a
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
+            .expect("cache present");
+        let post_ids: Vec<_> = cache.0.iter().map(|c| c.id.as_str().to_string()).collect();
+        assert!(
+            post_ids.contains(&"gen:lsp-completion".to_string()),
+            "post-cascade cache should include gen:lsp-completion; got {post_ids:?}",
+        );
+        let lsp = cache
+            .0
+            .iter()
+            .find(|c| c.id.as_str() == "gen:lsp-completion")
+            .unwrap();
+        assert_eq!(lsp.popup_filter_chord, Some('o'));
+        assert_eq!(lsp.kind.kind_label(), "async");
+    }
+
+    /// CSM.4–CSM.7: source-contributing modes auto-activate on
+    /// Document. The cache seeds with buffer-words, snippet,
+    /// tree-sitter, and path contributions at boot. LSP (CSM.8a)
+    /// rides on the M.6.1 cascade -- only attaches when the
+    /// `lsp-mode` umbrella activates; tested separately.
     #[test]
     fn active_completion_sources_seeded_with_default_modes_at_boot() {
         let a = app_with("alpha bravo", 10);

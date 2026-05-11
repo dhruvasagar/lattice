@@ -2435,6 +2435,49 @@ graceful error handling per CLAUDE.md.
   `IGNORE_NAMES` set). CSM.4/5/6 boot-cache test extends
   to assert path contribution + `popup_filter_chord =
   Some('f')`. Workspace 2571 → 2574.
+- CSM.8a -- ✅ landed (fifth source migration -- LSP
+  surface; first async source).
+  `LspCompletionSource` in `lattice-lsp::completion` (new
+  module). `LspCompletionMode` upgrades from M.6.0's
+  marker `lsp_sub_mode!` macro emission to a hand-written
+  stateful struct holding `LspSupervisorHandle`; the mode's
+  `completion_sources()` returns one
+  `CompletionSourceContribution { id:
+  "gen:lsp-completion", default_priority: 200,
+  popup_filter_chord: Some('o'), kind: Async(...) }`.
+  `register_lsp_completion_mode(registry, lsp_handle)` is
+  the new boot helper called from `App::new` after
+  `register_lsp_log_modes`. The supervisor handle is
+  shared with the host's existing LSP machinery.
+  Activation rides on the existing M.6.1 cascade
+  (`activate_lsp_sub_modes_for`) -- when `lsp-mode`
+  attaches to a buffer, the cascade flips
+  `lsp-completion-mode` on as part of the sub-mode set;
+  the cascade's tail now calls
+  `recompute_active_completion_sources_for` so the cache
+  picks up `gen:lsp-completion` immediately. Symmetric
+  on detach.
+  **Slice scope -- placeholder `produce_async`.** The
+  source's future resolves immediately with no candidates.
+  Production LSP fan-out continues in
+  `lattice-ui-tui::app::lsp::do_lsp_insert_completion_request`
+  (~200 lines, plus the
+  `App.insert_completion_lsp_meta` sidecar +
+  `lsp_completion_meta_for` decoder). CSM.8b will move
+  the fan-out into `produce_async`, retire the sidecar,
+  and decode LSP metadata from candidate payloads via
+  serde-encoded `lsp_types::CompletionItem`. CSM.8a
+  lands the surface so `<C-o>` in the CSM.K2 filter
+  chord palette wires through unchanged.
+  Existing tests for `LspCompletionMode` as a marker
+  relocated -- the `lsp_sub_mode!` macro-emission tests
+  for the unit struct no longer apply; the marker check
+  was the only invariant they pinned. New test asserts
+  the cache reflects the cascade: empty before
+  `toggle_mode_by_name("lsp-mode")`, contains
+  `gen:lsp-completion` with `popup_filter_chord =
+  Some('o')` + `kind: async` after. Workspace 2574 →
+  2575.
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

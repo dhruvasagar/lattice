@@ -829,6 +829,7 @@ dependencies = [
  "arc-swap",
  "criterion",
  "futures",
+ "lattice-completion",
  "lattice-config",
  "lattice-core",
  "lattice-help",

@@ -191,7 +191,12 @@ macro_rules! lsp_sub_mode {
     };
 }
 
-lsp_sub_mode!(LspCompletionMode, "lsp-completion-mode");
+// `LspCompletionMode` lives in `crate::completion` (CSM.8a) --
+// it's source-contributing rather than a pure marker, so the
+// macro-generated unit struct + Mode impl don't suffice. The
+// hand-written impl + `register_lsp_completion_mode` helper
+// take its place.
+pub use crate::completion::LspCompletionMode;
 lsp_sub_mode!(LspDiagnosticsMode, "lsp-diagnostics-mode");
 lsp_sub_mode!(LspHoverMode, "lsp-hover-mode");
 lsp_sub_mode!(LspSignatureMode, "lsp-signature-mode");
@@ -218,11 +223,11 @@ pub fn register_lsp_log_modes(registry: &mut ModeRegistry) {
         .register(LspServerLogMode)
         .expect("lsp-server-log-mode register");
     registry.register(LspMode).expect("lsp-mode register");
-    // M.6.0: nine LSP sub-mode minors. Pure declarations today;
-    // M.6.1+ wires auto-activation + per-feature gating.
-    registry
-        .register(LspCompletionMode)
-        .expect("lsp-completion-mode register");
+    // M.6.0: LSP sub-mode minors. `LspCompletionMode` is
+    // source-contributing (CSM.8a) and registered via
+    // `register_lsp_completion_mode(registry, lsp_handle)` from
+    // the boot path; the rest stay marker minors registered
+    // here.
     registry
         .register(LspDiagnosticsMode)
         .expect("lsp-diagnostics-mode register");
@@ -287,8 +292,9 @@ mod tests {
         assert!(registry.is_registered(LspServerLogMode::mode_id()));
         assert!(registry.is_registered(LspMode::mode_id()));
         // M.6.0 sub-modes are picked up by the same registration
-        // entry point.
-        assert!(registry.is_registered(LspCompletionMode::mode_id()));
+        // entry point. `LspCompletionMode` ships via
+        // `register_lsp_completion_mode` (CSM.8a) which needs a
+        // supervisor handle, so it's *not* asserted here.
         assert!(registry.is_registered(LspDiagnosticsMode::mode_id()));
         assert!(registry.is_registered(LspHoverMode::mode_id()));
         assert!(registry.is_registered(LspSignatureMode::mode_id()));
@@ -305,8 +311,10 @@ mod tests {
         // Capabilities and option contributions are empty; the
         // gating logic lives on the App side at the request
         // entry points + diagnostic / completion-source sites.
+        // `LspCompletionMode` is now source-contributing
+        // (CSM.8a) -- it's tested separately in
+        // `crate::completion`'s own test module.
         let modes: Vec<&dyn Mode> = vec![
-            &LspCompletionMode,
             &LspDiagnosticsMode,
             &LspHoverMode,
             &LspSignatureMode,

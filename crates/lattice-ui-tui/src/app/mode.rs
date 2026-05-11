@@ -433,6 +433,12 @@ impl App {
         self.active_modes.insert(buffer_id, active);
         self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
+        // CSM.8a: M.6.1 cascade flips `lsp-completion-mode` on,
+        // which is source-contributing -- refresh the
+        // `ActiveCompletionSources` cache so the popup picks up
+        // `gen:lsp-completion` (and its `<C-o>` filter chord)
+        // when the LSP server attaches.
+        self.recompute_active_completion_sources_for(buffer_id);
     }
 
     /// M.6.1: deactivate every LSP sub-mode currently active on
@@ -468,6 +474,10 @@ impl App {
         self.active_modes.insert(buffer_id, active);
         self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
+        // CSM.8a: symmetric refresh -- deactivating
+        // `lsp-completion-mode` drops the `gen:lsp-completion`
+        // entry from the cache.
+        self.recompute_active_completion_sources_for(buffer_id);
     }
 
     /// M.5.1: toggle a mode by name on the active pane's buffer.

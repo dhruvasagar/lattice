@@ -161,6 +161,16 @@ impl App {
             lattice_mode::register_foundation_modes(&mut mr);
             lattice_syntax::register_language_modes(&mut mr);
             lattice_lsp::modes::register_lsp_log_modes(&mut mr);
+            // CSM.8a: lsp-completion-mode needs the supervisor
+            // handle (its contributed source captures it). The
+            // existing `register_lsp_log_modes` is supervisor-
+            // free; the completion mode rides on a separate
+            // helper called here with the freshly-built `lsp`
+            // handle from above.
+            lattice_lsp::completion::register_lsp_completion_mode(
+                &mut mr,
+                lsp.clone(),
+            );
             lattice_oil::register_oil_modes(&mut mr);
             lattice_file_tree::register_file_tree_modes(&mut mr);
             lattice_snippet::register_snippet_modes(

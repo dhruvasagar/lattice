@@ -52,6 +52,136 @@ fn clip_to(s: &str, width: usize) -> String {
     out
 }
 
+/// Format unix mode bits like `ls -l` (`-rw-r--r--`,
+/// `drwxr-xr-x`, `lrwxrwxrwx`). On platforms without unix
+/// mode bits, falls back to a six-char `<file>` / `<ro>`
+/// marker so the column stays width-aligned.
+fn format_perms(meta: &std::fs::Metadata) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode();
+        let ft = meta.file_type();
+        let kind = if ft.is_dir() {
+            'd'
+        } else if ft.is_symlink() {
+            'l'
+        } else {
+            '-'
+        };
+        let bit = |mask, ch| if mode & mask != 0 { ch } else { '-' };
+        format!(
+            "{kind}{}{}{}{}{}{}{}{}{}",
+            bit(0o400, 'r'),
+            bit(0o200, 'w'),
+            bit(0o100, 'x'),
+            bit(0o040, 'r'),
+            bit(0o020, 'w'),
+            bit(0o010, 'x'),
+            bit(0o004, 'r'),
+            bit(0o002, 'w'),
+            bit(0o001, 'x'),
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        if meta.permissions().readonly() {
+            "<ro>      ".to_string()
+        } else {
+            "<rw>      ".to_string()
+        }
+    }
+}
+
+/// Format a byte size with a single-letter SI-ish suffix
+/// (`72` / `1.4K` / `70k` / `12M` / `4.2G`), matching the
+/// `ls -h` convention. Uses 1024-based units. Capped at 5
+/// chars so the size column has a stable width.
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if bytes < KB {
+        format!("{bytes}")
+    } else if bytes < MB {
+        let k = bytes as f64 / KB as f64;
+        if k < 10.0 {
+            format!("{k:.1}K")
+        } else {
+            format!("{}K", bytes / KB)
+        }
+    } else if bytes < GB {
+        let m = bytes as f64 / MB as f64;
+        if m < 10.0 {
+            format!("{m:.1}M")
+        } else {
+            format!("{}M", bytes / MB)
+        }
+    } else {
+        let g = bytes as f64 / GB as f64;
+        if g < 10.0 {
+            format!("{g:.1}G")
+        } else {
+            format!("{}G", bytes / GB)
+        }
+    }
+}
+
+/// Format a `SystemTime` as a relative-to-now phrase
+/// (`28 hours ago`, `3 days ago`, `just now`). Stable
+/// across reasonable clock skew (negative durations clamp
+/// to "just now" rather than producing nonsense). Returns
+/// a fixed-format string so columns align.
+fn format_mtime_relative(mtime: std::time::SystemTime) -> String {
+    let now = std::time::SystemTime::now();
+    let secs = match now.duration_since(mtime) {
+        Ok(d) => d.as_secs(),
+        Err(_) => return "just now".to_string(),
+    };
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 60 * 60 {
+        let m = secs / 60;
+        if m == 1 {
+            "1 minute ago".to_string()
+        } else {
+            format!("{m} minutes ago")
+        }
+    } else if secs < 60 * 60 * 36 {
+        // Hours up to 36h, matching moment.js / emacs
+        // marginalia convention (so a file edited yesterday
+        // afternoon reads "28 hours ago" instead of
+        // jumping to "1 day ago" at the 24h boundary).
+        let h = secs / (60 * 60);
+        if h == 1 {
+            "1 hour ago".to_string()
+        } else {
+            format!("{h} hours ago")
+        }
+    } else if secs < 60 * 60 * 24 * 30 {
+        let d = secs / (60 * 60 * 24);
+        if d == 1 {
+            "1 day ago".to_string()
+        } else {
+            format!("{d} days ago")
+        }
+    } else if secs < 60 * 60 * 24 * 365 {
+        let mo = secs / (60 * 60 * 24 * 30);
+        if mo == 1 {
+            "1 month ago".to_string()
+        } else {
+            format!("{mo} months ago")
+        }
+    } else {
+        let y = secs / (60 * 60 * 24 * 365);
+        if y == 1 {
+            "1 year ago".to_string()
+        } else {
+            format!("{y} years ago")
+        }
+    }
+}
+
 /// `:picker files [root]`. Walks `root` (or the workspace
 /// root from the context) and emits one row per regular file
 /// under the standard ignore set (`.git`, `target`,
@@ -121,16 +251,76 @@ impl PickerSourceGenerator for FilesSource {
                 canonical_root.display()
             ));
         }
-        let pairs = entries
+        // Stat each entry for marginalia (perms / size /
+        // mtime). One syscall per file -- on a fast disk
+        // O(N µs); the walker's 5000-entry cap keeps this
+        // bounded to <100ms in the worst case. Files we
+        // can't stat (permission denied mid-walk) get an
+        // empty-metadata row -- the path still shows but
+        // the marginalia columns blank out.
+        struct Row {
+            abs: std::path::PathBuf,
+            rel_display: String,
+            perms: String,
+            size: String,
+            mtime: String,
+        }
+        let rows: Vec<Row> = entries
             .into_iter()
             .map(|abs| {
                 let rel = abs
                     .strip_prefix(&canonical_root)
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|_| abs.clone());
-                let display = rel.display().to_string();
+                let (perms, size, mtime) = match std::fs::metadata(&abs) {
+                    Ok(m) => (
+                        format_perms(&m),
+                        format_size(m.len()),
+                        m.modified()
+                            .map(format_mtime_relative)
+                            .unwrap_or_default(),
+                    ),
+                    Err(_) => (String::new(), String::new(), String::new()),
+                };
+                Row {
+                    abs,
+                    rel_display: rel.display().to_string(),
+                    perms,
+                    size,
+                    mtime,
+                }
+            })
+            .collect();
+        // Per-column widths adapt to the longest row in each
+        // column. Path column caps at 60 chars (clip with
+        // ellipsis) so the marginalia stays visible on
+        // narrow terminals. Size + mtime have fixed maximums
+        // by formatter design (~5 / ~16 chars); perms is
+        // 10 chars on unix.
+        let path_width = rows
+            .iter()
+            .map(|r| r.rel_display.chars().count())
+            .max()
+            .unwrap_or(0)
+            .min(60);
+        let perms_width = rows.iter().map(|r| r.perms.len()).max().unwrap_or(0);
+        let size_width = rows.iter().map(|r| r.size.len()).max().unwrap_or(0);
+        let pairs = rows
+            .into_iter()
+            .map(|row| {
+                let path_clipped = clip_to(&row.rel_display, path_width);
+                let display = format!(
+                    "{:<path$}  {:<perms$}  {:>size$}  {}",
+                    path_clipped,
+                    row.perms,
+                    row.size,
+                    row.mtime,
+                    path = path_width,
+                    perms = perms_width,
+                    size = size_width,
+                );
                 let cand = RawCandidate::plain(display, CandidateKind::Plain);
-                (cand, RoutingPayload::OpenFile { path: abs })
+                (cand, RoutingPayload::OpenFile { path: row.abs })
             })
             .collect();
         Ok(PickerInitResult::Inline(pairs))
@@ -1209,6 +1399,102 @@ mod tests {
             }
             other => panic!("expected Inline, got {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Marginalia helpers: `format_size` matches the
+    /// `ls -h` convention (bytes / K / M / G with one-decimal
+    /// precision under 10 of each unit).
+    #[test]
+    fn format_size_humanizes_byte_counts() {
+        assert_eq!(format_size(0), "0");
+        assert_eq!(format_size(512), "512");
+        assert_eq!(format_size(1024), "1.0K");
+        assert_eq!(format_size(1024 * 9), "9.0K");
+        assert_eq!(format_size(1024 * 10), "10K");
+        assert_eq!(format_size(1024 * 70), "70K");
+        assert_eq!(format_size(1024 * 1024), "1.0M");
+        assert_eq!(format_size(1024 * 1024 * 12), "12M");
+        assert_eq!(format_size(1024_u64.pow(3) * 4 + 1024_u64.pow(3) / 5), "4.2G");
+    }
+
+    /// `format_mtime_relative` produces stable English-y
+    /// relative phrases. We don't test the boundary
+    /// transitions exactly (they depend on wall-clock); we
+    /// test category dispatch through synthesised deltas.
+    #[test]
+    fn format_mtime_relative_categorises_durations() {
+        use std::time::{Duration, SystemTime};
+
+        let now = SystemTime::now();
+        // 30 seconds ago -> "just now"
+        let recent = now - Duration::from_secs(30);
+        assert_eq!(format_mtime_relative(recent), "just now");
+        // 3 minutes ago
+        let mins = now - Duration::from_secs(3 * 60);
+        assert_eq!(format_mtime_relative(mins), "3 minutes ago");
+        // 1 minute ago (singular)
+        let one_min = now - Duration::from_secs(70);
+        assert_eq!(format_mtime_relative(one_min), "1 minute ago");
+        // 28 hours ago (the user's example)
+        let hours = now - Duration::from_secs(28 * 60 * 60);
+        assert_eq!(format_mtime_relative(hours), "28 hours ago");
+        // 5 days ago
+        let days = now - Duration::from_secs(5 * 24 * 60 * 60);
+        assert_eq!(format_mtime_relative(days), "5 days ago");
+    }
+
+    /// Unix permission bits format like `ls -l`.
+    #[cfg(unix)]
+    #[test]
+    fn format_perms_matches_ls_l_shape() {
+        // We can't easily construct a Metadata with arbitrary
+        // bits; instead stat a real fixture file and confirm
+        // the format shape.
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-perms-{}", std::process::id()));
+        std::fs::write(&tmp, b"x").unwrap();
+        let meta = std::fs::metadata(&tmp).unwrap();
+        let s = format_perms(&meta);
+        assert_eq!(s.len(), 10, "expected 10-char permission string, got `{s}`");
+        assert!(s.starts_with('-'), "file should render with `-` leader, got `{s}`");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Files source's display now carries the marginalia
+    /// columns (perms + size + mtime). Confirms the integration
+    /// by walking a temp dir with one known file and asserting
+    /// the display contains size + a relative-time phrase.
+    #[test]
+    fn files_source_display_carries_marginalia_columns() {
+        let tmp = std::env::temp_dir()
+            .join(format!("lattice-files-margin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("readme.md"), b"# hello").unwrap();
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = FilesSource::new();
+        let result = source
+            .init(&ctx, std::slice::from_ref(&tmp.display().to_string()))
+            .expect("inline");
+        let PickerInitResult::Inline(pairs) = result else {
+            panic!("expected Inline");
+        };
+        assert_eq!(pairs.len(), 1);
+        let display = &pairs[0].0.display;
+        // Path shows up.
+        assert!(display.contains("readme.md"), "got `{display}`");
+        // Size is 7 bytes -- shown as `7`.
+        assert!(display.contains(" 7 "), "expected size col, got `{display}`");
+        // mtime is a relative-time phrase. The file was just
+        // written so "just now" / "1 minute ago" depending
+        // on slow CI clocks.
+        assert!(
+            display.contains("just now") || display.contains("minute"),
+            "expected relative mtime, got `{display}`"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

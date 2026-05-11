@@ -1265,7 +1265,326 @@ Deliverables:
 
 ---
 
-## 12. Performance commitments
+## 12. Mode-driven source contributions
+
+Sections 3 -- 11 describe the v1 wiring: sources are hardcoded
+in the host. `populate_insert_completion_sync` calls
+`BufferWordsSource` / `lattice-snippet` / `Syntax::collect_symbols`
+directly; `do_lsp_insert_completion_request` fans out to LSP
+servers from the TUI crate. `lsp-completion-mode` is a marker
+minor whose only job is to gate the LSP fan-out at one site
+(`App::lsp_completion_mode_enabled_for`).
+
+This section describes the post-v1 evolution: **every source is
+contributed by a minor mode**, and the engine asks active modes
+what they contribute. The shape mirrors corfu + cape (emacs) and
+the existing lattice contract for `options()` / `keymap()` /
+`subscriptions()` / `decorations()` -- a new declarative
+contribution on the `Mode` trait.
+
+### 12.1 Why this shape
+
+Four reasons, in priority order:
+
+1. **Plugin parity.** A WASM plugin that wants to add a
+   completion source registers a minor mode contributing the
+   source. Same surface every other mode contribution uses; no
+   special "completion plugin" path.
+2. **Feature locality.** `lsp-completion-mode` lives in
+   `lattice-lsp`; the LSP source struct should too. v1 has it
+   in `lattice-ui-tui::app::lsp` because the trait surface
+   didn't support async sources cleanly. Mode contributions
+   close that gap.
+3. **Uniform discoverability.** `:describe-mode
+   lsp-completion-mode` renders *what source it contributes,
+   with what id, with what priority, with what trigger chars*
+   -- same rendering path as options / keymap.
+   `:describe-buffer`'s "Active modes" section (already
+   shipped) naturally surfaces "what sources are active here."
+4. **Toggle semantics already work.** `:lsp-completion-mode`
+   exists as a toggle command (M.5.1 auto-generated from the
+   mode name). The user-facing surface doesn't change.
+
+### 12.2 The trait surface
+
+A new declarative contribution on `Mode`:
+
+```rust
+pub trait Mode: Send + Sync + 'static {
+	// ... existing: id, kind, options, keymap,
+	// subscriptions, decorations, implies, conflicts,
+	// required_capabilities, on_activate, on_deactivate ...
+
+	/// Insert-mode completion sources this mode contributes
+	/// while active on a buffer. Empty = no contribution.
+	/// Default no-op; LSP / snippet / buffer-words / etc.
+	/// minors override.
+	fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
+		Vec::new()
+	}
+}
+```
+
+`CompletionSourceContribution` carries the source as one of two
+shapes (sync produce, async spawn) plus the metadata the
+aggregator needs upfront (priority, trigger chars, auto-fire
+policy) without paying a dynamic-dispatch cost per keystroke:
+
+```rust
+pub struct CompletionSourceContribution {
+	pub id: SourceId,
+	pub default_priority: u32,
+	pub auto_trigger: bool,
+	pub trigger_chars: Vec<char>,
+	pub kind: CompletionSourceKind,
+}
+
+pub enum CompletionSourceKind {
+	/// Cheap, blocking. Aggregator calls `produce(ctx)`
+	/// directly on the popup-open / refilter path.
+	/// `Arc` so cloning the contribution stays O(1).
+	Sync(Arc<dyn SyncCompletionSource>),
+
+	/// Tokio-driven; the aggregator spawns the task on
+	/// popup-open and on every `isIncomplete` re-fire. The
+	/// task pushes into a host-owned mailbox that drains
+	/// per-frame into `state.raw`.
+	Async(Arc<dyn AsyncCompletionSource>),
+}
+
+pub trait SyncCompletionSource: Send + Sync + std::fmt::Debug {
+	fn produce(&self, ctx: &InsertContext<'_>) -> Vec<RawCandidate>;
+}
+
+pub trait AsyncCompletionSource: Send + Sync + std::fmt::Debug {
+	/// Spawn the per-popup-instance task. The task pushes
+	/// into `tx` until `token` is cancelled or it has no
+	/// more to send. `ctx_snapshot` is owned data the task
+	/// captures (URI + cursor + query + trigger), since the
+	/// borrow can't cross the spawn boundary.
+	fn spawn(
+		&self,
+		ctx_snapshot: InsertContextSnapshot,
+		tx: tokio::sync::mpsc::UnboundedSender<RawCandidate>,
+		token: lattice_protocol::CancellationToken,
+	);
+}
+```
+
+The existing `InsertSource` trait (§3.3) is the v1 ancestor of
+`SyncCompletionSource`. The async side is genuinely new -- v1
+had no async-source trait, just bespoke host code. Naming the
+two as a family clarifies the contract: a source is either
+"give me data now, synchronously" or "spawn me; I'll push."
+
+### 12.3 The `completion-mode` engine minor
+
+`completion-mode` is the mode that *is* the completion engine's
+active surface. Activation contract:
+
+- **Activated** by the host when `App.insert_completion`
+  transitions from `None` to `Some(_)` (i.e. the popup opens).
+  No user toggle: it's a transient minor reflecting popup
+  state.
+- **Deactivated** on dismiss.
+- **Contributes:** the popup-layer keymap (§6.1) -- the
+  `<C-n>` / `<C-p>` / `<C-y>` / `<C-d>` / `<C-f>` / `<C-b>` /
+  `<C-e>` / `<CR>` / `<Tab>` / `<Esc>` chords the
+  `COMPLETION_POPUP_LAYER` already routes.
+- **Does NOT contribute a source itself.** The engine isn't a
+  source; it consumes sources from *other* active modes.
+
+This formalises §3.8's "completion-popup minor mode" sketch as
+a real registered mode. The architectural payoff is that
+`:describe-key <C-n>` resolves through the mode registry and
+attributes the binding to `completion-mode` -- same shape every
+other transient layer (active-snippet-mode, hover-mode) uses.
+
+### 12.4 Active source resolution + caching
+
+The aggregator must not pay a per-keystroke "walk every active
+mode" cost. Resolution is cached:
+
+```rust
+// On `App.active_modes[buffer]` change (activate / deactivate),
+// recompute and cache:
+buffer_locals[buffer].insert(ActiveCompletionSources(sources));
+
+pub struct ActiveCompletionSources(pub Vec<CompletionSourceContribution>);
+impl BufferLocal for ActiveCompletionSources {
+	const OWNER_MODE: &'static str = "completion-mode";
+	// ...
+}
+```
+
+The aggregator reads through the buffer-local on the popup-
+open path -- O(1) lookup, no registry walk per keystroke. The
+recompute happens on mode-transition (rare) and walks the
+buffer's `active_modes` set, calling `mode.completion_sources()`
+on each. Per-language overrides (§3.4) filter the resolved
+list at popup-open time (cheap; runs once per popup, not per
+keystroke).
+
+### 12.5 Source migration table
+
+| Source today (§3.4) | Becomes | Mode | Crate |
+|---|---|---|---|
+| `gen:lsp-completion` | `AsyncCompletionSource` | `lsp-completion-mode` (already exists) | `lattice-lsp` |
+| `gen:snippet` | `SyncCompletionSource` | new `snippet-completion-mode` | `lattice-snippet` |
+| `gen:buffer-words` | `SyncCompletionSource` | new `buffer-words-mode` | `lattice-completion` |
+| `gen:tree-sitter-symbol` | `SyncCompletionSource` | new `tree-sitter-completion-mode` | `lattice-syntax` |
+| `gen:path` | `SyncCompletionSource` | new `path-completion-mode` | `lattice-completion` |
+| `gen:plugin-*` | either shape | plugin's minor mode | plugin crate |
+
+Each new minor follows the existing "a mode lives with the
+crate that owns its feature" rule. `register_*_modes` per
+crate wires registration at boot, exactly like
+`register_lsp_log_modes` / `register_file_tree_modes` etc.
+
+### 12.6 Auto-activation policy
+
+Modes that contribute sources auto-activate by default on
+relevant buffers:
+
+| Mode | Auto-activates when |
+|---|---|
+| `buffer-words-mode` | every buffer with `text-mode` or any language major |
+| `snippet-completion-mode` | every buffer where `snippet_registry.has_for(language)` returns true |
+| `tree-sitter-completion-mode` | every buffer with an attached `Syntax` handle |
+| `path-completion-mode` | every buffer (suppressed at non-string scopes by the source itself) |
+| `lsp-completion-mode` | per M.6.1 cascade -- when `lsp-mode` activates and the attached server advertises `completionProvider` |
+
+Users disable via `:<mode>-mode` toggle (vim grammar already
+covers this). TOML-level disable lives in the existing
+`completion.per-language.<lang>.sources` allowlist (§3.4) --
+the per-language override still wins, since it's the
+*selection* layer applied on top of the activated set.
+
+### 12.7 LSP source relocation
+
+The LSP source moves from bespoke host code into a real
+`AsyncCompletionSource` implementation in `lattice-lsp`:
+
+```rust
+// crates/lattice-lsp/src/completion.rs (new module).
+
+pub struct LspCompletionSource {
+	pub lsp: LspSupervisorHandle,
+}
+
+impl AsyncCompletionSource for LspCompletionSource {
+	fn spawn(
+		&self,
+		ctx: InsertContextSnapshot,
+		tx: mpsc::UnboundedSender<RawCandidate>,
+		token: CancellationToken,
+	) {
+		let lsp = self.lsp.clone();
+		// Same fan-out + dedup + isIncomplete handling
+		// currently in `do_lsp_insert_completion_request`,
+		// but spawned from this method instead of the host.
+		tokio::spawn(async move {
+			// ... existing per-server iteration ...
+		});
+	}
+}
+```
+
+`LspCompletionMode::completion_sources()` returns one
+`CompletionSourceContribution { id: LSP_COMPLETION_SOURCE_ID,
+default_priority: 200, kind: Async(Arc::new(LspCompletionSource {
+lsp })) }`. The supervisor handle is captured at mode
+construction (App boot wires it).
+
+Once this lands, `lattice-ui-tui::app::lsp` no longer needs the
+~200-line `do_lsp_insert_completion_request` path; the
+aggregator drives the spawn through `Async::spawn`. The TUI
+keeps only the per-frame drain that merges `state.raw`.
+
+### 12.8 Slice plan
+
+Each slice ships docs + tests + (perf-relevant) benches +
+graceful error handling per CLAUDE.md. None of these can be
+batched -- they're staged so a regression at any step is
+attributable.
+
+| Slice | What lands | Crates touched |
+|---|---|---|
+| **CSM.1** | `CompletionSourceContribution` + `SyncCompletionSource` + `AsyncCompletionSource` types in `lattice-completion::source`. Default `Mode::completion_sources()` -> `Vec::new()`. No behaviour change -- everything still uses the v1 hardcoded path. | `lattice-completion`, `lattice-mode` |
+| **CSM.2** | `completion-mode` minor registered in `lattice-completion::modes` (new module). Host activates / deactivates on popup open / close. `COMPLETION_POPUP_LAYER` lookup gated on the mode being active (replaces the imperative `ctx.completion_popup_open` flag). | `lattice-completion`, `lattice-ui-tui` |
+| **CSM.3** | `ActiveCompletionSources` buffer-local + the recompute-on-mode-transition wiring. Empty in practice (no mode contributes yet); proves the cache shape works. Reader plumbed into the aggregator, fallback to today's hardcoded calls when the local is empty. | `lattice-ui-tui` |
+| **CSM.4** | `buffer-words-mode` (new minor in `lattice-completion`) contributes a `SyncCompletionSource`. Migrate the hardcoded buffer-words call in `populate_insert_completion_sync` to read through the active-sources cache. Tests pin behaviour parity. | `lattice-completion`, `lattice-ui-tui` |
+| **CSM.5** | `snippet-completion-mode` in `lattice-snippet`. Same migration shape as CSM.4. The snippet metadata sidecar (`insert_completion_snippet_meta`) stays host-side -- the source emits candidates with `CandidateData::Extension` payloads; the host's accept path resolves them as before. | `lattice-snippet`, `lattice-ui-tui` |
+| **CSM.6** | `tree-sitter-completion-mode` in `lattice-syntax`. Migrate `collect_symbols` walk into the source's `produce()`. | `lattice-syntax`, `lattice-ui-tui` |
+| **CSM.7** | `path-completion-mode` in `lattice-completion`. Migrate the path-context branch (`completion_in_path_context` stays as the host's scope-detect flag; the mode auto-suppresses outside string scopes by reading the flag through the context snapshot). | `lattice-completion`, `lattice-ui-tui` |
+| **CSM.8** | `LspCompletionSource` in `lattice-lsp::completion`. `LspCompletionMode::completion_sources()` returns it. Remove the bespoke `do_lsp_insert_completion_request` body -- the aggregator's async-spawn path covers it. `App::lsp_completion_mode_enabled_for` becomes a deprecated alias of the generic "is mode active" lookup. | `lattice-lsp`, `lattice-ui-tui` |
+| **CSM.9** | Plugin reservation: the WIT surface (Phase 7 prereq) defines `mode.completion-sources -> list<completion-source>` so a WASM plugin can contribute. No actual plugin -- this slice just locks the WIT shape so the host-side runtime can target it. | `wit/`, `lattice-mode` |
+
+Slice ordering: foundation (CSM.1) → engine mode (CSM.2) → cache
+(CSM.3) → migrate sources cheapest-first (CSM.4 → CSM.7) → LSP
+last (CSM.8) → plugin reservation (CSM.9). Each later slice
+inherits the parity tests of every earlier slice.
+
+### 12.9 Performance posture
+
+The cached `ActiveCompletionSources` keeps the hot path
+identical to today's:
+
+- **Per-keystroke refilter:** reads cached source list (O(1)
+  buffer-local lookup), calls each sync source's `produce()`
+  (same cost as today's hardcoded calls), runs the existing
+  matcher / ranker pipeline. No registry walk, no dynamic-
+  dispatch beyond what the trait object already costs.
+- **Async source spawn:** runs at popup-open + on
+  `isIncomplete` re-fire only. Same trigger frequency as
+  today; same cost.
+- **Mode-transition recompute:** rare (mode flips on
+  major-mode change, LSP attach/detach, manual `:` toggle).
+  Walks `active_modes.len()` × `mode.completion_sources()`
+  calls -- each a `Vec::new()` for non-contributing modes,
+  bounded clone of contribution metadata for contributing
+  ones. Worst case microseconds; happens off the keystroke
+  path.
+
+Benchmark coverage (lands with CSM.4 -- the first migrated
+source): `bench_completion_sync_cached` measures the
+cached-active-sources path against today's hardcoded path,
+asserts the regression budget is under 5% on a 200-candidate
+popup refilter.
+
+### 12.10 Open questions
+
+1. **Source contribution mutability post-activation.** A mode
+   today contributes a static `OptionOverrideSet`. Should
+   `completion_sources()` be allowed to vary by buffer (e.g.
+   `lsp-completion-mode` returns trigger chars sourced from
+   the *currently attached server's* `completionProvider`)?
+   Default position: yes, but the mode reads buffer-locals
+   for the per-buffer payload, not arguments to the method.
+   The method itself stays `&self -> Vec<...>`; the dynamic
+   bits come from the source closure capturing `Weak<...>`
+   handles. Verify when CSM.8 lands.
+
+2. **Cross-source dedup.** Today the host dedups LSP items by
+   `(label, kind)` inside the LSP fan-out, and the aggregator
+   reruns matcher / ranker over the merged set. Should
+   cross-source dedup (e.g. a tree-sitter symbol that
+   coincides with a buffer word) be a generic aggregator
+   concern? Default position: no -- per-source priority
+   already handles the "which wins on tie" question. Visual
+   merge of identical-text rows is a 4.2.g.7 polish item.
+
+3. **Manual toggle of `completion-mode`.** Should the user be
+   able to `:completion-mode off` to disable the popup
+   entirely? The mode auto-activates on popup-open, so
+   user-level disable is conceptually "no completion source
+   is active." Cleaner: a `completion.enabled` typed option
+   that gates `do_completion_trigger` outright, leaving the
+   mode purely transient. Resolve when CSM.2 lands.
+
+---
+
+## 13. Performance commitments
 
 | Path | Budget | Notes |
 |---|---|---|
@@ -1282,7 +1601,7 @@ budget (8 ms at 120 Hz / 16 ms at 60 Hz, CLAUDE.md goal #1).
 
 ---
 
-## 13. Open questions
+## 14. Open questions
 
 1. **Snippet placeholder mirroring with concurrent edits.**
    What if the user types in one mirror and a buffer event
@@ -1316,7 +1635,7 @@ budget (8 ms at 120 Hz / 16 ms at 60 Hz, CLAUDE.md goal #1).
 
 ---
 
-## 14. Cross-references
+## 15. Cross-references
 
 - design.md §5.11.3 — completion pipeline (cmdline today;
   Insert-mode peer formalised by this doc).
@@ -1336,3 +1655,7 @@ budget (8 ms at 120 Hz / 16 ms at 60 Hz, CLAUDE.md goal #1).
 - `friendly-snippets` upstream:
   https://github.com/rafamadriz/friendly-snippets — the
   default snippet corpus we target compatibility with.
+- [`mode-architecture.md`](mode-architecture.md) — `Mode`
+  trait surface; §12 of this doc adds
+  `Mode::completion_sources()` as a new declarative
+  contribution.

@@ -342,15 +342,20 @@ impl BufferRegistry {
         ids
     }
 
-    pub fn oil_with_dir(&self, dir: &std::path::Path) -> Option<BufferId> {
-        for entry in self.by_id.values() {
-            if let BufferData::Oil(o) = &entry.data
-                && o.dir == dir
-            {
-                return Some(entry.id);
-            }
-        }
-        None
+    /// IDs of every registered oil buffer, in arbitrary order.
+    /// Use the App's `oil_with_dir` helper for the dir-keyed
+    /// lookup -- it walks these ids and checks each one's
+    /// `OilDir` buffer-local (the canonical "where does this
+    /// oil buffer live"). The registry can't do that walk on
+    /// its own because it doesn't own buffer-locals.
+    pub fn oil_ids(&self) -> Vec<BufferId> {
+        self.by_id
+            .values()
+            .filter_map(|entry| match &entry.data {
+                BufferData::Oil(_) => Some(entry.id),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn oil(&self, id: BufferId) -> Option<&OilBuffer> {

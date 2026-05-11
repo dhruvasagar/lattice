@@ -217,7 +217,7 @@ impl App {
         );
         // Host-side candidate build (the picker module is
         // renderer-agnostic and doesn't import `BufferRegistry`).
-        let pairs = raw_buffer_candidates(&self.buffers, active);
+        let pairs = raw_buffer_candidates(&self.buffers, &self.buffer_locals, active);
         p.set_raw_candidates_with_routing(pairs);
         // Stash the original active buffer id so dismiss can
         // restore. None on no-buffer pickers (LSP); for the
@@ -426,6 +426,7 @@ impl App {
 /// `BufferRegistry` in hand.
 pub(super) fn raw_buffer_candidates(
     registry: &BufferRegistry,
+    buffer_locals: &std::collections::HashMap<BufferId, lattice_mode::BufferLocals>,
     active: BufferId,
 ) -> Vec<(lattice_completion::RawCandidate, crate::picker::RoutingPayload)> {
     let mut ids = registry.sorted_ids();
@@ -450,12 +451,11 @@ pub(super) fn raw_buffer_candidates(
                 )
             }
             BufferData::FileTree(t) => (
-                // M.3.2.c.2 note: this is a free-function
-                // buffer-picker site without App access.
-                // Reads the struct field directly; M.3.2.c.5
-                // can route through a parameterised
-                // `buffer_locals: &HashMap<...>` once free
-                // functions are reworked.
+                // M.3.2.c.2 note: file-tree's root is still a
+                // struct field; the parallel M.3.2.c.5 move
+                // will retire it the same way oil retired
+                // `dir`. Read through buffer-locals here as
+                // soon as that lands.
                 format!("#{:<3} {}", id.0, t.root.display()),
                 format!("tree{active_marker}"),
             ),
@@ -463,10 +463,21 @@ pub(super) fn raw_buffer_candidates(
                 format!("#{:<3} {}", id.0, h.title),
                 format!("help{active_marker}"),
             ),
-            BufferData::Oil(o) => (
-                format!("#{:<3} {}", id.0, o.dir.display()),
-                format!("oil{active_marker}"),
-            ),
+            BufferData::Oil(_) => {
+                // M.3.2.c.5: oil's dir lives in the `OilDir`
+                // buffer-local. The picker reads through the
+                // passed-in `buffer_locals` map; no struct
+                // mirror to fall back on.
+                let dir_display = buffer_locals
+                    .get(&id)
+                    .and_then(|locals| locals.get::<crate::modes::OilDir>())
+                    .map(|d| d.0.display().to_string())
+                    .unwrap_or_else(|| "[no dir]".to_string());
+                (
+                    format!("#{:<3} {}", id.0, dir_display),
+                    format!("oil{active_marker}"),
+                )
+            }
         };
         // `text` is the user-facing buffer id; matcher matches
         // against `display`. The typed routing payload carries

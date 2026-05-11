@@ -560,15 +560,20 @@ impl App {
     pub(super) fn do_write(&mut self, path: Option<std::path::PathBuf>) {
         if matches!(self.active_buffer, BufferKind::Oil) {
             let oil_id = self.active_pane_buffer_id();
-            // M.3.2.c.5: read dir through buffer_locals exclusively.
-            let dir_display = self
-                .buffer_locals
-                .get(&oil_id)
-                .and_then(|locals| locals.get::<crate::modes::OilDir>())
-                .map(|d| d.0.display().to_string())
-                .unwrap_or_default();
+            // M.3.2.c.5: dir lives in the OilDir buffer-local
+            // (no struct mirror). Read it once and pass into
+            // `OilBuffer::apply` -- the apply operation walks
+            // disk relative to this path.
+            let Some(dir) = self.oil_dir_for(oil_id) else {
+                self.set_message(
+                    EchoLevel::Error,
+                    "oil apply: no OilDir buffer-local seeded".to_string(),
+                );
+                return;
+            };
+            let dir_display = dir.display().to_string();
             if let Some(oil) = self.buffers.oil_mut(oil_id) {
-                match oil.apply() {
+                match oil.apply(&dir) {
                     Ok(()) => self.set_message(EchoLevel::Info, format!("oil: applied changes in {dir_display}")),
                     Err(e) => self.set_message(EchoLevel::Error, format!("oil apply error: {e}")),
                 }
@@ -2628,11 +2633,8 @@ mod tests {
         );
         // Trigger `-`.
         a.apply(crate::app::Action::OilNavigateUp);
-        let dir_after = a
-            .buffers
-            .oil(oil_id)
-            .map(|o| o.dir.clone())
-            .unwrap_or_default();
+        // Dir lives in the OilDir buffer-local (canonical).
+        let dir_after = a.oil_dir_for(oil_id).unwrap_or_default();
         assert_eq!(dir_after, tmp);
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -2760,20 +2762,12 @@ mod tests {
         );
         // Navigate up.
         a.do_oil_navigate_up();
-        // OilBuffer::dir is now tmp.
-        let oil_dir = a.buffers.oil(oil_id).map(|o| o.dir.clone()).unwrap_or_default();
-        assert_eq!(oil_dir, tmp);
-        // The buffer-local mirror must also be `tmp`, not the
-        // stale `tmp/sub`.
-        let mirrored = a
-            .buffer_locals
-            .get(&oil_id)
-            .and_then(|l| l.get::<crate::modes::OilDir>())
-            .map(|d| d.0.clone())
-            .unwrap_or_default();
+        // M.3.2.c.5: dir lives in the OilDir buffer-local
+        // (single source of truth; no struct mirror to drift).
+        let dir_after = a.oil_dir_for(oil_id).unwrap_or_default();
         assert_eq!(
-            mirrored, tmp,
-            "buffer-local OilDir should reflect the post-navigate dir",
+            dir_after, tmp,
+            "OilDir should reflect the post-navigate dir",
         );
 
         // Sanity: open the file at row 0 (which should be
@@ -2826,8 +2820,9 @@ mod tests {
         a.cursor.line = sub_row as u32;
         a.cursor.byte = 0;
         a.do_oil_follow();
-        // Now in oil rooted at tmp/sub.
-        let dir_after = a.buffers.oil(oil_id).map(|o| o.dir.clone()).unwrap_or_default();
+        // Now in oil rooted at tmp/sub (read via OilDir, the
+        // canonical buffer-local).
+        let dir_after = a.oil_dir_for(oil_id).unwrap_or_default();
         assert_eq!(dir_after, tmp.join("sub"));
         // Listing should show `inside.txt` at row 0.
         let names_after: Vec<String> = a

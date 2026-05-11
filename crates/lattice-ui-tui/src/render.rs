@@ -1943,13 +1943,14 @@ fn draw_oil_pane(
     let theme = &app.theme;
     let raw_text = oil.content.as_string();
     let snapshot = oil.snapshot_entries();
-    // M.3.2.c.3: prefer dir from buffer-locals.
+    // M.3.2.c.5: dir lives exclusively in the OilDir
+    // buffer-local. No struct fallback; nothing to drift.
     let dir = app
         .buffer_locals
         .get(&pane.buffer_id)
         .and_then(|locals| locals.get::<crate::modes::OilDir>())
         .map(|d| d.0.clone())
-        .unwrap_or_else(|| oil.dir.clone());
+        .unwrap_or_default();
     let lines: Vec<Line> = raw_text
         .split('\n')
         .enumerate()

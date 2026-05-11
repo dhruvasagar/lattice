@@ -4,12 +4,32 @@
 //! added as renderer spans in `draw_oil_pane` so the rope stays pure
 //! editable text). `apply()` diffs the rope against the open-time
 //! snapshot and executes renames / deletes / creates on disk.
+//!
+//! ## Where does "the dir this oil buffer represents" live?
+//!
+//! Not on `OilBuffer`. M.3.2.c.5 retired the struct-stored `dir`
+//! field; the canonical answer is the [`OilDir`] [`BufferLocal`]
+//! owned by `oil-mode`. The App reads it from
+//! `buffer_locals[id].get::<OilDir>()` and passes it into the
+//! `OilBuffer` methods that need it ([`OilBuffer::open`],
+//! [`OilBuffer::reload`], [`OilBuffer::apply`]) as an explicit
+//! `&Path` parameter.
+//!
+//! That design forces a single source of truth (the buffer-local)
+//! and makes the per-buffer mode-owned state uniform across every
+//! buffer kind: a reader does `buffer_locals[id].get::<T>()` and
+//! never branches on `BufferKind`. `:describe-buffer` enumerates
+//! every contributed local through the same path. Forgetting to
+//! re-mirror state after a mutation -- the class of bug that
+//! produced "navigate-up corrupts paths" -- is impossible by
+//! construction because the buffer-local IS the state. There's
+//! nothing to mirror.
 
 pub mod modes;
 
 pub use modes::{OilDir, OilMode, register_oil_modes};
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use lattice_core::Buffer;
 use lattice_protocol::edit::Edit;
@@ -23,26 +43,35 @@ pub struct OilEntry {
     pub is_dir: bool,
 }
 
+/// Editable directory listing buffer. Holds the rope (editable
+/// filename-per-line text) and a snapshot of the entries at
+/// open / last-successful-apply time. Does NOT hold the
+/// directory path -- that lives in the
+/// [`OilDir`] `BufferLocal`, looked up by the App.
 #[derive(Debug)]
 pub struct OilBuffer {
     pub id: BufferId,
-    pub dir: PathBuf,
-    /// State at open / last successful `:w`.
+    /// State at open / last successful `:w`. The dir these
+    /// entries belong to is not stored here -- the App carries
+    /// it in [`OilDir`].
     snapshot: Vec<OilEntry>,
-    /// Editable rope — one bare filename per line, dirs-first alpha order.
+    /// Editable rope -- one bare filename per line, dirs-first
+    /// alpha order.
     pub content: Buffer,
     pub cursor: Position,
     pub scroll: usize,
 }
 
 impl OilBuffer {
-    pub fn open(dir: impl Into<PathBuf>) -> std::io::Result<Self> {
-        let dir = dir.into();
-        let snapshot = read_dir_entries(&dir)?;
+    /// Open an oil buffer for `dir`. `dir` is used only to
+    /// build the initial snapshot; the buffer doesn't retain
+    /// it. The caller is responsible for storing `dir` in the
+    /// [`OilDir`] buffer-local under the returned buffer's id.
+    pub fn open(dir: &Path) -> std::io::Result<Self> {
+        let snapshot = read_dir_entries(dir)?;
         let content = render_to_buffer(&snapshot);
         Ok(Self {
             id: BufferId::next(),
-            dir,
             snapshot,
             content,
             cursor: Position::ZERO,
@@ -50,21 +79,22 @@ impl OilBuffer {
         })
     }
 
-    /// Replace the listing with `subdir`'s contents in-place.
-    pub fn navigate_into(&mut self, subdir: impl Into<PathBuf>) -> std::io::Result<()> {
-        self.dir = subdir.into();
-        self.snapshot = read_dir_entries(&self.dir)?;
+    /// Replace the listing with `dir`'s contents in-place.
+    /// Does NOT update [`OilDir`] -- the caller does that after
+    /// a successful return, so the post-mutation sync is at
+    /// one App-side chokepoint (`App::set_oil_dir`). Cursor
+    /// + scroll reset to origin so the next motion starts
+    /// fresh.
+    ///
+    /// Replaces what was the `navigate_into` API. There's no
+    /// "into" relationship anymore -- `OilBuffer` is stateless
+    /// w.r.t. where it lives; this just reloads from a given
+    /// path.
+    pub fn reload(&mut self, dir: &Path) -> std::io::Result<()> {
+        self.snapshot = read_dir_entries(dir)?;
         self.content = render_to_buffer(&self.snapshot);
         self.cursor = Position::ZERO;
         self.scroll = 0;
-        Ok(())
-    }
-
-    /// Replace the listing with the parent directory's contents.
-    pub fn navigate_up(&mut self) -> std::io::Result<()> {
-        if let Some(parent) = self.dir.parent().map(Path::to_path_buf) {
-            self.navigate_into(parent)?;
-        }
         Ok(())
     }
 
@@ -83,9 +113,13 @@ impl OilBuffer {
         &self.snapshot
     }
 
-    /// Entry at the cursor line (for `<CR>` dispatch).
-    pub fn entry_at_cursor(&self) -> Option<&OilEntry> {
-        self.snapshot.get(self.cursor.line as usize)
+    /// Entry at `line` in the snapshot. The App passes
+    /// `app.cursor.line` -- the OilBuffer carries its own
+    /// `cursor` field as a vestige but reading it is unsafe
+    /// (it's not synced to the App's hot-path cursor). Always
+    /// pass an explicit line.
+    pub fn entry_at_line(&self, line: u32) -> Option<&OilEntry> {
+        self.snapshot.get(line as usize)
     }
 
     pub fn line_count(&self) -> u32 {
@@ -119,11 +153,17 @@ impl OilBuffer {
         }
     }
 
-    /// Diff rope against snapshot and execute filesystem operations.
-    /// Order: renames → deletes → creates.
+    /// Diff rope against snapshot and execute filesystem operations
+    /// relative to `dir`. Order: renames → deletes → creates.
     /// On error: stops, returns the error (caller echoes it).
     /// On success: refreshes snapshot to new disk state.
-    pub fn apply(&mut self) -> std::io::Result<()> {
+    ///
+    /// `dir` is supplied by the caller from
+    /// `buffer_locals[id].get::<OilDir>()`. Passing it explicitly
+    /// instead of storing on the buffer eliminates the class of
+    /// sync bug where post-navigate state could drift (the
+    /// buffer-local IS the state).
+    pub fn apply(&mut self, dir: &Path) -> std::io::Result<()> {
         let current_names: Vec<String> = self
             .content
             .as_string()
@@ -151,12 +191,12 @@ impl OilBuffer {
 
         // Rename heuristic: exactly 1 delete + 1 create → use fs::rename
         if deleted.len() == 1 && created.len() == 1 {
-            let from = self.dir.join(&deleted[0].name);
-            let to   = self.dir.join(created[0]);
+            let from = dir.join(&deleted[0].name);
+            let to = dir.join(created[0]);
             std::fs::rename(&from, &to)?;
         } else {
             for entry in &deleted {
-                let path = self.dir.join(&entry.name);
+                let path = dir.join(&entry.name);
                 if entry.is_dir {
                     std::fs::remove_dir_all(&path)?;
                 } else {
@@ -165,7 +205,7 @@ impl OilBuffer {
             }
             for name in &created {
                 let clean = name.trim_end_matches('/');
-                let path = self.dir.join(clean);
+                let path = dir.join(clean);
                 if name.ends_with('/') {
                     std::fs::create_dir_all(&path)?;
                 } else {
@@ -175,8 +215,8 @@ impl OilBuffer {
         }
 
         // Refresh snapshot from disk.
-        self.snapshot = read_dir_entries(&self.dir)?;
-        self.content  = render_to_buffer(&self.snapshot);
+        self.snapshot = read_dir_entries(dir)?;
+        self.content = render_to_buffer(&self.snapshot);
         Ok(())
     }
 }
@@ -230,6 +270,7 @@ fn line_byte_len(buf: &Buffer, line: u32) -> u32 {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use std::path::PathBuf;
 
     fn temp_dir() -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -263,26 +304,34 @@ mod tests {
     }
 
     #[test]
-    fn navigate_into_replaces_listing() {
+    fn reload_replaces_listing() {
         let dir = temp_dir();
         let sub = dir.join("sub");
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("inner.rs"), "").unwrap();
         let mut oil = OilBuffer::open(&dir).unwrap();
-        oil.navigate_into(&sub).unwrap();
+        oil.reload(&sub).unwrap();
         assert_eq!(oil.snapshot_names(), vec!["inner.rs"]);
         assert_eq!(oil.cursor, Position::ZERO);
         std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
-    fn navigate_up_goes_to_parent() {
+    fn navigate_up_via_caller_computed_parent() {
+        // The `navigate_up` method was retired in M.3.2.c.5
+        // -- the caller computes the parent from the OilDir
+        // buffer-local and calls reload. This test pins the
+        // shape: starting in `sub`, reload at `dir` (its
+        // parent) yields `dir`'s entries.
         let dir = temp_dir();
         let sub = dir.join("sub");
         std::fs::create_dir(&sub).unwrap();
+        std::fs::write(dir.join("a.txt"), "").unwrap();
         let mut oil = OilBuffer::open(&sub).unwrap();
-        oil.navigate_up().unwrap();
-        assert_eq!(oil.dir, dir);
+        // Caller does: parent = sub.parent(); oil.reload(parent).
+        let parent = sub.parent().expect("sub has parent").to_path_buf();
+        oil.reload(&parent).unwrap();
+        assert!(oil.snapshot_names().contains(&"a.txt"));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -303,7 +352,7 @@ mod tests {
         // Edit rope: replace "old.txt" with "new.txt"
         oil.content = Buffer::empty();
         oil.content.apply_edit(&Edit::insert(Position::ZERO, "new.txt".to_string())).unwrap();
-        oil.apply().unwrap();
+        oil.apply(&dir).unwrap();
         assert!(dir.join("new.txt").exists(), "new.txt should exist after rename");
         assert!(!dir.join("old.txt").exists(), "old.txt should not exist after rename");
         std::fs::remove_dir_all(dir).ok();
@@ -324,7 +373,7 @@ mod tests {
         if !new_text.is_empty() {
             oil.content.apply_edit(&Edit::insert(Position::ZERO, new_text)).unwrap();
         }
-        oil.apply().unwrap();
+        oil.apply(&dir).unwrap();
         assert!(!dir.join("gone.txt").exists());
         assert!(dir.join("keep.txt").exists());
         std::fs::remove_dir_all(dir).ok();
@@ -339,7 +388,7 @@ mod tests {
         text.push_str("\nnewfile.txt");
         oil.content = Buffer::empty();
         oil.content.apply_edit(&Edit::insert(Position::ZERO, text)).unwrap();
-        oil.apply().unwrap();
+        oil.apply(&dir).unwrap();
         assert!(dir.join("newfile.txt").exists());
         std::fs::remove_dir_all(dir).ok();
     }
@@ -352,7 +401,7 @@ mod tests {
         let mut oil = OilBuffer::open(&dir).unwrap();
         oil.content = Buffer::empty();
         oil.content.apply_edit(&Edit::insert(Position::ZERO, "c.txt\nd.txt".to_string())).unwrap();
-        oil.apply().unwrap();
+        oil.apply(&dir).unwrap();
         assert!(!dir.join("a.txt").exists());
         assert!(!dir.join("b.txt").exists());
         assert!(dir.join("c.txt").exists());
@@ -367,7 +416,7 @@ mod tests {
         let mut oil = OilBuffer::open(&dir).unwrap();
         oil.content = Buffer::empty();
         oil.content.apply_edit(&Edit::insert(Position::ZERO, "b.txt".to_string())).unwrap();
-        oil.apply().unwrap();
+        oil.apply(&dir).unwrap();
         assert_eq!(oil.snapshot_names(), vec!["b.txt"]);
         assert!(!oil.is_dirty());
         std::fs::remove_dir_all(dir).ok();

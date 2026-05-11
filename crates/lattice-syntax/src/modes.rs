@@ -15,6 +15,12 @@
 //! All language modes register through
 //! [`register_language_modes`].
 
+use std::sync::Arc;
+
+use lattice_completion::{
+    CandidateKind, CompletionSourceContribution, CompletionSourceKind, InsertContext, RawCandidate,
+    SourceId, SyncCompletionSource,
+};
 use lattice_mode::{
     CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
@@ -77,6 +83,10 @@ pub fn major_mode_id_for_lang(lang: Lang) -> Option<ModeId> {
 /// Register every language major mode against `registry`.
 /// Called from the App's mode-registry boot path. Idempotent
 /// only by duplication (registry's existing invariant).
+///
+/// Also registers [`TreeSitterCompletionMode`] (CSM.6) -- the
+/// syntax-feature minor that contributes
+/// `gen:tree-sitter-symbol` candidates to the completion popup.
 pub fn register_language_modes(registry: &mut ModeRegistry) {
     registry
         .register(RustMode)
@@ -90,6 +100,87 @@ pub fn register_language_modes(registry: &mut ModeRegistry) {
     registry
         .register(MarkdownMode)
         .expect("markdown-mode register without conflict");
+    registry
+        .register(TreeSitterCompletionMode)
+        .expect("tree-sitter-completion-mode register without conflict");
+}
+
+// ---------------------------------------------------------
+// CSM.6: tree-sitter completion source + mode.
+// ---------------------------------------------------------
+
+/// Stable id for the tree-sitter symbol completion source.
+/// Must match `lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID`
+/// -- the host's per-language allowlist and `:set
+/// completion.source.<id>.priority` key off this string.
+pub const TREE_SITTER_COMPLETION_SOURCE_ID: &str =
+    lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
+
+/// The `SyncCompletionSource` impl that emits tree-sitter
+/// local-symbol candidates. Stateless -- reads the pre-computed
+/// symbol slice off `InsertContext::tree_sitter_symbols` (the
+/// host walks `collect_symbols()` once per populate). Filters
+/// out the cursor's own current query so the user doesn't get
+/// "complete this word with itself."
+#[derive(Debug, Clone, Default)]
+pub struct TreeSitterSymbolSource;
+
+impl SyncCompletionSource for TreeSitterSymbolSource {
+    fn produce(&self, ctx: &InsertContext<'_>) -> Vec<RawCandidate> {
+        ctx.tree_sitter_symbols
+            .iter()
+            .filter(|sym| sym.as_str() != ctx.query)
+            .map(|sym| {
+                RawCandidate::plain(sym.clone(), CandidateKind::Plain)
+                    .with_source(SourceId::new(TREE_SITTER_COMPLETION_SOURCE_ID))
+            })
+            .collect()
+    }
+}
+
+/// `tree-sitter-completion-mode` (CSM.6). Contributes the
+/// tree-sitter symbol source while active. Auto-activates on
+/// Document buffers via `auto_activated_minors_for_buffer_kind`
+/// in `lattice-ui-tui::modes`. `popup_filter_chord = Some('t')`
+/// ⇒ `<C-t>` inside `completion-popup-mode` narrows the popup
+/// to tree-sitter symbols only.
+pub struct TreeSitterCompletionMode;
+
+impl TreeSitterCompletionMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("tree-sitter-completion-mode")
+    }
+}
+
+impl Mode for TreeSitterCompletionMode {
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
+        vec![CompletionSourceContribution {
+            id: SourceId::new(TREE_SITTER_COMPLETION_SOURCE_ID),
+            // 80 per insert-completion.md §3.4 -- buffer-words
+            // (100) wins on ties because it's a superset of
+            // tree-sitter symbols.
+            default_priority: 80,
+            auto_trigger: true,
+            trigger_chars: Vec::new(),
+            popup_filter_chord: Some('t'),
+            kind: CompletionSourceKind::Sync(Arc::new(TreeSitterSymbolSource)),
+        }]
+    }
+    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        Ok(())
+    }
+    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

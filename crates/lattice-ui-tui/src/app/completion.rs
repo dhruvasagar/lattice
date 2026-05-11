@@ -314,6 +314,14 @@ impl App {
             return;
         }
         let language = self.active_language_id();
+        // CSM.6: pre-compute tree-sitter symbols once. The
+        // tree-sitter source iterates this slice via
+        // `ctx.tree_sitter_symbols` rather than re-walking the
+        // tree per produce.
+        let tree_sitter_symbols: Vec<String> = self
+            .document_syntax_for(self.document_buffer_id)
+            .map(|s| s.snapshot().collect_symbols())
+            .unwrap_or_default();
         let ctx = lattice_completion::InsertContext {
             buffer,
             cursor: state.cursor,
@@ -322,6 +330,7 @@ impl App {
             trigger,
             case_sensitive: false,
             language: &language,
+            tree_sitter_symbols: &tree_sitter_symbols,
         };
         // Resolve the active language's effective config once;
         // both sync sources (buffer-words, snippet) gate emit on
@@ -366,50 +375,14 @@ impl App {
         // is gone -- candidate payloads carry the snippet's
         // name; the accept path resolves the body via
         // `SnippetRegistry::by_name` (see `snippet_meta_for`).
-        // Source 3: tree-sitter local symbols (Phase 4.2.g.6
-        // (1/2)). Walks the buffer's syntax tree per popup-
-        // trigger; emits definition-position identifiers
-        // (functions, structs, let bindings, parameters) as
-        // candidates. Skipped when:
-        //   - the per-language source filter excludes
-        //     `gen:tree-sitter-symbol`
-        //   - no `Syntax` is attached (e.g. plain-text buffer)
-        //   - the language ships no `symbols.scm` query
-        //     (`collect_symbols` returns empty)
-        // Duplicates against buffer-words are deduped by text;
-        // the tree-sitter-tagged copy wins so the ranker's
-        // per-source priority applies.
-        let tree_sitter_id = lattice_completion::SourceId::new(
-            lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID,
-        );
-        if effective.source_enabled(&tree_sitter_id)
-            && let Some(syntax) = self.document_syntax_for(self.document_buffer_id)
-        {
-            // Each source emits independently. tree-sitter
-            // names overlap heavily with buffer-words (which
-            // walks every word in the rope), so cross-source
-            // dedup at the producer level would always erase
-            // tree-sitter -- buffer-words is a superset by
-            // construction. Per spec §3.4 the per-source
-            // priority handles ranking (buffer-words 100 vs
-            // tree-sitter 80) so the user-typed prefix surfaces
-            // the buffer-words copy ahead of the tree-sitter
-            // copy on ties; visual deduping of identical text
-            // in the popup is a 4.2.g.7 polish item that needs
-            // the renderer to merge same-text rows by source
-            // label.
-            for sym in syntax.snapshot().collect_symbols() {
-                if sym == state.query {
-                    continue;
-                }
-                let cand = lattice_completion::RawCandidate::plain(
-                    sym,
-                    lattice_completion::CandidateKind::Plain,
-                )
-                .with_source(tree_sitter_id.clone());
-                raw.push(cand);
-            }
-        }
+        // CSM.6: tree-sitter local symbols are now contributed
+        // via `tree-sitter-completion-mode` (read from
+        // `ActiveCompletionSources` above). The host pre-walks
+        // `collect_symbols()` once per populate and threads
+        // the result via `ctx.tree_sitter_symbols`; the
+        // contributed source iterates that slice without
+        // re-traversing the tree. Per-language `source_enabled`
+        // gate still applies through the cache-reader loop.
         state.raw = raw;
         self.refilter_insert_completion(state);
     }
@@ -2351,10 +2324,10 @@ mod tests {
 
     // ---- CSM.3: ActiveCompletionSources cache ----
 
-    /// CSM.4/CSM.5: source-contributing modes auto-activate on
-    /// Document. The cache seeds with buffer-words and snippet
-    /// contributions at boot; future migrations (tree-sitter
-    /// CSM.6, path CSM.7, LSP CSM.8) extend the set.
+    /// CSM.4/CSM.5/CSM.6: source-contributing modes auto-
+    /// activate on Document. The cache seeds with buffer-words,
+    /// snippet, and tree-sitter contributions at boot; future
+    /// migrations (path CSM.7, LSP CSM.8) extend the set.
     #[test]
     fn active_completion_sources_seeded_with_default_modes_at_boot() {
         let a = app_with("alpha bravo", 10);
@@ -2366,6 +2339,10 @@ mod tests {
         let ids: Vec<_> = cache.0.iter().map(|c| c.id.as_str().to_string()).collect();
         assert!(ids.contains(&"gen:buffer-words".to_string()), "got {ids:?}");
         assert!(ids.contains(&"gen:snippet".to_string()), "got {ids:?}");
+        assert!(
+            ids.contains(&"gen:tree-sitter-symbol".to_string()),
+            "got {ids:?}",
+        );
         let buffer_words = cache
             .0
             .iter()
@@ -2377,10 +2354,14 @@ mod tests {
             .iter()
             .find(|c| c.id.as_str() == "gen:snippet")
             .unwrap();
-        // Snippets have no dedicated filter chord per §12 (read
-        // best alongside prose; filtering to snippets-only is
-        // rare).
+        // Snippets have no dedicated filter chord per §12.
         assert!(snippet.popup_filter_chord.is_none());
+        let tree_sitter = cache
+            .0
+            .iter()
+            .find(|c| c.id.as_str() == "gen:tree-sitter-symbol")
+            .unwrap();
+        assert_eq!(tree_sitter.popup_filter_chord, Some('t'));
     }
 
     /// CSM.4: triggering the popup populates candidates via

@@ -233,11 +233,15 @@ pub struct InsertContextSnapshot {
     /// Active buffer's language id (CSM.5). See
     /// [`InsertContext::language`].
     pub language: String,
+    /// Pre-computed tree-sitter symbols (CSM.6). See
+    /// [`InsertContext::tree_sitter_symbols`].
+    pub tree_sitter_symbols: Vec<String>,
 }
 
 impl InsertContextSnapshot {
-    /// Take an owned snapshot of `ctx`. Cheap -- `query` and
-    /// `language` clone; the other fields are `Copy`.
+    /// Take an owned snapshot of `ctx`. Cheap-ish -- clones
+    /// `query` + `language` + the `tree_sitter_symbols` slice;
+    /// the other fields are `Copy`.
     pub fn from_context(ctx: &InsertContext<'_>) -> Self {
         Self {
             cursor: ctx.cursor,
@@ -246,6 +250,7 @@ impl InsertContextSnapshot {
             trigger: ctx.trigger.clone(),
             case_sensitive: ctx.case_sensitive,
             language: ctx.language.to_string(),
+            tree_sitter_symbols: ctx.tree_sitter_symbols.to_vec(),
         }
     }
 }
@@ -307,6 +312,7 @@ mod tests {
             trigger: &CompletionTrigger::Manual,
             case_sensitive: false,
             language: "",
+            tree_sitter_symbols: &[],
         };
         let src = EchoSync {
             id: SourceId::new("gen:echo"),
@@ -375,6 +381,7 @@ mod tests {
             trigger: &CompletionTrigger::Manual,
             case_sensitive: false,
             language: "",
+            tree_sitter_symbols: &[],
         };
         let snap = InsertContextSnapshot::from_context(&ctx);
         let mut fut = src.produce_async(snap, sink, CancellationToken::never());
@@ -396,6 +403,7 @@ mod tests {
             trigger: &CompletionTrigger::IdentifierThreshold,
             case_sensitive: true,
             language: "rust",
+            tree_sitter_symbols: &[],
         };
         let snap = InsertContextSnapshot::from_context(&ctx);
         assert_eq!(snap.cursor, Position::new(2, 7));

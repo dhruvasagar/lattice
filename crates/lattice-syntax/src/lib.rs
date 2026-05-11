@@ -60,7 +60,8 @@ pub mod syntax;
 pub use crate::handle::SyntaxHandle;
 pub use crate::lang::Lang;
 pub use crate::modes::{
-    JavascriptMode, MarkdownMode, PythonMode, RustMode, major_mode_id_for_lang,
+    JavascriptMode, MarkdownMode, PythonMode, RustMode, TREE_SITTER_COMPLETION_SOURCE_ID,
+    TreeSitterCompletionMode, TreeSitterSymbolSource, major_mode_id_for_lang,
     register_language_modes,
 };
 pub use crate::registry::LangRegistry;

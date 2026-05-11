@@ -114,6 +114,15 @@ pub struct InsertContext<'a> {
     /// detected (plain-text buffer); sources should treat
     /// empty + the literal `"*"` as the catch-all bucket.
     pub language: &'a str,
+    /// CSM.6: pre-computed local-symbol identifiers from the
+    /// buffer's tree-sitter parse (function names, struct
+    /// names, let bindings, parameters -- whatever the
+    /// language's `symbols.scm` query selects). Empty when no
+    /// syntax handle is attached or the language ships no
+    /// query. The host walks `collect_symbols()` once per
+    /// populate / refilter; the tree-sitter source iterates
+    /// this slice without re-traversing the tree.
+    pub tree_sitter_symbols: &'a [String],
 }
 
 /// One side popup showing the focused candidate's full
@@ -837,6 +846,7 @@ mod tests {
             trigger: CONTEXT_TRIGGER,
             case_sensitive: false,
             language: "",
+            tree_sitter_symbols: &[],
         }
     }
 

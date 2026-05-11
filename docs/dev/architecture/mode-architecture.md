@@ -2350,6 +2350,47 @@ graceful error handling per CLAUDE.md.
   snippet-trigger test reworked to query `snippet_meta_for`
   via the candidate's payload instead of poking the sidecar.
   Workspace 2568 → 2571.
+- CSM.6 -- ✅ landed (third source migration -- tree-sitter).
+  `TreeSitterCompletionMode` + `TreeSitterSymbolSource` in
+  `lattice-syntax::modes` (feature crate placement -- the
+  per-language majors already live here, so the dep graph
+  was already set up). `lattice-syntax` gains a direct
+  `lattice-completion` dep (the transitive edge through
+  `lattice-mode` already existed; direct dep makes the import
+  path explicit).
+  Source is stateless -- iterates the pre-computed
+  `ctx.tree_sitter_symbols` slice without re-traversing the
+  syntax tree. The host walks `collect_symbols()` once per
+  populate / refilter (same work as today's hardcoded path)
+  and threads the result through the new `InsertContext`
+  fields `tree_sitter_symbols: &'a [String]` +
+  `InsertContextSnapshot::tree_sitter_symbols: Vec<String>`.
+  Contribution shape:
+
+      CompletionSourceContribution {
+          id: "gen:tree-sitter-symbol",
+          default_priority: 80,        // < buffer-words (100)
+                                       // per §3.4 ranking
+          auto_trigger: true,
+          trigger_chars: [],
+          popup_filter_chord: Some('t'),
+          kind: Sync(Arc::new(TreeSitterSymbolSource)),
+      }
+
+  `<C-t>` inside `completion-popup-mode` (CSM.K2) will narrow
+  the popup to tree-sitter symbols only.
+  `register_language_modes` extends to register the new mode
+  alongside the per-language majors (already called from the
+  App's boot path). Auto-activates on Document via
+  `auto_activated_minors_for_buffer_kind`. Hardcoded
+  tree-sitter branch in `populate_insert_completion_sync`
+  retired entirely.
+  Tests: existing tree-sitter completion tests pass through
+  the new path. CSM.4/5 boot-cache test extended to assert
+  the tree-sitter contribution + its `popup_filter_chord =
+  Some('t')`. Workspace 2571 stable (tests updated in-place;
+  no net count change yet -- per-source unit tests in
+  lattice-syntax follow with the source's lib-test).
 - Crate audit (lattice-ui-tui shrink) -- 🟡 partial.
   In support of M.4 and the broader "everything-is-a-buffer"
   commitment, content models that aren't tui-shaped were lifted

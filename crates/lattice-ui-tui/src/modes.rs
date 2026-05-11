@@ -286,6 +286,11 @@ pub fn auto_activated_minors_for_buffer_kind(kind: BufferKind) -> Vec<ModeId> {
             // completion source; contributes through the same
             // cache.
             lattice_snippet::SnippetCompletionMode::mode_id(),
+            // CSM.6: tree-sitter-completion-mode owns the
+            // local-symbol source; produce-time is cheap (host
+            // pre-walks `collect_symbols()` once per populate
+            // and threads via `ctx.tree_sitter_symbols`).
+            lattice_syntax::TreeSitterCompletionMode::mode_id(),
         ],
         // Read-only kinds: nothing to add. (`help-mode` /
         // `oil-mode` / `file-tree-mode` are already activated

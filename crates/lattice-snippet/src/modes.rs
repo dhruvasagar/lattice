@@ -196,6 +196,7 @@ mod tests {
             trigger: &lattice_completion::CompletionTrigger::Manual,
             case_sensitive: false,
             language: "rust",
+            tree_sitter_symbols: &[],
         };
         let candidates = source.produce(&ctx);
         assert_eq!(candidates.len(), 1);

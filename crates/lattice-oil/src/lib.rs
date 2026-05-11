@@ -5,6 +5,10 @@
 //! editable text). `apply()` diffs the rope against the open-time
 //! snapshot and executes renames / deletes / creates on disk.
 
+pub mod modes;
+
+pub use modes::{OilDir, OilMode, register_oil_modes};
+
 use std::path::{Path, PathBuf};
 
 use lattice_core::Buffer;

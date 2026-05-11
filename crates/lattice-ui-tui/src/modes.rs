@@ -147,27 +147,12 @@ impl BufferLocal for FileTreeNerdFonts {
 
 // ---- M.3.2.c.3: oil-mode buffer-locals ----
 //
-// `OilBuffer` carries `dir` (the directory the listing
-// represents) as public mode-internal state. `snapshot` (the
-// rope-vs-disk diff baseline) is private and stays internal
-// to the OilBuffer; M.3.2.c.5's BufferStorage retirement
-// decision will revisit whether to expose it.
+// `OilDir` moved to `lattice_oil::modes` alongside its
+// declaring mode (`OilMode`). Re-exported here so existing
+// `crate::modes::OilDir` callsites compile without change;
+// new callers should import from `lattice_oil` directly.
 
-/// Filesystem path the oil buffer's listing represents.
-#[derive(Debug, Clone)]
-pub struct OilDir(pub std::path::PathBuf);
-
-impl BufferLocal for OilDir {
-    const NAME: &'static str = "oil-mode.dir";
-    const DOC: &'static str =
-        "Directory the oil buffer's editable listing represents. \
-         Diff-on-:write applies filesystem ops relative to this \
-         path; status line shows it.";
-    const OWNER_MODE: &'static str = "oil-mode";
-    fn describe(&self) -> String {
-        self.0.display().to_string()
-    }
-}
+pub use lattice_oil::OilDir;
 
 // ---- M.3.2.c.4: language-mode / text-mode buffer-locals ----
 //
@@ -288,7 +273,12 @@ impl BufferLocal for DocumentFolds {
 //
 // Re-exported here so existing `crate::modes::HelpMode` etc.
 // imports keep working during the transition.
-pub use lattice_mode::{FileTreeMode, HelpMode, HoverMode, OilMode};
+pub use lattice_mode::{FileTreeMode, HelpMode, HoverMode};
+// `OilMode` moved to `lattice_oil` per the
+// mode-architecture convention (feature-crate-owned modes).
+// Re-exported here so `crate::modes::OilMode` callsites keep
+// compiling; new code imports from `lattice_oil` directly.
+pub use lattice_oil::OilMode;
 
 /// Resolve the default major-mode id for a [`BufferKind`].
 /// `Document` returns `None` because the mode is determined
@@ -400,9 +390,15 @@ mod tests {
     #[test]
     fn foundation_register_includes_per_kind_modes() {
         // M.4 follow-up: per-kind modes register through
-        // `lattice_mode::modes::register_foundation_modes`.
+        // `lattice_mode::modes::register_foundation_modes`
+        // *and* the feature-crate-owned mode registration
+        // helpers (`lattice_oil::register_oil_modes`, etc.).
+        // App boot calls all of them; the test mirrors that
+        // shape so the assertion set matches what an actual
+        // boot produces.
         let mut registry = ModeRegistry::new();
         lattice_mode::register_foundation_modes(&mut registry);
+        lattice_oil::register_oil_modes(&mut registry);
         assert!(registry.is_registered(HelpMode::mode_id()));
         assert!(registry.is_registered(FileTreeMode::mode_id()));
         assert!(registry.is_registered(OilMode::mode_id()));

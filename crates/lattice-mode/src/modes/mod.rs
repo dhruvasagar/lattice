@@ -1,23 +1,42 @@
 //! Foundation modes that ship with `lattice-mode`.
 //!
-//! Includes the catch-all [`TextMode`] plus the per-buffer-kind
-//! modes that ship with the editor's built-in buffer model
-//! (help / hover / file-tree / oil). Language modes live in
-//! `lattice-syntax`; LSP log modes live in `lattice-lsp` (where
-//! their feature crate is). The rule of thumb: a mode lives
-//! with the crate that owns its associated feature, unless the
-//! mode is itself foundational (catch-all `text-mode`) or
-//! shared across many features (`hover-mode` covers any
-//! buffer that pops up as a hover annotation).
+//! Includes the catch-all [`TextMode`] plus the modes that
+//! are genuinely foundational or shared across many features
+//! (`help-mode`, `hover-mode`). Per the rule of thumb -- "a
+//! mode lives with the crate that owns its associated feature"
+//! -- modes for feature crates live with their crate:
+//!
+//! - Language modes (`rust-mode`, `markdown-mode`, ...) live
+//!   in `lattice-syntax`.
+//! - LSP log modes + the `lsp-mode` umbrella + its sub-modes
+//!   live in `lattice-lsp`.
+//! - **`oil-mode`** lives in `lattice-oil`.
+//! - `file-tree-mode` -- still here pending the parallel move
+//!   to `lattice-file-tree`; same vestige.
+//!
+//! Exceptions kept here:
+//!
+//! - [`TextMode`] -- the catch-all major when no language
+//!   matches; foundational, no owning feature crate.
+//! - [`HelpMode`] -- shared across `:help`,
+//!   `:describe-*`, `:apropos`, `:keymap`, `:options`,
+//!   `:customize`. Many features compose with it; living
+//!   under any one of those crates would be arbitrary.
+//! - [`HoverMode`] -- shared across LSP hover, signature
+//!   help, future diagnostic-at-cursor popups.
+//! - Display minor modes (`line-numbers-mode`, `wrap-mode`,
+//!   ...) -- renderer-agnostic; they contribute typed options
+//!   that the renderer reads, no owning feature crate.
 //!
 //! All modes registered here self-register at App boot via
-//! [`register_foundation_modes`].
+//! [`register_foundation_modes`]. Feature-crate modes have
+//! their own `register_<X>_modes` entry point that the App's
+//! boot path calls alongside this one.
 
 pub mod display;
 pub mod file_tree;
 pub mod help;
 pub mod hover;
-pub mod oil;
 pub mod text;
 
 pub use display::{
@@ -27,7 +46,6 @@ pub use display::{
 pub use file_tree::FileTreeMode;
 pub use help::HelpMode;
 pub use hover::HoverMode;
-pub use oil::OilMode;
 pub use text::TextMode;
 
 use crate::registry::ModeRegistry;
@@ -44,9 +62,8 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(FileTreeMode)
         .expect("file-tree-mode must register without conflict");
-    registry
-        .register(OilMode)
-        .expect("oil-mode must register without conflict");
+    // `OilMode` registers from `lattice_oil::register_oil_modes`
+    // -- called by the App's boot path alongside this function.
     registry
         .register(HelpMode)
         .expect("help-mode must register without conflict");
@@ -88,7 +105,8 @@ mod tests {
         register_foundation_modes(&mut registry);
         assert!(registry.is_registered(TextMode::mode_id()));
         assert!(registry.is_registered(FileTreeMode::mode_id()));
-        assert!(registry.is_registered(OilMode::mode_id()));
+        // OilMode registers from lattice_oil::register_oil_modes;
+        // not asserted here.
         assert!(registry.is_registered(HelpMode::mode_id()));
         assert!(registry.is_registered(HoverMode::mode_id()));
         // M.7.0 display minors.

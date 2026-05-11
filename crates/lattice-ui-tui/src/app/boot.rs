@@ -150,6 +150,7 @@ impl App {
             lattice_mode::register_foundation_modes(&mut mr);
             lattice_syntax::register_language_modes(&mut mr);
             lattice_lsp::modes::register_lsp_log_modes(&mut mr);
+            lattice_oil::register_oil_modes(&mut mr);
             crate::modes::register_buffer_kind_modes(&mut mr);
             mr
         };

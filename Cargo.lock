@@ -859,6 +859,7 @@ name = "lattice-oil"
 version = "0.1.0"
 dependencies = [
  "lattice-core",
+ "lattice-mode",
  "lattice-protocol",
 ]
 

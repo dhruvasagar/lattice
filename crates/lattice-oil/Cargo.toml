@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 lattice-core = { path = "../lattice-core" }
 lattice-protocol = { path = "../lattice-protocol" }
+lattice-mode = { path = "../lattice-mode" }
 
 [lints]
 workspace = true

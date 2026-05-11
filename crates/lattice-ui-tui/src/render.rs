@@ -1636,7 +1636,7 @@ pub fn build_pane_render_registry() -> crate::pane_render::PaneRenderRegistry {
         },
     );
     registry.register(
-        lattice_mode::modes::OilMode.id(),
+        lattice_oil::OilMode.id(),
         PaneRenderProvider {
             render: oil_pane_render,
             status: oil_pane_status,

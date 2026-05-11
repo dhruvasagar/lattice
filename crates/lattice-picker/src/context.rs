@@ -75,6 +75,13 @@ pub struct ActiveBufferSnapshot<'a> {
     /// sources walk this directly; long-running async work
     /// must extract what it needs before `init` returns.
     pub buffer: &'a Buffer,
+    /// Tree-sitter symbol locations (name, line, byte-col)
+    /// for the active buffer when syntax is available.
+    /// Pre-collected by the host via
+    /// `Syntax::collect_symbol_locations`; empty when there's
+    /// no parser registered for the buffer's language. Drives
+    /// `:picker outline`.
+    pub syntax_symbols: Vec<(String, u32, u32)>,
 }
 
 /// One buffer in the registry, projected for picker rows.

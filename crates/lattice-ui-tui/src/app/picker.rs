@@ -65,6 +65,16 @@ impl App {
             .as_ref()
             .map(|v| (v.anchor, v.head));
 
+        // Collect tree-sitter symbol locations once per
+        // picker-open. Cost is O(parse-tree-size); reads through
+        // the document's current `SyntaxSnapshot`. Empty when
+        // no parser is registered for the buffer's language
+        // (the `outline` source returns Err in that case).
+        let syntax_symbols = self
+            .syntax
+            .as_ref()
+            .map(|s| s.snapshot().collect_symbol_locations())
+            .unwrap_or_default();
         let active_buffer = ActiveBufferSnapshot {
             buffer_id: active_id.0,
             path,
@@ -72,6 +82,7 @@ impl App {
             cursor: self.cursor,
             selection,
             buffer: &snap.buffer,
+            syntax_symbols,
         };
 
         let workspace_root = self.picker_workspace_root_path(snap);
@@ -1637,7 +1648,7 @@ mod tests {
             ids,
             vec![
                 "buffers", "commands", "files", "grep", "jumps", "lines",
-                "marks", "recent", "registers", "snippets",
+                "marks", "outline", "recent", "registers", "snippets",
             ]
         );
         // Sanity: matches what the registry itself reports.

@@ -966,6 +966,110 @@ fn parse_grep_line(binary: &str, raw: &str) -> Option<GrepHit> {
     None
 }
 
+/// `:picker outline`. Tree-sitter-driven symbol outline for
+/// the active buffer. Reads `ctx.active_buffer.syntax_symbols`
+/// (pre-collected by the host via
+/// `Syntax::collect_symbol_locations`) and emits one row per
+/// symbol, sorted by source position. Accept jumps the
+/// cursor to the symbol via `JumpInBuffer`.
+///
+/// The LSP-flavored counterpart (`textDocument/documentSymbol`)
+/// lives in `lattice-lsp::picker_sources` once the async-init
+/// seat path lands; for now this source provides a
+/// language-agnostic outline that works for every language
+/// with a tree-sitter symbols query (`rust`, `python`,
+/// `javascript` today; more as queries register).
+pub struct OutlineSource {
+    pub spec: PickerSourceSpec,
+}
+
+impl OutlineSource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                "outline",
+                "Tree-sitter symbol outline for the active buffer. `<CR>` jumps to the symbol.",
+            ),
+        }
+    }
+}
+
+impl Default for OutlineSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PickerSourceGenerator for OutlineSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(
+        &self,
+        ctx: &PickerContext<'_>,
+        _args: &[String],
+    ) -> SourceResult<PickerInitResult> {
+        if ctx.active_buffer.syntax_symbols.is_empty() {
+            let lang = ctx.active_buffer.language.unwrap_or("plain");
+            return Err(format!(
+                "outline: no symbols (language `{lang}` has no tree-sitter query, or the parse tree is empty)"
+            ));
+        }
+        let buffer_id = ctx.active_buffer.buffer_id;
+        // Width-pad the line-number column so the symbol name
+        // column lines up.
+        let max_line = ctx
+            .active_buffer
+            .syntax_symbols
+            .iter()
+            .map(|(_, l, _)| *l)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let line_width = ((max_line as f64).log10().floor() as usize) + 1;
+        let pairs = ctx
+            .active_buffer
+            .syntax_symbols
+            .iter()
+            .map(|(name, line, col)| {
+                let display = format!(
+                    "{:>width$}: {name}",
+                    line + 1,
+                    width = line_width,
+                );
+                let cand = RawCandidate::plain(display, CandidateKind::Plain);
+                (
+                    cand,
+                    RoutingPayload::JumpInBuffer {
+                        buffer_id,
+                        line: *line,
+                        col: *col,
+                    },
+                )
+            })
+            .collect();
+        Ok(PickerInitResult::Inline(pairs))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
+                Ok(PickerAcceptOutcome::JumpInBuffer {
+                    buffer_id: *buffer_id,
+                    line: *line,
+                    col: *col,
+                })
+            }
+            other => Err(format!("outline: unexpected routing payload {other:?}")),
+        }
+    }
+}
+
 /// Convenience: build the first-party source generators as
 /// `Arc<dyn PickerSourceGenerator>` ready to register against
 /// a `PickerRegistry`. Used by `App::new` to boot the
@@ -987,6 +1091,7 @@ pub fn first_party_generators(
         Arc::new(RegistersSource::new()),
         Arc::new(MarksSource::new()),
         Arc::new(GrepSource::new(config)),
+        Arc::new(OutlineSource::new()),
     ]
 }
 
@@ -1099,7 +1204,7 @@ mod tests {
             ids,
             vec![
                 "files", "recent", "buffers", "lines", "jumps",
-                "commands", "registers", "marks", "grep",
+                "commands", "registers", "marks", "grep", "outline",
             ]
         );
     }
@@ -1299,6 +1404,51 @@ mod tests {
             err.contains("not found on PATH"),
             "got {err}"
         );
+    }
+
+    /// P.9: outline source returns `Err` when the active
+    /// buffer has no tree-sitter symbols (plain text, or a
+    /// language without a `symbols.scm` query).
+    #[test]
+    fn outline_source_no_symbols_errors() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = OutlineSource::new();
+        let err = source.init(&ctx, &[]).unwrap_err();
+        assert!(err.starts_with("outline:"), "got {err}");
+    }
+
+    /// P.9: synthesised syntax_symbols on the context produce
+    /// one row per symbol with `JumpInBuffer` routing carrying
+    /// the captured buffer id + (line, col) coordinates.
+    #[test]
+    fn outline_source_emits_jump_in_buffer_routing() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let mut ctx = app.build_picker_context(&snap);
+        let active_id = ctx.active_buffer.buffer_id;
+        ctx.active_buffer.syntax_symbols = vec![
+            ("foo".to_string(), 2, 4),
+            ("bar".to_string(), 10, 0),
+        ];
+        let source = OutlineSource::new();
+        let result = source.init(&ctx, &[]).expect("inline");
+        let PickerInitResult::Inline(pairs) = result else {
+            panic!("expected Inline");
+        };
+        assert_eq!(pairs.len(), 2);
+        match &pairs[0].1 {
+            RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
+                assert_eq!(*buffer_id, active_id);
+                assert_eq!(*line, 2);
+                assert_eq!(*col, 4);
+            }
+            other => panic!("expected JumpInBuffer, got {other:?}"),
+        }
+        // Display contains 1-based line + the name.
+        assert!(pairs[0].0.display.contains("foo"), "got {}", pairs[0].0.display);
+        assert!(pairs[0].0.display.contains("3"), "got {}", pairs[0].0.display);
     }
 
     /// P.5: marks source returns `Err` when no marks set.

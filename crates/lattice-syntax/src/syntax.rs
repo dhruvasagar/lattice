@@ -248,6 +248,12 @@ impl Syntax {
     }
 
     /// Convenience pass-through to
+    /// [`SyntaxSnapshot::collect_symbol_locations`].
+    pub fn collect_symbol_locations(&self) -> Vec<(String, u32, u32)> {
+        self.inner.collect_symbol_locations()
+    }
+
+    /// Convenience pass-through to
     /// [`SyntaxSnapshot::highlight_lines`]. Note: takes `&self`
     /// (the read API never needed `&mut`).
     pub fn highlight_lines(
@@ -537,6 +543,53 @@ impl SyntaxSnapshot {
                 }
             }
         }
+        out
+    }
+
+    /// Like [`Self::collect_symbols`] but also reports each
+    /// symbol's location -- `(name, line, byte_column)` with
+    /// 0-based line and 0-based utf-8 byte column. Used by
+    /// the picker's `:picker outline` source so accept can
+    /// jump directly to the symbol definition. Dedup keys on
+    /// `(name, line, col)` to keep redundant captures
+    /// (function name appearing in both `@name` and `@definition`
+    /// captures of the same query) from doubling up.
+    pub fn collect_symbol_locations(&self) -> Vec<(String, u32, u32)> {
+        let Some(tree) = self.tree.as_ref() else {
+            return Vec::new();
+        };
+        let Some(query) = self.registry.symbols_query(self.lang.name()) else {
+            return Vec::new();
+        };
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), &self.source[..]);
+        let mut seen: std::collections::HashSet<(String, u32, u32)> =
+            std::collections::HashSet::new();
+        let mut out: Vec<(String, u32, u32)> = Vec::new();
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let n = cap.node;
+                let start = n.start_byte();
+                let end = n.end_byte();
+                if end > self.source.len() || start >= end {
+                    continue;
+                }
+                let Ok(text) = std::str::from_utf8(&self.source[start..end]) else {
+                    continue;
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                let pos = n.start_position();
+                let key = (text.to_string(), pos.row as u32, pos.column as u32);
+                if seen.insert(key.clone()) {
+                    out.push(key);
+                }
+            }
+        }
+        // Stable sort by (line, col) so the popup reads top-
+        // down through the file.
+        out.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.cmp(&b.2)));
         out
     }
 

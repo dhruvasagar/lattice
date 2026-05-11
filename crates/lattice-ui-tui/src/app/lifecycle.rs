@@ -761,14 +761,15 @@ impl App {
                         id.0
                     ));
                 }
-                BufferData::FileTree(t) => {
-                    // M.3.2.c.2: prefer root from buffer-locals.
+                BufferData::FileTree(_) => {
+                    // M.3.2.c.5: root lives in the FileTreeRoot
+                    // buffer-local (canonical; no struct mirror).
                     let root = self
                         .buffer_locals
                         .get(&id)
                         .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
                         .map(|r| r.0.clone())
-                        .unwrap_or_else(|| t.root.clone());
+                        .unwrap_or_default();
                     lines.push(format!(
                         "  {active_marker}{listed_marker} #{:<3} tree     {}",
                         id.0,

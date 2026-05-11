@@ -1629,7 +1629,7 @@ pub fn build_pane_render_registry() -> crate::pane_render::PaneRenderRegistry {
         },
     );
     registry.register(
-        lattice_mode::modes::FileTreeMode.id(),
+        lattice_file_tree::FileTreeMode.id(),
         PaneRenderProvider {
             render: file_tree_pane_render,
             status: file_tree_pane_status,
@@ -1883,9 +1883,8 @@ fn draw_file_tree_pane(
     let nerd_fonts = app.theme.nerd_fonts;
     let theme = &app.theme;
     let raw_text = tree.content.as_string();
-    // M.3.2.c.5: read entries through `buffer_locals` exclusively.
-    // The vestigial `tree.entries` field stays for tests; production
-    // resolves through the locals map keyed on `pane.buffer_id`.
+    // M.3.2.c.5: entries live exclusively in the
+    // FileTreeEntries buffer-local. Nothing to drift.
     let entries: &[crate::file_tree::FileTreeEntry] = app
         .buffer_locals
         .get(&pane.buffer_id)

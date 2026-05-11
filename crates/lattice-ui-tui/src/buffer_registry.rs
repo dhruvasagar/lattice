@@ -292,17 +292,19 @@ impl BufferRegistry {
         None
     }
 
-    /// First file-tree buffer with the given root, if any. Used
-    /// by `:Tree path` to detect "already open".
-    pub fn file_tree_with_root(&self, root: &std::path::Path) -> Option<BufferId> {
-        for entry in self.by_id.values() {
-            if let BufferData::FileTree(t) = &entry.data
-                && t.root == root
-            {
-                return Some(entry.id);
-            }
-        }
-        None
+    /// IDs of every registered file-tree buffer, in arbitrary
+    /// order. The App-side `file_tree_with_root` walks these +
+    /// probes each one's `FileTreeRoot` buffer-local for the
+    /// dedup lookup; the registry can't do that walk because it
+    /// doesn't own buffer-locals.
+    pub fn file_tree_ids(&self) -> Vec<BufferId> {
+        self.by_id
+            .values()
+            .filter_map(|entry| match &entry.data {
+                BufferData::FileTree(_) => Some(entry.id),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Convenience: borrow a document entry by id (returns `None`
@@ -390,12 +392,9 @@ mod tests {
             flags: BufferFlags::default(),
             data: BufferData::FileTree(FileTreeBuffer {
                 id: id_c,
-                root: std::path::PathBuf::from("/c"),
-                entries: Vec::new(),
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
-                nerd_fonts: false,
             }),
         });
         r.insert(BufferEntry {
@@ -403,12 +402,9 @@ mod tests {
             flags: BufferFlags::default(),
             data: BufferData::FileTree(FileTreeBuffer {
                 id: id_a,
-                root: std::path::PathBuf::from("/a"),
-                entries: Vec::new(),
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
-                nerd_fonts: false,
             }),
         });
         r.insert(BufferEntry {
@@ -416,12 +412,9 @@ mod tests {
             flags: BufferFlags::default(),
             data: BufferData::FileTree(FileTreeBuffer {
                 id: id_b,
-                root: std::path::PathBuf::from("/b"),
-                entries: Vec::new(),
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
-                nerd_fonts: false,
             }),
         });
         let sorted = r.sorted_ids();
@@ -441,12 +434,9 @@ mod tests {
             },
             data: BufferData::FileTree(FileTreeBuffer {
                 id: id_a,
-                root: std::path::PathBuf::from("/a"),
-                entries: Vec::new(),
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
-                nerd_fonts: false,
             }),
         });
         r.insert(BufferEntry {
@@ -457,12 +447,9 @@ mod tests {
             },
             data: BufferData::FileTree(FileTreeBuffer {
                 id: id_b,
-                root: std::path::PathBuf::from("/b"),
-                entries: Vec::new(),
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
-                nerd_fonts: false,
             }),
         });
         let listed = r.listed_ids_sorted();
@@ -472,27 +459,23 @@ mod tests {
     }
 
     #[test]
-    fn file_tree_with_root_finds_match() {
+    fn file_tree_ids_lists_registered_trees() {
+        // Was `file_tree_with_root_finds_match` -- the dedup
+        // lookup moved to the App side (`App::file_tree_with_root`),
+        // which probes each id's `FileTreeRoot` buffer-local.
+        // Here we exercise the registry's plain id enumeration.
         let mut r = BufferRegistry::new();
         let id = BufferId::next();
-        let path = std::path::PathBuf::from("/some/root");
         r.insert(BufferEntry {
             id,
             flags: BufferFlags::default(),
             data: BufferData::FileTree(FileTreeBuffer {
                 id,
-                root: path.clone(),
-                entries: Vec::new(),
                 content: lattice_core::Buffer::empty(),
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
-                nerd_fonts: false,
             }),
         });
-        assert_eq!(r.file_tree_with_root(&path), Some(id));
-        assert_eq!(
-            r.file_tree_with_root(std::path::Path::new("/different")),
-            None
-        );
+        assert_eq!(r.file_tree_ids(), vec![id]);
     }
 }

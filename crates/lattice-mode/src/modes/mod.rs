@@ -11,8 +11,7 @@
 //! - LSP log modes + the `lsp-mode` umbrella + its sub-modes
 //!   live in `lattice-lsp`.
 //! - **`oil-mode`** lives in `lattice-oil`.
-//! - `file-tree-mode` -- still here pending the parallel move
-//!   to `lattice-file-tree`; same vestige.
+//! - **`file-tree-mode`** lives in `lattice-file-tree`.
 //!
 //! Exceptions kept here:
 //!
@@ -34,7 +33,6 @@
 //! boot path calls alongside this one.
 
 pub mod display;
-pub mod file_tree;
 pub mod help;
 pub mod hover;
 pub mod text;
@@ -43,7 +41,6 @@ pub use display::{
     CurrentLineHighlightMode, LineNumbersMode, ReadOnlyMode, RelativeLineNumbersMode,
     WhitespaceShowMode, WrapMode,
 };
-pub use file_tree::FileTreeMode;
 pub use help::HelpMode;
 pub use hover::HoverMode;
 pub use text::TextMode;
@@ -59,11 +56,10 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(TextMode)
         .expect("text-mode must register without conflict");
-    registry
-        .register(FileTreeMode)
-        .expect("file-tree-mode must register without conflict");
-    // `OilMode` registers from `lattice_oil::register_oil_modes`
-    // -- called by the App's boot path alongside this function.
+    // `FileTreeMode` registers from
+    // `lattice_file_tree::register_file_tree_modes`, `OilMode`
+    // from `lattice_oil::register_oil_modes` -- both called by
+    // the App's boot path alongside this function.
     registry
         .register(HelpMode)
         .expect("help-mode must register without conflict");
@@ -104,9 +100,8 @@ mod tests {
         let mut registry = ModeRegistry::new();
         register_foundation_modes(&mut registry);
         assert!(registry.is_registered(TextMode::mode_id()));
-        assert!(registry.is_registered(FileTreeMode::mode_id()));
-        // OilMode registers from lattice_oil::register_oil_modes;
-        // not asserted here.
+        // FileTreeMode + OilMode register from their feature
+        // crates' helpers; not asserted here.
         assert!(registry.is_registered(HelpMode::mode_id()));
         assert!(registry.is_registered(HoverMode::mode_id()));
         // M.7.0 display minors.

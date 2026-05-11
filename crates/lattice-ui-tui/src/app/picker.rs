@@ -450,15 +450,21 @@ pub(super) fn raw_buffer_candidates(
                     format!("doc{active_marker}"),
                 )
             }
-            BufferData::FileTree(t) => (
-                // M.3.2.c.2 note: file-tree's root is still a
-                // struct field; the parallel M.3.2.c.5 move
-                // will retire it the same way oil retired
-                // `dir`. Read through buffer-locals here as
-                // soon as that lands.
-                format!("#{:<3} {}", id.0, t.root.display()),
-                format!("tree{active_marker}"),
-            ),
+            BufferData::FileTree(_) => {
+                // M.3.2.c.5: file-tree's root lives in the
+                // FileTreeRoot buffer-local (canonical; no
+                // struct mirror). Reads route through the
+                // passed-in `buffer_locals` map.
+                let root_display = buffer_locals
+                    .get(&id)
+                    .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
+                    .map(|r| r.0.display().to_string())
+                    .unwrap_or_else(|| "[no root]".to_string());
+                (
+                    format!("#{:<3} {}", id.0, root_display),
+                    format!("tree{active_marker}"),
+                )
+            }
             BufferData::Help(h) => (
                 format!("#{:<3} {}", id.0, h.title),
                 format!("help{active_marker}"),

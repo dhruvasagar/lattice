@@ -27,7 +27,6 @@ use lattice_mode::{BufferLocal, ModeId, ModeRegistry, TextMode};
 use lattice_syntax::Lang;
 
 use crate::buffers::BufferKind;
-use crate::file_tree::FileTreeEntry;
 use crate::help::{HelpAnchor, HelpLink};
 
 // ---- M.3.2.b.1: help-mode buffer-locals ----
@@ -89,61 +88,15 @@ impl BufferLocal for HelpHighlights {
     }
 }
 
-// ---- M.3.2.c.2: file-tree-mode buffer-locals ----
+// ---- file-tree-mode buffer-locals ----
 //
-// `FileTreeBuffer` carries three pieces of mode-specific
-// runtime state: the directory the tree is rooted at, the
-// flat tree-of-entries data structure, and the
-// nerd-fonts-rendering flag. The struct's `id` / `cursor` /
-// `scroll` / `content` (rope) remain universal payload.
+// All three live in `lattice_file_tree::modes` alongside their
+// declaring mode (`FileTreeMode`). Re-exported here so existing
+// `crate::modes::FileTreeRoot` etc. callsites compile without
+// change; new callers should import from `lattice_file_tree`
+// directly.
 
-/// Filesystem path the file-tree buffer is rooted at.
-#[derive(Debug, Clone)]
-pub struct FileTreeRoot(pub std::path::PathBuf);
-
-impl BufferLocal for FileTreeRoot {
-    const NAME: &'static str = "file-tree-mode.root";
-    const DOC: &'static str =
-        "Directory the file-tree buffer is rooted at -- the path \
-         the user passed to `:Tree` (or the workspace root for \
-         the default tree).";
-    const OWNER_MODE: &'static str = "file-tree-mode";
-    fn describe(&self) -> String {
-        self.0.display().to_string()
-    }
-}
-
-/// Flat tree-of-entries backing the file-tree buffer.
-#[derive(Debug, Clone)]
-pub struct FileTreeEntries(pub Vec<FileTreeEntry>);
-
-impl BufferLocal for FileTreeEntries {
-    const NAME: &'static str = "file-tree-mode.entries";
-    const DOC: &'static str =
-        "Flat list of tree entries (directories + files), each \
-         carrying its depth + expansion state. The file-tree \
-         renderer iterates this in order; the rope content is \
-         derived from it.";
-    const OWNER_MODE: &'static str = "file-tree-mode";
-    fn describe(&self) -> String {
-        format!("{} entries", self.0.len())
-    }
-}
-
-/// Whether the file-tree renders nerd-font icon glyphs inline.
-#[derive(Debug, Clone, Copy)]
-pub struct FileTreeNerdFonts(pub bool);
-
-impl BufferLocal for FileTreeNerdFonts {
-    const NAME: &'static str = "file-tree-mode.nerd-fonts";
-    const DOC: &'static str =
-        "Whether the file-tree buffer's rendered rope embeds \
-         nerd-font icon glyphs alongside file names.";
-    const OWNER_MODE: &'static str = "file-tree-mode";
-    fn describe(&self) -> String {
-        if self.0 { "enabled" } else { "disabled" }.to_string()
-    }
-}
+pub use lattice_file_tree::{FileTreeEntries, FileTreeNerdFonts, FileTreeRoot};
 
 // ---- M.3.2.c.3: oil-mode buffer-locals ----
 //
@@ -273,11 +226,12 @@ impl BufferLocal for DocumentFolds {
 //
 // Re-exported here so existing `crate::modes::HelpMode` etc.
 // imports keep working during the transition.
-pub use lattice_mode::{FileTreeMode, HelpMode, HoverMode};
-// `OilMode` moved to `lattice_oil` per the
-// mode-architecture convention (feature-crate-owned modes).
-// Re-exported here so `crate::modes::OilMode` callsites keep
-// compiling; new code imports from `lattice_oil` directly.
+pub use lattice_mode::{HelpMode, HoverMode};
+// Feature-crate-owned modes (moved per the mode-architecture
+// convention; see each feature crate's `modes.rs`).
+// Re-exported here so `crate::modes::*` callsites keep
+// compiling; new code imports from the feature crate.
+pub use lattice_file_tree::FileTreeMode;
 pub use lattice_oil::OilMode;
 
 /// Resolve the default major-mode id for a [`BufferKind`].
@@ -399,6 +353,7 @@ mod tests {
         let mut registry = ModeRegistry::new();
         lattice_mode::register_foundation_modes(&mut registry);
         lattice_oil::register_oil_modes(&mut registry);
+        lattice_file_tree::register_file_tree_modes(&mut registry);
         assert!(registry.is_registered(HelpMode::mode_id()));
         assert!(registry.is_registered(FileTreeMode::mode_id()));
         assert!(registry.is_registered(OilMode::mode_id()));

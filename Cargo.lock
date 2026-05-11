@@ -794,7 +794,9 @@ dependencies = [
 name = "lattice-file-tree"
 version = "0.1.0"
 dependencies = [
+ "lattice-config",
  "lattice-core",
+ "lattice-mode",
  "lattice-protocol",
 ]
 

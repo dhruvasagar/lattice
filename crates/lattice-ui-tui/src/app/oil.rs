@@ -219,16 +219,23 @@ impl App {
             }
             BufferKind::FileTree => {
                 let id = self.active_pane_buffer_id();
+                // M.3.2.c.5: entries live in the FileTreeEntries
+                // buffer-local; index by the App's cursor line
+                // (same pattern as oil's `do_oil_follow`).
+                let line = self.cursor.line;
                 let dir = self
-                    .buffers
-                    .file_tree(id)
-                    .and_then(|t| t.entry_at_cursor())
-                    .map(|e| {
-                        if matches!(e.kind, crate::file_tree::FileTreeEntryKind::Directory { .. }) {
-                            e.path.clone()
-                        } else {
-                            e.path.parent().unwrap_or(&e.path).to_path_buf()
-                        }
+                    .file_tree_entries_for(id)
+                    .and_then(|entries| {
+                        crate::file_tree::entry_at_line(&entries, line).map(|e| {
+                            if matches!(
+                                e.kind,
+                                crate::file_tree::FileTreeEntryKind::Directory { .. }
+                            ) {
+                                e.path.clone()
+                            } else {
+                                e.path.parent().unwrap_or(&e.path).to_path_buf()
+                            }
+                        })
                     });
                 self.do_open_oil(dir);
             }

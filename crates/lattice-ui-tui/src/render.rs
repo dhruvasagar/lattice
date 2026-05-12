@@ -2438,6 +2438,47 @@ fn compose_visible_lines_inner(
                 // user just collapsed.
                 closed_fold_display_span(view, snap, f)
             });
+        // 4.4.h: LSP semantic-tokens overlay. Replaces the
+        // foreground color (folding in modifier bits) for
+        // each token's byte range. Painted BEFORE visual /
+        // hlsearch / diagnostic passes so those still layer
+        // their bg / underline on top of the LSP-driven fg
+        // -- the user's selection and search highlight stay
+        // visible over semantic-colored text.
+        if let Some(cache) = app
+            .lsp_semantic_tokens_cache
+            .get(&app.document_buffer_id)
+            && app.lsp_semantic_tokens_mode_enabled_for(app.document_buffer_id)
+        {
+            for tok in cache.tokens.iter().filter(|t| t.line == line_idx) {
+                let start = lattice_lsp::position::utf16_column_to_utf8_byte(
+                    &line_text,
+                    tok.start_char,
+                ) as usize;
+                let end = lattice_lsp::position::utf16_column_to_utf8_byte(
+                    &line_text,
+                    tok.start_char + tok.length,
+                ) as usize;
+                let start = start.min(line_len);
+                let end = end.min(line_len);
+                if start >= end {
+                    continue;
+                }
+                let mut mods = Modifier::empty();
+                let style_with_mods = apply_semantic_token_modifiers(
+                    TuiStyle::default(),
+                    &tok.modifiers,
+                );
+                mods.insert(style_with_mods.add_modifier);
+                body = apply_semantic_token_overlay(
+                    body,
+                    start,
+                    end,
+                    semantic_token_color(&tok.token_type),
+                    mods,
+                );
+            }
+        }
         // Blockwise visual: per-line column band [min_col, max_col].
         // Charwise / Linewise visual go through `visual_range` instead.
         if let Some(b) = block
@@ -2925,6 +2966,91 @@ fn inlay_hint_style() -> TuiStyle {
     TuiStyle::default()
         .fg(Color::DarkGray)
         .add_modifier(Modifier::ITALIC)
+}
+
+/// 4.4.h: apply LSP semantic styling to the spans intersecting
+/// `[overlay_start, overlay_end)`. Replaces fg + folds in
+/// modifiers WITHOUT clobbering existing bg / underline /
+/// reverse from earlier passes (tree-sitter set bg = None
+/// commonly; visual / hlsearch / diagnostics overlays may
+/// have set bg). Same span-splitting machinery as
+/// `apply_match_overlay`.
+fn apply_semantic_token_overlay(
+    spans: Vec<Span<'static>>,
+    overlay_start: usize,
+    overlay_end: usize,
+    fg: Color,
+    modifiers: Modifier,
+) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 2);
+    let mut cursor = 0usize;
+    for span in spans {
+        let s = span.content.as_ref().to_string();
+        let span_start = cursor;
+        let span_end = cursor + s.len();
+        let overlap_start = span_start.max(overlay_start);
+        let overlap_end = span_end.min(overlay_end);
+        if overlap_start >= overlap_end {
+            out.push(Span::styled(s, span.style));
+        } else {
+            if overlap_start > span_start {
+                let pre = s[..overlap_start - span_start].to_string();
+                out.push(Span::styled(pre, span.style));
+            }
+            let mid = s[overlap_start - span_start..overlap_end - span_start].to_string();
+            // Merge: keep prior bg / underline / reverse;
+            // override fg + add modifier bits.
+            let merged = span.style.fg(fg).add_modifier(modifiers);
+            out.push(Span::styled(mid, merged));
+            if overlap_end < span_end {
+                let post = s[overlap_end - span_start..].to_string();
+                out.push(Span::styled(post, span.style));
+            }
+        }
+        cursor = span_end;
+    }
+    out
+}
+
+/// 4.4.h: pick a foreground color for a semantic-token kind.
+/// Names are the LSP-standard token-type strings (see
+/// `SemanticTokenType` consts in `lsp-types`). Servers may
+/// declare custom token types beyond the standard set; those
+/// fall through to the default magenta so they're at least
+/// distinguishable from un-styled text.
+///
+/// Modifiers are folded into the style via
+/// `apply_semantic_token_modifiers` (italic / bold / etc.);
+/// this fn only chooses the hue.
+fn semantic_token_color(kind: &str) -> Color {
+    match kind {
+        "keyword" | "controlKeyword" => Color::Magenta,
+        "type" | "class" | "struct" | "interface" | "enum" | "typeParameter" => Color::Cyan,
+        "function" | "method" | "macro" => Color::Yellow,
+        "string" => Color::Green,
+        "number" => Color::LightYellow,
+        "comment" => Color::DarkGray,
+        "operator" => Color::LightCyan,
+        "variable" | "parameter" | "property" | "enumMember" => Color::White,
+        "namespace" | "modifier" => Color::LightMagenta,
+        _ => Color::Magenta,
+    }
+}
+
+/// 4.4.h: apply LSP modifier bits to a base style. `static`,
+/// `readonly`, `deprecated` etc. carry visual cues
+/// (italic / strike-through). Idempotent; missing modifiers
+/// leave the style untouched.
+fn apply_semantic_token_modifiers(mut style: TuiStyle, modifiers: &[String]) -> TuiStyle {
+    for m in modifiers {
+        match m.as_str() {
+            "deprecated" => style = style.add_modifier(Modifier::CROSSED_OUT),
+            "readonly" | "static" => style = style.add_modifier(Modifier::ITALIC),
+            "defaultLibrary" => style = style.add_modifier(Modifier::DIM),
+            _ => {}
+        }
+    }
+    style
 }
 
 /// 4.4.g: flatten an LSP `InlayHintLabel` into a single string.
@@ -5011,6 +5137,107 @@ mod tests {
             }
         }
         assert!(found, "expected `: i32` inlay-hint span; got {row0:?}");
+    }
+
+    /// 4.4.h: a seeded semantic-tokens cache repaints the
+    /// foreground color within each token's byte range.
+    #[test]
+    fn semantic_tokens_overlay_repaints_fg_within_token_range() {
+        use std::str::FromStr;
+        let mut app = app_with("fn main() {}\n", 5);
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, uri);
+        if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-mode");
+        }
+        if !app.lsp_semantic_tokens_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-semantic-tokens-mode");
+        }
+        // Seed: "fn" as keyword (chars 0..=1), "main" as function
+        // (chars 3..=6).
+        app.lsp_semantic_tokens_cache.insert(
+            app.document_buffer_id,
+            crate::app::LspSemanticTokensCache {
+                document_version: app.document.snapshot().version,
+                result_id: None,
+                tokens: vec![
+                    crate::app::DecodedSemanticToken {
+                        line: 0,
+                        start_char: 0,
+                        length: 2,
+                        token_type: "keyword".into(),
+                        modifiers: Vec::new(),
+                    },
+                    crate::app::DecodedSemanticToken {
+                        line: 0,
+                        start_char: 3,
+                        length: 4,
+                        token_type: "function".into(),
+                        modifiers: Vec::new(),
+                    },
+                ],
+            },
+        );
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let row0 = &lines[0];
+        // Magenta = keyword, Yellow = function. Find at least
+        // one span of each in the row.
+        let mut saw_keyword = false;
+        let mut saw_function = false;
+        for span in &row0.spans {
+            match span.style.fg {
+                Some(Color::Magenta) if span.content.as_ref().contains("fn") => {
+                    saw_keyword = true;
+                }
+                Some(Color::Yellow) if span.content.as_ref().contains("main") => {
+                    saw_function = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_keyword, "expected keyword fg on `fn`; got {row0:?}");
+        assert!(saw_function, "expected function fg on `main`; got {row0:?}");
+    }
+
+    /// 4.4.h: with the mode off, the cache is ignored.
+    #[test]
+    fn semantic_tokens_overlay_suppressed_when_mode_off() {
+        use std::str::FromStr;
+        let mut app = app_with("fn main() {}\n", 5);
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, uri);
+        if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-mode");
+        }
+        if app.lsp_semantic_tokens_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-semantic-tokens-mode");
+        }
+        app.lsp_semantic_tokens_cache.insert(
+            app.document_buffer_id,
+            crate::app::LspSemanticTokensCache {
+                document_version: app.document.snapshot().version,
+                result_id: None,
+                tokens: vec![crate::app::DecodedSemanticToken {
+                    line: 0,
+                    start_char: 0,
+                    length: 2,
+                    token_type: "keyword".into(),
+                    modifiers: Vec::new(),
+                }],
+            },
+        );
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let row0 = &lines[0];
+        // No magenta fg should appear on the "fn" span.
+        for span in &row0.spans {
+            if span.content.as_ref().contains("fn") {
+                assert_ne!(
+                    span.style.fg,
+                    Some(Color::Magenta),
+                    "mode-off should suppress semantic-tokens overlay; got {span:?}"
+                );
+            }
+        }
     }
 
     /// 4.4.g: with the mode off, the cache content is ignored

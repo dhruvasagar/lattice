@@ -435,6 +435,58 @@ impl Capabilities {
         self.server.inlay_hint_provider.is_some()
     }
 
+    /// 4.4.h: `semanticTokensProvider` -- LSP-side highlight
+    /// layer that augments tree-sitter. The provider's legend
+    /// (declared at handshake) names the token types
+    /// (e.g. `"keyword"`, `"function"`) and modifiers
+    /// (e.g. `"static"`, `"readonly"`) the server's
+    /// `textDocument/semanticTokens/full` response references
+    /// by index. The host caches the legend at attach time so
+    /// decoding doesn't re-read capability state per request.
+    pub fn supports_semantic_tokens(&self) -> bool {
+        self.server.semantic_tokens_provider.is_some()
+    }
+
+    /// 4.4.h: token-type legend declared by the server. Used
+    /// by the host's decoder to map the integer token-type
+    /// index in `SemanticTokens.data` back to a semantic name
+    /// (`"keyword"`, `"function"`, etc.) for the renderer's
+    /// per-kind styling. Returns an empty vec when the server
+    /// doesn't advertise semantic tokens (the decoder then
+    /// skips every token as unrecognized).
+    pub fn semantic_token_types(&self) -> Vec<lsp_types::SemanticTokenType> {
+        use lsp_types::SemanticTokensServerCapabilities;
+        let Some(p) = self.server.semantic_tokens_provider.as_ref() else {
+            return Vec::new();
+        };
+        match p {
+            SemanticTokensServerCapabilities::SemanticTokensOptions(opts) => {
+                opts.legend.token_types.clone()
+            }
+            SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(opts) => {
+                opts.semantic_tokens_options.legend.token_types.clone()
+            }
+        }
+    }
+
+    /// 4.4.h: token-modifier legend declared by the server.
+    /// Same shape as [`Self::semantic_token_types`] but for
+    /// the bit-flag modifiers each token can carry.
+    pub fn semantic_token_modifiers(&self) -> Vec<lsp_types::SemanticTokenModifier> {
+        use lsp_types::SemanticTokensServerCapabilities;
+        let Some(p) = self.server.semantic_tokens_provider.as_ref() else {
+            return Vec::new();
+        };
+        match p {
+            SemanticTokensServerCapabilities::SemanticTokensOptions(opts) => {
+                opts.legend.token_modifiers.clone()
+            }
+            SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(opts) => {
+                opts.semantic_tokens_options.legend.token_modifiers.clone()
+            }
+        }
+    }
+
     /// Server's `documentOnTypeFormattingProvider` presence
     /// (Phase 4.3). Trigger-character driven formatting in
     /// Insert mode -- returns the first character that fires

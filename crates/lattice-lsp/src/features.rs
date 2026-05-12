@@ -394,6 +394,24 @@ impl ServerHandle {
     ) -> Pending<Option<Vec<lsp_types::InlayHint>>> {
         self.request_with_cancel("textDocument/inlayHint", params, token)
     }
+
+    /// 4.4.h: `textDocument/semanticTokens/full`. Returns the
+    /// whole-buffer semantic token list in the LSP
+    /// relative-position varint encoding (5 u32s per token:
+    /// deltaLine, deltaStart, length, tokenType, modifiers
+    /// bitfield). The host decodes against the server's
+    /// `SemanticTokensLegend` (cached at attach time via
+    /// [`crate::Capabilities::semantic_token_types`] /
+    /// `semantic_token_modifiers`). Wrapped response variant
+    /// `Tokens` carries `data: Vec<u32>` plus an optional
+    /// `result_id` for the 4.4.i delta path.
+    pub fn semantic_tokens_full(
+        &self,
+        params: lsp_types::SemanticTokensParams,
+        token: CancellationToken,
+    ) -> Pending<Option<lsp_types::SemanticTokensResult>> {
+        self.request_with_cancel("textDocument/semanticTokens/full", params, token)
+    }
 }
 
 #[cfg(test)]

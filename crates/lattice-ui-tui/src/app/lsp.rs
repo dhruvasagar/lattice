@@ -310,6 +310,16 @@ impl App {
         )
     }
 
+    /// 4.4.h: is `lsp-semantic-tokens-mode` active on
+    /// `buffer_id`? Gates `textDocument/semanticTokens/full`
+    /// issuance and the renderer's per-kind overlay.
+    pub fn lsp_semantic_tokens_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspSemanticTokensMode::mode_id(),
+        )
+    }
+
     /// M.5.4: shared gate for every LSP request entry point
     /// (hover / definition / completion / format / rename /
     /// code-action / symbols / signature / references). Returns
@@ -4177,6 +4187,156 @@ impl App {
         }
     }
 
+    /// 4.4.h: per-tick `semanticTokens/full` pump. Fires when
+    /// `lsp-semantic-tokens-mode` is on AND the buffer's
+    /// document version differs from the cache (or there's no
+    /// cache). Single-flight; the decoder runs server-side on
+    /// the spawned task and the drain seats decoded tokens
+    /// into the cache.
+    pub fn maybe_request_semantic_tokens(&mut self) {
+        if !self.lsp_semantic_tokens_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        if let Some(cache) = self
+            .lsp_semantic_tokens_cache
+            .get(&self.document_buffer_id)
+            && cache.document_version == version
+        {
+            return;
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(token) = self.pending_semantic_tokens_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::SemanticTokensOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_semantic_tokens_rx = Some(rx);
+        self.pending_semantic_tokens_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.servers_for(&uri) };
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_semantic_tokens())
+            else {
+                let _ = tx.send(super::SemanticTokensOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                });
+                return;
+            };
+            // Capture the legend snapshot per-request: a server
+            // can in principle re-register its legend via
+            // dynamic registration, so reading at the moment
+            // we decode keeps us aligned with what the server
+            // wrote.
+            let caps = handle.capabilities();
+            let token_types = caps.semantic_token_types();
+            let token_modifiers = caps.semantic_token_modifiers();
+            let params = lsp_types::SemanticTokensParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.semantic_tokens_full(params, token.clone()).await {
+                Ok(Some(lsp_types::SemanticTokensResult::Tokens(t))) => {
+                    let decoded = crate::app::decode_semantic_tokens(
+                        &t.data,
+                        &token_types,
+                        &token_modifiers,
+                    );
+                    let _ = tx.send(super::SemanticTokensOutcome::Items {
+                        buffer_id,
+                        document_version: version,
+                        result_id: t.result_id,
+                        tokens: decoded,
+                    });
+                }
+                Ok(Some(lsp_types::SemanticTokensResult::Partial(_))) => {
+                    // Partial-result streaming is a 4.4.i / future
+                    // optimization; treat the partial response as
+                    // "nothing for now" and wait for the next
+                    // full request after the next edit.
+                    let _ = tx.send(super::SemanticTokensOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(super::SemanticTokensOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+            }
+        });
+    }
+
+    /// 4.4.h: drain the in-flight `semanticTokens/full`
+    /// response. Coalesces multiple queued outcomes to the
+    /// latest. On success seats the cache; on Empty seats an
+    /// empty list so we don't re-issue immediately.
+    pub fn drain_pending_semantic_tokens(&mut self) {
+        let Some(mut rx) = self.pending_semantic_tokens_rx.take() else {
+            return;
+        };
+        let mut latest: Option<super::SemanticTokensOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
+        }
+        self.pending_semantic_tokens_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        match outcome {
+            super::SemanticTokensOutcome::Items {
+                buffer_id,
+                document_version,
+                result_id,
+                tokens,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_semantic_tokens_cache.insert(
+                    buffer_id,
+                    super::LspSemanticTokensCache {
+                        document_version,
+                        result_id,
+                        tokens,
+                    },
+                );
+            }
+            super::SemanticTokensOutcome::Empty {
+                buffer_id,
+                document_version,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_semantic_tokens_cache.insert(
+                    buffer_id,
+                    super::LspSemanticTokensCache {
+                        document_version,
+                        result_id: None,
+                        tokens: Vec::new(),
+                    },
+                );
+            }
+        }
+    }
+
     /// 4.4.g: per-tick `inlayHint` pump. Fires when:
     /// - `lsp-inlay-hint-mode` is enabled, AND
     /// - the buffer's document version differs from the cache
@@ -5537,6 +5697,94 @@ mod tests {
     /// 4.4.f: an LSP `FoldingRange` converts to our `Fold`
     /// with start/end lines copied verbatim, `closed = false`
     /// (the carry-over path in `recompute_folds` re-closes
+    /// 4.4.h: relative-position decoder produces absolute
+    /// positions per the LSP §3.17.6 contract. Two tokens on
+    /// the same line: the second's `delta_start` is relative
+    /// to the first's start. A subsequent line: the next's
+    /// `delta_start` is from column 0.
+    #[test]
+    fn decode_semantic_tokens_absolute_positions() {
+        let token_types = vec![
+            lsp_types::SemanticTokenType::KEYWORD,
+            lsp_types::SemanticTokenType::FUNCTION,
+        ];
+        let token_modifiers = vec![
+            lsp_types::SemanticTokenModifier::STATIC,
+            lsp_types::SemanticTokenModifier::READONLY,
+        ];
+        // Three tokens:
+        //  - Line 0, col 0, len 3, type=keyword, no mods.
+        //  - Line 0, col 4, len 4, type=function, mod bit 0 (static).
+        //  - Line 2, col 2, len 1, type=keyword, mod bits 0+1.
+        let data = vec![
+            lsp_types::SemanticToken {
+                delta_line: 0,
+                delta_start: 0,
+                length: 3,
+                token_type: 0,
+                token_modifiers_bitset: 0,
+            },
+            lsp_types::SemanticToken {
+                delta_line: 0,
+                delta_start: 4,
+                length: 4,
+                token_type: 1,
+                token_modifiers_bitset: 0b01,
+            },
+            lsp_types::SemanticToken {
+                delta_line: 2,
+                delta_start: 2,
+                length: 1,
+                token_type: 0,
+                token_modifiers_bitset: 0b11,
+            },
+        ];
+        let decoded = crate::app::decode_semantic_tokens(&data, &token_types, &token_modifiers);
+        assert_eq!(decoded.len(), 3);
+        assert_eq!(decoded[0].line, 0);
+        assert_eq!(decoded[0].start_char, 0);
+        assert_eq!(decoded[0].token_type, "keyword");
+        assert!(decoded[0].modifiers.is_empty());
+        // Second token: same line; start = 0 + 4.
+        assert_eq!(decoded[1].line, 0);
+        assert_eq!(decoded[1].start_char, 4);
+        assert_eq!(decoded[1].token_type, "function");
+        assert_eq!(decoded[1].modifiers, vec!["static"]);
+        // Third token: new line; start = delta_start (no
+        // accumulation across line changes per spec).
+        assert_eq!(decoded[2].line, 2);
+        assert_eq!(decoded[2].start_char, 2);
+        assert_eq!(decoded[2].modifiers, vec!["static", "readonly"]);
+    }
+
+    /// 4.4.h: tokens with type indexes past the legend are
+    /// dropped (defense in depth; real servers don't emit).
+    #[test]
+    fn decode_semantic_tokens_drops_out_of_range_type() {
+        let token_types = vec![lsp_types::SemanticTokenType::KEYWORD];
+        let token_modifiers: Vec<lsp_types::SemanticTokenModifier> = Vec::new();
+        let data = vec![
+            lsp_types::SemanticToken {
+                delta_line: 0,
+                delta_start: 0,
+                length: 3,
+                token_type: 0,
+                token_modifiers_bitset: 0,
+            },
+            lsp_types::SemanticToken {
+                delta_line: 0,
+                delta_start: 4,
+                length: 4,
+                token_type: 99, // out of range
+                token_modifiers_bitset: 0,
+            },
+        ];
+        let decoded = crate::app::decode_semantic_tokens(&data, &token_types, &token_modifiers);
+        // Only the in-range token survives.
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].token_type, "keyword");
+    }
+
     /// matching entries), and a stable identity hash.
     #[test]
     fn folding_range_to_fold_preserves_extents_and_keys_identity() {

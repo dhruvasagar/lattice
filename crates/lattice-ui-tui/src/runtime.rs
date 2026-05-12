@@ -302,6 +302,12 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // splices each hint as virtual text mid-line.
         app.maybe_request_inlay_hint();
         app.drain_pending_inlay_hint();
+        // 4.4.h: semanticTokens/full pump. Fires when
+        // `lsp-semantic-tokens-mode` is on AND the document
+        // version has changed; the renderer overlay overrides
+        // tree-sitter styling within each token's byte range.
+        app.maybe_request_semantic_tokens();
+        app.drain_pending_semantic_tokens();
         // Update viewport height. The buffer-area band is the
         // terminal minus the mode line + cmdline/echo row (and the
         // candidate-list row band, when a picker / completion popup

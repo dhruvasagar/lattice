@@ -742,6 +742,96 @@ pub struct LspInlayHintCache {
     pub hints: Vec<lsp_types::InlayHint>,
 }
 
+/// 4.4.h: one decoded LSP semantic token, expanded from the
+/// server's relative-position varint encoding into absolute
+/// positions. `token_type` is the canonical name from the
+/// server's legend (e.g. `"keyword"`, `"function"`) so the
+/// renderer can pick a style without looking up the index.
+/// `length` is in utf-16 code units per the LSP spec.
+#[derive(Debug, Clone)]
+pub struct DecodedSemanticToken {
+    pub line: u32,
+    pub start_char: u32,
+    pub length: u32,
+    pub token_type: String,
+    /// Names of every modifier bit set on this token (legend
+    /// resolved). Empty when the server set no modifier bits.
+    pub modifiers: Vec<String>,
+}
+
+/// 4.4.h: cached decoded `textDocument/semanticTokens/full`
+/// response for one buffer. Same shape as the other LSP
+/// per-buffer caches: keyed on `(BufferId, document_version)`,
+/// invalidated by the pump when the version changes.
+///
+/// `result_id` is the server-issued tag a future 4.4.i delta
+/// request includes so the server knows which baseline to
+/// diff against.
+#[derive(Debug, Clone)]
+pub struct LspSemanticTokensCache {
+    pub document_version: u64,
+    pub result_id: Option<String>,
+    pub tokens: Vec<DecodedSemanticToken>,
+}
+
+/// 4.4.h: in-flight `semanticTokens/full` request outcome.
+#[derive(Debug, Clone)]
+pub enum SemanticTokensOutcome {
+    Items {
+        buffer_id: BufferId,
+        document_version: u64,
+        result_id: Option<String>,
+        tokens: Vec<DecodedSemanticToken>,
+    },
+    Empty {
+        buffer_id: BufferId,
+        document_version: u64,
+    },
+}
+
+/// 4.4.h: decode the LSP semantic-tokens stream into
+/// absolute-position tokens. Format per LSP §3.17.6: each
+/// token's `delta_line` is relative to the previous token's
+/// line; `delta_start` is relative to the previous token's
+/// start when on the same line, otherwise relative to column
+/// 0. `token_types` / `token_modifiers` are the server's
+/// legend slices -- indexes outside the legend are dropped
+/// (defense-in-depth; real servers don't emit out-of-range).
+pub(crate) fn decode_semantic_tokens(
+    data: &[lsp_types::SemanticToken],
+    token_types: &[lsp_types::SemanticTokenType],
+    token_modifiers: &[lsp_types::SemanticTokenModifier],
+) -> Vec<DecodedSemanticToken> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut cur_line: u32 = 0;
+    let mut cur_start: u32 = 0;
+    for tok in data {
+        if tok.delta_line == 0 {
+            cur_start += tok.delta_start;
+        } else {
+            cur_line += tok.delta_line;
+            cur_start = tok.delta_start;
+        }
+        let Some(token_type) = token_types.get(tok.token_type as usize) else {
+            continue;
+        };
+        let mut modifiers: Vec<String> = Vec::new();
+        for (i, m) in token_modifiers.iter().enumerate() {
+            if (tok.token_modifiers_bitset >> i) & 1 == 1 {
+                modifiers.push(m.as_str().to_string());
+            }
+        }
+        out.push(DecodedSemanticToken {
+            line: cur_line,
+            start_char: cur_start,
+            length: tok.length,
+            token_type: token_type.as_str().to_string(),
+            modifiers,
+        });
+    }
+    out
+}
+
 /// 4.4.g: in-flight `inlayHint` request outcome.
 #[derive(Debug, Clone)]
 pub enum InlayHintOutcome {
@@ -1647,6 +1737,16 @@ pub struct App {
     pub pending_inlay_hint_token: Option<lattice_protocol::CancellationToken>,
     pub pending_inlay_hint_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<InlayHintOutcome>>,
+    /// 4.4.h: per-buffer semantic-tokens cache. Refilled when
+    /// the document version changes; the renderer overlay
+    /// repaints span ranges that fall under a token with a
+    /// kind-driven style.
+    pub lsp_semantic_tokens_cache:
+        std::collections::HashMap<BufferId, LspSemanticTokensCache>,
+    /// 4.4.h: in-flight semanticTokens/full single-flight slot.
+    pub pending_semantic_tokens_token: Option<lattice_protocol::CancellationToken>,
+    pub pending_semantic_tokens_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<SemanticTokensOutcome>>,
     // 4.4.f: stash for `lsp-folding-mode` activation moved
     // into `BufferLocals` (owned by the mode via the
     // `PriorFoldmethod` typed local in

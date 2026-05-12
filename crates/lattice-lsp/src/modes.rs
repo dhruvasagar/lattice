@@ -141,6 +141,7 @@ impl LspMode {
                 LspSelectionRangeMode::mode_id(),
                 LspFoldingMode::mode_id(),
                 LspInlayHintMode::mode_id(),
+                LspSemanticTokensMode::mode_id(),
             ],
         }
     }
@@ -282,6 +283,12 @@ lsp_sub_mode!(LspSelectionRangeMode, "lsp-selection-range-mode");
 // the App keyed by (BufferId, doc_version); renderer
 // splices each hint label as a virtual span.
 lsp_sub_mode!(LspInlayHintMode, "lsp-inlay-hint-mode");
+// 4.4.h: `textDocument/semanticTokens/full` highlight overlay.
+// Per-buffer cache keyed by `(BufferId, doc_version)` keeps
+// decoded tokens (absolute positions + kind + modifiers);
+// renderer paints each token with a kind-driven foreground
+// style overriding tree-sitter for the same byte range.
+lsp_sub_mode!(LspSemanticTokensMode, "lsp-semantic-tokens-mode");
 // 4.4.f: `textDocument/foldingRange` feeding `FoldMethod::Lsp`.
 // Coupled to the `foldmethod` option: activating the mode
 // stashes the prior value and swaps `foldmethod` to `lsp`;
@@ -415,6 +422,9 @@ pub fn register_lsp_log_modes(registry: &mut ModeRegistry) {
     registry
         .register(LspInlayHintMode)
         .expect("lsp-inlay-hint-mode register");
+    registry
+        .register(LspSemanticTokensMode)
+        .expect("lsp-semantic-tokens-mode register");
 }
 
 #[cfg(test)]
@@ -443,6 +453,7 @@ mod tests {
             LspSelectionRangeMode::mode_id(),
             LspFoldingMode::mode_id(),
             LspInlayHintMode::mode_id(),
+            LspSemanticTokensMode::mode_id(),
         ];
         for (i, a) in ids.iter().enumerate() {
             for b in &ids[i + 1..] {
@@ -476,6 +487,7 @@ mod tests {
         assert!(registry.is_registered(LspSelectionRangeMode::mode_id()));
         assert!(registry.is_registered(LspFoldingMode::mode_id()));
         assert!(registry.is_registered(LspInlayHintMode::mode_id()));
+        assert!(registry.is_registered(LspSemanticTokensMode::mode_id()));
     }
 
     #[test]
@@ -501,6 +513,7 @@ mod tests {
             &LspSelectionRangeMode,
             &LspFoldingMode,
             &LspInlayHintMode,
+            &LspSemanticTokensMode,
         ];
         for m in modes {
             assert_eq!(m.kind(), ModeKind::Minor, "{} not minor", m.id());

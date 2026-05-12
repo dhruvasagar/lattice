@@ -1126,6 +1126,25 @@ async fn actor_main<R, W>(
                                 .await;
                                 let _ = out_tx_clone.send(Message::Response(resp));
                             });
+                        } else if req.method == "workspace/inlayHint/refresh" {
+                            // 4.4.g: server-initiated inlay
+                            // hint cache invalidation. Reply
+                            // `null` synchronously per spec;
+                            // publish the typed
+                            // `LspInlayHintRefresh` event so
+                            // the App's drain clears cached
+                            // hints for attached buffers and
+                            // the next render tick re-issues
+                            // `inlayHint`.
+                            let _ = out_tx.send(Message::Response(Response::ok(
+                                req.id.clone(),
+                                Value::Null,
+                            )));
+                            if let Some(bus) = event_bus.as_ref() {
+                                bus.publish_typed(crate::events::LspInlayHintRefresh {
+                                    server_id: Arc::clone(&server_id_arc),
+                                });
+                            }
                         } else {
                             let resp = handle_server_request(&server_id_arc, &req, &logger);
                             let _ = out_tx.send(Message::Response(resp));

@@ -140,6 +140,7 @@ impl LspMode {
                 LspDocumentHighlightMode::mode_id(),
                 LspSelectionRangeMode::mode_id(),
                 LspFoldingMode::mode_id(),
+                LspInlayHintMode::mode_id(),
             ],
         }
     }
@@ -275,6 +276,12 @@ lsp_sub_mode!(LspProgressMode, "lsp-progress-mode");
 // overlays / expansion clobber other plugins.
 lsp_sub_mode!(LspDocumentHighlightMode, "lsp-document-highlight-mode");
 lsp_sub_mode!(LspSelectionRangeMode, "lsp-selection-range-mode");
+// 4.4.g: `textDocument/inlayHint` virtual-text overlay --
+// type / parameter annotations rendered inline with the
+// buffer's actual characters. Per-buffer cache lives on
+// the App keyed by (BufferId, doc_version); renderer
+// splices each hint label as a virtual span.
+lsp_sub_mode!(LspInlayHintMode, "lsp-inlay-hint-mode");
 // 4.4.f: `textDocument/foldingRange` feeding `FoldMethod::Lsp`.
 // Coupled to the `foldmethod` option: activating the mode
 // stashes the prior value and swaps `foldmethod` to `lsp`;
@@ -405,6 +412,9 @@ pub fn register_lsp_log_modes(registry: &mut ModeRegistry) {
     registry
         .register(LspFoldingMode)
         .expect("lsp-folding-mode register");
+    registry
+        .register(LspInlayHintMode)
+        .expect("lsp-inlay-hint-mode register");
 }
 
 #[cfg(test)]
@@ -432,6 +442,7 @@ mod tests {
             LspDocumentHighlightMode::mode_id(),
             LspSelectionRangeMode::mode_id(),
             LspFoldingMode::mode_id(),
+            LspInlayHintMode::mode_id(),
         ];
         for (i, a) in ids.iter().enumerate() {
             for b in &ids[i + 1..] {
@@ -464,6 +475,7 @@ mod tests {
         assert!(registry.is_registered(LspDocumentHighlightMode::mode_id()));
         assert!(registry.is_registered(LspSelectionRangeMode::mode_id()));
         assert!(registry.is_registered(LspFoldingMode::mode_id()));
+        assert!(registry.is_registered(LspInlayHintMode::mode_id()));
     }
 
     #[test]
@@ -488,6 +500,7 @@ mod tests {
             &LspDocumentHighlightMode,
             &LspSelectionRangeMode,
             &LspFoldingMode,
+            &LspInlayHintMode,
         ];
         for m in modes {
             assert_eq!(m.kind(), ModeKind::Minor, "{} not minor", m.id());

@@ -88,7 +88,7 @@ pub use diagnostics_layer::{DiagnosticsLayer, SeverityCounts, pump_diagnostics};
 pub use error::{LspError, LspResult};
 pub use events::{
     LspActorExitReason, LspActorExited, LspBufferAttached, LspBufferDetached, LspDocumentChanged,
-    LspLogPushed, LspProgressKind, LspProgressUpdate,
+    LspInlayHintRefresh, LspLogPushed, LspProgressKind, LspProgressUpdate,
 };
 pub use logging::{LogLevel, LogRecord, LogRing, LogSource, LspLogger};
 pub use framing::{FrameError, FrameHeader};

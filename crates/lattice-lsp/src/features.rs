@@ -378,6 +378,22 @@ impl ServerHandle {
     ) -> Pending<Option<Vec<lsp_types::FoldingRange>>> {
         self.request_with_cancel("textDocument/foldingRange", params, token)
     }
+
+    /// 4.4.g: `textDocument/inlayHint`. Returns inline
+    /// virtual-text annotations (type hints, parameter
+    /// names, etc.) over the requested range. Each hint
+    /// carries its position, a label (single string or
+    /// composite `Vec<InlayHintLabelPart>`), and optional
+    /// kind / padding / tooltip fields. The host caches the
+    /// response per buffer-version and the renderer splices
+    /// each hint into the line span list.
+    pub fn inlay_hint(
+        &self,
+        params: lsp_types::InlayHintParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::InlayHint>>> {
+        self.request_with_cancel("textDocument/inlayHint", params, token)
+    }
 }
 
 #[cfg(test)]

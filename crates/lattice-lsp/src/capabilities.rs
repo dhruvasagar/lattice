@@ -424,6 +424,17 @@ impl Capabilities {
         self.server.folding_range_provider.is_some()
     }
 
+    /// 4.4.g: `inlayHintProvider` -- type / parameter
+    /// annotations rendered as virtual text inline with the
+    /// buffer's actual characters. The host's per-tick pump
+    /// fires `textDocument/inlayHint` over the visible range
+    /// when the buffer's document version changes; the
+    /// renderer overlay splices each hint's label at its
+    /// position.
+    pub fn supports_inlay_hint(&self) -> bool {
+        self.server.inlay_hint_provider.is_some()
+    }
+
     /// Server's `documentOnTypeFormattingProvider` presence
     /// (Phase 4.3). Trigger-character driven formatting in
     /// Insert mode -- returns the first character that fires

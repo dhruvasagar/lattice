@@ -731,6 +731,31 @@ pub struct LspFoldsCache {
     pub folds: Vec<Fold>,
 }
 
+/// 4.4.g: cached `textDocument/inlayHint` response for one
+/// buffer. Keyed on `(BufferId, document_version)`; pump
+/// invalidates when the version changes. `hints` are sorted
+/// by position so the renderer can stop scanning once it
+/// walks past the current line.
+#[derive(Debug, Clone)]
+pub struct LspInlayHintCache {
+    pub document_version: u64,
+    pub hints: Vec<lsp_types::InlayHint>,
+}
+
+/// 4.4.g: in-flight `inlayHint` request outcome.
+#[derive(Debug, Clone)]
+pub enum InlayHintOutcome {
+    Items {
+        buffer_id: BufferId,
+        document_version: u64,
+        hints: Vec<lsp_types::InlayHint>,
+    },
+    Empty {
+        buffer_id: BufferId,
+        document_version: u64,
+    },
+}
+
 /// 4.4.f: in-flight `foldingRange` request outcome.
 #[derive(Debug, Clone)]
 pub enum FoldingRangeOutcome {
@@ -1550,6 +1575,14 @@ pub struct App {
     /// same behaviour for free.
     pub pending_lsp_detach_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspBufferDetached>>,
+    /// 4.4.g: receiver for `LspInlayHintRefresh` events. The
+    /// actor publishes these when a server sends
+    /// `workspace/inlayHint/refresh`; the App's per-tick drain
+    /// clears `lsp_inlay_hints_cache` for buffers attached to
+    /// the requesting server. The next render tick re-issues
+    /// `inlayHint` and refills.
+    pub pending_inlay_hint_refresh_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspInlayHintRefresh>>,
     /// Accumulated `$/progress` state keyed by
     /// (server_id, token). `Begin` inserts; `Report` updates;
     /// `End` removes. The modeline picks the most recent
@@ -1605,6 +1638,15 @@ pub struct App {
     pub pending_folding_range_token: Option<lattice_protocol::CancellationToken>,
     pub pending_folding_range_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<FoldingRangeOutcome>>,
+    /// 4.4.g: per-buffer `inlayHint` cache. Refilled by the
+    /// per-tick pump when the document version changes; the
+    /// renderer overlay splices each hint as virtual text.
+    pub lsp_inlay_hints_cache:
+        std::collections::HashMap<BufferId, LspInlayHintCache>,
+    /// 4.4.g: in-flight inlayHint single-flight slot.
+    pub pending_inlay_hint_token: Option<lattice_protocol::CancellationToken>,
+    pub pending_inlay_hint_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<InlayHintOutcome>>,
     // 4.4.f: stash for `lsp-folding-mode` activation moved
     // into `BufferLocals` (owned by the mode via the
     // `PriorFoldmethod` typed local in

@@ -290,6 +290,18 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // cache and triggers `recompute_folds`.
         app.maybe_request_folding_range();
         app.drain_pending_folding_range();
+        // 4.4.g: server-initiated inlay-hint refresh. Drain
+        // before the pump so a refresh that arrived this tick
+        // invalidates the cache before the pump checks it
+        // (otherwise the pump sees the cache as up-to-date for
+        // the current doc version and skips the re-fetch).
+        app.drain_inlay_hint_refresh();
+        // 4.4.g: inlayHint pump. Fires when
+        // `lsp-inlay-hint-mode` is on AND the buffer's
+        // document version has changed; the renderer overlay
+        // splices each hint as virtual text mid-line.
+        app.maybe_request_inlay_hint();
+        app.drain_pending_inlay_hint();
         // Update viewport height. The buffer-area band is the
         // terminal minus the mode line + cmdline/echo row (and the
         // candidate-list row band, when a picker / completion popup

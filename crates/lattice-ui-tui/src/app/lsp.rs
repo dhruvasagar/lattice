@@ -300,6 +300,16 @@ impl App {
         )
     }
 
+    /// 4.4.g: is `lsp-inlay-hint-mode` active on `buffer_id`?
+    /// Gates `textDocument/inlayHint` issuance and the
+    /// renderer overlay paint.
+    pub fn lsp_inlay_hint_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspInlayHintMode::mode_id(),
+        )
+    }
+
     /// M.5.4: shared gate for every LSP request entry point
     /// (hover / definition / completion / format / rename /
     /// code-action / symbols / signature / references). Returns
@@ -4163,6 +4173,187 @@ impl App {
                     },
                 );
                 self.recompute_folds();
+            }
+        }
+    }
+
+    /// 4.4.g: per-tick `inlayHint` pump. Fires when:
+    /// - `lsp-inlay-hint-mode` is enabled, AND
+    /// - the buffer's document version differs from the cache
+    ///   (or there's no cache).
+    ///
+    /// Single-flight: each new request cancels its predecessor.
+    /// Whole-buffer range for simplicity -- the LSP request
+    /// signature requires a range, but production servers
+    /// happily handle the entire buffer span. Viewport-only
+    /// fetching is a follow-up optimization.
+    pub fn maybe_request_inlay_hint(&mut self) {
+        if !self.lsp_inlay_hint_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        if let Some(cache) = self.lsp_inlay_hints_cache.get(&self.document_buffer_id)
+            && cache.document_version == version
+        {
+            return;
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(token) = self.pending_inlay_hint_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        // Whole-buffer range. LSP positions are 0-based;
+        // last_addressable_line returns the highest valid line
+        // index, and we use 0 as the end character (line-end
+        // coordinates work but we'd need to convert utf-8 byte
+        // length to utf-16 column which costs more than just
+        // overshooting via the next line index 0).
+        let last_line = last_addressable_line(&snapshot.buffer);
+        let range = lsp_types::Range {
+            start: lsp_types::Position { line: 0, character: 0 },
+            end: lsp_types::Position {
+                line: last_line.saturating_add(1),
+                character: 0,
+            },
+        };
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::InlayHintOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_inlay_hint_rx = Some(rx);
+        self.pending_inlay_hint_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.servers_for(&uri) };
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_inlay_hint())
+            else {
+                let _ = tx.send(super::InlayHintOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                });
+                return;
+            };
+            let params = lsp_types::InlayHintParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                range,
+                work_done_progress_params: Default::default(),
+            };
+            match handle.inlay_hint(params, token.clone()).await {
+                Ok(Some(hints)) if !hints.is_empty() => {
+                    let _ = tx.send(super::InlayHintOutcome::Items {
+                        buffer_id,
+                        document_version: version,
+                        hints,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(super::InlayHintOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+            }
+        });
+    }
+
+    /// 4.4.g: drain `workspace/inlayHint/refresh` events. Each
+    /// event names a server; clear cached inlay hints for any
+    /// buffer attached to that server so the next render
+    /// tick's pump re-issues `inlayHint`.
+    pub fn drain_inlay_hint_refresh(&mut self) {
+        let Some(mut rx) = self.pending_inlay_hint_refresh_rx.take() else {
+            return;
+        };
+        let mut refreshes: Vec<lattice_lsp::LspInlayHintRefresh> = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            refreshes.push(event);
+        }
+        self.pending_inlay_hint_refresh_rx = Some(rx);
+        if refreshes.is_empty() {
+            return;
+        }
+        // Build a set of (BufferId) entries to invalidate. A
+        // buffer is "attached" to a server when its URI shows
+        // up in the supervisor's per-server attachment map.
+        // Simple coarser-than-needed approach: any buffer
+        // whose attached servers list contains the named id
+        // gets its cache cleared.
+        let buffer_ids: Vec<BufferId> = self
+            .buffer_uris
+            .iter()
+            .filter_map(|(id, uri)| {
+                let handles = self.lsp.servers_for(uri);
+                let attached = handles
+                    .iter()
+                    .any(|h| {
+                        refreshes
+                            .iter()
+                            .any(|r| r.server_id.as_ref() == h.server_id())
+                    });
+                if attached { Some(*id) } else { None }
+            })
+            .collect();
+        for buffer_id in buffer_ids {
+            self.lsp_inlay_hints_cache.remove(&buffer_id);
+        }
+    }
+
+    /// 4.4.g: drain the in-flight `inlayHint` response.
+    /// Coalesces multiple queued outcomes to the latest.
+    pub fn drain_pending_inlay_hint(&mut self) {
+        let Some(mut rx) = self.pending_inlay_hint_rx.take() else {
+            return;
+        };
+        let mut latest: Option<super::InlayHintOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
+        }
+        self.pending_inlay_hint_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        match outcome {
+            super::InlayHintOutcome::Items {
+                buffer_id,
+                document_version,
+                hints,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_inlay_hints_cache.insert(
+                    buffer_id,
+                    super::LspInlayHintCache {
+                        document_version,
+                        hints,
+                    },
+                );
+            }
+            super::InlayHintOutcome::Empty {
+                buffer_id,
+                document_version,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                // Cache empty list so we don't re-issue
+                // immediately; bumped on next edit.
+                self.lsp_inlay_hints_cache.insert(
+                    buffer_id,
+                    super::LspInlayHintCache {
+                        document_version,
+                        hints: Vec::new(),
+                    },
+                );
             }
         }
     }

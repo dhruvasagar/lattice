@@ -308,6 +308,16 @@ impl App {
             lattice_lsp::LspBufferDetached,
         >();
         event_bus.subscribe_typed(lsp_detach_tx);
+        // 4.4.g: `workspace/inlayHint/refresh` subscriber.
+        // Server-initiated cache invalidation -- the actor
+        // replies `null` inline and publishes
+        // `LspInlayHintRefresh`; the App's per-tick drain
+        // clears `lsp_inlay_hints_cache` for buffers attached
+        // to the requesting server, and the next render tick
+        // refills them via `maybe_request_inlay_hint`.
+        let (lsp_inlay_refresh_tx, lsp_inlay_refresh_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspInlayHintRefresh>();
+        event_bus.subscribe_typed(lsp_inlay_refresh_tx);
         // Wire the logger's publisher to the same bus. The
         // logger lives in `lattice-lsp`; the closure captures an
         // Arc<EventBus> clone so the logger's lifetime is
@@ -714,6 +724,7 @@ impl App {
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),
             pending_lsp_detach_rx: Some(lsp_detach_rx),
+            pending_inlay_hint_refresh_rx: Some(lsp_inlay_refresh_rx),
             lsp_progress: std::collections::HashMap::new(),
             lsp_selection_chain: None,
             lsp_selection_chain_index: 0,
@@ -726,6 +737,9 @@ impl App {
             lsp_folds_cache: std::collections::HashMap::new(),
             pending_folding_range_token: None,
             pending_folding_range_rx: None,
+            lsp_inlay_hints_cache: std::collections::HashMap::new(),
+            pending_inlay_hint_token: None,
+            pending_inlay_hint_rx: None,
             auto_submit_after_chord: false,
             lsp,
             lsp_diagnostics,

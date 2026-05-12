@@ -175,6 +175,30 @@ lattice_protocol::register_event!(
     "lattice-lsp",
 );
 
+/// 4.4.g: fired when an attached server requests
+/// `workspace/inlayHint/refresh`. The host invalidates every
+/// cached inlay-hint entry for buffers attached to this
+/// server; the next render tick re-issues `inlayHint` and
+/// repopulates.
+///
+/// The actor replies `null` to the server inline (the request
+/// is fire-and-forget from the LSP spec's perspective); the
+/// cache invalidation flows over the typed event bus so the
+/// App-side drain can mutate `lsp_inlay_hints_cache` without
+/// the actor needing buffer-state access.
+#[derive(Debug, Clone)]
+pub struct LspInlayHintRefresh {
+    pub server_id: Arc<str>,
+}
+
+lattice_protocol::register_event!(
+    LspInlayHintRefresh,
+    "lsp.inlay-hint-refresh",
+    "Fired when a server requests workspace/inlayHint/refresh; the host \
+     invalidates cached hints for buffers attached to that server.",
+    "lattice-lsp",
+);
+
 /// Fired when a document buffer changes *and* `lsp-mode` is
 /// active for that buffer (M.5.5). The per-actor fan-in
 /// (`crate::fan_in`) subscribes via

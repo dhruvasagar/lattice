@@ -2538,6 +2538,48 @@ fn compose_visible_lines_inner(
                 );
             }
         }
+        // 4.4.g: `inlayHint` virtual-text overlay. Walks the
+        // per-buffer hint cache filtering to hints on this
+        // row; each hint's label splices into the line at the
+        // hint's utf-16-converted byte offset. Spliced AFTER
+        // diagnostic underline + match overlays so those style
+        // the buffer's real text and the hint sits visually
+        // beside it, not as part of it. Iterate in *reverse*
+        // position order so earlier splices don't shift the
+        // byte offsets of later ones.
+        if let Some(cache) = app.lsp_inlay_hints_cache.get(&app.document_buffer_id)
+            && app.lsp_inlay_hint_mode_enabled_for(app.document_buffer_id)
+        {
+            let mut on_line: Vec<&lsp_types::InlayHint> = cache
+                .hints
+                .iter()
+                .filter(|h| h.position.line == line_idx)
+                .collect();
+            on_line.sort_by(|a, b| b.position.character.cmp(&a.position.character));
+            for h in on_line {
+                let mut text = inlay_hint_label_text(&h.label);
+                // LSP `paddingLeft` / `paddingRight` produce a
+                // leading / trailing space character on the
+                // hint. Cheap to honor; cosmetic but matches
+                // what other editors render.
+                if h.padding_left.unwrap_or(false) {
+                    text.insert(0, ' ');
+                }
+                if h.padding_right.unwrap_or(false) {
+                    text.push(' ');
+                }
+                let byte_offset = lattice_lsp::position::utf16_column_to_utf8_byte(
+                    &line_text,
+                    h.position.character,
+                ) as usize;
+                body = splice_virtual_text_into_spans(
+                    body,
+                    byte_offset.min(line_len),
+                    text,
+                    inlay_hint_style(),
+                );
+            }
+        }
         // Substitute live preview overlay (DESIGN.md §5.9.10): paint
         // the about-to-be-replaced ranges in a strike-through-ish
         // style so the user sees what will change before they hit
@@ -2815,6 +2857,88 @@ fn match_style() -> TuiStyle {
         .bg(Color::Yellow)
         .fg(Color::Black)
         .add_modifier(Modifier::BOLD)
+}
+
+/// 4.4.g: splice `virtual_text` into `spans` at `byte_offset`
+/// (utf-8 byte index within the *concatenated* span text, i.e.
+/// the original line). When `byte_offset` lands strictly inside
+/// a span, the span is split on the byte boundary; when it
+/// lands at a span boundary (or past the end), the virtual
+/// text inserts cleanly between spans without splitting.
+///
+/// `byte_offset` past the end of all spans appends -- the
+/// caller's responsibility to convert LSP utf-16 columns to
+/// utf-8 bytes before passing in.
+fn splice_virtual_text_into_spans(
+    spans: Vec<Span<'static>>,
+    byte_offset: usize,
+    virtual_text: String,
+    virtual_style: TuiStyle,
+) -> Vec<Span<'static>> {
+    if virtual_text.is_empty() {
+        return spans;
+    }
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 2);
+    let mut cursor = 0usize;
+    let mut spliced = false;
+    for span in spans {
+        let s = span.content.as_ref().to_string();
+        let span_start = cursor;
+        let span_end = cursor + s.len();
+        if !spliced && byte_offset >= span_start && byte_offset <= span_end {
+            if byte_offset == span_start {
+                // Inject before this span.
+                out.push(Span::styled(virtual_text.clone(), virtual_style));
+                out.push(Span::styled(s, span.style));
+            } else if byte_offset == span_end {
+                // Inject after this span -- push the span first,
+                // then the virtual text, then continue.
+                out.push(Span::styled(s, span.style));
+                out.push(Span::styled(virtual_text.clone(), virtual_style));
+            } else {
+                // Split inside this span on the byte boundary.
+                let prefix = s[..byte_offset - span_start].to_string();
+                let suffix = s[byte_offset - span_start..].to_string();
+                out.push(Span::styled(prefix, span.style));
+                out.push(Span::styled(virtual_text.clone(), virtual_style));
+                out.push(Span::styled(suffix, span.style));
+            }
+            spliced = true;
+        } else {
+            out.push(Span::styled(s, span.style));
+        }
+        cursor = span_end;
+    }
+    if !spliced {
+        // Offset past every span -- append at the line end.
+        out.push(Span::styled(virtual_text, virtual_style));
+    }
+    out
+}
+
+/// 4.4.g: style for inlay-hint virtual text. Dimmed inline so
+/// the user can spot it as "annotation, not actual buffer
+/// content" -- italic + dim gray on default bg. Kind-specific
+/// hue could differentiate type vs parameter hints in a
+/// follow-up; v1 keeps a single style for simplicity.
+fn inlay_hint_style() -> TuiStyle {
+    TuiStyle::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::ITALIC)
+}
+
+/// 4.4.g: flatten an LSP `InlayHintLabel` into a single string.
+/// `String` variants return as-is; `LabelParts(Vec<LabelPart>)`
+/// concatenates each part's `value`. Tooltip / command / location
+/// fields on label parts are ignored at paint time (they're a
+/// resolve / hover affordance, not a render concern).
+fn inlay_hint_label_text(label: &lsp_types::InlayHintLabel) -> String {
+    match label {
+        lsp_types::InlayHintLabel::String(s) => s.clone(),
+        lsp_types::InlayHintLabel::LabelParts(parts) => {
+            parts.iter().map(|p| p.value.clone()).collect()
+        }
+    }
 }
 
 /// Trailing-side padding cells between the gutter's content and the
@@ -4135,6 +4259,83 @@ mod tests {
         assert_eq!(out[0].content.as_ref(), "untouched");
     }
 
+    /// 4.4.g: splice virtual text inside a single span.
+    #[test]
+    fn splice_virtual_text_inside_a_single_span() {
+        let spans = vec![Span::raw("let x = 1".to_string())];
+        let style = TuiStyle::default().fg(Color::DarkGray);
+        let out = splice_virtual_text_into_spans(spans, 5, ": i32".into(), style);
+        let texts: Vec<&str> = out.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, vec!["let x", ": i32", " = 1"]);
+        assert_eq!(out[1].style.fg, Some(Color::DarkGray));
+    }
+
+    /// 4.4.g: splice at a span boundary inserts without
+    /// splitting; preserves the adjacent spans' styles.
+    #[test]
+    fn splice_virtual_text_at_a_span_boundary() {
+        let spans = vec![
+            Span::styled("fn".to_string(), TuiStyle::default().fg(Color::Magenta)),
+            Span::raw(" main()".to_string()),
+        ];
+        let style = TuiStyle::default().fg(Color::DarkGray);
+        // Boundary at byte 2 (end of "fn").
+        let out = splice_virtual_text_into_spans(spans, 2, "[hint]".into(), style);
+        let texts: Vec<&str> = out.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, vec!["fn", "[hint]", " main()"]);
+        // Original spans' styles preserved.
+        assert_eq!(out[0].style.fg, Some(Color::Magenta));
+        assert_eq!(out[2].style.fg, None);
+    }
+
+    /// 4.4.g: empty virtual text is a no-op.
+    #[test]
+    fn splice_virtual_text_empty_is_noop() {
+        let spans = vec![Span::raw("hi".to_string())];
+        let style = TuiStyle::default();
+        let out = splice_virtual_text_into_spans(spans.clone(), 1, String::new(), style);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].content.as_ref(), "hi");
+    }
+
+    /// 4.4.g: offset past the end appends at the line end.
+    #[test]
+    fn splice_virtual_text_past_end_appends() {
+        let spans = vec![Span::raw("abc".to_string())];
+        let style = TuiStyle::default();
+        let out = splice_virtual_text_into_spans(spans, 999, " // EOL".into(), style);
+        let texts: Vec<&str> = out.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, vec!["abc", " // EOL"]);
+    }
+
+    /// 4.4.g: `inlay_hint_label_text` flattens both shapes.
+    #[test]
+    fn inlay_hint_label_text_handles_string_and_parts() {
+        let s = lsp_types::InlayHintLabel::String(": i32".into());
+        assert_eq!(inlay_hint_label_text(&s), ": i32");
+        let parts = lsp_types::InlayHintLabel::LabelParts(vec![
+            lsp_types::InlayHintLabelPart {
+                value: "size".into(),
+                tooltip: None,
+                location: None,
+                command: None,
+            },
+            lsp_types::InlayHintLabelPart {
+                value: ": ".into(),
+                tooltip: None,
+                location: None,
+                command: None,
+            },
+            lsp_types::InlayHintLabelPart {
+                value: "usize".into(),
+                tooltip: None,
+                location: None,
+                command: None,
+            },
+        ]);
+        assert_eq!(inlay_hint_label_text(&parts), "size: usize");
+    }
+
     #[test]
     fn compose_visible_lines_appends_ghost_text_at_eol_when_enabled() {
         // With completion.ghost_text on AND popup open with a
@@ -4766,6 +4967,91 @@ mod tests {
         }
         assert!(saw_read, "expected READ tint span; got {row0:?}");
         assert!(saw_write, "expected WRITE tint span; got {row0:?}");
+    }
+
+    /// 4.4.g: a seeded inlay-hint cache produces a virtual
+    /// span at the hint's character position, styled with the
+    /// inlay-hint italic+dim color.
+    #[test]
+    fn inlay_hint_overlay_splices_virtual_text() {
+        use std::str::FromStr;
+        let mut app = app_with("let x = 1;\n", 5);
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, uri);
+        if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-mode");
+        }
+        if !app.lsp_inlay_hint_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-inlay-hint-mode");
+        }
+        // Hint at column 5 (end of "let x") with label ": i32".
+        app.lsp_inlay_hints_cache.insert(
+            app.document_buffer_id,
+            crate::app::LspInlayHintCache {
+                document_version: app.document.snapshot().version,
+                hints: vec![lsp_types::InlayHint {
+                    position: lsp_types::Position { line: 0, character: 5 },
+                    label: lsp_types::InlayHintLabel::String(": i32".into()),
+                    kind: Some(lsp_types::InlayHintKind::TYPE),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: Some(false),
+                    padding_right: Some(false),
+                    data: None,
+                }],
+            },
+        );
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let row0 = &lines[0];
+        let mut found = false;
+        for span in &row0.spans {
+            if span.content.as_ref().contains(": i32") {
+                assert_eq!(span.style.fg, Some(Color::DarkGray));
+                found = true;
+            }
+        }
+        assert!(found, "expected `: i32` inlay-hint span; got {row0:?}");
+    }
+
+    /// 4.4.g: with the mode off, the cache content is ignored
+    /// and the overlay does not paint.
+    #[test]
+    fn inlay_hint_overlay_suppressed_when_mode_off() {
+        use std::str::FromStr;
+        let mut app = app_with("let x = 1;\n", 5);
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, uri);
+        if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-mode");
+        }
+        // Force mode OFF.
+        if app.lsp_inlay_hint_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-inlay-hint-mode");
+        }
+        app.lsp_inlay_hints_cache.insert(
+            app.document_buffer_id,
+            crate::app::LspInlayHintCache {
+                document_version: app.document.snapshot().version,
+                hints: vec![lsp_types::InlayHint {
+                    position: lsp_types::Position { line: 0, character: 5 },
+                    label: lsp_types::InlayHintLabel::String(": i32".into()),
+                    kind: None,
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: None,
+                    padding_right: None,
+                    data: None,
+                }],
+            },
+        );
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let row0 = &lines[0];
+        for span in &row0.spans {
+            assert!(
+                !span.content.as_ref().contains(": i32"),
+                "mode-off should suppress hint span; got {span:?}"
+            );
+        }
     }
 
     /// 4.4.e: with the mode off, the overlay must NOT paint --

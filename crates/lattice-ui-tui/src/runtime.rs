@@ -294,6 +294,12 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         app.drain_code_lens_refresh();
         app.maybe_request_code_lens();
         app.drain_pending_code_lens();
+        // 4.5.e: documentColor pump + drain. Per-tick pump on
+        // doc-version change caches color literal ranges; the
+        // cache feeds `:lsp-color-presentation` (and a future
+        // renderer swatch overlay).
+        app.maybe_request_document_color();
+        app.drain_pending_document_color();
         // 4.4.b: server-initiated window/showDocument requests
         // (open URI in buffer / external handler).
         app.drain_inbound_show_documents();

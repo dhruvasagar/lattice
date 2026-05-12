@@ -5993,6 +5993,268 @@ impl App {
         self.execute_lsp_command(Some(handle), command);
     }
 
+    /// 4.5.e: per-tick `documentColor` pump. Same shape as
+    /// the documentLink pump: fires on doc-version change,
+    /// single-flight per buffer.
+    pub fn maybe_request_document_color(&mut self) {
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        if let Some(cache) = self
+            .lsp_document_color_cache
+            .get(&self.document_buffer_id)
+            && cache.document_version == version
+        {
+            return;
+        }
+        if let Some(token) = self.pending_document_color_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::DocumentColorOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_document_color_rx = Some(rx);
+        self.pending_document_color_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_color())
+            else {
+                let _ = tx.send(super::DocumentColorOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                });
+                return;
+            };
+            let server_id_arc: std::sync::Arc<str> =
+                std::sync::Arc::from(handle.server_id());
+            let params = lsp_types::DocumentColorParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.document_color(params, token.clone()).await {
+                Ok(colors) if !colors.is_empty() => {
+                    let _ = tx.send(super::DocumentColorOutcome::Items {
+                        buffer_id,
+                        document_version: version,
+                        server_id: server_id_arc,
+                        colors,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(super::DocumentColorOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+            }
+        });
+    }
+
+    /// 4.5.e: drain queued `documentColor` responses + seat
+    /// the cache.
+    pub fn drain_pending_document_color(&mut self) {
+        let Some(mut rx) = self.pending_document_color_rx.take() else {
+            return;
+        };
+        let mut latest: Option<super::DocumentColorOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_document_color_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_document_color_token = None;
+        match outcome {
+            super::DocumentColorOutcome::Items {
+                buffer_id,
+                document_version,
+                server_id,
+                colors,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_document_color_cache.insert(
+                    buffer_id,
+                    super::LspDocumentColorCache {
+                        document_version,
+                        colors,
+                        server_id,
+                    },
+                );
+            }
+            super::DocumentColorOutcome::Empty {
+                buffer_id,
+                document_version,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_document_color_cache.insert(
+                    buffer_id,
+                    super::LspDocumentColorCache {
+                        document_version,
+                        colors: Vec::new(),
+                        server_id: std::sync::Arc::from("<none>"),
+                    },
+                );
+            }
+        }
+    }
+
+    /// 4.5.e: `:lsp-color-presentation`. Looks up the color
+    /// literal under the cursor in the per-buffer cache and
+    /// fires `textDocument/colorPresentation` to get the
+    /// alternative formats; opens the result as a picker.
+    /// Accept replaces the literal with the chosen
+    /// `ColorPresentation.text_edit` (or `label` fallback) at
+    /// the literal's range.
+    pub(super) fn do_lsp_color_presentation(&mut self) {
+        let snapshot = self.document.snapshot();
+        let Some(pos) = app_to_lsp_position(&snapshot.buffer, self.cursor) else {
+            return;
+        };
+        let buffer_id = self.document_buffer_id;
+        let cache = self.lsp_document_color_cache.get(&buffer_id).cloned();
+        let Some(cache) = cache else {
+            self.set_message(
+                EchoLevel::Info,
+                "no color literal at cursor (cache empty)".to_string(),
+            );
+            return;
+        };
+        let entry = cache
+            .colors
+            .iter()
+            .find(|c| range_covers(c.range, pos))
+            .cloned();
+        let Some(entry) = entry else {
+            self.set_message(
+                EchoLevel::Info,
+                "no color literal at cursor".to_string(),
+            );
+            return;
+        };
+        let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
+            return;
+        };
+        let handle = self
+            .lsp
+            .servers_for(&uri)
+            .into_iter()
+            .find(|h| h.server_id() == cache.server_id.as_ref());
+        let Some(handle) = handle else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "color-presentation: server `{}` no longer attached",
+                    cache.server_id
+                ),
+            );
+            return;
+        };
+        let params = lsp_types::ColorPresentationParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri },
+            color: entry.color,
+            range: entry.range,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let token = lattice_protocol::CancellationToken::new();
+        let presentations = lattice_runtime::block_on(async move {
+            handle.color_presentation(params, token).await
+        });
+        let presentations = match presentations {
+            Ok(p) => p,
+            Err(_) => {
+                self.set_message(
+                    EchoLevel::Warn,
+                    "colorPresentation failed".to_string(),
+                );
+                return;
+            }
+        };
+        if presentations.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                "no color alternatives".to_string(),
+            );
+            return;
+        }
+        let pairs: Vec<(
+            lattice_completion::RawCandidate,
+            lattice_picker::RoutingPayload,
+        )> = presentations
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let mut c = lattice_completion::RawCandidate::plain(
+                    p.label.clone(),
+                    lattice_completion::CandidateKind::Plain,
+                );
+                c.display = p.label.clone();
+                (
+                    c,
+                    lattice_picker::RoutingPayload::ColorPresentation {
+                        index: i as u32,
+                    },
+                )
+            })
+            .collect();
+        let total = pairs.len();
+        self.pending_color_presentations = Some(presentations);
+        self.pending_color_range = Some(entry.range);
+        let mut p = lattice_picker::Picker::new(
+            format!("color alternatives ({total})"),
+            lattice_picker::PickerSource::LspLocations,
+            lattice_picker::PickerAction::AcceptColorPresentation,
+        );
+        p.set_raw_candidates_with_routing(pairs);
+        self.picker = Some(p);
+    }
+
+    /// 4.5.e: accept one color presentation by index. Splices
+    /// the chosen alternative at the cached color range. Uses
+    /// `text_edit` when present; falls back to a plain replace
+    /// with `label` otherwise.
+    pub(super) fn accept_lsp_color_presentation(&mut self, index: u32) {
+        let Some(items) = self.pending_color_presentations.take() else {
+            return;
+        };
+        let range = self.pending_color_range.take();
+        let Some(item) = items.get(index as usize).cloned() else {
+            return;
+        };
+        let Some(range) = range else {
+            return;
+        };
+        // Prefer `text_edit` (server controls the substitution
+        // shape including surrounding context); fall back to a
+        // plain range-replace with `label`.
+        if let Some(edit) = item.text_edit {
+            let _ = self.apply_lsp_text_edits(vec![edit]);
+        } else {
+            let edit = lsp_types::TextEdit {
+                range,
+                new_text: item.label,
+            };
+            let _ = self.apply_lsp_text_edits(vec![edit]);
+        }
+    }
+
     /// 4.5.d: drain `workspace/codeLens/refresh` events. Each
     /// event names a server; evict every cached code-lens
     /// entry that came from that server. The next pump tick

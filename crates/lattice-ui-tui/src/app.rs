@@ -866,6 +866,37 @@ pub enum CodeLensOutcome {
     },
 }
 
+/// 4.5.e: per-buffer cache of color literals + their resolved
+/// values. Filled by the per-tick pump on document-version
+/// change; consumed by `:lsp-color-presentation`. Renderer
+/// swatch overlay queued -- today the cache only feeds the
+/// picker.
+#[derive(Debug, Clone)]
+pub struct LspDocumentColorCache {
+    pub document_version: u64,
+    pub colors: Vec<lsp_types::ColorInformation>,
+    /// Server that produced the cache. Routing `colorPresentation`
+    /// back to the same server keeps the alternatives consistent
+    /// (a CSS server's `rgb()` formats aren't useful for a Rust
+    /// `rgb!` macro).
+    pub server_id: std::sync::Arc<str>,
+}
+
+/// 4.5.e: outcome of an in-flight `documentColor` request.
+#[derive(Debug, Clone)]
+pub enum DocumentColorOutcome {
+    Items {
+        buffer_id: BufferId,
+        document_version: u64,
+        server_id: std::sync::Arc<str>,
+        colors: Vec<lsp_types::ColorInformation>,
+    },
+    Empty {
+        buffer_id: BufferId,
+        document_version: u64,
+    },
+}
+
 /// 4.4.h: one decoded LSP semantic token, expanded from the
 /// server's relative-position varint encoding into absolute
 /// positions. `token_type` is the canonical name from the
@@ -2039,6 +2070,22 @@ pub struct App {
     /// accept handler to route `workspace/executeCommand` to
     /// the originating server (commands are server-specific).
     pub pending_code_lens_server: Option<std::sync::Arc<str>>,
+    /// 4.5.e: per-buffer `documentColor` cache.
+    pub lsp_document_color_cache:
+        std::collections::HashMap<BufferId, LspDocumentColorCache>,
+    /// 4.5.e: in-flight `documentColor` single-flight slot.
+    pub pending_document_color_token: Option<lattice_protocol::CancellationToken>,
+    pub pending_document_color_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<DocumentColorOutcome>>,
+    /// 4.5.e: snapshot of color presentations the open picker
+    /// is referencing. Cleared on dismiss / accept.
+    /// Routing payload index points into this vec.
+    pub pending_color_presentations: Option<Vec<lsp_types::ColorPresentation>>,
+    /// 4.5.e: original color literal's range -- needed by the
+    /// accept handler so it can replace the literal even when
+    /// the chosen `ColorPresentation` has no `text_edit` (the
+    /// `label` then replaces at this range).
+    pub pending_color_range: Option<lsp_types::Range>,
     /// 4.4.g: in-flight inlayHint single-flight slot.
     pub pending_inlay_hint_token: Option<lattice_protocol::CancellationToken>,
     pub pending_inlay_hint_rx:

@@ -463,6 +463,7 @@ impl App {
                 | lattice_picker::PickerAction::AcceptLspCompletion
                 | lattice_picker::PickerAction::AcceptLspCodeAction
                 | lattice_picker::PickerAction::AcceptLspCodeLens
+                | lattice_picker::PickerAction::AcceptColorPresentation
                 | lattice_picker::PickerAction::OpenFile
                 | lattice_picker::PickerAction::AcceptShowMessageAction => {}
             }
@@ -1090,6 +1091,11 @@ impl App {
             // originating server's `workspace/executeCommand`.
             lattice_picker::RoutingPayload::LspCodeLens { index } => {
                 self.accept_lsp_code_lens(index);
+            }
+            // 4.5.e: splice the chosen color presentation into
+            // the buffer at the cached color range.
+            lattice_picker::RoutingPayload::ColorPresentation { index } => {
+                self.accept_lsp_color_presentation(index);
             }
         }
     }

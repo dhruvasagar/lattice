@@ -465,6 +465,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("lsp-moniker", "ex:lsp-moniker"),
     // 4.5.d -- code lens picker.
     ("lsp-code-lens", "ex:lsp-code-lens"),
+    // 4.5.e -- color presentation picker.
+    ("lsp-color-presentation", "ex:lsp-color-presentation"),
     // Phase 4.3 edits.
     ("lsp-format", "ex:lsp-format"),
     ("lsp-format-range", "ex:lsp-format-range"),

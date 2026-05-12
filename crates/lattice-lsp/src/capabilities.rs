@@ -319,6 +319,15 @@ fn text_document_capabilities() -> TextDocumentClientCapabilities {
                 dynamic_registration: Some(false),
             },
         ),
+        // 4.5.e: tell servers we honour `textDocument/documentColor`
+        // (+ `colorPresentation`). The host caches color
+        // ranges per buffer; `:lsp-color-presentation` opens
+        // the alternative-format picker at the cursor.
+        color_provider: Some(
+            lsp_types::DynamicRegistrationClientCapabilities {
+                dynamic_registration: Some(false),
+            },
+        ),
         ..Default::default()
     }
 }
@@ -947,6 +956,22 @@ impl Capabilities {
             .as_ref()
             .and_then(|opts| opts.resolve_provider)
             .unwrap_or(false)
+    }
+
+    /// 4.5.e: server's `colorProvider` presence -- gates the
+    /// per-tick `documentColor` pump + the
+    /// `:lsp-color-presentation` picker. Consults the dynamic
+    /// registry (4.4.n). lsp-types models the cap as
+    /// `Option<ColorProviderCapability>` which is a `OneOf<bool,
+    /// ...Options>`; both shapes count.
+    pub fn supports_color(&self) -> bool {
+        let static_ok = matches!(
+            self.server.color_provider,
+            Some(lsp_types::ColorProviderCapability::Simple(true))
+                | Some(lsp_types::ColorProviderCapability::ColorProvider(_))
+                | Some(lsp_types::ColorProviderCapability::Options(_))
+        );
+        static_ok || self.dynamic.has("textDocument/documentColor")
     }
 
     /// 4.4.m: server advertises interest in

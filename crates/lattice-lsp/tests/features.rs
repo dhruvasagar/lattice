@@ -947,3 +947,65 @@ async fn code_lens_request_and_resolve_round_trip() {
         Some("rust-analyzer.debugTest"),
     );
 }
+
+/// 4.5.e: `document_color` round-trips a list of color
+/// literals; `color_presentation` returns alternatives.
+#[tokio::test]
+async fn document_color_and_color_presentation_round_trip() {
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("textDocument/documentColor", |_params| {
+            MockResult::Ok(json!([{
+                "range": {
+                    "start": {"line": 3, "character": 8},
+                    "end": {"line": 3, "character": 15}
+                },
+                "color": { "red": 1.0, "green": 0.0, "blue": 0.0, "alpha": 1.0 }
+            }]))
+        })
+        .await;
+    mock.mock
+        .on("textDocument/colorPresentation", |_params| {
+            MockResult::Ok(json!([
+                { "label": "#ff0000" },
+                { "label": "rgb(255, 0, 0)" },
+                { "label": "red" }
+            ]))
+        })
+        .await;
+    let colors = mock
+        .handle
+        .document_color(
+            lsp_types::DocumentColorParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Uri::from_str("file:///tmp/style.css").unwrap(),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("documentColor decodes");
+    assert_eq!(colors.len(), 1);
+    let color = colors[0].clone();
+    assert_eq!(color.color.red, 1.0);
+    let alts = mock
+        .handle
+        .color_presentation(
+            lsp_types::ColorPresentationParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Uri::from_str("file:///tmp/style.css").unwrap(),
+                },
+                color: color.color,
+                range: color.range,
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("colorPresentation decodes");
+    assert_eq!(alts.len(), 3);
+    assert_eq!(alts[2].label, "red");
+}

@@ -315,6 +315,37 @@ impl ServerHandle {
         self.request_with_cancel("codeLens/resolve", lens, token)
     }
 
+    /// 4.5.e: `textDocument/documentColor`. Returns the color
+    /// literals (hex / named) the server detected in the
+    /// document, each with its `range` and resolved `color`
+    /// (red/green/blue/alpha in [0.0, 1.0]). The host caches
+    /// per (BufferId, doc_version) and feeds the cache to a
+    /// future renderer swatch overlay; `:lsp-color-presentation`
+    /// reads the cached entry at the cursor to drive the
+    /// alternative-format picker.
+    pub fn document_color(
+        &self,
+        params: lsp_types::DocumentColorParams,
+        token: CancellationToken,
+    ) -> Pending<Vec<lsp_types::ColorInformation>> {
+        self.request_with_cancel("textDocument/documentColor", params, token)
+    }
+
+    /// 4.5.e: `textDocument/colorPresentation`. Given a color
+    /// + the range it covers, the server returns alternative
+    /// presentations the user can replace the literal with
+    /// (e.g. `"#ff0000"` -> `"rgb(255, 0, 0)"`, `"red"`).
+    /// `:lsp-color-presentation` opens these as a picker;
+    /// accept splices the chosen `text_edit` (or `label` as
+    /// a simple replace) at the literal's range.
+    pub fn color_presentation(
+        &self,
+        params: lsp_types::ColorPresentationParams,
+        token: CancellationToken,
+    ) -> Pending<Vec<lsp_types::ColorPresentation>> {
+        self.request_with_cancel("textDocument/colorPresentation", params, token)
+    }
+
     /// `textDocument/completion` (DESIGN.md §5.4 / Phase 4.2.g).
     /// Returns either an array of items or an `isIncomplete` list
     /// the editor must re-query as the user types more. The

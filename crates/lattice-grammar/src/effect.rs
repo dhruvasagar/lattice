@@ -353,6 +353,13 @@ pub enum Effect {
     /// `codeLens/resolve` if the lens arrived without a
     /// command).
     LspCodeLens,
+    /// `:lsp-color-presentation` -- 4.5.e. At the cursor,
+    /// look up the color literal in the per-buffer
+    /// `documentColor` cache and fire
+    /// `textDocument/colorPresentation` to fetch alternative
+    /// formats (named, rgb(), hex, etc.). Open a picker;
+    /// accept splices the chosen alternative.
+    LspColorPresentation,
     /// `:format` -- run `textDocument/formatting` on the highest-
     /// priority server with `documentFormattingProvider` and
     /// apply the returned edits as one undo unit. Phase 4.3.

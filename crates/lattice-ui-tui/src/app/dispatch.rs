@@ -1199,6 +1199,7 @@ impl App {
             Effect::LspSubtypes => self.do_lsp_type_hierarchy_request(true),
             Effect::LspMoniker => self.do_lsp_moniker_request(),
             Effect::LspCodeLens => self.do_lsp_code_lens_picker(),
+            Effect::LspColorPresentation => self.do_lsp_color_presentation(),
             Effect::LspFormat => self.do_lsp_format_request(false),
             Effect::LspFormatRange => self.do_lsp_format_request(true),
             Effect::LspSignatureHelp => self.do_lsp_signature_help_request(),
@@ -1450,6 +1451,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspSubtypes
         | Effect::LspMoniker
         | Effect::LspCodeLens
+        | Effect::LspColorPresentation
         | Effect::LspFormat
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp
@@ -1532,6 +1534,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspSubtypes
         | Effect::LspMoniker
         | Effect::LspCodeLens
+        | Effect::LspColorPresentation
         | Effect::LspFormat
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp

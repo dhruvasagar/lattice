@@ -187,6 +187,12 @@ pub enum RoutingPayload {
     /// and routes the resulting `command` through
     /// `workspace/executeCommand` on the originating server.
     LspCodeLens { index: u32 },
+    /// 4.5.e -- `PickerAction::AcceptColorPresentation`.
+    /// Numeric index into the host's
+    /// `pending_color_presentations` snapshot. Accept splices
+    /// the chosen `ColorPresentation.text_edit` (or `label`
+    /// fallback) into the buffer at the cached color range.
+    ColorPresentation { index: u32 },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves
@@ -286,6 +292,11 @@ pub enum PickerAction {
     /// its `command` through `workspace/executeCommand` on
     /// the originating server.
     AcceptLspCodeLens,
+    /// 4.5.e: accept one color presentation from the
+    /// `:lsp-color-presentation` picker. Routing payload is
+    /// [`RoutingPayload::ColorPresentation`]; the host
+    /// splices the chosen alternative into the buffer.
+    AcceptColorPresentation,
 }
 
 /// One open vertico-style picker. Lives on `App.picker` while

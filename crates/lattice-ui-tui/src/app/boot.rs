@@ -344,6 +344,15 @@ impl App {
                 lattice_lsp::LspDiagnosticRefresh,
             >();
         event_bus.subscribe_typed(lsp_diagnostic_refresh_tx);
+        // 4.5.d: `workspace/codeLens/refresh` subscriber. Same
+        // pattern as the other refresh events; the drain
+        // evicts per-buffer code-lens caches for the
+        // requesting server so the next pump tick refetches.
+        let (lsp_code_lens_refresh_tx, lsp_code_lens_refresh_rx) =
+            tokio::sync::mpsc::unbounded_channel::<
+                lattice_lsp::LspCodeLensRefresh,
+            >();
+        event_bus.subscribe_typed(lsp_code_lens_refresh_tx);
         // `*messages*` buffer live-tail subscriber. Every
         // `set_message` publishes a `MessagePushed` event; the
         // App's per-tick drain coalesces and rebuilds the
@@ -780,6 +789,12 @@ impl App {
             lsp_document_links_cache: std::collections::HashMap::new(),
             pending_document_links_token: None,
             pending_document_links_rx: None,
+            lsp_code_lens_cache: std::collections::HashMap::new(),
+            pending_code_lens_token: None,
+            pending_code_lens_rx: None,
+            pending_code_lens_refresh_rx: Some(lsp_code_lens_refresh_rx),
+            pending_code_lens_items: None,
+            pending_code_lens_server: None,
             lsp_semantic_tokens_cache: std::collections::HashMap::new(),
             pending_semantic_tokens_token: None,
             pending_semantic_tokens_rx: None,

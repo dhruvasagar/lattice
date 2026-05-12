@@ -462,6 +462,7 @@ impl App {
                 | lattice_picker::PickerAction::JumpToLspLocation
                 | lattice_picker::PickerAction::AcceptLspCompletion
                 | lattice_picker::PickerAction::AcceptLspCodeAction
+                | lattice_picker::PickerAction::AcceptLspCodeLens
                 | lattice_picker::PickerAction::OpenFile
                 | lattice_picker::PickerAction::AcceptShowMessageAction => {}
             }
@@ -1083,6 +1084,12 @@ impl App {
                     Some(action_index),
                 );
                 self.open_next_queued_show_message_request();
+            }
+            // 4.5.d: accept one code lens. Resolve if needed,
+            // then route the lens's `command` through the
+            // originating server's `workspace/executeCommand`.
+            lattice_picker::RoutingPayload::LspCodeLens { index } => {
+                self.accept_lsp_code_lens(index);
             }
         }
     }

@@ -5737,6 +5737,283 @@ impl App {
         }
     }
 
+    /// 4.5.d: per-tick `codeLens` pump. Fires on document-
+    /// version change OR cache miss (`workspace/codeLens/refresh`
+    /// evicts the entry). Single-flight per buffer.
+    pub fn maybe_request_code_lens(&mut self) {
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        if let Some(cache) = self.lsp_code_lens_cache.get(&self.document_buffer_id)
+            && cache.document_version == version
+        {
+            return;
+        }
+        if let Some(token) = self.pending_code_lens_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::CodeLensOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_code_lens_rx = Some(rx);
+        self.pending_code_lens_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_code_lens())
+            else {
+                let _ = tx.send(super::CodeLensOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                });
+                return;
+            };
+            let server_id_arc: std::sync::Arc<str> =
+                std::sync::Arc::from(handle.server_id());
+            let params = lsp_types::CodeLensParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.code_lens(params, token.clone()).await {
+                Ok(Some(lenses)) if !lenses.is_empty() => {
+                    let _ = tx.send(super::CodeLensOutcome::Items {
+                        buffer_id,
+                        document_version: version,
+                        server_id: server_id_arc,
+                        lenses,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(super::CodeLensOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+            }
+        });
+    }
+
+    /// 4.5.d: drain queued `codeLens` responses + seat the
+    /// cache. The cache feeds `:lsp-code-lens`; the picker
+    /// reads from it.
+    pub fn drain_pending_code_lens(&mut self) {
+        let Some(mut rx) = self.pending_code_lens_rx.take() else {
+            return;
+        };
+        let mut latest: Option<super::CodeLensOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_code_lens_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_code_lens_token = None;
+        match outcome {
+            super::CodeLensOutcome::Items {
+                buffer_id,
+                document_version,
+                server_id,
+                lenses,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_code_lens_cache.insert(
+                    buffer_id,
+                    super::LspCodeLensCache {
+                        document_version,
+                        lenses,
+                        server_id,
+                    },
+                );
+            }
+            super::CodeLensOutcome::Empty {
+                buffer_id,
+                document_version,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                // Empty cache prevents re-issuing for the same
+                // version; bumped on next edit / refresh.
+                self.lsp_code_lens_cache.insert(
+                    buffer_id,
+                    super::LspCodeLensCache {
+                        document_version,
+                        lenses: Vec::new(),
+                        server_id: std::sync::Arc::from("<none>"),
+                    },
+                );
+            }
+        }
+    }
+
+    /// 4.5.d: `:lsp-code-lens`. Open a picker over the
+    /// active buffer's cached lenses. Empty cache -> echo.
+    /// Accept routes through
+    /// [`Self::accept_lsp_code_lens`].
+    pub(super) fn do_lsp_code_lens_picker(&mut self) {
+        let buffer_id = self.document_buffer_id;
+        let Some(cache) = self.lsp_code_lens_cache.get(&buffer_id).cloned() else {
+            self.set_message(
+                EchoLevel::Info,
+                "no code lenses (cache empty)".to_string(),
+            );
+            return;
+        };
+        if cache.lenses.is_empty() {
+            self.set_message(EchoLevel::Info, "no code lenses".to_string());
+            return;
+        }
+        let pairs: Vec<(
+            lattice_completion::RawCandidate,
+            lattice_picker::RoutingPayload,
+        )> = cache
+            .lenses
+            .iter()
+            .enumerate()
+            .map(|(i, lens)| {
+                let title = lens
+                    .command
+                    .as_ref()
+                    .map(|c| c.title.clone())
+                    .unwrap_or_else(|| format!("(unresolved lens at line {})", lens.range.start.line));
+                let line = lens.range.start.line;
+                let display = format!("{line:>4}  {title}");
+                let mut c = lattice_completion::RawCandidate::plain(
+                    title,
+                    lattice_completion::CandidateKind::Plain,
+                );
+                c.display = display;
+                (
+                    c,
+                    lattice_picker::RoutingPayload::LspCodeLens { index: i as u32 },
+                )
+            })
+            .collect();
+        let total = pairs.len();
+        self.pending_code_lens_items = Some(cache.lenses.clone());
+        self.pending_code_lens_server = Some(cache.server_id.clone());
+        let mut p = lattice_picker::Picker::new(
+            format!("code-lens ({total})"),
+            lattice_picker::PickerSource::LspLocations,
+            lattice_picker::PickerAction::AcceptLspCodeLens,
+        );
+        p.set_raw_candidates_with_routing(pairs);
+        self.picker = Some(p);
+    }
+
+    /// 4.5.d: accept a code lens by `index` (the routing
+    /// payload). Resolves the lens via `codeLens/resolve`
+    /// when its `command` is missing AND the server advertises
+    /// `codeLensProvider.resolveProvider`. The resulting
+    /// `command` routes through `workspace/executeCommand`
+    /// on the originating server (the one that produced the
+    /// cache).
+    pub(super) fn accept_lsp_code_lens(&mut self, index: u32) {
+        let Some(items) = self.pending_code_lens_items.take() else {
+            return;
+        };
+        let server_id = self.pending_code_lens_server.take();
+        let Some(lens) = items.get(index as usize).cloned() else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("code-lens accept: index {index} out of bounds"),
+            );
+            return;
+        };
+        let Some(server_id) = server_id else {
+            self.set_message(
+                EchoLevel::Warn,
+                "code-lens accept: no server id captured".to_string(),
+            );
+            return;
+        };
+        // Look up the originating server handle by id.
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return;
+        };
+        let handle = self
+            .lsp
+            .servers_for(&uri)
+            .into_iter()
+            .find(|h| h.server_id() == server_id.as_ref());
+        let Some(handle) = handle else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("code-lens accept: server `{server_id}` no longer attached"),
+            );
+            return;
+        };
+        // Resolve lazily when needed.
+        let command = if let Some(cmd) = lens.command.clone() {
+            Some(cmd)
+        } else if handle.capabilities().code_lens_resolve_provider() {
+            let handle_for_resolve = handle.clone();
+            let token = lattice_protocol::CancellationToken::new();
+            let resolved = lattice_runtime::block_on(async move {
+                handle_for_resolve.code_lens_resolve(lens, token).await
+            });
+            match resolved {
+                Ok(r) => r.command,
+                Err(_) => {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        "codeLens/resolve failed".to_string(),
+                    );
+                    return;
+                }
+            }
+        } else {
+            self.set_message(
+                EchoLevel::Info,
+                "code lens has no command (server doesn't resolve)".to_string(),
+            );
+            return;
+        };
+        let Some(command) = command else {
+            self.set_message(
+                EchoLevel::Info,
+                "code lens has no command after resolve".to_string(),
+            );
+            return;
+        };
+        self.execute_lsp_command(Some(handle), command);
+    }
+
+    /// 4.5.d: drain `workspace/codeLens/refresh` events. Each
+    /// event names a server; evict every cached code-lens
+    /// entry that came from that server. The next pump tick
+    /// re-issues `textDocument/codeLens`.
+    pub fn drain_code_lens_refresh(&mut self) {
+        let Some(mut rx) = self.pending_code_lens_refresh_rx.take() else {
+            return;
+        };
+        let mut servers: Vec<std::sync::Arc<str>> = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            servers.push(ev.server_id);
+        }
+        self.pending_code_lens_refresh_rx = Some(rx);
+        if servers.is_empty() {
+            return;
+        }
+        self.lsp_code_lens_cache.retain(|_buf, cache| {
+            !servers.iter().any(|s| s.as_ref() == cache.server_id.as_ref())
+        });
+    }
+
     /// 4.4.e: per-tick `documentHighlight` pump. Compares the
     /// current cursor against the cache anchor; when they
     /// differ AND the sub-mode is on AND the buffer has an

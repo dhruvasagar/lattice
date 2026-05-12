@@ -346,6 +346,13 @@ pub enum Effect {
     /// navigation; the result surfaces as a one-line
     /// summary, not a picker.
     LspMoniker,
+    /// `:lsp-code-lens` -- 4.5.d. Open a picker over the
+    /// cached `textDocument/codeLens` entries for the active
+    /// buffer. Accept routes the chosen lens's `command`
+    /// through `workspace/executeCommand` (after a lazy
+    /// `codeLens/resolve` if the lens arrived without a
+    /// command).
+    LspCodeLens,
     /// `:format` -- run `textDocument/formatting` on the highest-
     /// priority server with `documentFormattingProvider` and
     /// apply the returned edits as one undo unit. Phase 4.3.

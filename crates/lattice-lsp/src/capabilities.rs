@@ -178,6 +178,13 @@ fn workspace_capabilities() -> WorkspaceClientCapabilities {
         diagnostic: Some(lsp_types::DiagnosticWorkspaceClientCapabilities {
             refresh_support: Some(true),
         }),
+        // 4.5.d: tell servers we honour
+        // `workspace/codeLens/refresh`. On refresh we evict
+        // the cache for every attached buffer so the next
+        // tick's pump re-issues `textDocument/codeLens`.
+        code_lens: Some(lsp_types::CodeLensWorkspaceClientCapabilities {
+            refresh_support: Some(true),
+        }),
         // 4.4.k: tell servers we send
         // `workspace/didChangeConfiguration` when typed
         // options under `lsp.*` change. `dynamic_registration
@@ -301,6 +308,15 @@ fn text_document_capabilities() -> TextDocumentClientCapabilities {
             lsp_types::DocumentLinkClientCapabilities {
                 dynamic_registration: Some(false),
                 tooltip_support: Some(true),
+            },
+        ),
+        // 4.5.d: tell servers we honour `textDocument/codeLens`.
+        // No `tooltipSupport` / `commandSupport` fields here
+        // (LSP doesn't model them); the wire wrapper consumes
+        // every lens shape the server emits.
+        code_lens: Some(
+            lsp_types::DynamicRegistrationClientCapabilities {
+                dynamic_registration: Some(false),
             },
         ),
         ..Default::default()
@@ -907,6 +923,27 @@ impl Capabilities {
     pub fn document_link_resolve_provider(&self) -> bool {
         self.server
             .document_link_provider
+            .as_ref()
+            .and_then(|opts| opts.resolve_provider)
+            .unwrap_or(false)
+    }
+
+    /// 4.5.d: server's `codeLensProvider` presence -- gates
+    /// the per-tick `textDocument/codeLens` pump + the
+    /// `:lsp-code-lens` picker. Consults the dynamic
+    /// registry (4.4.n).
+    pub fn supports_code_lens(&self) -> bool {
+        self.server.code_lens_provider.is_some()
+            || self.dynamic.has("textDocument/codeLens")
+    }
+
+    /// 4.5.d: whether `codeLensProvider.resolveProvider` is
+    /// advertised. When true, lenses may arrive without a
+    /// `command` and need `codeLens/resolve` before the
+    /// accept-action can route through `executeCommand`.
+    pub fn code_lens_resolve_provider(&self) -> bool {
+        self.server
+            .code_lens_provider
             .as_ref()
             .and_then(|opts| opts.resolve_provider)
             .unwrap_or(false)

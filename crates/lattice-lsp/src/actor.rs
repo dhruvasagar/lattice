@@ -1200,6 +1200,24 @@ async fn actor_main<R, W>(
                                     server_id: Arc::clone(&server_id_arc),
                                 });
                             }
+                        } else if req.method == "workspace/codeLens/refresh" {
+                            // 4.5.d: server-initiated code-lens
+                            // cache invalidation. Same shape as
+                            // inlay-hint / semantic-tokens
+                            // refreshes: reply `null` inline +
+                            // publish so the App's drain evicts
+                            // cached lenses for attached buffers
+                            // and the next tick's pump re-issues
+                            // `textDocument/codeLens`.
+                            let _ = out_tx.send(Message::Response(Response::ok(
+                                req.id.clone(),
+                                Value::Null,
+                            )));
+                            if let Some(bus) = event_bus.as_ref() {
+                                bus.publish_typed(crate::events::LspCodeLensRefresh {
+                                    server_id: Arc::clone(&server_id_arc),
+                                });
+                            }
                         } else if req.method == "workspace/diagnostic/refresh" {
                             // 4.4.j: server-initiated pull-
                             // diagnostic invalidation. Reply

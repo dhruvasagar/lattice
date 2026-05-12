@@ -289,6 +289,32 @@ impl ServerHandle {
         self.request_with_cancel("documentLink/resolve", link, token)
     }
 
+    /// 4.5.d: `textDocument/codeLens`. Returns above-line
+    /// clickable annotations (run / debug / references etc.).
+    /// The host caches per (BufferId, doc_version) and renders
+    /// `title`-only items inline; clicking (`:lsp-code-lens`)
+    /// fires the lens's `command` via `executeCommand`.
+    pub fn code_lens(
+        &self,
+        params: lsp_types::CodeLensParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::CodeLens>>> {
+        self.request_with_cancel("textDocument/codeLens", params, token)
+    }
+
+    /// 4.5.d: `codeLens/resolve`. Lazy-resolves a code lens
+    /// whose `command` is missing -- some servers return only
+    /// the range + minimal title in the batched response and
+    /// fill in the actual command on demand. Triggered when
+    /// the user accepts a lens whose `command` is `None`.
+    pub fn code_lens_resolve(
+        &self,
+        lens: lsp_types::CodeLens,
+        token: CancellationToken,
+    ) -> Pending<lsp_types::CodeLens> {
+        self.request_with_cancel("codeLens/resolve", lens, token)
+    }
+
     /// `textDocument/completion` (DESIGN.md §5.4 / Phase 4.2.g).
     /// Returns either an array of items or an `isIncomplete` list
     /// the editor must re-query as the user types more. The

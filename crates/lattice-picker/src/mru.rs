@@ -405,6 +405,7 @@ pub fn routing_identity(payload: &RoutingPayload) -> Option<String> {
         | RoutingPayload::LspLocation { .. }
         | RoutingPayload::LspCompletion { .. }
         | RoutingPayload::LspCodeAction { .. }
+        | RoutingPayload::LspCodeLens { .. }
         | RoutingPayload::LspInstance { .. }
         | RoutingPayload::AcceptShowMessageAction { .. } => None,
     }

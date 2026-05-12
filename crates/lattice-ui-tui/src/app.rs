@@ -833,6 +833,39 @@ pub enum DocumentLinksOutcome {
     },
 }
 
+/// 4.5.d: per-buffer cache of `textDocument/codeLens` results.
+/// Filled by the pump on doc-version change or after
+/// `workspace/codeLens/refresh` evicts the entry. The
+/// `:lsp-code-lens` picker reads the cache; accept routes the
+/// chosen lens's `command` through `workspace/executeCommand`.
+#[derive(Debug, Clone)]
+pub struct LspCodeLensCache {
+    pub document_version: u64,
+    pub lenses: Vec<lsp_types::CodeLens>,
+    /// Which server produced the cached batch. Code-lens
+    /// `command` payloads are server-specific; routing the
+    /// `executeCommand` to the originating server keeps the
+    /// dispatch unambiguous when multiple servers attach.
+    pub server_id: std::sync::Arc<str>,
+}
+
+/// 4.5.d: outcome of an in-flight `textDocument/codeLens`
+/// request. Carries the server id so the eviction-on-refresh
+/// path can match by server.
+#[derive(Debug, Clone)]
+pub enum CodeLensOutcome {
+    Items {
+        buffer_id: BufferId,
+        document_version: u64,
+        server_id: std::sync::Arc<str>,
+        lenses: Vec<lsp_types::CodeLens>,
+    },
+    Empty {
+        buffer_id: BufferId,
+        document_version: u64,
+    },
+}
+
 /// 4.4.h: one decoded LSP semantic token, expanded from the
 /// server's relative-position varint encoding into absolute
 /// positions. `token_type` is the canonical name from the
@@ -1979,6 +2012,33 @@ pub struct App {
     pub pending_document_links_token: Option<lattice_protocol::CancellationToken>,
     pub pending_document_links_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<DocumentLinksOutcome>>,
+    /// 4.5.d: per-buffer code-lens cache. Refilled by the
+    /// per-tick pump on document-version change; consumed by
+    /// `:lsp-code-lens` (opens a picker over the cached
+    /// lenses). Cleared via `workspace/codeLens/refresh` so
+    /// servers that recompute lenses out-of-band (test runs,
+    /// debug session start) can force a refetch.
+    pub lsp_code_lens_cache:
+        std::collections::HashMap<BufferId, LspCodeLensCache>,
+    /// 4.5.d: in-flight `codeLens` single-flight slot.
+    pub pending_code_lens_token: Option<lattice_protocol::CancellationToken>,
+    pub pending_code_lens_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<CodeLensOutcome>>,
+    /// 4.5.d: workspace/codeLens/refresh inbound stream. The
+    /// actor publishes `LspCodeLensRefresh`; the drain pulls
+    /// from this rx (subscribed via `event_bus.subscribe_typed`)
+    /// and evicts per-buffer caches.
+    pub pending_code_lens_refresh_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspCodeLensRefresh>>,
+    /// 4.5.d: snapshot of the lenses the open picker is
+    /// referencing. Cleared on picker dismiss / accept.
+    /// `RoutingPayload::LspCodeLens { index }` indexes into
+    /// this vec.
+    pub pending_code_lens_items: Option<Vec<lsp_types::CodeLens>>,
+    /// 4.5.d: server id the snapshot came from -- used by the
+    /// accept handler to route `workspace/executeCommand` to
+    /// the originating server (commands are server-specific).
+    pub pending_code_lens_server: Option<std::sync::Arc<str>>,
     /// 4.4.g: in-flight inlayHint single-flight slot.
     pub pending_inlay_hint_token: Option<lattice_protocol::CancellationToken>,
     pub pending_inlay_hint_rx:

@@ -251,6 +251,24 @@ lattice_protocol::register_event!(
     "lattice-lsp",
 );
 
+/// 4.5.d: server-issued `workspace/codeLens/refresh` request
+/// surfaces as this typed bus event. Same shape as the other
+/// refresh events; the App-side drain evicts cached code
+/// lenses for every buffer attached to the requesting server.
+#[derive(Debug, Clone)]
+pub struct LspCodeLensRefresh {
+    pub server_id: Arc<str>,
+}
+
+lattice_protocol::register_event!(
+    LspCodeLensRefresh,
+    "lsp.code-lens-refresh",
+    "Fired when a server requests workspace/codeLens/refresh; the host \
+     evicts cached code lenses for buffers attached to that server so the \
+     next render tick re-issues textDocument/codeLens.",
+    "lattice-lsp",
+);
+
 /// Fired when a document buffer changes *and* `lsp-mode` is
 /// active for that buffer (M.5.5). The per-actor fan-in
 /// (`crate::fan_in`) subscribes via

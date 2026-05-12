@@ -871,3 +871,79 @@ async fn document_link_resolve_fills_in_target() {
         "file:///tmp/resolved.rs",
     );
 }
+
+/// 4.5.d: `code_lens` round-trips a list of lenses from the
+/// server; `code_lens_resolve` fills in a missing command.
+#[tokio::test]
+async fn code_lens_request_and_resolve_round_trip() {
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("textDocument/codeLens", |_params| {
+            MockResult::Ok(json!([
+                {
+                    "range": {
+                        "start": {"line": 3, "character": 0},
+                        "end": {"line": 3, "character": 10}
+                    },
+                    "command": {
+                        "title": "▶ Run test",
+                        "command": "rust-analyzer.runTest",
+                        "arguments": []
+                    }
+                },
+                {
+                    "range": {
+                        "start": {"line": 5, "character": 0},
+                        "end": {"line": 5, "character": 8}
+                    }
+                }
+            ]))
+        })
+        .await;
+    mock.mock
+        .on("codeLens/resolve", |_params| {
+            MockResult::Ok(json!({
+                "range": {
+                    "start": {"line": 5, "character": 0},
+                    "end": {"line": 5, "character": 8}
+                },
+                "command": {
+                    "title": "Debug",
+                    "command": "rust-analyzer.debugTest"
+                }
+            }))
+        })
+        .await;
+    let lenses = mock
+        .handle
+        .code_lens(
+            lsp_types::CodeLensParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Uri::from_str("file:///tmp/lib.rs").unwrap(),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("response decodes")
+        .expect("server returned lenses");
+    assert_eq!(lenses.len(), 2);
+    assert_eq!(
+        lenses[0].command.as_ref().map(|c| c.title.as_str()),
+        Some("▶ Run test"),
+    );
+    assert!(lenses[1].command.is_none());
+    // Resolve the second lens.
+    let stub = lenses[1].clone();
+    let resolved = mock
+        .handle
+        .code_lens_resolve(stub, CancellationToken::never())
+        .await
+        .expect("resolve decodes");
+    assert_eq!(
+        resolved.command.as_ref().map(|c| c.command.as_str()),
+        Some("rust-analyzer.debugTest"),
+    );
+}

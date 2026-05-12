@@ -179,6 +179,14 @@ pub enum RoutingPayload {
     /// through `do_picker_dismiss` which replies `null` (i.e.
     /// the user closed the prompt without picking).
     AcceptShowMessageAction { request_id: u32, action_index: u32 },
+    /// 4.5.d -- `PickerAction::AcceptLspCodeLens`. Numeric
+    /// index into the host's `pending_code_lens_items`
+    /// snapshot (a clone of the active buffer's code-lens
+    /// cache at picker-open time). The accept dispatch
+    /// resolves the lens (if it arrived without a `command`)
+    /// and routes the resulting `command` through
+    /// `workspace/executeCommand` on the originating server.
+    LspCodeLens { index: u32 },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves
@@ -271,6 +279,13 @@ pub enum PickerAction {
     /// (Esc) replies `null` via the SMR-specific arm in
     /// `do_picker_dismiss`.
     AcceptShowMessageAction,
+    /// 4.5.d: accept one code lens from the
+    /// `:lsp-code-lens` picker. Routing payload is
+    /// [`RoutingPayload::LspCodeLens`]; the host's accept
+    /// dispatch resolves the lens (when needed) and routes
+    /// its `command` through `workspace/executeCommand` on
+    /// the originating server.
+    AcceptLspCodeLens,
 }
 
 /// One open vertico-style picker. Lives on `App.picker` while

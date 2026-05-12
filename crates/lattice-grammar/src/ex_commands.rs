@@ -90,6 +90,7 @@ pub struct ExBuiltins {
     pub lsp_supertypes: ExCommandId,
     pub lsp_subtypes: ExCommandId,
     pub lsp_moniker: ExCommandId,
+    pub lsp_code_lens: ExCommandId,
     pub lsp_format: ExCommandId,
     pub lsp_format_range: ExCommandId,
     pub lsp_signature_help: ExCommandId,
@@ -1348,6 +1349,19 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let lsp_code_lens = registry.register_ex_command(
+        "ex:lsp-code-lens",
+        "Open a picker over the active buffer's cached code lenses; accept routes the chosen lens through `workspace/executeCommand` (Phase 4.5.d).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_ctx| Ok(Effect::LspCodeLens)),
+            args_schema: Vec::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
 
     let list_diagnostics = registry.register_ex_command(
         "ex:diagnostics",
@@ -1497,6 +1511,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_supertypes,
         lsp_subtypes,
         lsp_moniker,
+        lsp_code_lens,
         lsp_format,
         lsp_format_range,
         lsp_signature_help,

@@ -285,6 +285,15 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // the per-buffer cache that `gx` consults.
         app.maybe_request_document_link();
         app.drain_pending_document_link();
+        // 4.5.d: codeLens refresh + pump + drain. The refresh
+        // drain evicts cached lenses for servers that emitted
+        // `workspace/codeLens/refresh` (so the next pump
+        // refetches); the pump fires on doc-version change OR
+        // a fresh eviction; the drain seats the response into
+        // the per-buffer cache that `:lsp-code-lens` reads.
+        app.drain_code_lens_refresh();
+        app.maybe_request_code_lens();
+        app.drain_pending_code_lens();
         // 4.4.b: server-initiated window/showDocument requests
         // (open URI in buffer / external handler).
         app.drain_inbound_show_documents();

@@ -440,11 +440,16 @@ a smaller blast radius:
   struct with the 13 sub-mode ids in `implies()`. App-side
   `on_lsp_mode_activated`, `on_lsp_mode_deactivated`,
   `activate_lsp_sub_modes_for`, and
-  `deactivate_lsp_sub_modes_for` deleted. Only
-  `lsp_close_buffer` (wire-level `didClose` +
-  `buffer_uris` cleanup) remains on the App side because
-  it mutates per-buffer App state; subscriber-pattern
-  move queued for a follow-up slice.
+  `deactivate_lsp_sub_modes_for` deleted.
+- **Phase 3 follow-up — `LspBufferDetached` subscriber.**
+  Wire-level `didClose` + `buffer_uris` cleanup
+  (previously the last LSP-specific orchestration in
+  `deactivate_mode_by_id`) now lives behind a typed-event
+  subscription. Boot subscribes to
+  `LspBufferDetached`; the App's per-tick drain
+  (`drain_lsp_detach_events`) calls `lsp_close_buffer` per
+  event. `deactivate_mode_by_id` no longer knows anything
+  about `lsp-mode`.
 
 `OptionOverrideSet` is a type-checked bag built via macro (§6.4
 shows the syntax). Each entry pairs an option type with a value

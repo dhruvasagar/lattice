@@ -248,6 +248,13 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // the App's progress accumulator so the modeline shows
         // the freshest state on the next render tick.
         app.drain_lsp_progress_events();
+        // `LspBufferDetached` subscriber: `LspMode::on_deactivate`
+        // publishes the event; this drain calls
+        // `lsp_close_buffer` per event so the wire-level
+        // `didClose` runs after the mode lifecycle without
+        // the App's `deactivate_mode_by_id` knowing anything
+        // about `lsp-mode`.
+        app.drain_lsp_detach_events();
         // Drain server-initiated `workspace/applyEdit` requests
         // (Phase 4.3). Each is applied via the existing
         // workspace-edit flatten + per-file batch path, then

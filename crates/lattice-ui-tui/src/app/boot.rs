@@ -296,6 +296,18 @@ impl App {
             lattice_lsp::LspProgressUpdate,
         >();
         event_bus.subscribe_typed(lsp_progress_tx);
+        // `LspBufferDetached` subscriber: `LspMode::on_deactivate`
+        // publishes this event (Phase 2 of the mode-architecture
+        // refactor). The App's per-tick drain calls
+        // `lsp_close_buffer` for each event so the wire-level
+        // `didClose` + `buffer_uris` cleanup runs *after* the
+        // mode lifecycle, not from a hardcoded branch in
+        // `deactivate_mode_by_id`. Same shape any future
+        // renderer would use -- no special-casing per host.
+        let (lsp_detach_tx, lsp_detach_rx) = tokio::sync::mpsc::unbounded_channel::<
+            lattice_lsp::LspBufferDetached,
+        >();
+        event_bus.subscribe_typed(lsp_detach_tx);
         // Wire the logger's publisher to the same bus. The
         // logger lives in `lattice-lsp`; the closure captures an
         // Arc<EventBus> clone so the logger's lifetime is
@@ -701,6 +713,7 @@ impl App {
             previewing: false,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),
+            pending_lsp_detach_rx: Some(lsp_detach_rx),
             lsp_progress: std::collections::HashMap::new(),
             lsp_selection_chain: None,
             lsp_selection_chain_index: 0,

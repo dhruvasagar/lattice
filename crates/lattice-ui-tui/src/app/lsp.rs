@@ -1225,6 +1225,39 @@ impl App {
     ///
     /// Cheap when no events arrived: a single try_recv that
     /// returns `Empty` and exits.
+    /// Drain queued `lattice_lsp::LspBufferDetached` events
+    /// (published by `LspMode::on_deactivate` via Phase 2's
+    /// `ctx.events()`). For each event, call
+    /// [`Self::lsp_close_buffer`] to fire the wire-level
+    /// `textDocument/didClose` and clear the buffer's URI
+    /// mapping. Called once per main-loop tick.
+    ///
+    /// Cheap when no events arrived (single `try_recv` → `Empty`).
+    /// Cheap when the buffer has no URI mapping (the close path
+    /// short-circuits on `buffer_uris.remove` returning `None`).
+    pub fn drain_lsp_detach_events(&mut self) {
+        let Some(mut rx) = self.pending_lsp_detach_rx.take() else {
+            return;
+        };
+        // Collect first so the subsequent `lsp_close_buffer`
+        // calls (which take `&mut self`) don't conflict with
+        // the receiver borrow.
+        let mut buffer_ids: Vec<BufferId> = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            // `LspBufferDetached.id` is a `DocumentId`; the
+            // mode published it via `DocumentId::new(buffer_id
+            // .raw())`, so we reverse the conversion here.
+            // `BufferId` is `pub u32` here; `DocumentId.raw()` is
+            // `u64`. The mode published via `DocumentId::new(
+            // ctx.buffer_id().0 as u64)` so the value fits.
+            buffer_ids.push(BufferId(event.id.raw() as u32));
+        }
+        self.pending_lsp_detach_rx = Some(rx);
+        for buffer_id in buffer_ids {
+            self.lsp_close_buffer(buffer_id);
+        }
+    }
+
     pub fn drain_lsp_progress_events(&mut self) {
         let Some(mut rx) = self.lsp_progress_event_rx.take() else {
             return;

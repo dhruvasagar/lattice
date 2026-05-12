@@ -1538,6 +1538,18 @@ pub struct App {
     /// the accumulated state on each render.
     pub lsp_progress_event_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspProgressUpdate>>,
+    /// Receiver for [`lattice_lsp::LspBufferDetached`] events
+    /// published by `LspMode::on_deactivate`. Drained once per
+    /// main-loop tick by [`Self::drain_lsp_detach_events`]; for
+    /// each event the App calls [`Self::lsp_close_buffer`]
+    /// (which sends `textDocument/didClose` per attached server
+    /// and clears `buffer_uris`). The subscriber pattern keeps
+    /// the wire-level close off the mode-activation path:
+    /// `deactivate_mode_by_id` no longer special-cases
+    /// `lsp-mode`; any future renderer hosting the App gets the
+    /// same behaviour for free.
+    pub pending_lsp_detach_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspBufferDetached>>,
     /// Accumulated `$/progress` state keyed by
     /// (server_id, token). `Begin` inserts; `Report` updates;
     /// `End` removes. The modeline picks the most recent

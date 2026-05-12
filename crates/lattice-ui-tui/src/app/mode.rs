@@ -355,18 +355,14 @@ impl App {
         self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
         self.recompute_active_completion_sources_for(buffer_id);
-        // Phase 3: `lsp-mode` deactivate side-effects are
-        // owned by the mode (event publication via Phase 2,
-        // sub-mode cascade via the registry's
-        // `deactivate_minor` `implies()` walk). The wire-
-        // level `didClose` + `buffer_uris` cleanup is the
-        // only piece still on the App side -- it depends on
-        // App-owned `buffer_uris` state and is queued for a
-        // follow-up slice that subscribes to
-        // `LspBufferDetached` from boot.
-        if mode_id == lattice_lsp::modes::LspMode::mode_id() {
-            self.lsp_close_buffer(buffer_id);
-        }
+        // Phase 3 + follow-up: `lsp-mode` deactivate side-
+        // effects are fully owned by the mode. `LspBufferDetached`
+        // is published from `LspMode::on_deactivate` via
+        // `ctx.events()` (Phase 2); the App's per-tick drain
+        // (`drain_lsp_detach_events`, wired in `runtime.rs`)
+        // subscribes to that event at boot and calls
+        // `lsp_close_buffer` for each detach. No App-side
+        // hook here.
         // Symmetric to `activate_mode_by_id`: drain option
         // mutations the mode emitted in its `on_deactivate`
         // (e.g. `lsp-folding-mode` restoring the prior
@@ -933,10 +929,13 @@ mod tests {
 
     #[test]
     fn deactivating_lsp_mode_clears_buffer_uri_mapping() {
-        // M.5.3: the deactivate path runs through `lsp_close_buffer`
-        // which also clears `App::buffer_uris` for that id (so
-        // future requests don't leak the URI). Verifies the
-        // detach side-effect on App state, not just the event.
+        // Follow-up to Phase 3: the wire-level `didClose` +
+        // `buffer_uris` cleanup runs from the
+        // `LspBufferDetached` drain, not from the mode-
+        // activation path itself. Test mirrors the runtime
+        // tick: toggle the mode (publishes the event), then
+        // call the drain (consumes the event + calls
+        // `lsp_close_buffer`).
         use crate::app::test_helpers::app_with_path;
         let mut a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
         let id = a.pane_tree.active().buffer_id;
@@ -944,9 +943,10 @@ mod tests {
         // mapping at App::new time.
         assert!(a.buffer_uri(id).is_some());
         a.toggle_mode_by_name("lsp-mode");
+        a.drain_lsp_detach_events();
         assert!(
             a.buffer_uri(id).is_none(),
-            "lsp-mode deactivate should clear buffer_uris[id]"
+            "lsp-mode deactivate should clear buffer_uris[id] after detach drain"
         );
     }
 

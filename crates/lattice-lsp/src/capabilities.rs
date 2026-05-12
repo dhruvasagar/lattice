@@ -291,6 +291,18 @@ fn text_document_capabilities() -> TextDocumentClientCapabilities {
                 dynamic_registration: Some(false),
             },
         ),
+        // 4.5.c: tell servers we honour
+        // `textDocument/documentLink`. `tooltip_support = true`
+        // lets the server emit the `tooltip` field; future
+        // hover-on-link UX consumes it (the renderer overlay
+        // / `gx` path doesn't need it today, but advertising
+        // is harmless).
+        document_link: Some(
+            lsp_types::DocumentLinkClientCapabilities {
+                dynamic_registration: Some(false),
+                tooltip_support: Some(true),
+            },
+        ),
         ..Default::default()
     }
 }
@@ -876,6 +888,28 @@ impl Capabilities {
                 | Some(lsp_types::OneOf::Right(_))
         );
         static_ok || self.dynamic.has("textDocument/moniker")
+    }
+
+    /// 4.5.c: server's `documentLinkProvider` presence --
+    /// gates the per-tick pump that caches link ranges + the
+    /// `gx` keystroke that consults the cache. Consults the
+    /// dynamic registry (4.4.n).
+    pub fn supports_document_link(&self) -> bool {
+        self.server.document_link_provider.is_some()
+            || self.dynamic.has("textDocument/documentLink")
+    }
+
+    /// 4.5.c: whether `documentLinkProvider.resolveProvider`
+    /// is advertised. When true, links may arrive without a
+    /// `target` and need `documentLink/resolve` before they
+    /// can be followed. `gx` fires the resolve only when the
+    /// matched link lacks a target.
+    pub fn document_link_resolve_provider(&self) -> bool {
+        self.server
+            .document_link_provider
+            .as_ref()
+            .and_then(|opts| opts.resolve_provider)
+            .unwrap_or(false)
     }
 
     /// 4.4.m: server advertises interest in

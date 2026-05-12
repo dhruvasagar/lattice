@@ -785,3 +785,89 @@ async fn moniker_round_trips_scheme_identifier_kind() {
     assert_eq!(monikers[0].identifier, "my_crate::module::foo");
     assert_eq!(monikers[0].kind, Some(lsp_types::MonikerKind::Export));
 }
+
+/// 4.5.c: `document_link` round-trips a list of links from
+/// the server.
+#[tokio::test]
+async fn document_link_returns_link_list_with_targets() {
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("textDocument/documentLink", |_params| {
+            MockResult::Ok(json!([
+                {
+                    "range": {
+                        "start": {"line": 2, "character": 4},
+                        "end": {"line": 2, "character": 20}
+                    },
+                    "target": "https://example.com",
+                    "tooltip": "Open example.com"
+                },
+                {
+                    "range": {
+                        "start": {"line": 5, "character": 0},
+                        "end": {"line": 5, "character": 10}
+                    }
+                }
+            ]))
+        })
+        .await;
+    let links = mock
+        .handle
+        .document_link(
+            lsp_types::DocumentLinkParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Uri::from_str("file:///tmp/main.md").unwrap(),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("response decodes")
+        .expect("server returned links");
+    assert_eq!(links.len(), 2);
+    assert_eq!(
+        links[0].target.as_ref().map(|u| u.as_str().to_string()),
+        Some("https://example.com".to_string())
+    );
+    // Second link has no target -> resolver path applies.
+    assert!(links[1].target.is_none());
+}
+
+/// 4.5.c: `documentLink/resolve` round-trips the resolved
+/// `target` field for a link that arrived without it.
+#[tokio::test]
+async fn document_link_resolve_fills_in_target() {
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("documentLink/resolve", |_params| {
+            MockResult::Ok(json!({
+                "range": {
+                    "start": {"line": 5, "character": 0},
+                    "end": {"line": 5, "character": 10}
+                },
+                "target": "file:///tmp/resolved.rs"
+            }))
+        })
+        .await;
+    let stub = lsp_types::DocumentLink {
+        range: LspRange {
+            start: LspPosition { line: 5, character: 0 },
+            end: LspPosition { line: 5, character: 10 },
+        },
+        target: None,
+        tooltip: None,
+        data: None,
+    };
+    let resolved = mock
+        .handle
+        .document_link_resolve(stub, CancellationToken::never())
+        .await
+        .expect("response decodes");
+    assert!(resolved.target.is_some());
+    assert_eq!(
+        resolved.target.unwrap().as_str(),
+        "file:///tmp/resolved.rs",
+    );
+}

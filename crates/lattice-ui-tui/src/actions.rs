@@ -81,6 +81,7 @@ pub struct ActionIds {
     pub lsp_type_definition_request: CommandId,
     pub lsp_implementation_request: CommandId,
     pub lsp_references_request: CommandId,
+    pub lsp_follow_link_at_cursor: CommandId,
     pub enter_append: CommandId,
     pub create_fold_from_visual: CommandId,
     pub delete_char_backward: CommandId,
@@ -410,6 +411,12 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:lsp-references",
             "`gr`: send `textDocument/references` to attached LSP servers.",
             AppEffect::LspReferencesRequest,
+        ),
+        lsp_follow_link_at_cursor: register_simple(
+            registry,
+            "action:lsp-follow-link",
+            "`gx`: follow the `textDocument/documentLink` covering the cursor.",
+            AppEffect::LspFollowLinkAtCursor,
         ),
         enter_append: register_simple(
             registry,
@@ -1033,6 +1040,7 @@ mod tests {
             (ids.lsp_type_definition_request, "action:lsp-type-definition"),
             (ids.lsp_implementation_request, "action:lsp-implementation"),
             (ids.lsp_references_request, "action:lsp-references"),
+            (ids.lsp_follow_link_at_cursor, "action:lsp-follow-link"),
             (ids.enter_append, "action:enter-append"),
             (ids.create_fold_from_visual, "action:create-fold-from-visual"),
             (ids.delete_char_backward, "action:delete-char-backward"),

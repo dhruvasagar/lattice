@@ -51,7 +51,7 @@ use super::{
     LSP_COMPLETION_KIND_ID, LspCompletionMeta, LspNavKind, ReferencesOutcome, RenameOutcome,
     SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
     call_hierarchy_to_row, code_action_kind_glyph, completion_kind_glyph, dedup_rendered_by_text,
-    type_hierarchy_to_row,
+    range_covers, type_hierarchy_to_row,
     definition_response_to_locations, flatten_document_symbol_response, flatten_workspace_edit,
     hover_contents_to_markdown, is_word_char_byte, last_addressable_line, line_byte_len,
     lsp_position_to_app_byte, prepare_rename_placeholder, signature_help_to_markdown,
@@ -5497,6 +5497,243 @@ impl App {
                     },
                 );
             }
+        }
+    }
+
+    /// 4.5.c: per-tick `documentLink` pump. Fires on
+    /// document-version change (cheap when versions match;
+    /// the cache lookup short-circuits). Whole-buffer request
+    /// since link ranges are typically sparse and not bound
+    /// to a viewport. Single-flight per buffer; each new
+    /// request cancels its predecessor.
+    pub fn maybe_request_document_link(&mut self) {
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        if let Some(cache) = self
+            .lsp_document_links_cache
+            .get(&self.document_buffer_id)
+            && cache.document_version == version
+        {
+            return;
+        }
+        if let Some(token) = self.pending_document_links_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::DocumentLinksOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_document_links_rx = Some(rx);
+        self.pending_document_links_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_document_link())
+            else {
+                let _ = tx.send(super::DocumentLinksOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                });
+                return;
+            };
+            let params = lsp_types::DocumentLinkParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.document_link(params, token.clone()).await {
+                Ok(Some(links)) if !links.is_empty() => {
+                    let _ = tx.send(super::DocumentLinksOutcome::Items {
+                        buffer_id,
+                        document_version: version,
+                        links,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(super::DocumentLinksOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+            }
+        });
+    }
+
+    /// 4.5.c: drain queued `documentLink` responses + seat the
+    /// cache. Cancels stale single-flight tokens; `gx`
+    /// consults the cache when triggered.
+    pub fn drain_pending_document_link(&mut self) {
+        let Some(mut rx) = self.pending_document_links_rx.take() else {
+            return;
+        };
+        let mut latest: Option<super::DocumentLinksOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_document_links_rx = Some(rx);
+        let outcome = match latest {
+            Some(o) => o,
+            None => return,
+        };
+        self.pending_document_links_token = None;
+        match outcome {
+            super::DocumentLinksOutcome::Items {
+                buffer_id,
+                document_version,
+                links,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_document_links_cache.insert(
+                    buffer_id,
+                    super::LspDocumentLinksCache {
+                        document_version,
+                        links,
+                    },
+                );
+            }
+            super::DocumentLinksOutcome::Empty {
+                buffer_id,
+                document_version,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                // Empty cache prevents re-issuing for the same
+                // version; bumped on next edit.
+                self.lsp_document_links_cache.insert(
+                    buffer_id,
+                    super::LspDocumentLinksCache {
+                        document_version,
+                        links: Vec::new(),
+                    },
+                );
+            }
+        }
+    }
+
+    /// 4.5.c: follow the LSP `documentLink` at the cursor (the
+    /// `gx` keystroke). Walks the cache, picks the first link
+    /// whose range covers the cursor, follows its `target`.
+    /// When the link has no target AND the server advertises
+    /// `documentLinkProvider.resolveProvider`, fires
+    /// `documentLink/resolve` to fill in the target before
+    /// following. Echoes `(no link at cursor)` when the cache
+    /// is empty or the cursor sits outside every cached range.
+    pub fn do_lsp_follow_link_at_cursor(&mut self) {
+        let snapshot = self.document.snapshot();
+        let Some(pos) = app_to_lsp_position(&snapshot.buffer, self.cursor) else {
+            return;
+        };
+        let buffer_id = self.document_buffer_id;
+        let link = self
+            .lsp_document_links_cache
+            .get(&buffer_id)
+            .and_then(|c| {
+                c.links
+                    .iter()
+                    .find(|l| range_covers(l.range, pos))
+                    .cloned()
+            });
+        let Some(link) = link else {
+            self.set_message(EchoLevel::Info, "no link at cursor".to_string());
+            return;
+        };
+        // Direct target hit -> follow.
+        if let Some(target) = link.target.clone() {
+            self.follow_document_link_target(&target);
+            return;
+        }
+        // No target -> need documentLink/resolve. Capability
+        // gate: silently skip when the server doesn't advertise
+        // resolveProvider (the link wouldn't get a target on a
+        // round-trip anyway).
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        let handles = self.lsp.servers_for(&uri);
+        let Some(handle) = handles.into_iter().find(|h| {
+            let c = h.capabilities();
+            c.supports_document_link() && c.document_link_resolve_provider()
+        }) else {
+            self.set_message(
+                EchoLevel::Info,
+                "link has no target (server doesn't resolve)".to_string(),
+            );
+            return;
+        };
+        let token = lattice_protocol::CancellationToken::new();
+        // `block_on` on the LSP runtime so we don't deadlock the
+        // UI thread waiting on a network round-trip. The user
+        // typed `gx`; a few-ms wait is acceptable; long resolves
+        // are bounded by the protocol's cancellation token.
+        let resolved = lattice_runtime::block_on(async move {
+            handle.document_link_resolve(link, token).await
+        });
+        match resolved {
+            Ok(resolved) => {
+                if let Some(target) = resolved.target {
+                    self.follow_document_link_target(&target);
+                } else {
+                    self.set_message(
+                        EchoLevel::Info,
+                        "link has no target after resolve".to_string(),
+                    );
+                }
+            }
+            Err(_) => {
+                self.set_message(
+                    EchoLevel::Warn,
+                    "documentLink/resolve failed".to_string(),
+                );
+            }
+        }
+    }
+
+    /// Follow a `documentLink` target URI: `file://` URIs open
+    /// the path in a new buffer (same path as `:e`); anything
+    /// else (`http(s)://`, etc.) delegates to the OS handler.
+    /// Non-`file://` URIs use the same dispatch as
+    /// `window/showDocument`'s `external` path.
+    fn follow_document_link_target(&mut self, target: &lsp_types::Uri) {
+        let target_str = target.as_str();
+        if target_str.starts_with("file://") {
+            if let Some(path) = lattice_lsp::actor::uri_to_path(target) {
+                self.do_edit(Some(path), false);
+            } else {
+                self.set_message(
+                    EchoLevel::Warn,
+                    format!("could not parse file URI: {target_str}"),
+                );
+            }
+            return;
+        }
+        // External URI -> OS handler. Reuse the same dispatch
+        // shape `window/showDocument` uses for `external = true`.
+        // No per-server tagging here -- the link came from the
+        // active document's cache, not a server callback, so we
+        // synthesise an `<editor>` id.
+        let server_id: std::sync::Arc<str> = std::sync::Arc::from("<editor>");
+        let opened = self.open_external_uri(&server_id, target_str);
+        if !opened {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("could not open {target_str}"),
+            );
         }
     }
 

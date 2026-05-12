@@ -234,6 +234,12 @@ pub enum AppEffect {
     /// to the symbol at the cursor. Promoted from
     /// `Action::LspReferencesRequest` in slice 8.i.1.f.
     LspReferencesRequest,
+    /// `gx` (Phase 4.5.c). Follow the LSP `documentLink`
+    /// covering the cursor. `file://` URIs open in a new
+    /// buffer; everything else delegates to the OS handler.
+    /// Echoes `(no link at cursor)` when the per-buffer link
+    /// cache is empty or no entry covers the cursor.
+    LspFollowLinkAtCursor,
     /// Vim's `a`. Move cursor one byte right (clamped) and enter
     /// Insert. Promoted from `Action::EnterAppend` in slice
     /// 8.i.1.g.

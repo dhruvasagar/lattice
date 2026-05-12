@@ -279,6 +279,12 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // and echo the summary line. Cheap when the channel is
         // empty; no-op when no request is in flight.
         app.drain_pending_moniker();
+        // 4.5.c: per-tick documentLink pump + drain. The pump
+        // fires on document-version change (cheap short-circuit
+        // otherwise); the drain seats fresh link ranges into
+        // the per-buffer cache that `gx` consults.
+        app.maybe_request_document_link();
+        app.drain_pending_document_link();
         // 4.4.b: server-initiated window/showDocument requests
         // (open URI in buffer / external handler).
         app.drain_inbound_show_documents();

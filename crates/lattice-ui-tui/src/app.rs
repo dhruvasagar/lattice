@@ -374,6 +374,14 @@ pub enum Action {
     /// token rides on follow-up `gr` so a slow server can't
     /// drop a stale popup over a moved cursor.
     LspReferencesRequest,
+    /// `gx` (Phase 4.5.c). Follow the LSP documentLink at the
+    /// cursor: `file://` URIs open in a new buffer; external
+    /// URIs delegate to the OS handler. The per-tick pump
+    /// keeps the cache fresh; the keystroke walks it for the
+    /// first link whose range covers the cursor. Echoes
+    /// `(no link at cursor)` when the cache is empty or no
+    /// link covers.
+    LspFollowLinkAtCursor,
     /// `:lsp-signature-help` (Phase 4.3). Sends
     /// `textDocument/signatureHelp` to attached servers; the
     /// first non-empty response renders into a popup near the
@@ -795,6 +803,34 @@ pub struct LspInlayHintCache {
     pub hints: Vec<lsp_types::InlayHint>,
     pub requested_first_line: u32,
     pub requested_last_line: u32,
+}
+
+/// 4.5.c: per-buffer cache of `textDocument/documentLink`
+/// responses. Filled by the pump on document-version change;
+/// `gx` walks the entries looking for the first link whose
+/// range covers the cursor and follows it. Cache invalidates
+/// when the version changes.
+#[derive(Debug, Clone)]
+pub struct LspDocumentLinksCache {
+    pub document_version: u64,
+    pub links: Vec<lsp_types::DocumentLink>,
+}
+
+/// 4.5.c: outcome of an in-flight `textDocument/documentLink`
+/// request. `Empty` for server responses that returned no
+/// links (still updates the cache so we don't keep
+/// re-issuing for the same version).
+#[derive(Debug, Clone)]
+pub enum DocumentLinksOutcome {
+    Items {
+        buffer_id: BufferId,
+        document_version: u64,
+        links: Vec<lsp_types::DocumentLink>,
+    },
+    Empty {
+        buffer_id: BufferId,
+        document_version: u64,
+    },
 }
 
 /// 4.4.h: one decoded LSP semantic token, expanded from the
@@ -1931,6 +1967,18 @@ pub struct App {
     /// renderer overlay splices each hint as virtual text.
     pub lsp_inlay_hints_cache:
         std::collections::HashMap<BufferId, LspInlayHintCache>,
+    /// 4.5.c: per-buffer `documentLink` cache. Refilled by
+    /// the per-tick pump on document-version change; consumed
+    /// by `gx` (Normal-mode keystroke) -- the first link whose
+    /// range covers the cursor wins. The renderer overlay
+    /// (underline link ranges) is queued; today the cache only
+    /// drives navigation, not visuals.
+    pub lsp_document_links_cache:
+        std::collections::HashMap<BufferId, LspDocumentLinksCache>,
+    /// 4.5.c: in-flight `documentLink` single-flight slot.
+    pub pending_document_links_token: Option<lattice_protocol::CancellationToken>,
+    pub pending_document_links_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<DocumentLinksOutcome>>,
     /// 4.4.g: in-flight inlayHint single-flight slot.
     pub pending_inlay_hint_token: Option<lattice_protocol::CancellationToken>,
     pub pending_inlay_hint_rx:
@@ -3098,6 +3146,20 @@ pub(crate) fn call_hierarchy_to_row(
     }
 }
 
+/// 4.5.c: does the given `range` cover the LSP `position`?
+/// Inclusive on both ends (matches VSCode's "click-through"
+/// semantics on a link's rightmost char). Used by the `gx`
+/// keystroke to find the first cached `documentLink` under
+/// the cursor.
+pub(crate) fn range_covers(
+    range: lsp_types::Range,
+    position: lsp_types::Position,
+) -> bool {
+    let after_start = (range.start.line, range.start.character) <= (position.line, position.character);
+    let before_end = (position.line, position.character) <= (range.end.line, range.end.character);
+    after_start && before_end
+}
+
 /// 4.5.b: render one `TypeHierarchyItem` (a supertype or
 /// subtype of the cursor's type) as a [`SymbolRow`] for the
 /// picker. Same projection as [`call_hierarchy_to_row`]
@@ -4132,6 +4194,69 @@ mod tests {
     // ---- LSP hover (Phase 4.2.b) ----
 
     // ---- LSP goto-definition (Phase 4.2.c) ----
+
+    /// 4.5.c: `range_covers` returns true for points strictly
+    /// inside the range; inclusive on both ends to match the
+    /// "click on the rightmost char of a link" UX.
+    #[test]
+    fn range_covers_inclusive_at_both_ends() {
+        let r = lsp_types::Range {
+            start: lsp_types::Position { line: 2, character: 4 },
+            end: lsp_types::Position { line: 2, character: 10 },
+        };
+        // Inside.
+        assert!(super::range_covers(
+            r,
+            lsp_types::Position { line: 2, character: 6 }
+        ));
+        // Boundary (inclusive).
+        assert!(super::range_covers(r, r.start));
+        assert!(super::range_covers(r, r.end));
+        // Before start -> miss.
+        assert!(!super::range_covers(
+            r,
+            lsp_types::Position { line: 2, character: 3 }
+        ));
+        // After end -> miss.
+        assert!(!super::range_covers(
+            r,
+            lsp_types::Position { line: 2, character: 11 }
+        ));
+        // Different line outside the range.
+        assert!(!super::range_covers(
+            r,
+            lsp_types::Position { line: 1, character: 7 }
+        ));
+        assert!(!super::range_covers(
+            r,
+            lsp_types::Position { line: 3, character: 0 }
+        ));
+    }
+
+    /// 4.5.c: `range_covers` works across line boundaries when
+    /// the range spans multiple lines.
+    #[test]
+    fn range_covers_multi_line_range() {
+        let r = lsp_types::Range {
+            start: lsp_types::Position { line: 2, character: 4 },
+            end: lsp_types::Position { line: 4, character: 8 },
+        };
+        // Mid-range second line: covered regardless of column.
+        assert!(super::range_covers(
+            r,
+            lsp_types::Position { line: 3, character: 0 }
+        ));
+        // First line before start column -> miss.
+        assert!(!super::range_covers(
+            r,
+            lsp_types::Position { line: 2, character: 3 }
+        ));
+        // Last line after end column -> miss.
+        assert!(!super::range_covers(
+            r,
+            lsp_types::Position { line: 4, character: 9 }
+        ));
+    }
 
     #[test]
     fn symbol_kind_glyph_distinct_for_common_kinds() {

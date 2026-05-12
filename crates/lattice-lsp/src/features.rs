@@ -260,6 +260,35 @@ impl ServerHandle {
         self.request_with_cancel("textDocument/moniker", params, token)
     }
 
+    /// 4.5.c: `textDocument/documentLink`. Returns the
+    /// hyperlink ranges inside the document (URLs, imports,
+    /// `file://` references emitted by certain LSPs). The
+    /// host caches the response per (BufferId, doc_version)
+    /// and consults the cache when `gx` is pressed in Normal
+    /// mode -- the first link whose range covers the cursor
+    /// wins.
+    pub fn document_link(
+        &self,
+        params: lsp_types::DocumentLinkParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::DocumentLink>>> {
+        self.request_with_cancel("textDocument/documentLink", params, token)
+    }
+
+    /// 4.5.c: `documentLink/resolve`. Lazy-resolves a link
+    /// that arrived without a `target` -- the server fills it
+    /// in on demand. `gx` triggers this when the cached link
+    /// at the cursor lacks `target` AND the server advertises
+    /// `documentLinkProvider.resolveProvider`. The resolved
+    /// link is then followed in the same gesture.
+    pub fn document_link_resolve(
+        &self,
+        link: lsp_types::DocumentLink,
+        token: CancellationToken,
+    ) -> Pending<lsp_types::DocumentLink> {
+        self.request_with_cancel("documentLink/resolve", link, token)
+    }
+
     /// `textDocument/completion` (DESIGN.md §5.4 / Phase 4.2.g).
     /// Returns either an array of items or an `isIncomplete` list
     /// the editor must re-query as the user types more. The

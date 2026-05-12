@@ -442,6 +442,7 @@ impl App {
                 self.do_lsp_nav_request(LspNavKind::Implementation)
             }
             Action::LspReferencesRequest => self.do_lsp_references_request(),
+            Action::LspFollowLinkAtCursor => self.do_lsp_follow_link_at_cursor(),
             Action::LspSignatureHelpRequest => self.do_lsp_signature_help_request(),
             Action::LspCompletionRequest => self.do_lsp_completion_request(),
             Action::TagStackPop => self.do_tag_stack_pop(),
@@ -1267,6 +1268,7 @@ impl App {
             AppEffect::LspTypeDefinitionRequest => self.apply(Action::LspTypeDefinitionRequest),
             AppEffect::LspImplementationRequest => self.apply(Action::LspImplementationRequest),
             AppEffect::LspReferencesRequest => self.apply(Action::LspReferencesRequest),
+            AppEffect::LspFollowLinkAtCursor => self.apply(Action::LspFollowLinkAtCursor),
             AppEffect::EnterAppend => self.apply(Action::EnterAppend),
             AppEffect::CreateFoldFromVisual => self.apply(Action::CreateFoldFromVisual),
             AppEffect::DeleteCharBackward => self.apply(Action::DeleteCharBackward),

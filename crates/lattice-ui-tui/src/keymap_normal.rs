@@ -530,6 +530,14 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.lsp_references_request),
         source(),
     );
+    // 4.5.c: `gx` -> follow LSP documentLink at cursor.
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_char('x')],
+        CommandInvocation::of(actions.lsp_follow_link_at_cursor),
+        source(),
+    );
 
     // ---- Slice 8.g.ii: `z_` family.
     //

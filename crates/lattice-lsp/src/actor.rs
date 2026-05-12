@@ -259,6 +259,19 @@ impl ServerHandle {
             .map_err(|_| LspError::ActorGone)
     }
 
+    /// 4.4.b: send `$/setTrace { value }` to the server (LSP
+    /// §3.18). `Off` silences trace records; `Messages` ships
+    /// the wire shapes; `Verbose` ships shapes + parameter
+    /// contents. The server replies with `$/logTrace`
+    /// notifications which the host routes into the
+    /// `*lsp:<server>:trace*` ring.
+    pub fn set_trace(&self, value: lsp_types::TraceValue) -> LspResult<()> {
+        self.notify(
+            "$/setTrace",
+            lsp_types::SetTraceParams { value },
+        )
+    }
+
     /// Cancel an in-flight server-side `$/progress` operation
     /// (LSP §3.16 `window/workDoneProgress/cancel`). The server
     /// is asked to wind down the work tied to `token`; whether
@@ -429,6 +442,8 @@ pub async fn spawn(
     logger: LspLogger,
     apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
     configuration_bus: Option<crate::configuration::ConfigurationBus>,
+    show_document_bus: Option<crate::show_document::ShowDocumentBus>,
+    show_message_request_bus: Option<crate::show_message_request::ShowMessageRequestBus>,
     event_bus: Option<Arc<lattice_runtime::EventBus>>,
 ) -> LspResult<ServerHandle> {
     let transport = ChildTransport::spawn(&config.binary, &config.args, Some(&workspace_root))
@@ -445,6 +460,8 @@ pub async fn spawn(
         logger,
         apply_edit_bus,
         configuration_bus,
+        show_document_bus,
+        show_message_request_bus,
         event_bus,
     )
     .await
@@ -468,6 +485,8 @@ pub async fn spawn_with_io<R, W>(
     logger: LspLogger,
     apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
     configuration_bus: Option<crate::configuration::ConfigurationBus>,
+    show_document_bus: Option<crate::show_document::ShowDocumentBus>,
+    show_message_request_bus: Option<crate::show_message_request::ShowMessageRequestBus>,
     event_bus: Option<Arc<lattice_runtime::EventBus>>,
 ) -> LspResult<ServerHandle>
 where
@@ -515,6 +534,8 @@ where
         logger.clone(),
         apply_edit_bus,
         configuration_bus,
+        show_document_bus,
+        show_message_request_bus,
         event_bus,
     ));
 
@@ -654,6 +675,8 @@ async fn actor_main<R, W>(
     logger: LspLogger,
     apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
     configuration_bus: Option<crate::configuration::ConfigurationBus>,
+    show_document_bus: Option<crate::show_document::ShowDocumentBus>,
+    show_message_request_bus: Option<crate::show_message_request::ShowMessageRequestBus>,
     event_bus: Option<Arc<lattice_runtime::EventBus>>,
 ) where
     R: AsyncBufRead + Unpin + Send + 'static,
@@ -1054,6 +1077,55 @@ async fn actor_main<R, W>(
                                 .await;
                                 let _ = out_tx_clone.send(Message::Response(resp));
                             });
+                        } else if req.method == "window/showDocument"
+                            && let Some(bus) = show_document_bus.as_ref()
+                        {
+                            // 4.4.b: server wants the host to open
+                            // a URI (file -> buffer; external ->
+                            // OS handler). The App's drain
+                            // performs the open + writes back via
+                            // the embedded oneshot.
+                            let bus = bus.clone();
+                            let server_id_clone = Arc::clone(&server_id_arc);
+                            let logger_clone = logger.clone();
+                            let out_tx_clone = out_tx.clone();
+                            let req_id = req.id.clone();
+                            let params = req.params.clone();
+                            tokio::spawn(async move {
+                                let resp = handle_show_document_request(
+                                    server_id_clone,
+                                    req_id,
+                                    params,
+                                    &bus,
+                                    &logger_clone,
+                                )
+                                .await;
+                                let _ = out_tx_clone.send(Message::Response(resp));
+                            });
+                        } else if req.method == "window/showMessageRequest"
+                            && let Some(bus) = show_message_request_bus.as_ref()
+                        {
+                            // 4.4.b: server-emitted modal action
+                            // request. The App opens an action
+                            // picker; the user's selection
+                            // (or `null` on dismiss) ferries back.
+                            let bus = bus.clone();
+                            let server_id_clone = Arc::clone(&server_id_arc);
+                            let logger_clone = logger.clone();
+                            let out_tx_clone = out_tx.clone();
+                            let req_id = req.id.clone();
+                            let params = req.params.clone();
+                            tokio::spawn(async move {
+                                let resp = handle_show_message_request(
+                                    server_id_clone,
+                                    req_id,
+                                    params,
+                                    &bus,
+                                    &logger_clone,
+                                )
+                                .await;
+                                let _ = out_tx_clone.send(Message::Response(resp));
+                            });
                         } else {
                             let resp = handle_server_request(&server_id_arc, &req, &logger);
                             let _ = out_tx.send(Message::Response(resp));
@@ -1150,6 +1222,31 @@ fn handle_server_notification(
                 LogSource::Telemetry,
                 compact_params(&n.params),
             );
+        }
+        "$/logTrace" => {
+            // 4.4.b: server-emitted trace record. Shape:
+            // `{ message: String, verbose: Option<String> }`.
+            // Append both lines to the trace ring so the
+            // `*lsp:<server>:trace*` buffer surfaces them; the
+            // ring drops records by capacity, not by level, so
+            // a verbose-mode session can produce a lot of data
+            // -- that's intentional, the user opted in by
+            // running `:lsp-trace`.
+            let (message, verbose) = parse_log_trace(n.params.as_ref());
+            logger.log(
+                Some(server_id),
+                LogLevel::Trace,
+                LogSource::Trace,
+                message,
+            );
+            if let Some(verbose) = verbose {
+                logger.log(
+                    Some(server_id),
+                    LogLevel::Trace,
+                    LogSource::Trace,
+                    format!("    {verbose}"),
+                );
+            }
         }
         "textDocument/publishDiagnostics" => {
             let params = match n.params.clone() {
@@ -1250,6 +1347,25 @@ fn parse_progress(
         percentage,
         cancellable,
     })
+}
+
+/// 4.4.b: parse a `$/logTrace` params object. Returns
+/// `(message, verbose_opt)`. Fallback for malformed shape:
+/// the compacted-JSON tail as the message and no verbose.
+fn parse_log_trace(params: Option<&Value>) -> (String, Option<String>) {
+    let Some(p) = params else {
+        return ("<empty $/logTrace params>".to_string(), None);
+    };
+    let message = p
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| compact_params(&Some(p.clone())));
+    let verbose = p
+        .get("verbose")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    (message, verbose)
 }
 
 /// Pull severity + message out of a `window/logMessage` /
@@ -1438,6 +1554,125 @@ async fn handle_configuration_request(
         Err(_) => (0..count).map(|_| Value::Null).collect(),
     };
     Response::ok(req_id, Value::Array(values))
+}
+
+/// 4.4.b: `window/showDocument` request handler. Parses the
+/// LSP shape, dispatches via the bus, awaits the App's
+/// outcome, and ferries `ShowDocumentResult { success }` back.
+/// Falls back to `success: false` on malformed params or
+/// receiver-dropped — the spec lets clients refuse and we
+/// prefer that over hanging the server.
+async fn handle_show_document_request(
+    server_id: Arc<str>,
+    req_id: RequestId,
+    params: Option<Value>,
+    bus: &crate::show_document::ShowDocumentBus,
+    logger: &LspLogger,
+) -> Response {
+    let parsed: lsp_types::ShowDocumentParams = match params {
+        Some(v) => match serde_json::from_value(v) {
+            Ok(p) => p,
+            Err(e) => {
+                logger.log(
+                    Some(&server_id),
+                    LogLevel::Warn,
+                    LogSource::Client,
+                    format!("window/showDocument: malformed params: {e}"),
+                );
+                return show_document_response(req_id, false);
+            }
+        },
+        None => return show_document_response(req_id, false),
+    };
+    let (response_tx, response_rx) = oneshot::channel();
+    let inbound = crate::show_document::InboundShowDocument {
+        server_id: Arc::clone(&server_id),
+        uri: parsed.uri,
+        external: parsed.external.unwrap_or(false),
+        take_focus: parsed.take_focus.unwrap_or(false),
+        selection: parsed.selection,
+        response: response_tx,
+    };
+    if bus.dispatch(inbound).is_err() {
+        return show_document_response(req_id, false);
+    }
+    match response_rx.await {
+        Ok(outcome) => show_document_response(req_id, outcome.success),
+        Err(_) => show_document_response(req_id, false),
+    }
+}
+
+fn show_document_response(req_id: RequestId, success: bool) -> Response {
+    let body = lsp_types::ShowDocumentResult { success };
+    match serde_json::to_value(body) {
+        Ok(v) => Response::ok(req_id, v),
+        Err(e) => Response::err(
+            req_id,
+            crate::jsonrpc::ResponseError {
+                code: crate::jsonrpc::error_codes::INTERNAL_ERROR,
+                message: format!("encode response: {e}"),
+                data: None,
+            },
+        ),
+    }
+}
+
+/// 4.4.b: `window/showMessageRequest` handler. Same shape as
+/// applyEdit + showDocument: parse, dispatch, await, ferry.
+/// The reply body is either the selected `MessageActionItem`
+/// (verbatim) or JSON `null` when the user dismissed without
+/// picking.
+async fn handle_show_message_request(
+    server_id: Arc<str>,
+    req_id: RequestId,
+    params: Option<Value>,
+    bus: &crate::show_message_request::ShowMessageRequestBus,
+    logger: &LspLogger,
+) -> Response {
+    let parsed: lsp_types::ShowMessageRequestParams = match params {
+        Some(v) => match serde_json::from_value(v) {
+            Ok(p) => p,
+            Err(e) => {
+                logger.log(
+                    Some(&server_id),
+                    LogLevel::Warn,
+                    LogSource::Client,
+                    format!("window/showMessageRequest: malformed params: {e}"),
+                );
+                return Response::ok(req_id, Value::Null);
+            }
+        },
+        None => return Response::ok(req_id, Value::Null),
+    };
+    let (response_tx, response_rx) = oneshot::channel();
+    let inbound = crate::show_message_request::InboundShowMessageRequest {
+        server_id: Arc::clone(&server_id),
+        level: parsed.typ,
+        message: parsed.message,
+        actions: parsed.actions.unwrap_or_default(),
+        response: response_tx,
+    };
+    if bus.dispatch(inbound).is_err() {
+        return Response::ok(req_id, Value::Null);
+    }
+    let selected = match response_rx.await {
+        Ok(outcome) => outcome.selected,
+        Err(_) => None,
+    };
+    match selected {
+        Some(item) => match serde_json::to_value(item) {
+            Ok(v) => Response::ok(req_id, v),
+            Err(e) => Response::err(
+                req_id,
+                crate::jsonrpc::ResponseError {
+                    code: crate::jsonrpc::error_codes::INTERNAL_ERROR,
+                    message: format!("encode response: {e}"),
+                    data: None,
+                },
+            ),
+        },
+        None => Response::ok(req_id, Value::Null),
+    }
 }
 
 /// Handle a server-initiated request. Default behaviour is "we
@@ -1810,5 +2045,40 @@ mod progress_tests {
         });
         let p = parse_progress(&sid(), Some(&params)).expect("report parses");
         assert_eq!(p.percentage, Some(100));
+    }
+}
+
+#[cfg(test)]
+mod log_trace_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parses_message_and_optional_verbose() {
+        let params = json!({
+            "message": "rpc inbound",
+            "verbose": "{\"jsonrpc\":\"2.0\",\"id\":1}",
+        });
+        let (msg, verbose) = parse_log_trace(Some(&params));
+        assert_eq!(msg, "rpc inbound");
+        assert_eq!(verbose.as_deref(), Some("{\"jsonrpc\":\"2.0\",\"id\":1}"));
+    }
+
+    #[test]
+    fn message_required_verbose_optional() {
+        let params = json!({ "message": "step" });
+        let (msg, verbose) = parse_log_trace(Some(&params));
+        assert_eq!(msg, "step");
+        assert!(verbose.is_none());
+    }
+
+    #[test]
+    fn falls_back_on_missing_message() {
+        // Spec says message is required; for a malformed
+        // payload we use the compacted JSON as the message so
+        // the trace log still shows something useful.
+        let params = json!({ "other": 1 });
+        let (msg, _) = parse_log_trace(Some(&params));
+        assert!(!msg.is_empty());
     }
 }

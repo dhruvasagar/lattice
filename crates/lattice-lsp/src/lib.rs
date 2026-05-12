@@ -66,6 +66,8 @@ pub mod logging;
 pub mod modes;
 pub mod pending;
 pub mod position;
+pub mod show_document;
+pub mod show_message_request;
 pub mod supervisor;
 pub mod sync;
 pub mod transport;
@@ -73,6 +75,10 @@ pub mod transport;
 pub use actor::{ServerHandle, spawn, spawn_with_io};
 pub use apply_edit::{ApplyEditBus, ApplyEditOutcome, InboundApplyEdit};
 pub use configuration::{ConfigurationBus, InboundConfigurationRequest};
+pub use show_document::{InboundShowDocument, ShowDocumentBus, ShowDocumentOutcome};
+pub use show_message_request::{
+    InboundShowMessageRequest, ShowMessageRequestBus, ShowMessageRequestOutcome,
+};
 pub use capabilities::{Capabilities, client_capabilities};
 pub use codec::{LspReader, LspWriter};
 pub use config::{ServerConfig, builtin_servers, resolve_workspace_root};

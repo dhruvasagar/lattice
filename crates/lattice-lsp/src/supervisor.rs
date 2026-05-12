@@ -161,6 +161,17 @@ pub struct LspSupervisor {
     /// `Vec<null>`-per-item replies (the pre-this-commit
     /// stub).
     configuration_bus: Option<crate::configuration::ConfigurationBus>,
+    /// Server-initiated `window/showDocument` bus (4.4.b).
+    /// `Some` once the App calls [`Self::set_show_document_bus`];
+    /// `None` leaves the actor falling back to `success: false`
+    /// so the server knows the host can't open URIs.
+    show_document_bus: Option<crate::show_document::ShowDocumentBus>,
+    /// Server-initiated `window/showMessageRequest` bus (4.4.b).
+    /// `Some` once the App calls
+    /// [`Self::set_show_message_request_bus`]; `None` leaves the
+    /// actor replying with JSON `null` (spec-compliant "user
+    /// dismissed without picking").
+    show_message_request_bus: Option<crate::show_message_request::ShowMessageRequestBus>,
     /// Editor-wide event bus. `Some` after the App calls
     /// [`Self::set_event_bus`] (early in startup, before any
     /// buffer opens). When set, every spawned actor gets a
@@ -223,6 +234,8 @@ impl LspSupervisor {
             diagnostics,
             apply_edit_bus: None,
             configuration_bus: None,
+            show_document_bus: None,
+            show_message_request_bus: None,
             event_bus: None,
             fan_in_subs: HashMap::new(),
             restart_history: HashMap::new(),
@@ -279,6 +292,25 @@ impl LspSupervisor {
         bus: crate::configuration::ConfigurationBus,
     ) {
         self.configuration_bus = Some(bus);
+    }
+
+    /// 4.4.b: install the show-document bus. Cloned into every
+    /// actor spawned (or restarted) after this call. The App
+    /// calls this once at startup with the sender side of the
+    /// channel whose receiver it holds.
+    pub fn set_show_document_bus(
+        &mut self,
+        bus: crate::show_document::ShowDocumentBus,
+    ) {
+        self.show_document_bus = Some(bus);
+    }
+
+    /// 4.4.b: install the show-message-request bus.
+    pub fn set_show_message_request_bus(
+        &mut self,
+        bus: crate::show_message_request::ShowMessageRequestBus,
+    ) {
+        self.show_message_request_bus = Some(bus);
     }
 
     /// Borrow the shared logger (so callers can register their
@@ -411,6 +443,8 @@ impl LspSupervisor {
                         self.logger.clone(),
                         self.apply_edit_bus.clone(),
                         self.configuration_bus.clone(),
+                        self.show_document_bus.clone(),
+                        self.show_message_request_bus.clone(),
                         self.event_bus.clone(),
                     )
                     .await
@@ -771,6 +805,8 @@ impl LspSupervisor {
                 self.logger.clone(),
                 self.apply_edit_bus.clone(),
                 self.configuration_bus.clone(),
+                self.show_document_bus.clone(),
+                self.show_message_request_bus.clone(),
                 self.event_bus.clone(),
             )
             .await?;
@@ -1524,6 +1560,8 @@ async fn handle_actor_exit(
             state.logger.clone(),
             state.apply_edit_bus.clone(),
             state.configuration_bus.clone(),
+            state.show_document_bus.clone(),
+            state.show_message_request_bus.clone(),
             state.event_bus.clone(),
         )
         .await

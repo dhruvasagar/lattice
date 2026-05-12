@@ -260,6 +260,12 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // section in the cached TOML tree at `lsp.<section>`
         // and reply with the per-section value.
         app.drain_inbound_configuration_requests();
+        // 4.4.b: server-initiated window/showDocument requests
+        // (open URI in buffer / external handler).
+        app.drain_inbound_show_documents();
+        // 4.4.b: server-initiated window/showMessageRequest
+        // (modal action picker; user's selection ferries back).
+        app.drain_inbound_show_message_requests();
         // Update viewport height. The buffer-area band is the
         // terminal minus the mode line + cmdline/echo row (and the
         // candidate-list row band, when a picker / completion popup

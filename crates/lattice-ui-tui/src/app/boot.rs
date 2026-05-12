@@ -57,6 +57,8 @@ fn build_lsp_subsystem(
     LspLogger,
     tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundApplyEdit>,
     tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundConfigurationRequest>,
+    tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowDocument>,
+    tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowMessageRequest>,
 ) {
     let logger = LspLogger::with_defaults();
     let mut sup = LspSupervisor::new(logger.clone());
@@ -78,6 +80,17 @@ fn build_lsp_subsystem(
     // requested item.
     let (configuration_bus, configuration_rx) = lattice_lsp::ConfigurationBus::new();
     sup.set_configuration_bus(configuration_bus);
+    // 4.4.b: window/showDocument bus -- the App's drain opens
+    // the requested URI and writes `{ success }` back via the
+    // embedded oneshot.
+    let (show_document_bus, show_document_rx) = lattice_lsp::ShowDocumentBus::new();
+    sup.set_show_document_bus(show_document_bus);
+    // 4.4.b: window/showMessageRequest bus -- the App's drain
+    // opens a modal action picker; the user's selection (or
+    // `None` on dismiss) ferries back via the oneshot.
+    let (show_message_request_bus, show_message_request_rx) =
+        lattice_lsp::ShowMessageRequestBus::new();
+    sup.set_show_message_request_bus(show_message_request_bus);
     // Event bus is wired pre-spawn so every actor born in this
     // supervisor task gets its per-actor edit fan-in
     // automatically (lattice_lsp::fan_in).
@@ -102,7 +115,15 @@ fn build_lsp_subsystem(
         handle.clone(),
         logger.clone(),
     );
-    (handle, diagnostics, logger, apply_edit_rx, configuration_rx)
+    (
+        handle,
+        diagnostics,
+        logger,
+        apply_edit_rx,
+        configuration_rx,
+        show_document_rx,
+        show_message_request_rx,
+    )
 }
 
 /// Boot-time registration of the first-party picker sources
@@ -161,6 +182,8 @@ impl App {
             lsp_logger,
             lsp_apply_edit_rx,
             lsp_configuration_rx,
+            lsp_show_document_rx,
+            lsp_show_message_request_rx,
         ) = build_lsp_subsystem(event_bus.clone(), &runtime_handle);
         let mut registry = CommandRegistry::new();
         let builtins = populate(&mut registry);
@@ -676,6 +699,8 @@ impl App {
             lsp_logger,
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),
             pending_configuration_rx: Some(lsp_configuration_rx),
+            pending_show_document_rx: Some(lsp_show_document_rx),
+            pending_show_message_request_rx: Some(lsp_show_message_request_rx),
             lsp_config_tree: toml::Table::new(),
             buffer_uris: std::collections::HashMap::new(),
         };

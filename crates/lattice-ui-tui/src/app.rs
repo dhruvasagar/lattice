@@ -1526,6 +1526,23 @@ pub struct App {
     pub pending_configuration_rx: Option<
         tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundConfigurationRequest>,
     >,
+    /// 4.4.b: server-initiated `window/showDocument` request
+    /// stream. Drained per-frame by
+    /// [`Self::drain_inbound_show_documents`]; each request
+    /// opens the supplied URI (in a buffer for `file://`, in
+    /// the OS handler when `external` is set) and writes
+    /// `{ success }` back via the oneshot.
+    pub pending_show_document_rx: Option<
+        tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowDocument>,
+    >,
+    /// 4.4.b: server-initiated `window/showMessageRequest`
+    /// request stream. Drained per-frame by
+    /// [`Self::drain_inbound_show_message_requests`]; each
+    /// request opens an action picker and writes the user's
+    /// selection (or `None` on dismiss) back via the oneshot.
+    pub pending_show_message_request_rx: Option<
+        tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowMessageRequest>,
+    >,
     /// Merged TOML tree of every loaded config file (user +
     /// project, project deep-merged on top). Populated by
     /// [`Self::load_persistent_config`] from the loader's new

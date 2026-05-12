@@ -1385,6 +1385,222 @@ impl App {
     /// `flatten_workspace_edit` path the `:rename` drain uses),
     /// apply each, and reply via the oneshot.
     ///
+    /// 4.4.b: drain server-initiated `window/showDocument`
+    /// requests. Each request lands as
+    /// [`lattice_lsp::InboundShowDocument`] carrying the URI,
+    /// the `external`/`take_focus` flags, an optional
+    /// `selection` range, and a oneshot for the reply.
+    ///
+    /// Open semantics:
+    /// - `external == true` -> delegate to the OS handler
+    ///   (`open` on macOS, `xdg-open` on linux). Selection is
+    ///   ignored; success reflects whether the spawn was
+    ///   accepted, not whether the target opened.
+    /// - `file://` URI with `external == false` -> open the
+    ///   path in a new editor buffer via the same path
+    ///   `:e <path>` uses. Selection (if present) is applied
+    ///   after open via the standard LSP-position conversion.
+    /// - Anything else with `external == false` -> reply
+    ///   `success: false` (we don't know how to surface a
+    ///   non-file URI in a buffer).
+    pub fn drain_inbound_show_documents(&mut self) {
+        let Some(mut rx) = self.pending_show_document_rx.take() else {
+            return;
+        };
+        let mut requests: Vec<lattice_lsp::InboundShowDocument> = Vec::new();
+        while let Ok(req) = rx.try_recv() {
+            requests.push(req);
+        }
+        self.pending_show_document_rx = Some(rx);
+        for req in requests {
+            let success = self.perform_show_document(
+                &req.server_id,
+                &req.uri,
+                req.external,
+                req.take_focus,
+                req.selection,
+            );
+            let _ = req
+                .response
+                .send(lattice_lsp::ShowDocumentOutcome { success });
+        }
+    }
+
+    fn perform_show_document(
+        &mut self,
+        server_id: &std::sync::Arc<str>,
+        uri: &lattice_lsp::Uri,
+        external: bool,
+        take_focus: bool,
+        selection: Option<lsp_types::Range>,
+    ) -> bool {
+        let uri_str = uri.as_str().to_string();
+        if external {
+            return self.open_external_uri(server_id, &uri_str);
+        }
+        // In-editor branch: only `file://` URIs reach here.
+        if !uri_str.starts_with("file://") {
+            self.lsp_logger.log(
+                Some(server_id),
+                lattice_lsp::LogLevel::Warn,
+                lattice_lsp::LogSource::Client,
+                format!(
+                    "showDocument: refusing non-file URI {uri_str:?} without `external`"
+                ),
+            );
+            return false;
+        }
+        let Some(path) = lattice_lsp::actor::uri_to_path(uri) else {
+            self.lsp_logger.log(
+                Some(server_id),
+                lattice_lsp::LogLevel::Warn,
+                lattice_lsp::LogSource::Client,
+                format!("showDocument: malformed file URI {uri_str:?}"),
+            );
+            return false;
+        };
+        // `take_focus` defaults to false in spec; we don't
+        // implement preview-without-focus today (every `:e`
+        // moves focus). The flag stays honoured by always
+        // moving focus when true and accepting that the
+        // false case still moves focus -- documented in
+        // lsp-features.md.
+        let _ = take_focus;
+        self.do_edit(Some(path), false);
+        if let Some(range) = selection {
+            self.move_cursor_to_lsp_position(range.start);
+        }
+        true
+    }
+
+    fn open_external_uri(
+        &mut self,
+        server_id: &std::sync::Arc<str>,
+        uri: &str,
+    ) -> bool {
+        // Pick the platform's open command. We don't take an
+        // optional `App.external_open_command` config knob
+        // yet -- the OS defaults cover the supported
+        // platforms.
+        #[cfg(target_os = "macos")]
+        let cmd = "open";
+        #[cfg(target_os = "windows")]
+        let cmd = "explorer";
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let cmd = "xdg-open";
+        match std::process::Command::new(cmd).arg(uri).spawn() {
+            Ok(_) => {
+                self.lsp_logger.log(
+                    Some(server_id),
+                    lattice_lsp::LogLevel::Info,
+                    lattice_lsp::LogSource::Client,
+                    format!("showDocument(external): {uri}"),
+                );
+                true
+            }
+            Err(e) => {
+                self.lsp_logger.log(
+                    Some(server_id),
+                    lattice_lsp::LogLevel::Warn,
+                    lattice_lsp::LogSource::Client,
+                    format!("showDocument(external) failed: {e}"),
+                );
+                false
+            }
+        }
+    }
+
+    fn move_cursor_to_lsp_position(&mut self, position: lsp_types::Position) {
+        // Position arrives in LSP utf-16; convert via the
+        // active document's encoding before moving. Best-
+        // effort: if the line is out of buffer, leave the
+        // cursor where `do_edit` put it.
+        let snapshot = self.document.snapshot();
+        let byte = crate::app::lsp_position_to_app_byte(
+            &snapshot.buffer,
+            position.line,
+            position.character,
+        );
+        if snapshot.buffer.line(position.line).is_some() {
+            self.cursor = lattice_protocol::Position {
+                line: position.line,
+                byte,
+            };
+        }
+    }
+
+    /// 4.4.b: drain server-initiated
+    /// `window/showMessageRequest`. Initial slice surfaces the
+    /// prompt + action list to the minibuffer + the LSP log so
+    /// the user can see what the server asked, then ferries
+    /// back `null` (dismissed) -- spec-compliant. A proper
+    /// picker-driven response UX queues for a follow-up slice;
+    /// the wire path + bus + dispatch path are the load-bearing
+    /// part this slice ships.
+    pub fn drain_inbound_show_message_requests(&mut self) {
+        let Some(mut rx) = self.pending_show_message_request_rx.take() else {
+            return;
+        };
+        let mut requests: Vec<lattice_lsp::InboundShowMessageRequest> = Vec::new();
+        while let Ok(req) = rx.try_recv() {
+            requests.push(req);
+        }
+        self.pending_show_message_request_rx = Some(rx);
+        // If multiple arrive in one tick, the minibuffer only
+        // surfaces the last (consistent with successive
+        // `:echo`). The LSP log records every request so nothing
+        // is lost.
+        let mut last_minibuffer: Option<(EchoLevel, String)> = None;
+        for req in requests {
+            let labels: Vec<&str> = req
+                .actions
+                .iter()
+                .map(|a| a.title.as_str())
+                .collect();
+            let labels_joined = labels.join(" / ");
+            let echo_level = match req.level {
+                lsp_types::MessageType::ERROR => EchoLevel::Error,
+                lsp_types::MessageType::WARNING => EchoLevel::Warn,
+                _ => EchoLevel::Info,
+            };
+            let log_level = match req.level {
+                lsp_types::MessageType::ERROR => lattice_lsp::LogLevel::Error,
+                lsp_types::MessageType::WARNING => lattice_lsp::LogLevel::Warn,
+                _ => lattice_lsp::LogLevel::Info,
+            };
+            self.lsp_logger.log(
+                Some(&req.server_id),
+                log_level,
+                lattice_lsp::LogSource::LspShowMessage,
+                if labels.is_empty() {
+                    format!("showMessageRequest: {}", req.message)
+                } else {
+                    format!(
+                        "showMessageRequest: {} [actions: {labels_joined}] -- auto-dismissed (picker UX queued)",
+                        req.message
+                    )
+                },
+            );
+            let echo_text = if labels.is_empty() {
+                format!("[{}] {}", req.server_id, req.message)
+            } else {
+                format!(
+                    "[{}] {} [{labels_joined}]",
+                    req.server_id, req.message
+                )
+            };
+            last_minibuffer = Some((echo_level, echo_text));
+            // Auto-dismiss. The receiver may already be dropped
+            // if the server cancelled; ignore the send error.
+            let _ = req
+                .response
+                .send(lattice_lsp::ShowMessageRequestOutcome { selected: None });
+        }
+        if let Some((level, text)) = last_minibuffer {
+            self.set_message(level, text);
+        }
+    }
+
     /// Apply semantics mirror `apply_rename_workspace_edit`:
     /// edits to the active buffer land directly via
     /// `apply_lsp_text_edits`; cross-file edits open the target
@@ -3658,13 +3874,37 @@ impl App {
             return;
         };
         let id: std::sync::Arc<str> = std::sync::Arc::from(server_id.as_str());
-        let now_on = self.lsp_logger.toggle_trace(id);
+        let now_on = self.lsp_logger.toggle_trace(id.clone());
         let label = if now_on { "on" } else { "off" };
         let alias_note = if server_id != name {
             format!(" (resolved {name:?} -> {server_id:?})")
         } else {
             String::new()
         };
+        // 4.4.b: drive the server's trace level over the wire
+        // via `$/setTrace`. Matched against every running actor
+        // with this id (one server may attach to multiple
+        // workspaces). Failures log + skip -- the local flag
+        // already flipped, and a server that ignores setTrace
+        // still feeds the trace ring from wire-frame records.
+        let trace_value = if now_on {
+            lsp_types::TraceValue::Verbose
+        } else {
+            lsp_types::TraceValue::Off
+        };
+        for (_key, handle) in self.lsp.running_actors() {
+            if handle.server_id() != server_id {
+                continue;
+            }
+            if let Err(e) = handle.set_trace(trace_value) {
+                self.lsp_logger.log(
+                    Some(&id),
+                    lattice_lsp::LogLevel::Warn,
+                    lattice_lsp::LogSource::Client,
+                    format!("setTrace failed: {e}"),
+                );
+            }
+        }
         self.set_message(
             EchoLevel::Info,
             format!(

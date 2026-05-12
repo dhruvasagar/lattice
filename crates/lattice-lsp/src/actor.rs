@@ -1200,6 +1200,26 @@ async fn actor_main<R, W>(
                                     server_id: Arc::clone(&server_id_arc),
                                 });
                             }
+                        } else if req.method == "workspace/inlineValue/refresh" {
+                            // 4.5.h: server-initiated inline-
+                            // value cache invalidation. The
+                            // renderer trigger is itself
+                            // deferred (no debug-adapter
+                            // integration yet); we still reply
+                            // `null` per spec so the server's
+                            // request resolves, and log so a
+                            // future renderer wire-up can grep
+                            // for the breadcrumb.
+                            let _ = out_tx.send(Message::Response(Response::ok(
+                                req.id.clone(),
+                                Value::Null,
+                            )));
+                            logger.log(
+                                Some(&server_id_arc),
+                                LogLevel::Info,
+                                LogSource::Client,
+                                "workspace/inlineValue/refresh accepted (renderer trigger deferred)",
+                            );
                         } else if req.method == "workspace/codeLens/refresh" {
                             // 4.5.d: server-initiated code-lens
                             // cache invalidation. Same shape as

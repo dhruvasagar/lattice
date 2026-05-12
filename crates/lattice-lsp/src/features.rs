@@ -346,6 +346,46 @@ impl ServerHandle {
         self.request_with_cancel("textDocument/colorPresentation", params, token)
     }
 
+    /// 4.5.f: `textDocument/linkedEditingRange`. Returns the
+    /// ranges that should be edited in lockstep when the user
+    /// types inside one of them (e.g. matching HTML/JSX tag
+    /// pairs). Wire wrapper only -- the multi-cursor
+    /// shadow-edit machinery the feature needs is its own
+    /// slice; see the matrix row's strong-reason defer.
+    pub fn linked_editing_range(
+        &self,
+        params: lsp_types::LinkedEditingRangeParams,
+        token: CancellationToken,
+    ) -> Pending<Option<lsp_types::LinkedEditingRanges>> {
+        self.request_with_cancel("textDocument/linkedEditingRange", params, token)
+    }
+
+    /// 4.5.h: `textDocument/inlineValue`. Returns the live
+    /// values to render at each line during a debug session
+    /// (e.g. `n = 5`, `result = "ok"`). Wire wrapper only --
+    /// without a debug-adapter integration (DAP) the trigger
+    /// surface that would render these is absent; see the
+    /// matrix row's strong-reason defer.
+    pub fn inline_value(
+        &self,
+        params: lsp_types::InlineValueParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::InlineValue>>> {
+        self.request_with_cancel("textDocument/inlineValue", params, token)
+    }
+
+    // 4.5.i: `textDocument/inlineCompletion` (LSP 3.18 /
+    // pre-spec). **Strong-reason defer at the wire layer**:
+    // lsp-types 0.97 doesn't export `InlineCompletionParams`
+    // / `InlineCompletionResponse` (the request types live
+    // behind a `proposed` feature flag the workspace doesn't
+    // opt into). The server-cap field
+    // `inline_completion_provider` is present but no client-
+    // facing types are accessible. Revisit when lsp-types
+    // promotes inlineCompletion out of `proposed` -- the
+    // Insert-mode autopilot trigger + ghost-text overlay
+    // will land in the same slice.
+
     /// `textDocument/completion` (DESIGN.md §5.4 / Phase 4.2.g).
     /// Returns either an array of items or an `isIncomplete` list
     /// the editor must re-query as the user types more. The

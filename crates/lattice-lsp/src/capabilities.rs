@@ -185,6 +185,16 @@ fn workspace_capabilities() -> WorkspaceClientCapabilities {
         code_lens: Some(lsp_types::CodeLensWorkspaceClientCapabilities {
             refresh_support: Some(true),
         }),
+        // 4.5.h: tell servers we honour
+        // `workspace/inlineValue/refresh`. Same shape as the
+        // other workspace refresh advertisements; the actor
+        // accepts the inbound request inline and publishes
+        // `LspInlineValueRefresh`. The host-side renderer
+        // trigger is itself deferred (no debug-adapter
+        // integration), so the refresh just logs for now.
+        inline_value: Some(lsp_types::InlineValueWorkspaceClientCapabilities {
+            refresh_support: Some(true),
+        }),
         // 4.4.k: tell servers we send
         // `workspace/didChangeConfiguration` when typed
         // options under `lsp.*` change. `dynamic_registration
@@ -973,6 +983,31 @@ impl Capabilities {
         );
         static_ok || self.dynamic.has("textDocument/documentColor")
     }
+
+    /// 4.5.f: server's `linkedEditingRangeProvider` presence.
+    /// Returns true for the bool-only, options, or
+    /// registration-options shapes; also consults the
+    /// dynamic registry.
+    pub fn supports_linked_editing_range(&self) -> bool {
+        let static_ok = self.server.linked_editing_range_provider.is_some();
+        static_ok || self.dynamic.has("textDocument/linkedEditingRange")
+    }
+
+    /// 4.5.h: server's `inlineValueProvider` presence.
+    /// Returns true for either the bool-only or options
+    /// shape; consults the dynamic registry.
+    pub fn supports_inline_value(&self) -> bool {
+        let static_ok = matches!(
+            self.server.inline_value_provider,
+            Some(lsp_types::OneOf::Left(true)) | Some(lsp_types::OneOf::Right(_))
+        );
+        static_ok || self.dynamic.has("textDocument/inlineValue")
+    }
+
+    // 4.5.i: `inlineCompletionProvider` (LSP 3.18 / pre-
+    // spec). lsp-types 0.97 doesn't export the param /
+    // response types -- see the wire-layer note in
+    // `features.rs`. Probe deferred to the same revisit.
 
     /// 4.4.m: server advertises interest in
     /// `workspace/willCreateFiles` requests (server returns

@@ -1009,3 +1009,89 @@ async fn document_color_and_color_presentation_round_trip() {
     assert_eq!(alts.len(), 3);
     assert_eq!(alts[2].label, "red");
 }
+
+/// 4.5.f: `linked_editing_range` round-trips the ranges
+/// payload from the server.
+#[tokio::test]
+async fn linked_editing_range_returns_paired_ranges() {
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("textDocument/linkedEditingRange", |_params| {
+            MockResult::Ok(json!({
+                "ranges": [
+                    {
+                        "start": {"line": 2, "character": 4},
+                        "end": {"line": 2, "character": 8}
+                    },
+                    {
+                        "start": {"line": 2, "character": 20},
+                        "end": {"line": 2, "character": 24}
+                    }
+                ],
+                "wordPattern": "[a-zA-Z][a-zA-Z0-9]*"
+            }))
+        })
+        .await;
+    let resp = mock
+        .handle
+        .linked_editing_range(
+            lsp_types::LinkedEditingRangeParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///tmp/index.html").unwrap(),
+                    },
+                    position: LspPosition { line: 2, character: 6 },
+                },
+                work_done_progress_params: Default::default(),
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("response decodes")
+        .expect("server returned ranges");
+    assert_eq!(resp.ranges.len(), 2);
+}
+
+/// 4.5.h: `inline_value` round-trips the text variant of the
+/// response.
+#[tokio::test]
+async fn inline_value_returns_text_variants() {
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("textDocument/inlineValue", |_params| {
+            MockResult::Ok(json!([{
+                "range": {
+                    "start": {"line": 5, "character": 8},
+                    "end": {"line": 5, "character": 16}
+                },
+                "text": "n = 5"
+            }]))
+        })
+        .await;
+    let resp = mock
+        .handle
+        .inline_value(
+            lsp_types::InlineValueParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Uri::from_str("file:///tmp/lib.rs").unwrap(),
+                },
+                range: LspRange {
+                    start: LspPosition { line: 0, character: 0 },
+                    end: LspPosition { line: 10, character: 0 },
+                },
+                context: lsp_types::InlineValueContext {
+                    frame_id: 0,
+                    stopped_location: LspRange {
+                        start: LspPosition { line: 5, character: 8 },
+                        end: LspPosition { line: 5, character: 16 },
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("response decodes")
+        .expect("server returned values");
+    assert_eq!(resp.len(), 1);
+}

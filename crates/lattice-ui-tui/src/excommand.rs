@@ -458,6 +458,9 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     // 4.5.a -- call hierarchy.
     ("lsp-incoming-calls", "ex:lsp-incoming-calls"),
     ("lsp-outgoing-calls", "ex:lsp-outgoing-calls"),
+    // 4.5.b -- type hierarchy.
+    ("lsp-supertypes", "ex:lsp-supertypes"),
+    ("lsp-subtypes", "ex:lsp-subtypes"),
     // Phase 4.3 edits.
     ("lsp-format", "ex:lsp-format"),
     ("lsp-format-range", "ex:lsp-format-range"),

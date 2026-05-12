@@ -1194,6 +1194,8 @@ impl App {
             }
             Effect::LspIncomingCalls => self.do_lsp_call_hierarchy_request(false),
             Effect::LspOutgoingCalls => self.do_lsp_call_hierarchy_request(true),
+            Effect::LspSupertypes => self.do_lsp_type_hierarchy_request(false),
+            Effect::LspSubtypes => self.do_lsp_type_hierarchy_request(true),
             Effect::LspFormat => self.do_lsp_format_request(false),
             Effect::LspFormatRange => self.do_lsp_format_request(true),
             Effect::LspSignatureHelp => self.do_lsp_signature_help_request(),
@@ -1440,6 +1442,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspWorkspaceSymbol { .. }
         | Effect::LspIncomingCalls
         | Effect::LspOutgoingCalls
+        | Effect::LspSupertypes
+        | Effect::LspSubtypes
         | Effect::LspFormat
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp
@@ -1518,6 +1522,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspWorkspaceSymbol { .. }
         | Effect::LspIncomingCalls
         | Effect::LspOutgoingCalls
+        | Effect::LspSupertypes
+        | Effect::LspSubtypes
         | Effect::LspFormat
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp

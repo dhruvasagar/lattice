@@ -273,6 +273,15 @@ fn text_document_capabilities() -> TextDocumentClientCapabilities {
                 dynamic_registration: Some(false),
             },
         ),
+        // 4.5.b: tell servers we honour the type-hierarchy
+        // pipeline (`textDocument/prepareTypeHierarchy` →
+        // `typeHierarchy/{super,sub}types`). Same shape
+        // rationale as `call_hierarchy` above.
+        type_hierarchy: Some(
+            lsp_types::DynamicRegistrationClientCapabilities {
+                dynamic_registration: Some(false),
+            },
+        ),
         ..Default::default()
     }
 }
@@ -833,6 +842,19 @@ impl Capabilities {
                 | Some(lsp_types::CallHierarchyServerCapability::Options(_))
         );
         static_ok || self.dynamic.has("textDocument/prepareCallHierarchy")
+    }
+
+    /// 4.5.b: server's type-hierarchy support. lsp-types 0.97
+    /// doesn't model a static `type_hierarchy_provider` field on
+    /// `ServerCapabilities` (newer LSP versions add one); the
+    /// probe consults the dynamic registry only. Most servers
+    /// that support type hierarchy register it dynamically anyway
+    /// (rust-analyzer, pyright). If a server advertises static
+    /// type-hierarchy support via a `serverInfo`-embedded blob
+    /// we don't parse it; the dynamic path is the standard way
+    /// to negotiate.
+    pub fn supports_type_hierarchy(&self) -> bool {
+        self.dynamic.has("textDocument/prepareTypeHierarchy")
     }
 
     /// 4.4.m: server advertises interest in

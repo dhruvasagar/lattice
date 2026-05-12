@@ -3092,6 +3092,28 @@ pub(crate) fn call_hierarchy_to_row(
     }
 }
 
+/// 4.5.b: render one `TypeHierarchyItem` (a supertype or
+/// subtype of the cursor's type) as a [`SymbolRow`] for the
+/// picker. Same projection as [`call_hierarchy_to_row`]
+/// because the item shape is identical (name, kind, uri,
+/// range, selection_range); the container hint differs
+/// (`"super of foo"` / `"sub of foo"`).
+pub(crate) fn type_hierarchy_to_row(
+    item: &lsp_types::TypeHierarchyItem,
+    related_to: &str,
+) -> SymbolRow {
+    let path = lattice_lsp::actor::uri_to_path(&item.uri).unwrap_or_default();
+    SymbolRow {
+        name: item.name.clone(),
+        kind_glyph: symbol_kind_glyph(item.kind),
+        container: Some(format!("of {related_to}")),
+        depth: 0,
+        path,
+        line: item.selection_range.start.line,
+        col: item.selection_range.start.character,
+    }
+}
+
 /// Extract a placeholder string from a `PrepareRenameResponse`.
 /// The spec gives three shapes: a Range (no placeholder, just
 /// "you can rename here"), a Range+Placeholder (preferred), or

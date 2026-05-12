@@ -211,6 +211,40 @@ impl ServerHandle {
         self.request_with_cancel("callHierarchy/outgoingCalls", params, token)
     }
 
+    /// 4.5.b: `textDocument/prepareTypeHierarchy`. Same
+    /// preparation shape as `prepareCallHierarchy` but
+    /// targets type relationships (super/sub-types). Used by
+    /// `:lsp-supertypes` / `:lsp-subtypes`.
+    pub fn prepare_type_hierarchy(
+        &self,
+        params: lsp_types::TypeHierarchyPrepareParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::TypeHierarchyItem>>> {
+        self.request_with_cancel("textDocument/prepareTypeHierarchy", params, token)
+    }
+
+    /// 4.5.b: `typeHierarchy/supertypes`. Returns the types
+    /// the given item is a subtype of (e.g. trait
+    /// supertraits, class superclasses).
+    pub fn type_hierarchy_supertypes(
+        &self,
+        params: lsp_types::TypeHierarchySupertypesParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::TypeHierarchyItem>>> {
+        self.request_with_cancel("typeHierarchy/supertypes", params, token)
+    }
+
+    /// 4.5.b: `typeHierarchy/subtypes`. Returns the types that
+    /// subtype the given item (e.g. trait implementors,
+    /// class subclasses).
+    pub fn type_hierarchy_subtypes(
+        &self,
+        params: lsp_types::TypeHierarchySubtypesParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::TypeHierarchyItem>>> {
+        self.request_with_cancel("typeHierarchy/subtypes", params, token)
+    }
+
     /// `textDocument/completion` (DESIGN.md §5.4 / Phase 4.2.g).
     /// Returns either an array of items or an `isIncomplete` list
     /// the editor must re-query as the user types more. The

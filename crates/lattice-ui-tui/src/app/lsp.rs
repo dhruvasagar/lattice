@@ -51,6 +51,7 @@ use super::{
     LSP_COMPLETION_KIND_ID, LspCompletionMeta, LspNavKind, ReferencesOutcome, RenameOutcome,
     SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
     call_hierarchy_to_row, code_action_kind_glyph, completion_kind_glyph, dedup_rendered_by_text,
+    type_hierarchy_to_row,
     definition_response_to_locations, flatten_document_symbol_response, flatten_workspace_edit,
     hover_contents_to_markdown, is_word_char_byte, last_addressable_line, line_byte_len,
     lsp_position_to_app_byte, prepare_rename_placeholder, signature_help_to_markdown,
@@ -3576,6 +3577,144 @@ impl App {
             });
             let title = format!(
                 "{direction_label}-calls of {item_name} ({})",
+                rows.len()
+            );
+            let _ = tx.send(SymbolsOutcome::Found { title, rows });
+        });
+    }
+
+    /// 4.5.b: `:lsp-supertypes` / `:lsp-subtypes`. Same shape
+    /// as the call-hierarchy peer but for type relationships.
+    /// `subtypes=false` -> supertypes ("what does this type
+    /// subtype?"); `subtypes=true` -> subtypes ("what subtypes
+    /// this type?"). Reuses the symbols outcome / picker
+    /// plumbing.
+    ///
+    /// Capability: lsp-types 0.97 doesn't model a static
+    /// `type_hierarchy_provider` field; the probe consults the
+    /// dynamic registry only. Servers that support type
+    /// hierarchy typically register it dynamically anyway
+    /// (rust-analyzer, pyright). When the server doesn't
+    /// advertise either path the command echoes "no LSP server
+    /// with type-hierarchy support" instead of firing a request
+    /// that would error.
+    pub(super) fn do_lsp_type_hierarchy_request(&mut self, subtypes: bool) {
+        if let Some(token) = self.pending_symbols_token.take() {
+            token.cancel();
+        }
+        let snapshot_for_label = self.document.snapshot();
+        let label =
+            word_under_cursor(&snapshot_for_label.buffer, self.cursor).unwrap_or_default();
+        self.pending_tag_origin = Some(TagStackEntry {
+            buffer: self.active_buffer,
+            buffer_id: self.active_pane_buffer_id(),
+            position: self.cursor,
+            label,
+        });
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no buffer URI -- save the file first".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => {
+                self.set_message(
+                    EchoLevel::Warn,
+                    "cursor outside the document".to_string(),
+                );
+                return;
+            }
+        };
+        let handles = self.lsp.servers_for(&uri);
+        let handle = handles
+            .into_iter()
+            .find(|h| h.capabilities().supports_type_hierarchy());
+        let Some(handle) = handle else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server with type-hierarchy support".to_string(),
+            );
+            return;
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SymbolsOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_symbols_rx = Some(rx);
+        self.pending_symbols_token = Some(token.clone());
+        let direction_label = if subtypes { "subtypes" } else { "supertypes" };
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let prepare_params = lsp_types::TypeHierarchyPrepareParams {
+                text_document_position_params: lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri },
+                    position: lsp_position,
+                },
+                work_done_progress_params: Default::default(),
+            };
+            let items = match handle
+                .prepare_type_hierarchy(prepare_params, token.clone())
+                .await
+            {
+                Ok(Some(items)) if !items.is_empty() => items,
+                _ => {
+                    let _ = tx.send(SymbolsOutcome::Found {
+                        title: format!("{direction_label} (no type at cursor)"),
+                        rows: Vec::new(),
+                    });
+                    return;
+                }
+            };
+            let item = items.into_iter().next().expect("non-empty per match");
+            let item_name = item.name.clone();
+            let mut rows: Vec<SymbolRow> = Vec::new();
+            if subtypes {
+                let p = lsp_types::TypeHierarchySubtypesParams {
+                    item: item.clone(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                };
+                if let Ok(Some(types)) =
+                    handle.type_hierarchy_subtypes(p, token.clone()).await
+                {
+                    for t in types {
+                        if token.is_cancelled() {
+                            return;
+                        }
+                        rows.push(type_hierarchy_to_row(&t, &item_name));
+                    }
+                }
+            } else {
+                let p = lsp_types::TypeHierarchySupertypesParams {
+                    item: item.clone(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                };
+                if let Ok(Some(types)) =
+                    handle.type_hierarchy_supertypes(p, token.clone()).await
+                {
+                    for t in types {
+                        if token.is_cancelled() {
+                            return;
+                        }
+                        rows.push(type_hierarchy_to_row(&t, &item_name));
+                    }
+                }
+            }
+            rows.sort_by(|a, b| {
+                a.path
+                    .cmp(&b.path)
+                    .then_with(|| a.line.cmp(&b.line))
+                    .then_with(|| a.col.cmp(&b.col))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            let title = format!(
+                "{direction_label} of {item_name} ({})",
                 rows.len()
             );
             let _ = tx.send(SymbolsOutcome::Found { title, rows });

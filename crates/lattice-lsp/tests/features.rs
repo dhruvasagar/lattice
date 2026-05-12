@@ -668,3 +668,80 @@ async fn call_hierarchy_incoming_calls_returns_callers() {
     assert_eq!(calls[0].from.name, "bar");
     assert_eq!(calls[0].from_ranges[0].start.line, 21);
 }
+
+/// 4.5.b: `prepare_type_hierarchy` + `type_hierarchy_supertypes`
+/// round-trip a `TypeHierarchyItem` list end-to-end.
+#[tokio::test]
+async fn type_hierarchy_supertypes_returns_parent_types() {
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("textDocument/prepareTypeHierarchy", |_params| {
+            MockResult::Ok(json!([{
+                "name": "MyTrait",
+                "kind": 11,
+                "uri": "file:///tmp/lib.rs",
+                "range": {
+                    "start": {"line": 5, "character": 0},
+                    "end": {"line": 5, "character": 12}
+                },
+                "selectionRange": {
+                    "start": {"line": 5, "character": 6},
+                    "end": {"line": 5, "character": 13}
+                }
+            }]))
+        })
+        .await;
+    mock.mock
+        .on("typeHierarchy/supertypes", |_params| {
+            MockResult::Ok(json!([{
+                "name": "ParentTrait",
+                "kind": 11,
+                "uri": "file:///tmp/parent.rs",
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 1, "character": 16}
+                },
+                "selectionRange": {
+                    "start": {"line": 1, "character": 6},
+                    "end": {"line": 1, "character": 17}
+                }
+            }]))
+        })
+        .await;
+    // Prepare.
+    let items = mock
+        .handle
+        .prepare_type_hierarchy(
+            lsp_types::TypeHierarchyPrepareParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///tmp/lib.rs").unwrap(),
+                    },
+                    position: LspPosition { line: 5, character: 6 },
+                },
+                work_done_progress_params: Default::default(),
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("response decodes")
+        .expect("server returned items");
+    assert_eq!(items.len(), 1);
+    let item = items.into_iter().next().unwrap();
+    // Supertypes.
+    let supers = mock
+        .handle
+        .type_hierarchy_supertypes(
+            lsp_types::TypeHierarchySupertypesParams {
+                item,
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("response decodes")
+        .expect("server returned supertypes");
+    assert_eq!(supers.len(), 1);
+    assert_eq!(supers[0].name, "ParentTrait");
+}

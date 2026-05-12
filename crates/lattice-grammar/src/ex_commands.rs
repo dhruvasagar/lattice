@@ -87,6 +87,8 @@ pub struct ExBuiltins {
     pub lsp_workspace_symbol: ExCommandId,
     pub lsp_incoming_calls: ExCommandId,
     pub lsp_outgoing_calls: ExCommandId,
+    pub lsp_supertypes: ExCommandId,
+    pub lsp_subtypes: ExCommandId,
     pub lsp_format: ExCommandId,
     pub lsp_format_range: ExCommandId,
     pub lsp_signature_help: ExCommandId,
@@ -1306,6 +1308,32 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let lsp_supertypes = registry.register_ex_command(
+        "ex:lsp-supertypes",
+        "Open a vertico picker over the types the type at the cursor subtypes (`textDocument/prepareTypeHierarchy` -> `typeHierarchy/supertypes`, Phase 4.5.b).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_ctx| Ok(Effect::LspSupertypes)),
+            args_schema: Vec::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let lsp_subtypes = registry.register_ex_command(
+        "ex:lsp-subtypes",
+        "Open a vertico picker over the subtypes of the type at the cursor (`textDocument/prepareTypeHierarchy` -> `typeHierarchy/subtypes`, Phase 4.5.b).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_ctx| Ok(Effect::LspSubtypes)),
+            args_schema: Vec::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
 
     let list_diagnostics = registry.register_ex_command(
         "ex:diagnostics",
@@ -1452,6 +1480,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_workspace_symbol,
         lsp_incoming_calls,
         lsp_outgoing_calls,
+        lsp_supertypes,
+        lsp_subtypes,
         lsp_format,
         lsp_format_range,
         lsp_signature_help,

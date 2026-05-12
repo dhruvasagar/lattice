@@ -330,6 +330,15 @@ pub enum Effect {
     /// `:lsp-outgoing-calls` -- 4.5.a. Symmetric peer of
     /// `LspIncomingCalls`. "What does this function call?"
     LspOutgoingCalls,
+    /// `:lsp-supertypes` -- 4.5.b. Same shape as
+    /// `LspIncomingCalls` but for type relationships: prepares
+    /// type-hierarchy items, fans out
+    /// `typeHierarchy/supertypes`, opens the picker. "What
+    /// does this type subtype?"
+    LspSupertypes,
+    /// `:lsp-subtypes` -- 4.5.b. Symmetric peer of
+    /// `LspSupertypes`. "What subtypes this type?"
+    LspSubtypes,
     /// `:format` -- run `textDocument/formatting` on the highest-
     /// priority server with `documentFormattingProvider` and
     /// apply the returned edits as one undo unit. Phase 4.3.

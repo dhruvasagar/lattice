@@ -267,6 +267,14 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // section in the cached TOML tree at `lsp.<section>`
         // and reply with the per-section value.
         app.drain_inbound_configuration_requests();
+        // 4.4.l.2: refresh the file-watcher subscription set +
+        // drain any fs events the watcher emitted since the
+        // last tick. Refresh is cheap when nothing changed
+        // (per-server fingerprint short-circuit); the drain
+        // fans out `workspace/didChangeWatchedFiles` per server
+        // for matching events.
+        app.refresh_lsp_file_watcher();
+        app.drain_lsp_fs_events();
         // 4.4.b: server-initiated window/showDocument requests
         // (open URI in buffer / external handler).
         app.drain_inbound_show_documents();

@@ -39,6 +39,9 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 serde_json = { workspace = true }
+# 4.4.l.2: cross-platform fs watcher driving the LSP
+# `workspace/didChangeWatchedFiles` fan-out.
+notify = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "test-util", "time"] }

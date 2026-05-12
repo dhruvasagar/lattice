@@ -788,6 +788,7 @@ impl App {
             pending_message_event_rx: Some(message_event_rx),
             auto_submit_after_chord: false,
             lsp,
+            lsp_file_watcher: None,
             lsp_diagnostics,
             lsp_logger,
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),

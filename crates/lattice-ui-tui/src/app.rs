@@ -109,6 +109,7 @@ mod help;
 mod highlights;
 mod lifecycle;
 mod lsp;
+mod lsp_watcher;
 mod macros;
 mod messages;
 mod mode;
@@ -1988,6 +1989,13 @@ pub struct App {
     /// `:e <path>` held the mutex across the LSP `initialize`
     /// handshake -- is gone.
     pub lsp: LspSupervisorHandle,
+    /// 4.4.l.2: file-watcher service backing
+    /// `workspace/didChangeWatchedFiles`. `None` until the first
+    /// server registers at least one
+    /// `workspace/didChangeWatchedFiles` capability; auto-spawned
+    /// by `refresh_lsp_file_watcher`. Tearing the App down drops
+    /// this, which tears down the notify background thread.
+    pub lsp_file_watcher: Option<crate::app::lsp_watcher::LspFileWatcher>,
     /// Cloned handle to the supervisor's diagnostics layer.
     /// `DiagnosticsLayer` is Clone-via-Arc-internal so this is
     /// cheap; the renderer's per-frame `app.lsp_diagnostics

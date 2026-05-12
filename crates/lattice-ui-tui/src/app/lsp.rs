@@ -280,11 +280,23 @@ impl App {
 
     /// 4.4.e: is `lsp-selection-range-mode` active on
     /// `buffer_id`? Gates `textDocument/selectionRange`
-    /// request issuance for the smart-expansion operator.
+    /// issuance for the smart-expansion operator.
     pub fn lsp_selection_range_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
         self.minor_mode_enabled_for(
             buffer_id,
             lattice_lsp::modes::LspSelectionRangeMode::mode_id(),
+        )
+    }
+
+    /// 4.4.f: is `lsp-folding-mode` active on `buffer_id`?
+    /// Gates `textDocument/foldingRange` issuance. Independent
+    /// of the foldmethod option: when the mode is off the
+    /// cache stays empty and `:set foldmethod=lsp` cascades to
+    /// `Syntax`.
+    pub fn lsp_folding_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspFoldingMode::mode_id(),
         )
     }
 
@@ -1377,14 +1389,6 @@ impl App {
         serde_json::to_value(toml_value).unwrap_or(serde_json::Value::Null)
     }
 
-    /// Drain server-initiated `workspace/applyEdit` requests
-    /// (Phase 4.3). Each request lands as a
-    /// `lattice_lsp::InboundApplyEdit` carrying a typed
-    /// `WorkspaceEdit` + a oneshot for the response. We flatten
-    /// the edit into per-file `Vec<TextEdit>` batches (same
-    /// `flatten_workspace_edit` path the `:rename` drain uses),
-    /// apply each, and reply via the oneshot.
-    ///
     /// 4.4.b: drain server-initiated `window/showDocument`
     /// requests. Each request lands as
     /// [`lattice_lsp::InboundShowDocument`] carrying the URI,
@@ -1601,6 +1605,14 @@ impl App {
         }
     }
 
+    /// Drain server-initiated `workspace/applyEdit` requests
+    /// (Phase 4.3). Each request lands as a
+    /// `lattice_lsp::InboundApplyEdit` carrying a typed
+    /// `WorkspaceEdit` + a oneshot for the response. We flatten
+    /// the edit into per-file `Vec<TextEdit>` batches (same
+    /// `flatten_workspace_edit` path the `:rename` drain uses),
+    /// apply each, and reply via the oneshot.
+    ///
     /// Apply semantics mirror `apply_rename_workspace_edit`:
     /// edits to the active buffer land directly via
     /// `apply_lsp_text_edits`; cross-file edits open the target
@@ -3982,90 +3994,6 @@ impl App {
 
     /// `:lsp-progress-cancel [server]` -- send
     /// `window/workDoneProgress/cancel` for every cancellable
-    /// active progress entry (4.4.c). With `server_id == Some`,
-    /// cancel only entries on that server; with `None`, cancel
-    /// across every server attached to the current buffer.
-    ///
-    /// The entry stays in the accumulator until the server sends
-    /// the `end` progress notification — `cancel` is best-effort
-    /// per spec, and the server may decline.
-    pub fn do_lsp_progress_cancel(&mut self, server_id: Option<&str>) {
-        // Filter to attached servers when no explicit server is
-        // given: we don't want `:lsp-progress-cancel` from a
-        // buffer with no LSP attachment to fire cancels for a
-        // background indexer the user can't see.
-        let allowed: std::collections::HashSet<String> = match server_id {
-            Some(id) => std::iter::once(id.to_string()).collect(),
-            None => {
-                let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned()
-                else {
-                    self.set_message(
-                        EchoLevel::Info,
-                        "lsp-progress-cancel: buffer has no URI".to_string(),
-                    );
-                    return;
-                };
-                self.lsp
-                    .servers_for(&uri)
-                    .into_iter()
-                    .map(|h| h.server_id().to_string())
-                    .collect()
-            }
-        };
-        if allowed.is_empty() {
-            self.set_message(
-                EchoLevel::Info,
-                "lsp-progress-cancel: no attached servers".to_string(),
-            );
-            return;
-        }
-        // Build a map from server_id -> handles once so we don't
-        // walk `running_actors()` per token.
-        let mut handles_by_id: std::collections::HashMap<String, lattice_lsp::ServerHandle> =
-            std::collections::HashMap::new();
-        for (_key, h) in self.lsp.running_actors() {
-            let id = h.server_id().to_string();
-            if allowed.contains(&id) {
-                handles_by_id.insert(id, h);
-            }
-        }
-        let mut sent = 0usize;
-        let mut skipped_non_cancellable = 0usize;
-        for ((sid, token), update) in &self.lsp_progress {
-            if !allowed.contains(sid.as_ref()) {
-                continue;
-            }
-            if !update.cancellable {
-                skipped_non_cancellable += 1;
-                continue;
-            }
-            if matches!(update.kind, lattice_lsp::LspProgressKind::End) {
-                continue;
-            }
-            if let Some(handle) = handles_by_id.get(sid.as_ref()) {
-                let _ = handle.cancel_progress(token);
-                sent += 1;
-            }
-        }
-        let scope = match server_id {
-            Some(id) => format!(" on {id}"),
-            None => String::new(),
-        };
-        if sent == 0 && skipped_non_cancellable == 0 {
-            self.set_message(
-                EchoLevel::Info,
-                format!("lsp-progress-cancel: no active progress{scope}"),
-            );
-        } else {
-            self.set_message(
-                EchoLevel::Info,
-                format!(
-                    "lsp-progress-cancel{scope}: sent {sent}, skipped {skipped_non_cancellable} non-cancellable"
-                ),
-            );
-        }
-    }
-
     /// 4.4.f: per-tick `foldingRange` pump. Only fires when:
     /// - `:set foldmethod=lsp` is active for the buffer, AND
     /// - `lsp-folding-mode` is enabled, AND
@@ -4206,21 +4134,19 @@ impl App {
         }
     }
 
-    /// 4.4.f: is `lsp-folding-mode` active on `buffer_id`?
-    /// Gates the per-tick `foldingRange` pump and the
-    /// `FoldMethod::Lsp` recompute branch.
-    pub fn lsp_folding_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspFoldingMode::mode_id(),
-        )
-    }
-
-    /// 4.4.e: per-tick `documentHighlight` pump. Fires a fresh
-    /// request when the cursor moves to a different (line, byte)
-    /// from the prior issue point; cancels any in-flight
-    /// predecessor so a slow server can't paint a stale highlight
-    /// over a moved cursor.
+    /// 4.4.e: per-tick `documentHighlight` pump. Compares the
+    /// current cursor against the cache anchor; when they
+    /// differ AND the sub-mode is on AND the buffer has an
+    /// attached server advertising the capability, fires a
+    /// fresh request (cancelling any in-flight). The drain
+    /// (`drain_pending_document_highlight`) seats the response
+    /// into `lsp_document_highlights`.
+    ///
+    /// Self-cancelling: the cursor moves faster than the
+    /// network round-trip during a `/word` search, so the
+    /// `CancellationToken` invalidates every in-flight request
+    /// the moment the next one fires. Only the latest response
+    /// ever lands in the cache.
     pub fn maybe_request_document_highlight(&mut self) {
         if !self.lsp_document_highlight_mode_enabled_for(self.document_buffer_id) {
             // Mode off: clear stale state so the overlay
@@ -4611,6 +4537,90 @@ impl App {
                     "lsp-expand-region: server returned no ranges".to_string(),
                 );
             }
+        }
+    }
+
+    /// active progress entry (4.4.c). With `server_id == Some`,
+    /// cancel only entries on that server; with `None`, cancel
+    /// across every server attached to the current buffer.
+    ///
+    /// The entry stays in the accumulator until the server sends
+    /// the `end` progress notification — `cancel` is best-effort
+    /// per spec, and the server may decline.
+    pub fn do_lsp_progress_cancel(&mut self, server_id: Option<&str>) {
+        // Filter to attached servers when no explicit server is
+        // given: we don't want `:lsp-progress-cancel` from a
+        // buffer with no LSP attachment to fire cancels for a
+        // background indexer the user can't see.
+        let allowed: std::collections::HashSet<String> = match server_id {
+            Some(id) => std::iter::once(id.to_string()).collect(),
+            None => {
+                let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned()
+                else {
+                    self.set_message(
+                        EchoLevel::Info,
+                        "lsp-progress-cancel: buffer has no URI".to_string(),
+                    );
+                    return;
+                };
+                self.lsp
+                    .servers_for(&uri)
+                    .into_iter()
+                    .map(|h| h.server_id().to_string())
+                    .collect()
+            }
+        };
+        if allowed.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                "lsp-progress-cancel: no attached servers".to_string(),
+            );
+            return;
+        }
+        // Build a map from server_id -> handles once so we don't
+        // walk `running_actors()` per token.
+        let mut handles_by_id: std::collections::HashMap<String, lattice_lsp::ServerHandle> =
+            std::collections::HashMap::new();
+        for (_key, h) in self.lsp.running_actors() {
+            let id = h.server_id().to_string();
+            if allowed.contains(&id) {
+                handles_by_id.insert(id, h);
+            }
+        }
+        let mut sent = 0usize;
+        let mut skipped_non_cancellable = 0usize;
+        for ((sid, token), update) in &self.lsp_progress {
+            if !allowed.contains(sid.as_ref()) {
+                continue;
+            }
+            if !update.cancellable {
+                skipped_non_cancellable += 1;
+                continue;
+            }
+            if matches!(update.kind, lattice_lsp::LspProgressKind::End) {
+                continue;
+            }
+            if let Some(handle) = handles_by_id.get(sid.as_ref()) {
+                let _ = handle.cancel_progress(token);
+                sent += 1;
+            }
+        }
+        let scope = match server_id {
+            Some(id) => format!(" on {id}"),
+            None => String::new(),
+        };
+        if sent == 0 && skipped_non_cancellable == 0 {
+            self.set_message(
+                EchoLevel::Info,
+                format!("lsp-progress-cancel: no active progress{scope}"),
+            );
+        } else {
+            self.set_message(
+                EchoLevel::Info,
+                format!(
+                    "lsp-progress-cancel{scope}: sent {sent}, skipped {skipped_non_cancellable} non-cancellable"
+                ),
+            );
         }
     }
 
@@ -5013,6 +5023,7 @@ mod tests {
             .activate_minor(
                 &mut active,
                 &mut locals,
+                &a.config,
                 proto_id,
                 lattice_lsp::modes::LspMode::mode_id(),
                 lattice_mode::CapabilitySet::empty(),
@@ -5263,6 +5274,168 @@ mod tests {
     fn app_to_lsp_position_returns_none_for_out_of_range_line() {
         let buf = lattice_core::Buffer::from_text("only-one-line\n");
         assert!(super::app_to_lsp_position(&buf, Position::new(99, 0)).is_none());
+    }
+
+    /// 4.4.e: flatten LSP linked-list `SelectionRange` into a
+    /// `Vec<Range>` ordered innermost-first.
+    #[test]
+    fn flatten_selection_range_chain_walks_parent_links() {
+        let outer = lsp_types::SelectionRange {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: 0, character: 0 },
+                end: lsp_types::Position { line: 5, character: 0 },
+            },
+            parent: None,
+        };
+        let middle = lsp_types::SelectionRange {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: 1, character: 0 },
+                end: lsp_types::Position { line: 3, character: 0 },
+            },
+            parent: Some(Box::new(outer)),
+        };
+        let inner = lsp_types::SelectionRange {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: 2, character: 0 },
+                end: lsp_types::Position { line: 2, character: 8 },
+            },
+            parent: Some(Box::new(middle)),
+        };
+        let flat = crate::app::flatten_selection_range_chain(&inner);
+        assert_eq!(flat.len(), 3);
+        assert_eq!(flat[0].start.line, 2); // innermost
+        assert_eq!(flat[1].start.line, 1);
+        assert_eq!(flat[2].start.line, 0); // outermost
+    }
+
+    /// 4.4.f: an LSP `FoldingRange` converts to our `Fold`
+    /// with start/end lines copied verbatim, `closed = false`
+    /// (the carry-over path in `recompute_folds` re-closes
+    /// matching entries), and a stable identity hash.
+    #[test]
+    fn folding_range_to_fold_preserves_extents_and_keys_identity() {
+        let r = lsp_types::FoldingRange {
+            start_line: 2,
+            end_line: 5,
+            start_character: None,
+            end_character: None,
+            kind: Some(lsp_types::FoldingRangeKind::Comment),
+            collapsed_text: None,
+        };
+        let f = crate::app::folding_range_to_fold(r.clone());
+        assert_eq!(f.start_line, 2);
+        assert_eq!(f.end_line, 5);
+        assert!(!f.closed);
+        assert!(f.identity.is_some());
+
+        // Same shape -> same identity, so closed-state survives
+        // re-fetches.
+        let f2 = crate::app::folding_range_to_fold(r);
+        assert_eq!(f.identity, f2.identity);
+
+        // Different end-line -> different identity.
+        let r3 = lsp_types::FoldingRange {
+            start_line: 2,
+            end_line: 9,
+            start_character: None,
+            end_character: None,
+            kind: Some(lsp_types::FoldingRangeKind::Comment),
+            collapsed_text: None,
+        };
+        let f3 = crate::app::folding_range_to_fold(r3);
+        assert_ne!(f.identity, f3.identity);
+    }
+
+    /// 4.4.f: activating `lsp-folding-mode` swaps `foldmethod`
+    /// to `lsp` and stashes the prior value (via the mode's
+    /// `BufferLocal<PriorFoldmethod>`); deactivating restores
+    /// the stash. The mode owns this work via its hand-written
+    /// `Mode::on_activate` / `on_deactivate` impls -- the App
+    /// is purely an orchestrator that calls
+    /// `toggle_mode_by_name` and drains the resulting option
+    /// cascade.
+    #[test]
+    fn lsp_folding_mode_toggle_syncs_foldmethod() {
+        use lattice_core::FoldMethod;
+        let mut app = app_with("fn a() {}\n", 5);
+        app.set_foldmethod_for_test(FoldMethod::Syntax);
+        assert_eq!(app.foldmethod(), FoldMethod::Syntax);
+        // Make sure the mode is currently off (test-app starts
+        // without LSP attached, so the cascade hasn't fired).
+        if app.lsp_folding_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-folding-mode");
+        }
+        // Activate -> mode swaps foldmethod to Lsp and stashes
+        // Syntax in its buffer-local.
+        app.toggle_mode_by_name("lsp-folding-mode");
+        assert!(app.lsp_folding_mode_enabled_for(app.document_buffer_id));
+        assert_eq!(app.foldmethod(), FoldMethod::Lsp);
+        let stash = app
+            .buffer_locals
+            .get(&app.document_buffer_id)
+            .and_then(|l| l.get::<lattice_lsp::folding_sync::PriorFoldmethod>())
+            .map(|p| p.0);
+        assert_eq!(stash, Some(FoldMethod::Syntax));
+        // Deactivate -> foldmethod restores; stash cleared.
+        app.toggle_mode_by_name("lsp-folding-mode");
+        assert!(!app.lsp_folding_mode_enabled_for(app.document_buffer_id));
+        assert_eq!(app.foldmethod(), FoldMethod::Syntax);
+        let stash_after = app
+            .buffer_locals
+            .get(&app.document_buffer_id)
+            .and_then(|l| l.get::<lattice_lsp::folding_sync::PriorFoldmethod>());
+        assert!(stash_after.is_none(), "stash should clear on deactivate");
+    }
+
+    /// 4.4.f: a seeded `lsp_folds_cache` makes `recompute_folds`
+    /// pick up the LSP fold list when `:set foldmethod=lsp`.
+    #[test]
+    fn recompute_folds_with_foldmethod_lsp_reads_cache() {
+        use lattice_core::FoldMethod;
+        let mut app = app_with("fn a() {}\nfn b() {}\nfn c() {}\n", 5);
+        app.set_foldmethod_for_test(FoldMethod::Lsp);
+        let fold = crate::app::folding_range_to_fold(lsp_types::FoldingRange {
+            start_line: 0,
+            end_line: 1,
+            start_character: None,
+            end_character: None,
+            kind: None,
+            collapsed_text: None,
+        });
+        app.lsp_folds_cache.insert(
+            app.document_buffer_id,
+            crate::app::LspFoldsCache {
+                document_version: app.document.snapshot().version,
+                folds: vec![fold],
+            },
+        );
+        // Force `lsp-folding-mode` on so the cache is read
+        // (the M.6.0 cascade may have left it off in test
+        // setup).
+        if !app.lsp_folding_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-folding-mode");
+        }
+        app.recompute_folds();
+        assert!(
+            app.folds.iter().any(|f| f.start_line == 0 && f.end_line == 1),
+            "expected LSP fold from cache; got {:?}",
+            app.folds,
+        );
+    }
+
+    /// 4.4.e: cursor on the start-character of a range is
+    /// "inside" (half-open); cursor on `end` is outside.
+    #[test]
+    fn cursor_inside_range_is_half_open() {
+        let r = lsp_types::Range {
+            start: lsp_types::Position { line: 1, character: 4 },
+            end: lsp_types::Position { line: 1, character: 8 },
+        };
+        assert!(crate::app::cursor_inside_range(Position::new(1, 4), &r));
+        assert!(crate::app::cursor_inside_range(Position::new(1, 6), &r));
+        assert!(!crate::app::cursor_inside_range(Position::new(1, 8), &r));
+        assert!(!crate::app::cursor_inside_range(Position::new(0, 6), &r));
+        assert!(!crate::app::cursor_inside_range(Position::new(2, 6), &r));
     }
 
     fn fake_uri(path: &str) -> lsp_types::Uri {
@@ -6953,6 +7126,64 @@ mod tests {
         assert!(msg.text.contains("totally-fake-server-name"));
     }
 
+    /// 4.4.c: a Begin+Report+End sequence on the typed event
+    /// stream lands in `app.lsp_progress`, gets updated, and is
+    /// removed at End.
+    #[test]
+    fn lsp_progress_drain_accumulates_lifecycle() {
+        let mut app = app_with("hi\n", 5);
+        let server: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        app.event_bus
+            .publish_typed(lattice_lsp::LspProgressUpdate {
+                server_id: server.clone(),
+                token: "build-1".into(),
+                kind: lattice_lsp::LspProgressKind::Begin,
+                title: Some("Building".into()),
+                message: None,
+                percentage: Some(0),
+                cancellable: true,
+            });
+        app.drain_lsp_progress_events();
+        let key = (server.clone(), "build-1".to_string());
+        let entry = app.lsp_progress.get(&key).expect("begin landed");
+        assert_eq!(entry.title.as_deref(), Some("Building"));
+        assert_eq!(entry.percentage, Some(0));
+
+        // Report without restating the title -- the drain merges
+        // with the existing entry's title.
+        app.event_bus
+            .publish_typed(lattice_lsp::LspProgressUpdate {
+                server_id: server.clone(),
+                token: "build-1".into(),
+                kind: lattice_lsp::LspProgressKind::Report,
+                title: None,
+                message: Some("linking".into()),
+                percentage: Some(73),
+                cancellable: true,
+            });
+        app.drain_lsp_progress_events();
+        let entry = app.lsp_progress.get(&key).expect("report landed");
+        assert_eq!(entry.title.as_deref(), Some("Building"));
+        assert_eq!(entry.message.as_deref(), Some("linking"));
+        assert_eq!(entry.percentage, Some(73));
+
+        app.event_bus
+            .publish_typed(lattice_lsp::LspProgressUpdate {
+                server_id: server.clone(),
+                token: "build-1".into(),
+                kind: lattice_lsp::LspProgressKind::End,
+                title: None,
+                message: None,
+                percentage: None,
+                cancellable: false,
+            });
+        app.drain_lsp_progress_events();
+        assert!(
+            app.lsp_progress.get(&key).is_none(),
+            "End should remove the entry"
+        );
+    }
+
     #[test]
     fn lsp_status_with_no_servers_renders_placeholder() {
         let mut app = app_with("hi\n", 5);
@@ -7029,6 +7260,118 @@ mod tests {
         assert_eq!(app.lsp_logger.snapshot_server(&id).len(), 1);
         app.do_lsp_log_clear(Some("rust"));
         assert_eq!(app.lsp_logger.snapshot_server(&id).len(), 0);
+    }
+
+    /// 4.4.b: show-document drain on a `file://` URI opens the
+    /// path via the same edit path `:e` uses; the response
+    /// oneshot resolves with `success: true`.
+    #[test]
+    fn show_document_file_uri_opens_buffer_and_replies_success() {
+        use std::str::FromStr;
+        let tmp_dir = std::env::temp_dir();
+        let file_path = tmp_dir.join("lattice-4-4-b-show-document.rs");
+        std::fs::write(&file_path, "fn main() {}\n").unwrap();
+        let uri = lattice_lsp::Uri::from_str(&format!(
+            "file://{}",
+            file_path.display()
+        ))
+        .unwrap();
+
+        let mut app = app_with("hi\n", 5);
+        let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
+        let bus_sender =
+            app.pending_show_document_rx.take().unwrap();
+        // Re-push back so the App drain can consume it.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(lattice_lsp::InboundShowDocument {
+            server_id: std::sync::Arc::from("rust"),
+            uri,
+            external: false,
+            take_focus: true,
+            selection: None,
+            response: response_tx,
+        })
+        .unwrap();
+        app.pending_show_document_rx = Some(rx);
+        drop(bus_sender); // discard the boot-time receiver
+
+        app.drain_inbound_show_documents();
+        let outcome = response_rx.try_recv().expect("reply landed");
+        assert!(outcome.success);
+        // The active document should now reflect the opened
+        // file (path matches).
+        let snap = app.document.snapshot();
+        assert_eq!(snap.path(), Some(file_path.as_ref()));
+        let _ = std::fs::remove_file(&file_path);
+    }
+
+    /// 4.4.b: non-file URI without `external` is refused
+    /// (we don't know how to surface http* in a buffer).
+    #[test]
+    fn show_document_refuses_non_file_uri_without_external() {
+        use std::str::FromStr;
+        let uri = lattice_lsp::Uri::from_str("https://example.com/x").unwrap();
+        let mut app = app_with("hi\n", 5);
+        let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(lattice_lsp::InboundShowDocument {
+            server_id: std::sync::Arc::from("rust"),
+            uri,
+            external: false,
+            take_focus: false,
+            selection: None,
+            response: response_tx,
+        })
+        .unwrap();
+        app.pending_show_document_rx = Some(rx);
+        app.drain_inbound_show_documents();
+        let outcome = response_rx.try_recv().expect("reply landed");
+        assert!(!outcome.success);
+    }
+
+    /// 4.4.b: showMessageRequest drain auto-dismisses (replies
+    /// `None`), surfaces the prompt to the minibuffer with the
+    /// matching severity, and records the request in the LSP
+    /// log so the user can review what the server asked.
+    #[test]
+    fn show_message_request_logs_and_auto_dismisses() {
+        let mut app = app_with("hi\n", 5);
+        let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(lattice_lsp::InboundShowMessageRequest {
+            server_id: server_id.clone(),
+            level: lsp_types::MessageType::INFO,
+            message: "Reload workspace?".into(),
+            actions: vec![
+                lsp_types::MessageActionItem {
+                    title: "Yes".into(),
+                    properties: Default::default(),
+                },
+                lsp_types::MessageActionItem {
+                    title: "No".into(),
+                    properties: Default::default(),
+                },
+            ],
+            response: response_tx,
+        })
+        .unwrap();
+        app.pending_show_message_request_rx = Some(rx);
+        app.drain_inbound_show_message_requests();
+        let outcome = response_rx.try_recv().expect("reply landed");
+        assert!(outcome.selected.is_none(), "auto-dismiss = None");
+        // Minibuffer surfaces the prompt + action labels.
+        let msg = app.last_message.as_ref().expect("minibuffer set");
+        assert!(msg.text.contains("Reload workspace?"));
+        assert!(msg.text.contains("Yes"));
+        assert!(msg.text.contains("No"));
+        // LSP log records the request.
+        let records = app.lsp_logger.snapshot_server(&server_id);
+        assert!(
+            records
+                .iter()
+                .any(|r| r.message.contains("showMessageRequest"))
+        );
     }
 
     #[test]
@@ -7502,127 +7845,6 @@ mod tests {
         assert!(app.picker.is_none());
         let msg = app.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no diagnostics"));
-    }
-
-    /// 4.4.e: flatten LSP linked-list `SelectionRange` into a
-    /// `Vec<Range>` ordered innermost-first.
-    #[test]
-    fn flatten_selection_range_chain_walks_parent_links() {
-        let outer = lsp_types::SelectionRange {
-            range: lsp_types::Range {
-                start: lsp_types::Position { line: 0, character: 0 },
-                end: lsp_types::Position { line: 5, character: 0 },
-            },
-            parent: None,
-        };
-        let middle = lsp_types::SelectionRange {
-            range: lsp_types::Range {
-                start: lsp_types::Position { line: 1, character: 0 },
-                end: lsp_types::Position { line: 3, character: 0 },
-            },
-            parent: Some(Box::new(outer)),
-        };
-        let inner = lsp_types::SelectionRange {
-            range: lsp_types::Range {
-                start: lsp_types::Position { line: 2, character: 0 },
-                end: lsp_types::Position { line: 2, character: 8 },
-            },
-            parent: Some(Box::new(middle)),
-        };
-        let flat = crate::app::flatten_selection_range_chain(&inner);
-        assert_eq!(flat.len(), 3);
-        assert_eq!(flat[0].start.line, 2); // innermost
-        assert_eq!(flat[1].start.line, 1);
-        assert_eq!(flat[2].start.line, 0); // outermost
-    }
-
-    /// 4.4.f: an LSP `FoldingRange` converts to our `Fold`
-    /// with start/end lines copied verbatim, `closed = false`
-    /// (the carry-over path in `recompute_folds` re-closes
-    /// matching entries), and a stable identity hash.
-    #[test]
-    fn folding_range_to_fold_preserves_extents_and_keys_identity() {
-        let r = lsp_types::FoldingRange {
-            start_line: 2,
-            end_line: 5,
-            start_character: None,
-            end_character: None,
-            kind: Some(lsp_types::FoldingRangeKind::Comment),
-            collapsed_text: None,
-        };
-        let f = crate::app::folding_range_to_fold(r.clone());
-        assert_eq!(f.start_line, 2);
-        assert_eq!(f.end_line, 5);
-        assert!(!f.closed);
-        assert!(f.identity.is_some());
-
-        // Same shape -> same identity, so closed-state survives
-        // re-fetches.
-        let f2 = crate::app::folding_range_to_fold(r);
-        assert_eq!(f.identity, f2.identity);
-
-        // Different end-line -> different identity.
-        let r3 = lsp_types::FoldingRange {
-            start_line: 2,
-            end_line: 9,
-            start_character: None,
-            end_character: None,
-            kind: Some(lsp_types::FoldingRangeKind::Comment),
-            collapsed_text: None,
-        };
-        let f3 = crate::app::folding_range_to_fold(r3);
-        assert_ne!(f.identity, f3.identity);
-    }
-
-    /// 4.4.f: a seeded `lsp_folds_cache` makes `recompute_folds`
-    /// pick up the LSP fold list when `:set foldmethod=lsp`.
-    #[test]
-    fn recompute_folds_with_foldmethod_lsp_reads_cache() {
-        use lattice_core::FoldMethod;
-        let mut app = app_with("fn a() {}\nfn b() {}\nfn c() {}\n", 5);
-        app.set_foldmethod_for_test(FoldMethod::Lsp);
-        let fold = crate::app::folding_range_to_fold(lsp_types::FoldingRange {
-            start_line: 0,
-            end_line: 1,
-            start_character: None,
-            end_character: None,
-            kind: None,
-            collapsed_text: None,
-        });
-        app.lsp_folds_cache.insert(
-            app.document_buffer_id,
-            crate::app::LspFoldsCache {
-                document_version: app.document.snapshot().version,
-                folds: vec![fold],
-            },
-        );
-        // Force `lsp-folding-mode` on so the cache is read
-        // (the M.6.0 cascade may have left it off in test
-        // setup).
-        if !app.lsp_folding_mode_enabled_for(app.document_buffer_id) {
-            app.toggle_mode_by_name("lsp-folding-mode");
-        }
-        app.recompute_folds();
-        assert!(
-            app.folds.iter().any(|f| f.start_line == 0 && f.end_line == 1),
-            "expected LSP fold from cache; got {:?}",
-            app.folds,
-        );
-    }
-
-    /// 4.4.e: cursor on the start-character of a range is
-    /// "inside" (half-open); cursor on `end` is outside.
-    #[test]
-    fn cursor_inside_range_is_half_open() {
-        let r = lsp_types::Range {
-            start: lsp_types::Position { line: 1, character: 4 },
-            end: lsp_types::Position { line: 1, character: 8 },
-        };
-        assert!(crate::app::cursor_inside_range(Position::new(1, 4), &r));
-        assert!(crate::app::cursor_inside_range(Position::new(1, 6), &r));
-        assert!(!crate::app::cursor_inside_range(Position::new(1, 8), &r));
-        assert!(!crate::app::cursor_inside_range(Position::new(0, 6), &r));
-        assert!(!crate::app::cursor_inside_range(Position::new(2, 6), &r));
     }
 
 }

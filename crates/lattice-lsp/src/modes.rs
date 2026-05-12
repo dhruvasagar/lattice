@@ -224,11 +224,72 @@ lsp_sub_mode!(LspSelectionRangeMode, "lsp-selection-range-mode");
 // stashes the prior value and swaps `foldmethod` to `lsp`;
 // deactivating restores. The toggle command is the bare mode
 // name (`:lsp-folding-mode`); there's no separate `:disable`.
-// Slice 6 ships this as a macro-generated marker mode -- the
-// foldmethod coupling lives on the App side; slice 7 migrates
-// to a hand-written impl that drives the swap through
-// `ModeContext`.
-lsp_sub_mode!(LspFoldingMode, "lsp-folding-mode");
+//
+// Hand-written (not macro-generated) because the lifecycle
+// hooks do real work -- they read the config registry and
+// the buffer-local stash via [`ModeContext`]. Anyone who
+// activates `lsp-folding-mode` -- direct toggle, the
+// `lsp-mode` cascade, a plugin via the registry API -- gets
+// the foldmethod sync for free; the mode is responsible for
+// its own work, not the App.
+pub struct LspFoldingMode;
+
+impl LspFoldingMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("lsp-folding-mode")
+    }
+}
+
+impl Mode for LspFoldingMode {
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
+    fn options(&self) -> OptionOverrideSet {
+        OptionOverrideSet::default()
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn on_activate(
+        &self,
+        ctx: &mut ModeContext<'_>,
+    ) -> Result<(), ModeActivationError> {
+        if let Some(prior) = crate::folding_sync::on_activate(ctx.config()) {
+            // Stash the prior `foldmethod` so deactivate can
+            // restore it. `set_local` enforces the
+            // `OWNER_MODE = "lsp-folding-mode"` rule.
+            //
+            // Idempotent: when this mode is already active and
+            // someone re-activates (the registry's
+            // `activate_minor` short-circuits, so we wouldn't
+            // be here, but be defensive anyway), we DO NOT
+            // overwrite the stash -- the `on_activate` helper
+            // already returned `None` if the option was already
+            // `Lsp`, so reaching this branch means we just did
+            // the swap.
+            ctx.set_local(crate::folding_sync::PriorFoldmethod(prior))?;
+        }
+        Ok(())
+    }
+    fn on_deactivate(
+        &self,
+        ctx: &mut ModeContext<'_>,
+    ) -> Result<(), ModeActivationError> {
+        // Take the stash; restore via the helper. No-op when
+        // the stash is missing (mode was never activated, or
+        // activate skipped the stash because the option was
+        // already `Lsp`).
+        let prior = ctx
+            .remove_local::<crate::folding_sync::PriorFoldmethod>()?;
+        if let Some(p) = prior {
+            crate::folding_sync::on_deactivate(ctx.config(), p.0);
+        }
+        Ok(())
+    }
+}
 
 /// Register every LSP mode (the three log majors, the umbrella
 /// `lsp-mode` minor, and the nine M.6 sub-mode minors) against
@@ -410,10 +471,12 @@ mod tests {
         register_lsp_log_modes(&mut registry);
         let mut active = ActiveModes::new();
         let mut locals = BufferLocals::new();
+        let cfg = lattice_config::ConfigRegistry::new();
         registry
             .activate_minor(
                 &mut active,
                 &mut locals,
+                &cfg,
                 BufferId::new(1),
                 LspMode::mode_id(),
                 CapabilitySet::empty(),

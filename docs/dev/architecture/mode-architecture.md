@@ -365,7 +365,7 @@ pub struct ModeContext<'a> {
 }
 ```
 
-### 5.2 The declarative-only rule
+### 5.2 Modes own their lifecycle work
 
 The trait splits cleanly into two halves:
 
@@ -375,19 +375,62 @@ The trait splits cleanly into two halves:
   mode, applies these to the layer stack on activation and
   removes them on deactivation. A mode can never "leak"
   contributions past its lifetime by construction.
-- **Lifecycle hooks** (`on_activate`, `on_deactivate`) are for
-  side effects only -- spawning a server connection, opening
-  a file watcher, allocating a buffer-side cache. They receive
-  a *read-only* `ModeContext`. They cannot mutate the config
-  registry, the keymap registry, or another mode's state.
+- **Lifecycle hooks** (`on_activate`, `on_deactivate`) are
+  where modes do their imperative work — swapping coupled
+  options, spawning a server connection, opening a file
+  watcher, allocating a buffer-side cache. They receive a
+  `ModeContext` carrying the buffer id, the active mode id,
+  the buffer's typed-local map, and **the shared
+  `ConfigRegistry`** (Phase 1 / 4.4.f extension). The mode
+  can mutate options through `ctx.config()`; option changes
+  publish on the typed-options channel and the App's drain
+  picks up the side-effect cascade (option cache recompute,
+  `recompute_folds` for `foldmethod`, theme refresh for
+  `ui.*`, ...) when the activation returns.
 
-Why this matters: it makes the user-facing toggle / reload
-contract (§9.6) clean by construction. `:disable
-lsp-diagnostics-mode` removes every override the mode
-contributed, because the registry owns them and the mode has no
-way to install state outside the registry's view. Going around
-the override system is impossible by API design, not by
-convention.
+  Constraint that still holds: the hook may NOT mutate
+  *another* mode's state. Cross-mode writes through
+  `ctx.set_local` are rejected by the `OWNER_MODE` rule.
+  Cross-mode option clobbering is uncoupled by the
+  layer-stack mechanism — each mode contributes options
+  through its `options()` declarative output, and the
+  registry merges; hooks should only mutate options when
+  the mode and the option are inherently coupled (e.g.
+  `lsp-folding-mode` ⇔ `foldmethod=lsp`).
+
+**Why this matters: renderer-agnostic activation.** A TUI
+host (`lattice-ui-tui::App`) and a future GPUI host should
+both call `registry.activate_minor(...)` and get identical
+side effects. The mode is responsible for its own work; the
+App is just the orchestrator that holds the handles
+(`ConfigRegistry`, `BufferLocals`, event bus once Phase 2
+lands, service handles once Phase 3 lands) and feeds them
+to the registry. New activation paths (plugin API,
+programmatic trigger, cascade) get the mode's behaviour for
+free because everything funnels through `Mode::on_activate`.
+
+**Reload semantics** (§9.6) stay clean by the same
+construction: `:lsp-diagnostics-mode` (toggle off) deactivates
+the mode, which removes every override the mode contributed
+*and* runs `on_deactivate` to undo any option swaps the
+mode performed in its `on_activate`.
+
+#### Migration phases
+
+The `ModeContext` extension is staged so each phase touches
+a smaller blast radius:
+
+- **Phase 1** (4.4.f) — `ConfigRegistry` exposed via
+  `ctx.config()`. `LspFoldingMode` migrated to own its
+  `foldmethod=lsp` swap.
+- **Phase 2** (queued) — typed event bus exposed via
+  `ctx.events()`. `LspMode` will migrate to publish
+  `LspBufferAttached` / `LspBufferDetached` from its
+  hand-written hooks.
+- **Phase 3** (queued) — typed service registry exposed via
+  `ctx.service::<LspSupervisorHandle>()`. `LspMode`'s
+  `didClose` cascade and cross-mode cascade trigger will
+  migrate, eliminating the App-side `on_lsp_mode_*` hooks.
 
 `OptionOverrideSet` is a type-checked bag built via macro (§6.4
 shows the syntax). Each entry pairs an option type with a value

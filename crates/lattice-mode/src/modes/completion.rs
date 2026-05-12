@@ -293,10 +293,12 @@ mod tests {
             .expect("register completion-popup-mode");
         let mut active = ActiveModes::new();
         let mut locals = BufferLocals::new();
+        let cfg = lattice_config::ConfigRegistry::new();
         registry
             .activate_minor(
                 &mut active,
                 &mut locals,
+                &cfg,
                 BufferId::new(0),
                 CompletionMode::mode_id(),
                 CapabilitySet::empty(),
@@ -306,6 +308,7 @@ mod tests {
             .activate_minor(
                 &mut active,
                 &mut locals,
+                &cfg,
                 BufferId::new(0),
                 CompletionPopupMode::mode_id(),
                 CapabilitySet::empty(),

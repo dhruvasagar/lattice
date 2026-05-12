@@ -828,6 +828,7 @@ impl App {
             let _ = self.mode_registry.activate_minor(
                 &mut active,
                 &mut locals,
+                &self.config,
                 proto_id,
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -836,6 +837,7 @@ impl App {
             let _ = self.mode_registry.deactivate_minor(
                 &mut active,
                 &mut locals,
+                &self.config,
                 proto_id,
                 mode_id,
             );

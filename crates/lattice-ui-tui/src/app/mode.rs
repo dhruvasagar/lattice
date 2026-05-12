@@ -92,6 +92,7 @@ impl App {
         match self.mode_registry.activate_major(
             &mut active,
             &mut locals,
+            &self.config,
             proto_id,
             major_id,
             // Capability set: M.3.1 doesn't yet plumb per-buffer
@@ -125,6 +126,7 @@ impl App {
             if let Err(e) = self.mode_registry.activate_minor(
                 &mut active,
                 &mut locals,
+                &self.config,
                 proto_id,
                 minor_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -147,6 +149,7 @@ impl App {
             if let Err(e) = self.mode_registry.activate_minor(
                 &mut active,
                 &mut locals,
+                &self.config,
                 proto_id,
                 minor_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -247,6 +250,7 @@ impl App {
             ModeKind::Major => self.mode_registry.activate_major(
                 &mut active,
                 &mut locals,
+                &self.config,
                 proto_id,
                 mode_id,
                 CapabilitySet::empty(),
@@ -254,6 +258,7 @@ impl App {
             ModeKind::Minor => self.mode_registry.activate_minor(
                 &mut active,
                 &mut locals,
+                &self.config,
                 proto_id,
                 mode_id,
                 CapabilitySet::empty(),
@@ -287,6 +292,15 @@ impl App {
         if mode_id == lattice_lsp::modes::LspMode::mode_id() {
             self.on_lsp_mode_activated(buffer_id);
         }
+        // Modes that mutated options in their `on_activate`
+        // (e.g. `lsp-folding-mode` swapping `foldmethod=lsp`)
+        // have already published `OptionChanged` events into
+        // the typed-options channel. Drain here so the
+        // side-effect cascade (option cache recompute,
+        // `recompute_folds` for foldmethod, theme refresh for
+        // `ui.*`, ...) runs synchronously before the caller
+        // observes the post-activation state.
+        self.drain_option_changes();
     }
 
     /// M.5.1: programmatic deactivation of `mode_id` on
@@ -310,11 +324,13 @@ impl App {
             ModeKind::Major => self.mode_registry.deactivate_major(
                 &mut active,
                 &mut locals,
+                &self.config,
                 proto_id,
             ),
             ModeKind::Minor => self.mode_registry.deactivate_minor(
                 &mut active,
                 &mut locals,
+                &self.config,
                 proto_id,
                 mode_id,
             ),
@@ -337,6 +353,12 @@ impl App {
         if mode_id == lattice_lsp::modes::LspMode::mode_id() {
             self.on_lsp_mode_deactivated(buffer_id);
         }
+        // Symmetric to `activate_mode_by_id`: drain option
+        // mutations the mode emitted in its `on_deactivate`
+        // (e.g. `lsp-folding-mode` restoring the prior
+        // `foldmethod`) so the side-effect cascade runs
+        // before the caller observes the state.
+        self.drain_option_changes();
     }
 
     /// M.5.3: lsp-mode activated on `buffer_id`. Emits
@@ -389,6 +411,13 @@ impl App {
         self.deactivate_lsp_sub_modes_for(buffer_id);
     }
 
+    // 4.4.f: `lsp-folding-mode` lifecycle moved into
+    // `LspFoldingMode::on_activate` / `on_deactivate` in
+    // `lattice-lsp`. The mode owns its work; the App is just
+    // the orchestrator. `drain_option_changes()` in the
+    // activate/deactivate call sites picks up the option
+    // mutation the mode emits via `ctx.config()`.
+
     /// M.6.1: activate every LSP sub-mode whose state is currently
     /// inactive on `buffer_id`. Idempotent -- already-active
     /// sub-modes are skipped silently (no echo, no error). Runs
@@ -411,6 +440,13 @@ impl App {
             LspSymbolsMode::mode_id(),
             LspCodeActionMode::mode_id(),
             LspNavMode::mode_id(),
+            // 4.4.c / 4.4.e / 4.4.f -- added to the cascade so
+            // the umbrella activate brings them in alongside
+            // the original nine.
+            LspProgressMode::mode_id(),
+            LspDocumentHighlightMode::mode_id(),
+            LspSelectionRangeMode::mode_id(),
+            LspFoldingMode::mode_id(),
         ];
         for sub_id in sub_mode_ids {
             if active.has_minor(sub_id) {
@@ -425,6 +461,7 @@ impl App {
             let _ = self.mode_registry.activate_minor(
                 &mut active,
                 &mut locals,
+                &self.config,
                 proto_id,
                 sub_id,
                 CapabilitySet::empty(),
@@ -439,6 +476,11 @@ impl App {
         // `gen:lsp-completion` (and its `<C-o>` filter chord)
         // when the LSP server attaches.
         self.recompute_active_completion_sources_for(buffer_id);
+        // Cascade can fire option-mutating `on_activate` hooks
+        // (`lsp-folding-mode` swaps `foldmethod=lsp`). Drain
+        // so the side-effect chain runs before this method
+        // returns.
+        self.drain_option_changes();
     }
 
     /// M.6.1: deactivate every LSP sub-mode currently active on
@@ -459,6 +501,10 @@ impl App {
             LspSymbolsMode::mode_id(),
             LspCodeActionMode::mode_id(),
             LspNavMode::mode_id(),
+            LspProgressMode::mode_id(),
+            LspDocumentHighlightMode::mode_id(),
+            LspSelectionRangeMode::mode_id(),
+            LspFoldingMode::mode_id(),
         ];
         for sub_id in sub_mode_ids {
             if !active.has_minor(sub_id) {
@@ -467,6 +513,7 @@ impl App {
             let _ = self.mode_registry.deactivate_minor(
                 &mut active,
                 &mut locals,
+                &self.config,
                 proto_id,
                 sub_id,
             );
@@ -478,6 +525,10 @@ impl App {
         // `lsp-completion-mode` drops the `gen:lsp-completion`
         // entry from the cache.
         self.recompute_active_completion_sources_for(buffer_id);
+        // Cascade can fire option-mutating `on_deactivate`
+        // hooks (`lsp-folding-mode` restores the prior
+        // `foldmethod`). Drain so the side-effect chain runs.
+        self.drain_option_changes();
     }
 
     /// M.5.1: toggle a mode by name on the active pane's buffer.

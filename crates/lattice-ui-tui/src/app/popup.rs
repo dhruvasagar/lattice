@@ -220,6 +220,7 @@ impl App {
         let _ = self.mode_registry.activate_major(
             &mut active,
             &mut locals,
+            &self.config,
             proto_id,
             lattice_syntax::MarkdownMode::mode_id(),
             lattice_mode::CapabilitySet::empty(),
@@ -227,6 +228,7 @@ impl App {
         let _ = self.mode_registry.activate_minor(
             &mut active,
             &mut locals,
+            &self.config,
             proto_id,
             crate::modes::HoverMode::mode_id(),
             lattice_mode::CapabilitySet::empty(),

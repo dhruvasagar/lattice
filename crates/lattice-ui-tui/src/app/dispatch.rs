@@ -2536,6 +2536,7 @@ mod tests {
             .activate_minor(
                 &mut active,
                 &mut locs,
+                &a.config,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -2570,6 +2571,7 @@ mod tests {
             .activate_minor(
                 &mut active,
                 &mut locs,
+                &a.config,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -2581,6 +2583,7 @@ mod tests {
             .deactivate_minor(
                 &mut active,
                 &mut locs,
+                &a.config,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
             )
@@ -2616,6 +2619,7 @@ mod tests {
             .activate_minor(
                 &mut active,
                 &mut locs,
+                &a.config,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),

@@ -1,26 +1,37 @@
 //! `ModeContext`: the handle passed to
 //! [`crate::Mode::on_activate`] / [`crate::Mode::on_deactivate`].
 //!
-//! Per `mode-architecture.md` §5.2, lifecycle hooks may do side
-//! effects (spawn a server, open a watcher) but must NOT mutate
-//! the config registry, the keymap registry, or another mode's
-//! state. The context API enforces this by exposing only:
+//! Hooks own their own work. Modes that need to mutate options
+//! (e.g. `lsp-folding-mode` swapping `foldmethod=lsp` on
+//! activate) reach the typed-options registry through
+//! [`Self::config`]. Hooks must still leave OTHER modes' state
+//! alone; `BufferLocals` writes go through [`Self::set_local`]
+//! which enforces the [`crate::BufferLocal::OWNER_MODE`] rule.
+//!
+//! Why the context owns these handles (rather than the App):
+//! a mode's activation behaviour shouldn't depend on which
+//! renderer hosts it. A TUI App and a future GPUI App should
+//! both call `registry.activate_minor(...)` and get identical
+//! side effects. So everything a mode needs to do its own work
+//! lives on `ModeContext`.
+//!
+//! Today the context exposes:
 //!
 //! - The [`BufferId`] the activation is operating on.
-//! - The [`ModeId`] of the *current* mode (the one being
-//!   activated / deactivated). Used by
-//!   [`Self::set_local`] to enforce the
-//!   [`crate::BufferLocal::OWNER_MODE`] rule.
+//! - The [`ModeId`] of the current mode.
 //! - A typed-map ([`crate::BufferLocals`]) of buffer-local
 //!   mode-internal data (M.3.2.a, Shape A from
-//!   `mode-architecture.md` §9.4). Modes write their own
-//!   locals here during activation; cross-mode writes are
-//!   rejected with [`crate::ModeActivationError::WrongOwnerMode`].
+//!   `mode-architecture.md` §9.4).
+//! - The shared typed-options registry
+//!   ([`lattice_config::ConfigRegistry`]) -- modes use this to
+//!   set/get options whose values are coupled to the mode's
+//!   active state.
 //!
 //! The borrow lifetime `'a` ties the context to the underlying
-//! `&mut BufferLocals` so the borrow checker prevents the mode
-//! from holding the context past the lifecycle hook's return.
+//! borrows so the borrow checker prevents the mode from
+//! holding the context past the lifecycle hook's return.
 
+use lattice_config::ConfigRegistry;
 use lattice_protocol::ids::BufferId;
 
 use crate::error::ModeActivationError;
@@ -28,15 +39,18 @@ use crate::locals::{BufferLocal, BufferLocals};
 use crate::mode::ModeId;
 
 /// Lifecycle context. Carries the current activation's
-/// metadata + a borrow of the buffer's locals map.
+/// metadata + a borrow of the buffer's locals map +
+/// references to system-wide registries the mode may need to
+/// mutate.
 ///
 /// Borrowed lifetime: a context cannot outlive the
-/// `&mut BufferLocals` it carries. Lifecycle hooks receive
-/// this by `&mut` reference and must not stash it.
+/// references it carries. Lifecycle hooks receive this by
+/// `&mut` reference and must not stash it.
 pub struct ModeContext<'a> {
     buffer_id: BufferId,
     current_mode: ModeId,
     locals: &'a mut BufferLocals,
+    config: &'a ConfigRegistry,
 }
 
 impl<'a> ModeContext<'a> {
@@ -48,12 +62,23 @@ impl<'a> ModeContext<'a> {
         buffer_id: BufferId,
         current_mode: ModeId,
         locals: &'a mut BufferLocals,
+        config: &'a ConfigRegistry,
     ) -> Self {
         Self {
             buffer_id,
             current_mode,
             locals,
+            config,
         }
+    }
+
+    /// Shared typed-options registry. Mutations propagate
+    /// through the registry's `OptionChanged` event stream the
+    /// same way `:set` does, so subscribers (option cache
+    /// recompute, side-effect cascades like `foldmethod ⇒
+    /// recompute_folds`) fire automatically.
+    pub fn config(&self) -> &ConfigRegistry {
+        self.config
     }
 
     /// Buffer the activation is operating on.
@@ -157,14 +182,19 @@ mod tests {
         }
     }
 
-    fn ctx<'a>(mode_name: &str, locals: &'a mut BufferLocals) -> ModeContext<'a> {
-        ModeContext::new(BufferId::new(1), ModeId::new(mode_name), locals)
+    fn ctx<'a>(
+        mode_name: &str,
+        locals: &'a mut BufferLocals,
+        config: &'a ConfigRegistry,
+    ) -> ModeContext<'a> {
+        ModeContext::new(BufferId::new(1), ModeId::new(mode_name), locals, config)
     }
 
     #[test]
     fn buffer_id_and_current_mode_round_trip() {
         let mut locals = BufferLocals::new();
-        let c = ctx("a-mode", &mut locals);
+        let cfg = ConfigRegistry::new();
+        let c = ctx("a-mode", &mut locals, &cfg);
         assert_eq!(c.buffer_id(), BufferId::new(1));
         assert_eq!(c.current_mode().as_str(), "a-mode");
     }
@@ -172,7 +202,8 @@ mod tests {
     #[test]
     fn set_local_succeeds_when_owner_matches() {
         let mut locals = BufferLocals::new();
-        let mut c = ctx("a-mode", &mut locals);
+        let cfg = ConfigRegistry::new();
+        let mut c = ctx("a-mode", &mut locals, &cfg);
         assert!(c.set_local(OwnedByA(42)).is_ok());
         assert_eq!(c.get_local::<OwnedByA>().unwrap().0, 42);
     }
@@ -180,7 +211,8 @@ mod tests {
     #[test]
     fn set_local_fails_when_owner_mismatch() {
         let mut locals = BufferLocals::new();
-        let mut c = ctx("a-mode", &mut locals);
+        let cfg = ConfigRegistry::new();
+        let mut c = ctx("a-mode", &mut locals, &cfg);
         let err = c.set_local(OwnedByB("hi".into())).unwrap_err();
         match err {
             ModeActivationError::WrongOwnerMode {
@@ -200,33 +232,35 @@ mod tests {
     #[test]
     fn get_local_is_unrestricted() {
         let mut locals = BufferLocals::new();
+        let cfg = ConfigRegistry::new();
         // Write as a-mode...
         {
-            let mut c = ctx("a-mode", &mut locals);
+            let mut c = ctx("a-mode", &mut locals, &cfg);
             c.set_local(OwnedByA(7)).unwrap();
         }
         // ...read as b-mode (cross-mode read OK).
-        let c = ctx("b-mode", &mut locals);
+        let c = ctx("b-mode", &mut locals, &cfg);
         assert_eq!(c.get_local::<OwnedByA>().unwrap().0, 7);
     }
 
     #[test]
     fn remove_local_owner_check() {
         let mut locals = BufferLocals::new();
+        let cfg = ConfigRegistry::new();
         {
-            let mut c = ctx("a-mode", &mut locals);
+            let mut c = ctx("a-mode", &mut locals, &cfg);
             c.set_local(OwnedByA(1)).unwrap();
         }
         // Wrong owner: remove fails without removing.
         {
-            let mut c = ctx("b-mode", &mut locals);
+            let mut c = ctx("b-mode", &mut locals, &cfg);
             let err = c.remove_local::<OwnedByA>().unwrap_err();
             assert!(matches!(err, ModeActivationError::WrongOwnerMode { .. }));
         }
         assert!(locals.contains::<OwnedByA>());
         // Correct owner: remove succeeds.
         {
-            let mut c = ctx("a-mode", &mut locals);
+            let mut c = ctx("a-mode", &mut locals, &cfg);
             let removed = c.remove_local::<OwnedByA>().unwrap();
             assert_eq!(removed.unwrap().0, 1);
         }
@@ -236,24 +270,25 @@ mod tests {
     #[test]
     fn get_local_mut_owner_check() {
         let mut locals = BufferLocals::new();
+        let cfg = ConfigRegistry::new();
         {
-            let mut c = ctx("a-mode", &mut locals);
+            let mut c = ctx("a-mode", &mut locals, &cfg);
             c.set_local(OwnedByA(0)).unwrap();
         }
         // Wrong owner: error.
         {
-            let mut c = ctx("b-mode", &mut locals);
+            let mut c = ctx("b-mode", &mut locals, &cfg);
             assert!(c.get_local_mut::<OwnedByA>().is_err());
         }
         // Right owner: in-place mutation.
         {
-            let mut c = ctx("a-mode", &mut locals);
+            let mut c = ctx("a-mode", &mut locals, &cfg);
             c.get_local_mut::<OwnedByA>()
                 .unwrap()
                 .unwrap()
                 .0 = 99;
         }
-        let c = ctx("a-mode", &mut locals);
+        let c = ctx("a-mode", &mut locals, &cfg);
         assert_eq!(c.get_local::<OwnedByA>().unwrap().0, 99);
     }
 }

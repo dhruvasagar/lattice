@@ -720,22 +720,6 @@ pub struct DocumentHighlightCache {
     pub highlights: Vec<lsp_types::DocumentHighlight>,
 }
 
-/// 4.4.e: in-flight `documentHighlight` request outcome.
-#[derive(Debug, Clone)]
-pub enum DocumentHighlightOutcome {
-    Items {
-        buffer_id: BufferId,
-        cursor: Position,
-        highlights: Vec<lsp_types::DocumentHighlight>,
-    },
-    /// Server returned null (cursor not on a known symbol);
-    /// the pump clears the cache so we don't paint stale
-    /// highlights.
-    Empty {
-        buffer_id: BufferId,
-    },
-}
-
 /// 4.4.f: cached `textDocument/foldingRange` response for one
 /// buffer. `document_version` is the buffer's
 /// [`lattice_core::Document`] version at the time the request
@@ -758,6 +742,22 @@ pub enum FoldingRangeOutcome {
     Empty {
         buffer_id: BufferId,
         document_version: u64,
+    },
+}
+
+/// 4.4.e: in-flight `documentHighlight` request outcome.
+#[derive(Debug, Clone)]
+pub enum DocumentHighlightOutcome {
+    Items {
+        buffer_id: BufferId,
+        cursor: Position,
+        highlights: Vec<lsp_types::DocumentHighlight>,
+    },
+    /// Server returned null (cursor not on a known symbol);
+    /// the pump clears the cache so we don't paint stale
+    /// highlights.
+    Empty {
+        buffer_id: BufferId,
     },
 }
 
@@ -1587,6 +1587,11 @@ pub struct App {
     pub pending_folding_range_token: Option<lattice_protocol::CancellationToken>,
     pub pending_folding_range_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<FoldingRangeOutcome>>,
+    // 4.4.f: stash for `lsp-folding-mode` activation moved
+    // into `BufferLocals` (owned by the mode via the
+    // `PriorFoldmethod` typed local in
+    // `lattice_lsp::folding_sync`). Modes own their own
+    // lifecycle state; the App is just the orchestrator.
     // `completion.auto_insert_single` lives on the typed-options
     // registry (`self.config` type-keyed by
     // `lattice_config::CompletionAutoInsertSingle`). Read via

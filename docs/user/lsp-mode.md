@@ -52,7 +52,7 @@ scratch buffers experimenting with a server).
 
 ## Sub-modes (M.6)
 
-`lsp-mode` is the umbrella; nine **sub-modes** turn each LSP
+`lsp-mode` is the umbrella; ten **sub-modes** turn each LSP
 feature on and off independently. When the umbrella activates,
 every sub-mode auto-activates with it (cascade); deactivating
 the umbrella deactivates them all. Between those two extremes,
@@ -71,6 +71,7 @@ too distracting in this file but I still want hover" case.
 | `lsp-symbols-mode`      | `:lsp-symbols` / `:lsp-workspace-symbol`             |
 | `lsp-code-action-mode`  | `:lsp-code-action`                                   |
 | `lsp-nav-mode`          | `gd`/`gD`/`gy`/`gI` definition family + `gr`         |
+| `lsp-progress-mode`     | `$/progress` accumulator + modeline progress segment |
 
 **The umbrella check wins.** When `lsp-mode` is off, the
 echo always says `lsp-mode disabled` -- one

@@ -77,6 +77,7 @@ pub struct ExBuiltins {
     pub lsp_status: ExCommandId,
     pub lsp_server_log: ExCommandId,
     pub lsp_restart: ExCommandId,
+    pub lsp_progress_cancel: ExCommandId,
     pub lsp_log_level: ExCommandId,
     pub lsp_log_clear: ExCommandId,
     pub lsp_symbols: ExCommandId,
@@ -1007,6 +1008,31 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let lsp_progress_cancel = registry.register_ex_command(
+        "ex:lsp-progress-cancel",
+        "Cancel cancellable LSP $/progress operations on the named server (or every server attached to the active buffer if omitted) (`:lsp-progress-cancel [server]`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(s) if !s.trim().is_empty() => Ok(Effect::LspProgressCancel {
+                    server_id: Some(s.trim().to_string()),
+                }),
+                _ => Ok(Effect::LspProgressCancel { server_id: None }),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "server",
+                kind: ArgKind::String,
+                doc: "Optional server id; omit to cancel on every attached server.",
+                prompt: "server:",
+                default: ArgDefault::None,
+                completion: Some("gen:lsp-servers"),
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let lsp_log_level = registry.register_ex_command(
         "ex:lsp-log-level",
         "Set the subsystem-wide default min log level (or a per-server override) (`:lsp-log-level [server] <level>`).",
@@ -1345,6 +1371,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_status,
         lsp_server_log,
         lsp_restart,
+        lsp_progress_cancel,
         lsp_log_level,
         lsp_log_clear,
         lsp_symbols,

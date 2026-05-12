@@ -205,6 +205,14 @@ lsp_sub_mode!(LspRenameMode, "lsp-rename-mode");
 lsp_sub_mode!(LspSymbolsMode, "lsp-symbols-mode");
 lsp_sub_mode!(LspCodeActionMode, "lsp-code-action-mode");
 lsp_sub_mode!(LspNavMode, "lsp-nav-mode");
+// 4.4.c: progress is a workspace-wide concern (one bar per
+// server token, surfaced in the modeline). It's still a per-
+// buffer sub-mode because the activation cascade matches the
+// rest of the LSP family — turning `lsp-mode` off on a buffer
+// quiets every channel, progress included; `:lsp-progress-mode`
+// (toggle) keeps everything else but stops accumulating
+// progress for that buffer.
+lsp_sub_mode!(LspProgressMode, "lsp-progress-mode");
 
 /// Register every LSP mode (the three log majors, the umbrella
 /// `lsp-mode` minor, and the nine M.6 sub-mode minors) against
@@ -252,6 +260,9 @@ pub fn register_lsp_log_modes(registry: &mut ModeRegistry) {
     registry
         .register(LspNavMode)
         .expect("lsp-nav-mode register");
+    registry
+        .register(LspProgressMode)
+        .expect("lsp-progress-mode register");
 }
 
 #[cfg(test)]
@@ -275,6 +286,7 @@ mod tests {
             LspSymbolsMode::mode_id(),
             LspCodeActionMode::mode_id(),
             LspNavMode::mode_id(),
+            LspProgressMode::mode_id(),
         ];
         for (i, a) in ids.iter().enumerate() {
             for b in &ids[i + 1..] {
@@ -303,6 +315,7 @@ mod tests {
         assert!(registry.is_registered(LspSymbolsMode::mode_id()));
         assert!(registry.is_registered(LspCodeActionMode::mode_id()));
         assert!(registry.is_registered(LspNavMode::mode_id()));
+        assert!(registry.is_registered(LspProgressMode::mode_id()));
     }
 
     #[test]
@@ -323,6 +336,7 @@ mod tests {
             &LspSymbolsMode,
             &LspCodeActionMode,
             &LspNavMode,
+            &LspProgressMode,
         ];
         for m in modes {
             assert_eq!(m.kind(), ModeKind::Minor, "{} not minor", m.id());

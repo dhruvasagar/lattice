@@ -47,7 +47,7 @@ Capability columns:
 | `$/setTrace`      | C → S     | 4.4   | ⏹️      | Honours `trace` value from `initialize` for now (we set `Off`); switching dynamically is a 4.4 polish item.                 |
 | `$/logTrace`      | S → C     | 4.4   | ⏹️      | Will route into `:messages` buffer alongside `window/logMessage`.                                                           |
 | `$/cancelRequest` | both      | 4.1   | ✅     | `ServerHandle::cancel(id)` emits the notification + resolves the matching `Pending` with `LspError::Cancelled`.             |
-| `$/progress`      | S → C     | 4.4   | ⏹️      | Currently logged; routed to the modeline progress slot in 4.4.                                                              |
+| `$/progress`      | S → C     | 4.4.c | ✅     | Actor parses the `{token, value{kind,...}}` envelope and publishes `LspProgressUpdate` on the typed bus; the App accumulates by `(server_id, token)` and the modeline LSP segment surfaces the most-recent active entry. `lsp-progress-mode` per-buffer minor gates the modeline render. |
 
 ## Document synchronisation
 
@@ -87,7 +87,7 @@ Capability columns:
 | `workspace/semanticTokens/refresh` | 4.4   | ⏹️      | Invalidate semantic-token cache + re-request.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `workspace/diagnostic/refresh`     | 4.4   | ⏹️      | Re-fetch diagnostics across the workspace (pull-based diagnostics).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `window/workDoneProgress/create`   | 4.1   | ✅     | Accepted with `null` result.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `window/workDoneProgress/cancel`   | 4.4   | ⏹️      | Will cancel a created token's progress; needs the progress map.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `window/workDoneProgress/cancel`   | 4.4.c | ✅     | `ServerHandle::cancel_progress(token)` notifies the server; `:lsp-progress-cancel [server]` cancels cancellable active entries (best-effort -- entries stay in the accumulator until `end`).                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ## Workspace operations
 
@@ -220,7 +220,7 @@ Phase rollup:
 - **4.1** Foundation: **complete**. Wire layer + actor/handshake + sync + diagnostics (broadcast → layer → renderer → buffer view + nav) + logging (rings + tracing fan-out + buffer views + commands) + supervisor + App-side wiring + edit-dispatch + open-on-`:e` all shipped. `workspace/configuration` surfaces real values from the merged user + project TOML tree via the `ConfigurationBus` mpsc + oneshot channel and the `App::drain_inbound_configuration_requests` drain; users place server-namespaced settings under `[lsp.<server-id>]`.
 - **4.2** Navigation: **complete**. ✅ hover (`K`), definition (`gd`), declaration (`gD`), typeDefinition (`gy`), implementation (`gI`), references (`gr`), documentSymbol (`:lsp-symbols`), workspaceSymbol (`:lsp-workspace-symbol`), workspaceSymbol/resolve (eager-resolve at fan-out for LSP 3.17+ Nested-WorkspaceLocation symbols), Insert-mode completion (the full 4.2.g surface: shell + buffer-words + LSP source + docs popup + lazy completionItem/resolve + snippets + frequency / per-source priority / per-language overrides + tree-sitter + path source + commit chars + ghost text + cross-source dedup + typed picker routing). All multi-result lookups + `:diagnostics` route through the unified vertico picker (`PickerSource::LspLocations` + `PickerAction::JumpToLspLocation`); picker routing payload is now typed (`RoutingPayload` enum) so accept dispatch reads variants instead of parsing tab-encoded strings. Tag stack `<C-t>` pops `gd`-family drill-downs LIFO; jump list `<C-o>`/`<C-i>` walks every cursor jump chronologically. The `:complete` picker bridge stays as the cmdline-driven peer of the inline popup.
 - **4.3** Edits: **complete**. formatting + rangeFormatting; signatureHelp + Insert-mode autopilot; rename + prepareRename; willSave / didSave notifications; willSaveWaitUntil format-on-save (500ms per-server bound); codeAction + resolve + executeCommand; onTypeFormatting Insert-mode autopilot; `workspace/applyEdit` (server-initiated) ferries through the `ApplyEditBus` mpsc + per-request oneshot, drained per-frame by `App::drain_inbound_apply_edits`. codeAction Commands keep routing through `executeCommand` (fire-and-forget); applyEdit is the inbound complement servers use after `executeCommand` callbacks.
-- **4.4** Polish: 2/15 -- in progress. 4.4.a (`window/showMessage` + `window/logMessage` + `telemetry/event`) + 4.4.o (`lsp.log_level` + `lsp.log_capacity` typed options seed the logger at boot; `lsp.trace_io` deferred -- runtime `:lsp-trace` covers it for now) shipped.
+- **4.4** Polish: 3/15 -- in progress. 4.4.a (`window/showMessage` + `window/logMessage` + `telemetry/event`) + 4.4.c (`$/progress` accumulator + modeline slot + `window/workDoneProgress/cancel` + `lsp-progress-mode` sub-mode + `:lsp-progress-cancel`) + 4.4.o (`lsp.log_level` + `lsp.log_capacity` typed options seed the logger at boot; `lsp.trace_io` deferred -- runtime `:lsp-trace` covers it for now) shipped.
 - **4.5** Expansion: 0/14 -- queued.
 - **post-1.0**: notebooks + multi-root workspaces.
 
@@ -263,8 +263,18 @@ shut down + respawn an actor and replay `didOpen` to every attached
 buffer. Stays close to the per-actor DocSync work that's fresh in
 mind.
 
-- **4.4.c** -- `$/progress` accumulator + modeline slot +
-  `workDoneProgress/cancel`.
+- **4.4.c** -- ✅ shipped. `$/progress` accumulator (App-side
+  `HashMap<(server_id, token), LspProgressUpdate>` keyed by the
+  begin event; report merges title from begin; end removes the
+  entry). Modeline LSP segment surfaces the highest-percentage
+  active entry for any attached server, with stable tie-breaks so
+  the rendered text doesn't flicker. `ServerHandle::cancel_progress(token)`
+  + `:lsp-progress-cancel [server]` notify the server via
+  `window/workDoneProgress/cancel` for every cancellable active
+  entry on the targeted server (or every attached server when
+  omitted). `lsp-progress-mode` per-buffer minor gates the
+  modeline render (events still flow; bus subscribers still see
+  them).
 - **4.4.d** -- supervisor restart-with-backoff + `:lsp-restart`
   wiring + crash-detection auto-restart (the supervisor's "today
   the actor detects pipe close" comment becomes "and the

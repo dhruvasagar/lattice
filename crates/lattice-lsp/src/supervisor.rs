@@ -362,6 +362,7 @@ impl LspSupervisor {
                         self.logger.clone(),
                         self.apply_edit_bus.clone(),
                         self.configuration_bus.clone(),
+                        self.event_bus.clone(),
                     )
                     .await
                     {

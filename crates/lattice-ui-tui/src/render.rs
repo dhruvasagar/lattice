@@ -2208,7 +2208,71 @@ fn active_lsp_segment(app: &App) -> String {
         return String::new();
     }
     let ids: Vec<&str> = handles.iter().map(|h| h.server_id()).collect();
-    format!("[lsp:{}]", ids.join("+"))
+    let base = format!("[lsp:{}]", ids.join("+"));
+    // 4.4.c: append a progress segment when `lsp-progress-mode`
+    // is on and the supervisor has an active progress entry for
+    // one of the buffer's attached servers. The accumulator is
+    // keyed by (server_id, token); we pick the entry whose
+    // server is attached to this buffer. Stable selection: take
+    // the highest-percentage active entry, breaking ties by
+    // server-id then token so the modeline doesn't flicker
+    // between equal candidates frame-to-frame.
+    if !app.lsp_progress_mode_enabled_for(app.document_buffer_id) {
+        return base;
+    }
+    let attached: std::collections::HashSet<&str> = ids.iter().copied().collect();
+    let mut best: Option<&lattice_lsp::LspProgressUpdate> = None;
+    for ((sid, _tok), update) in &app.lsp_progress {
+        if !attached.contains(sid.as_ref()) {
+            continue;
+        }
+        if matches!(update.kind, lattice_lsp::LspProgressKind::End) {
+            continue;
+        }
+        best = match best {
+            None => Some(update),
+            Some(cur) => {
+                let cur_key = (
+                    cur.percentage.unwrap_or(0),
+                    cur.server_id.as_ref(),
+                    cur.token.as_str(),
+                );
+                let new_key = (
+                    update.percentage.unwrap_or(0),
+                    update.server_id.as_ref(),
+                    update.token.as_str(),
+                );
+                if new_key > cur_key {
+                    Some(update)
+                } else {
+                    Some(cur)
+                }
+            }
+        };
+    }
+    let Some(p) = best else {
+        return base;
+    };
+    let mut detail = String::new();
+    if let Some(title) = &p.title {
+        detail.push_str(title);
+    }
+    if let Some(msg) = &p.message {
+        if !detail.is_empty() {
+            detail.push_str(": ");
+        }
+        detail.push_str(msg);
+    }
+    if let Some(pct) = p.percentage {
+        if !detail.is_empty() {
+            detail.push(' ');
+        }
+        detail.push_str(&format!("{pct}%"));
+    }
+    if detail.is_empty() {
+        detail.push_str(&p.token);
+    }
+    format!("{base} [{detail}]")
 }
 
 fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {

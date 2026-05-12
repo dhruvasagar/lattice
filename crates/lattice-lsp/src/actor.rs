@@ -259,6 +259,23 @@ impl ServerHandle {
             .map_err(|_| LspError::ActorGone)
     }
 
+    /// Cancel an in-flight server-side `$/progress` operation
+    /// (LSP §3.16 `window/workDoneProgress/cancel`). The server
+    /// is asked to wind down the work tied to `token`; whether
+    /// it complies is server-specific. The host treats the
+    /// cancel as best-effort — the modeline keeps the entry
+    /// until an `end` progress notification arrives.
+    pub fn cancel_progress(&self, token: &str) -> LspResult<()> {
+        // Wire shape: { "token": <number | string> }. We always
+        // serialise as a string here; that's the canonical
+        // representation the host uses to key its accumulator,
+        // and servers accept either form.
+        self.notify(
+            "window/workDoneProgress/cancel",
+            serde_json::json!({ "token": token }),
+        )
+    }
+
     /// Cancel a pending request by JSON-RPC numeric id (LSP
     /// `$/cancelRequest`). The actor sends the cancel
     /// notification and resolves the matching pending oneshot
@@ -412,6 +429,7 @@ pub async fn spawn(
     logger: LspLogger,
     apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
     configuration_bus: Option<crate::configuration::ConfigurationBus>,
+    event_bus: Option<Arc<lattice_runtime::EventBus>>,
 ) -> LspResult<ServerHandle> {
     let transport = ChildTransport::spawn(&config.binary, &config.args, Some(&workspace_root))
         .await
@@ -427,6 +445,7 @@ pub async fn spawn(
         logger,
         apply_edit_bus,
         configuration_bus,
+        event_bus,
     )
     .await
 }
@@ -449,6 +468,7 @@ pub async fn spawn_with_io<R, W>(
     logger: LspLogger,
     apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
     configuration_bus: Option<crate::configuration::ConfigurationBus>,
+    event_bus: Option<Arc<lattice_runtime::EventBus>>,
 ) -> LspResult<ServerHandle>
 where
     R: AsyncBufRead + Unpin + Send + 'static,
@@ -495,6 +515,7 @@ where
         logger.clone(),
         apply_edit_bus,
         configuration_bus,
+        event_bus,
     ));
 
     let capabilities = handshake_rx
@@ -633,6 +654,7 @@ async fn actor_main<R, W>(
     logger: LspLogger,
     apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
     configuration_bus: Option<crate::configuration::ConfigurationBus>,
+    event_bus: Option<Arc<lattice_runtime::EventBus>>,
 ) where
     R: AsyncBufRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -697,7 +719,13 @@ async fn actor_main<R, W>(
         match in_rx.recv().await {
             Some(Message::Response(r)) if r.id == init_id => break r,
             Some(other) => {
-                handle_pre_handshake_message(&server_id_arc, other, &diagnostics, &logger);
+                handle_pre_handshake_message(
+                    &server_id_arc,
+                    other,
+                    &diagnostics,
+                    &logger,
+                    event_bus.as_ref(),
+                );
             }
             None => {
                 let _ = handshake_tx.send(Err(LspError::HandshakeFailed(
@@ -963,7 +991,13 @@ async fn actor_main<R, W>(
                         }
                     }
                     Some(Message::Notification(n)) => {
-                        handle_server_notification(&server_id_arc, &n, &diagnostics, &logger);
+                        handle_server_notification(
+                            &server_id_arc,
+                            &n,
+                            &diagnostics,
+                            &logger,
+                            event_bus.as_ref(),
+                        );
                     }
                     Some(Message::Request(req)) => {
                         // `workspace/applyEdit` (Phase 4.3) is
@@ -1053,6 +1087,7 @@ fn handle_server_notification(
     n: &Notification,
     diagnostics: &DiagnosticsBus,
     logger: &LspLogger,
+    event_bus: Option<&Arc<lattice_runtime::EventBus>>,
 ) {
     match n.method.as_str() {
         "window/logMessage" => {
@@ -1065,14 +1100,25 @@ fn handle_server_notification(
             logger.log(Some(server_id), level, LogSource::LspShowMessage, msg);
         }
         "$/progress" => {
-            // Progress events are debug-level chatter until the
-            // 4.4 progress slot lands.
+            // Server-side work-done progress (LSP §3.16). Parse
+            // the {token, value} envelope and publish a typed
+            // `LspProgressUpdate` on the editor bus. The modeline
+            // (and any plugin subscriber) accumulates by
+            // (server_id, token).
+            //
+            // Logger still gets a Debug breadcrumb so the
+            // `*lsp:<server>:trace*` ring keeps the raw record.
             logger.log(
                 Some(server_id),
                 LogLevel::Debug,
                 LogSource::Client,
                 format!("$/progress: {}", compact_params(&n.params)),
             );
+            if let (Some(bus), Some(update)) =
+                (event_bus, parse_progress(server_id, n.params.as_ref()))
+            {
+                bus.publish_typed(update);
+            }
         }
         "telemetry/event" => {
             // 4.4.a: distinct LogSource so plugin subscribers
@@ -1133,6 +1179,60 @@ fn handle_server_notification(
             );
         }
     }
+}
+
+/// Parse a `$/progress` payload (LSP §3.16) into a typed
+/// `LspProgressUpdate`. Returns `None` if the envelope is
+/// missing fields or has the wrong shape — we'd rather drop
+/// the update than publish a half-filled event.
+///
+/// Token can be number or string per spec; we serialise both
+/// to `String` so the (server_id, token) accumulator key is
+/// uniform.
+fn parse_progress(
+    server_id: &Arc<str>,
+    params: Option<&Value>,
+) -> Option<crate::events::LspProgressUpdate> {
+    use crate::events::{LspProgressKind, LspProgressUpdate};
+    let p = params?;
+    let token = match p.get("token")? {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    let value = p.get("value")?;
+    let kind_str = value.get("kind")?.as_str()?;
+    let kind = match kind_str {
+        "begin" => LspProgressKind::Begin,
+        "report" => LspProgressKind::Report,
+        "end" => LspProgressKind::End,
+        _ => return None,
+    };
+    let title = value
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let message = value
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let percentage = value
+        .get("percentage")
+        .and_then(Value::as_u64)
+        .map(|n| n.min(100) as u32);
+    let cancellable = value
+        .get("cancellable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Some(LspProgressUpdate {
+        server_id: Arc::clone(server_id),
+        token,
+        kind,
+        title,
+        message,
+        percentage,
+        cancellable,
+    })
 }
 
 /// Pull severity + message out of a `window/logMessage` /
@@ -1377,10 +1477,11 @@ fn handle_pre_handshake_message(
     msg: Message,
     diagnostics: &DiagnosticsBus,
     logger: &LspLogger,
+    event_bus: Option<&Arc<lattice_runtime::EventBus>>,
 ) {
     match msg {
         Message::Notification(n) => {
-            handle_server_notification(server_id, &n, diagnostics, logger)
+            handle_server_notification(server_id, &n, diagnostics, logger, event_bus)
         }
         Message::Request(r) => {
             logger.log(
@@ -1618,5 +1719,79 @@ mod uri_tests {
         let abs = PathBuf::from("/tmp/lattice-test/foo.rs");
         let uri = uri_from_path(&abs);
         assert_eq!(uri.as_str(), "file:///tmp/lattice-test/foo.rs");
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    use crate::events::LspProgressKind;
+    use serde_json::json;
+
+    fn sid() -> Arc<str> {
+        Arc::from("rust")
+    }
+
+    #[test]
+    fn parses_begin_with_full_payload() {
+        let params = json!({
+            "token": "build-1",
+            "value": {
+                "kind": "begin",
+                "title": "Building",
+                "message": "compiling",
+                "percentage": 12,
+                "cancellable": true,
+            }
+        });
+        let p = parse_progress(&sid(), Some(&params)).expect("begin parses");
+        assert_eq!(&*p.server_id, "rust");
+        assert_eq!(p.token, "build-1");
+        assert_eq!(p.kind, LspProgressKind::Begin);
+        assert_eq!(p.title.as_deref(), Some("Building"));
+        assert_eq!(p.message.as_deref(), Some("compiling"));
+        assert_eq!(p.percentage, Some(12));
+        assert!(p.cancellable);
+    }
+
+    #[test]
+    fn parses_numeric_token() {
+        // Per spec the token can be number or string; we serialise
+        // either form to a String so the accumulator key stays
+        // uniform.
+        let params = json!({
+            "token": 42,
+            "value": { "kind": "end" }
+        });
+        let p = parse_progress(&sid(), Some(&params)).expect("end parses");
+        assert_eq!(p.token, "42");
+        assert_eq!(p.kind, LspProgressKind::End);
+    }
+
+    #[test]
+    fn rejects_unknown_kind() {
+        let params = json!({
+            "token": "x",
+            "value": { "kind": "bogus" }
+        });
+        assert!(parse_progress(&sid(), Some(&params)).is_none());
+    }
+
+    #[test]
+    fn rejects_missing_value() {
+        let params = json!({ "token": "x" });
+        assert!(parse_progress(&sid(), Some(&params)).is_none());
+    }
+
+    #[test]
+    fn caps_percentage_at_100() {
+        // Some servers report 0..=100, some over-report briefly;
+        // we clamp so the modeline can't render `120%`.
+        let params = json!({
+            "token": "x",
+            "value": { "kind": "report", "percentage": 150 }
+        });
+        let p = parse_progress(&sid(), Some(&params)).expect("report parses");
+        assert_eq!(p.percentage, Some(100));
     }
 }

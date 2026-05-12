@@ -105,6 +105,44 @@ lattice_protocol::register_event!(
     "lattice-lsp",
 );
 
+/// Fired when an attached server sends a `$/progress`
+/// notification (LSP §3.16 work-done progress). The host
+/// accumulates progress entries by (server_id, token) and
+/// surfaces the most recent active one in the modeline.
+///
+/// `kind` carries the progress lifecycle phase:
+/// - `LspProgressKind::Begin` -- new operation started.
+/// - `LspProgressKind::Report` -- ongoing update.
+/// - `LspProgressKind::End` -- operation finished; host
+///   removes the entry.
+#[derive(Debug, Clone)]
+pub struct LspProgressUpdate {
+    pub server_id: Arc<str>,
+    pub token: String,
+    pub kind: LspProgressKind,
+    pub title: Option<String>,
+    pub message: Option<String>,
+    /// 0..=100 if the server reports it; `None` for
+    /// indeterminate progress.
+    pub percentage: Option<u32>,
+    pub cancellable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspProgressKind {
+    Begin,
+    Report,
+    End,
+}
+
+lattice_protocol::register_event!(
+    LspProgressUpdate,
+    "lsp.progress-update",
+    "Fired when a server sends $/progress. Host accumulates by \
+     (server_id, token) and surfaces in the modeline.",
+    "lattice-lsp",
+);
+
 /// Fired when a document buffer changes *and* `lsp-mode` is
 /// active for that buffer (M.5.5). The per-actor fan-in
 /// (`crate::fan_in`) subscribes via

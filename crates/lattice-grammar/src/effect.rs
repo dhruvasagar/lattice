@@ -275,6 +275,15 @@ pub enum Effect {
     LspRestart {
         server_id: String,
     },
+    /// `:lsp-progress-cancel [server]` -- send
+    /// `window/workDoneProgress/cancel` for every active,
+    /// cancellable progress entry on the named server (or, with
+    /// no arg, on every server currently attached to the active
+    /// buffer). Non-cancellable entries are left alone — the
+    /// host's cancel is best-effort regardless. 4.4.c.
+    LspProgressCancel {
+        server_id: Option<String>,
+    },
     /// `:lsp-log-level [server] <level>` -- set the subsystem-
     /// wide default min level (when `server_id` is None) or a
     /// per-server override.

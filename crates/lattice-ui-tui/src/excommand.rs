@@ -445,6 +445,7 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("lsp-status", "ex:lsp-status"),
     ("lsp-server-log", "ex:lsp-server-log"),
     ("lsp-restart", "ex:lsp-restart"),
+    ("lsp-progress-cancel", "ex:lsp-progress-cancel"),
     ("lsp-log-level", "ex:lsp-log-level"),
     ("lsp-log-clear", "ex:lsp-log-clear"),
     // Navigation pickers (Phase 4.2.e / 4.2.f).

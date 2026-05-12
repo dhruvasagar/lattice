@@ -79,7 +79,10 @@ pub use config::{ServerConfig, builtin_servers, resolve_workspace_root};
 pub use diagnostics::{DIAGNOSTICS_CHANNEL_CAPACITY, DiagnosticEvent, DiagnosticsBus};
 pub use diagnostics_layer::{DiagnosticsLayer, SeverityCounts, pump_diagnostics};
 pub use error::{LspError, LspResult};
-pub use events::{LspBufferAttached, LspBufferDetached, LspDocumentChanged, LspLogPushed};
+pub use events::{
+    LspBufferAttached, LspBufferDetached, LspDocumentChanged, LspLogPushed, LspProgressKind,
+    LspProgressUpdate,
+};
 pub use logging::{LogLevel, LogRecord, LogRing, LogSource, LspLogger};
 pub use framing::{FrameError, FrameHeader};
 pub use jsonrpc::{Message, Notification, Request, RequestId, Response, ResponseError};

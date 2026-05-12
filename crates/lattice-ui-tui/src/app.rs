@@ -1458,6 +1458,18 @@ pub struct App {
     /// user having to reopen them.
     pub lsp_log_event_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
+    /// Receiver for [`lattice_lsp::LspProgressUpdate`] events
+    /// (4.4.c). Drained once per main-loop tick by
+    /// [`Self::drain_lsp_progress_events`]; the modeline reads
+    /// the accumulated state on each render.
+    pub lsp_progress_event_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspProgressUpdate>>,
+    /// Accumulated `$/progress` state keyed by
+    /// (server_id, token). `Begin` inserts; `Report` updates;
+    /// `End` removes. The modeline picks the most recent
+    /// active entry to surface.
+    pub lsp_progress:
+        std::collections::HashMap<(std::sync::Arc<str>, String), lattice_lsp::LspProgressUpdate>,
     // `completion.auto_insert_single` lives on the typed-options
     // registry (`self.config` type-keyed by
     // `lattice_config::CompletionAutoInsertSingle`). Read via

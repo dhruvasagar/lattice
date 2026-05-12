@@ -264,6 +264,15 @@ impl App {
         let (lsp_log_tx, lsp_log_event_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspLogPushed>();
         event_bus.subscribe_typed(lsp_log_tx);
+        // LSP work-done progress (4.4.c): the actor publishes
+        // `LspProgressUpdate` whenever a server sends $/progress.
+        // The App accumulates by (server_id, token) and surfaces
+        // the most recent active entry in the modeline's LSP
+        // segment.
+        let (lsp_progress_tx, lsp_progress_event_rx) = tokio::sync::mpsc::unbounded_channel::<
+            lattice_lsp::LspProgressUpdate,
+        >();
+        event_bus.subscribe_typed(lsp_progress_tx);
         // Wire the logger's publisher to the same bus. The
         // logger lives in `lattice-lsp`; the closure captures an
         // Arc<EventBus> clone so the logger's lifetime is
@@ -659,6 +668,8 @@ impl App {
             pending_picker_init: None,
             previewing: false,
             lsp_log_event_rx: Some(lsp_log_event_rx),
+            lsp_progress_event_rx: Some(lsp_progress_event_rx),
+            lsp_progress: std::collections::HashMap::new(),
             auto_submit_after_chord: false,
             lsp,
             lsp_diagnostics,

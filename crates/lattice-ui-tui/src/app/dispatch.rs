@@ -1178,6 +1178,9 @@ impl App {
             Effect::LspStatus => self.do_lsp_status(),
             Effect::LspServerLogListing => self.do_lsp_server_log_listing(),
             Effect::LspRestart { server_id } => self.do_lsp_restart(&server_id),
+            Effect::LspProgressCancel { server_id } => {
+                self.do_lsp_progress_cancel(server_id.as_deref())
+            }
             Effect::SetLspLogLevel { server_id, level } => {
                 self.do_set_lsp_log_level(server_id.as_deref(), &level)
             }
@@ -1422,6 +1425,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspStatus
         | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
+        | Effect::LspProgressCancel { .. }
         | Effect::SetLspLogLevel { .. }
         | Effect::LspLogClear { .. }
         | Effect::LspDocumentSymbol
@@ -1494,6 +1498,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspStatus
         | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
+        | Effect::LspProgressCancel { .. }
         | Effect::SetLspLogLevel { .. }
         | Effect::LspLogClear { .. }
         | Effect::LspDocumentSymbol

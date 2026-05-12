@@ -244,6 +244,10 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // buffer is open (the refresh path short-circuits on
         // missing-by-title).
         app.drain_lsp_log_events();
+        // Drain queued `LspProgressUpdate` events (4.4.c) into
+        // the App's progress accumulator so the modeline shows
+        // the freshest state on the next render tick.
+        app.drain_lsp_progress_events();
         // Drain server-initiated `workspace/applyEdit` requests
         // (Phase 4.3). Each is applied via the existing
         // workspace-edit flatten + per-file batch path, then

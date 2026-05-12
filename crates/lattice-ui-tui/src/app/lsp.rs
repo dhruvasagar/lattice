@@ -254,6 +254,19 @@ impl App {
         )
     }
 
+    /// 4.4.c: is `lsp-progress-mode` active on `buffer_id`?
+    /// Gates the modeline `$/progress` segment and progress
+    /// accumulation for buffers attached to a server. With
+    /// the mode off, incoming progress events still flow on
+    /// the bus (plugins can subscribe) but the modeline stays
+    /// quiet for that buffer.
+    pub fn lsp_progress_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspProgressMode::mode_id(),
+        )
+    }
+
     /// M.5.4: shared gate for every LSP request entry point
     /// (hover / definition / completion / format / rename /
     /// code-action / symbols / signature / references). Returns
@@ -1169,6 +1182,53 @@ impl App {
             self.refresh_lsp_trace_buffer(&id);
         }
         self.lsp_log_event_rx = Some(rx);
+    }
+
+    /// 4.4.c: drain queued `LspProgressUpdate` events and
+    /// fold them into `self.lsp_progress`. `Begin` inserts,
+    /// `Report` updates (preserving title from the prior
+    /// `Begin` when the report doesn't restate it), `End`
+    /// removes. Called once per main-loop tick.
+    ///
+    /// Cheap when no events arrived: a single try_recv that
+    /// returns `Empty` and exits.
+    pub fn drain_lsp_progress_events(&mut self) {
+        let Some(mut rx) = self.lsp_progress_event_rx.take() else {
+            return;
+        };
+        while let Ok(event) = rx.try_recv() {
+            let key = (event.server_id.clone(), event.token.clone());
+            match event.kind {
+                lattice_lsp::LspProgressKind::Begin => {
+                    self.lsp_progress.insert(key, event);
+                }
+                lattice_lsp::LspProgressKind::Report => {
+                    // LSP §3.16: report inherits title from
+                    // the preceding begin. If the begin entry
+                    // was already removed (shouldn't happen
+                    // in practice), insert as-is.
+                    if let Some(prev) = self.lsp_progress.get(&key) {
+                        let title = event.title.clone().or_else(|| prev.title.clone());
+                        let merged = lattice_lsp::LspProgressUpdate {
+                            server_id: event.server_id,
+                            token: event.token,
+                            kind: event.kind,
+                            title,
+                            message: event.message,
+                            percentage: event.percentage.or(prev.percentage),
+                            cancellable: event.cancellable,
+                        };
+                        self.lsp_progress.insert(key, merged);
+                    } else {
+                        self.lsp_progress.insert(key, event);
+                    }
+                }
+                lattice_lsp::LspProgressKind::End => {
+                    self.lsp_progress.remove(&key);
+                }
+            }
+        }
+        self.lsp_progress_event_rx = Some(rx);
     }
 
     /// Rebuild the `*lsp*` (subsystem-wide) help buffer from the
@@ -3625,6 +3685,92 @@ impl App {
                 server_id
             ),
         );
+    }
+
+    /// `:lsp-progress-cancel [server]` -- send
+    /// `window/workDoneProgress/cancel` for every cancellable
+    /// active progress entry (4.4.c). With `server_id == Some`,
+    /// cancel only entries on that server; with `None`, cancel
+    /// across every server attached to the current buffer.
+    ///
+    /// The entry stays in the accumulator until the server sends
+    /// the `end` progress notification — `cancel` is best-effort
+    /// per spec, and the server may decline.
+    pub fn do_lsp_progress_cancel(&mut self, server_id: Option<&str>) {
+        // Filter to attached servers when no explicit server is
+        // given: we don't want `:lsp-progress-cancel` from a
+        // buffer with no LSP attachment to fire cancels for a
+        // background indexer the user can't see.
+        let allowed: std::collections::HashSet<String> = match server_id {
+            Some(id) => std::iter::once(id.to_string()).collect(),
+            None => {
+                let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned()
+                else {
+                    self.set_message(
+                        EchoLevel::Info,
+                        "lsp-progress-cancel: buffer has no URI".to_string(),
+                    );
+                    return;
+                };
+                self.lsp
+                    .servers_for(&uri)
+                    .into_iter()
+                    .map(|h| h.server_id().to_string())
+                    .collect()
+            }
+        };
+        if allowed.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                "lsp-progress-cancel: no attached servers".to_string(),
+            );
+            return;
+        }
+        // Build a map from server_id -> handles once so we don't
+        // walk `running_actors()` per token.
+        let mut handles_by_id: std::collections::HashMap<String, lattice_lsp::ServerHandle> =
+            std::collections::HashMap::new();
+        for (_key, h) in self.lsp.running_actors() {
+            let id = h.server_id().to_string();
+            if allowed.contains(&id) {
+                handles_by_id.insert(id, h);
+            }
+        }
+        let mut sent = 0usize;
+        let mut skipped_non_cancellable = 0usize;
+        for ((sid, token), update) in &self.lsp_progress {
+            if !allowed.contains(sid.as_ref()) {
+                continue;
+            }
+            if !update.cancellable {
+                skipped_non_cancellable += 1;
+                continue;
+            }
+            if matches!(update.kind, lattice_lsp::LspProgressKind::End) {
+                continue;
+            }
+            if let Some(handle) = handles_by_id.get(sid.as_ref()) {
+                let _ = handle.cancel_progress(token);
+                sent += 1;
+            }
+        }
+        let scope = match server_id {
+            Some(id) => format!(" on {id}"),
+            None => String::new(),
+        };
+        if sent == 0 && skipped_non_cancellable == 0 {
+            self.set_message(
+                EchoLevel::Info,
+                format!("lsp-progress-cancel: no active progress{scope}"),
+            );
+        } else {
+            self.set_message(
+                EchoLevel::Info,
+                format!(
+                    "lsp-progress-cancel{scope}: sent {sent}, skipped {skipped_non_cancellable} non-cancellable"
+                ),
+            );
+        }
     }
 
     /// `:lsp-log-level [server] <level>` -- set the subsystem

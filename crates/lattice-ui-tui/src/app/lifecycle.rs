@@ -1381,6 +1381,17 @@ impl App {
                 path: (**path).clone(),
             });
         }
+        // 4.4.m: detect first-save BEFORE block_on triggers the
+        // write. If the resolved path doesn't yet exist on disk,
+        // the post-save fan-out should also emit
+        // `workspace/didCreateFiles` so servers can update
+        // module trees / import graphs / etc. without waiting
+        // for a file-watcher round-trip.
+        let pre_save_existed = snap
+            .path
+            .as_ref()
+            .map(|p| p.exists())
+            .unwrap_or(false);
         // LSP textDocument/willSave (Phase 4.3) fan-out: every
         // server attached to the buffer that advertises the
         // notification gets a heads-up before the disk write.
@@ -1401,8 +1412,54 @@ impl App {
             });
             // Fire didSave to every server that wants it.
             self.fire_did_save_notifications();
+            // 4.4.m: fire `workspace/didCreateFiles` when the
+            // save just created the path. willCreateFiles
+            // (pre-create blocking edits) is strong-reason
+            // deferred -- it requires applying the returned
+            // WorkspaceEdit inside the same atomic save
+            // window, which the format-on-save pipeline could
+            // host but isn't wired today.
+            if !pre_save_existed {
+                self.fire_did_create_files_notifications(path);
+            }
         }
         result
+    }
+
+    /// 4.4.m: fan out `workspace/didCreateFiles` to every
+    /// attached server that advertises interest. The wire
+    /// wrapper accepts any URI list; in this single-file
+    /// save path the batch is exactly one entry. Servers
+    /// without registered filters or with non-matching
+    /// filters still receive the notification (server-side
+    /// filter logic isn't echoed on the client side -- the
+    /// server is the source of truth on whether to act).
+    /// Future enhancement: filter URIs against
+    /// `Capabilities::file_operations_options(DidCreate)`
+    /// pre-emptively to avoid sending notifications the
+    /// server will discard.
+    fn fire_did_create_files_notifications(&self, path: &std::path::Path) {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return;
+        };
+        let handles = self.lsp.servers_for(uri);
+        if handles.is_empty() {
+            return;
+        }
+        let uri_string = lattice_lsp::actor::uri_from_path(path)
+            .as_str()
+            .to_string();
+        let params = lsp_types::CreateFilesParams {
+            files: vec![lsp_types::FileCreate {
+                uri: uri_string,
+            }],
+        };
+        for h in handles {
+            if !h.capabilities().supports_did_create_files() {
+                continue;
+            }
+            let _ = h.did_create_files(params.clone());
+        }
     }
 
     /// Walk the buffer's attached servers; fire

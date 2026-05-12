@@ -314,6 +314,85 @@ impl ServerHandle {
         self.notify("workspace/didChangeWatchedFiles", params)
     }
 
+    /// 4.4.m: `workspace/willCreateFiles` (request).
+    /// Pre-create hook -- server MAY return a `WorkspaceEdit`
+    /// the client applies BEFORE the actual file is created on
+    /// disk (e.g. add an import to a sibling module). Callers
+    /// must gate on `Capabilities::supports_will_create_files`
+    /// + filter the URIs against the registration's
+    /// `FileOperationFilter`s before issuing. The host pump
+    /// (when wired) blocks the create path on the response;
+    /// timeouts skip the edits and proceed.
+    pub fn will_create_files(
+        &self,
+        params: lsp_types::CreateFilesParams,
+        cancel: lattice_protocol::CancellationToken,
+    ) -> crate::pending::Pending<Option<lsp_types::WorkspaceEdit>> {
+        self.request_with_cancel(
+            "workspace/willCreateFiles",
+            params,
+            cancel,
+        )
+    }
+
+    /// 4.4.m: `workspace/didCreateFiles` (notification).
+    /// Post-create fan-out. The wire wrapper is straight-line;
+    /// trigger discipline (when to fire) lives in the host
+    /// save / create paths.
+    pub fn did_create_files(
+        &self,
+        params: lsp_types::CreateFilesParams,
+    ) -> crate::error::LspResult<()> {
+        self.notify("workspace/didCreateFiles", params)
+    }
+
+    /// 4.4.m: `workspace/willRenameFiles` (request). Same
+    /// response shape as `willCreateFiles`. Triggered when the
+    /// user renames a file in-place (`:saveas` follow-up that
+    /// removes the original); server returns edits to keep
+    /// imports / references in sync with the new path.
+    pub fn will_rename_files(
+        &self,
+        params: lsp_types::RenameFilesParams,
+        cancel: lattice_protocol::CancellationToken,
+    ) -> crate::pending::Pending<Option<lsp_types::WorkspaceEdit>> {
+        self.request_with_cancel(
+            "workspace/willRenameFiles",
+            params,
+            cancel,
+        )
+    }
+
+    /// 4.4.m: `workspace/didRenameFiles` (notification).
+    pub fn did_rename_files(
+        &self,
+        params: lsp_types::RenameFilesParams,
+    ) -> crate::error::LspResult<()> {
+        self.notify("workspace/didRenameFiles", params)
+    }
+
+    /// 4.4.m: `workspace/willDeleteFiles` (request). Server
+    /// returns edits to clean up references before the delete.
+    pub fn will_delete_files(
+        &self,
+        params: lsp_types::DeleteFilesParams,
+        cancel: lattice_protocol::CancellationToken,
+    ) -> crate::pending::Pending<Option<lsp_types::WorkspaceEdit>> {
+        self.request_with_cancel(
+            "workspace/willDeleteFiles",
+            params,
+            cancel,
+        )
+    }
+
+    /// 4.4.m: `workspace/didDeleteFiles` (notification).
+    pub fn did_delete_files(
+        &self,
+        params: lsp_types::DeleteFilesParams,
+    ) -> crate::error::LspResult<()> {
+        self.notify("workspace/didDeleteFiles", params)
+    }
+
     /// `textDocument/codeAction` (Phase 4.3). Returns the list
     /// of quick fixes / refactors / source actions available
     /// for the supplied range. Each item carries either an

@@ -39,6 +39,21 @@ use lsp_types::{
 
 use crate::dynamic_registration::DynamicRegistry;
 
+/// 4.4.m: discriminator for the six file-operation hooks. Used
+/// by [`Capabilities::file_operations_options`] so probes don't
+/// repeat the
+/// `server.workspace.as_ref().and_then(|w| w.file_operations.as_ref())`
+/// walk; the enum names the field instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileOpKind {
+    WillCreate,
+    DidCreate,
+    WillRename,
+    DidRename,
+    WillDelete,
+    DidDelete,
+}
+
 /// Build the full set of capabilities the client advertises in
 /// `initialize`. Pure -- safe to call from any task / thread.
 ///
@@ -193,6 +208,28 @@ fn workspace_capabilities() -> WorkspaceClientCapabilities {
             lsp_types::DidChangeWatchedFilesClientCapabilities {
                 dynamic_registration: Some(true),
                 relative_pattern_support: Some(true),
+            },
+        ),
+        // 4.4.m: workspace file-operation hooks. Advertising
+        // each as `Some(true)` tells the server we honour the
+        // corresponding will/did request or notification. The
+        // host's trigger discipline lives in the save / saveas
+        // / bd paths; today the wire wrappers are callable but
+        // not every trigger is fully wired (see the per-row
+        // strong-reason defers in lsp-features.md). Servers
+        // only emit the hooks for URIs matching their
+        // registered `FileOperationFilter`s, so a server that
+        // doesn't care about a particular path stays quiet
+        // even when we advertise interest.
+        file_operations: Some(
+            lsp_types::WorkspaceFileOperationsClientCapabilities {
+                dynamic_registration: Some(false),
+                did_create: Some(true),
+                will_create: Some(true),
+                did_rename: Some(true),
+                will_rename: Some(true),
+                did_delete: Some(true),
+                will_delete: Some(true),
             },
         ),
         // Other 4.4 workspace-side advertisements
@@ -771,6 +808,70 @@ impl Capabilities {
         }
     }
 
+    /// 4.4.m: server advertises interest in
+    /// `workspace/willCreateFiles` requests (server returns
+    /// `WorkspaceEdit` BEFORE the file is created on disk; the
+    /// host applies the edits in the same save txn).
+    pub fn supports_will_create_files(&self) -> bool {
+        self.file_operations_options(FileOpKind::WillCreate).is_some()
+    }
+
+    /// 4.4.m: server advertises interest in
+    /// `workspace/didCreateFiles` notifications.
+    pub fn supports_did_create_files(&self) -> bool {
+        self.file_operations_options(FileOpKind::DidCreate).is_some()
+    }
+
+    /// 4.4.m: server advertises interest in
+    /// `workspace/willRenameFiles` requests.
+    pub fn supports_will_rename_files(&self) -> bool {
+        self.file_operations_options(FileOpKind::WillRename).is_some()
+    }
+
+    /// 4.4.m: server advertises interest in
+    /// `workspace/didRenameFiles` notifications.
+    pub fn supports_did_rename_files(&self) -> bool {
+        self.file_operations_options(FileOpKind::DidRename).is_some()
+    }
+
+    /// 4.4.m: server advertises interest in
+    /// `workspace/willDeleteFiles` requests.
+    pub fn supports_will_delete_files(&self) -> bool {
+        self.file_operations_options(FileOpKind::WillDelete).is_some()
+    }
+
+    /// 4.4.m: server advertises interest in
+    /// `workspace/didDeleteFiles` notifications.
+    pub fn supports_did_delete_files(&self) -> bool {
+        self.file_operations_options(FileOpKind::DidDelete).is_some()
+    }
+
+    /// 4.4.m: borrow the server-supplied
+    /// `FileOperationRegistrationOptions` for the requested
+    /// file-operation kind. The filters drive the host's
+    /// will/did fan-out -- a server only receives events whose
+    /// URIs match at least one filter's
+    /// `FileOperationPattern.glob`. `None` when the server
+    /// didn't advertise the kind.
+    pub fn file_operations_options(
+        &self,
+        kind: FileOpKind,
+    ) -> Option<&lsp_types::FileOperationRegistrationOptions> {
+        let ops = self
+            .server
+            .workspace
+            .as_ref()
+            .and_then(|w| w.file_operations.as_ref())?;
+        match kind {
+            FileOpKind::WillCreate => ops.will_create.as_ref(),
+            FileOpKind::DidCreate => ops.did_create.as_ref(),
+            FileOpKind::WillRename => ops.will_rename.as_ref(),
+            FileOpKind::DidRename => ops.did_rename.as_ref(),
+            FileOpKind::WillDelete => ops.will_delete.as_ref(),
+            FileOpKind::DidDelete => ops.did_delete.as_ref(),
+        }
+    }
+
     /// 4.4.j: diagnostic provider's optional `identifier` --
     /// the namespace under which the server groups its
     /// diagnostics. Passed back in `DocumentDiagnosticParams`
@@ -1028,5 +1129,65 @@ mod tests {
         let ws = caps.workspace.expect("workspace advertised");
         let ws_diag = ws.diagnostic.expect("ws.diagnostic advertised");
         assert_eq!(ws_diag.refresh_support, Some(true));
+    }
+
+    /// 4.4.m: client advertises all six workspace file-
+    /// operation hooks so servers know they can fire any of
+    /// them. Without these, servers default to "no file-op
+    /// hooks" and won't even attempt to register filters.
+    #[test]
+    fn client_advertises_all_file_operation_hooks() {
+        let caps = client_capabilities();
+        let ws = caps.workspace.expect("workspace advertised");
+        let ops = ws.file_operations.expect("file_operations advertised");
+        assert_eq!(ops.did_create, Some(true));
+        assert_eq!(ops.will_create, Some(true));
+        assert_eq!(ops.did_rename, Some(true));
+        assert_eq!(ops.will_rename, Some(true));
+        assert_eq!(ops.did_delete, Some(true));
+        assert_eq!(ops.will_delete, Some(true));
+    }
+
+    /// 4.4.m: probes reflect the server's per-kind advertisement.
+    /// A server registering `did_create` lights up that probe
+    /// only; other kinds stay false.
+    #[test]
+    fn file_operation_probes_consult_per_kind_server_field() {
+        let server = ServerCapabilities {
+            workspace: Some(lsp_types::WorkspaceServerCapabilities {
+                workspace_folders: None,
+                file_operations: Some(
+                    lsp_types::WorkspaceFileOperationsServerCapabilities {
+                        did_create: Some(
+                            lsp_types::FileOperationRegistrationOptions {
+                                filters: vec![lsp_types::FileOperationFilter {
+                                    scheme: Some("file".into()),
+                                    pattern: lsp_types::FileOperationPattern {
+                                        glob: "**/*.rs".into(),
+                                        matches: None,
+                                        options: None,
+                                    },
+                                }],
+                            },
+                        ),
+                        ..Default::default()
+                    },
+                ),
+            }),
+            ..Default::default()
+        };
+        let caps = Capabilities::from_initialize(client_capabilities(), server);
+        assert!(caps.supports_did_create_files());
+        assert!(!caps.supports_will_create_files());
+        assert!(!caps.supports_did_rename_files());
+        assert!(!caps.supports_will_rename_files());
+        assert!(!caps.supports_did_delete_files());
+        assert!(!caps.supports_will_delete_files());
+        // The options are reachable so the host pump can read
+        // the filter list when it lands.
+        let opts = caps
+            .file_operations_options(FileOpKind::DidCreate)
+            .expect("server advertised did_create options");
+        assert_eq!(opts.filters[0].pattern.glob, "**/*.rs");
     }
 }

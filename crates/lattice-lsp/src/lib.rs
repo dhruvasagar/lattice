@@ -82,7 +82,7 @@ pub use show_document::{InboundShowDocument, ShowDocumentBus, ShowDocumentOutcom
 pub use show_message_request::{
     InboundShowMessageRequest, ShowMessageRequestBus, ShowMessageRequestOutcome,
 };
-pub use capabilities::{Capabilities, client_capabilities};
+pub use capabilities::{Capabilities, FileOpKind, client_capabilities};
 pub use dynamic_registration::{DynamicRegistration, DynamicRegistry};
 pub use file_watcher::{WatcherSubscriptions, compile_with_workspace_root};
 pub use codec::{LspReader, LspWriter};

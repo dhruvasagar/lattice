@@ -477,3 +477,87 @@ async fn did_change_configuration_notifies_with_settings() {
         json!(["foo", "bar"]),
     );
 }
+
+/// 4.4.m: `did_create_files` is a notification with the file
+/// list payload; the mock records it in arrival order.
+#[tokio::test]
+async fn did_create_files_notifies_with_file_list() {
+    let mock = MockServer::start().await;
+    let baseline = mock.mock.notifications().await.len();
+    mock.handle
+        .did_create_files(lsp_types::CreateFilesParams {
+            files: vec![lsp_types::FileCreate {
+                uri: "file:///tmp/newfile.rs".into(),
+            }],
+        })
+        .expect("notification queued");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let notes = mock.mock.notifications().await;
+    let our = notes[baseline..]
+        .iter()
+        .find(|n| n.method == "workspace/didCreateFiles")
+        .expect("mock received didCreateFiles");
+    let params = our.params.as_ref().expect("notification carries params");
+    assert_eq!(params["files"][0]["uri"], "file:///tmp/newfile.rs");
+}
+
+/// 4.4.m: `will_rename_files` is a request whose response is
+/// `Option<WorkspaceEdit>`. A server returning `null` resolves
+/// the relay with `Ok(None)`.
+#[tokio::test]
+async fn will_rename_files_round_trips_workspace_edit_option() {
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("workspace/willRenameFiles", |_params| {
+            MockResult::Ok(json!({
+                "changes": {
+                    "file:///tmp/old.rs": [{
+                        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}},
+                        "newText": "use new::name"
+                    }]
+                }
+            }))
+        })
+        .await;
+    let edit = mock
+        .handle
+        .will_rename_files(
+            lsp_types::RenameFilesParams {
+                files: vec![lsp_types::FileRename {
+                    old_uri: "file:///tmp/old.rs".into(),
+                    new_uri: "file:///tmp/new.rs".into(),
+                }],
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("response decodes");
+    let workspace_edit = edit.expect("server returned an edit");
+    let changes = workspace_edit.changes.expect("legacy changes map");
+    assert_eq!(changes.len(), 1);
+}
+
+/// 4.4.m: server returning `null` to a will* request means
+/// "no edits needed"; the relay resolves with `Ok(None)`.
+#[tokio::test]
+async fn will_delete_files_handles_null_response() {
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("workspace/willDeleteFiles", |_params| {
+            MockResult::Ok(json!(null))
+        })
+        .await;
+    let edit = mock
+        .handle
+        .will_delete_files(
+            lsp_types::DeleteFilesParams {
+                files: vec![lsp_types::FileDelete {
+                    uri: "file:///tmp/gone.rs".into(),
+                }],
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("response decodes");
+    assert!(edit.is_none(), "null response surfaces as None");
+}

@@ -266,6 +266,17 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // 4.4.b: server-initiated window/showMessageRequest
         // (modal action picker; user's selection ferries back).
         app.drain_inbound_show_message_requests();
+        // 4.4.e: outstanding selectionRange response, if any
+        // expand/shrink invocation hit the wire path. Seats
+        // the chain + applies the step.
+        app.drain_pending_selection_range();
+        // 4.4.e: documentHighlight pump. Fires a fresh
+        // request when the cursor has moved off the last
+        // issue point; cancels any in-flight predecessor.
+        // The drain consumes the most recent response and
+        // seats the cache for the renderer overlay.
+        app.maybe_request_document_highlight();
+        app.drain_pending_document_highlight();
         // Update viewport height. The buffer-area band is the
         // terminal minus the mode line + cmdline/echo row (and the
         // candidate-list row band, when a picker / completion popup

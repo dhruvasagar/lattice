@@ -1181,6 +1181,8 @@ impl App {
             Effect::LspProgressCancel { server_id } => {
                 self.do_lsp_progress_cancel(server_id.as_deref())
             }
+            Effect::LspExpandRegion => self.do_lsp_expand_region(),
+            Effect::LspShrinkRegion => self.do_lsp_shrink_region(),
             Effect::SetLspLogLevel { server_id, level } => {
                 self.do_set_lsp_log_level(server_id.as_deref(), &level)
             }
@@ -1426,6 +1428,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
         | Effect::LspProgressCancel { .. }
+        | Effect::LspExpandRegion
+        | Effect::LspShrinkRegion
         | Effect::SetLspLogLevel { .. }
         | Effect::LspLogClear { .. }
         | Effect::LspDocumentSymbol
@@ -1499,6 +1503,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
         | Effect::LspProgressCancel { .. }
+        | Effect::LspExpandRegion
+        | Effect::LspShrinkRegion
         | Effect::SetLspLogLevel { .. }
         | Effect::LspLogClear { .. }
         | Effect::LspDocumentSymbol

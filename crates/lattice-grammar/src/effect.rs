@@ -284,6 +284,16 @@ pub enum Effect {
     LspProgressCancel {
         server_id: Option<String>,
     },
+    /// 4.4.e: `:lsp-expand-region` -- structural smart-
+    /// expansion. First invocation fires `textDocument/selectionRange`
+    /// at the cursor; each subsequent invocation walks one
+    /// `parent` step outward in the cached chain. Enters Visual
+    /// mode with the resolved range as the selection.
+    LspExpandRegion,
+    /// 4.4.e: `:lsp-shrink-region` -- inverse walk through the
+    /// cached selection-range chain. No-op when the chain is
+    /// empty / at the innermost step.
+    LspShrinkRegion,
     /// `:lsp-log-level [server] <level>` -- set the subsystem-
     /// wide default min level (when `server_id` is None) or a
     /// per-server override.

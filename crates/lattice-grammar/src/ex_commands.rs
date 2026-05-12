@@ -78,6 +78,8 @@ pub struct ExBuiltins {
     pub lsp_server_log: ExCommandId,
     pub lsp_restart: ExCommandId,
     pub lsp_progress_cancel: ExCommandId,
+    pub lsp_expand_region: ExCommandId,
+    pub lsp_shrink_region: ExCommandId,
     pub lsp_log_level: ExCommandId,
     pub lsp_log_clear: ExCommandId,
     pub lsp_symbols: ExCommandId,
@@ -1033,6 +1035,32 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let lsp_expand_region = registry.register_ex_command(
+        "ex:lsp-expand-region",
+        "Smart-expansion: walk one step outward in the LSP selectionRange chain (`:lsp-expand-region`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::LspExpandRegion)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let lsp_shrink_region = registry.register_ex_command(
+        "ex:lsp-shrink-region",
+        "Walk one step inward in the cached LSP selectionRange chain (`:lsp-shrink-region`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::LspShrinkRegion)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let lsp_log_level = registry.register_ex_command(
         "ex:lsp-log-level",
         "Set the subsystem-wide default min log level (or a per-server override) (`:lsp-log-level [server] <level>`).",
@@ -1372,6 +1400,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_server_log,
         lsp_restart,
         lsp_progress_cancel,
+        lsp_expand_region,
+        lsp_shrink_region,
         lsp_log_level,
         lsp_log_clear,
         lsp_symbols,

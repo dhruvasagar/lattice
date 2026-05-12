@@ -2499,6 +2499,45 @@ fn compose_visible_lines_inner(
             };
             body = apply_underline_overlay(body, start, end, color);
         }
+        // 4.4.e: `documentHighlight` soft overlay. Reads from
+        // the App's per-buffer cache (populated by the per-tick
+        // pump). The overlay walks each highlight; the range
+        // intersected with this row gets a background tint with
+        // hue keyed off the `kind` field (Read = green-ish,
+        // Write = red-ish, Text/None = blue-ish). The styling
+        // composes with diagnostics + hlsearch + visual so a
+        // symbol caught by all four still reads correctly.
+        if let Some(cache) = app.lsp_document_highlights.as_ref()
+            && cache.buffer_id == app.document_buffer_id
+            && app.lsp_document_highlight_mode_enabled_for(app.document_buffer_id)
+        {
+            for h in &cache.highlights {
+                let start_line = h.range.start.line;
+                let end_line = h.range.end.line;
+                if line_idx < start_line || line_idx > end_line {
+                    continue;
+                }
+                let start = if line_idx == start_line {
+                    (h.range.start.character as usize).min(line_len)
+                } else {
+                    0
+                };
+                let end = if line_idx == end_line {
+                    (h.range.end.character as usize).min(line_len)
+                } else {
+                    line_len
+                };
+                if start >= end {
+                    continue;
+                }
+                body = apply_match_overlay(
+                    body,
+                    start,
+                    end,
+                    document_highlight_style(h.kind),
+                );
+            }
+        }
         // Substitute live preview overlay (DESIGN.md §5.9.10): paint
         // the about-to-be-replaced ranges in a strike-through-ish
         // style so the user sees what will change before they hit
@@ -2594,6 +2633,28 @@ fn hlsearch_style() -> TuiStyle {
     // as "another instance of what you're searching for" without
     // stealing attention from the cursor's match.
     TuiStyle::default().bg(Color::Cyan).fg(Color::Black)
+}
+
+/// 4.4.e: `documentHighlight` overlay style. Soft tint that
+/// reads as "same symbol, related to the one your cursor is
+/// on". Distinct hue per kind so the user can spot reads-vs-
+/// writes-vs-other without consulting the spec:
+///
+/// - `Read` (default) — dim green; "this is being consulted"
+/// - `Write` — dim red; "this site mutates the symbol"
+/// - `Text` / `None` — dim blue; "this is an occurrence"
+///
+/// All three use a dark background tint + the original fg so
+/// the text stays readable; composes with the other overlays
+/// (diagnostics underline, visual selection bg, hlsearch).
+fn document_highlight_style(kind: Option<lsp_types::DocumentHighlightKind>) -> TuiStyle {
+    use lsp_types::DocumentHighlightKind;
+    let bg = match kind {
+        Some(DocumentHighlightKind::READ) => Color::Rgb(20, 50, 25),
+        Some(DocumentHighlightKind::WRITE) => Color::Rgb(60, 20, 20),
+        _ => Color::Rgb(20, 30, 60),
+    };
+    TuiStyle::default().bg(bg)
 }
 
 /// Style for substitute live-preview matches. Magenta-bg with a
@@ -4644,6 +4705,106 @@ mod tests {
             !row0.contains('■'),
             "lsp-diagnostics-mode off should suppress glyph; got {row0:?}",
         );
+    }
+
+    /// 4.4.e: a seeded `documentHighlight` cache produces a
+    /// background-tinted run on the matching row when
+    /// `lsp-document-highlight-mode` is on.
+    #[test]
+    fn document_highlight_overlay_tints_matched_range() {
+        use std::str::FromStr;
+        let mut app = app_with("let x = x + 1;\n", 5);
+        // M.5.6: the overlay gate also requires lsp-mode.
+        // Seed a URI so the mode gate's URI check passes (the
+        // overlay also checks lsp_document_highlight_mode).
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, uri);
+        if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-mode");
+        }
+        // `lsp-document-highlight-mode` should have cascaded
+        // on with lsp-mode (capability cascade is per-mode);
+        // if not, force it.
+        if !app.lsp_document_highlight_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-document-highlight-mode");
+        }
+        app.lsp_document_highlights = Some(crate::app::DocumentHighlightCache {
+            buffer_id: app.document_buffer_id,
+            cursor: lattice_protocol::Position::new(0, 4),
+            highlights: vec![
+                lsp_types::DocumentHighlight {
+                    range: lsp_types::Range {
+                        start: lsp_types::Position { line: 0, character: 4 },
+                        end: lsp_types::Position { line: 0, character: 5 },
+                    },
+                    kind: Some(lsp_types::DocumentHighlightKind::WRITE),
+                },
+                lsp_types::DocumentHighlight {
+                    range: lsp_types::Range {
+                        start: lsp_types::Position { line: 0, character: 8 },
+                        end: lsp_types::Position { line: 0, character: 9 },
+                    },
+                    kind: Some(lsp_types::DocumentHighlightKind::READ),
+                },
+            ],
+        });
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        // Walk the spans on row 0; expect at least one span
+        // with the read tint (rgb(20,50,25)) and one with the
+        // write tint (rgb(60,20,20)). Span splitting depends on
+        // overlay composition, so we tolerate any number of
+        // them as long as both tints appear at least once.
+        let row0 = &lines[0];
+        let mut saw_read = false;
+        let mut saw_write = false;
+        for span in &row0.spans {
+            match span.style.bg {
+                Some(Color::Rgb(20, 50, 25)) => saw_read = true,
+                Some(Color::Rgb(60, 20, 20)) => saw_write = true,
+                _ => {}
+            }
+        }
+        assert!(saw_read, "expected READ tint span; got {row0:?}");
+        assert!(saw_write, "expected WRITE tint span; got {row0:?}");
+    }
+
+    /// 4.4.e: with the mode off, the overlay must NOT paint --
+    /// even if the cache still holds entries (mode disable is
+    /// a render-side gate).
+    #[test]
+    fn document_highlight_overlay_suppressed_when_mode_off() {
+        use std::str::FromStr;
+        let mut app = app_with("let x = x;\n", 5);
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris.insert(app.document_buffer_id, uri);
+        if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-mode");
+        }
+        // Force the sub-mode OFF (lsp-mode cascade may have
+        // turned it on by default).
+        if app.lsp_document_highlight_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-document-highlight-mode");
+        }
+        app.lsp_document_highlights = Some(crate::app::DocumentHighlightCache {
+            buffer_id: app.document_buffer_id,
+            cursor: lattice_protocol::Position::new(0, 4),
+            highlights: vec![lsp_types::DocumentHighlight {
+                range: lsp_types::Range {
+                    start: lsp_types::Position { line: 0, character: 4 },
+                    end: lsp_types::Position { line: 0, character: 5 },
+                },
+                kind: None,
+            }],
+        });
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let row0 = &lines[0];
+        for span in &row0.spans {
+            // No DH-tinted span should appear.
+            assert!(
+                !matches!(span.style.bg, Some(Color::Rgb(20, 30, 60))),
+                "expected suppressed; got tinted span: {span:?}"
+            );
+        }
     }
 
     #[test]

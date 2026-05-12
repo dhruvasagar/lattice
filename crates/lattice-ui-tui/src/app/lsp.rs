@@ -4066,6 +4066,404 @@ impl App {
         }
     }
 
+    /// 4.4.e: per-tick `documentHighlight` pump. Fires a fresh
+    /// request when the cursor moves to a different (line, byte)
+    /// from the prior issue point; cancels any in-flight
+    /// predecessor so a slow server can't paint a stale highlight
+    /// over a moved cursor.
+    pub fn maybe_request_document_highlight(&mut self) {
+        if !self.lsp_document_highlight_mode_enabled_for(self.document_buffer_id) {
+            // Mode off: clear stale state so the overlay
+            // disappears the moment the user disables the mode.
+            self.lsp_document_highlights = None;
+            self.last_document_highlight_issue_cursor = None;
+            if let Some(token) = self.pending_document_highlight_token.take() {
+                token.cancel();
+            }
+            return;
+        }
+        if self.last_document_highlight_issue_cursor == Some(self.cursor) {
+            return;
+        }
+        // Invalidate stale cache if it belonged to a different
+        // buffer.
+        if let Some(cache) = self.lsp_document_highlights.as_ref() {
+            if cache.buffer_id != self.document_buffer_id {
+                self.lsp_document_highlights = None;
+            }
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let Some(position) =
+            crate::app::app_to_lsp_position(&snapshot.buffer, self.cursor)
+        else {
+            return;
+        };
+        // Cancel any in-flight request so its response is
+        // dropped if it lands after this one is issued.
+        if let Some(token) = self.pending_document_highlight_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let anchor_cursor = self.cursor;
+        self.last_document_highlight_issue_cursor = Some(anchor_cursor);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            super::DocumentHighlightOutcome,
+        >();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_document_highlight_rx = Some(rx);
+        self.pending_document_highlight_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.servers_for(&uri) };
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_document_highlight())
+            else {
+                let _ = tx.send(super::DocumentHighlightOutcome::Empty { buffer_id });
+                return;
+            };
+            let params = lsp_types::DocumentHighlightParams {
+                text_document_position_params: lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.document_highlight(params, token.clone()).await {
+                Ok(Some(highlights)) if !highlights.is_empty() => {
+                    let _ = tx.send(super::DocumentHighlightOutcome::Items {
+                        buffer_id,
+                        cursor: anchor_cursor,
+                        highlights,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(super::DocumentHighlightOutcome::Empty { buffer_id });
+                }
+            }
+        });
+    }
+
+    /// 4.4.e: drain the in-flight `documentHighlight` response
+    /// (if any). Coalesces multiple queued outcomes to the
+    /// latest one so a burst of cursor moves only commits the
+    /// final response.
+    pub fn drain_pending_document_highlight(&mut self) {
+        let Some(mut rx) = self.pending_document_highlight_rx.take() else {
+            return;
+        };
+        let mut latest: Option<super::DocumentHighlightOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
+        }
+        self.pending_document_highlight_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        match outcome {
+            super::DocumentHighlightOutcome::Items {
+                buffer_id,
+                cursor,
+                highlights,
+            } => {
+                // Guard against stale responses that arrived
+                // after the active buffer switched out from
+                // under the request.
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_document_highlights = Some(super::DocumentHighlightCache {
+                    buffer_id,
+                    cursor,
+                    highlights,
+                });
+            }
+            super::DocumentHighlightOutcome::Empty { buffer_id } => {
+                if buffer_id == self.document_buffer_id {
+                    self.lsp_document_highlights = None;
+                }
+            }
+        }
+    }
+
+    /// 4.4.e: `:lsp-expand-region` -- structural smart-
+    /// expansion. If a cached chain still applies (cursor sits
+    /// inside its innermost range AND same buffer), step the
+    /// index outward and apply the new selection. Otherwise
+    /// fire `textDocument/selectionRange` and let the drain
+    /// seat the chain + apply step 0 on completion.
+    pub fn do_lsp_expand_region(&mut self) {
+        if self.try_step_cached_region(super::SelectionRangeStep::Expand) {
+            return;
+        }
+        self.issue_selection_range_request(super::SelectionRangeStep::Expand);
+    }
+
+    /// 4.4.e: `:lsp-shrink-region` -- step inward inside the
+    /// cached chain. With no cache (e.g. user invoked shrink
+    /// first), echo + bail; with the cursor at index 0, exit
+    /// Visual mode.
+    pub fn do_lsp_shrink_region(&mut self) {
+        if self.try_step_cached_region(super::SelectionRangeStep::Shrink) {
+            return;
+        }
+        // No active chain to shrink -- user likely invoked
+        // shrink before expand. Echo + bail rather than issuing
+        // a fresh request (a shrink without prior expand has no
+        // meaningful step to take).
+        self.set_message(
+            EchoLevel::Info,
+            "lsp-shrink-region: no active expansion to shrink".to_string(),
+        );
+    }
+
+    /// Returns `true` when the cached chain was usable for the
+    /// requested step (and the selection has been applied).
+    /// `false` means the caller must fall back to issuing a
+    /// fresh request (expand) or surfacing an error (shrink).
+    fn try_step_cached_region(&mut self, step: super::SelectionRangeStep) -> bool {
+        let Some(chain) = self.lsp_selection_chain.as_ref() else {
+            return false;
+        };
+        if chain.buffer_id != self.document_buffer_id {
+            self.lsp_selection_chain = None;
+            self.lsp_selection_chain_index = 0;
+            return false;
+        }
+        // Cache is anchored at the original cursor. If the
+        // cursor has wandered outside the innermost range we
+        // invalidate -- the chain belonged to a different
+        // symbol position.
+        let inside = chain
+            .ranges
+            .first()
+            .is_some_and(|r| crate::app::cursor_inside_range(self.cursor, r));
+        if !inside {
+            self.lsp_selection_chain = None;
+            self.lsp_selection_chain_index = 0;
+            return false;
+        }
+        match step {
+            super::SelectionRangeStep::Expand => {
+                let next = self.lsp_selection_chain_index + 1;
+                if next >= chain.ranges.len() {
+                    self.set_message(
+                        EchoLevel::Info,
+                        "lsp-expand-region: outermost".to_string(),
+                    );
+                    return true;
+                }
+                self.lsp_selection_chain_index = next;
+            }
+            super::SelectionRangeStep::Shrink => {
+                if self.lsp_selection_chain_index == 0 {
+                    // Collapse to cursor; exit Visual.
+                    self.do_exit_visual();
+                    return true;
+                }
+                self.lsp_selection_chain_index -= 1;
+            }
+        }
+        self.apply_selection_chain_step();
+        true
+    }
+
+    fn apply_selection_chain_step(&mut self) {
+        let Some(chain) = self.lsp_selection_chain.as_ref() else {
+            return;
+        };
+        let Some(range) = chain.ranges.get(self.lsp_selection_chain_index).cloned()
+        else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let anchor = lattice_protocol::Position {
+            line: range.start.line,
+            byte: crate::app::lsp_position_to_app_byte(
+                &snapshot.buffer,
+                range.start.line,
+                range.start.character,
+            ),
+        };
+        let head = lattice_protocol::Position {
+            line: range.end.line,
+            byte: crate::app::lsp_position_to_app_byte(
+                &snapshot.buffer,
+                range.end.line,
+                range.end.character,
+            ),
+        };
+        // Apply via Visual-mode plumbing: enter Visual if not
+        // already, then seat the selection with anchor/head.
+        use lattice_grammar::{ModalState, VisualKind};
+        use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+        self.modal = ModalState::Visual(VisualKind::Charwise);
+        self.visual_anchor = Some(anchor);
+        // The cursor lands on the head; the head sits *inside*
+        // the range (LSP ranges are half-open).
+        self.cursor = head;
+        let sel = Selection {
+            anchor,
+            head,
+            visual: Some(VisualMode::Charwise),
+        };
+        self.set_selections_blocking(SelectionSet::single(sel));
+    }
+
+    fn issue_selection_range_request(&mut self, step: super::SelectionRangeStep) {
+        // M.6.2: lsp-selection-range-mode gate.
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspSelectionRangeMode::mode_id(),
+            "lsp-selection-range-mode",
+        ) {
+            return;
+        }
+        // Cancel any in-flight request first so the prior
+        // response can't seat a stale chain.
+        if let Some(token) = self.pending_selection_range_token.take() {
+            token.cancel();
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let position = match crate::app::app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => {
+                self.set_message(
+                    EchoLevel::Error,
+                    "lsp-expand-region: cursor out of buffer".to_string(),
+                );
+                return;
+            }
+        };
+        let anchor_cursor = self.cursor;
+        let anchor_buffer = self.document_buffer_id;
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::SelectionRangeOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_selection_range_rx = Some(rx);
+        self.pending_selection_range_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.servers_for(&uri) };
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_selection_range())
+            else {
+                let _ = tx.send(super::SelectionRangeOutcome::NoProvider);
+                return;
+            };
+            let params = lsp_types::SelectionRangeParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                positions: vec![position],
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.selection_range(params, token.clone()).await {
+                Ok(Some(ranges)) if !ranges.is_empty() => {
+                    let flat = super::flatten_selection_range_chain(&ranges[0]);
+                    if flat.is_empty() {
+                        let _ = tx.send(super::SelectionRangeOutcome::Empty);
+                        return;
+                    }
+                    let _ = tx.send(super::SelectionRangeOutcome::Items {
+                        anchor_cursor,
+                        anchor_buffer,
+                        ranges: flat,
+                        pending_step: step,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(super::SelectionRangeOutcome::Empty);
+                }
+            }
+        });
+    }
+
+    /// 4.4.e: drain the in-flight `selectionRange` response.
+    /// Seats the chain into `App::lsp_selection_chain` and
+    /// applies the step the original invocation requested.
+    pub fn drain_pending_selection_range(&mut self) {
+        let Some(mut rx) = self.pending_selection_range_rx.take() else {
+            return;
+        };
+        // Coalesce: only the most recent outcome wins. A user
+        // that mashes `:lsp-expand-region` faster than the
+        // server can respond would otherwise step through the
+        // older chain before the newer one lands.
+        let mut latest: Option<super::SelectionRangeOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
+        }
+        self.pending_selection_range_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        match outcome {
+            super::SelectionRangeOutcome::Items {
+                anchor_cursor,
+                anchor_buffer,
+                ranges,
+                pending_step,
+            } => {
+                self.lsp_selection_chain = Some(super::LspSelectionChain {
+                    buffer_id: anchor_buffer,
+                    anchor_cursor,
+                    ranges,
+                });
+                // Always start at index 0 (innermost); for an
+                // expand-triggered fetch we then bump to 1 so
+                // the user sees the first widening; for a
+                // shrink-triggered fetch we leave at 0 (the
+                // shrink-without-cache case is the user's bail
+                // path).
+                self.lsp_selection_chain_index = match pending_step {
+                    super::SelectionRangeStep::Expand => {
+                        let chain = self.lsp_selection_chain.as_ref().unwrap();
+                        if chain.ranges.len() > 1 {
+                            1
+                        } else {
+                            0
+                        }
+                    }
+                    super::SelectionRangeStep::Shrink => 0,
+                };
+                self.apply_selection_chain_step();
+            }
+            super::SelectionRangeOutcome::NoProvider => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "lsp-expand-region: no server advertises selectionRange".to_string(),
+                );
+            }
+            super::SelectionRangeOutcome::Empty => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "lsp-expand-region: server returned no ranges".to_string(),
+                );
+            }
+        }
+    }
+
     /// `:lsp-log-level [server] <level>` -- set the subsystem
     /// default min level (when no server) or a per-server
     /// override.
@@ -6484,11 +6882,23 @@ mod tests {
     }
 
     #[test]
-    fn lsp_restart_currently_echoes_placeholder() {
+    fn lsp_restart_queues_via_supervisor_mailbox() {
+        // 4.4.d: the placeholder echo path is gone; the real
+        // dispatcher posts a `Restart` cmd onto the supervisor
+        // mailbox and echoes "queued" while the async work
+        // unfolds. The supervisor's response (success/error,
+        // including the backoff cooldown) lands in the *lsp*
+        // log via `LspLogger::log`, which is asserted in the
+        // supervisor's own tests.
         let mut app = app_with("hi\n", 5);
         app.do_lsp_restart("rust");
         let msg = app.last_message.as_ref().unwrap();
-        assert!(msg.text.contains("4.4"));
+        assert!(
+            msg.text.contains("queued"),
+            "expected immediate `queued` echo; got `{}`",
+            msg.text,
+        );
+        assert!(matches!(msg.level, EchoLevel::Info));
     }
 
     fn app_with_path(
@@ -6942,6 +7352,53 @@ mod tests {
         assert!(app.picker.is_none());
         let msg = app.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no diagnostics"));
+    }
+
+    /// 4.4.e: flatten LSP linked-list `SelectionRange` into a
+    /// `Vec<Range>` ordered innermost-first.
+    #[test]
+    fn flatten_selection_range_chain_walks_parent_links() {
+        let outer = lsp_types::SelectionRange {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: 0, character: 0 },
+                end: lsp_types::Position { line: 5, character: 0 },
+            },
+            parent: None,
+        };
+        let middle = lsp_types::SelectionRange {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: 1, character: 0 },
+                end: lsp_types::Position { line: 3, character: 0 },
+            },
+            parent: Some(Box::new(outer)),
+        };
+        let inner = lsp_types::SelectionRange {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: 2, character: 0 },
+                end: lsp_types::Position { line: 2, character: 8 },
+            },
+            parent: Some(Box::new(middle)),
+        };
+        let flat = crate::app::flatten_selection_range_chain(&inner);
+        assert_eq!(flat.len(), 3);
+        assert_eq!(flat[0].start.line, 2); // innermost
+        assert_eq!(flat[1].start.line, 1);
+        assert_eq!(flat[2].start.line, 0); // outermost
+    }
+
+    /// 4.4.e: cursor on the start-character of a range is
+    /// "inside" (half-open); cursor on `end` is outside.
+    #[test]
+    fn cursor_inside_range_is_half_open() {
+        let r = lsp_types::Range {
+            start: lsp_types::Position { line: 1, character: 4 },
+            end: lsp_types::Position { line: 1, character: 8 },
+        };
+        assert!(crate::app::cursor_inside_range(Position::new(1, 4), &r));
+        assert!(crate::app::cursor_inside_range(Position::new(1, 6), &r));
+        assert!(!crate::app::cursor_inside_range(Position::new(1, 8), &r));
+        assert!(!crate::app::cursor_inside_range(Position::new(0, 6), &r));
+        assert!(!crate::app::cursor_inside_range(Position::new(2, 6), &r));
     }
 
 }

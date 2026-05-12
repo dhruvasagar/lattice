@@ -693,6 +693,49 @@ pub struct PrevPaneState {
     pub scroll: u32,
 }
 
+/// 4.4.e: cached `textDocument/selectionRange` chain anchored
+/// at a specific buffer + cursor position. Flat `Vec<Range>`
+/// (innermost first) instead of the LSP linked-list shape so
+/// the operator can index into it in O(1). Captured once on
+/// the first `:lsp-expand-region` after a fresh cursor; reused
+/// across subsequent expand/shrink steps until the cursor
+/// moves outside `ranges[0]` (the innermost) or the buffer
+/// changes.
+#[derive(Debug, Clone)]
+pub struct LspSelectionChain {
+    pub buffer_id: BufferId,
+    pub anchor_cursor: Position,
+    pub ranges: Vec<lsp_types::Range>,
+}
+
+/// 4.4.e: cached `textDocument/documentHighlight` result
+/// anchored at a specific buffer + cursor position. The
+/// renderer reads `highlights` to paint a soft overlay; the
+/// pump compares `cursor` to the live cursor to decide whether
+/// to invalidate and re-request.
+#[derive(Debug, Clone)]
+pub struct DocumentHighlightCache {
+    pub buffer_id: BufferId,
+    pub cursor: Position,
+    pub highlights: Vec<lsp_types::DocumentHighlight>,
+}
+
+/// 4.4.e: in-flight `documentHighlight` request outcome.
+#[derive(Debug, Clone)]
+pub enum DocumentHighlightOutcome {
+    Items {
+        buffer_id: BufferId,
+        cursor: Position,
+        highlights: Vec<lsp_types::DocumentHighlight>,
+    },
+    /// Server returned null (cursor not on a known symbol);
+    /// the pump clears the cache so we don't paint stale
+    /// highlights.
+    Empty {
+        buffer_id: BufferId,
+    },
+}
+
 pub struct App {
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable [`Document`]; mutations route
@@ -1470,6 +1513,43 @@ pub struct App {
     /// active entry to surface.
     pub lsp_progress:
         std::collections::HashMap<(std::sync::Arc<str>, String), lattice_lsp::LspProgressUpdate>,
+    /// 4.4.e: cached `textDocument/selectionRange` chain for
+    /// the smart-expansion operator. Index 0 is the innermost
+    /// range (closest to the cursor); each subsequent entry is
+    /// one `parent` step outward. `cursor` and `buffer` are the
+    /// anchor that captured this chain; we invalidate the cache
+    /// when the cursor moves outside the innermost range or
+    /// the active buffer changes.
+    pub lsp_selection_chain: Option<LspSelectionChain>,
+    /// 4.4.e: current step inside `lsp_selection_chain.ranges`.
+    /// `0` = innermost; `chain.ranges.len() - 1` = outermost.
+    pub lsp_selection_chain_index: usize,
+    /// 4.4.e: receiver for the in-flight `selectionRange`
+    /// response. Drained per frame.
+    pub pending_selection_range_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<SelectionRangeOutcome>>,
+    /// 4.4.e: cancellation token for the in-flight
+    /// `selectionRange` request. Flipped when the user invokes
+    /// `:lsp-expand-region` again (or moves the cursor) before
+    /// the prior response lands; the response is then dropped.
+    pub pending_selection_range_token: Option<lattice_protocol::CancellationToken>,
+    /// 4.4.e: cached `textDocument/documentHighlight` for the
+    /// active buffer + symbol position. Refreshed by the
+    /// per-tick pump when the cursor moves to a different
+    /// (line, byte). Renderer reads this to paint the soft
+    /// overlay across same-symbol occurrences.
+    pub lsp_document_highlights: Option<DocumentHighlightCache>,
+    /// 4.4.e: cursor position at which the most recent
+    /// `documentHighlight` request was issued. Used by the
+    /// pump to decide whether to re-issue (cursor moved) vs.
+    /// reuse the cache. Distinct from `cache.cursor` because
+    /// the in-flight request may not have landed yet.
+    pub last_document_highlight_issue_cursor: Option<Position>,
+    /// 4.4.e: cancellation token + receiver for the in-flight
+    /// `documentHighlight` request.
+    pub pending_document_highlight_token: Option<lattice_protocol::CancellationToken>,
+    pub pending_document_highlight_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<DocumentHighlightOutcome>>,
     // `completion.auto_insert_single` lives on the typed-options
     // registry (`self.config` type-keyed by
     // `lattice_config::CompletionAutoInsertSingle`). Read via
@@ -1841,6 +1921,35 @@ pub enum SymbolsOutcome {
         rows: Vec<SymbolRow>,
     },
     NoServers,
+}
+
+/// 4.4.e: outcome of an in-flight `textDocument/selectionRange`
+/// request. The drain consumes one of these per response and
+/// either seats the chain into `App::lsp_selection_chain` or
+/// surfaces an error echo. `pending_step` carries whether the
+/// triggering invocation was `:lsp-expand-region` or the first
+/// step of `:lsp-shrink-region` (the latter is rare -- shrink
+/// without an existing chain is a user error -- but the drain
+/// handles it uniformly).
+#[derive(Debug, Clone)]
+pub enum SelectionRangeOutcome {
+    /// Server returned a non-empty chain; `ranges[0]` is the
+    /// innermost. The drain stores this and applies the first
+    /// step at `index = 0` (then bumps for expand).
+    Items {
+        anchor_cursor: Position,
+        anchor_buffer: BufferId,
+        ranges: Vec<lsp_types::Range>,
+        pending_step: SelectionRangeStep,
+    },
+    NoProvider,
+    Empty,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionRangeStep {
+    Expand,
+    Shrink,
 }
 
 /// Which navigation request flavour produced an in-flight nav
@@ -2308,6 +2417,33 @@ pub(crate) fn signature_help_to_markdown(sh: &lsp_types::SignatureHelp) -> Strin
 pub(crate) fn lsp_position_to_app_byte(buffer: &Buffer, line: u32, character: u32) -> u32 {
     let line_text = buffer.line(line).unwrap_or_default();
     lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, character)
+}
+
+/// 4.4.e: does the App `(line, byte)` cursor sit inside the
+/// half-open LSP `range`? We compare only by (line, character)
+/// in LSP utf-16 space because the range itself is LSP-shape;
+/// the App cursor is converted on the fly.
+pub(crate) fn cursor_inside_range(cursor: Position, range: &lsp_types::Range) -> bool {
+    let line = cursor.line;
+    let col = cursor.byte;
+    let start = (range.start.line, range.start.character);
+    let end = (range.end.line, range.end.character);
+    let here = (line, col);
+    here >= start && here < end
+}
+
+/// 4.4.e: flatten an LSP `SelectionRange` (linked list via
+/// `parent`) into a `Vec<Range>` ordered innermost-first.
+pub(crate) fn flatten_selection_range_chain(
+    head: &lsp_types::SelectionRange,
+) -> Vec<lsp_types::Range> {
+    let mut out = Vec::new();
+    let mut cur = Some(head);
+    while let Some(node) = cur {
+        out.push(node.range);
+        cur = node.parent.as_deref();
+    }
+    out
 }
 
 pub(crate) fn app_to_lsp_position(buffer: &Buffer, p: Position) -> Option<lsp_types::Position> {

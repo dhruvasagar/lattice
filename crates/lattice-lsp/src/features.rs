@@ -298,6 +298,22 @@ impl ServerHandle {
         self.notify("workspace/didChangeConfiguration", params)
     }
 
+    /// 4.4.l: `workspace/didChangeWatchedFiles` (notification).
+    /// Fan-out fires when the host's file-watcher observes an
+    /// fs event whose path matches a glob from this server's
+    /// `client/registerCapability`-issued
+    /// `DidChangeWatchedFilesRegistrationOptions`. The host
+    /// batches per-tick into one notification per server (the
+    /// LSP spec allows multiple `FileEvent`s in one payload);
+    /// servers receive the events in arrival order.
+    /// Notification-only -- no response, no cancellation.
+    pub fn did_change_watched_files(
+        &self,
+        params: lsp_types::DidChangeWatchedFilesParams,
+    ) -> crate::error::LspResult<()> {
+        self.notify("workspace/didChangeWatchedFiles", params)
+    }
+
     /// `textDocument/codeAction` (Phase 4.3). Returns the list
     /// of quick fixes / refactors / source actions available
     /// for the supplied range. Each item carries either an

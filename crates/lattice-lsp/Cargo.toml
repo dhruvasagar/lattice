@@ -27,6 +27,11 @@ lsp-types = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
+# 4.4.l: glob matching for the file-watcher subscription set.
+# `globset::GlobSet` compiles N patterns into one matcher so
+# per-fs-event cost is O(1) regardless of how many globs the
+# server registered.
+globset = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time"] }

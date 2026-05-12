@@ -75,6 +75,20 @@ toml = "0.8"
 # the loader to locate ~/.config/lattice/lattice.toml and friends.
 dirs = "5"
 
+# 4.4.l: cross-platform file-system watcher (inotify on Linux,
+# FSEvents on macOS, ReadDirectoryChanges on Windows). Used by
+# the LSP file-watcher service to back `workspace/didChangeWatchedFiles`
+# fan-out -- servers register glob patterns dynamically via
+# `client/registerCapability`; we forward matching fs events.
+notify = "6"
+
+# 4.4.l: glob-pattern matching for the file-watcher's
+# registration set. `globset` compiles multiple patterns into
+# one fast aho-corasick-backed matcher so the per-event match
+# cost stays O(1) regardless of how many patterns are
+# registered.
+globset = "0.4"
+
 # LSP (Phase 4 -- lattice-lsp). `lsp-types` models the LSP 3.17
 # wire types; we hand-roll the JSON-RPC client + framing per
 # DESIGN.md §5.4 (tower-lsp is server-side). `serde_json` is the

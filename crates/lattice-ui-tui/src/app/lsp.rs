@@ -1420,6 +1420,47 @@ impl App {
         }
     }
 
+    /// 4.4.k: fan out `workspace/didChangeConfiguration` to
+    /// every running actor with the given `server_id`. Called
+    /// from the typed-option cascade
+    /// ([`Self::apply_option_cascade`]) whenever a key under
+    /// `lsp.<server_id>.*` changes. The notification's
+    /// `settings` payload is the full `lsp.<server_id>` JSON
+    /// subtree from the merged TOML tree -- matches the shape
+    /// returned by `workspace/configuration` so servers that
+    /// pull and servers that read-inline see consistent data.
+    ///
+    /// Empty subtree (server doesn't exist in TOML) still
+    /// fires the notification with `settings: null`; per spec
+    /// servers MAY interpret that as "reset to defaults".
+    /// Notify-only -- no response, errors log and skip.
+    ///
+    /// Cross-workspace fan-out: if two actors share `server_id`
+    /// across different workspace roots, both receive the
+    /// notification (config is global, not workspace-scoped).
+    pub fn fan_out_did_change_configuration(&mut self, server_id: &str) {
+        let settings = self.lookup_lsp_config_section(server_id);
+        let params = lsp_types::DidChangeConfigurationParams { settings };
+        let supervisor = self.lsp.clone();
+        for (_key, handle) in supervisor.running_actors() {
+            if handle.server_id() != server_id {
+                continue;
+            }
+            if let Err(e) = handle.did_change_configuration(params.clone()) {
+                let server_id_arc: std::sync::Arc<str> =
+                    std::sync::Arc::from(handle.server_id());
+                self.lsp_logger.log(
+                    Some(&server_id_arc),
+                    lattice_lsp::LogLevel::Warn,
+                    lattice_lsp::LogSource::Client,
+                    format!(
+                        "workspace/didChangeConfiguration fan-out failed: {e}"
+                    ),
+                );
+            }
+        }
+    }
+
     /// Look up a server-supplied `section` path in the cached
     /// TOML tree at `lsp.<section>`. Returns `Value::Null` when
     /// the path is missing or the TOML value can't be converted

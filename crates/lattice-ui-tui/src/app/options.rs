@@ -477,7 +477,21 @@ impl App {
                     }
                 }
             }
-            _ => {}
+            // 4.4.k: any change under `lsp.<server-id>.*` is a
+            // server-scoped config edit -- fan out
+            // `workspace/didChangeConfiguration` to every actor
+            // matching that server-id with the freshly merged
+            // `lsp.<server-id>` subtree. `lsp.<host-knob>` keys
+            // (e.g. `lsp.log_level`, `lsp.log_capacity`) have
+            // only one dot after `lsp` and stop here -- they
+            // configure the host, not any server, and shouldn't
+            // page every attached language server.
+            n => {
+                if let Some(server_id) = lsp_server_scope(n) {
+                    let server_id = server_id.to_string();
+                    self.fan_out_did_change_configuration(&server_id);
+                }
+            }
         }
     }
 
@@ -729,6 +743,26 @@ impl App {
     }
 }
 
+/// 4.4.k: returns `Some(server_id)` when `canonical_name`
+/// names a server-scoped config key (`lsp.<server_id>.<...>`),
+/// `None` otherwise. Used by [`App::apply_option_cascade`] to
+/// decide whether an option change should fan out
+/// `workspace/didChangeConfiguration` to a language server.
+///
+/// Single-dot `lsp.foo` keys are host-side (the `log_level` /
+/// `log_capacity` family); the spec is that we never page
+/// servers for host-side knob changes.
+pub(crate) fn lsp_server_scope(canonical_name: &str) -> Option<&str> {
+    let rest = canonical_name.strip_prefix("lsp.")?;
+    let dot = rest.find('.')?;
+    let server_id = &rest[..dot];
+    if server_id.is_empty() {
+        None
+    } else {
+        Some(server_id)
+    }
+}
+
 /// Parse a `[completion.per-language.<lang>]` TOML sub-table
 /// into [`PerLanguageOverrides`]. Unknown keys + wrong-typed
 /// values append warnings to `warnings` (caller surfaces them
@@ -797,6 +831,36 @@ mod tests {
     use crate::app::test_helpers::{app_in_command_mode, app_with, subscribe_all_events, submit_ex};
     use lattice_grammar::ModalState;
     use lattice_protocol::Event;
+
+    // ---- 4.4.k: lsp_server_scope ----
+
+    /// 4.4.k: `lsp.<server>.<key>` returns the server-id;
+    /// anything shallower (`lsp.<host-knob>`) is host-side and
+    /// returns None. The host-side knobs (e.g. `lsp.log_level`)
+    /// must NOT trigger workspace/didChangeConfiguration, since
+    /// they configure the host's behaviour, not the server's.
+    #[test]
+    fn lsp_server_scope_picks_server_id_segment() {
+        use super::lsp_server_scope;
+        assert_eq!(
+            lsp_server_scope("lsp.rust-analyzer.checkOnSave"),
+            Some("rust-analyzer")
+        );
+        assert_eq!(
+            lsp_server_scope("lsp.gopls.completeUnimported"),
+            Some("gopls")
+        );
+        // Single-dot under lsp.* -> host knob, NOT a fan-out
+        // target.
+        assert_eq!(lsp_server_scope("lsp.log_level"), None);
+        assert_eq!(lsp_server_scope("lsp.log_capacity"), None);
+        // Non-lsp options are unaffected.
+        assert_eq!(lsp_server_scope("tabstop"), None);
+        assert_eq!(lsp_server_scope("ui.theme"), None);
+        // Empty server-id (`lsp..foo`) is rejected -- malformed
+        // config should never page a phantom server.
+        assert_eq!(lsp_server_scope("lsp..foo"), None);
+    }
 
     // ---- Event::OptionChanged (DESIGN.md §5.10 + §5.12) ----
 

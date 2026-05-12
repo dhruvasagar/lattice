@@ -442,3 +442,38 @@ fn block_on_drives_the_async_path() {
         };
     });
 }
+
+/// 4.4.k: `did_change_configuration` is a notification (no
+/// response). The mock receives it in its notification log
+/// with the `settings` JSON tree we hand in.
+#[tokio::test]
+async fn did_change_configuration_notifies_with_settings() {
+    let mock = MockServer::start().await;
+    let baseline = mock.mock.notifications().await.len();
+    mock.handle
+        .did_change_configuration(lsp_types::DidChangeConfigurationParams {
+            settings: json!({
+                "rust-analyzer": {
+                    "checkOnSave": true,
+                    "cargo": { "features": ["foo", "bar"] }
+                }
+            }),
+        })
+        .expect("notification queued");
+    // The notification fires via the actor's outbound channel; the
+    // wire flush is asynchronous, so give it a tick to land.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let notes = mock.mock.notifications().await;
+    let new_notes = &notes[baseline..];
+    let our = new_notes
+        .iter()
+        .find(|n| n.method == "workspace/didChangeConfiguration")
+        .expect("mock received didChangeConfiguration");
+    let params = our.params.as_ref().expect("notification carries params");
+    let settings = &params["settings"];
+    assert_eq!(settings["rust-analyzer"]["checkOnSave"], json!(true));
+    assert_eq!(
+        settings["rust-analyzer"]["cargo"]["features"],
+        json!(["foo", "bar"]),
+    );
+}

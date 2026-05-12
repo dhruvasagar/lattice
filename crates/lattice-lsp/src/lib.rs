@@ -80,14 +80,16 @@ pub use diagnostics::{DIAGNOSTICS_CHANNEL_CAPACITY, DiagnosticEvent, Diagnostics
 pub use diagnostics_layer::{DiagnosticsLayer, SeverityCounts, pump_diagnostics};
 pub use error::{LspError, LspResult};
 pub use events::{
-    LspBufferAttached, LspBufferDetached, LspDocumentChanged, LspLogPushed, LspProgressKind,
-    LspProgressUpdate,
+    LspActorExitReason, LspActorExited, LspBufferAttached, LspBufferDetached, LspDocumentChanged,
+    LspLogPushed, LspProgressKind, LspProgressUpdate,
 };
 pub use logging::{LogLevel, LogRecord, LogRing, LogSource, LspLogger};
 pub use framing::{FrameError, FrameHeader};
 pub use jsonrpc::{Message, Notification, Request, RequestId, Response, ResponseError};
 pub use pending::{InvocationId, Pending};
-pub use supervisor::{ActorKey, LspSupervisor, LspSupervisorHandle, SupervisorSnapshot};
+pub use supervisor::{
+    ActorKey, LspSupervisor, LspSupervisorHandle, RestartReport, SupervisorSnapshot,
+};
 pub use sync::{DocSync, uri_from_str};
 
 // Re-export commonly-used LSP types so consumers don't need

@@ -84,9 +84,10 @@
 //!   (lattice-lsp has no parser dependencies). The App calls
 //!   `add_config()` for each entry.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use lsp_types::Uri;
@@ -103,6 +104,20 @@ use lattice_protocol::edit::Edit;
 /// so [`SupervisorSnapshot`] consumers can pattern-match on the
 /// actor map without re-typing the tuple.
 pub type ActorKey = (PathBuf, String);
+
+/// 4.4.d: result of a successful [`LspSupervisor::restart_server`]
+/// (or the handle-side equivalent). The App surfaces these to
+/// the user in the echo area ("restarted rust in 1 workspace; 4
+/// buffers replayed") and tests assert on them.
+#[derive(Debug, Clone)]
+pub struct RestartReport {
+    pub server_id: String,
+    /// Every `(workspace, server_id)` pair that re-spawned.
+    pub respawned: Vec<ActorKey>,
+    /// URIs that the replay path issued `didOpen` for so the
+    /// new actor sees the same buffer set.
+    pub replayed_uris: Vec<Uri>,
+}
 
 /// One LSP subsystem per editor instance.
 pub struct LspSupervisor {
@@ -159,6 +174,39 @@ pub struct LspSupervisor {
     /// actor so shutdown can call `unsubscribe` and stop the
     /// bus from holding a dead sender.
     fan_in_subs: HashMap<ActorKey, lattice_runtime::SubscriptionId>,
+    /// 4.4.d: per-server-id recent restart timestamps. Each
+    /// `:lsp-restart` (and each auto-restart on crash) appends
+    /// the current `Instant`; older entries (> 60s) are pruned
+    /// before the gate check fires. The cap (`MAX_RESTARTS`) is
+    /// per-window so a healthy server that crashes once a day
+    /// keeps restarting forever, but a runaway crash loop
+    /// surfaces as a refusal after the third attempt.
+    restart_history: HashMap<String, VecDeque<Instant>>,
+}
+
+/// 4.4.d: maximum restarts allowed inside [`RESTART_WINDOW`].
+/// Beyond this the supervisor refuses to restart the same server
+/// id until the window slides past. Three is the smallest number
+/// that lets a "spawn → crash → spawn" double-tap recover (one
+/// restart for the user's `:lsp-restart`, one for the post-crash
+/// auto, one for a fast self-correcting re-crash) without
+/// hiding a runaway loop.
+pub(crate) const MAX_RESTARTS: usize = 3;
+/// 4.4.d: rolling window the restart counter respects.
+pub(crate) const RESTART_WINDOW: Duration = Duration::from_secs(60);
+/// 4.4.d: base delay between restarts; multiplied by `2^n` where
+/// `n` is the number of restarts already inside the window.
+/// Capped at [`RESTART_BACKOFF_MAX`].
+pub(crate) const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(250);
+pub(crate) const RESTART_BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+fn compute_restart_backoff(prior_count: usize) -> Duration {
+    if prior_count == 0 {
+        return Duration::ZERO;
+    }
+    let factor = 1u32 << prior_count.min(7); // cap shift at 2^7
+    let scaled = RESTART_BACKOFF_BASE.saturating_mul(factor);
+    scaled.min(RESTART_BACKOFF_MAX)
 }
 
 impl LspSupervisor {
@@ -177,6 +225,7 @@ impl LspSupervisor {
             configuration_bus: None,
             event_bus: None,
             fan_in_subs: HashMap::new(),
+            restart_history: HashMap::new(),
         }
     }
 
@@ -597,6 +646,192 @@ impl LspSupervisor {
         self.actors.len()
     }
 
+    /// 4.4.d: force-restart every actor with id `server_id`.
+    ///
+    /// Steps:
+    ///   1. Prune restart history outside [`RESTART_WINDOW`].
+    ///   2. If `history.len() >= MAX_RESTARTS`, refuse (caller
+    ///      surfaces the cooldown to the user).
+    ///   3. Sleep [`compute_restart_backoff(history.len())`].
+    ///   4. For every `(workspace, server_id)` actor pair: shut
+    ///      down the existing handle, drop the fan-in
+    ///      subscription, spawn a fresh actor with the same
+    ///      config, restart the diagnostics pump + fan-in.
+    ///   5. Replay `didOpen` for every URI that pointed at the
+    ///      old actor so the new actor sees the same workspace
+    ///      state.
+    ///   6. Push `Instant::now()` to history.
+    ///
+    /// Replayed `didOpen` uses each tracked URI's last-known
+    /// text; today the supervisor doesn't keep that text (each
+    /// actor's `DocSync` owns the mirror), so the replay uses
+    /// the empty string and the App is expected to re-send the
+    /// full buffer via the next `didChange` debounce. Future
+    /// revision can snapshot text into `RestartReport` and let
+    /// the App ferry it back via `record_edit` proactively.
+    ///
+    /// Returns the list of `(workspace, server_id)` keys that
+    /// were re-spawned and the URIs that need re-opening.
+    pub async fn restart_server(
+        &mut self,
+        server_id: &str,
+    ) -> LspResult<RestartReport> {
+        // Step 1: prune the window.
+        let now = Instant::now();
+        let history = self
+            .restart_history
+            .entry(server_id.to_string())
+            .or_default();
+        while let Some(front) = history.front().copied()
+            && now.duration_since(front) >= RESTART_WINDOW
+        {
+            history.pop_front();
+        }
+
+        // Step 2: gate.
+        if history.len() >= MAX_RESTARTS {
+            let oldest = history.front().copied().unwrap_or(now);
+            let resume = oldest + RESTART_WINDOW;
+            let cooldown = resume.saturating_duration_since(now);
+            return Err(LspError::HandshakeFailed(format!(
+                "{server_id}: too many restarts ({} in the last {}s); next allowed in {}ms",
+                history.len(),
+                RESTART_WINDOW.as_secs(),
+                cooldown.as_millis(),
+            )));
+        }
+
+        // Step 3: backoff before doing any work.
+        let backoff = compute_restart_backoff(history.len());
+        if !backoff.is_zero() {
+            tokio::time::sleep(backoff).await;
+        }
+
+        // Snapshot every (workspace, server_id) match -- usually
+        // one actor, but a single server can attach to multiple
+        // workspaces if the user opens files across different
+        // roots.
+        let targets: Vec<ActorKey> = self
+            .actors
+            .keys()
+            .filter(|(_, id)| id == server_id)
+            .cloned()
+            .collect();
+        if targets.is_empty() {
+            return Err(LspError::HandshakeFailed(format!(
+                "{server_id}: no running actor with that id"
+            )));
+        }
+        let config = self
+            .configs
+            .iter()
+            .find(|c| c.id == server_id)
+            .cloned()
+            .ok_or_else(|| {
+                LspError::HandshakeFailed(format!("{server_id}: no config registered"))
+            })?;
+
+        let mut respawned: Vec<ActorKey> = Vec::new();
+        let mut replayed_uris: Vec<Uri> = Vec::new();
+
+        for key in targets {
+            // Step 4: shut down + replace.
+            let workspace = key.0.clone();
+            let old_handle = match self.actors.remove(&key) {
+                Some(h) => h,
+                None => continue,
+            };
+            if let Some(bus) = self.event_bus.as_ref() {
+                if let Some(sub) = self.fan_in_subs.remove(&key) {
+                    bus.unsubscribe(sub);
+                }
+            } else {
+                self.fan_in_subs.remove(&key);
+            }
+            // Best-effort graceful shutdown. We don't fail the
+            // restart on shutdown errors -- the wire path may
+            // already be dead (the very reason the user asked
+            // for a restart).
+            let _ = old_handle.shutdown().await;
+
+            self.logger.log(
+                None,
+                LogLevel::Info,
+                LogSource::Client,
+                format!(
+                    "supervisor: restarting {} in workspace {}",
+                    server_id,
+                    workspace.display(),
+                ),
+            );
+
+            let new_handle = actor::spawn(
+                (*config).clone(),
+                workspace.clone(),
+                self.logger.clone(),
+                self.apply_edit_bus.clone(),
+                self.configuration_bus.clone(),
+                self.event_bus.clone(),
+            )
+            .await?;
+
+            let rx = new_handle.subscribe_diagnostics();
+            tokio::spawn(pump_diagnostics(self.diagnostics.clone(), rx));
+            self.actors.insert(key.clone(), new_handle.clone());
+            if let Some(bus) = self.event_bus.clone() {
+                let sub = crate::fan_in::spawn(new_handle.clone(), bus);
+                self.fan_in_subs.insert(key.clone(), sub);
+            }
+
+            // Step 5: replay didOpen for every URI bound to this
+            // key. Empty text -- the next edit (or an explicit
+            // App re-send) repopulates the server's mirror.
+            let uris_for_key: Vec<Uri> = self
+                .attachments
+                .iter()
+                .filter_map(|(uri, keys)| {
+                    if keys.contains(&key) {
+                        Some(uri.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for uri in &uris_for_key {
+                if let Err(e) = new_handle.open_doc(
+                    uri.clone(),
+                    config.language_id.clone(),
+                    String::new(),
+                ) {
+                    self.logger.log(
+                        None,
+                        LogLevel::Warn,
+                        LogSource::Client,
+                        format!(
+                            "supervisor: restart replay didOpen for {} failed: {}",
+                            uri.as_str(),
+                            e,
+                        ),
+                    );
+                }
+            }
+            replayed_uris.extend(uris_for_key);
+            respawned.push(key);
+        }
+
+        // Step 6: record this restart.
+        self.restart_history
+            .entry(server_id.to_string())
+            .or_default()
+            .push_back(now);
+
+        Ok(RestartReport {
+            server_id: server_id.to_string(),
+            respawned,
+            replayed_uris,
+        })
+    }
+
     /// Detach every buffer + drop every actor. Used at editor
     /// exit. Each attached buffer's `didClose` is fired.
     pub async fn shutdown(&mut self) -> LspResult<()> {
@@ -695,7 +930,22 @@ impl LspSupervisor {
         let logger = self.logger.clone();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SupervisorCmd>();
         let snapshot_for_task = snapshot_cell.clone();
-        runtime_handle.spawn(supervisor_main(self, cmd_rx, snapshot_for_task));
+        // 4.4.d: bridge `LspActorExited` events from the editor
+        // bus to a tokio mpsc the supervisor task selects on.
+        // None when `set_event_bus` was never called (tests that
+        // skip event-bus wiring; pre-config sequences); the
+        // supervisor task tolerates a never-firing receiver.
+        let exit_rx = self.event_bus.as_ref().map(|bus| {
+            let (tx, rx) = mpsc::unbounded_channel::<crate::events::LspActorExited>();
+            bus.subscribe_typed(tx);
+            rx
+        });
+        runtime_handle.spawn(supervisor_main(
+            self,
+            cmd_rx,
+            exit_rx,
+            snapshot_for_task,
+        ));
         LspSupervisorHandle {
             snapshot: snapshot_cell,
             cmd_tx,
@@ -802,6 +1052,12 @@ enum SupervisorCmd {
     /// tests + admin tooling; production edits flow through the
     /// event-bus fan-in (see `lattice_lsp::fan_in`).
     RecordEdit { uri: Uri, edit: Edit },
+    /// 4.4.d: force-restart every actor with id `server_id`.
+    /// Replays `didOpen` for every URI that was attached.
+    Restart {
+        server_id: String,
+        reply: oneshot::Sender<LspResult<RestartReport>>,
+    },
     /// Editor exit: close every buffer, drop fan-ins, shut down
     /// every actor. Reply resolves after the supervisor task
     /// itself is exiting (next iteration drops `cmd_rx`).
@@ -1021,6 +1277,22 @@ impl LspSupervisorHandle {
         let _ = self.cmd_tx.send(SupervisorCmd::RecordEdit { uri, edit });
     }
 
+    /// 4.4.d: force-restart every actor with id `server_id`.
+    /// Subject to the per-server-id restart-history backoff:
+    /// more than [`MAX_RESTARTS`] inside [`RESTART_WINDOW`]
+    /// returns an error; the caller surfaces the cooldown
+    /// message via `set_message`.
+    pub async fn restart_server(
+        &self,
+        server_id: String,
+    ) -> LspResult<RestartReport> {
+        let (reply, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SupervisorCmd::Restart { server_id, reply })
+            .map_err(|_| LspError::ActorGone)?;
+        rx.await.map_err(|_| LspError::ActorGone)?
+    }
+
     /// Editor exit: close every buffer, drop fan-ins, shut down
     /// every actor. Awaits the supervisor task's final ack.
     pub async fn shutdown(&self) -> LspResult<()> {
@@ -1055,9 +1327,28 @@ impl std::fmt::Debug for LspSupervisorHandle {
 async fn supervisor_main(
     mut state: LspSupervisor,
     mut cmd_rx: mpsc::UnboundedReceiver<SupervisorCmd>,
+    mut exit_rx: Option<mpsc::UnboundedReceiver<crate::events::LspActorExited>>,
     snapshot: Arc<ArcSwap<SupervisorSnapshot>>,
 ) {
-    while let Some(cmd) = cmd_rx.recv().await {
+    loop {
+        let cmd = tokio::select! {
+            biased;
+            // Drain exit events first so a crash-storm can't
+            // get starved behind a long sequence of edits.
+            Some(exit) = async {
+                match exit_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                handle_actor_exit(&mut state, &snapshot, exit).await;
+                continue;
+            }
+            cmd = cmd_rx.recv() => match cmd {
+                Some(c) => c,
+                None => break,
+            },
+        };
         match cmd {
             SupervisorCmd::OpenBuffer { path, text, reply } => {
                 let result = state.open_buffer(path, text).await;
@@ -1102,6 +1393,11 @@ async fn supervisor_main(
             SupervisorCmd::RecordEdit { uri, edit } => {
                 let _ = state.record_edit(&uri, &edit);
             }
+            SupervisorCmd::Restart { server_id, reply } => {
+                let result = state.restart_server(&server_id).await;
+                snapshot.store(Arc::new(state.build_snapshot()));
+                let _ = reply.send(result);
+            }
             SupervisorCmd::Shutdown { reply } => {
                 let result = state.shutdown().await;
                 snapshot.store(Arc::new(state.build_snapshot()));
@@ -1114,6 +1410,183 @@ async fn supervisor_main(
             }
         }
     }
+}
+
+/// 4.4.d: handle a typed `LspActorExited`. Clean exits are
+/// already accounted for (the supervisor itself triggered the
+/// shutdown via `:lsp-restart` or `shutdown`). Unexpected
+/// exits drive a restart through the same path the user-
+/// facing `restart_server` uses, including the backoff gate
+/// -- a server in a crash loop hits `MAX_RESTARTS` and the
+/// supervisor stops attempting until the window slides past.
+async fn handle_actor_exit(
+    state: &mut LspSupervisor,
+    snapshot: &Arc<ArcSwap<SupervisorSnapshot>>,
+    exit: crate::events::LspActorExited,
+) {
+    use crate::events::LspActorExitReason;
+    if matches!(exit.reason, LspActorExitReason::Clean) {
+        // Routine shutdown -- nothing to do. The
+        // restart_server / shutdown path already removed the
+        // actor + republished snapshot.
+        return;
+    }
+    let server_id = exit.server_id.as_ref();
+    // Drop the dead actor (and its fan-in) from state before
+    // re-spawning so `restart_server`'s view is consistent.
+    // The actor's `cmd_tx` is closed already (its task
+    // returned); a stale entry would mislead `running_actors`
+    // and the snapshot.
+    let stale_keys: Vec<ActorKey> = state
+        .actors
+        .keys()
+        .filter(|(_, id)| id == server_id)
+        .cloned()
+        .collect();
+    for key in &stale_keys {
+        state.actors.remove(key);
+        if let Some(bus) = state.event_bus.as_ref() {
+            if let Some(sub) = state.fan_in_subs.remove(key) {
+                bus.unsubscribe(sub);
+            }
+        } else {
+            state.fan_in_subs.remove(key);
+        }
+    }
+    state.logger.log(
+        None,
+        LogLevel::Warn,
+        LogSource::Client,
+        format!(
+            "supervisor: {} exited unexpectedly; attempting auto-restart",
+            server_id,
+        ),
+    );
+    // Re-stash workspace info: restart_server walks actors,
+    // but those are gone now. Synthesise the calls by stashing
+    // workspaces from the stale_keys list -- we can't reuse
+    // restart_server here because it expects actors[key] to
+    // still exist. Inline the equivalent spawn-and-replay
+    // logic without the gate's "no running actor" branch:
+    // the actor *had* been running, it just died.
+    let history = state
+        .restart_history
+        .entry(server_id.to_string())
+        .or_default();
+    let now = Instant::now();
+    while let Some(front) = history.front().copied()
+        && now.duration_since(front) >= RESTART_WINDOW
+    {
+        history.pop_front();
+    }
+    if history.len() >= MAX_RESTARTS {
+        state.logger.log(
+            None,
+            LogLevel::Error,
+            LogSource::Client,
+            format!(
+                "supervisor: {} crashed {} times in {}s; giving up auto-restart \
+                 (use :lsp-restart {} after the window slides past)",
+                server_id,
+                history.len(),
+                RESTART_WINDOW.as_secs(),
+                server_id,
+            ),
+        );
+        snapshot.store(Arc::new(state.build_snapshot()));
+        return;
+    }
+    let backoff = compute_restart_backoff(history.len());
+    if !backoff.is_zero() {
+        tokio::time::sleep(backoff).await;
+    }
+    let config = match state.configs.iter().find(|c| c.id == server_id).cloned() {
+        Some(c) => c,
+        None => {
+            state.logger.log(
+                None,
+                LogLevel::Warn,
+                LogSource::Client,
+                format!(
+                    "supervisor: {} exited but its config is gone; cannot restart",
+                    server_id
+                ),
+            );
+            snapshot.store(Arc::new(state.build_snapshot()));
+            return;
+        }
+    };
+    for key in stale_keys {
+        let workspace = key.0.clone();
+        let new_handle = match actor::spawn(
+            (*config).clone(),
+            workspace.clone(),
+            state.logger.clone(),
+            state.apply_edit_bus.clone(),
+            state.configuration_bus.clone(),
+            state.event_bus.clone(),
+        )
+        .await
+        {
+            Ok(h) => h,
+            Err(e) => {
+                state.logger.log(
+                    None,
+                    LogLevel::Warn,
+                    LogSource::Client,
+                    format!(
+                        "supervisor: auto-restart spawn failed for {} ({}): {}",
+                        server_id,
+                        workspace.display(),
+                        e,
+                    ),
+                );
+                continue;
+            }
+        };
+        let rx = new_handle.subscribe_diagnostics();
+        tokio::spawn(pump_diagnostics(state.diagnostics.clone(), rx));
+        state.actors.insert(key.clone(), new_handle.clone());
+        if let Some(bus) = state.event_bus.clone() {
+            let sub = crate::fan_in::spawn(new_handle.clone(), bus);
+            state.fan_in_subs.insert(key.clone(), sub);
+        }
+        let uris_for_key: Vec<Uri> = state
+            .attachments
+            .iter()
+            .filter_map(|(uri, keys)| {
+                if keys.contains(&key) {
+                    Some(uri.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for uri in uris_for_key {
+            if let Err(e) = new_handle.open_doc(
+                uri.clone(),
+                config.language_id.clone(),
+                String::new(),
+            ) {
+                state.logger.log(
+                    None,
+                    LogLevel::Warn,
+                    LogSource::Client,
+                    format!(
+                        "supervisor: auto-restart replay didOpen for {} failed: {}",
+                        uri.as_str(),
+                        e,
+                    ),
+                );
+            }
+        }
+    }
+    state
+        .restart_history
+        .entry(server_id.to_string())
+        .or_default()
+        .push_back(now);
+    snapshot.store(Arc::new(state.build_snapshot()));
 }
 
 /// Match `path` against any of `patterns`. Supports `*.<ext>`
@@ -1160,6 +1633,51 @@ mod tests {
         let path = std::path::PathBuf::from("/tmp/main.go");
         let patterns = vec!["*.rs".to_string(), "*.go".to_string(), "go.mod".to_string()];
         assert!(matches_any_pattern(&path, &patterns));
+    }
+
+    /// 4.4.d: the backoff growth doubles per prior restart, but
+    /// stays bounded so a 10-restart-storm doesn't wedge for
+    /// hours. The cap is the load-bearing property; the exact
+    /// curve below it isn't.
+    #[test]
+    fn restart_backoff_doubles_then_caps() {
+        assert_eq!(compute_restart_backoff(0), Duration::ZERO);
+        assert_eq!(compute_restart_backoff(1), Duration::from_millis(500));
+        assert_eq!(compute_restart_backoff(2), Duration::from_millis(1000));
+        // Saturates well before pathological values.
+        let big = compute_restart_backoff(20);
+        assert_eq!(big, RESTART_BACKOFF_MAX);
+    }
+
+    #[tokio::test]
+    async fn restart_no_running_actor_returns_error() {
+        // No actor with `rust` id is running; the supervisor
+        // must refuse rather than silently spawn one.
+        let mut sup = LspSupervisor::new(LspLogger::with_defaults());
+        sup.add_config(ServerConfig::new("rust", "rust-analyzer", "rust"));
+        let err = sup.restart_server("rust").await.unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no running actor"),
+            "got: {msg}",
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_unknown_config_returns_error() {
+        // Even with restart history clean, asking to restart a
+        // server with no registered config must fail rather
+        // than panicking on the `find` below.
+        let mut sup = LspSupervisor::new(LspLogger::with_defaults());
+        let err = sup.restart_server("ghost").await.unwrap_err();
+        let msg = format!("{err}");
+        // We hit the "no running actor" branch first (since
+        // both checks fail without an actor); that's the
+        // correct user-facing message either way.
+        assert!(
+            msg.contains("no running actor") || msg.contains("no config"),
+            "got: {msg}",
+        );
     }
 
     #[test]

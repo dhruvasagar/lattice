@@ -143,6 +143,40 @@ lattice_protocol::register_event!(
     "lattice-lsp",
 );
 
+/// Fired when an actor task exits (4.4.d). The supervisor
+/// subscribes to this event to drive crash-detection
+/// auto-restart: `Clean` exits (after a `Shutdown` command)
+/// are ignored; `Unexpected` exits trigger the
+/// supervisor's restart-with-backoff path. The supervisor
+/// is the single subscriber today; plugin telemetry can
+/// subscribe later without further plumbing.
+#[derive(Debug, Clone)]
+pub struct LspActorExited {
+    pub server_id: Arc<str>,
+    pub reason: LspActorExitReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspActorExitReason {
+    /// Actor exited because the supervisor (or last
+    /// `ServerHandle`) requested shutdown -- no restart wanted.
+    Clean,
+    /// Actor exited because read_loop returned None (pipe
+    /// closed, server crashed) or another unexpected condition.
+    /// The supervisor restarts via the same path `:lsp-restart`
+    /// uses, gated on the restart-history backoff window.
+    Unexpected,
+}
+
+lattice_protocol::register_event!(
+    LspActorExited,
+    "lsp.actor-exited",
+    "Fired when an actor task exits. The supervisor uses this for \
+     crash-detection auto-restart; subscribers can also tap for \
+     telemetry.",
+    "lattice-lsp",
+);
+
 /// Fired when a document buffer changes *and* `lsp-mode` is
 /// active for that buffer (M.5.5). The per-actor fan-in
 /// (`crate::fan_in`) subscribes via

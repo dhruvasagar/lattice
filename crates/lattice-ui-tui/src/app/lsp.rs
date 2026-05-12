@@ -3678,12 +3678,44 @@ impl App {
     /// Currently emits an info message; full restart-with-
     /// backoff lands in 4.4.
     pub fn do_lsp_restart(&mut self, server_id: &str) {
+        // 4.4.d: drive the supervisor mailbox. Backoff lives on
+        // the supervisor side; the user-facing surface here is
+        // just success / error / report. The call is async but
+        // we don't have an executor on the UI thread, so we
+        // spawn into the LSP runtime and let the result echo
+        // via the bus-message path.
+        let supervisor = self.lsp.clone();
+        let id_owned = server_id.to_string();
+        let runtime = crate::runtime::lsp_runtime();
+        let logger = self.lsp_logger.clone();
+        runtime.spawn(async move {
+            match supervisor.restart_server(id_owned.clone()).await {
+                Ok(report) => {
+                    logger.log(
+                        None,
+                        lattice_lsp::LogLevel::Info,
+                        lattice_lsp::LogSource::Client,
+                        format!(
+                            "lsp-restart {}: respawned {} actor(s); replayed didOpen on {} uri(s)",
+                            report.server_id,
+                            report.respawned.len(),
+                            report.replayed_uris.len(),
+                        ),
+                    );
+                }
+                Err(e) => {
+                    logger.log(
+                        None,
+                        lattice_lsp::LogLevel::Warn,
+                        lattice_lsp::LogSource::Client,
+                        format!("lsp-restart {}: {}", id_owned, e),
+                    );
+                }
+            }
+        });
         self.set_message(
             EchoLevel::Info,
-            format!(
-                "lsp-restart {}: supervisor restart wiring lands in 4.4",
-                server_id
-            ),
+            format!("lsp-restart {server_id}: queued"),
         );
     }
 

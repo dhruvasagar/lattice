@@ -1074,8 +1074,25 @@ async fn actor_main<R, W>(
     for (_id, reply) in pending.drain() {
         let _ = reply.send(Err(LspError::ActorGone));
     }
+    let was_clean_shutdown = shutting_down.is_some();
     if let Some(reply) = shutting_down {
         let _ = reply.send(Ok(()));
+    }
+    // 4.4.d: publish actor-exited to the event bus so the
+    // supervisor can drive auto-restart on unexpected exits.
+    // Clean exits (the user / shutdown path requested it) are
+    // tagged distinctly so the supervisor doesn't restart what
+    // it just asked to die.
+    if let Some(bus) = event_bus {
+        let reason = if was_clean_shutdown {
+            crate::events::LspActorExitReason::Clean
+        } else {
+            crate::events::LspActorExitReason::Unexpected
+        };
+        bus.publish_typed(crate::events::LspActorExited {
+            server_id: server_id_arc.clone(),
+            reason,
+        });
     }
 }
 

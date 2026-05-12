@@ -220,7 +220,7 @@ Phase rollup:
 - **4.1** Foundation: **complete**. Wire layer + actor/handshake + sync + diagnostics (broadcast → layer → renderer → buffer view + nav) + logging (rings + tracing fan-out + buffer views + commands) + supervisor + App-side wiring + edit-dispatch + open-on-`:e` all shipped. `workspace/configuration` surfaces real values from the merged user + project TOML tree via the `ConfigurationBus` mpsc + oneshot channel and the `App::drain_inbound_configuration_requests` drain; users place server-namespaced settings under `[lsp.<server-id>]`.
 - **4.2** Navigation: **complete**. ✅ hover (`K`), definition (`gd`), declaration (`gD`), typeDefinition (`gy`), implementation (`gI`), references (`gr`), documentSymbol (`:lsp-symbols`), workspaceSymbol (`:lsp-workspace-symbol`), workspaceSymbol/resolve (eager-resolve at fan-out for LSP 3.17+ Nested-WorkspaceLocation symbols), Insert-mode completion (the full 4.2.g surface: shell + buffer-words + LSP source + docs popup + lazy completionItem/resolve + snippets + frequency / per-source priority / per-language overrides + tree-sitter + path source + commit chars + ghost text + cross-source dedup + typed picker routing). All multi-result lookups + `:diagnostics` route through the unified vertico picker (`PickerSource::LspLocations` + `PickerAction::JumpToLspLocation`); picker routing payload is now typed (`RoutingPayload` enum) so accept dispatch reads variants instead of parsing tab-encoded strings. Tag stack `<C-t>` pops `gd`-family drill-downs LIFO; jump list `<C-o>`/`<C-i>` walks every cursor jump chronologically. The `:complete` picker bridge stays as the cmdline-driven peer of the inline popup.
 - **4.3** Edits: **complete**. formatting + rangeFormatting; signatureHelp + Insert-mode autopilot; rename + prepareRename; willSave / didSave notifications; willSaveWaitUntil format-on-save (500ms per-server bound); codeAction + resolve + executeCommand; onTypeFormatting Insert-mode autopilot; `workspace/applyEdit` (server-initiated) ferries through the `ApplyEditBus` mpsc + per-request oneshot, drained per-frame by `App::drain_inbound_apply_edits`. codeAction Commands keep routing through `executeCommand` (fire-and-forget); applyEdit is the inbound complement servers use after `executeCommand` callbacks.
-- **4.4** Polish: 3/15 -- in progress. 4.4.a (`window/showMessage` + `window/logMessage` + `telemetry/event`) + 4.4.c (`$/progress` accumulator + modeline slot + `window/workDoneProgress/cancel` + `lsp-progress-mode` sub-mode + `:lsp-progress-cancel`) + 4.4.o (`lsp.log_level` + `lsp.log_capacity` typed options seed the logger at boot; `lsp.trace_io` deferred -- runtime `:lsp-trace` covers it for now) shipped.
+- **4.4** Polish: 4/15 -- in progress. 4.4.a (`window/showMessage` + `window/logMessage` + `telemetry/event`) + 4.4.c (`$/progress` accumulator + modeline slot + `window/workDoneProgress/cancel` + `lsp-progress-mode` sub-mode + `:lsp-progress-cancel`) + 4.4.d (supervisor `restart_server` + per-server backoff window + crash-detection auto-restart via `LspActorExited` typed event + `:lsp-restart` wired end-to-end) + 4.4.o (`lsp.log_level` + `lsp.log_capacity` typed options seed the logger at boot; `lsp.trace_io` deferred -- runtime `:lsp-trace` covers it for now) shipped.
 - **4.5** Expansion: 0/14 -- queued.
 - **post-1.0**: notebooks + multi-root workspaces.
 
@@ -275,10 +275,16 @@ mind.
   omitted). `lsp-progress-mode` per-buffer minor gates the
   modeline render (events still flow; bus subscribers still see
   them).
-- **4.4.d** -- supervisor restart-with-backoff + `:lsp-restart`
-  wiring + crash-detection auto-restart (the supervisor's "today
-  the actor detects pipe close" comment becomes "and the
-  supervisor responds with a graceful respawn").
+- **4.4.d** -- ✅ shipped. Supervisor restart-with-backoff +
+  `:lsp-restart` wired end-to-end + crash-detection
+  auto-restart. The supervisor owns a per-server-id rolling
+  restart history (cap 3 restarts inside a 60s window; base
+  delay 250ms * 2^n capped at 30s); `:lsp-restart` and the
+  crash path share the gate. `LspActorExited` typed event
+  (`Clean` / `Unexpected`) fires from `actor::actor_main` on
+  exit; the supervisor's `select!` loop receives `Unexpected`
+  exits and triggers the restart with replay of `didOpen` for
+  every previously-attached buffer.
 
 ### Group 3 — new renderer overlays
 

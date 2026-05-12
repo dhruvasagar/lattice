@@ -85,6 +85,8 @@ pub struct ExBuiltins {
     pub lsp_log_clear: ExCommandId,
     pub lsp_symbols: ExCommandId,
     pub lsp_workspace_symbol: ExCommandId,
+    pub lsp_incoming_calls: ExCommandId,
+    pub lsp_outgoing_calls: ExCommandId,
     pub lsp_format: ExCommandId,
     pub lsp_format_range: ExCommandId,
     pub lsp_signature_help: ExCommandId,
@@ -1278,6 +1280,33 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         },
     );
 
+    let lsp_incoming_calls = registry.register_ex_command(
+        "ex:lsp-incoming-calls",
+        "Open a vertico picker over the callers of the function at the cursor (`textDocument/prepareCallHierarchy` -> `callHierarchy/incomingCalls`, Phase 4.5.a).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_ctx| Ok(Effect::LspIncomingCalls)),
+            args_schema: Vec::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let lsp_outgoing_calls = registry.register_ex_command(
+        "ex:lsp-outgoing-calls",
+        "Open a vertico picker over the callees of the function at the cursor (`textDocument/prepareCallHierarchy` -> `callHierarchy/outgoingCalls`, Phase 4.5.a).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_ctx| Ok(Effect::LspOutgoingCalls)),
+            args_schema: Vec::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
     let list_diagnostics = registry.register_ex_command(
         "ex:diagnostics",
         "Open a help-style buffer listing every workspace diagnostic with clickable per-entry source links (`:diagnostics`).",
@@ -1421,6 +1450,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_log_clear,
         lsp_symbols,
         lsp_workspace_symbol,
+        lsp_incoming_calls,
+        lsp_outgoing_calls,
         lsp_format,
         lsp_format_range,
         lsp_signature_help,

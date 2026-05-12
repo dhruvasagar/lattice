@@ -168,6 +168,49 @@ impl ServerHandle {
         self.request_with_cancel("workspaceSymbol/resolve", symbol, token)
     }
 
+    /// 4.5.a: `textDocument/prepareCallHierarchy`. Asks the
+    /// server which callable(s) live at the cursor; the
+    /// response feeds the subsequent
+    /// [`Self::call_hierarchy_incoming_calls`] /
+    /// [`Self::call_hierarchy_outgoing_calls`] request.
+    /// Servers typically return a single-element vec for a
+    /// position inside a function body; macros / overloads
+    /// can produce multiple items. `None` means "no callable
+    /// here", which short-circuits the navigation.
+    pub fn prepare_call_hierarchy(
+        &self,
+        params: lsp_types::CallHierarchyPrepareParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::CallHierarchyItem>>> {
+        self.request_with_cancel("textDocument/prepareCallHierarchy", params, token)
+    }
+
+    /// 4.5.a: `callHierarchy/incomingCalls`. Given a
+    /// `CallHierarchyItem` from `prepareCallHierarchy`,
+    /// returns the call sites that invoke it. Each
+    /// `CallHierarchyIncomingCall` carries the *caller* item
+    /// (`from`) plus the ranges inside the caller where the
+    /// call appears (`from_ranges`).
+    pub fn call_hierarchy_incoming_calls(
+        &self,
+        params: lsp_types::CallHierarchyIncomingCallsParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::CallHierarchyIncomingCall>>> {
+        self.request_with_cancel("callHierarchy/incomingCalls", params, token)
+    }
+
+    /// 4.5.a: `callHierarchy/outgoingCalls`. Symmetric peer
+    /// of `incomingCalls`; given a callable, returns the
+    /// callables it invokes plus the call sites inside its
+    /// own body (`from_ranges` on the caller's text).
+    pub fn call_hierarchy_outgoing_calls(
+        &self,
+        params: lsp_types::CallHierarchyOutgoingCallsParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::CallHierarchyOutgoingCall>>> {
+        self.request_with_cancel("callHierarchy/outgoingCalls", params, token)
+    }
+
     /// `textDocument/completion` (DESIGN.md §5.4 / Phase 4.2.g).
     /// Returns either an array of items or an `isIncomplete` list
     /// the editor must re-query as the user types more. The

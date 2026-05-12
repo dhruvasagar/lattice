@@ -260,6 +260,19 @@ fn text_document_capabilities() -> TextDocumentClientCapabilities {
             dynamic_registration: Some(false),
             related_document_support: Some(true),
         }),
+        // 4.5.a: tell servers we honour the call-hierarchy
+        // pipeline (`textDocument/prepareCallHierarchy` →
+        // `callHierarchy/{incoming,outgoing}Calls`).
+        // `dynamic_registration: false` keeps the gate purely
+        // server-cap driven; switching to dynamic doesn't buy
+        // us anything because the host can't suppress the
+        // commands at register time -- they probe `supports_*`
+        // on each invocation.
+        call_hierarchy: Some(
+            lsp_types::DynamicRegistrationClientCapabilities {
+                dynamic_registration: Some(false),
+            },
+        ),
         ..Default::default()
     }
 }
@@ -806,6 +819,20 @@ impl Capabilities {
                 r.diagnostic_options.workspace_diagnostics
             }
         }
+    }
+
+    /// 4.5.a: server's `callHierarchyProvider` presence --
+    /// gates `:lsp-incoming-calls` / `:lsp-outgoing-calls`.
+    /// Returns true for either the bool-only or options-shape
+    /// the LSP spec allows. Consults the dynamic registry
+    /// (4.4.n).
+    pub fn supports_call_hierarchy(&self) -> bool {
+        let static_ok = matches!(
+            self.server.call_hierarchy_provider,
+            Some(lsp_types::CallHierarchyServerCapability::Simple(true))
+                | Some(lsp_types::CallHierarchyServerCapability::Options(_))
+        );
+        static_ok || self.dynamic.has("textDocument/prepareCallHierarchy")
     }
 
     /// 4.4.m: server advertises interest in

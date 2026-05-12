@@ -3068,6 +3068,30 @@ pub(crate) fn symbol_information_to_row(
     })
 }
 
+/// 4.5.a: render one `CallHierarchyItem` (the caller in an
+/// `IncomingCall.from` or the callee in an
+/// `OutgoingCall.to`) as a [`SymbolRow`] for the picker. The
+/// item's `detail` (if any) plus the *originating* callable's
+/// name ride in `container` -- e.g. for an incoming-calls
+/// listing of `foo`, the rows say "bar.rs:42 fn quux  (in foo)".
+/// Falls back to `(path, 0, 0)` if the URI doesn't parse;
+/// keeping the row visible beats silently dropping it.
+pub(crate) fn call_hierarchy_to_row(
+    item: &lsp_types::CallHierarchyItem,
+    related_to: &str,
+) -> SymbolRow {
+    let path = lattice_lsp::actor::uri_to_path(&item.uri).unwrap_or_default();
+    SymbolRow {
+        name: item.name.clone(),
+        kind_glyph: symbol_kind_glyph(item.kind),
+        container: Some(format!("in {related_to}")),
+        depth: 0,
+        path,
+        line: item.selection_range.start.line,
+        col: item.selection_range.start.character,
+    }
+}
+
 /// Extract a placeholder string from a `PrepareRenameResponse`.
 /// The spec gives three shapes: a Range (no placeholder, just
 /// "you can rename here"), a Range+Placeholder (preferred), or

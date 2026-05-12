@@ -322,6 +322,14 @@ pub enum Effect {
     LspWorkspaceSymbol {
         query: String,
     },
+    /// `:lsp-incoming-calls` -- 4.5.a. Prepares call-hierarchy
+    /// items at the cursor, fans out `callHierarchy/incomingCalls`
+    /// for the first item, opens the merged caller list as a
+    /// vertico picker. "Who calls this function?"
+    LspIncomingCalls,
+    /// `:lsp-outgoing-calls` -- 4.5.a. Symmetric peer of
+    /// `LspIncomingCalls`. "What does this function call?"
+    LspOutgoingCalls,
     /// `:format` -- run `textDocument/formatting` on the highest-
     /// priority server with `documentFormattingProvider` and
     /// apply the returned edits as one undo unit. Phase 4.3.

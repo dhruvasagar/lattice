@@ -50,7 +50,7 @@ use super::{
     CompletionResolveOutcome, EchoLevel, FormatOutcome, HoverOutcome, InsertCompletionLspOutcome,
     LSP_COMPLETION_KIND_ID, LspCompletionMeta, LspNavKind, ReferencesOutcome, RenameOutcome,
     SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
-    code_action_kind_glyph, completion_kind_glyph, dedup_rendered_by_text,
+    call_hierarchy_to_row, code_action_kind_glyph, completion_kind_glyph, dedup_rendered_by_text,
     definition_response_to_locations, flatten_document_symbol_response, flatten_workspace_edit,
     hover_contents_to_markdown, is_word_char_byte, last_addressable_line, line_byte_len,
     lsp_position_to_app_byte, prepare_rename_placeholder, signature_help_to_markdown,
@@ -3426,6 +3426,160 @@ impl App {
                 self.picker = Some(p);
             }
         }
+    }
+
+    /// 4.5.a: `:lsp-incoming-calls` / `:lsp-outgoing-calls`.
+    /// Prepares call-hierarchy items at the cursor on the
+    /// first attached server with `callHierarchyProvider`,
+    /// then fans out the chosen direction
+    /// (`incomingCalls` / `outgoingCalls`) for the first item
+    /// in the response. The merged caller / callee list opens
+    /// in a vertico picker. Single-server strategy mirrors
+    /// the `:rename` choice -- a function's call graph is
+    /// language-specific; merging across servers produces
+    /// duplicated rows on mixed-language buffers.
+    ///
+    /// Picker rows reuse the `SymbolsOutcome` /
+    /// `PickerSource::LspLocations` plumbing so accept jumps
+    /// land through the existing `RoutingPayload::JumpToLspLocation`
+    /// path -- no new picker action variant required.
+    pub(super) fn do_lsp_call_hierarchy_request(&mut self, outgoing: bool) {
+        if let Some(token) = self.pending_symbols_token.take() {
+            token.cancel();
+        }
+        // Tag-stack: a call-hierarchy drill-down is a
+        // navigation intent; push the pre-jump cursor so
+        // `<C-t>` pops it cleanly.
+        let snapshot_for_label = self.document.snapshot();
+        let label =
+            word_under_cursor(&snapshot_for_label.buffer, self.cursor).unwrap_or_default();
+        self.pending_tag_origin = Some(TagStackEntry {
+            buffer: self.active_buffer,
+            buffer_id: self.active_pane_buffer_id(),
+            position: self.cursor,
+            label,
+        });
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no buffer URI -- save the file first".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => {
+                self.set_message(
+                    EchoLevel::Warn,
+                    "cursor outside the document".to_string(),
+                );
+                return;
+            }
+        };
+        let handles = self.lsp.servers_for(&uri);
+        let handle = handles
+            .into_iter()
+            .find(|h| h.capabilities().supports_call_hierarchy());
+        let Some(handle) = handle else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server with call-hierarchy support".to_string(),
+            );
+            return;
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SymbolsOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_symbols_rx = Some(rx);
+        self.pending_symbols_token = Some(token.clone());
+        let direction_label = if outgoing { "outgoing" } else { "incoming" };
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            // 1. Prepare at cursor.
+            let prepare_params = lsp_types::CallHierarchyPrepareParams {
+                text_document_position_params: lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri },
+                    position: lsp_position,
+                },
+                work_done_progress_params: Default::default(),
+            };
+            let items = match handle
+                .prepare_call_hierarchy(prepare_params, token.clone())
+                .await
+            {
+                Ok(Some(items)) if !items.is_empty() => items,
+                _ => {
+                    let _ = tx.send(SymbolsOutcome::Found {
+                        title: format!("{direction_label}-calls (no item at cursor)"),
+                        rows: Vec::new(),
+                    });
+                    return;
+                }
+            };
+            // First-item strategy: rare for a position to map
+            // to >1 callable; when it does, the picker on the
+            // subsequent step lets the user pick. v2 polish
+            // can expose the prepare list as a pre-step
+            // picker.
+            let item = items.into_iter().next().expect("non-empty per match");
+            let item_name = item.name.clone();
+            // 2. Call the chosen direction.
+            let mut rows: Vec<SymbolRow> = Vec::new();
+            if outgoing {
+                let p = lsp_types::CallHierarchyOutgoingCallsParams {
+                    item: item.clone(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                };
+                if let Ok(Some(calls)) =
+                    handle.call_hierarchy_outgoing_calls(p, token.clone()).await
+                {
+                    for call in calls {
+                        if token.is_cancelled() {
+                            return;
+                        }
+                        rows.push(call_hierarchy_to_row(
+                            &call.to,
+                            &item_name,
+                        ));
+                    }
+                }
+            } else {
+                let p = lsp_types::CallHierarchyIncomingCallsParams {
+                    item: item.clone(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                };
+                if let Ok(Some(calls)) =
+                    handle.call_hierarchy_incoming_calls(p, token.clone()).await
+                {
+                    for call in calls {
+                        if token.is_cancelled() {
+                            return;
+                        }
+                        rows.push(call_hierarchy_to_row(
+                            &call.from,
+                            &item_name,
+                        ));
+                    }
+                }
+            }
+            rows.sort_by(|a, b| {
+                a.path
+                    .cmp(&b.path)
+                    .then_with(|| a.line.cmp(&b.line))
+                    .then_with(|| a.col.cmp(&b.col))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            let title = format!(
+                "{direction_label}-calls of {item_name} ({})",
+                rows.len()
+            );
+            let _ = tx.send(SymbolsOutcome::Found { title, rows });
+        });
     }
 
     /// `:lsp-signature-help` (Phase 4.3). Fan-out across attached

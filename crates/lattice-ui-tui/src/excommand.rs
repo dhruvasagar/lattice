@@ -455,6 +455,9 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     // Navigation pickers (Phase 4.2.e / 4.2.f).
     ("lsp-symbols", "ex:lsp-symbols"),
     ("lsp-workspace-symbol", "ex:lsp-workspace-symbol"),
+    // 4.5.a -- call hierarchy.
+    ("lsp-incoming-calls", "ex:lsp-incoming-calls"),
+    ("lsp-outgoing-calls", "ex:lsp-outgoing-calls"),
     // Phase 4.3 edits.
     ("lsp-format", "ex:lsp-format"),
     ("lsp-format-range", "ex:lsp-format-range"),

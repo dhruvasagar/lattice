@@ -561,3 +561,110 @@ async fn will_delete_files_handles_null_response() {
         .expect("response decodes");
     assert!(edit.is_none(), "null response surfaces as None");
 }
+
+/// 4.5.a: `prepare_call_hierarchy` round-trips a single
+/// `CallHierarchyItem` from the server.
+#[tokio::test]
+async fn prepare_call_hierarchy_returns_item_at_cursor() {
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("textDocument/prepareCallHierarchy", |_params| {
+            MockResult::Ok(json!([{
+                "name": "foo",
+                "kind": 12,
+                "uri": "file:///tmp/lib.rs",
+                "range": {
+                    "start": {"line": 10, "character": 0},
+                    "end": {"line": 10, "character": 8}
+                },
+                "selectionRange": {
+                    "start": {"line": 10, "character": 4},
+                    "end": {"line": 10, "character": 7}
+                }
+            }]))
+        })
+        .await;
+    let items = mock
+        .handle
+        .prepare_call_hierarchy(
+            lsp_types::CallHierarchyPrepareParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///tmp/lib.rs").unwrap(),
+                    },
+                    position: LspPosition { line: 10, character: 4 },
+                },
+                work_done_progress_params: Default::default(),
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("response decodes")
+        .expect("server returned items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].name, "foo");
+    assert_eq!(items[0].selection_range.start.line, 10);
+}
+
+/// 4.5.a: `call_hierarchy_incoming_calls` returns the
+/// `IncomingCall { from, from_ranges }` shape with the
+/// caller item plus call-site ranges.
+#[tokio::test]
+async fn call_hierarchy_incoming_calls_returns_callers() {
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("callHierarchy/incomingCalls", |_params| {
+            MockResult::Ok(json!([{
+                "from": {
+                    "name": "bar",
+                    "kind": 12,
+                    "uri": "file:///tmp/lib.rs",
+                    "range": {
+                        "start": {"line": 20, "character": 0},
+                        "end": {"line": 22, "character": 1}
+                    },
+                    "selectionRange": {
+                        "start": {"line": 20, "character": 4},
+                        "end": {"line": 20, "character": 7}
+                    }
+                },
+                "fromRanges": [{
+                    "start": {"line": 21, "character": 8},
+                    "end": {"line": 21, "character": 11}
+                }]
+            }]))
+        })
+        .await;
+    let item = lsp_types::CallHierarchyItem {
+        name: "foo".into(),
+        kind: lsp_types::SymbolKind::FUNCTION,
+        tags: None,
+        detail: None,
+        uri: Uri::from_str("file:///tmp/lib.rs").unwrap(),
+        range: LspRange {
+            start: LspPosition { line: 10, character: 0 },
+            end: LspPosition { line: 10, character: 8 },
+        },
+        selection_range: LspRange {
+            start: LspPosition { line: 10, character: 4 },
+            end: LspPosition { line: 10, character: 7 },
+        },
+        data: None,
+    };
+    let calls = mock
+        .handle
+        .call_hierarchy_incoming_calls(
+            lsp_types::CallHierarchyIncomingCallsParams {
+                item,
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("response decodes")
+        .expect("server returned calls");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].from.name, "bar");
+    assert_eq!(calls[0].from_ranges[0].start.line, 21);
+}

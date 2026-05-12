@@ -1192,6 +1192,8 @@ impl App {
             Effect::LspWorkspaceSymbol { query } => {
                 self.do_lsp_workspace_symbol_request(&query)
             }
+            Effect::LspIncomingCalls => self.do_lsp_call_hierarchy_request(false),
+            Effect::LspOutgoingCalls => self.do_lsp_call_hierarchy_request(true),
             Effect::LspFormat => self.do_lsp_format_request(false),
             Effect::LspFormatRange => self.do_lsp_format_request(true),
             Effect::LspSignatureHelp => self.do_lsp_signature_help_request(),
@@ -1436,6 +1438,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspLogClear { .. }
         | Effect::LspDocumentSymbol
         | Effect::LspWorkspaceSymbol { .. }
+        | Effect::LspIncomingCalls
+        | Effect::LspOutgoingCalls
         | Effect::LspFormat
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp
@@ -1512,6 +1516,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspLogClear { .. }
         | Effect::LspDocumentSymbol
         | Effect::LspWorkspaceSymbol { .. }
+        | Effect::LspIncomingCalls
+        | Effect::LspOutgoingCalls
         | Effect::LspFormat
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp

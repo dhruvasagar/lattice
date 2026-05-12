@@ -423,14 +423,20 @@ a smaller blast radius:
 - **Phase 1** (4.4.f) — `ConfigRegistry` exposed via
   `ctx.config()`. `LspFoldingMode` migrated to own its
   `foldmethod=lsp` swap.
-- **Phase 2** (queued) — typed event bus exposed via
-  `ctx.events()`. `LspMode` will migrate to publish
+- **Phase 1.5** — declarative `Mode::mirrors_option()`
+  hint replaces six hardcoded per-display-mode special
+  cases in the App's option-changed cascade with one
+  generic loop.
+- **Phase 2** — typed event bus exposed via
+  `ctx.events()`. `LspMode` publishes
   `LspBufferAttached` / `LspBufferDetached` from its
-  hand-written hooks.
+  hand-written hooks (was App-side
+  `on_lsp_mode_activated` / `_deactivated`).
 - **Phase 3** (queued) — typed service registry exposed via
-  `ctx.service::<LspSupervisorHandle>()`. `LspMode`'s
-  `didClose` cascade and cross-mode cascade trigger will
-  migrate, eliminating the App-side `on_lsp_mode_*` hooks.
+  `ctx.service::<LspSupervisorHandle>()` + cascade
+  primitive. `LspMode`'s `didClose` cascade and sub-mode
+  cascade activation will migrate, eliminating the
+  remaining App-side `on_lsp_mode_*` orchestration.
 
 `OptionOverrideSet` is a type-checked bag built via macro (§6.4
 shows the syntax). Each entry pairs an option type with a value

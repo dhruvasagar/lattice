@@ -24,6 +24,10 @@ lattice-config = { path = "../lattice-config" }
 # transitively (lattice-config -> lattice-completion); the direct
 # dep just makes the import path explicit.
 lattice-completion = { path = "../lattice-completion" }
+# Phase 2 ModeContext extension: lifecycle hooks can publish
+# typed events via `ctx.events()`. The event bus type lives in
+# `lattice-runtime`.
+lattice-runtime = { path = "../lattice-runtime" }
 
 [lints]
 workspace = true

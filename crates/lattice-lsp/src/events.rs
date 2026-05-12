@@ -34,14 +34,13 @@ use lattice_protocol::ids::DocumentId;
 /// future plugin hooks, telemetry) react without polling
 /// `App::active_modes`.
 ///
-/// `path` is `None` for standalone-server / scratch-buffer
-/// activations (auto-activation only fires for path-bearing
-/// buffers today; a future revision may add a `server_ids`
-/// slice when standalone-server semantics land).
+/// Carries only the `DocumentId` so the event can be published
+/// from `LspMode::on_activate` without the mode needing a
+/// host-side path lookup. Subscribers that need the buffer's
+/// path resolve it themselves via their App handle.
 #[derive(Debug, Clone)]
 pub struct LspBufferAttached {
     pub id: DocumentId,
-    pub path: Option<PathBuf>,
 }
 
 lattice_protocol::register_event!(
@@ -60,7 +59,6 @@ lattice_protocol::register_event!(
 #[derive(Debug, Clone)]
 pub struct LspBufferDetached {
     pub id: DocumentId,
-    pub path: Option<PathBuf>,
 }
 
 lattice_protocol::register_event!(

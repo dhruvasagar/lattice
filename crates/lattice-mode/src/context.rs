@@ -25,14 +25,21 @@
 //! - The shared typed-options registry
 //!   ([`lattice_config::ConfigRegistry`]) -- modes use this to
 //!   set/get options whose values are coupled to the mode's
-//!   active state.
+//!   active state (Phase 1).
+//! - The shared typed event bus ([`lattice_runtime::EventBus`])
+//!   -- modes publish typed events on activate / deactivate
+//!   (e.g. `LspMode` publishes `LspBufferAttached` /
+//!   `LspBufferDetached`). Phase 2.
 //!
 //! The borrow lifetime `'a` ties the context to the underlying
 //! borrows so the borrow checker prevents the mode from
 //! holding the context past the lifecycle hook's return.
 
+use std::sync::Arc;
+
 use lattice_config::ConfigRegistry;
 use lattice_protocol::ids::BufferId;
+use lattice_runtime::EventBus;
 
 use crate::error::ModeActivationError;
 use crate::locals::{BufferLocal, BufferLocals};
@@ -51,6 +58,7 @@ pub struct ModeContext<'a> {
     current_mode: ModeId,
     locals: &'a mut BufferLocals,
     config: &'a ConfigRegistry,
+    events: &'a Arc<EventBus>,
 }
 
 impl<'a> ModeContext<'a> {
@@ -63,12 +71,14 @@ impl<'a> ModeContext<'a> {
         current_mode: ModeId,
         locals: &'a mut BufferLocals,
         config: &'a ConfigRegistry,
+        events: &'a Arc<EventBus>,
     ) -> Self {
         Self {
             buffer_id,
             current_mode,
             locals,
             config,
+            events,
         }
     }
 
@@ -79,6 +89,17 @@ impl<'a> ModeContext<'a> {
     /// recompute_folds`) fire automatically.
     pub fn config(&self) -> &ConfigRegistry {
         self.config
+    }
+
+    /// Shared typed event bus. Modes publish lifecycle events
+    /// (e.g. `LspBufferAttached` / `LspBufferDetached` on
+    /// `LspMode::on_activate` / `on_deactivate`) via
+    /// `ctx.events().publish_typed(...)`. Subscribers are
+    /// wired through the App at boot; modes don't subscribe
+    /// from `on_activate` (lifetime semantics don't survive
+    /// the hook return).
+    pub fn events(&self) -> &Arc<EventBus> {
+        self.events
     }
 
     /// Buffer the activation is operating on.
@@ -186,15 +207,23 @@ mod tests {
         mode_name: &str,
         locals: &'a mut BufferLocals,
         config: &'a ConfigRegistry,
+        events: &'a Arc<EventBus>,
     ) -> ModeContext<'a> {
-        ModeContext::new(BufferId::new(1), ModeId::new(mode_name), locals, config)
+        ModeContext::new(
+            BufferId::new(1),
+            ModeId::new(mode_name),
+            locals,
+            config,
+            events,
+        )
     }
 
     #[test]
     fn buffer_id_and_current_mode_round_trip() {
         let mut locals = BufferLocals::new();
         let cfg = ConfigRegistry::new();
-        let c = ctx("a-mode", &mut locals, &cfg);
+        let evt = Arc::new(EventBus::new());
+        let c = ctx("a-mode", &mut locals, &cfg, &evt);
         assert_eq!(c.buffer_id(), BufferId::new(1));
         assert_eq!(c.current_mode().as_str(), "a-mode");
     }
@@ -203,7 +232,8 @@ mod tests {
     fn set_local_succeeds_when_owner_matches() {
         let mut locals = BufferLocals::new();
         let cfg = ConfigRegistry::new();
-        let mut c = ctx("a-mode", &mut locals, &cfg);
+        let evt = Arc::new(EventBus::new());
+        let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
         assert!(c.set_local(OwnedByA(42)).is_ok());
         assert_eq!(c.get_local::<OwnedByA>().unwrap().0, 42);
     }
@@ -212,7 +242,8 @@ mod tests {
     fn set_local_fails_when_owner_mismatch() {
         let mut locals = BufferLocals::new();
         let cfg = ConfigRegistry::new();
-        let mut c = ctx("a-mode", &mut locals, &cfg);
+        let evt = Arc::new(EventBus::new());
+        let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
         let err = c.set_local(OwnedByB("hi".into())).unwrap_err();
         match err {
             ModeActivationError::WrongOwnerMode {
@@ -233,13 +264,14 @@ mod tests {
     fn get_local_is_unrestricted() {
         let mut locals = BufferLocals::new();
         let cfg = ConfigRegistry::new();
+        let evt = Arc::new(EventBus::new());
         // Write as a-mode...
         {
-            let mut c = ctx("a-mode", &mut locals, &cfg);
+            let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
             c.set_local(OwnedByA(7)).unwrap();
         }
         // ...read as b-mode (cross-mode read OK).
-        let c = ctx("b-mode", &mut locals, &cfg);
+        let c = ctx("b-mode", &mut locals, &cfg, &evt);
         assert_eq!(c.get_local::<OwnedByA>().unwrap().0, 7);
     }
 
@@ -247,20 +279,21 @@ mod tests {
     fn remove_local_owner_check() {
         let mut locals = BufferLocals::new();
         let cfg = ConfigRegistry::new();
+        let evt = Arc::new(EventBus::new());
         {
-            let mut c = ctx("a-mode", &mut locals, &cfg);
+            let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
             c.set_local(OwnedByA(1)).unwrap();
         }
         // Wrong owner: remove fails without removing.
         {
-            let mut c = ctx("b-mode", &mut locals, &cfg);
+            let mut c = ctx("b-mode", &mut locals, &cfg, &evt);
             let err = c.remove_local::<OwnedByA>().unwrap_err();
             assert!(matches!(err, ModeActivationError::WrongOwnerMode { .. }));
         }
         assert!(locals.contains::<OwnedByA>());
         // Correct owner: remove succeeds.
         {
-            let mut c = ctx("a-mode", &mut locals, &cfg);
+            let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
             let removed = c.remove_local::<OwnedByA>().unwrap();
             assert_eq!(removed.unwrap().0, 1);
         }
@@ -271,24 +304,25 @@ mod tests {
     fn get_local_mut_owner_check() {
         let mut locals = BufferLocals::new();
         let cfg = ConfigRegistry::new();
+        let evt = Arc::new(EventBus::new());
         {
-            let mut c = ctx("a-mode", &mut locals, &cfg);
+            let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
             c.set_local(OwnedByA(0)).unwrap();
         }
         // Wrong owner: error.
         {
-            let mut c = ctx("b-mode", &mut locals, &cfg);
+            let mut c = ctx("b-mode", &mut locals, &cfg, &evt);
             assert!(c.get_local_mut::<OwnedByA>().is_err());
         }
         // Right owner: in-place mutation.
         {
-            let mut c = ctx("a-mode", &mut locals, &cfg);
+            let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
             c.get_local_mut::<OwnedByA>()
                 .unwrap()
                 .unwrap()
                 .0 = 99;
         }
-        let c = ctx("a-mode", &mut locals, &cfg);
+        let c = ctx("a-mode", &mut locals, &cfg, &evt);
         assert_eq!(c.get_local::<OwnedByA>().unwrap().0, 99);
     }
 }

@@ -135,16 +135,29 @@ impl Mode for LspMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        // M.5.3 will attach the buffer to a server here (didOpen +
-        // editor `LspBufferAttached` event). M.5.0 ships a no-op so
-        // the surface lands without behavioural surprises.
+    fn on_activate(&self, ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        // Phase 2: publish `LspBufferAttached` from the mode's
+        // own lifecycle hook via `ctx.events()`. The App's
+        // `on_lsp_mode_activated` used to do this; now it just
+        // cascades sub-mode activation (Phase 3 will move the
+        // cascade in here too once `ModeContext` exposes a
+        // cascade primitive).
+        ctx.events().publish_typed(crate::events::LspBufferAttached {
+            id: lattice_protocol::ids::DocumentId::new(
+                ctx.buffer_id().0 as u64,
+            ),
+        });
         Ok(())
     }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        // M.5.3 will detach the buffer from its server here
-        // (didClose + `LspBufferDetached`). The server connection
-        // itself stays up if other buffers are still attached.
+    fn on_deactivate(&self, ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        // Phase 2: symmetric to `on_activate`. Wire-level
+        // `didClose` still runs from the App (Phase 3 needs
+        // `ctx.service::<LspSupervisorHandle>()`).
+        ctx.events().publish_typed(crate::events::LspBufferDetached {
+            id: lattice_protocol::ids::DocumentId::new(
+                ctx.buffer_id().0 as u64,
+            ),
+        });
         Ok(())
     }
 }
@@ -472,11 +485,13 @@ mod tests {
         let mut active = ActiveModes::new();
         let mut locals = BufferLocals::new();
         let cfg = lattice_config::ConfigRegistry::new();
+        let evt = std::sync::Arc::new(lattice_runtime::EventBus::new());
         registry
             .activate_minor(
                 &mut active,
                 &mut locals,
                 &cfg,
+                &evt,
                 BufferId::new(1),
                 LspMode::mode_id(),
                 CapabilitySet::empty(),

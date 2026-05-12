@@ -93,6 +93,7 @@ impl App {
             &mut active,
             &mut locals,
             &self.config,
+            &self.event_bus,
             proto_id,
             major_id,
             // Capability set: M.3.1 doesn't yet plumb per-buffer
@@ -127,6 +128,7 @@ impl App {
                 &mut active,
                 &mut locals,
                 &self.config,
+                &self.event_bus,
                 proto_id,
                 minor_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -150,6 +152,7 @@ impl App {
                 &mut active,
                 &mut locals,
                 &self.config,
+                &self.event_bus,
                 proto_id,
                 minor_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -251,6 +254,7 @@ impl App {
                 &mut active,
                 &mut locals,
                 &self.config,
+                &self.event_bus,
                 proto_id,
                 mode_id,
                 CapabilitySet::empty(),
@@ -259,6 +263,7 @@ impl App {
                 &mut active,
                 &mut locals,
                 &self.config,
+                &self.event_bus,
                 proto_id,
                 mode_id,
                 CapabilitySet::empty(),
@@ -325,12 +330,14 @@ impl App {
                 &mut active,
                 &mut locals,
                 &self.config,
+                &self.event_bus,
                 proto_id,
             ),
             ModeKind::Minor => self.mode_registry.deactivate_minor(
                 &mut active,
                 &mut locals,
                 &self.config,
+                &self.event_bus,
                 proto_id,
                 mode_id,
             ),
@@ -382,11 +389,11 @@ impl App {
     /// want a sub-mode permanently off run `:lsp-hover-mode` to
     /// toggle.
     fn on_lsp_mode_activated(&mut self, buffer_id: BufferId) {
-        let path = self.path_for_buffer(buffer_id);
-        self.event_bus.publish_typed(lattice_lsp::LspBufferAttached {
-            id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
-            path,
-        });
+        // Phase 2: event publication moved into
+        // `LspMode::on_activate` via `ctx.events()`. The App
+        // here only orchestrates the sub-mode cascade
+        // (deferred to Phase 3 -- needs cascade primitive
+        // on `ModeContext`).
         self.activate_lsp_sub_modes_for(buffer_id);
     }
 
@@ -402,12 +409,13 @@ impl App {
     /// M.6.1 cascade: every LSP sub-mode deactivates. Symmetric
     /// to [`Self::on_lsp_mode_activated`]'s cascade.
     fn on_lsp_mode_deactivated(&mut self, buffer_id: BufferId) {
-        let path = self.path_for_buffer(buffer_id);
+        // Phase 2: event publication moved into
+        // `LspMode::on_deactivate` via `ctx.events()`.
+        // Wire-level `didClose` (`lsp_close_buffer`) + sub-
+        // mode cascade still live here -- both need Phase 3
+        // resources (`LspSupervisorHandle` service + cascade
+        // primitive).
         self.lsp_close_buffer(buffer_id);
-        self.event_bus.publish_typed(lattice_lsp::LspBufferDetached {
-            id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
-            path,
-        });
         self.deactivate_lsp_sub_modes_for(buffer_id);
     }
 
@@ -462,6 +470,7 @@ impl App {
                 &mut active,
                 &mut locals,
                 &self.config,
+                &self.event_bus,
                 proto_id,
                 sub_id,
                 CapabilitySet::empty(),
@@ -514,6 +523,7 @@ impl App {
                 &mut active,
                 &mut locals,
                 &self.config,
+                &self.event_bus,
                 proto_id,
                 sub_id,
             );

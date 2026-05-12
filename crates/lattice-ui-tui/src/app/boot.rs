@@ -829,6 +829,7 @@ impl App {
                 &mut active,
                 &mut locals,
                 &self.config,
+                &self.event_bus,
                 proto_id,
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -838,6 +839,7 @@ impl App {
                 &mut active,
                 &mut locals,
                 &self.config,
+                &self.event_bus,
                 proto_id,
                 mode_id,
             );

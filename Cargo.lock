@@ -874,6 +874,7 @@ dependencies = [
  "lattice-completion",
  "lattice-config",
  "lattice-protocol",
+ "lattice-runtime",
  "smallvec",
  "thiserror 2.0.18",
 ]

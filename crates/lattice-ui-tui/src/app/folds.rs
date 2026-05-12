@@ -137,13 +137,11 @@ impl App {
     /// [`Self::maybe_request_folding_range`], invoked from the
     /// per-tick runtime drain.
     fn recompute_lsp_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
-        if self.lsp_folding_mode_enabled_for(self.document_buffer_id) {
-            if let Some(cache) = self.lsp_folds_cache.get(&self.document_buffer_id) {
-                if !cache.folds.is_empty() {
+        if self.lsp_folding_mode_enabled_for(self.document_buffer_id)
+            && let Some(cache) = self.lsp_folds_cache.get(&self.document_buffer_id)
+                && !cache.folds.is_empty() {
                     return cache.folds.clone();
                 }
-            }
-        }
         // Cascade: identical to `Syntax`'s fall-through so users
         // don't see an empty fold list when the server is slow
         // or doesn't advertise the capability.

@@ -124,8 +124,8 @@ impl App {
         // M.4 (Option B): per-kind default minor (help-mode for
         // Help kinds today). Activated AFTER the major so it
         // layers correctly in the resolver's priority stack.
-        if let Some(minor_id) = crate::modes::default_minor_mode_id_for_buffer_kind(kind) {
-            if let Err(e) = self.mode_registry.activate_minor(
+        if let Some(minor_id) = crate::modes::default_minor_mode_id_for_buffer_kind(kind)
+            && let Err(e) = self.mode_registry.activate_minor(
                 &mut active,
                 &mut locals,
                 &self.config,
@@ -143,7 +143,6 @@ impl App {
                     ),
                 );
             }
-        }
         // CSM.K1: auto-activate `completion-mode` on writable
         // kinds so `<C-Space>` opens the popup. Read-only kinds
         // return an empty Vec from

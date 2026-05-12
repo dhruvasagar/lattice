@@ -55,17 +55,14 @@ use smallvec::SmallVec;
 ///
 /// See `mode-architecture.md` §6.2 for the conflict policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default)]
 pub enum OverridePriority {
     Low,
+    #[default]
     Normal,
     High,
 }
 
-impl Default for OverridePriority {
-    fn default() -> Self {
-        Self::Normal
-    }
-}
 
 /// One option-value override from a single layer producer (a
 /// mode, a buffer-local set, a modal-state hook).

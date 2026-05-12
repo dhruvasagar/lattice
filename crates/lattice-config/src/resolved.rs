@@ -96,6 +96,8 @@ impl ResolvedOptions {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
     use super::*;
     use crate::option_decl::HasGroup;
 

@@ -1882,7 +1882,7 @@ mod tests {
         // into partial_chord. The trie returns Partial because
         // `[d, i, w]` etc. are bound; lookup_normal_with_prefix
         // emits `AbsorbPartialChord(i)`.
-        let (h, _, a) = populated_handle();
+        let (h, _, _a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d')],
@@ -1940,7 +1940,7 @@ mod tests {
         // Slice 8.i.4.c: with prefix [d], pressing `f` absorbs
         // into partial_chord. The trie returns Partial because
         // `[d, f, *]` is bound (find-char wildcard).
-        let (h, _, a) = populated_handle();
+        let (h, _, _a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d')],
@@ -1954,7 +1954,7 @@ mod tests {
 
     #[test]
     fn d_unrecognised_drops_pending() {
-        let (h, _, a) = populated_handle();
+        let (h, _, _a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('d')],
@@ -2013,7 +2013,7 @@ mod tests {
     #[test]
     fn g_absorbs_partial_chord() {
         // Slice 8.i.4.a: trie's `Partial` -> `AbsorbPartialChord(g)`.
-        let (h, _, a) = populated_handle();
+        let (h, _, _a) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('g'), KeyModifiers::NONE));
         assert!(matches!(
             r,
@@ -2024,7 +2024,7 @@ mod tests {
     #[test]
     fn z_absorbs_partial_chord() {
         // Slice 8.i.4.a: trie's `Partial` -> `AbsorbPartialChord(z)`.
-        let (h, _, a) = populated_handle();
+        let (h, _, _a) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('z'), KeyModifiers::NONE));
         assert!(matches!(
             r,
@@ -2162,7 +2162,7 @@ mod tests {
 
     #[test]
     fn z_unrecognized_drops_pending() {
-        let (h, _, a) = populated_handle();
+        let (h, _, _a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
@@ -2173,7 +2173,7 @@ mod tests {
 
     #[test]
     fn z_esc_drops_pending() {
-        let (h, _, a) = populated_handle();
+        let (h, _, _a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('z')],
@@ -2190,7 +2190,7 @@ mod tests {
     #[test]
     fn q_absorbs_partial_chord() {
         // Slice 8.i.4.a: trie's `Partial` -> `AbsorbPartialChord(q)`.
-        let (h, _, a) = populated_handle();
+        let (h, _, _a) = populated_handle();
         let r = lookup_normal(&h, &ev(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(matches!(
             r,
@@ -2455,7 +2455,7 @@ mod tests {
     /// alternative chord representation is the trie's invariant.
     #[test]
     fn f_ctrl_x_falls_through_to_drop_pending() {
-        let (h, _, a) = populated_handle();
+        let (h, _, _a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::char('f')],
@@ -2665,7 +2665,7 @@ mod tests {
     #[test]
     fn ctrl_w_absorbs_partial_chord() {
         // Slice 8.i.4.a: trie's `Partial` -> `AbsorbPartialChord(<C-w>)`.
-        let (h, _, a) = populated_handle();
+        let (h, _, _a) = populated_handle();
         let r = lookup_normal(
             &h,
             &ev(KeyCode::Char('w'), KeyModifiers::CONTROL),
@@ -2812,7 +2812,7 @@ mod tests {
 
     #[test]
     fn ctrl_w_then_esc_drops_pending() {
-        let (h, _, a) = populated_handle();
+        let (h, _, _a) = populated_handle();
         let r = lookup_normal_with_prefix(
             &h,
             &[KeyChord::ctrl('w')],

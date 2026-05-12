@@ -1,3 +1,10 @@
+// `single_range_in_vec_init`: the fuzzy matcher returns a
+// `Vec<Range<usize>>` of highlight regions; a single-range
+// vec is the natural shape for exact / prefix / substring
+// hits and rewriting to `iter::once(...).collect()` would
+// muddy the API.
+#![allow(clippy::single_range_in_vec_init)]
+
 //! Insert-mode completion -- the editor surface that turns the
 //! existing pipeline (cmdline today) into a buffer-level input
 //! flow.
@@ -480,14 +487,12 @@ fn match_word_boundary(text: &str, query: &str) -> Option<Vec<Range<usize>>> {
         let at_boundary = prev_was_sep
             || prev_was_underscore
             || (c.is_ascii_uppercase() && prev_was_lower);
-        if at_boundary {
-            if let Some(&&want) = q_iter.peek() {
-                if want == lower {
+        if at_boundary
+            && let Some(&&want) = q_iter.peek()
+                && want == lower {
                     ranges.push(byte_idx..byte_idx + len);
                     q_iter.next();
                 }
-            }
-        }
         prev_was_sep = is_sep;
         prev_was_lower = c.is_ascii_lowercase();
         prev_was_underscore = c == '_';
@@ -567,7 +572,7 @@ impl InsertRanker {
     /// closure.
     pub fn rank_with_bonus(
         &self,
-        scored: &mut Vec<ScoredCandidate>,
+        scored: &mut [ScoredCandidate],
         bonus: impl Fn(&RawCandidate) -> u32,
     ) {
         scored.sort_by_cached_key(|s| {

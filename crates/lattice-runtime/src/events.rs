@@ -163,11 +163,15 @@ impl std::fmt::Debug for Inner {
 /// concrete event type and forwards to the subscriber's typed
 /// channel; it returns `false` if the channel has been closed
 /// so the bus can prune lazily.
+///
+/// `ForwardFn` factors out the type-erased forwarder so clippy's
+/// `type_complexity` lint stops flagging the inline shape at
+/// every use site.
+type ForwardFn = Arc<dyn Fn(&Arc<dyn std::any::Any + Send + Sync>) -> bool + Send + Sync>;
+
 struct TypedSubscription {
     id: SubscriptionId,
-    forward: Arc<
-        dyn Fn(&Arc<dyn std::any::Any + Send + Sync>) -> bool + Send + Sync,
-    >,
+    forward: ForwardFn,
 }
 
 /// Process-shared event bus. Cheap to construct (one `Mutex`
@@ -346,9 +350,7 @@ impl EventBus {
         T: TypedEvent + Clone,
     {
         let id = SubscriptionId::next();
-        let forward: Arc<
-            dyn Fn(&Arc<dyn std::any::Any + Send + Sync>) -> bool + Send + Sync,
-        > = Arc::new(move |payload| {
+        let forward: ForwardFn = Arc::new(move |payload| {
             let Some(typed) = payload.downcast_ref::<T>() else {
                 // Wrong type for this subscriber -- not an error
                 // (the bus dispatches to whichever bucket it

@@ -142,6 +142,7 @@ impl ModeRegistry {
     /// Implied modes (`Mode::implies`) are auto-activated as
     /// minors after the major lands; failure on an implied
     /// activation rolls back the major activation.
+    #[allow(clippy::too_many_arguments)]
     pub fn activate_major(
         &self,
         active: &mut ActiveModes,
@@ -178,9 +179,7 @@ impl ModeRegistry {
             });
             if let Some(prev) = self.modes.get(&prev_id) {
                 let mut prev_ctx = ModeContext::new(buffer, prev_id, locals, config, events, services);
-                if let Err(e) = prev.on_deactivate(&mut prev_ctx) {
-                    return Err(e);
-                }
+                prev.on_deactivate(&mut prev_ctx)?
             }
             active.set_major(None);
         }
@@ -188,9 +187,7 @@ impl ModeRegistry {
         // Run the new major's on_activate.
         {
             let mut ctx = ModeContext::new(buffer, mode, locals, config, events, services);
-            if let Err(e) = entry.on_activate(&mut ctx) {
-                return Err(e);
-            }
+            entry.on_activate(&mut ctx)?
         }
         active.set_major(Some(mode));
         emitted.push(ModeEvent::MajorEntered { buffer, mode });
@@ -216,6 +213,7 @@ impl ModeRegistry {
     /// conflicts (rejects on conflict; auto-deactivation policy
     /// is M.6+ when LSP sub-modes have real conflict cases),
     /// and dependency presence.
+    #[allow(clippy::too_many_arguments)]
     pub fn activate_minor(
         &self,
         active: &mut ActiveModes,
@@ -230,6 +228,7 @@ impl ModeRegistry {
         self.activate_minor_inner(active, locals, config, events, services, buffer, mode, caps)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn activate_minor_inner(
         &self,
         active: &mut ActiveModes,
@@ -268,32 +267,27 @@ impl ModeRegistry {
                 return Err(ModeActivationError::Conflict { mode, active: c });
             }
         }
-        if let Some(major) = active.major() {
-            if let Some(major_entry) = self.modes.get(&major) {
-                if major_entry.conflicts_with().contains(&mode) {
+        if let Some(major) = active.major()
+            && let Some(major_entry) = self.modes.get(&major)
+                && major_entry.conflicts_with().contains(&mode) {
                     return Err(ModeActivationError::Conflict {
                         mode,
                         active: major,
                     });
                 }
-            }
-        }
         for &active_minor in active.minors() {
-            if let Some(minor_entry) = self.modes.get(&active_minor) {
-                if minor_entry.conflicts_with().contains(&mode) {
+            if let Some(minor_entry) = self.modes.get(&active_minor)
+                && minor_entry.conflicts_with().contains(&mode) {
                     return Err(ModeActivationError::Conflict {
                         mode,
                         active: active_minor,
                     });
                 }
-            }
         }
 
         {
             let mut ctx = ModeContext::new(buffer, mode, locals, config, events, services);
-            if let Err(e) = entry.on_activate(&mut ctx) {
-                return Err(e);
-            }
+            entry.on_activate(&mut ctx)?
         }
         active.push_minor(mode);
         let mut emitted = vec![ModeEvent::MinorActivated { buffer, mode }];
@@ -319,6 +313,7 @@ impl ModeRegistry {
     /// Per `mode-architecture.md` §7.1, this is synchronous --
     /// `on_deactivate` runs before this returns; subscribers
     /// then receive `MinorDeactivated`.
+    #[allow(clippy::too_many_arguments)]
     pub fn deactivate_minor(
         &self,
         active: &mut ActiveModes,

@@ -1378,7 +1378,7 @@ impl App {
         new_buf.id = id;
         new_buf.cursor = cur;
         new_buf.scroll = scr;
-        let line_count = new_buf.line_count() as u32;
+        let line_count = new_buf.line_count();
         if line_count > 0 && new_buf.cursor.line >= line_count {
             new_buf.cursor.line = line_count - 1;
         }
@@ -6305,11 +6305,10 @@ impl App {
         }
         // Invalidate stale cache if it belonged to a different
         // buffer.
-        if let Some(cache) = self.lsp_document_highlights.as_ref() {
-            if cache.buffer_id != self.document_buffer_id {
+        if let Some(cache) = self.lsp_document_highlights.as_ref()
+            && cache.buffer_id != self.document_buffer_id {
                 self.lsp_document_highlights = None;
             }
-        }
         let Some(uri) = self
             .buffer_uris
             .get(&self.document_buffer_id)

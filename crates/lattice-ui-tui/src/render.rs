@@ -516,7 +516,7 @@ fn draw_insert_completion_docs_popup(
     let cand_right = cand_x + cand_width;
     let space_right =
         (buffer_area.x + buffer_area.width).saturating_sub(cand_right + 1);
-    let docs_width: u16 = 60u16.min(space_right).max(0);
+    let docs_width: u16 = 60u16.min(space_right);
     let (x, y, width, height) = if docs_width >= 30 {
         // Right side, same vertical extent as the candidate
         // popup.
@@ -817,7 +817,7 @@ fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let count = if p.candidates.is_empty() {
-        format!("(0/0) ")
+        "(0/0) ".to_string()
     } else {
         format!("({}/{}) ", p.selected + 1, p.candidates.len())
     };
@@ -3278,11 +3278,10 @@ fn classify_whitespace(
 ) -> Option<(char, TuiStyle)> {
     // Trailing wins: every whitespace byte in `[trailing_start,
     // line.len())` becomes trailing-marked.
-    if pos >= trailing_start && (ch == ' ' || ch == '\t') {
-        if let Some(g) = d.trailing {
+    if pos >= trailing_start && (ch == ' ' || ch == '\t')
+        && let Some(g) = d.trailing {
             return Some((g, d.style_trailing));
         }
-    }
     if ch == '\t' {
         // Tabs anywhere except in the trailing zone (handled
         // above) get the tab glyph.

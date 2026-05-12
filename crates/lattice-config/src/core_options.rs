@@ -30,6 +30,11 @@ use lattice_core::FoldMethod;
 
 // Validators referenced by `#[validate(...)]` on the options
 // below. Plain Rust functions; the macro just records the path.
+// `&String` is required by the typed-option machinery's
+// validator signature; clippy's `ptr_arg` lint flags this as
+// "use `&str` instead", but doing so breaks the macro-emitted
+// caller.
+#[allow(clippy::ptr_arg)]
 fn validate_log_level(s: &String) -> Result<(), String> {
     match s.as_str() {
         "error" | "warn" | "info" | "debug" | "trace" => Ok(()),
@@ -467,7 +472,12 @@ crate::options! {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic, unsafe_code)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::panic,
+        clippy::assertions_on_constants,
+        unsafe_code
+    )]
     use super::*;
     use crate::option_decl::OptionDecl;
     use crate::registry::ConfigRegistry;

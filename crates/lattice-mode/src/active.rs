@@ -58,7 +58,7 @@ impl ActiveModes {
 
     /// True iff this minor is currently active.
     pub fn has_minor(&self, mode: ModeId) -> bool {
-        self.minors.iter().any(|&m| m == mode)
+        self.minors.contains(&mode)
     }
 
     /// True iff `mode` is the active major.

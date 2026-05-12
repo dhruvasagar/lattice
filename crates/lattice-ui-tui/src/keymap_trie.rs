@@ -228,15 +228,13 @@ impl KeymapTrie {
             // Wildcard fallback: only bare chars (no
             // modifiers) qualify. `<C-x>` does not match a
             // wildcard intended for `'a` / `"a` / `fX`.
-            if chord.mods.is_empty() {
-                if let KeyKind::Char(c) = chord.key {
-                    if let Some(wild) = node.char_wildcard.as_deref() {
+            if chord.mods.is_empty()
+                && let KeyKind::Char(c) = chord.key
+                    && let Some(wild) = node.char_wildcard.as_deref() {
                         captured.push(c);
                         node = wild;
                         continue;
                     }
-                }
-            }
             return LookupResult::Unbound;
         }
         match node.binding.as_ref() {

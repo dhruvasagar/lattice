@@ -492,7 +492,7 @@ impl SyntaxSnapshot {
         };
         loop {
             let kind = node.kind();
-            if STRING_NODE_KINDS.iter().any(|k| *k == kind) {
+            if STRING_NODE_KINDS.contains(&kind) {
                 return true;
             }
             match node.parent() {

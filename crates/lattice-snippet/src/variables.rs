@@ -281,7 +281,7 @@ fn days_to_ymd(mut days: u64) -> (u32, u32, u32) {
 }
 
 fn is_leap_year(y: u32) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 fn day_of_week_zeller(year: u32, month: u32, day: u32) -> u32 {
@@ -294,8 +294,8 @@ fn day_of_week_zeller(year: u32, month: u32, day: u32) -> u32 {
     };
     let k = y % 100;
     let j = y / 100;
-    let h = (day + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;
-    h
+    
+    (day + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j) % 7
 }
 
 /// Cheap UUID v4 string from a 64-bit seed. Not RFC-cryptographic,

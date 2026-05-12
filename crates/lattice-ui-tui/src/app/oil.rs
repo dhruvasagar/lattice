@@ -75,12 +75,7 @@ impl App {
     /// dir lives in buffer-locals; we walk the registry's
     /// oil-id list and probe each buffer-local entry.
     pub(super) fn oil_with_dir(&self, dir: &Path) -> Option<crate::buffers::BufferId> {
-        for id in self.buffers.oil_ids() {
-            if self.oil_dir_for(id).as_deref() == Some(dir) {
-                return Some(id);
-            }
-        }
-        None
+        self.buffers.oil_ids().into_iter().find(|&id| self.oil_dir_for(id).as_deref() == Some(dir))
     }
 
     /// `:Oil [dir]` -- open an oil buffer rooted at `dir` (or the

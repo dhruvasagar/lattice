@@ -130,12 +130,7 @@ impl App {
     /// matches `root`. Mirrors `App::oil_with_dir` -- registry
     /// can't answer on its own (root lives in buffer-locals).
     pub(super) fn file_tree_with_root(&self, root: &Path) -> Option<crate::buffers::BufferId> {
-        for id in self.buffers.file_tree_ids() {
-            if self.file_tree_root_for(id).as_deref() == Some(root) {
-                return Some(id);
-            }
-        }
-        None
+        self.buffers.file_tree_ids().into_iter().find(|&id| self.file_tree_root_for(id).as_deref() == Some(root))
     }
 
     /// `:Tree [path]` (DESIGN.md §5.9 buffer-as-content). Opens a

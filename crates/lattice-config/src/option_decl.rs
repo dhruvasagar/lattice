@@ -185,7 +185,11 @@ pub static OPTION_DECLS: [&'static OptionDeclMetadata];
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::panic,
+        clippy::assertions_on_constants
+    )]
     use super::*;
 
     // Test fixture: declare an option manually (without the

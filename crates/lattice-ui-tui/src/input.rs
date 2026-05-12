@@ -2000,7 +2000,8 @@ mod tests {
                         // back to the single-char path so `<C-Space>`
                         // parses to `Char(' ') + CONTROL`. Same shape
                         // crossterm reports.
-                        let evt = match rest {
+                        
+                        match rest {
                             "Space" => KeyEvent::new(
                                 KeyCode::Char(' '),
                                 KeyModifiers::CONTROL,
@@ -2012,8 +2013,7 @@ mod tests {
                                 ),
                                 None => continue,
                             },
-                        };
-                        evt
+                        }
                     } else {
                         // Unrecognised special-key notation -- skip
                         // rather than panic; the drift test will fail
@@ -2466,11 +2466,8 @@ mod tests {
             ctx(ModalState::Normal, &b),
             ctrl(KeyCode::Char('d')),
         );
-        match half_down {
-            Action::Invoke(inv) => {
-                assert_ne!(inv.command, a.completion_toggle_docs);
-            }
-            _ => {}
+        if let Action::Invoke(inv) = half_down {
+            assert_ne!(inv.command, a.completion_toggle_docs);
         }
     }
 
@@ -2644,11 +2641,8 @@ mod tests {
         let action = translate(ctx, key(KeyCode::Tab));
         // Normal-mode `<Tab>` is `<C-i>` -- jump history forward,
         // not the snippet placeholder action.
-        match action {
-            Action::Invoke(inv) => {
-                assert_ne!(inv.command, a.snippet_next_placeholder);
-            }
-            _ => {}
+        if let Action::Invoke(inv) = action {
+            assert_ne!(inv.command, a.snippet_next_placeholder);
         }
     }
 
@@ -4042,7 +4036,7 @@ mod tests {
             ctx(ModalState::Normal, &b),
             key(KeyCode::Char('d')),
         );
-        let _ = match after_d {
+        match after_d {
             Action::Invoke(_) => {}
             other => panic!("expected Invoke(absorb_operator_delete), got {other:?}"),
         };

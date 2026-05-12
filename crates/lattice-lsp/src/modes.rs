@@ -189,7 +189,7 @@ impl Mode for LspMode {
         // cascade primitive).
         ctx.events().publish_typed(crate::events::LspBufferAttached {
             id: lattice_protocol::ids::DocumentId::new(
-                ctx.buffer_id().0 as u64,
+                ctx.buffer_id().0,
             ),
         });
         Ok(())
@@ -200,7 +200,7 @@ impl Mode for LspMode {
         // `ctx.service::<LspSupervisorHandle>()`).
         ctx.events().publish_typed(crate::events::LspBufferDetached {
             id: lattice_protocol::ids::DocumentId::new(
-                ctx.buffer_id().0 as u64,
+                ctx.buffer_id().0,
             ),
         });
         Ok(())

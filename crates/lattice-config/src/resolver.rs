@@ -154,6 +154,8 @@ struct Candidate<'a> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
     use super::*;
     use crate::option_decl::{HasGroup, OptionDecl};
     use std::any::TypeId;

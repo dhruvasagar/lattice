@@ -1129,7 +1129,7 @@ fn picker_buffer_entry(
     let id = entry.id.0;
     let (kind_label, path, title, dirty) = match &entry.data {
         BufferData::Document(d) => {
-            let path = d.handle.path().map(std::path::PathBuf::from);
+            let path = d.handle.path();
             let title = path
                 .as_ref()
                 .and_then(|p| p.file_name())

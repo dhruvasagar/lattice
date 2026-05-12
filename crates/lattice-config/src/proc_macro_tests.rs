@@ -6,7 +6,13 @@
 //! `linkme` submission, runtime spec construction.
 
 #![cfg(test)]
-#![allow(clippy::unwrap_used, clippy::panic, dead_code, unsafe_code)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::assertions_on_constants,
+    dead_code,
+    unsafe_code
+)]
 
 use crate::{ConfigRegistry, OptionDecl, OptionGroup};
 
@@ -65,7 +71,7 @@ fn group_declaration_emits_typed_constants() {
 #[test]
 fn option_declaration_emits_typed_constants() {
     assert_eq!(Simple::NAME, "test-proc.simple");
-    assert_eq!(Simple::default_value(), true);
+    assert!(Simple::default_value());
     assert!(Simple::DOC.contains("First option"));
     assert!(Simple::CUSTOMIZABLE);
 
@@ -144,7 +150,7 @@ fn init_from_linkme_registers_every_option() {
     let v = registry
         .get_typed::<Simple>()
         .expect("Simple should be registered after init_from_linkme");
-    assert_eq!(*v, true);
+    assert!(*v);
 
     let v = registry
         .get_typed::<WithAliases>()

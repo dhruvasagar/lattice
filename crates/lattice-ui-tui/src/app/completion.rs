@@ -270,21 +270,19 @@ impl App {
     /// completion-popup minor mode). Half-popup-height jump
     /// per press; clamps at the body's last visible line.
     pub fn do_completion_docs_scroll_down(&mut self) {
-        if let Some(state) = self.insert_completion.as_mut() {
-            if let Some(doc) = state.doc_popup.as_mut() {
+        if let Some(state) = self.insert_completion.as_mut()
+            && let Some(doc) = state.doc_popup.as_mut() {
                 doc.scroll = doc.scroll.saturating_add(8);
             }
-        }
     }
 
     /// Page the docs popup body backward (`<C-b>` inside the
     /// completion-popup minor mode).
     pub fn do_completion_docs_scroll_up(&mut self) {
-        if let Some(state) = self.insert_completion.as_mut() {
-            if let Some(doc) = state.doc_popup.as_mut() {
+        if let Some(state) = self.insert_completion.as_mut()
+            && let Some(doc) = state.doc_popup.as_mut() {
                 doc.scroll = doc.scroll.saturating_sub(8);
             }
-        }
     }
 
     /// Run sync sources against the supplied state, populating
@@ -636,14 +634,13 @@ impl App {
         // (in which case `do_lsp_insert_completion_request`
         // returned early without spawning).
         let lsp_pending = self.pending_insert_completion_lsp_token.is_some();
-        if !lsp_pending {
-            if let Some(state) = self.insert_completion.as_ref()
+        if !lsp_pending
+            && let Some(state) = self.insert_completion.as_ref()
                 && state.rendered.is_empty()
             {
                 self.set_message(EchoLevel::Info, "no completions");
                 self.insert_completion = None;
             }
-        }
     }
 
     /// Insert-mode character key while the popup is open
@@ -657,9 +654,7 @@ impl App {
             .as_ref()
             .and_then(|s| s.selected_candidate())
             .map(|cand| {
-                self.effective_commit_chars_for(cand)
-                    .iter()
-                    .any(|c| *c == ch)
+                self.effective_commit_chars_for(cand).contains(&ch)
             })
             .unwrap_or(false);
         if is_commit {
@@ -1130,13 +1125,12 @@ impl App {
             .unwrap_or(0);
         let body = self.docs_body_for_selected();
         let needs_resolve = body.is_none() && self.selected_needs_resolve();
-        if let Some(state) = self.insert_completion.as_mut() {
-            if let Some(doc) = state.doc_popup.as_mut() {
+        if let Some(state) = self.insert_completion.as_mut()
+            && let Some(doc) = state.doc_popup.as_mut() {
                 doc.for_index = new_index;
                 doc.scroll = 0;
                 doc.body = body;
             }
-        }
         if needs_resolve {
             self.do_completion_resolve_focused();
         }
@@ -1331,15 +1325,11 @@ impl App {
         // tracks ranges in buffer bytes; since our rope edit
         // returned the inserted_range, we recompute the
         // origin from the buffer's positional API.
-        let origin = match self
+        let origin = self
             .document
             .snapshot()
             .buffer
-            .position_to_byte(applied.inserted_range.start)
-        {
-            Ok(b) => b,
-            Err(_) => 0,
-        };
+            .position_to_byte(applied.inserted_range.start).unwrap_or_default();
         if !rendered.tabstops.is_empty() {
             let mut active =
                 lattice_snippet::ActiveSnippet::from_render(&rendered, origin);

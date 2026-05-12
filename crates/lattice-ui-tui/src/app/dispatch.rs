@@ -2482,7 +2482,7 @@ mod tests {
         a.load_persistent_config(Some(&ws));
         a.apply_per_language_toml_overrides();
         let eff = a.effective_completion_for("markdown");
-        assert_eq!(eff.auto_trigger, true, "TOML wins for auto_trigger");
+        assert!(eff.auto_trigger, "TOML wins for auto_trigger");
         let lsp_id = lattice_completion::SourceId::new(
             lattice_completion::LSP_COMPLETION_SOURCE_ID,
         );
@@ -2518,7 +2518,7 @@ mod tests {
             !eff.source_enabled(&buffer_words_id),
             "`sources = [\"lsp\"]` excludes buffer-words",
         );
-        assert_eq!(eff.auto_insert_single, true);
+        assert!(eff.auto_insert_single);
     }
 
     #[test]

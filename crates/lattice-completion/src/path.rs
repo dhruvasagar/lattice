@@ -159,6 +159,8 @@ fn is_path_byte(b: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
     use crate::insert::CompletionTrigger;
     use lattice_core::Buffer;

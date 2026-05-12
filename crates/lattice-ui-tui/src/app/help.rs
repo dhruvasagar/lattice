@@ -997,11 +997,10 @@ impl App {
 
         let mut entries: Vec<&'static lattice_config::OptionDeclMetadata> = Vec::new();
         for ovr in mode.options().iter() {
-            if let Some(meta) = by_type_id.get(&ovr.option_type_id) {
-                if meta.customizable {
+            if let Some(meta) = by_type_id.get(&ovr.option_type_id)
+                && meta.customizable {
                     entries.push(meta);
                 }
-            }
         }
         entries.sort_by_key(|d| d.name);
         entries.dedup_by_key(|d| d.name);

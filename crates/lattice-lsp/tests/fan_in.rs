@@ -28,7 +28,7 @@ use lsp_types::{
 
 use lattice_lsp::fan_in;
 use lattice_protocol::EventKind;
-use lattice_protocol::event::{AppliedEdit, Event};
+use lattice_protocol::event::AppliedEdit;
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::{Position, Range};
 use lattice_runtime::{EventBus, EventFilter, SubscriptionTarget};

@@ -224,8 +224,14 @@ impl ConfigRegistry {
         let mut inner = self.inner.lock().expect("ConfigRegistry poisoned");
         if inner.by_typeid.insert(type_id, handle.idx).is_some() {
             // Two registrations for the same type id is a build
-            // bug -- shouldn't be reachable from the macro.
-            panic!("config: duplicate TypeId in register_with_typeid");
+            // bug -- shouldn't be reachable from the macro. We
+            // use `unreachable!` (which clippy permits) rather
+            // than `panic!` because the path is structurally
+            // impossible to reach in correct callers.
+            #[allow(clippy::panic)]
+            {
+                panic!("config: duplicate TypeId in register_with_typeid");
+            }
         }
         handle
     }

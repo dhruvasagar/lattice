@@ -61,17 +61,17 @@ pub fn popup_outer_size(
     let line_count = line_count.max(1);
     let (max_h, max_w) = match placement {
         PopupPlacement::Centered => {
-            let max_h = ((buffer_height as u32 * 3 / 4).max(5).min(40)) as u16;
-            let max_w = (buffer_width.saturating_sub(4)).min(120).max(30);
+            let max_h = ((buffer_height as u32 * 3 / 4).clamp(5, 40)) as u16;
+            let max_w = (buffer_width.saturating_sub(4)).clamp(30, 120);
             (max_h, max_w)
         }
         PopupPlacement::CursorAnchored => {
-            let max_h = (buffer_height / 2).max(5).min(20);
+            let max_h = (buffer_height / 2).clamp(5, 20);
             let max_w = (buffer_width.saturating_sub(4)).clamp(30, 80);
             (max_h, max_w)
         }
     };
-    let height = (line_count.saturating_add(2)).min(max_h).max(5);
+    let height = (line_count.saturating_add(2)).clamp(5, max_h);
     (max_w, height)
 }
 

@@ -2992,7 +2992,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp.join("subdir")).expect("create subdir");
+        std::fs::create_dir_all(tmp.join("subdir")).expect("create subdir");
         std::fs::write(tmp.join("subdir/inner.txt"), "hi").expect("write inner");
 
         let mut a = app_with("hi", 5);

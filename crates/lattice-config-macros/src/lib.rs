@@ -534,7 +534,7 @@ fn expand_overrides(input: &OverridesInput) -> syn::Result<TokenStream2> {
         .map(|entry| {
             let decl = &entry.decl;
             let value = &entry.value;
-            let push_expr = if let Some(priority) = &entry.priority {
+            if let Some(priority) = &entry.priority {
                 quote! {
                     {
                         // Compile-time type check: the value
@@ -563,8 +563,7 @@ fn expand_overrides(input: &OverridesInput) -> syn::Result<TokenStream2> {
                         );
                     }
                 }
-            };
-            push_expr
+            }
         })
         .collect();
 

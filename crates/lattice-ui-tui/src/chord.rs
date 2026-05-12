@@ -356,14 +356,13 @@ impl fmt::Display for KeyChord {
         // Plain printable chars with no modifiers render bare,
         // except `<` which escapes as `<lt>` so the parser can
         // round-trip without ambiguity.
-        if self.mods.is_empty() {
-            if let KeyKind::Char(c) = self.key {
+        if self.mods.is_empty()
+            && let KeyKind::Char(c) = self.key {
                 if c == '<' {
                     return f.write_str("<lt>");
                 }
                 return write!(f, "{c}");
             }
-        }
 
         f.write_str("<")?;
         if self.mods.ctrl() {

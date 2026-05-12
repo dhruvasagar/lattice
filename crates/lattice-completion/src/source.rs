@@ -455,7 +455,7 @@ mod tests {
         assert_eq!(snap.cursor, Position::new(2, 7));
         assert_eq!(snap.anchor, Position::new(2, 4));
         assert_eq!(snap.query, "foo");
-        assert_eq!(snap.case_sensitive, true);
+        assert!(snap.case_sensitive);
         assert_eq!(snap.language, "rust");
         assert!(matches!(
             snap.trigger,

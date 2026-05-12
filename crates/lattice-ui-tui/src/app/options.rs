@@ -1474,7 +1474,7 @@ mod tests {
             lattice_completion::SNIPPET_SOURCE_ID,
         );
         assert!(eff.source_enabled(&snippet_id), "markdown keeps snippet");
-        assert_eq!(eff.auto_trigger, false);
+        assert!(!eff.auto_trigger);
     }
 
     #[test]

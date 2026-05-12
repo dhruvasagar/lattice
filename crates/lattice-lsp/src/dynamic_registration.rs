@@ -122,16 +122,14 @@ impl DynamicRegistry {
         // If the id was registered before, clean up the old
         // method bucket so the new entry's method is the only
         // place its id appears.
-        if let Some(prev) = self.by_id.get(&reg.id) {
-            if prev.method != reg.method {
-                if let Some(bucket) = self.by_method.get_mut(&prev.method) {
+        if let Some(prev) = self.by_id.get(&reg.id)
+            && prev.method != reg.method
+                && let Some(bucket) = self.by_method.get_mut(&prev.method) {
                     bucket.retain(|id| id != &reg.id);
                     if bucket.is_empty() {
                         self.by_method.remove(&prev.method);
                     }
                 }
-            }
-        }
         let bucket = self.by_method.entry(reg.method.clone()).or_default();
         if !bucket.contains(&reg.id) {
             bucket.push(reg.id.clone());

@@ -834,11 +834,10 @@ impl Capabilities {
         }
         if let Some(more) = p.more_trigger_character.as_ref() {
             for s in more {
-                if let Some(c) = s.chars().next() {
-                    if !out.contains(&c) {
+                if let Some(c) = s.chars().next()
+                    && !out.contains(&c) {
                         out.push(c);
                     }
-                }
             }
         }
         out

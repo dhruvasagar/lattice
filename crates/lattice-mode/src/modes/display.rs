@@ -49,6 +49,7 @@ macro_rules! display_minor_mode {
     (
         $struct_name:ident,
         $mode_name:literal,
+        $(mirrors $mirrors_name:literal,)?
         contributes $option_path:path = $on_value:expr,
         $($extra_overrides:tt)*
     ) => {
@@ -76,6 +77,11 @@ macro_rules! display_minor_mode {
             fn required_capabilities(&self) -> CapabilitySet {
                 CapabilitySet::empty()
             }
+            $(
+                fn mirrors_option(&self) -> Option<&'static str> {
+                    Some($mirrors_name)
+                }
+            )?
             fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
                 Ok(())
             }
@@ -89,19 +95,21 @@ macro_rules! display_minor_mode {
 display_minor_mode!(
     LineNumbersMode,
     "line-numbers-mode",
+    mirrors "number",
     contributes lattice_config::Number = true,
 );
 
 // `relative-line-numbers-mode` mirrors vim's `:set rnu` cascade:
 // rnu implies nu (so the gutter renders at all). We contribute
-// both overrides directly -- this matches the
-// `relativenumber=true ⇒ number=true` cascade in
-// `App::apply_option_cascade` and lets users `:line-numbers-mode`
-// off independently while leaving relative on (the cascade only
-// fires the *implication* direction).
+// both overrides directly. The `mirrors "relativenumber"` hint
+// keeps the mode's active state and the option's value in sync
+// via the host's option-mirror cascade -- the App's hardcoded
+// per-mode special case in `apply_option_cascade` is gone,
+// replaced with one declarative loop driven by this hint.
 display_minor_mode!(
     RelativeLineNumbersMode,
     "relative-line-numbers-mode",
+    mirrors "relativenumber",
     contributes lattice_config::RelativeNumber = true,
     lattice_config::Number = true,
 );
@@ -109,6 +117,7 @@ display_minor_mode!(
 display_minor_mode!(
     WrapMode,
     "wrap-mode",
+    mirrors "wrap",
     contributes lattice_config::Wrap = true,
 );
 
@@ -118,7 +127,8 @@ display_minor_mode!(
 // kind-driven (every help buffer gets read-only); this minor
 // is the user gesture for "make THIS buffer read-only" on
 // arbitrary buffer kinds. `ReadOnly` is `customizable = false`
-// (mode-only); this is the only user-typed pathway.
+// (mode-only); this is the only user-typed pathway. No
+// `mirrors` hint because `ReadOnly` has no `:set` surface.
 display_minor_mode!(
     ReadOnlyMode,
     "read-only-mode",
@@ -132,6 +142,7 @@ display_minor_mode!(
 display_minor_mode!(
     WhitespaceShowMode,
     "whitespace-show-mode",
+    mirrors "whitespace",
     contributes lattice_config::Whitespace = true,
 );
 
@@ -142,6 +153,7 @@ display_minor_mode!(
 display_minor_mode!(
     CurrentLineHighlightMode,
     "current-line-highlight-mode",
+    mirrors "current-line-highlight",
     contributes lattice_config::CursorLine = true,
 );
 

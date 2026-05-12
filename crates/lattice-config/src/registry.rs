@@ -403,6 +403,23 @@ impl ConfigRegistry {
             .map(|i| Arc::clone(&inner.by_id[*i]))
     }
 
+    /// Read a `bool`-typed option's current value by name.
+    /// Returns `None` if the option doesn't exist, isn't boolean,
+    /// or its erased current value fails to downcast to `bool`
+    /// (last case is defense-in-depth -- shouldn't happen given
+    /// `is_bool()` agreement). Used by the host's mode-mirror
+    /// cascade (see `Mode::mirrors_option`) so display modes can
+    /// stay in sync with their typed-option counterparts without
+    /// hardcoded per-mode special cases in the cascade handler.
+    pub fn get_bool_by_name(&self, name: &str) -> std::option::Option<bool> {
+        let spec = self.lookup(name)?;
+        if !spec.is_bool() {
+            return None;
+        }
+        let erased = spec.current_value_erased();
+        erased.downcast_ref::<bool>().copied()
+    }
+
     /// Iterate every registered option in registration order.
     /// Used by completion (`gen:options`) and the customize buffer
     /// view to enumerate.

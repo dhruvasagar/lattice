@@ -440,50 +440,22 @@ impl App {
         // `rebuild_option_cache` when `buffer == active`; this
         // belt-and-braces call covers the bootstrap window.
         self.rebuild_option_cache();
+        // M.7.1: declarative mode-mirror cascade. Each
+        // registered mode that declares `mirrors_option ==
+        // Some(canonical_name)` gets its active state synced to
+        // the option's new value. Replaces the hardcoded
+        // per-mode `match` branches that used to live here --
+        // adding a new display mode no longer requires touching
+        // this method.
+        self.mirror_option_to_modes(canonical_name);
         match canonical_name {
             "relativenumber" => {
                 // Vim cascade: `:set rnu` implies `:set nu` so the
                 // gutter renders at all. The reverse (`:set nornu`)
                 // does NOT clear `nu` -- preserves user intent.
-                // Conditional on the new value being `true`, which
-                // we re-read through the typed handle (cheap).
                 if self.relative_line_numbers() {
                     let _ = self.config.set_typed::<lattice_config::Number>(true);
                 }
-                // M.7.1: mirror to `relative-line-numbers-mode`.
-                self.mirror_typed_option_to_display_mode::<lattice_config::RelativeNumber>(
-                    lattice_mode::modes::RelativeLineNumbersMode::mode_id(),
-                );
-            }
-            "number" => {
-                // M.7.1: mirror to `line-numbers-mode` on the
-                // active buffer. Typed-option-driven `:set number`
-                // and mode-driven `:line-numbers-mode` converge to
-                // one observable state.
-                self.mirror_typed_option_to_display_mode::<lattice_config::Number>(
-                    lattice_mode::modes::LineNumbersMode::mode_id(),
-                );
-            }
-            "wrap" => {
-                self.mirror_typed_option_to_display_mode::<lattice_config::Wrap>(
-                    lattice_mode::modes::WrapMode::mode_id(),
-                );
-            }
-            "whitespace" => {
-                // M.7.2: `:set list` (alias) / `:set whitespace`
-                // (canonical) ↔ `:whitespace-show-mode`.
-                self.mirror_typed_option_to_display_mode::<lattice_config::Whitespace>(
-                    lattice_mode::modes::WhitespaceShowMode::mode_id(),
-                );
-            }
-            "current-line-highlight" => {
-                // M.7.2: `:set cursorline` ↔
-                // `:current-line-highlight-mode`. Canonical name
-                // is `current-line-highlight`; alias `cursorline`
-                // (vim).
-                self.mirror_typed_option_to_display_mode::<lattice_config::CursorLine>(
-                    lattice_mode::modes::CurrentLineHighlightMode::mode_id(),
-                );
             }
             "foldmethod" => {
                 // Recompute folds against the new method. Idempotent
@@ -509,38 +481,51 @@ impl App {
         }
     }
 
-    /// M.7.1: read the typed-option layer for `D` (a boolean
-    /// display option) and mirror its current value to the
-    /// corresponding display minor mode on the active buffer.
-    /// `true` ⇒ mode active; `false` ⇒ mode inactive. Idempotent
-    /// per buffer (already-(in)active short-circuits in the
-    /// underlying register/deregister calls).
+    /// M.7.1 (Phase 1.5): drive the declarative
+    /// `Mode::mirrors_option` cascade. Walks every registered
+    /// mode and, for each that declares it mirrors
+    /// `canonical_name`, toggles the mode's active state on the
+    /// current buffer to match the option's `bool` value.
     ///
-    /// Reads through `config.get_typed::<D>()` (the *typed-option*
-    /// layer) rather than `resolved_option::<D>` -- the user's
-    /// explicit `:set` gesture is the authority for the mode's
-    /// activation state, not the resolved layered view.
-    fn mirror_typed_option_to_display_mode<D>(
-        &mut self,
-        mode_id: lattice_mode::ModeId,
-    ) where
-        D: lattice_config::OptionDecl<Value = bool>,
-    {
+    /// Reads through `ConfigRegistry::get_bool_by_name` (the
+    /// typed-option layer) rather than the resolved-options
+    /// view -- the user's explicit `:set` gesture is the
+    /// authority for the mode's active state, not the layered
+    /// resolution. Non-bool options short-circuit at the
+    /// `get_bool_by_name` step; the loop is a no-op.
+    fn mirror_option_to_modes(&mut self, canonical_name: &str) {
+        let Some(on) = self.config.get_bool_by_name(canonical_name) else {
+            return;
+        };
+        // Collect mode ids first so the activate/deactivate
+        // calls (which take `&mut self`) don't conflict with the
+        // registry borrow inside `iter_meta`.
+        let mirror_ids: Vec<lattice_mode::ModeId> = {
+            let registry = &self.mode_registry;
+            registry
+                .iter_meta()
+                .filter_map(|(id, _kind)| {
+                    let mode = registry.get(id)?;
+                    if mode.mirrors_option() == Some(canonical_name) {
+                        Some(id)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
         let buffer_id = self.document_buffer_id;
-        let on = self
-            .config
-            .get_typed::<D>()
-            .map(|v| *v)
-            .unwrap_or(false);
-        let currently_active = self
-            .active_modes
-            .get(&buffer_id)
-            .map(|modes| modes.has_minor(mode_id))
-            .unwrap_or(false);
-        if on && !currently_active {
-            self.activate_mode_by_id(buffer_id, mode_id);
-        } else if !on && currently_active {
-            self.deactivate_mode_by_id(buffer_id, mode_id);
+        for mode_id in mirror_ids {
+            let currently_active = self
+                .active_modes
+                .get(&buffer_id)
+                .map(|modes| modes.has_minor(mode_id))
+                .unwrap_or(false);
+            if on && !currently_active {
+                self.activate_mode_by_id(buffer_id, mode_id);
+            } else if !on && currently_active {
+                self.deactivate_mode_by_id(buffer_id, mode_id);
+            }
         }
     }
 

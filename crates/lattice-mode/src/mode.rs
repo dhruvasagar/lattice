@@ -159,12 +159,40 @@ pub trait Mode: Send + Sync + 'static {
         &[]
     }
 
+    /// Declarative mirror hint for "this mode is the on/off
+    /// switch for a typed option of the same observable state".
+    /// `Some(canonical_name)` ⇒ a host-driven cascade keeps the
+    /// mode's active state and the option's value in sync:
+    ///
+    /// - User runs `:set <name>=true` ⇒ host auto-activates the
+    ///   mode (so the mode's `options()` overrides apply, and
+    ///   anything reading the mode-active gate sees `true`).
+    /// - User runs `:set <name>=false` ⇒ host auto-deactivates.
+    /// - User runs `:<mode-name>` toggle ⇒ the mode's
+    ///   `options()` contribution writes the option as part of
+    ///   its declarative overrides; no separate mirror needed.
+    ///
+    /// The default `None` means the mode does *not* participate
+    /// in the option-mirror cascade. Used today by the M.7.1
+    /// display modes (`line-numbers-mode`, `wrap-mode`, etc.).
+    ///
+    /// Constraint: the mirrored option must be `bool`-typed.
+    /// The host's mirror cascade reads via the type-erased
+    /// `ErasedOption::current_value_erased()` and downcasts to
+    /// `bool`; non-bool options return `None` from the cascade
+    /// and the mirror silently no-ops (defense in depth).
+    fn mirrors_option(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Lifecycle. Called once per (buffer, activation) cycle
     /// after the registry has applied the declarative contributions.
     /// May start side effects (spawn a server connection, register
-    /// a watcher) and may write its own buffer-locals via
-    /// [`ModeContext::set_local`]; may NOT mutate the config
-    /// registry, keymap registry, or another mode's locals.
+    /// a watcher), may mutate its own coupled options via
+    /// [`ModeContext::config`] (`mode-architecture.md` §5.2), and
+    /// may write its own buffer-locals via
+    /// [`ModeContext::set_local`]; may NOT mutate another mode's
+    /// locals (the `OWNER_MODE` rule guards this).
     /// Errors propagated as [`ModeActivationError`]; do not panic.
     ///
     /// Idempotent setup contract: `on_activate` may run more

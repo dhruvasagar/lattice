@@ -267,6 +267,27 @@ impl App {
         )
     }
 
+    /// 4.4.e: is `lsp-document-highlight-mode` active on
+    /// `buffer_id`? Gates the cursor-driven
+    /// `textDocument/documentHighlight` request issuance and
+    /// the soft-highlight decoration overlay.
+    pub fn lsp_document_highlight_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspDocumentHighlightMode::mode_id(),
+        )
+    }
+
+    /// 4.4.e: is `lsp-selection-range-mode` active on
+    /// `buffer_id`? Gates `textDocument/selectionRange`
+    /// request issuance for the smart-expansion operator.
+    pub fn lsp_selection_range_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspSelectionRangeMode::mode_id(),
+        )
+    }
+
     /// M.5.4: shared gate for every LSP request entry point
     /// (hover / definition / completion / format / rename /
     /// code-action / symbols / signature / references). Returns

@@ -336,6 +336,34 @@ impl ServerHandle {
     ) -> Pending<Option<Vec<TextEdit>>> {
         self.request_with_cancel("textDocument/onTypeFormatting", params, token)
     }
+
+    /// 4.4.e: `textDocument/documentHighlight`. Returns the
+    /// references to the symbol at the cursor inside the
+    /// current document; each entry carries an optional `kind`
+    /// (`Text` / `Read` / `Write`) so the overlay can paint
+    /// reads / writes differently. Response is `Vec<DocumentHighlight>`
+    /// or null when the cursor isn't on a known symbol.
+    pub fn document_highlight(
+        &self,
+        params: lsp_types::DocumentHighlightParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::DocumentHighlight>>> {
+        self.request_with_cancel("textDocument/documentHighlight", params, token)
+    }
+
+    /// 4.4.e: `textDocument/selectionRange`. Given a slice of
+    /// positions (almost always one cursor position), the server
+    /// returns the structural ranges that surround each
+    /// position, walking outward (token → expression → statement
+    /// → block → function → module). The operator-side
+    /// `expand-region` / `shrink-region` consumes the linked list.
+    pub fn selection_range(
+        &self,
+        params: lsp_types::SelectionRangeParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::SelectionRange>>> {
+        self.request_with_cancel("textDocument/selectionRange", params, token)
+    }
 }
 
 #[cfg(test)]

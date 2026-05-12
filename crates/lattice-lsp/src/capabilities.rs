@@ -401,6 +401,20 @@ impl Capabilities {
         self.server.execute_command_provider.is_some()
     }
 
+    /// 4.4.e: `documentHighlightProvider` -- references in the
+    /// current document at the cursor; used to paint same-symbol
+    /// occurrences as a soft overlay.
+    pub fn supports_document_highlight(&self) -> bool {
+        self.server.document_highlight_provider.is_some()
+    }
+
+    /// 4.4.e: `selectionRangeProvider` -- structural smart-
+    /// expansion ranges around a position (token → expression →
+    /// statement → block → function ...).
+    pub fn supports_selection_range(&self) -> bool {
+        self.server.selection_range_provider.is_some()
+    }
+
     /// Server's `documentOnTypeFormattingProvider` presence
     /// (Phase 4.3). Trigger-character driven formatting in
     /// Insert mode -- returns the first character that fires

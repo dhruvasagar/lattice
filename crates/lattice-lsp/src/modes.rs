@@ -213,6 +213,12 @@ lsp_sub_mode!(LspNavMode, "lsp-nav-mode");
 // (toggle) keeps everything else but stops accumulating
 // progress for that buffer.
 lsp_sub_mode!(LspProgressMode, "lsp-progress-mode");
+// 4.4.e: `documentHighlight` references at the cursor +
+// `selectionRange` smart-expansion. Both are
+// position-driven and on by default; toggle off when their
+// overlays / expansion clobber other plugins.
+lsp_sub_mode!(LspDocumentHighlightMode, "lsp-document-highlight-mode");
+lsp_sub_mode!(LspSelectionRangeMode, "lsp-selection-range-mode");
 
 /// Register every LSP mode (the three log majors, the umbrella
 /// `lsp-mode` minor, and the nine M.6 sub-mode minors) against
@@ -263,6 +269,12 @@ pub fn register_lsp_log_modes(registry: &mut ModeRegistry) {
     registry
         .register(LspProgressMode)
         .expect("lsp-progress-mode register");
+    registry
+        .register(LspDocumentHighlightMode)
+        .expect("lsp-document-highlight-mode register");
+    registry
+        .register(LspSelectionRangeMode)
+        .expect("lsp-selection-range-mode register");
 }
 
 #[cfg(test)]
@@ -287,6 +299,8 @@ mod tests {
             LspCodeActionMode::mode_id(),
             LspNavMode::mode_id(),
             LspProgressMode::mode_id(),
+            LspDocumentHighlightMode::mode_id(),
+            LspSelectionRangeMode::mode_id(),
         ];
         for (i, a) in ids.iter().enumerate() {
             for b in &ids[i + 1..] {
@@ -316,6 +330,8 @@ mod tests {
         assert!(registry.is_registered(LspCodeActionMode::mode_id()));
         assert!(registry.is_registered(LspNavMode::mode_id()));
         assert!(registry.is_registered(LspProgressMode::mode_id()));
+        assert!(registry.is_registered(LspDocumentHighlightMode::mode_id()));
+        assert!(registry.is_registered(LspSelectionRangeMode::mode_id()));
     }
 
     #[test]
@@ -337,6 +353,8 @@ mod tests {
             &LspCodeActionMode,
             &LspNavMode,
             &LspProgressMode,
+            &LspDocumentHighlightMode,
+            &LspSelectionRangeMode,
         ];
         for m in modes {
             assert_eq!(m.kind(), ModeKind::Minor, "{} not minor", m.id());

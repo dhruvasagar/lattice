@@ -215,6 +215,147 @@ async fn register_capability_is_accepted() {
     assert!(our.error.is_none(), "expected ok response, got {:?}", our.error);
 }
 
+/// 4.4.n: registerCapability mutates the published
+/// [`Capabilities`] snapshot. The server in the fixture
+/// advertises *no* completion provider statically, so a
+/// subsequent `supports_completion()` should switch from
+/// `false` to `true` once the registration lands.
+#[tokio::test]
+async fn register_capability_mutates_supports_probe() {
+    let server = MockServer::start().await;
+    assert!(
+        !server.handle.capabilities().supports_completion(),
+        "static caps don't advertise completion -- probe must be false pre-register"
+    );
+
+    server.mock.push_request(
+        9100,
+        "client/registerCapability",
+        json!({
+            "registrations": [{
+                "id": "comp-1",
+                "method": "textDocument/completion",
+                "registerOptions": { "triggerCharacters": [".", "::"] }
+            }]
+        }),
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let caps = server.handle.capabilities();
+    assert!(
+        caps.supports_completion(),
+        "dynamic registration should light up supports_completion"
+    );
+    let registrations: Vec<&lattice_lsp::DynamicRegistration> = caps
+        .dynamic
+        .registrations_for("textDocument/completion")
+        .collect();
+    assert_eq!(registrations.len(), 1, "one active completion registration");
+    assert_eq!(registrations[0].id, "comp-1");
+}
+
+/// 4.4.n: unregisterCapability evicts the entry; the probe
+/// goes back to consulting only the static snapshot.
+#[tokio::test]
+async fn unregister_capability_evicts_dynamic_entry() {
+    let server = MockServer::start().await;
+    server.mock.push_request(
+        9101,
+        "client/registerCapability",
+        json!({
+            "registrations": [{
+                "id": "fmt-1",
+                "method": "textDocument/formatting",
+                "registerOptions": {}
+            }]
+        }),
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(server.handle.capabilities().supports_formatting());
+
+    server.mock.push_request(
+        9102,
+        "client/unregisterCapability",
+        json!({
+            "unregisterations": [{
+                "id": "fmt-1",
+                "method": "textDocument/formatting"
+            }]
+        }),
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !server.handle.capabilities().supports_formatting(),
+        "after unregister, only the static caps are consulted"
+    );
+}
+
+/// 4.4.n: register/unregister capabilities are surfaced from
+/// `ServerHandle::capabilities()` as fresh snapshots -- a
+/// snapshot taken before registration doesn't observe the new
+/// entry (it's the Arc that was current at load time), and a
+/// snapshot taken after does. This pins the ArcSwap semantics
+/// against accidental switch-back to a captured static Arc.
+#[tokio::test]
+async fn capabilities_snapshot_is_per_call_after_registration() {
+    let server = MockServer::start().await;
+    let before = server.handle.capabilities();
+    assert!(!before.dynamic.has("workspace/didChangeWatchedFiles"));
+
+    server.mock.push_request(
+        9103,
+        "client/registerCapability",
+        json!({
+            "registrations": [{
+                "id": "watch-rust",
+                "method": "workspace/didChangeWatchedFiles",
+                "registerOptions": {
+                    "watchers": [{ "globPattern": "**/*.rs" }]
+                }
+            }]
+        }),
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The Arc taken *before* the registration is still
+    // pre-mutation. The Arc taken *after* observes the new
+    // registration. ArcSwap's promise.
+    assert!(!before.dynamic.has("workspace/didChangeWatchedFiles"));
+    let after = server.handle.capabilities();
+    assert!(after.dynamic.has("workspace/didChangeWatchedFiles"));
+    let watcher = after
+        .dynamic
+        .registrations_for("workspace/didChangeWatchedFiles")
+        .next()
+        .expect("one watcher registration");
+    let opts = watcher
+        .register_options
+        .as_ref()
+        .expect("watcher registration carries options");
+    assert_eq!(opts["watchers"][0]["globPattern"], "**/*.rs");
+}
+
+/// 4.4.n: malformed register-params logs a warning + still
+/// replies `null`. Throwing the registration away beats
+/// failing the request, which some servers treat as a fatal
+/// protocol error.
+#[tokio::test]
+async fn register_capability_with_malformed_params_replies_ok() {
+    let server = MockServer::start().await;
+    server.mock.push_request(
+        9104,
+        "client/registerCapability",
+        json!({ "registrations": "not-an-array" }),
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let resps = server.mock.responses().await;
+    let our = resps
+        .iter()
+        .find(|r| matches!(&r.id, lattice_lsp::jsonrpc::RequestId::Number(9104)))
+        .expect("expected response to malformed registerCapability");
+    assert!(our.error.is_none(), "even malformed input must not error the wire");
+}
+
 /// `workspace/configuration` returns one entry per requested
 /// item -- LSP requires the response to be an array of length
 /// equal to the request.

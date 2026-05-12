@@ -55,6 +55,7 @@ pub mod config;
 pub mod configuration;
 pub mod diagnostics;
 pub mod diagnostics_layer;
+pub mod dynamic_registration;
 pub mod error;
 pub mod events;
 pub mod fan_in;
@@ -81,6 +82,7 @@ pub use show_message_request::{
     InboundShowMessageRequest, ShowMessageRequestBus, ShowMessageRequestOutcome,
 };
 pub use capabilities::{Capabilities, client_capabilities};
+pub use dynamic_registration::{DynamicRegistration, DynamicRegistry};
 pub use codec::{LspReader, LspWriter};
 pub use config::{ServerConfig, builtin_servers, resolve_workspace_root};
 pub use diagnostics::{DIAGNOSTICS_CHANNEL_CAPACITY, DiagnosticEvent, DiagnosticsBus};

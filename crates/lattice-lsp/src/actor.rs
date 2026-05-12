@@ -38,6 +38,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use lsp_types::{
     ClientInfo, InitializeParams, InitializeResult, InitializedParams, Uri, WorkspaceFolder,
 };
@@ -71,10 +72,15 @@ pub struct ServerHandle {
 
 struct HandleInner {
     cmd_tx: mpsc::UnboundedSender<ActorCmd>,
-    /// Negotiated capabilities -- captured at handshake. Stable
-    /// for the actor's lifetime; per-feature dispatch reads from
-    /// here before issuing requests.
-    capabilities: Arc<Capabilities>,
+    /// Negotiated capabilities, published as an
+    /// `ArcSwap<Capabilities>` (4.4.n). The handshake snapshot
+    /// goes in at handshake-time; subsequent
+    /// `client/registerCapability` and
+    /// `client/unregisterCapability` notifications publish new
+    /// snapshots in place. Readers
+    /// ([`ServerHandle::capabilities`]) load a fresh `Arc` per
+    /// call -- lock-free and as cheap as an atomic load.
+    capabilities: Arc<ArcSwap<Capabilities>>,
     /// Server id, for logs / telemetry.
     server_id: String,
     /// Diagnostics broadcast bus -- subscribers (App, plugins,
@@ -96,9 +102,16 @@ impl std::fmt::Debug for ServerHandle {
 }
 
 impl ServerHandle {
-    /// Negotiated capabilities. Stable for the actor's lifetime.
+    /// Snapshot of the current negotiated capabilities. Each
+    /// call returns a fresh `Arc` that includes any dynamic
+    /// registrations the server has issued since handshake
+    /// (4.4.n). Callers that need the capability set to be
+    /// stable for a multi-step decision should bind the
+    /// snapshot to a local variable; subsequent
+    /// `capabilities()` calls see whatever the actor has
+    /// published in the interim.
     pub fn capabilities(&self) -> Arc<Capabilities> {
-        Arc::clone(&self.inner.capabilities)
+        self.inner.capabilities.load_full()
     }
 
     /// Server's stable id (e.g. `"rust"`). Useful for logs and
@@ -494,7 +507,15 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ActorCmd>();
-    let (handshake_tx, handshake_rx) = oneshot::channel::<LspResult<Arc<Capabilities>>>();
+    // 4.4.n: handshake hands back the published `ArcSwap` cell
+    // (not a plain `Arc<Capabilities>`) so the host's handle and
+    // the actor task share one publication point. After
+    // handshake the actor swaps in fresh snapshots whenever
+    // `client/(un)registerCapability` modifies the dynamic
+    // registry; readers (`ServerHandle::capabilities()`) load
+    // through the same cell.
+    let (handshake_tx, handshake_rx) =
+        oneshot::channel::<LspResult<Arc<ArcSwap<Capabilities>>>>();
 
     let server_id = config.id.clone();
     let init_options = config.initialization_options.clone();
@@ -554,6 +575,9 @@ where
     Ok(ServerHandle {
         inner: Arc::new(HandleInner {
             cmd_tx,
+            // 4.4.n: ArcSwap shared with the actor task so
+            // register / unregister updates are observable
+            // from readers without restarting the actor.
             capabilities,
             server_id,
             diagnostics,
@@ -666,7 +690,7 @@ async fn actor_main<R, W>(
     mut child: Option<Child>,
     stderr: Option<ChildStderr>,
     mut cmd_rx: mpsc::UnboundedReceiver<ActorCmd>,
-    handshake_tx: oneshot::Sender<LspResult<Arc<Capabilities>>>,
+    handshake_tx: oneshot::Sender<LspResult<Arc<ArcSwap<Capabilities>>>>,
     server_id: String,
     workspace_folder_uri: Uri,
     workspace_name: String,
@@ -781,6 +805,17 @@ async fn actor_main<R, W>(
     };
 
     let caps = Capabilities::from_initialize(capabilities::client_capabilities(), server_caps);
+    // 4.4.n: publish the handshake snapshot into the shared
+    // ArcSwap cell. `caps_cell` is the publication point both
+    // the host's `ServerHandle::capabilities()` and the
+    // actor's own dynamic-registration code read / write.
+    let caps_cell: Arc<ArcSwap<Capabilities>> = Arc::new(ArcSwap::new(Arc::clone(&caps)));
+    // Local snapshot used by the actor task between mutations.
+    // After `client/(un)registerCapability` we rebuild + store
+    // a new `Arc<Capabilities>` and refresh this binding so
+    // subsequent reads in this task see the latest state
+    // without a load through the cell.
+    let mut caps: Arc<Capabilities> = caps;
 
     // Send `initialized` notification per LSP base spec -- the
     // server is required to wait for this before processing
@@ -792,7 +827,7 @@ async fn actor_main<R, W>(
     )));
 
     // Hand the handle back to the caller.
-    if handshake_tx.send(Ok(Arc::clone(&caps))).is_err() {
+    if handshake_tx.send(Ok(Arc::clone(&caps_cell))).is_err() {
         // The caller dropped the spawn future -- nothing else to
         // do. Run shutdown locally.
         perform_shutdown(&out_tx, &mut in_rx, &mut next_id, child.as_mut()).await;
@@ -1185,6 +1220,107 @@ async fn actor_main<R, W>(
                                     server_id: Arc::clone(&server_id_arc),
                                 });
                             }
+                        } else if req.method == "client/registerCapability" {
+                            // 4.4.n: parse the registration batch,
+                            // fold every entry into the dynamic
+                            // registry, publish a new caps snapshot,
+                            // reply `null`. Parse errors degrade to
+                            // a logged warning + still-reply-null --
+                            // throwing the registration away is
+                            // better than failing the request,
+                            // which most servers treat as a fatal
+                            // protocol error.
+                            let parsed = req
+                                .params
+                                .as_ref()
+                                .map(|p| {
+                                    serde_json::from_value::<lsp_types::RegistrationParams>(
+                                        p.clone(),
+                                    )
+                                });
+                            match parsed {
+                                Some(Ok(params)) => {
+                                    caps = caps.with_dynamic_mut(|reg| {
+                                        for r in params.registrations {
+                                            reg.register(
+                                                crate::DynamicRegistration {
+                                                    id: r.id,
+                                                    method: r.method,
+                                                    register_options: r
+                                                        .register_options,
+                                                },
+                                            );
+                                        }
+                                    });
+                                    caps_cell.store(Arc::clone(&caps));
+                                }
+                                Some(Err(e)) => {
+                                    logger.log(
+                                        Some(&server_id_arc),
+                                        LogLevel::Warn,
+                                        LogSource::Client,
+                                        format!(
+                                            "client/registerCapability: malformed params, dropping ({e})"
+                                        ),
+                                    );
+                                }
+                                None => {
+                                    logger.log(
+                                        Some(&server_id_arc),
+                                        LogLevel::Warn,
+                                        LogSource::Client,
+                                        "client/registerCapability: missing params",
+                                    );
+                                }
+                            }
+                            let _ = out_tx.send(Message::Response(Response::ok(
+                                req.id.clone(),
+                                Value::Null,
+                            )));
+                        } else if req.method == "client/unregisterCapability" {
+                            // 4.4.n: evict each entry by id; publish.
+                            // Unknown ids are silently dropped
+                            // (see `DynamicRegistry::unregister`).
+                            let parsed = req
+                                .params
+                                .as_ref()
+                                .map(|p| {
+                                    serde_json::from_value::<lsp_types::UnregistrationParams>(
+                                        p.clone(),
+                                    )
+                                });
+                            match parsed {
+                                Some(Ok(params)) => {
+                                    caps = caps.with_dynamic_mut(|reg| {
+                                        for u in &params.unregisterations {
+                                            reg.unregister(&u.id);
+                                        }
+                                    });
+                                    caps_cell.store(Arc::clone(&caps));
+                                }
+                                Some(Err(e)) => {
+                                    logger.log(
+                                        Some(&server_id_arc),
+                                        LogLevel::Warn,
+                                        LogSource::Client,
+                                        format!(
+                                            "client/unregisterCapability: malformed params, dropping ({e})"
+                                        ),
+                                    );
+                                }
+                                None => {
+                                    logger.log(
+                                        Some(&server_id_arc),
+                                        LogLevel::Warn,
+                                        LogSource::Client,
+                                        "client/unregisterCapability: missing params",
+                                    );
+                                }
+                            }
+                            let _ = out_tx.send(Message::Response(Response::ok(
+                                req.id.clone(),
+                                Value::Null,
+                            )));
                         } else {
                             let resp = handle_server_request(&server_id_arc, &req, &logger);
                             let _ = out_tx.send(Message::Response(resp));
@@ -1739,10 +1875,21 @@ async fn handle_show_message_request(
 /// handlers replace this as features land.
 fn handle_server_request(server_id: &Arc<str>, req: &Request, logger: &LspLogger) -> Response {
     match req.method.as_str() {
-        // Accept dynamic registration so servers don't fail at
-        // startup. We don't actually act on the registration --
-        // 4.4 wires the registry properly.
+        // `client/registerCapability` / `client/unregisterCapability`
+        // are handled inline in `actor_main` (4.4.n) so they can
+        // mutate the published capability snapshot. Reaching this
+        // arm means the inline handler is missing a branch --
+        // log it so we notice in CI.
         "client/registerCapability" | "client/unregisterCapability" => {
+            logger.log(
+                Some(server_id),
+                LogLevel::Warn,
+                LogSource::Client,
+                format!(
+                    "{} reached the inline-fallback handler -- registration dropped (bug)",
+                    req.method
+                ),
+            );
             Response::ok(req.id.clone(), Value::Null)
         }
         // Empty configuration -- the §5.12 typed-options layer

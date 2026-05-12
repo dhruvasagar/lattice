@@ -37,6 +37,8 @@ use lsp_types::{
     WorkspaceEditClientCapabilities,
 };
 
+use crate::dynamic_registration::DynamicRegistry;
+
 /// Build the full set of capabilities the client advertises in
 /// `initialize`. Pure -- safe to call from any task / thread.
 ///
@@ -173,6 +175,26 @@ fn workspace_capabilities() -> WorkspaceClientCapabilities {
                 dynamic_registration: Some(false),
             },
         ),
+        // 4.4.n: we honour dynamic registration of
+        // `workspace/didChangeWatchedFiles`. Servers (notably
+        // rust-analyzer + tsserver) register file-watcher
+        // patterns lazily after handshake -- the glob set
+        // depends on the active workspace, not on anything
+        // visible at `initialize` time. Without this advert
+        // they fall back to "watch nothing" and miss out-of-
+        // band edits (e.g. a `git checkout` that rewrites
+        // source files without a `didChange`).
+        //
+        // `relative_pattern_support = true` lets the server
+        // anchor patterns to a `WorkspaceFolder` rather than
+        // emitting absolute globs -- matters once 4.4.l's
+        // file-watcher pump consumes the registrations.
+        did_change_watched_files: Some(
+            lsp_types::DidChangeWatchedFilesClientCapabilities {
+                dynamic_registration: Some(true),
+                relative_pattern_support: Some(true),
+            },
+        ),
         // Other 4.4 workspace-side advertisements
         // (codeLens.refresh, diagnostics.refresh) are added when
         // those phases land.
@@ -269,26 +291,48 @@ fn publish_diagnostics_capabilities() -> PublishDiagnosticsClientCapabilities {
     }
 }
 
-/// Snapshot of the negotiated capabilities. The actor stores one
-/// of these (in an `Arc`) after `initialize` completes; per-feature
-/// dispatch reads from it before issuing a request.
+/// Snapshot of the negotiated capabilities. The actor publishes
+/// one of these through an `arc_swap::ArcSwap` cell on the
+/// [`ServerHandle`](crate::ServerHandle) (4.4.n); per-feature
+/// dispatch loads a fresh snapshot before issuing a request.
+///
+/// Before 4.4.n this lived in a plain `Arc<Capabilities>`
+/// captured at handshake; the dynamic registry was tracked
+/// nowhere. The ArcSwap layer makes register / unregister
+/// observable without changing the read-side ergonomics:
+/// `caps.supports_completion()` still works the same way, it
+/// just now consults the dynamic side too.
 #[derive(Debug, Clone)]
 pub struct Capabilities {
     /// What we advertised. Stable for the actor's lifetime.
     pub client: ClientCapabilities,
-    /// What the server advertised back.
+    /// What the server advertised in its `initialize` response.
+    /// Stable for the actor's lifetime; dynamic registrations
+    /// ride in [`Self::dynamic`].
     pub server: ServerCapabilities,
     /// Final negotiated position encoding. utf-8 if the server
     /// honoured our preference; utf-16 otherwise (older servers
     /// that ignore `general.positionEncodings`).
     pub position_encoding: PositionEncodingKind,
+    /// 4.4.n: registrations the server added via
+    /// `client/registerCapability` after handshake. Empty on a
+    /// freshly-attached server; each register / unregister
+    /// notification produces a new snapshot the actor publishes
+    /// through the ArcSwap cell. Probes (`supports_*` and
+    /// friends) that care about dynamic-only registrations OR
+    /// in `dynamic.has(method)`; consumers that need the
+    /// `register_options` blob (file watchers, etc.) walk
+    /// [`crate::DynamicRegistry::registrations_for`].
+    pub dynamic: DynamicRegistry,
 }
 
 impl Capabilities {
     /// Construct from server's `initialize` response. Picks the
     /// position encoding the server advertised (if any) or
     /// defaults to utf-16 -- the LSP 3.17 fallback when the
-    /// server doesn't honour negotiation.
+    /// server doesn't honour negotiation. Starts with an empty
+    /// dynamic registry; the actor adds entries as
+    /// `client/registerCapability` notifications arrive.
     pub fn from_initialize(client: ClientCapabilities, server: ServerCapabilities) -> Arc<Self> {
         // Server's position encoding preference wins. If absent,
         // the spec says utf-16 is the default (3.16 and earlier
@@ -301,7 +345,21 @@ impl Capabilities {
             client,
             server,
             position_encoding,
+            dynamic: DynamicRegistry::new(),
         })
+    }
+
+    /// 4.4.n: clone this capabilities snapshot with the
+    /// `dynamic` registry mutated by `f`. Returns the new
+    /// `Arc<Capabilities>` the caller stores in the ArcSwap
+    /// cell. Pure -- the old Arc stays valid for any reader
+    /// that already loaded it; the new Arc carries the
+    /// updated registry. Used by the actor on register /
+    /// unregister to publish without locking.
+    pub fn with_dynamic_mut(self: &Arc<Self>, f: impl FnOnce(&mut DynamicRegistry)) -> Arc<Self> {
+        let mut next = (**self).clone();
+        f(&mut next.dynamic);
+        Arc::new(next)
     }
 
     /// True iff the negotiated encoding is utf-8. Used by the
@@ -313,31 +371,41 @@ impl Capabilities {
 
     /// Server's `hoverProvider` presence -- gates 4.2's hover
     /// dispatch. Returns false until 4.2 supplements the helper.
+    /// Consults the dynamic registry (4.4.n) so servers that
+    /// register hover lazily via `client/registerCapability`
+    /// still gate-in.
     pub fn supports_hover(&self) -> bool {
-        self.server.hover_provider.is_some()
+        self.server.hover_provider.is_some() || self.dynamic.has("textDocument/hover")
     }
 
-    /// Server's `definitionProvider` presence.
+    /// Server's `definitionProvider` presence. Consults the
+    /// dynamic registry (4.4.n).
     pub fn supports_definition(&self) -> bool {
         self.server.definition_provider.is_some()
+            || self.dynamic.has("textDocument/definition")
     }
 
     /// Server's `referencesProvider` presence -- gates 4.2.d's
-    /// `gr` dispatch.
+    /// `gr` dispatch. Consults the dynamic registry (4.4.n).
     pub fn supports_references(&self) -> bool {
         self.server.references_provider.is_some()
+            || self.dynamic.has("textDocument/references")
     }
 
     /// Server's `documentSymbolProvider` presence -- gates the
-    /// `:document-symbols` outline view (Phase 4.2.e).
+    /// `:document-symbols` outline view (Phase 4.2.e). Consults
+    /// the dynamic registry (4.4.n).
     pub fn supports_document_symbol(&self) -> bool {
         self.server.document_symbol_provider.is_some()
+            || self.dynamic.has("textDocument/documentSymbol")
     }
 
     /// Server's `workspaceSymbolProvider` presence -- gates the
-    /// `:workspace-symbols` picker (Phase 4.2.f).
+    /// `:workspace-symbols` picker (Phase 4.2.f). Consults the
+    /// dynamic registry (4.4.n).
     pub fn supports_workspace_symbol(&self) -> bool {
         self.server.workspace_symbol_provider.is_some()
+            || self.dynamic.has("workspace/symbol")
     }
 
     /// Whether the server advertises `resolveProvider` on its
@@ -357,9 +425,11 @@ impl Capabilities {
     }
 
     /// Server's `completionProvider` presence -- gates 4.2.g's
-    /// `gen:lsp-completion` source.
+    /// `gen:lsp-completion` source. Consults the dynamic
+    /// registry (4.4.n).
     pub fn supports_completion(&self) -> bool {
         self.server.completion_provider.is_some()
+            || self.dynamic.has("textDocument/completion")
     }
 
     /// Whether the server advertises `resolveProvider` on its
@@ -388,43 +458,53 @@ impl Capabilities {
     }
 
     /// Server's `documentFormattingProvider` presence -- gates
-    /// `:format` (Phase 4.3).
+    /// `:format` (Phase 4.3). Consults the dynamic registry
+    /// (4.4.n).
     pub fn supports_formatting(&self) -> bool {
         self.server.document_formatting_provider.is_some()
+            || self.dynamic.has("textDocument/formatting")
     }
 
     /// Server's `documentRangeFormattingProvider` presence --
     /// gates `:format-range` / `=` operator on motions / objects.
+    /// Consults the dynamic registry (4.4.n).
     pub fn supports_range_formatting(&self) -> bool {
         self.server.document_range_formatting_provider.is_some()
+            || self.dynamic.has("textDocument/rangeFormatting")
     }
 
     /// Server's `signatureHelpProvider` presence -- gates the
-    /// trigger-character signature popup (Phase 4.3).
+    /// trigger-character signature popup (Phase 4.3). Consults
+    /// the dynamic registry (4.4.n).
     pub fn supports_signature_help(&self) -> bool {
         self.server.signature_help_provider.is_some()
+            || self.dynamic.has("textDocument/signatureHelp")
     }
 
     /// Server's `renameProvider` presence -- gates `:rename`
     /// (Phase 4.3). Returns true for both bool and options
-    /// shapes the LSP spec allows.
+    /// shapes the LSP spec allows. Consults the dynamic
+    /// registry (4.4.n).
     pub fn supports_rename(&self) -> bool {
-        match self.server.rename_provider.as_ref() {
+        let static_ok = match self.server.rename_provider.as_ref() {
             Some(lsp_types::OneOf::Left(b)) => *b,
             Some(lsp_types::OneOf::Right(_)) => true,
             None => false,
-        }
+        };
+        static_ok || self.dynamic.has("textDocument/rename")
     }
 
     /// Server's `codeActionProvider` presence -- gates
     /// `:code-actions` (Phase 4.3). Returns true for both
-    /// bool and options shapes the LSP spec allows.
+    /// bool and options shapes the LSP spec allows. Consults
+    /// the dynamic registry (4.4.n).
     pub fn supports_code_action(&self) -> bool {
-        match self.server.code_action_provider.as_ref() {
+        let static_ok = match self.server.code_action_provider.as_ref() {
             Some(lsp_types::CodeActionProviderCapability::Simple(b)) => *b,
             Some(lsp_types::CodeActionProviderCapability::Options(_)) => true,
             None => false,
-        }
+        };
+        static_ok || self.dynamic.has("textDocument/codeAction")
     }
 
     /// Whether the server advertises `resolveProvider` on its
@@ -449,25 +529,31 @@ impl Capabilities {
 
     /// 4.4.e: `documentHighlightProvider` -- references in the
     /// current document at the cursor; used to paint same-symbol
-    /// occurrences as a soft overlay.
+    /// occurrences as a soft overlay. Consults the dynamic
+    /// registry (4.4.n).
     pub fn supports_document_highlight(&self) -> bool {
         self.server.document_highlight_provider.is_some()
+            || self.dynamic.has("textDocument/documentHighlight")
     }
 
     /// 4.4.e: `selectionRangeProvider` -- structural smart-
     /// expansion ranges around a position (token → expression →
-    /// statement → block → function ...).
+    /// statement → block → function ...). Consults the dynamic
+    /// registry (4.4.n).
     pub fn supports_selection_range(&self) -> bool {
         self.server.selection_range_provider.is_some()
+            || self.dynamic.has("textDocument/selectionRange")
     }
 
     /// 4.4.f: `foldingRangeProvider` -- feeds the LSP
     /// foldmethod. The host's per-tick pump fires
     /// `textDocument/foldingRange` when the buffer's document
     /// version changes; the response seats into a per-buffer
-    /// cache the `recompute_folds` dispatcher reads.
+    /// cache the `recompute_folds` dispatcher reads. Consults
+    /// the dynamic registry (4.4.n).
     pub fn supports_folding_range(&self) -> bool {
         self.server.folding_range_provider.is_some()
+            || self.dynamic.has("textDocument/foldingRange")
     }
 
     /// 4.4.g: `inlayHintProvider` -- type / parameter
@@ -476,9 +562,10 @@ impl Capabilities {
     /// fires `textDocument/inlayHint` over the visible range
     /// when the buffer's document version changes; the
     /// renderer overlay splices each hint's label at its
-    /// position.
+    /// position. Consults the dynamic registry (4.4.n).
     pub fn supports_inlay_hint(&self) -> bool {
         self.server.inlay_hint_provider.is_some()
+            || self.dynamic.has("textDocument/inlayHint")
     }
 
     /// 4.4.g follow-up: `InlayHintOptions.resolve_provider`.

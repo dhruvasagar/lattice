@@ -61,10 +61,12 @@ pub mod locals;
 pub mod mode;
 pub mod modes;
 pub mod registry;
+pub mod services;
 
 pub use crate::active::ActiveModes;
 pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;
+pub use crate::services::ServiceRegistry;
 pub use crate::contributions::{DecorationProvider, Keymap, Subscription};
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;

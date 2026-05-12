@@ -5025,6 +5025,7 @@ mod tests {
                 &mut locals,
                 &a.config,
                 &a.event_bus,
+                &a.services,
                 proto_id,
                 lattice_lsp::modes::LspMode::mode_id(),
                 lattice_mode::CapabilitySet::empty(),

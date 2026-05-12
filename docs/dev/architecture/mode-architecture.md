@@ -432,11 +432,19 @@ a smaller blast radius:
   `LspBufferAttached` / `LspBufferDetached` from its
   hand-written hooks (was App-side
   `on_lsp_mode_activated` / `_deactivated`).
-- **Phase 3** (queued) — typed service registry exposed via
-  `ctx.service::<LspSupervisorHandle>()` + cascade
-  primitive. `LspMode`'s `didClose` cascade and sub-mode
-  cascade activation will migrate, eliminating the
-  remaining App-side `on_lsp_mode_*` orchestration.
+- **Phase 3** — typed service registry exposed via
+  `ctx.service::<LspSupervisorHandle>()`. Sub-mode cascade
+  is now driven by `Mode::implies()` (the registry walks
+  the slice on activate AND, via the Phase 3 extension, on
+  deactivate). `LspMode` was rewritten to a stateful
+  struct with the 13 sub-mode ids in `implies()`. App-side
+  `on_lsp_mode_activated`, `on_lsp_mode_deactivated`,
+  `activate_lsp_sub_modes_for`, and
+  `deactivate_lsp_sub_modes_for` deleted. Only
+  `lsp_close_buffer` (wire-level `didClose` +
+  `buffer_uris` cleanup) remains on the App side because
+  it mutates per-buffer App state; subscriber-pattern
+  move queued for a follow-up slice.
 
 `OptionOverrideSet` is a type-checked bag built via macro (§6.4
 shows the syntax). Each entry pairs an option type with a value

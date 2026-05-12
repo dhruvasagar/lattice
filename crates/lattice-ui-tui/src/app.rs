@@ -1226,6 +1226,12 @@ pub struct App {
     /// One process-shared registry; all Documents share the
     /// same mode definitions.
     pub mode_registry: std::sync::Arc<lattice_mode::ModeRegistry>,
+    /// Phase 3: typed service map subsystems hand off to modes
+    /// so the mode's `Mode::on_activate` / `on_deactivate` can
+    /// pull subsystem handles via `ctx.service::<T>()`.
+    /// Populated at boot (LSP supervisor handle, buffer-uri
+    /// resolver). Read-only after init.
+    pub services: lattice_mode::ServiceRegistry,
     /// Mode-keyed pane render dispatch (M.4 follow-up). Populated
     /// at boot; lookup walks active minors then the major to find
     /// the per-buffer renderer + status formatter, with the

@@ -94,6 +94,7 @@ impl App {
             &mut locals,
             &self.config,
             &self.event_bus,
+            &self.services,
             proto_id,
             major_id,
             // Capability set: M.3.1 doesn't yet plumb per-buffer
@@ -129,6 +130,7 @@ impl App {
                 &mut locals,
                 &self.config,
                 &self.event_bus,
+                &self.services,
                 proto_id,
                 minor_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -153,6 +155,7 @@ impl App {
                 &mut locals,
                 &self.config,
                 &self.event_bus,
+                &self.services,
                 proto_id,
                 minor_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -255,6 +258,7 @@ impl App {
                 &mut locals,
                 &self.config,
                 &self.event_bus,
+                &self.services,
                 proto_id,
                 mode_id,
                 CapabilitySet::empty(),
@@ -264,6 +268,7 @@ impl App {
                 &mut locals,
                 &self.config,
                 &self.event_bus,
+                &self.services,
                 proto_id,
                 mode_id,
                 CapabilitySet::empty(),
@@ -288,15 +293,11 @@ impl App {
         if matches!(kind, ModeKind::Major) {
             self.maybe_auto_activate_lsp_mode(buffer_id);
         }
-        // M.5.3: lsp-mode activate side-effect -- emit
-        // `LspBufferAttached` for subscribers (statusline,
-        // diagnostics renderer, future plugin hooks). The actual
-        // wire-level didOpen happens via the existing
-        // `attach_driver` listening on `Event::DocumentOpened`,
-        // which fires from the file-open path.
-        if mode_id == lattice_lsp::modes::LspMode::mode_id() {
-            self.on_lsp_mode_activated(buffer_id);
-        }
+        // Phase 3: the `lsp-mode` activate side-effects --
+        // `LspBufferAttached` event publication (Phase 2)
+        // and sub-mode cascade (Phase 3 -- now driven by
+        // `Mode::implies()` so the registry handles it) --
+        // are owned by the mode. No App-side hook here.
         // Modes that mutated options in their `on_activate`
         // (e.g. `lsp-folding-mode` swapping `foldmethod=lsp`)
         // have already published `OptionChanged` events into
@@ -331,6 +332,7 @@ impl App {
                 &mut locals,
                 &self.config,
                 &self.event_bus,
+                &self.services,
                 proto_id,
             ),
             ModeKind::Minor => self.mode_registry.deactivate_minor(
@@ -338,6 +340,7 @@ impl App {
                 &mut locals,
                 &self.config,
                 &self.event_bus,
+                &self.services,
                 proto_id,
                 mode_id,
             ),
@@ -352,13 +355,17 @@ impl App {
         self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
         self.recompute_active_completion_sources_for(buffer_id);
-        // M.5.3: lsp-mode deactivate side-effect -- send didClose
-        // to attached servers (`lsp_close_buffer` already does
-        // this for the bdelete path) and emit
-        // `LspBufferDetached`. Server connection persists if
-        // other buffers are still attached.
+        // Phase 3: `lsp-mode` deactivate side-effects are
+        // owned by the mode (event publication via Phase 2,
+        // sub-mode cascade via the registry's
+        // `deactivate_minor` `implies()` walk). The wire-
+        // level `didClose` + `buffer_uris` cleanup is the
+        // only piece still on the App side -- it depends on
+        // App-owned `buffer_uris` state and is queued for a
+        // follow-up slice that subscribes to
+        // `LspBufferDetached` from boot.
         if mode_id == lattice_lsp::modes::LspMode::mode_id() {
-            self.on_lsp_mode_deactivated(buffer_id);
+            self.lsp_close_buffer(buffer_id);
         }
         // Symmetric to `activate_mode_by_id`: drain option
         // mutations the mode emitted in its `on_deactivate`
@@ -373,51 +380,25 @@ impl App {
     /// subscribers see the gate flip. Wire-level `didOpen` is
     /// already driven by the `attach_driver` subscribing to
     /// `Event::DocumentOpened` from the file-open path.
-    ///
-    /// M.6.1 cascade: every LSP sub-mode (`lsp-completion-mode`,
-    /// `lsp-diagnostics-mode`, ..., `lsp-nav-mode`) auto-activates
-    /// alongside the umbrella. The sub-mode is a *user-controllable
-    /// disable switch*, not a duplicate capability gate -- the
-    /// wire layer already filters per-server (e.g.
-    /// `handle.capabilities().supports_hover()` before issuing a
-    /// hover request). Auto-activating regardless of capability:
-    /// (a) avoids the async race between `lsp-mode` activation
-    /// (immediate) and `initialize` response (hundreds of ms);
-    /// (b) gives the right user-facing error when a server
-    /// doesn't support a feature ("server doesn't advertise
-    /// hover" rather than "lsp-hover-mode disabled"). Users who
-    /// want a sub-mode permanently off run `:lsp-hover-mode` to
-    /// toggle.
-    fn on_lsp_mode_activated(&mut self, buffer_id: BufferId) {
-        // Phase 2: event publication moved into
-        // `LspMode::on_activate` via `ctx.events()`. The App
-        // here only orchestrates the sub-mode cascade
-        // (deferred to Phase 3 -- needs cascade primitive
-        // on `ModeContext`).
-        self.activate_lsp_sub_modes_for(buffer_id);
-    }
-
-    /// M.5.3: lsp-mode deactivated on `buffer_id`. Sends
-    /// `textDocument/didClose` per attached server (the LSP wire
-    /// mechanism for "stop tracking this URI") and emits
-    /// `LspBufferDetached`. Mirrors nvim's
-    /// `vim.lsp.buf_detach_client` and emacs `lsp-mode`'s
-    /// disable path. The buffer stays open in the editor; only
-    /// LSP tracking ends. Server connection persists if other
-    /// buffers are still attached.
-    ///
-    /// M.6.1 cascade: every LSP sub-mode deactivates. Symmetric
-    /// to [`Self::on_lsp_mode_activated`]'s cascade.
-    fn on_lsp_mode_deactivated(&mut self, buffer_id: BufferId) {
-        // Phase 2: event publication moved into
-        // `LspMode::on_deactivate` via `ctx.events()`.
-        // Wire-level `didClose` (`lsp_close_buffer`) + sub-
-        // mode cascade still live here -- both need Phase 3
-        // resources (`LspSupervisorHandle` service + cascade
-        // primitive).
-        self.lsp_close_buffer(buffer_id);
-        self.deactivate_lsp_sub_modes_for(buffer_id);
-    }
+    // Phase 3 removed `on_lsp_mode_activated` /
+    // `_deactivated`. The work they did is owned by the mode
+    // now:
+    //
+    // - Event publication (`LspBufferAttached` /
+    //   `LspBufferDetached`) lives in `LspMode::on_activate` /
+    //   `on_deactivate` via `ctx.events()` (Phase 2).
+    // - Sub-mode cascade (activate + deactivate of the 13
+    //   LSP sub-modes) lives in `Mode::implies()` --
+    //   `LspMode::new` builds the list once; the registry's
+    //   `activate_minor` / `deactivate_minor` walk the list
+    //   (the latter symmetrically via the Phase 3 cascade
+    //   extension).
+    //
+    // The wire-level `didClose` (`lsp_close_buffer`) is the
+    // only remaining App-side action; it lives at the
+    // `deactivate_mode_by_id` call site directly. Moving it
+    // requires a `LspBufferDetached` subscriber in boot;
+    // queued for a follow-up slice.
 
     // 4.4.f: `lsp-folding-mode` lifecycle moved into
     // `LspFoldingMode::on_activate` / `on_deactivate` in
@@ -426,120 +407,16 @@ impl App {
     // activate/deactivate call sites picks up the option
     // mutation the mode emits via `ctx.config()`.
 
-    /// M.6.1: activate every LSP sub-mode whose state is currently
-    /// inactive on `buffer_id`. Idempotent -- already-active
-    /// sub-modes are skipped silently (no echo, no error). Runs
-    /// the registry's `activate_minor` directly rather than
-    /// recursing through [`Self::activate_mode_by_id`] so the
-    /// option-recompute cost is paid once at the end of the
-    /// cascade rather than nine times.
-    fn activate_lsp_sub_modes_for(&mut self, buffer_id: BufferId) {
-        use lattice_lsp::modes::*;
-        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
-        let sub_mode_ids = [
-            LspCompletionMode::mode_id(),
-            LspDiagnosticsMode::mode_id(),
-            LspHoverMode::mode_id(),
-            LspSignatureMode::mode_id(),
-            LspFormatMode::mode_id(),
-            LspRenameMode::mode_id(),
-            LspSymbolsMode::mode_id(),
-            LspCodeActionMode::mode_id(),
-            LspNavMode::mode_id(),
-            // 4.4.c / 4.4.e / 4.4.f -- added to the cascade so
-            // the umbrella activate brings them in alongside
-            // the original nine.
-            LspProgressMode::mode_id(),
-            LspDocumentHighlightMode::mode_id(),
-            LspSelectionRangeMode::mode_id(),
-            LspFoldingMode::mode_id(),
-        ];
-        for sub_id in sub_mode_ids {
-            if active.has_minor(sub_id) {
-                continue;
-            }
-            // `_` on the registry result -- AlreadyActive (the
-            // only foreseeable error here, given the empty
-            // capability requirements every sub-mode declares)
-            // is the case we just guarded with `has_minor`. Any
-            // other error means a build-config bug
-            // (mode-registry mismatch) we'd surface elsewhere.
-            let _ = self.mode_registry.activate_minor(
-                &mut active,
-                &mut locals,
-                &self.config,
-                &self.event_bus,
-                proto_id,
-                sub_id,
-                CapabilitySet::empty(),
-            );
-        }
-        self.active_modes.insert(buffer_id, active);
-        self.buffer_locals.insert(buffer_id, locals);
-        self.recompute_options_for_buffer(buffer_id);
-        // CSM.8a: M.6.1 cascade flips `lsp-completion-mode` on,
-        // which is source-contributing -- refresh the
-        // `ActiveCompletionSources` cache so the popup picks up
-        // `gen:lsp-completion` (and its `<C-o>` filter chord)
-        // when the LSP server attaches.
-        self.recompute_active_completion_sources_for(buffer_id);
-        // Cascade can fire option-mutating `on_activate` hooks
-        // (`lsp-folding-mode` swaps `foldmethod=lsp`). Drain
-        // so the side-effect chain runs before this method
-        // returns.
-        self.drain_option_changes();
-    }
-
-    /// M.6.1: deactivate every LSP sub-mode currently active on
-    /// `buffer_id`. Symmetric to [`Self::activate_lsp_sub_modes_for`].
-    /// Idempotent -- already-inactive sub-modes are skipped.
-    fn deactivate_lsp_sub_modes_for(&mut self, buffer_id: BufferId) {
-        use lattice_lsp::modes::*;
-        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
-        let sub_mode_ids = [
-            LspCompletionMode::mode_id(),
-            LspDiagnosticsMode::mode_id(),
-            LspHoverMode::mode_id(),
-            LspSignatureMode::mode_id(),
-            LspFormatMode::mode_id(),
-            LspRenameMode::mode_id(),
-            LspSymbolsMode::mode_id(),
-            LspCodeActionMode::mode_id(),
-            LspNavMode::mode_id(),
-            LspProgressMode::mode_id(),
-            LspDocumentHighlightMode::mode_id(),
-            LspSelectionRangeMode::mode_id(),
-            LspFoldingMode::mode_id(),
-        ];
-        for sub_id in sub_mode_ids {
-            if !active.has_minor(sub_id) {
-                continue;
-            }
-            let _ = self.mode_registry.deactivate_minor(
-                &mut active,
-                &mut locals,
-                &self.config,
-                &self.event_bus,
-                proto_id,
-                sub_id,
-            );
-        }
-        self.active_modes.insert(buffer_id, active);
-        self.buffer_locals.insert(buffer_id, locals);
-        self.recompute_options_for_buffer(buffer_id);
-        // CSM.8a: symmetric refresh -- deactivating
-        // `lsp-completion-mode` drops the `gen:lsp-completion`
-        // entry from the cache.
-        self.recompute_active_completion_sources_for(buffer_id);
-        // Cascade can fire option-mutating `on_deactivate`
-        // hooks (`lsp-folding-mode` restores the prior
-        // `foldmethod`). Drain so the side-effect chain runs.
-        self.drain_option_changes();
-    }
+    // Phase 3 removed `activate_lsp_sub_modes_for` /
+    // `deactivate_lsp_sub_modes_for`. The sub-mode cascade
+    // lives in the registry now, driven by
+    // `LspMode::implies()` (a Vec built once at
+    // `LspMode::new()`). `ModeRegistry::activate_minor`
+    // walks `implies()` on activation; the symmetric
+    // `deactivate_minor` extension walks it on
+    // deactivation. Adding a new LSP sub-mode is one
+    // entry in `LspMode::new()`'s `vec![...]`; no App-side
+    // edits.
 
     /// M.5.1: toggle a mode by name on the active pane's buffer.
     /// This is the apply-fn target for the auto-generated

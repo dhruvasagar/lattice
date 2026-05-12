@@ -295,12 +295,14 @@ mod tests {
         let mut locals = BufferLocals::new();
         let cfg = lattice_config::ConfigRegistry::new();
         let evt = std::sync::Arc::new(lattice_runtime::EventBus::new());
+        let svc = crate::services::ServiceRegistry::new();
         registry
             .activate_minor(
                 &mut active,
                 &mut locals,
                 &cfg,
                 &evt,
+                &svc,
                 BufferId::new(0),
                 CompletionMode::mode_id(),
                 CapabilitySet::empty(),
@@ -312,6 +314,7 @@ mod tests {
                 &mut locals,
                 &cfg,
                 &evt,
+                &svc,
                 BufferId::new(0),
                 CompletionPopupMode::mode_id(),
                 CapabilitySet::empty(),

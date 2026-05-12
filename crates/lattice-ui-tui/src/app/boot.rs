@@ -654,6 +654,15 @@ impl App {
             // registration is M.10 territory and uses a
             // different surface).
             mode_registry,
+            services: {
+                // Phase 3: typed service map for subsystem
+                // handles modes need from their lifecycle
+                // hooks. `LspMode::on_deactivate` pulls the
+                // supervisor handle here to send `didClose`.
+                let mut s = lattice_mode::ServiceRegistry::new();
+                s.register(lsp.clone());
+                s
+            },
             pane_render_registry: crate::render::build_pane_render_registry(),
             active_modes: std::collections::HashMap::new(),
             buffer_locals,
@@ -830,6 +839,7 @@ impl App {
                 &mut locals,
                 &self.config,
                 &self.event_bus,
+                &self.services,
                 proto_id,
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -840,6 +850,7 @@ impl App {
                 &mut locals,
                 &self.config,
                 &self.event_bus,
+                &self.services,
                 proto_id,
                 mode_id,
             );

@@ -35,6 +35,7 @@
 //! borrows so the borrow checker prevents the mode from
 //! holding the context past the lifecycle hook's return.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use lattice_config::ConfigRegistry;
@@ -44,6 +45,7 @@ use lattice_runtime::EventBus;
 use crate::error::ModeActivationError;
 use crate::locals::{BufferLocal, BufferLocals};
 use crate::mode::ModeId;
+use crate::services::ServiceRegistry;
 
 /// Lifecycle context. Carries the current activation's
 /// metadata + a borrow of the buffer's locals map +
@@ -59,6 +61,7 @@ pub struct ModeContext<'a> {
     locals: &'a mut BufferLocals,
     config: &'a ConfigRegistry,
     events: &'a Arc<EventBus>,
+    services: &'a ServiceRegistry,
 }
 
 impl<'a> ModeContext<'a> {
@@ -72,6 +75,7 @@ impl<'a> ModeContext<'a> {
         locals: &'a mut BufferLocals,
         config: &'a ConfigRegistry,
         events: &'a Arc<EventBus>,
+        services: &'a ServiceRegistry,
     ) -> Self {
         Self {
             buffer_id,
@@ -79,7 +83,20 @@ impl<'a> ModeContext<'a> {
             locals,
             config,
             events,
+            services,
         }
+    }
+
+    /// Typed service lookup (Phase 3). Used by modes that need
+    /// access to subsystem handles (e.g. `LspMode` retrieves
+    /// `LspSupervisorHandle` in its `on_deactivate` to send
+    /// `textDocument/didClose`). Returns `None` when no service
+    /// of type `T` was registered -- a mode that depends on a
+    /// service should fail gracefully (echo or log) rather
+    /// than panic; tests may run the mode without wiring the
+    /// service.
+    pub fn service<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.services.get::<T>()
     }
 
     /// Shared typed-options registry. Mutations propagate
@@ -208,6 +225,7 @@ mod tests {
         locals: &'a mut BufferLocals,
         config: &'a ConfigRegistry,
         events: &'a Arc<EventBus>,
+        services: &'a ServiceRegistry,
     ) -> ModeContext<'a> {
         ModeContext::new(
             BufferId::new(1),
@@ -215,6 +233,7 @@ mod tests {
             locals,
             config,
             events,
+            services,
         )
     }
 
@@ -223,7 +242,8 @@ mod tests {
         let mut locals = BufferLocals::new();
         let cfg = ConfigRegistry::new();
         let evt = Arc::new(EventBus::new());
-        let c = ctx("a-mode", &mut locals, &cfg, &evt);
+        let svc = ServiceRegistry::new();
+        let c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
         assert_eq!(c.buffer_id(), BufferId::new(1));
         assert_eq!(c.current_mode().as_str(), "a-mode");
     }
@@ -233,7 +253,8 @@ mod tests {
         let mut locals = BufferLocals::new();
         let cfg = ConfigRegistry::new();
         let evt = Arc::new(EventBus::new());
-        let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
+        let svc = ServiceRegistry::new();
+        let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
         assert!(c.set_local(OwnedByA(42)).is_ok());
         assert_eq!(c.get_local::<OwnedByA>().unwrap().0, 42);
     }
@@ -243,7 +264,8 @@ mod tests {
         let mut locals = BufferLocals::new();
         let cfg = ConfigRegistry::new();
         let evt = Arc::new(EventBus::new());
-        let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
+        let svc = ServiceRegistry::new();
+        let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
         let err = c.set_local(OwnedByB("hi".into())).unwrap_err();
         match err {
             ModeActivationError::WrongOwnerMode {
@@ -265,13 +287,14 @@ mod tests {
         let mut locals = BufferLocals::new();
         let cfg = ConfigRegistry::new();
         let evt = Arc::new(EventBus::new());
+        let svc = ServiceRegistry::new();
         // Write as a-mode...
         {
-            let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
+            let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
             c.set_local(OwnedByA(7)).unwrap();
         }
         // ...read as b-mode (cross-mode read OK).
-        let c = ctx("b-mode", &mut locals, &cfg, &evt);
+        let c = ctx("b-mode", &mut locals, &cfg, &evt, &svc);
         assert_eq!(c.get_local::<OwnedByA>().unwrap().0, 7);
     }
 
@@ -280,20 +303,21 @@ mod tests {
         let mut locals = BufferLocals::new();
         let cfg = ConfigRegistry::new();
         let evt = Arc::new(EventBus::new());
+        let svc = ServiceRegistry::new();
         {
-            let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
+            let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
             c.set_local(OwnedByA(1)).unwrap();
         }
         // Wrong owner: remove fails without removing.
         {
-            let mut c = ctx("b-mode", &mut locals, &cfg, &evt);
+            let mut c = ctx("b-mode", &mut locals, &cfg, &evt, &svc);
             let err = c.remove_local::<OwnedByA>().unwrap_err();
             assert!(matches!(err, ModeActivationError::WrongOwnerMode { .. }));
         }
         assert!(locals.contains::<OwnedByA>());
         // Correct owner: remove succeeds.
         {
-            let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
+            let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
             let removed = c.remove_local::<OwnedByA>().unwrap();
             assert_eq!(removed.unwrap().0, 1);
         }
@@ -305,24 +329,25 @@ mod tests {
         let mut locals = BufferLocals::new();
         let cfg = ConfigRegistry::new();
         let evt = Arc::new(EventBus::new());
+        let svc = ServiceRegistry::new();
         {
-            let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
+            let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
             c.set_local(OwnedByA(0)).unwrap();
         }
         // Wrong owner: error.
         {
-            let mut c = ctx("b-mode", &mut locals, &cfg, &evt);
+            let mut c = ctx("b-mode", &mut locals, &cfg, &evt, &svc);
             assert!(c.get_local_mut::<OwnedByA>().is_err());
         }
         // Right owner: in-place mutation.
         {
-            let mut c = ctx("a-mode", &mut locals, &cfg, &evt);
+            let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
             c.get_local_mut::<OwnedByA>()
                 .unwrap()
                 .unwrap()
                 .0 = 99;
         }
-        let c = ctx("a-mode", &mut locals, &cfg, &evt);
+        let c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
         assert_eq!(c.get_local::<OwnedByA>().unwrap().0, 99);
     }
 }

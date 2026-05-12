@@ -108,11 +108,46 @@ lsp_log_mode!(LspServerLogMode, "lsp-server-log-mode");
 /// to activate `lsp-mode` on un-named buffers. The capability
 /// lattice can tighten in a later slice once we have a clearer
 /// per-server minimum-requirement story.
-pub struct LspMode;
+/// `lsp-mode` -- the umbrella minor. Stores the sub-mode id
+/// list so `Mode::implies()` can return a slice that lives
+/// for `&self`'s lifetime (Phase 3: cascade activation lives
+/// in the registry now, driven by `implies()`).
+pub struct LspMode {
+    /// The 13 LSP sub-modes the umbrella cascades to. Built
+    /// once at `LspMode::new()`; `implies()` returns a slice
+    /// against this Vec.
+    sub_modes: Vec<ModeId>,
+}
 
 impl LspMode {
     pub fn mode_id() -> ModeId {
         ModeId::new("lsp-mode")
+    }
+
+    pub fn new() -> Self {
+        Self {
+            sub_modes: vec![
+                LspCompletionMode::mode_id(),
+                LspDiagnosticsMode::mode_id(),
+                LspHoverMode::mode_id(),
+                LspSignatureMode::mode_id(),
+                LspFormatMode::mode_id(),
+                LspRenameMode::mode_id(),
+                LspSymbolsMode::mode_id(),
+                LspCodeActionMode::mode_id(),
+                LspNavMode::mode_id(),
+                LspProgressMode::mode_id(),
+                LspDocumentHighlightMode::mode_id(),
+                LspSelectionRangeMode::mode_id(),
+                LspFoldingMode::mode_id(),
+            ],
+        }
+    }
+}
+
+impl Default for LspMode {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -122,6 +157,14 @@ impl Mode for LspMode {
     }
     fn kind(&self) -> ModeKind {
         ModeKind::Minor
+    }
+    fn implies(&self) -> &[ModeId] {
+        // Phase 3: the umbrella cascade lives in
+        // `Mode::implies()` -- the registry walks this on
+        // `activate_minor` and (with the matching extension)
+        // on `deactivate_minor`. Eliminates the App-side
+        // `activate_lsp_sub_modes_for` / `deactivate_lsp_sub_modes_for`.
+        &self.sub_modes
     }
     fn options(&self) -> OptionOverrideSet {
         // `lsp-mode` doesn't contribute any typed options today.
@@ -320,7 +363,7 @@ pub fn register_lsp_log_modes(registry: &mut ModeRegistry) {
     registry
         .register(LspServerLogMode)
         .expect("lsp-server-log-mode register");
-    registry.register(LspMode).expect("lsp-mode register");
+    registry.register(LspMode::new()).expect("lsp-mode register");
     // M.6.0: LSP sub-mode minors. `LspCompletionMode` is
     // source-contributing (CSM.8a) and registered via
     // `register_lsp_completion_mode(registry, lsp_handle)` from
@@ -467,36 +510,50 @@ mod tests {
         // M.5.0: `lsp-mode` is a minor (it overlays the buffer's
         // language major); standalone-server use cases want to
         // activate without a `BUFFER_URI` capability requirement.
-        assert_eq!(LspMode.kind(), ModeKind::Minor);
-        assert_eq!(LspMode.required_capabilities(), CapabilitySet::empty());
+        let m = LspMode::new();
+        assert_eq!(m.kind(), ModeKind::Minor);
+        assert_eq!(m.required_capabilities(), CapabilitySet::empty());
     }
 
-    #[test]
-    fn lsp_mode_activates_through_registry_as_minor() {
-        // M.5.0 ships the surface; M.5.3 wires the actual
-        // attach / detach + didOpen / didClose. The hooks
-        // are no-ops today; activation through the registry
-        // succeeds and `has_minor` reports true.
-        use lattice_mode::ActiveModes;
-        use lattice_mode::BufferLocals;
+    #[tokio::test]
+    async fn lsp_mode_activates_through_registry_as_minor() {
+        // Phase 3: activating `lsp-mode` cascades through
+        // `implies()` to all 13 sub-modes. The completion
+        // sub-mode is hand-written and registered separately
+        // via `register_lsp_completion_mode(...)` with a real
+        // supervisor handle, so the test needs a tokio
+        // runtime to build one.
+        use crate::completion::register_lsp_completion_mode;
+        use crate::supervisor::LspSupervisor;
+        use lattice_mode::{ActiveModes, BufferLocals};
         use lattice_protocol::ids::BufferId;
         let mut registry = ModeRegistry::new();
         register_lsp_log_modes(&mut registry);
+        let sup = LspSupervisor::new(crate::LspLogger::with_defaults());
+        let lsp_handle = sup.spawn(&tokio::runtime::Handle::current());
+        register_lsp_completion_mode(&mut registry, lsp_handle);
         let mut active = ActiveModes::new();
         let mut locals = BufferLocals::new();
         let cfg = lattice_config::ConfigRegistry::new();
         let evt = std::sync::Arc::new(lattice_runtime::EventBus::new());
+        let svc = lattice_mode::ServiceRegistry::new();
         registry
             .activate_minor(
                 &mut active,
                 &mut locals,
                 &cfg,
                 &evt,
+                &svc,
                 BufferId::new(1),
                 LspMode::mode_id(),
                 CapabilitySet::empty(),
             )
-            .expect("activate lsp-mode");
+            .expect("activate lsp-mode + sub-mode cascade");
         assert!(active.has_minor(LspMode::mode_id()));
+        // Phase 3: every sub-mode in `implies()` activated
+        // via the registry's cascade. Sample a few.
+        assert!(active.has_minor(LspCompletionMode::mode_id()));
+        assert!(active.has_minor(LspDiagnosticsMode::mode_id()));
+        assert!(active.has_minor(LspFoldingMode::mode_id()));
     }
 }

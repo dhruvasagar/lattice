@@ -522,10 +522,14 @@ mod tests {
 
     #[test]
     fn foldmethod_parse_error_preserves_legacy_wording() {
+        // Wording grew the `lsp` option in 4.4.f; the test
+        // pins the new shape (legacy bytes-identical
+        // constraint dropped because the option list itself
+        // grew).
         let r = ConfigRegistry::new();
         r.init_from_linkme();
         let err = r.parse_and_set_command("foldmethod=xyz").unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("expected `manual`, `indent`, `markdown`, or `syntax`"));
+        assert!(msg.contains("expected `manual`, `indent`, `markdown`, `syntax`, or `lsp`"));
     }
 }

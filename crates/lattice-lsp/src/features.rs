@@ -364,6 +364,20 @@ impl ServerHandle {
     ) -> Pending<Option<Vec<lsp_types::SelectionRange>>> {
         self.request_with_cancel("textDocument/selectionRange", params, token)
     }
+
+    /// 4.4.f: `textDocument/foldingRange`. Returns line-based
+    /// fold extents (with optional character columns + kind tag
+    /// like `comment` / `imports` / `region`). The host's
+    /// per-tick pump refreshes the cache when the document
+    /// version bumps; `:set foldmethod=lsp` reads from the
+    /// cache.
+    pub fn folding_range(
+        &self,
+        params: lsp_types::FoldingRangeParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::FoldingRange>>> {
+        self.request_with_cancel("textDocument/foldingRange", params, token)
+    }
 }
 
 #[cfg(test)]

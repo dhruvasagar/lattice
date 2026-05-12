@@ -415,6 +415,15 @@ impl Capabilities {
         self.server.selection_range_provider.is_some()
     }
 
+    /// 4.4.f: `foldingRangeProvider` -- feeds the LSP
+    /// foldmethod. The host's per-tick pump fires
+    /// `textDocument/foldingRange` when the buffer's document
+    /// version changes; the response seats into a per-buffer
+    /// cache the `recompute_folds` dispatcher reads.
+    pub fn supports_folding_range(&self) -> bool {
+        self.server.folding_range_provider.is_some()
+    }
+
     /// Server's `documentOnTypeFormattingProvider` presence
     /// (Phase 4.3). Trigger-character driven formatting in
     /// Insert mode -- returns the first character that fires

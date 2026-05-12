@@ -4066,6 +4066,156 @@ impl App {
         }
     }
 
+    /// 4.4.f: per-tick `foldingRange` pump. Only fires when:
+    /// - `:set foldmethod=lsp` is active for the buffer, AND
+    /// - `lsp-folding-mode` is enabled, AND
+    /// - the buffer's document version differs from the cached
+    ///   version (or there's no cache), AND
+    /// - no in-flight request is already chasing this version.
+    ///
+    /// Single-flight: each new request cancels its predecessor.
+    /// The drain seats the response into `lsp_folds_cache` and
+    /// triggers `recompute_folds` so the fold list refreshes
+    /// without the user having to do anything.
+    pub fn maybe_request_folding_range(&mut self) {
+        use lattice_core::FoldMethod;
+        if !matches!(self.foldmethod(), FoldMethod::Lsp) {
+            return;
+        }
+        if !self.lsp_folding_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        if let Some(cache) = self.lsp_folds_cache.get(&self.document_buffer_id)
+            && cache.document_version == version
+        {
+            return;
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(token) = self.pending_folding_range_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::FoldingRangeOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_folding_range_rx = Some(rx);
+        self.pending_folding_range_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> =
+                { lsp.servers_for(&uri) };
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_folding_range())
+            else {
+                let _ = tx.send(super::FoldingRangeOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                });
+                return;
+            };
+            let params = lsp_types::FoldingRangeParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.folding_range(params, token.clone()).await {
+                Ok(Some(ranges)) if !ranges.is_empty() => {
+                    let folds = ranges
+                        .into_iter()
+                        .map(crate::app::folding_range_to_fold)
+                        .collect();
+                    let _ = tx.send(super::FoldingRangeOutcome::Items {
+                        buffer_id,
+                        document_version: version,
+                        folds,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(super::FoldingRangeOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+            }
+        });
+    }
+
+    /// 4.4.f: drain the in-flight `foldingRange` response.
+    /// Coalesces multiple queued outcomes to the latest. On a
+    /// successful response, seats the cache + triggers a
+    /// `recompute_folds` so the renderer picks up the new
+    /// extents on the next frame.
+    pub fn drain_pending_folding_range(&mut self) {
+        let Some(mut rx) = self.pending_folding_range_rx.take() else {
+            return;
+        };
+        let mut latest: Option<super::FoldingRangeOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
+        }
+        self.pending_folding_range_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        match outcome {
+            super::FoldingRangeOutcome::Items {
+                buffer_id,
+                document_version,
+                folds,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_folds_cache.insert(
+                    buffer_id,
+                    super::LspFoldsCache {
+                        document_version,
+                        folds,
+                    },
+                );
+                self.recompute_folds();
+            }
+            super::FoldingRangeOutcome::Empty {
+                buffer_id,
+                document_version,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                // Remember the version so we don't re-issue
+                // immediately; a future edit will bump the
+                // version and re-trigger.
+                self.lsp_folds_cache.insert(
+                    buffer_id,
+                    super::LspFoldsCache {
+                        document_version,
+                        folds: Vec::new(),
+                    },
+                );
+                self.recompute_folds();
+            }
+        }
+    }
+
+    /// 4.4.f: is `lsp-folding-mode` active on `buffer_id`?
+    /// Gates the per-tick `foldingRange` pump and the
+    /// `FoldMethod::Lsp` recompute branch.
+    pub fn lsp_folding_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspFoldingMode::mode_id(),
+        )
+    }
+
     /// 4.4.e: per-tick `documentHighlight` pump. Fires a fresh
     /// request when the cursor moves to a different (line, byte)
     /// from the prior issue point; cancels any in-flight
@@ -7384,6 +7534,80 @@ mod tests {
         assert_eq!(flat[0].start.line, 2); // innermost
         assert_eq!(flat[1].start.line, 1);
         assert_eq!(flat[2].start.line, 0); // outermost
+    }
+
+    /// 4.4.f: an LSP `FoldingRange` converts to our `Fold`
+    /// with start/end lines copied verbatim, `closed = false`
+    /// (the carry-over path in `recompute_folds` re-closes
+    /// matching entries), and a stable identity hash.
+    #[test]
+    fn folding_range_to_fold_preserves_extents_and_keys_identity() {
+        let r = lsp_types::FoldingRange {
+            start_line: 2,
+            end_line: 5,
+            start_character: None,
+            end_character: None,
+            kind: Some(lsp_types::FoldingRangeKind::Comment),
+            collapsed_text: None,
+        };
+        let f = crate::app::folding_range_to_fold(r.clone());
+        assert_eq!(f.start_line, 2);
+        assert_eq!(f.end_line, 5);
+        assert!(!f.closed);
+        assert!(f.identity.is_some());
+
+        // Same shape -> same identity, so closed-state survives
+        // re-fetches.
+        let f2 = crate::app::folding_range_to_fold(r);
+        assert_eq!(f.identity, f2.identity);
+
+        // Different end-line -> different identity.
+        let r3 = lsp_types::FoldingRange {
+            start_line: 2,
+            end_line: 9,
+            start_character: None,
+            end_character: None,
+            kind: Some(lsp_types::FoldingRangeKind::Comment),
+            collapsed_text: None,
+        };
+        let f3 = crate::app::folding_range_to_fold(r3);
+        assert_ne!(f.identity, f3.identity);
+    }
+
+    /// 4.4.f: a seeded `lsp_folds_cache` makes `recompute_folds`
+    /// pick up the LSP fold list when `:set foldmethod=lsp`.
+    #[test]
+    fn recompute_folds_with_foldmethod_lsp_reads_cache() {
+        use lattice_core::FoldMethod;
+        let mut app = app_with("fn a() {}\nfn b() {}\nfn c() {}\n", 5);
+        app.set_foldmethod_for_test(FoldMethod::Lsp);
+        let fold = crate::app::folding_range_to_fold(lsp_types::FoldingRange {
+            start_line: 0,
+            end_line: 1,
+            start_character: None,
+            end_character: None,
+            kind: None,
+            collapsed_text: None,
+        });
+        app.lsp_folds_cache.insert(
+            app.document_buffer_id,
+            crate::app::LspFoldsCache {
+                document_version: app.document.snapshot().version,
+                folds: vec![fold],
+            },
+        );
+        // Force `lsp-folding-mode` on so the cache is read
+        // (the M.6.0 cascade may have left it off in test
+        // setup).
+        if !app.lsp_folding_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-folding-mode");
+        }
+        app.recompute_folds();
+        assert!(
+            app.folds.iter().any(|f| f.start_line == 0 && f.end_line == 1),
+            "expected LSP fold from cache; got {:?}",
+            app.folds,
+        );
     }
 
     /// 4.4.e: cursor on the start-character of a range is

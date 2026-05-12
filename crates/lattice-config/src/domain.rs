@@ -57,8 +57,9 @@ impl OptionType for FoldMethod {
 
     fn enumerate() -> Option<Vec<&'static str>> {
         // Order matches the legacy `gen:options` value list so
-        // `:set foldmethod=<Tab>` shows the same candidates.
-        Some(vec!["manual", "indent", "markdown", "syntax"])
+        // `:set foldmethod=<Tab>` shows the same candidates;
+        // `lsp` (4.4.f) appended at the end.
+        Some(vec!["manual", "indent", "markdown", "syntax", "lsp"])
     }
 }
 
@@ -74,6 +75,7 @@ mod tests {
             FoldMethod::Indent,
             FoldMethod::Markdown,
             FoldMethod::Syntax,
+            FoldMethod::Lsp,
         ] {
             assert_eq!(FoldMethod::parse(&fm.format()), Ok(fm));
         }
@@ -82,16 +84,17 @@ mod tests {
     #[test]
     fn foldmethod_enumerate_lists_every_variant() {
         let values = FoldMethod::enumerate().expect("enumeration available");
-        assert_eq!(values, vec!["manual", "indent", "markdown", "syntax"]);
+        assert_eq!(values, vec!["manual", "indent", "markdown", "syntax", "lsp"]);
     }
 
     #[test]
     fn foldmethod_parse_error_message_matches_legacy_wording() {
-        // Migration constraint: error message must match the
-        // pre-typed-options string for byte-identical user output.
+        // Error wording grew the `lsp` option in 4.4.f; check
+        // for the new shape (the legacy-string requirement is
+        // dropped because the option set itself grew).
         let err = FoldMethod::parse("xyz").unwrap_err();
         assert!(
-            err.contains("expected `manual`, `indent`, `markdown`, or `syntax`")
+            err.contains("expected `manual`, `indent`, `markdown`, `syntax`, or `lsp`")
                 && err.contains("xyz"),
             "got `{err}`"
         );

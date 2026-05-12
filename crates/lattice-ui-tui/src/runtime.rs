@@ -277,6 +277,12 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // seats the cache for the renderer overlay.
         app.maybe_request_document_highlight();
         app.drain_pending_document_highlight();
+        // 4.4.f: foldingRange pump. Only fires when
+        // `:set foldmethod=lsp` is active AND the buffer's
+        // document version has changed; the drain seats the
+        // cache and triggers `recompute_folds`.
+        app.maybe_request_folding_range();
+        app.drain_pending_folding_range();
         // Update viewport height. The buffer-area band is the
         // terminal minus the mode line + cmdline/echo row (and the
         // candidate-list row band, when a picker / completion popup

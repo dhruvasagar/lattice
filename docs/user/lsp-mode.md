@@ -52,7 +52,7 @@ scratch buffers experimenting with a server).
 
 ## Sub-modes (M.6)
 
-`lsp-mode` is the umbrella; twelve **sub-modes** turn each LSP
+`lsp-mode` is the umbrella; thirteen **sub-modes** turn each LSP
 feature on and off independently. When the umbrella activates,
 every sub-mode auto-activates with it (cascade); deactivating
 the umbrella deactivates them all. Between those two extremes,
@@ -74,6 +74,7 @@ too distracting in this file but I still want hover" case.
 | `lsp-progress-mode`     | `$/progress` accumulator + modeline progress segment |
 | `lsp-document-highlight-mode` | `textDocument/documentHighlight` overlay         |
 | `lsp-selection-range-mode`    | `textDocument/selectionRange` smart-expansion    |
+| `lsp-folding-mode`            | `textDocument/foldingRange` -> `FoldMethod::Lsp` |
 
 **The umbrella check wins.** When `lsp-mode` is off, the
 echo always says `lsp-mode disabled` -- one

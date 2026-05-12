@@ -736,6 +736,31 @@ pub enum DocumentHighlightOutcome {
     },
 }
 
+/// 4.4.f: cached `textDocument/foldingRange` response for one
+/// buffer. `document_version` is the buffer's
+/// [`lattice_core::Document`] version at the time the request
+/// was issued; the pump compares it against the live version
+/// to decide whether to refresh.
+#[derive(Debug, Clone)]
+pub struct LspFoldsCache {
+    pub document_version: u64,
+    pub folds: Vec<Fold>,
+}
+
+/// 4.4.f: in-flight `foldingRange` request outcome.
+#[derive(Debug, Clone)]
+pub enum FoldingRangeOutcome {
+    Items {
+        buffer_id: BufferId,
+        document_version: u64,
+        folds: Vec<Fold>,
+    },
+    Empty {
+        buffer_id: BufferId,
+        document_version: u64,
+    },
+}
+
 pub struct App {
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable [`Document`]; mutations route
@@ -1550,6 +1575,18 @@ pub struct App {
     pub pending_document_highlight_token: Option<lattice_protocol::CancellationToken>,
     pub pending_document_highlight_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<DocumentHighlightOutcome>>,
+    /// 4.4.f: per-buffer cache of the last `textDocument/foldingRange`
+    /// response. Keyed by `BufferId` because the foldmethod is a
+    /// per-buffer setting; multiple open buffers can each track
+    /// their own LSP fold list. Invalidated by the pump when
+    /// the document version bumps.
+    pub lsp_folds_cache: std::collections::HashMap<BufferId, LspFoldsCache>,
+    /// 4.4.f: cancellation token + receiver for the in-flight
+    /// `foldingRange` request. Single-flight: a new request
+    /// cancels any predecessor.
+    pub pending_folding_range_token: Option<lattice_protocol::CancellationToken>,
+    pub pending_folding_range_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<FoldingRangeOutcome>>,
     // `completion.auto_insert_single` lives on the typed-options
     // registry (`self.config` type-keyed by
     // `lattice_config::CompletionAutoInsertSingle`). Read via
@@ -2430,6 +2467,28 @@ pub(crate) fn cursor_inside_range(cursor: Position, range: &lsp_types::Range) ->
     let end = (range.end.line, range.end.character);
     let here = (line, col);
     here >= start && here < end
+}
+
+/// 4.4.f: convert an LSP `FoldingRange` to our `Fold`. LSP
+/// returns line-based extents; the identity hash combines
+/// start_line + end_line + kind so closed-state survives
+/// re-fetches that produce the same logical fold.
+pub(crate) fn folding_range_to_fold(r: lsp_types::FoldingRange) -> Fold {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    r.start_line.hash(&mut hasher);
+    r.end_line.hash(&mut hasher);
+    // Spec omits a stable u32 for `kind`; hash the string form
+    // when present so a fold's kind change still re-keys.
+    if let Some(kind) = r.kind.as_ref() {
+        std::mem::discriminant(kind).hash(&mut hasher);
+    }
+    Fold {
+        start_line: r.start_line,
+        end_line: r.end_line,
+        closed: false,
+        identity: Some(hasher.finish()),
+    }
 }
 
 /// 4.4.e: flatten an LSP `SelectionRange` (linked list via

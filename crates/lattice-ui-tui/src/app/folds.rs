@@ -63,6 +63,7 @@ impl App {
             FoldMethod::Indent => crate::folds::compute_indent_folds(&snapshot.buffer),
             FoldMethod::Markdown => crate::folds::compute_markdown_folds(&snapshot.buffer),
             FoldMethod::Syntax => self.recompute_syntax_folds(&snapshot.buffer),
+            FoldMethod::Lsp => self.recompute_lsp_folds(&snapshot.buffer),
         };
         // Carry over closed-state. Identity hash (heading text +
         // depth) is the primary key so that adding a line to one
@@ -126,6 +127,27 @@ impl App {
         } else {
             crate::folds::compute_indent_folds(buffer)
         }
+    }
+
+    /// 4.4.f: read the LSP fold cache for the active buffer.
+    /// When the cache is empty (request still in-flight, no
+    /// server attached, or sub-mode disabled), cascade to the
+    /// syntax provider so the user sees *some* folds rather
+    /// than an empty list. The cache is refilled async by
+    /// [`Self::maybe_request_folding_range`], invoked from the
+    /// per-tick runtime drain.
+    fn recompute_lsp_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
+        if self.lsp_folding_mode_enabled_for(self.document_buffer_id) {
+            if let Some(cache) = self.lsp_folds_cache.get(&self.document_buffer_id) {
+                if !cache.folds.is_empty() {
+                    return cache.folds.clone();
+                }
+            }
+        }
+        // Cascade: identical to `Syntax`'s fall-through so users
+        // don't see an empty fold list when the server is slow
+        // or doesn't advertise the capability.
+        self.recompute_syntax_folds(buffer)
     }
 
     /// Vim's `zf`: create a fold over the current Visual selection's

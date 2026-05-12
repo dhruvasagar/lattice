@@ -17,6 +17,12 @@
 /// - `Syntax` -- tree-sitter scope queries; cascades to `Markdown`
 ///   for `.md` buffers and `Indent` otherwise when the tree-sitter
 ///   provider has nothing to offer.
+/// - `Lsp` -- 4.4.f: feeds from `textDocument/foldingRange`.
+///   Async: the per-tick pump fires the request when the buffer's
+///   document version changes; the response lands in a per-buffer
+///   cache and triggers a recompute. Cascades to `Syntax` when no
+///   attached server advertises the capability (so `:set
+///   foldmethod=lsp` is still useful in mixed-language workspaces).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FoldMethod {
     #[default]
@@ -24,6 +30,7 @@ pub enum FoldMethod {
     Indent,
     Markdown,
     Syntax,
+    Lsp,
 }
 
 impl FoldMethod {
@@ -35,6 +42,7 @@ impl FoldMethod {
             FoldMethod::Indent => "indent",
             FoldMethod::Markdown => "markdown",
             FoldMethod::Syntax => "syntax",
+            FoldMethod::Lsp => "lsp",
         }
     }
 
@@ -52,8 +60,9 @@ impl FoldMethod {
             "indent" => Ok(FoldMethod::Indent),
             "markdown" => Ok(FoldMethod::Markdown),
             "syntax" => Ok(FoldMethod::Syntax),
+            "lsp" => Ok(FoldMethod::Lsp),
             other => Err(format!(
-                "expected `manual`, `indent`, `markdown`, or `syntax`, got `{other}`"
+                "expected `manual`, `indent`, `markdown`, `syntax`, or `lsp`, got `{other}`"
             )),
         }
     }
@@ -71,6 +80,7 @@ mod tests {
             FoldMethod::Indent,
             FoldMethod::Markdown,
             FoldMethod::Syntax,
+            FoldMethod::Lsp,
         ] {
             assert_eq!(FoldMethod::parse_label(fm.label()), Ok(fm));
         }

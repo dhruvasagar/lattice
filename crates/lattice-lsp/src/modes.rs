@@ -219,6 +219,16 @@ lsp_sub_mode!(LspProgressMode, "lsp-progress-mode");
 // overlays / expansion clobber other plugins.
 lsp_sub_mode!(LspDocumentHighlightMode, "lsp-document-highlight-mode");
 lsp_sub_mode!(LspSelectionRangeMode, "lsp-selection-range-mode");
+// 4.4.f: `textDocument/foldingRange` feeding `FoldMethod::Lsp`.
+// Coupled to the `foldmethod` option: activating the mode
+// stashes the prior value and swaps `foldmethod` to `lsp`;
+// deactivating restores. The toggle command is the bare mode
+// name (`:lsp-folding-mode`); there's no separate `:disable`.
+// Slice 6 ships this as a macro-generated marker mode -- the
+// foldmethod coupling lives on the App side; slice 7 migrates
+// to a hand-written impl that drives the swap through
+// `ModeContext`.
+lsp_sub_mode!(LspFoldingMode, "lsp-folding-mode");
 
 /// Register every LSP mode (the three log majors, the umbrella
 /// `lsp-mode` minor, and the nine M.6 sub-mode minors) against
@@ -275,6 +285,9 @@ pub fn register_lsp_log_modes(registry: &mut ModeRegistry) {
     registry
         .register(LspSelectionRangeMode)
         .expect("lsp-selection-range-mode register");
+    registry
+        .register(LspFoldingMode)
+        .expect("lsp-folding-mode register");
 }
 
 #[cfg(test)]
@@ -301,6 +314,7 @@ mod tests {
             LspProgressMode::mode_id(),
             LspDocumentHighlightMode::mode_id(),
             LspSelectionRangeMode::mode_id(),
+            LspFoldingMode::mode_id(),
         ];
         for (i, a) in ids.iter().enumerate() {
             for b in &ids[i + 1..] {
@@ -332,6 +346,7 @@ mod tests {
         assert!(registry.is_registered(LspProgressMode::mode_id()));
         assert!(registry.is_registered(LspDocumentHighlightMode::mode_id()));
         assert!(registry.is_registered(LspSelectionRangeMode::mode_id()));
+        assert!(registry.is_registered(LspFoldingMode::mode_id()));
     }
 
     #[test]
@@ -355,6 +370,7 @@ mod tests {
             &LspProgressMode,
             &LspDocumentHighlightMode,
             &LspSelectionRangeMode,
+            &LspFoldingMode,
         ];
         for m in modes {
             assert_eq!(m.kind(), ModeKind::Minor, "{} not minor", m.id());

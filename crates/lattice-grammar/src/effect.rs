@@ -243,6 +243,11 @@ pub enum Effect {
     OpenLspLog {
         server_id: Option<String>,
     },
+    /// `:messages` -- open the `*messages*` buffer (the emacs
+    /// `*Messages*` analogue). Renders a chronological view
+    /// of every echo / minibuffer notification; live-tails as
+    /// new entries arrive via the typed event bus.
+    OpenMessages,
     /// `:lsp-trace <server>` -- pure toggle of JSON-RPC tracing
     /// for the server. The trace buffer is opened separately via
     /// `:lsp-trace-log <server>` so peeking mid-stream doesn't

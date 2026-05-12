@@ -399,12 +399,14 @@ pub fn routing_identity(payload: &RoutingPayload) -> Option<String> {
         RoutingPayload::ExpandSnippet { id } => Some(format!("snip:{id}")),
         // No stable identity for these -- coordinates drift,
         // indices are per-request, LSP-instance entries are
-        // ephemeral.
+        // ephemeral, and show-message-request actions key into
+        // a per-request transient slot.
         RoutingPayload::JumpInBuffer { .. }
         | RoutingPayload::LspLocation { .. }
         | RoutingPayload::LspCompletion { .. }
         | RoutingPayload::LspCodeAction { .. }
-        | RoutingPayload::LspInstance { .. } => None,
+        | RoutingPayload::LspInstance { .. }
+        | RoutingPayload::AcceptShowMessageAction { .. } => None,
     }
 }
 

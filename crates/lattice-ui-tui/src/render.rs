@@ -5125,6 +5125,8 @@ mod tests {
                     padding_right: Some(false),
                     data: None,
                 }],
+                requested_first_line: 0,
+                requested_last_line: u32::MAX,
             },
         );
         let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
@@ -5160,6 +5162,7 @@ mod tests {
             crate::app::LspSemanticTokensCache {
                 document_version: app.document.snapshot().version,
                 result_id: None,
+                raw_data: Vec::new(),
                 tokens: vec![
                     crate::app::DecodedSemanticToken {
                         line: 0,
@@ -5217,6 +5220,7 @@ mod tests {
             crate::app::LspSemanticTokensCache {
                 document_version: app.document.snapshot().version,
                 result_id: None,
+                raw_data: Vec::new(),
                 tokens: vec![crate::app::DecodedSemanticToken {
                     line: 0,
                     start_char: 0,
@@ -5269,6 +5273,8 @@ mod tests {
                     padding_right: None,
                     data: None,
                 }],
+                requested_first_line: 0,
+                requested_last_line: u32::MAX,
             },
         );
         let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);

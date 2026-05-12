@@ -110,6 +110,7 @@ mod highlights;
 mod lifecycle;
 mod lsp;
 mod macros;
+mod messages;
 mod mode;
 mod motions;
 mod oil;
@@ -172,6 +173,47 @@ pub enum EchoLevel {
     Info,
     Warn,
     Error,
+}
+
+// `MessageRecord` / `MessagesRing` / `MessagePushed` are
+// renderer-agnostic, live in [`lattice_runtime`], and re-
+// exported below so existing call sites that imported them
+// through `crate::app::*` keep working. The wire-typed
+// `lattice_grammar::EchoLevel` rides through unchanged --
+// `crate::app::EchoLevel` is the display-typed peer kept for
+// renderer-side ergonomics; conversion lives at the
+// `set_message` seam.
+pub use lattice_runtime::{MessagePushed, MessageRecord, MessagesRing};
+
+/// Convert the renderer's display-typed `EchoLevel` to the
+/// wire-typed `lattice_grammar::EchoLevel` used by
+/// `MessageRecord` (and every other host-side / plugin-side
+/// subscriber on the typed bus). The variants are bit-
+/// identical; the split between display-typed (ui-tui) and
+/// wire-typed (grammar / runtime / plugin host) is the
+/// existing convention that kept the renderer surface from
+/// leaking into the grammar layer.
+pub(crate) fn echo_level_to_wire(level: EchoLevel) -> lattice_grammar::EchoLevel {
+    match level {
+        EchoLevel::Info => lattice_grammar::EchoLevel::Info,
+        EchoLevel::Warn => lattice_grammar::EchoLevel::Warn,
+        EchoLevel::Error => lattice_grammar::EchoLevel::Error,
+    }
+}
+
+/// Reverse of [`echo_level_to_wire`]: every renderer-side
+/// reader of `MessageRecord` (e.g. the `*messages*` formatter)
+/// projects the wire-typed level back to the renderer's
+/// display-typed enum. Allowed-dead until the renderer grows
+/// a reader site -- the formatter currently matches on the
+/// wire-typed enum directly to skip the round-trip.
+#[allow(dead_code)]
+pub(crate) fn echo_level_from_wire(level: lattice_grammar::EchoLevel) -> EchoLevel {
+    match level {
+        lattice_grammar::EchoLevel::Info => EchoLevel::Info,
+        lattice_grammar::EchoLevel::Warn => EchoLevel::Warn,
+        lattice_grammar::EchoLevel::Error => EchoLevel::Error,
+    }
 }
 
 /// Convert grammar's wire-typed [`lattice_grammar::EchoLevel`] (carried
@@ -736,10 +778,22 @@ pub struct LspFoldsCache {
 /// invalidates when the version changes. `hints` are sorted
 /// by position so the renderer can stop scanning once it
 /// walks past the current line.
+///
+/// 4.4.g viewport polish: `requested_first_line` /
+/// `requested_last_line` (inclusive, 0-based LSP line indices)
+/// record the line range that produced this cache entry. The
+/// pump refetches when the visible viewport scrolls outside
+/// this window plus an overscan margin -- so small scrolls
+/// stay cached, larger ones trigger a new request bounded to
+/// the new viewport. Small files where viewport + overscan
+/// covers the whole buffer cache exactly once and never
+/// refetch on scroll.
 #[derive(Debug, Clone)]
 pub struct LspInlayHintCache {
     pub document_version: u64,
     pub hints: Vec<lsp_types::InlayHint>,
+    pub requested_first_line: u32,
+    pub requested_last_line: u32,
 }
 
 /// 4.4.h: one decoded LSP semantic token, expanded from the
@@ -764,29 +818,85 @@ pub struct DecodedSemanticToken {
 /// per-buffer caches: keyed on `(BufferId, document_version)`,
 /// invalidated by the pump when the version changes.
 ///
-/// `result_id` is the server-issued tag a future 4.4.i delta
-/// request includes so the server knows which baseline to
-/// diff against.
+/// `result_id` is the server-issued tag the host sends back
+/// on the next `full/delta` request so the server knows which
+/// baseline to diff against (4.4.i).
+///
+/// `raw_data` (4.4.i) keeps the un-decoded `Vec<SemanticToken>`
+/// alongside the decoded view so delta edits can splice into
+/// it before the host re-decodes for the renderer. Without
+/// `raw_data` we'd have to round-trip through the renderer's
+/// absolute positions back to relative offsets, which is
+/// possible but adds avoidable arithmetic.
 #[derive(Debug, Clone)]
 pub struct LspSemanticTokensCache {
     pub document_version: u64,
     pub result_id: Option<String>,
+    pub raw_data: Vec<lsp_types::SemanticToken>,
     pub tokens: Vec<DecodedSemanticToken>,
 }
 
 /// 4.4.h: in-flight `semanticTokens/full` request outcome.
+/// 4.4.i extends with the `Delta` variant for the
+/// `full/delta` path.
 #[derive(Debug, Clone)]
 pub enum SemanticTokensOutcome {
     Items {
         buffer_id: BufferId,
         document_version: u64,
         result_id: Option<String>,
+        raw_data: Vec<lsp_types::SemanticToken>,
         tokens: Vec<DecodedSemanticToken>,
+    },
+    /// 4.4.i: server returned a delta against `previous_result_id`.
+    /// The drain looks up the previous cache, splices the edits
+    /// into `raw_data`, and re-decodes using the legend captured
+    /// at request time. Carrying the legend in-band (rather than
+    /// re-reading at drain time) keeps the drain off the LSP
+    /// registry and matches the snapshot semantics used by the
+    /// Items variant.
+    Delta {
+        buffer_id: BufferId,
+        document_version: u64,
+        previous_result_id: String,
+        new_result_id: Option<String>,
+        edits: Vec<lsp_types::SemanticTokensEdit>,
+        token_types: Vec<lsp_types::SemanticTokenType>,
+        token_modifiers: Vec<lsp_types::SemanticTokenModifier>,
     },
     Empty {
         buffer_id: BufferId,
         document_version: u64,
     },
+}
+
+/// 4.4.i: apply a server-issued `SemanticTokensEdit` script
+/// to `raw_data` in place. Each edit specifies a start index
+/// (into the previous token vec), a count to delete, and a
+/// replacement slice. Edits are applied in order; the server
+/// constructs them against the index space of the input vec.
+///
+/// Returns `Err(())` and leaves `raw_data` untouched when an
+/// edit references a range outside the current vec (defensive
+/// guard against server bugs; the host falls back to a fresh
+/// full request when this fires).
+pub(crate) fn apply_semantic_token_edits(
+    raw_data: &mut Vec<lsp_types::SemanticToken>,
+    edits: &[lsp_types::SemanticTokensEdit],
+) -> Result<(), ()> {
+    for edit in edits {
+        let start = edit.start as usize;
+        let delete_count = edit.delete_count as usize;
+        let end = start
+            .checked_add(delete_count)
+            .ok_or(())?;
+        if end > raw_data.len() {
+            return Err(());
+        }
+        let replacement = edit.data.clone().unwrap_or_default();
+        raw_data.splice(start..end, replacement);
+    }
+    Ok(())
 }
 
 /// 4.4.h: decode the LSP semantic-tokens stream into
@@ -832,17 +942,72 @@ pub(crate) fn decode_semantic_tokens(
     out
 }
 
-/// 4.4.g: in-flight `inlayHint` request outcome.
+/// 4.4.j: cached `textDocument/diagnostic` state per buffer.
+/// `result_id` is what the server issued on the previous
+/// response; threading it back in `previous_result_id` lets
+/// the server answer `Unchanged` when nothing moved. The pump
+/// fires on (a) document-version change OR (b) cache miss
+/// (after `workspace/diagnostic/refresh` eviction); the drain
+/// updates the cache to the new `result_id` regardless of
+/// whether the report was `Full` or `Unchanged`. Diagnostic
+/// items themselves don't live here -- they're already in
+/// `DiagnosticsLayer`; this cache only tracks the staleness
+/// bookkeeping the next request needs.
+#[derive(Debug, Clone, Default)]
+pub struct LspPullDiagnosticsCache {
+    pub document_version: u64,
+    pub result_id: Option<String>,
+}
+
+/// 4.4.j: in-flight `textDocument/diagnostic` request outcome.
+/// `Full` means "here are the diagnostics" (apply to the
+/// layer); `Unchanged` means "nothing moved since the
+/// previous `result_id`" (no-op on the layer, just refresh
+/// the cache's version). `Empty` is the "no server / cancelled
+/// / error" path -- still seats a cache entry with the
+/// current version so the pump doesn't re-fire on the next
+/// tick without an actual edit.
+#[derive(Debug, Clone)]
+pub enum PullDiagnosticsOutcome {
+    Full {
+        buffer_id: BufferId,
+        server_id: std::sync::Arc<str>,
+        uri: lattice_lsp::Uri,
+        document_version: u64,
+        result_id: Option<String>,
+        diagnostics: Vec<lsp_types::Diagnostic>,
+    },
+    Unchanged {
+        buffer_id: BufferId,
+        document_version: u64,
+        result_id: String,
+    },
+    Empty {
+        buffer_id: BufferId,
+        document_version: u64,
+    },
+}
+
+/// 4.4.g: in-flight `inlayHint` request outcome. The
+/// `requested_*_line` pair rides through so the drain can seat
+/// the cache with the range that actually produced these
+/// hints (matters for the viewport pump -- subsequent scrolls
+/// reuse the cache only while the viewport sits inside that
+/// range).
 #[derive(Debug, Clone)]
 pub enum InlayHintOutcome {
     Items {
         buffer_id: BufferId,
         document_version: u64,
         hints: Vec<lsp_types::InlayHint>,
+        requested_first_line: u32,
+        requested_last_line: u32,
     },
     Empty {
         buffer_id: BufferId,
         document_version: u64,
+        requested_first_line: u32,
+        requested_last_line: u32,
     },
 }
 
@@ -1125,6 +1290,21 @@ pub struct App {
     /// Most recent transient status / error message, displayed in the echo
     /// area until replaced.
     pub last_message: Option<EchoMessage>,
+    /// Append-only chronological ring of every echo
+    /// (`set_message` call). The `:messages` ex-command opens
+    /// a `*messages*` buffer rendered from this ring -- the
+    /// emacs `*Messages*` analogue. Updated on every call to
+    /// `set_message`; bounded by [`MessagesRing::capacity`]
+    /// so the editor never grows unboundedly.
+    pub messages: MessagesRing,
+    /// Receiver for [`lattice_runtime::MessagePushed`] events
+    /// published by `set_message`. The runtime's per-tick
+    /// drain ([`Self::drain_message_events`]) coalesces
+    /// bursts and rebuilds the `*messages*` buffer view once
+    /// per frame.
+    pub pending_message_event_rx: Option<
+        tokio::sync::mpsc::UnboundedReceiver<lattice_runtime::MessagePushed>,
+    >,
     /// Set by [`Action::RedrawScreen`] (`<C-l>`); the runtime
     /// clears this on its next frame after issuing a full
     /// terminal-clear so any leftover ANSI / stale glyph state
@@ -1673,6 +1853,17 @@ pub struct App {
     /// `inlayHint` and refills.
     pub pending_inlay_hint_refresh_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspInlayHintRefresh>>,
+    /// 4.4.i: receiver for `LspSemanticTokensRefresh` events.
+    /// Mirrors `pending_inlay_hint_refresh_rx`: actor publishes
+    /// on `workspace/semanticTokens/refresh`; the App's per-tick
+    /// drain drops `lsp_semantic_tokens_cache` entries (including
+    /// the cached `result_id`) for buffers attached to the
+    /// requesting server, forcing the next render tick to issue
+    /// a fresh `semanticTokens/full` baseline rather than a
+    /// delta against a now-stale id.
+    pub pending_semantic_tokens_refresh_rx: Option<
+        tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspSemanticTokensRefresh>,
+    >,
     /// Accumulated `$/progress` state keyed by
     /// (server_id, token). `Begin` inserts; `Report` updates;
     /// `End` removes. The modeline picks the most recent
@@ -1747,6 +1938,27 @@ pub struct App {
     pub pending_semantic_tokens_token: Option<lattice_protocol::CancellationToken>,
     pub pending_semantic_tokens_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<SemanticTokensOutcome>>,
+    /// 4.4.j: per-buffer pull-diagnostics cache. Keys the
+    /// last `result_id` the server issued so the next pull
+    /// can be answered as `Unchanged` cheaply. The pump
+    /// re-issues on document-version change OR cache miss
+    /// (e.g. after `workspace/diagnostic/refresh` evicts).
+    pub lsp_pull_diagnostics_cache:
+        std::collections::HashMap<BufferId, LspPullDiagnosticsCache>,
+    /// 4.4.j: in-flight `textDocument/diagnostic` single-flight
+    /// slot. Each new request cancels its predecessor.
+    pub pending_pull_diagnostics_token: Option<lattice_protocol::CancellationToken>,
+    pub pending_pull_diagnostics_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<PullDiagnosticsOutcome>>,
+    /// 4.4.j: receiver for `LspDiagnosticRefresh` events.
+    /// Actor publishes when a server sends
+    /// `workspace/diagnostic/refresh`; the App's per-tick
+    /// drain evicts `lsp_pull_diagnostics_cache` entries for
+    /// buffers attached to that server, and the next render
+    /// tick re-pulls.
+    pub pending_diagnostic_refresh_rx: Option<
+        tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspDiagnosticRefresh>,
+    >,
     // 4.4.f: stash for `lsp-folding-mode` activation moved
     // into `BufferLocals` (owned by the mode via the
     // `PriorFoldmethod` typed local in
@@ -1825,6 +2037,28 @@ pub struct App {
     pub pending_show_message_request_rx: Option<
         tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowMessageRequest>,
     >,
+    /// 4.4.b picker UX: in-flight `showMessageRequest` slots
+    /// keyed by an App-local `u32` request id. The drain
+    /// registers each inbound request here before opening the
+    /// picker; `do_picker_accept` (AcceptShowMessageAction arm)
+    /// and `do_picker_dismiss` (LspShowMessageRequest source
+    /// arm) pull the slot back out and send the LSP response.
+    /// Slots stay in the map until exactly one of accept /
+    /// dismiss / drop fires for them.
+    pub lsp_pending_show_message_requests:
+        std::collections::HashMap<u32, lattice_lsp::InboundShowMessageRequest>,
+    /// 4.4.b picker UX: FIFO of `request_id`s waiting for the
+    /// picker slot. Only one SMR picker is open at a time; the
+    /// drain enqueues here when a request lands while another
+    /// picker is already open, and the accept/dismiss arms pop
+    /// the next id off after they finish.
+    pub lsp_show_message_request_queue: std::collections::VecDeque<u32>,
+    /// 4.4.b picker UX: monotonically-incrementing request id
+    /// counter for `lsp_pending_show_message_requests`. Wraps
+    /// on `u32::MAX` -- with one-at-a-time picker UX the
+    /// collision window is effectively zero, but the assignment
+    /// path still checks for an existing id before insert.
+    pub lsp_next_show_message_request_id: u32,
     /// Merged TOML tree of every loaded config file (user +
     /// project, project deep-merged on top). Populated by
     /// [`Self::load_persistent_config`] from the loader's new
@@ -2440,11 +2674,32 @@ impl std::fmt::Debug for App {
 impl App {
     /// Set the echo / status-line message. The renderer reads the
     /// most recent value into the bottom row each frame.
+    ///
+    /// Side effects:
+    /// 1. Appends a [`MessageRecord`] to the bounded
+    ///    [`MessagesRing`] (`self.messages`) so the
+    ///    `:messages` buffer can replay history.
+    /// 2. Publishes a [`crate::app::messages::MessagePushed`]
+    ///    typed event on the editor's event bus. The
+    ///    `*messages*` buffer's live tail
+    ///    ([`Self::drain_message_events`]) subscribes via a
+    ///    bounded channel and rebuilds the buffer once per
+    ///    tick when events landed; future plugin / telemetry
+    ///    subscribers can attach to the same event without
+    ///    coupling to `set_message` internals.
     pub fn set_message(&mut self, level: EchoLevel, text: impl Into<String>) {
+        let text: String = text.into();
         self.last_message = Some(EchoMessage {
-            text: text.into(),
+            text: text.clone(),
             level,
         });
+        let record = MessageRecord {
+            timestamp: std::time::SystemTime::now(),
+            level: echo_level_to_wire(level),
+            text,
+        };
+        self.messages.push(record.clone());
+        self.event_bus.publish_typed(MessagePushed { record });
     }
 }
 

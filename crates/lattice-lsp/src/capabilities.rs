@@ -136,9 +136,46 @@ fn workspace_capabilities() -> WorkspaceClientCapabilities {
         // `workspaceFolders` in initialize and emit the
         // `workspace/didChangeWorkspaceFolders` notification.
         workspace_folders: Some(true),
-        // 4.4 features that need workspace-side advertisement
-        // (semanticTokens.refresh, inlayHint.refresh, codeLens.refresh,
-        // diagnostics.refresh) are added when those phases land.
+        // 4.4.g: tell servers we honour
+        // `workspace/inlayHint/refresh`. Without this the server
+        // either never sends the request or sends it and we
+        // reject -- both make stale inlay hints stick around.
+        inlay_hint: Some(lsp_types::InlayHintWorkspaceClientCapabilities {
+            refresh_support: Some(true),
+        }),
+        // 4.4.i: tell servers we honour
+        // `workspace/semanticTokens/refresh`. Required for the
+        // delta path -- when the server can't compute a delta
+        // for a previously-issued result_id (e.g. after an
+        // internal index rebuild), it pushes a refresh request
+        // and we fall back to a fresh full baseline.
+        semantic_tokens: Some(lsp_types::SemanticTokensWorkspaceClientCapabilities {
+            refresh_support: Some(true),
+        }),
+        // 4.4.j: tell servers we honour
+        // `workspace/diagnostic/refresh`. The per-document
+        // pull pump caches result_ids per buffer; on refresh
+        // we evict the cache for every attached buffer so
+        // the next tick re-pulls and the server can answer
+        // either `Full` (forced refresh) or `Unchanged`.
+        diagnostic: Some(lsp_types::DiagnosticWorkspaceClientCapabilities {
+            refresh_support: Some(true),
+        }),
+        // 4.4.k: tell servers we send
+        // `workspace/didChangeConfiguration` when typed
+        // options under `lsp.*` change. `dynamic_registration
+        // = false` because our config keyspace is static at
+        // build time; runtime registration of new keys is a
+        // post-1.0 feature (it would need WASM plugins to
+        // declare option schemas).
+        did_change_configuration: Some(
+            lsp_types::DynamicRegistrationClientCapabilities {
+                dynamic_registration: Some(false),
+            },
+        ),
+        // Other 4.4 workspace-side advertisements
+        // (codeLens.refresh, diagnostics.refresh) are added when
+        // those phases land.
         ..Default::default()
     }
 }
@@ -155,6 +192,15 @@ fn text_document_capabilities() -> TextDocumentClientCapabilities {
         // the popup renders as flat grey text.
         hover: Some(hover_capabilities()),
         signature_help: Some(signature_help_capabilities()),
+        // 4.4.j: pull-based diagnostics client capabilities.
+        // `related_document_support = true` tells the server
+        // it can include related-document reports in the
+        // response; the host applies them via the same
+        // DiagnosticEvent path used by push diagnostics.
+        diagnostic: Some(lsp_types::DiagnosticClientCapabilities {
+            dynamic_registration: Some(false),
+            related_document_support: Some(true),
+        }),
         ..Default::default()
     }
 }
@@ -435,6 +481,32 @@ impl Capabilities {
         self.server.inlay_hint_provider.is_some()
     }
 
+    /// 4.4.g follow-up: `InlayHintOptions.resolve_provider`.
+    /// When set, the server populates `tooltip` and
+    /// `text_edits` lazily -- callers issue `inlayHint/resolve`
+    /// for individual hints rather than getting the full
+    /// payload in the batched response. The host doesn't wire
+    /// a trigger today (interaction UX is strong-reason
+    /// deferred -- see lsp-features.md); the probe ships
+    /// alongside the wrapper so the future trigger has a
+    /// stable check to gate on.
+    pub fn supports_inlay_hint_resolve(&self) -> bool {
+        let Some(p) = self.server.inlay_hint_provider.as_ref() else {
+            return false;
+        };
+        match p {
+            lsp_types::OneOf::Left(_b) => false,
+            lsp_types::OneOf::Right(opts) => match opts {
+                lsp_types::InlayHintServerCapabilities::Options(options) => {
+                    options.resolve_provider == Some(true)
+                }
+                lsp_types::InlayHintServerCapabilities::RegistrationOptions(reg) => {
+                    reg.inlay_hint_options.resolve_provider == Some(true)
+                }
+            },
+        }
+    }
+
     /// 4.4.h: `semanticTokensProvider` -- LSP-side highlight
     /// layer that augments tree-sitter. The provider's legend
     /// (declared at handshake) names the token types
@@ -487,6 +559,56 @@ impl Capabilities {
         }
     }
 
+    /// 4.4.i: server advertises `semanticTokens/full/delta`?
+    /// When `true`, the host issues delta requests with the
+    /// previous `result_id` after the first full response;
+    /// the server returns a small edit script the host
+    /// splices into the cached token vec. Falls back to full
+    /// when `false`.
+    pub fn supports_semantic_tokens_delta(&self) -> bool {
+        use lsp_types::{
+            SemanticTokensFullOptions, SemanticTokensServerCapabilities,
+        };
+        let Some(p) = self.server.semantic_tokens_provider.as_ref() else {
+            return false;
+        };
+        let full = match p {
+            SemanticTokensServerCapabilities::SemanticTokensOptions(opts) => {
+                opts.full.as_ref()
+            }
+            SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(opts) => {
+                opts.semantic_tokens_options.full.as_ref()
+            }
+        };
+        match full {
+            Some(SemanticTokensFullOptions::Delta { delta }) => delta.unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    /// 4.4.i: server advertises `semanticTokens/range`?
+    /// Viewport-bounded request -- the host can issue this
+    /// for very large files to skip decoding tokens outside
+    /// the visible window. Not used by the v1 whole-buffer
+    /// pump but exposed for future viewport-aware fetching.
+    pub fn supports_semantic_tokens_range(&self) -> bool {
+        use lsp_types::SemanticTokensServerCapabilities;
+        let Some(p) = self.server.semantic_tokens_provider.as_ref() else {
+            return false;
+        };
+        let range_opt = match p {
+            SemanticTokensServerCapabilities::SemanticTokensOptions(opts) => {
+                opts.range.as_ref()
+            }
+            SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(opts) => {
+                opts.semantic_tokens_options.range.as_ref()
+            }
+        };
+        // `Some(true)` advertises range support;
+        // `Some(false)` and `None` mean no.
+        matches!(range_opt, Some(true))
+    }
+
     /// Server's `documentOnTypeFormattingProvider` presence
     /// (Phase 4.3). Trigger-character driven formatting in
     /// Insert mode -- returns the first character that fires
@@ -529,6 +651,52 @@ impl Capabilities {
         match self.server.rename_provider.as_ref() {
             Some(lsp_types::OneOf::Right(opts)) => opts.prepare_provider.unwrap_or(false),
             _ => false,
+        }
+    }
+
+    /// 4.4.j: whether the server advertises pull-based
+    /// diagnostics (`textDocument/diagnostic`). Servers can
+    /// support pull alongside push or pull-only; in both
+    /// cases the host's pull pump fires on document-version
+    /// change and threads the cached `result_id` so the
+    /// server can answer `Unchanged` when nothing moved.
+    pub fn supports_pull_diagnostics(&self) -> bool {
+        self.server.diagnostic_provider.is_some()
+    }
+
+    /// 4.4.j: whether the server's diagnostic provider also
+    /// supports the workspace-wide `workspace/diagnostic`
+    /// pull. Reads `DiagnosticOptions.workspace_diagnostics`
+    /// from either flavour of `DiagnosticServerCapabilities`.
+    /// Returned `true` even when the host doesn't issue
+    /// workspace pulls today (strong-reason deferred -- see
+    /// lsp-features.md); future workspace-view rework
+    /// branches off this probe.
+    pub fn supports_workspace_diagnostic_pull(&self) -> bool {
+        let Some(p) = self.server.diagnostic_provider.as_ref() else {
+            return false;
+        };
+        match p {
+            lsp_types::DiagnosticServerCapabilities::Options(o) => o.workspace_diagnostics,
+            lsp_types::DiagnosticServerCapabilities::RegistrationOptions(r) => {
+                r.diagnostic_options.workspace_diagnostics
+            }
+        }
+    }
+
+    /// 4.4.j: diagnostic provider's optional `identifier` --
+    /// the namespace under which the server groups its
+    /// diagnostics. Passed back in `DocumentDiagnosticParams`
+    /// so a server that hosts multiple diagnostic streams
+    /// (e.g. lint + typecheck on the same wire) can route the
+    /// request to the right computation.
+    pub fn diagnostic_identifier(&self) -> Option<String> {
+        let p = self.server.diagnostic_provider.as_ref()?;
+        match p {
+            lsp_types::DiagnosticServerCapabilities::Options(o) => o.identifier.clone(),
+            lsp_types::DiagnosticServerCapabilities::RegistrationOptions(r) => {
+                r.diagnostic_options.identifier.clone()
+            }
         }
     }
 
@@ -721,5 +889,57 @@ mod tests {
             caps.text_document_sync_kind(),
             Some(lsp_types::TextDocumentSyncKind::FULL)
         );
+    }
+
+    /// 4.4.j: when the server doesn't advertise a
+    /// `diagnostic_provider`, `supports_pull_diagnostics` is
+    /// false.
+    #[test]
+    fn pull_diagnostics_off_when_provider_absent() {
+        let server = ServerCapabilities::default();
+        let caps = Capabilities::from_initialize(client_capabilities(), server);
+        assert!(!caps.supports_pull_diagnostics());
+        assert!(!caps.supports_workspace_diagnostic_pull());
+        assert!(caps.diagnostic_identifier().is_none());
+    }
+
+    /// 4.4.j: with `DiagnosticOptions { workspace_diagnostics
+    /// = true, identifier = Some(..) }` the per-document
+    /// probe AND the workspace probe both light up, and the
+    /// identifier round-trips.
+    #[test]
+    fn pull_diagnostics_options_variant_reads_workspace_and_identifier() {
+        let server = ServerCapabilities {
+            diagnostic_provider: Some(lsp_types::DiagnosticServerCapabilities::Options(
+                lsp_types::DiagnosticOptions {
+                    identifier: Some("rust-analyzer".into()),
+                    inter_file_dependencies: false,
+                    workspace_diagnostics: true,
+                    work_done_progress_options: Default::default(),
+                },
+            )),
+            ..Default::default()
+        };
+        let caps = Capabilities::from_initialize(client_capabilities(), server);
+        assert!(caps.supports_pull_diagnostics());
+        assert!(caps.supports_workspace_diagnostic_pull());
+        assert_eq!(
+            caps.diagnostic_identifier().as_deref(),
+            Some("rust-analyzer"),
+        );
+    }
+
+    /// 4.4.j: client advertises pull-diagnostic capabilities
+    /// on both the text-document and workspace sides so
+    /// servers know we honour pull + refresh.
+    #[test]
+    fn client_advertises_pull_diagnostic_capabilities() {
+        let caps = client_capabilities();
+        let td = caps.text_document.expect("text_document advertised");
+        let diag = td.diagnostic.expect("td.diagnostic advertised");
+        assert_eq!(diag.related_document_support, Some(true));
+        let ws = caps.workspace.expect("workspace advertised");
+        let ws_diag = ws.diagnostic.expect("ws.diagnostic advertised");
+        assert_eq!(ws_diag.refresh_support, Some(true));
     }
 }

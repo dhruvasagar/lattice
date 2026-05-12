@@ -302,10 +302,39 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // splices each hint as virtual text mid-line.
         app.maybe_request_inlay_hint();
         app.drain_pending_inlay_hint();
+        // `*messages*` live tail: coalesce queued
+        // MessagePushed events and rebuild the buffer view
+        // once per tick. Cheap (rebuild only fires when at
+        // least one event landed AND the buffer is open).
+        app.drain_message_events();
+        // 4.4.j: server-initiated pull-diagnostic refresh.
+        // Drained ahead of the pull pump so a refresh this
+        // tick evicts the cache before the pump's version
+        // check sees it as fresh.
+        app.drain_diagnostic_refresh();
+        // 4.4.j: textDocument/diagnostic pull pump. Fires when
+        // `lsp-diagnostics-mode` is on AND the active server
+        // advertises pull AND the document version changed.
+        // The server can answer either `Full` (apply to the
+        // layer same as push) or `Unchanged` (no-op, just
+        // refresh the cached result_id). Pump is single-
+        // flight: each new request cancels its predecessor.
+        app.maybe_request_pull_diagnostics();
+        app.drain_pending_pull_diagnostics();
+        // 4.4.i: server-initiated semantic-tokens refresh.
+        // Drained before the pump for the same reason as the
+        // inlay-hint refresh -- a refresh this tick must
+        // invalidate the cache before the pump's version check
+        // sees it as fresh.
+        app.drain_semantic_tokens_refresh();
         // 4.4.h: semanticTokens/full pump. Fires when
         // `lsp-semantic-tokens-mode` is on AND the document
         // version has changed; the renderer overlay overrides
         // tree-sitter styling within each token's byte range.
+        // 4.4.i: when the cache has a `result_id` and the server
+        // advertises delta support, the pump issues
+        // `semanticTokens/full/delta` and the drain splices the
+        // returned edit script into the cached raw vec.
         app.maybe_request_semantic_tokens();
         app.drain_pending_semantic_tokens();
         // Update viewport height. The buffer-area band is the

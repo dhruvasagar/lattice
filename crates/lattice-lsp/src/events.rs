@@ -199,6 +199,58 @@ lattice_protocol::register_event!(
     "lattice-lsp",
 );
 
+/// 4.4.i: fired when an attached server requests
+/// `workspace/semanticTokens/refresh`. The host invalidates
+/// every cached semantic-tokens entry for buffers attached to
+/// this server; the next render tick re-issues
+/// `semanticTokens/full` (forcing a fresh baseline rather than
+/// a delta against a now-stale `result_id`) and repopulates.
+///
+/// Same shape as `LspInlayHintRefresh`: the actor replies
+/// `null` to the server inline, and cache invalidation flows
+/// over the typed event bus so the App-side drain can mutate
+/// `lsp_semantic_tokens_cache` without the actor reaching into
+/// buffer state.
+#[derive(Debug, Clone)]
+pub struct LspSemanticTokensRefresh {
+    pub server_id: Arc<str>,
+}
+
+lattice_protocol::register_event!(
+    LspSemanticTokensRefresh,
+    "lsp.semantic-tokens-refresh",
+    "Fired when a server requests workspace/semanticTokens/refresh; the \
+     host invalidates cached semantic tokens for buffers attached to \
+     that server.",
+    "lattice-lsp",
+);
+
+/// 4.4.j: fired when an attached server requests
+/// `workspace/diagnostic/refresh`. The host invalidates the
+/// pull-diagnostics `result_id` cache for every buffer attached
+/// to this server; the next render tick re-issues
+/// `textDocument/diagnostic` (without a `previous_result_id`,
+/// so the server must answer with a `Full` report) and the
+/// `DiagnosticsLayer` re-applies.
+///
+/// Same shape as the inlay-hint / semantic-tokens refreshes:
+/// actor replies `null` inline and publishes this event so
+/// the App-side drain can mutate `lsp_pull_diagnostics_cache`
+/// without the actor reaching into buffer state.
+#[derive(Debug, Clone)]
+pub struct LspDiagnosticRefresh {
+    pub server_id: Arc<str>,
+}
+
+lattice_protocol::register_event!(
+    LspDiagnosticRefresh,
+    "lsp.diagnostic-refresh",
+    "Fired when a server requests workspace/diagnostic/refresh; the host \
+     invalidates the pull-diagnostics result_id cache for buffers attached \
+     to that server.",
+    "lattice-lsp",
+);
+
 /// Fired when a document buffer changes *and* `lsp-mode` is
 /// active for that buffer (M.5.5). The per-actor fan-in
 /// (`crate::fan_in`) subscribes via

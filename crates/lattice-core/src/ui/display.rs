@@ -92,6 +92,11 @@ pub enum BufferDisplayCategory {
     /// user picks a server, then the chosen log opens under
     /// `LspLog`.)
     LspLog,
+    /// `:messages` -- chronological transcript of every echo
+    /// area message (analogue of emacs's `*Messages*`).
+    /// Live-tailed via the `MessagesRing`; opens in the
+    /// active pane by default.
+    Messages,
 
     // ---- Help feature group ----
     /// `:help <topic>` -- free-form help docs.
@@ -217,6 +222,7 @@ pub const fn default_display(category: BufferDisplayCategory) -> BufferDisplay {
     match category {
         C::LspStatus => BufferDisplay::POPUP_CENTERED,
         C::LspLog => BufferDisplay::ActivePane,
+        C::Messages => BufferDisplay::ActivePane,
         C::HelpTopic => BufferDisplay::POPUP_CENTERED,
         C::HelpDescribe => BufferDisplay::POPUP_CENTERED,
         C::HelpApropos => BufferDisplay::POPUP_CENTERED,

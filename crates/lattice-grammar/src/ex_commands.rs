@@ -73,6 +73,7 @@ pub struct ExBuiltins {
     pub next_diagnostic: ExCommandId,
     pub prev_diagnostic: ExCommandId,
     pub lsp_log: ExCommandId,
+    pub messages: ExCommandId,
     pub lsp_trace: ExCommandId,
     pub lsp_status: ExCommandId,
     pub lsp_server_log: ExCommandId,
@@ -878,6 +879,19 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         },
     );
     // ---- LSP introspection (Phase 4.1.g) -------------------
+    let messages = registry.register_ex_command(
+        "ex:messages",
+        "Open the `*messages*` buffer -- the emacs `*Messages*` analogue carrying every minibuffer echo / notification with timestamps (`:messages`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_ctx| Ok(Effect::OpenMessages)),
+            args_schema: Vec::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let lsp_log = registry.register_ex_command(
         "ex:lsp-log",
         "Open the LSP subsystem log (`*lsp*`) or a per-server log (`*lsp:<server>*`) (`:lsp-log [server]`).",
@@ -1395,6 +1409,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         next_diagnostic,
         prev_diagnostic,
         lsp_log,
+        messages,
         lsp_trace,
         lsp_status,
         lsp_server_log,

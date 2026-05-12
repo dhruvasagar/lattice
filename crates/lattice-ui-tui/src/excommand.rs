@@ -439,6 +439,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     //    mechanism eventually lands (slice 8.h's WIT-shaped
     //    plugin / init.rs API), users / plugins can add their
     //    own personal shortcuts.
+    ("messages", "ex:messages"),
+    ("msg", "ex:messages"),
     ("lsp-log", "ex:lsp-log"),
     ("lsp-trace", "ex:lsp-trace"),
     ("lsp-trace-log", "ex:lsp-trace-log"),

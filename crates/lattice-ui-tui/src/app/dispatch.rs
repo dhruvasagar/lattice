@@ -1171,6 +1171,7 @@ impl App {
             Effect::NextDiagnostic => self.do_next_diagnostic(),
             Effect::PrevDiagnostic => self.do_prev_diagnostic(),
             Effect::OpenLspLog { server_id } => self.do_open_lsp_log(server_id.as_deref()),
+            Effect::OpenMessages => self.do_open_messages(),
             Effect::ToggleLspTrace { server_id } => self.do_toggle_lsp_trace(&server_id),
             Effect::OpenLspTraceLog { server_id } => {
                 self.do_open_lsp_trace_log(server_id.as_deref())
@@ -1422,6 +1423,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::NextDiagnostic
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
+        | Effect::OpenMessages
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }
         | Effect::LspStatus
@@ -1497,6 +1499,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::NextDiagnostic
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
+        | Effect::OpenMessages
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }
         | Effect::LspStatus

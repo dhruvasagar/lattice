@@ -28,6 +28,12 @@ fancy-regex = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 arc-swap = { workspace = true }
+# `register_event!` expands to a `#[linkme::distributed_slice]`
+# entry; caller crates that invoke the macro must declare
+# linkme as a direct dep (lattice-protocol re-exports the
+# attribute macro but the path lookup still resolves through
+# the caller's manifest).
+linkme = { workspace = true }
 unicode-width = "0.2"
 anyhow = { workspace = true }
 thiserror = { workspace = true }

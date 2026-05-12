@@ -170,6 +170,15 @@ pub enum RoutingPayload {
     /// existing `:snippet-expand` path. MRU keys on
     /// `snip:<name>`.
     ExpandSnippet { id: String },
+    /// Accept one action from a server-initiated
+    /// `window/showMessageRequest`. `request_id` keys into the
+    /// App's `lsp_pending_show_message_requests` map (the slot
+    /// that holds the inbound oneshot); `action_index` selects
+    /// which `MessageActionItem` from the request's actions
+    /// vec ferries back to the server. Dismiss (Esc) routes
+    /// through `do_picker_dismiss` which replies `null` (i.e.
+    /// the user closed the prompt without picking).
+    AcceptShowMessageAction { request_id: u32, action_index: u32 },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves
@@ -206,6 +215,13 @@ pub enum PickerSource {
     /// `App::do_edit`. Caller seeds the candidate list (the
     /// picker stays renderer-agnostic).
     Files,
+    /// Server-initiated `window/showMessageRequest`. Each row
+    /// is one `MessageActionItem` title from the request's
+    /// `actions` vec. `request_id` keys into the App's pending-
+    /// SMR map so the accept arm (and the dismiss path) can
+    /// locate the inbound oneshot and reply. `server_id` rides
+    /// for display + log breadcrumbs.
+    LspShowMessageRequest { request_id: u32, server_id: String },
 }
 
 /// What `<CR>` does to the selected candidate. Variants stay
@@ -249,6 +265,12 @@ pub enum PickerAction {
     /// `App::do_edit(Some(path), false)`. File picker
     /// (`:files`) and recent-files picker share this action.
     OpenFile,
+    /// Accept one [`MessageActionItem`] from a server-initiated
+    /// `window/showMessageRequest`. Routing payload is
+    /// [`RoutingPayload::AcceptShowMessageAction`]; dismiss
+    /// (Esc) replies `null` via the SMR-specific arm in
+    /// `do_picker_dismiss`.
+    AcceptShowMessageAction,
 }
 
 /// One open vertico-style picker. Lives on `App.picker` while

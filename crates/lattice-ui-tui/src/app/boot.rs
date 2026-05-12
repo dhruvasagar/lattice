@@ -318,6 +318,42 @@ impl App {
         let (lsp_inlay_refresh_tx, lsp_inlay_refresh_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspInlayHintRefresh>();
         event_bus.subscribe_typed(lsp_inlay_refresh_tx);
+        // 4.4.i: `workspace/semanticTokens/refresh` subscriber.
+        // Same shape as the inlay-hint refresh: the actor
+        // replies `null` inline and publishes
+        // `LspSemanticTokensRefresh`; the App's per-tick drain
+        // drops `lsp_semantic_tokens_cache` entries for buffers
+        // attached to the requesting server, and the next
+        // render tick refills them via
+        // `maybe_request_semantic_tokens` (forced full path,
+        // since the cached `result_id` is gone).
+        let (lsp_semantic_tokens_refresh_tx, lsp_semantic_tokens_refresh_rx) =
+            tokio::sync::mpsc::unbounded_channel::<
+                lattice_lsp::LspSemanticTokensRefresh,
+            >();
+        event_bus.subscribe_typed(lsp_semantic_tokens_refresh_tx);
+        // 4.4.j: `workspace/diagnostic/refresh` subscriber. The
+        // actor publishes `LspDiagnosticRefresh` on inbound;
+        // the App's drain evicts the per-buffer
+        // `lsp_pull_diagnostics_cache` entries for attached
+        // buffers so the next pump tick issues a fresh
+        // `textDocument/diagnostic` (no `previous_result_id`)
+        // and the server emits a `Full` report.
+        let (lsp_diagnostic_refresh_tx, lsp_diagnostic_refresh_rx) =
+            tokio::sync::mpsc::unbounded_channel::<
+                lattice_lsp::LspDiagnosticRefresh,
+            >();
+        event_bus.subscribe_typed(lsp_diagnostic_refresh_tx);
+        // `*messages*` buffer live-tail subscriber. Every
+        // `set_message` publishes a `MessagePushed` event; the
+        // App's per-tick drain coalesces and rebuilds the
+        // buffer view if `*messages*` is open. Other consumers
+        // (plugins, telemetry) can subscribe to the same event
+        // via `event_bus.subscribe_typed::<MessagePushed>(...)`.
+        let (message_event_tx, message_event_rx) = tokio::sync::mpsc::unbounded_channel::<
+            lattice_runtime::MessagePushed,
+        >();
+        event_bus.subscribe_typed(message_event_tx);
         // Wire the logger's publisher to the same bus. The
         // logger lives in `lattice-lsp`; the closure captures an
         // Arc<EventBus> clone so the logger's lifetime is
@@ -725,6 +761,7 @@ impl App {
             lsp_progress_event_rx: Some(lsp_progress_event_rx),
             pending_lsp_detach_rx: Some(lsp_detach_rx),
             pending_inlay_hint_refresh_rx: Some(lsp_inlay_refresh_rx),
+            pending_semantic_tokens_refresh_rx: Some(lsp_semantic_tokens_refresh_rx),
             lsp_progress: std::collections::HashMap::new(),
             lsp_selection_chain: None,
             lsp_selection_chain_index: 0,
@@ -743,6 +780,12 @@ impl App {
             lsp_semantic_tokens_cache: std::collections::HashMap::new(),
             pending_semantic_tokens_token: None,
             pending_semantic_tokens_rx: None,
+            lsp_pull_diagnostics_cache: std::collections::HashMap::new(),
+            pending_pull_diagnostics_token: None,
+            pending_pull_diagnostics_rx: None,
+            pending_diagnostic_refresh_rx: Some(lsp_diagnostic_refresh_rx),
+            messages: crate::app::MessagesRing::default(),
+            pending_message_event_rx: Some(message_event_rx),
             auto_submit_after_chord: false,
             lsp,
             lsp_diagnostics,
@@ -751,6 +794,9 @@ impl App {
             pending_configuration_rx: Some(lsp_configuration_rx),
             pending_show_document_rx: Some(lsp_show_document_rx),
             pending_show_message_request_rx: Some(lsp_show_message_request_rx),
+            lsp_pending_show_message_requests: std::collections::HashMap::new(),
+            lsp_show_message_request_queue: std::collections::VecDeque::new(),
+            lsp_next_show_message_request_id: 0,
             lsp_config_tree: toml::Table::new(),
             buffer_uris: std::collections::HashMap::new(),
         };

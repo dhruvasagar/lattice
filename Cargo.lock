@@ -987,6 +987,7 @@ dependencies = [
  "lattice-runtime",
  "lattice-snippet",
  "lattice-syntax",
+ "linkme",
  "lsp-types",
  "ratatui",
  "serde_json",

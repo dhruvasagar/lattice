@@ -87,8 +87,9 @@ pub use diagnostics::{DIAGNOSTICS_CHANNEL_CAPACITY, DiagnosticEvent, Diagnostics
 pub use diagnostics_layer::{DiagnosticsLayer, SeverityCounts, pump_diagnostics};
 pub use error::{LspError, LspResult};
 pub use events::{
-    LspActorExitReason, LspActorExited, LspBufferAttached, LspBufferDetached, LspDocumentChanged,
-    LspInlayHintRefresh, LspLogPushed, LspProgressKind, LspProgressUpdate,
+    LspActorExitReason, LspActorExited, LspBufferAttached, LspBufferDetached,
+    LspDiagnosticRefresh, LspDocumentChanged, LspInlayHintRefresh, LspLogPushed,
+    LspProgressKind, LspProgressUpdate, LspSemanticTokensRefresh,
 };
 pub use logging::{LogLevel, LogRecord, LogRing, LogSource, LspLogger};
 pub use framing::{FrameError, FrameHeader};

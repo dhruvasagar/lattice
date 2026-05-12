@@ -1361,7 +1361,7 @@ impl App {
     /// live-tail readers (links / anchors / highlights) reflect
     /// the updated parse. Also syncs `App.popup_buffer` (the popup
     /// hot-path mirror) when it points at the same id.
-    fn replace_help_buffer_preserving_cursor(
+    pub(crate) fn replace_help_buffer_preserving_cursor(
         &mut self,
         id: BufferId,
         new_content: crate::help::HelpContent,
@@ -1587,13 +1587,21 @@ impl App {
     }
 
     /// 4.4.b: drain server-initiated
-    /// `window/showMessageRequest`. Initial slice surfaces the
-    /// prompt + action list to the minibuffer + the LSP log so
-    /// the user can see what the server asked, then ferries
-    /// back `null` (dismissed) -- spec-compliant. A proper
-    /// picker-driven response UX queues for a follow-up slice;
-    /// the wire path + bus + dispatch path are the load-bearing
-    /// part this slice ships.
+    /// Drain server-initiated `window/showMessageRequest`
+    /// inbound requests (4.4.b). Each request comes with a
+    /// prompt, an optional action list, and a oneshot for the
+    /// reply. The actionless case (just an info / warn / error
+    /// notification) auto-replies `null` and surfaces the
+    /// prompt on the minibuffer + LSP log. The actionful case
+    /// registers the request in `lsp_pending_show_message_requests`
+    /// and either opens an action picker (if no picker is
+    /// currently up) or queues the id behind the active one.
+    ///
+    /// Picker accept (the `AcceptShowMessageAction` routing
+    /// arm) and picker dismiss (the `LspShowMessageRequest`
+    /// source arm) both pull the slot out, ferry back the
+    /// response, then drain the queue so the next pending SMR
+    /// opens on the same tick.
     pub fn drain_inbound_show_message_requests(&mut self) {
         let Some(mut rx) = self.pending_show_message_request_rx.take() else {
             return;
@@ -1603,10 +1611,6 @@ impl App {
             requests.push(req);
         }
         self.pending_show_message_request_rx = Some(rx);
-        // If multiple arrive in one tick, the minibuffer only
-        // surfaces the last (consistent with successive
-        // `:echo`). The LSP log records every request so nothing
-        // is lost.
         let mut last_minibuffer: Option<(EchoLevel, String)> = None;
         for req in requests {
             let labels: Vec<&str> = req
@@ -1625,36 +1629,161 @@ impl App {
                 lsp_types::MessageType::WARNING => lattice_lsp::LogLevel::Warn,
                 _ => lattice_lsp::LogLevel::Info,
             };
+            // Actionless requests: spec-compliant `null` reply
+            // (the prompt is purely informational); surface the
+            // prompt on the minibuffer + LSP log and move on.
+            if req.actions.is_empty() {
+                self.lsp_logger.log(
+                    Some(&req.server_id),
+                    log_level,
+                    lattice_lsp::LogSource::LspShowMessage,
+                    format!("showMessageRequest: {}", req.message),
+                );
+                last_minibuffer = Some((
+                    echo_level,
+                    format!("[{}] {}", req.server_id, req.message),
+                ));
+                let _ = req
+                    .response
+                    .send(lattice_lsp::ShowMessageRequestOutcome { selected: None });
+                continue;
+            }
+            // Actionful: register and either open the picker
+            // (if none is up) or queue. The log breadcrumb names
+            // every request so nothing is lost when multiple
+            // arrive together.
+            let request_id = self.allocate_smr_request_id();
             self.lsp_logger.log(
                 Some(&req.server_id),
                 log_level,
                 lattice_lsp::LogSource::LspShowMessage,
-                if labels.is_empty() {
-                    format!("showMessageRequest: {}", req.message)
-                } else {
-                    format!(
-                        "showMessageRequest: {} [actions: {labels_joined}] -- auto-dismissed (picker UX queued)",
-                        req.message
-                    )
-                },
-            );
-            let echo_text = if labels.is_empty() {
-                format!("[{}] {}", req.server_id, req.message)
-            } else {
                 format!(
-                    "[{}] {} [{labels_joined}]",
-                    req.server_id, req.message
-                )
-            };
-            last_minibuffer = Some((echo_level, echo_text));
-            // Auto-dismiss. The receiver may already be dropped
-            // if the server cancelled; ignore the send error.
-            let _ = req
-                .response
-                .send(lattice_lsp::ShowMessageRequestOutcome { selected: None });
+                    "showMessageRequest #{request_id}: {} [actions: {labels_joined}]",
+                    req.message
+                ),
+            );
+            last_minibuffer = Some((
+                echo_level,
+                format!("[{}] {} [{labels_joined}]", req.server_id, req.message),
+            ));
+            self.lsp_pending_show_message_requests
+                .insert(request_id, req);
+            if self.picker.is_some() {
+                self.lsp_show_message_request_queue.push_back(request_id);
+            } else {
+                self.open_show_message_request_picker(request_id);
+            }
         }
         if let Some((level, text)) = last_minibuffer {
             self.set_message(level, text);
+        }
+    }
+
+    /// Allocate a fresh `u32` request id for
+    /// `lsp_pending_show_message_requests`. Wraps on overflow
+    /// and skips any id currently in use -- collision is only
+    /// possible if `u32::MAX` actionful requests pile up at
+    /// once, which won't happen, but the loop keeps the
+    /// invariant honest.
+    fn allocate_smr_request_id(&mut self) -> u32 {
+        loop {
+            let id = self.lsp_next_show_message_request_id;
+            self.lsp_next_show_message_request_id =
+                self.lsp_next_show_message_request_id.wrapping_add(1);
+            if !self.lsp_pending_show_message_requests.contains_key(&id) {
+                return id;
+            }
+        }
+    }
+
+    /// Open the `window/showMessageRequest` action picker for
+    /// the given pending-slot id. One row per `MessageActionItem`
+    /// title; payload is `AcceptShowMessageAction { request_id,
+    /// action_index }` so the accept arm can locate both the
+    /// inbound slot and the chosen action. The picker title is
+    /// the server-prefixed prompt so the user always sees what
+    /// they're answering.
+    pub(super) fn open_show_message_request_picker(&mut self, request_id: u32) {
+        let Some(req) = self.lsp_pending_show_message_requests.get(&request_id)
+        else {
+            return;
+        };
+        let server_id = req.server_id.to_string();
+        let title = format!("[{}] {}", server_id, req.message);
+        let items: Vec<(
+            lattice_completion::RawCandidate,
+            lattice_picker::RoutingPayload,
+        )> = req
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(i, act)| {
+                let mut raw = lattice_completion::RawCandidate::plain(
+                    act.title.clone(),
+                    lattice_completion::CandidateKind::Plain,
+                );
+                raw.display = format!("{}. {}", i + 1, act.title);
+                (
+                    raw,
+                    lattice_picker::RoutingPayload::AcceptShowMessageAction {
+                        request_id,
+                        action_index: i as u32,
+                    },
+                )
+            })
+            .collect();
+        let mut p = lattice_picker::Picker::new(
+            &title,
+            lattice_picker::PickerSource::LspShowMessageRequest {
+                request_id,
+                server_id,
+            },
+            lattice_picker::PickerAction::AcceptShowMessageAction,
+        );
+        p.set_raw_candidates_with_routing(items);
+        self.picker = Some(p);
+    }
+
+    /// Send the LSP response for one in-flight
+    /// `showMessageRequest`. `selected_index` of `None` is the
+    /// dismiss path (reply `null`); `Some(i)` ferries the
+    /// `i`-th MessageActionItem back. Idempotent on missing
+    /// ids (the slot may already have been answered if the
+    /// drain logic raced with picker close).
+    pub(crate) fn finalize_show_message_request(
+        &mut self,
+        request_id: u32,
+        selected_index: Option<u32>,
+    ) {
+        let Some(req) = self
+            .lsp_pending_show_message_requests
+            .remove(&request_id)
+        else {
+            return;
+        };
+        let selected = selected_index.and_then(|i| {
+            req.actions
+                .get(i as usize)
+                .cloned()
+        });
+        let _ = req
+            .response
+            .send(lattice_lsp::ShowMessageRequestOutcome { selected });
+    }
+
+    /// Advance the SMR queue. Called from the picker accept /
+    /// dismiss arms after the active request is resolved -- if
+    /// another id is queued, open its picker on the same tick
+    /// so the user sees the next prompt without a frame's gap.
+    pub(crate) fn open_next_queued_show_message_request(&mut self) {
+        while let Some(next_id) = self.lsp_show_message_request_queue.pop_front() {
+            if self
+                .lsp_pending_show_message_requests
+                .contains_key(&next_id)
+            {
+                self.open_show_message_request_picker(next_id);
+                return;
+            }
         }
     }
 
@@ -4199,13 +4328,19 @@ impl App {
         }
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        if let Some(cache) = self
+        // 4.4.i: pull the prior result_id (if any) before the
+        // version-equal early-return. The delta path uses the
+        // previous result_id; if we already cached this version
+        // we have nothing to do.
+        let prior = self
             .lsp_semantic_tokens_cache
-            .get(&self.document_buffer_id)
+            .get(&self.document_buffer_id);
+        if let Some(cache) = prior
             && cache.document_version == version
         {
             return;
         }
+        let prior_result_id = prior.and_then(|c| c.result_id.clone());
         let Some(uri) = self
             .buffer_uris
             .get(&self.document_buffer_id)
@@ -4244,6 +4379,63 @@ impl App {
             let caps = handle.capabilities();
             let token_types = caps.semantic_token_types();
             let token_modifiers = caps.semantic_token_modifiers();
+            // 4.4.i: prefer full/delta when a prior result_id
+            // exists AND the server advertises delta support.
+            // Falls back to a plain `full` request when either
+            // side hasn't supplied the prerequisites.
+            if let (Some(prev_id), true) =
+                (prior_result_id, caps.supports_semantic_tokens_delta())
+            {
+                let params = lsp_types::SemanticTokensDeltaParams {
+                    text_document: lsp_types::TextDocumentIdentifier {
+                        uri: uri.clone(),
+                    },
+                    previous_result_id: prev_id.clone(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                };
+                match handle
+                    .semantic_tokens_full_delta(params, token.clone())
+                    .await
+                {
+                    Ok(Some(
+                        lsp_types::SemanticTokensFullDeltaResult::Tokens(t),
+                    )) => {
+                        let decoded = crate::app::decode_semantic_tokens(
+                            &t.data,
+                            &token_types,
+                            &token_modifiers,
+                        );
+                        let _ = tx.send(super::SemanticTokensOutcome::Items {
+                            buffer_id,
+                            document_version: version,
+                            result_id: t.result_id,
+                            raw_data: t.data,
+                            tokens: decoded,
+                        });
+                    }
+                    Ok(Some(
+                        lsp_types::SemanticTokensFullDeltaResult::TokensDelta(d),
+                    )) => {
+                        let _ = tx.send(super::SemanticTokensOutcome::Delta {
+                            buffer_id,
+                            document_version: version,
+                            previous_result_id: prev_id,
+                            new_result_id: d.result_id,
+                            edits: d.edits,
+                            token_types: token_types.clone(),
+                            token_modifiers: token_modifiers.clone(),
+                        });
+                    }
+                    _ => {
+                        let _ = tx.send(super::SemanticTokensOutcome::Empty {
+                            buffer_id,
+                            document_version: version,
+                        });
+                    }
+                }
+                return;
+            }
             let params = lsp_types::SemanticTokensParams {
                 text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                 work_done_progress_params: Default::default(),
@@ -4260,6 +4452,7 @@ impl App {
                         buffer_id,
                         document_version: version,
                         result_id: t.result_id,
+                        raw_data: t.data,
                         tokens: decoded,
                     });
                 }
@@ -4304,6 +4497,7 @@ impl App {
                 buffer_id,
                 document_version,
                 result_id,
+                raw_data,
                 tokens,
             } => {
                 if buffer_id != self.document_buffer_id {
@@ -4314,7 +4508,64 @@ impl App {
                     super::LspSemanticTokensCache {
                         document_version,
                         result_id,
+                        raw_data,
                         tokens,
+                    },
+                );
+            }
+            // 4.4.i: splice the server-issued edit script into
+            // the cached raw token vec, re-decode for the
+            // renderer, and seat the updated cache entry.
+            // Stale-baseline check: if our current cache's
+            // result_id no longer matches `previous_result_id`
+            // we drop the cache and let the next pump issue a
+            // fresh `full` request. Same fallback on splice
+            // failure (out-of-bounds edit indices).
+            super::SemanticTokensOutcome::Delta {
+                buffer_id,
+                document_version,
+                previous_result_id,
+                new_result_id,
+                edits,
+                token_types,
+                token_modifiers,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                let Some(cache) =
+                    self.lsp_semantic_tokens_cache.get(&buffer_id)
+                else {
+                    return;
+                };
+                if cache.result_id.as_deref()
+                    != Some(previous_result_id.as_str())
+                {
+                    self.lsp_semantic_tokens_cache.remove(&buffer_id);
+                    return;
+                }
+                let mut raw_data = cache.raw_data.clone();
+                if crate::app::apply_semantic_token_edits(
+                    &mut raw_data,
+                    &edits,
+                )
+                .is_err()
+                {
+                    self.lsp_semantic_tokens_cache.remove(&buffer_id);
+                    return;
+                }
+                let decoded = crate::app::decode_semantic_tokens(
+                    &raw_data,
+                    &token_types,
+                    &token_modifiers,
+                );
+                self.lsp_semantic_tokens_cache.insert(
+                    buffer_id,
+                    super::LspSemanticTokensCache {
+                        document_version,
+                        result_id: new_result_id,
+                        raw_data,
+                        tokens: decoded,
                     },
                 );
             }
@@ -4330,10 +4581,238 @@ impl App {
                     super::LspSemanticTokensCache {
                         document_version,
                         result_id: None,
+                        raw_data: Vec::new(),
                         tokens: Vec::new(),
                     },
                 );
             }
+        }
+    }
+
+    /// 4.4.j: per-tick `textDocument/diagnostic` (pull-based)
+    /// pump. Fires when:
+    /// - `lsp-diagnostics-mode` is enabled (umbrella +
+    ///   diagnostics sub-mode), AND
+    /// - the active server advertises pull diagnostics, AND
+    /// - the buffer's document version differs from the
+    ///   cached one (or there's no cache entry).
+    ///
+    /// Threads the cached `result_id` back via
+    /// `previous_result_id` so the server can answer
+    /// `Unchanged` cheaply when nothing moved. Single-flight:
+    /// each new request cancels its predecessor. Failures
+    /// surface as `PullDiagnosticsOutcome::Empty` and the
+    /// drain seats a cache entry at the current version so
+    /// the pump doesn't re-fire on the next tick without an
+    /// actual edit.
+    pub fn maybe_request_pull_diagnostics(&mut self) {
+        if !self.lsp_diagnostics_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        let prior = self
+            .lsp_pull_diagnostics_cache
+            .get(&self.document_buffer_id);
+        if let Some(cache) = prior
+            && cache.document_version == version
+        {
+            return;
+        }
+        let prior_result_id = prior.and_then(|c| c.result_id.clone());
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(token) = self.pending_pull_diagnostics_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            super::PullDiagnosticsOutcome,
+        >();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_pull_diagnostics_rx = Some(rx);
+        self.pending_pull_diagnostics_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_pull_diagnostics())
+            else {
+                let _ = tx.send(super::PullDiagnosticsOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                });
+                return;
+            };
+            let identifier = handle.capabilities().diagnostic_identifier();
+            let server_id_arc: std::sync::Arc<str> =
+                std::sync::Arc::from(handle.server_id());
+            let params = lsp_types::DocumentDiagnosticParams {
+                text_document: lsp_types::TextDocumentIdentifier {
+                    uri: uri.clone(),
+                },
+                identifier,
+                previous_result_id: prior_result_id,
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.document_diagnostic(params, token.clone()).await {
+                Ok(lsp_types::DocumentDiagnosticReportResult::Report(report)) => {
+                    match report {
+                        lsp_types::DocumentDiagnosticReport::Full(full) => {
+                            let inner = full.full_document_diagnostic_report;
+                            let _ = tx.send(super::PullDiagnosticsOutcome::Full {
+                                buffer_id,
+                                server_id: server_id_arc,
+                                uri,
+                                document_version: version,
+                                result_id: inner.result_id,
+                                diagnostics: inner.items,
+                            });
+                        }
+                        lsp_types::DocumentDiagnosticReport::Unchanged(unchanged) => {
+                            let _ = tx.send(
+                                super::PullDiagnosticsOutcome::Unchanged {
+                                    buffer_id,
+                                    document_version: version,
+                                    result_id: unchanged
+                                        .unchanged_document_diagnostic_report
+                                        .result_id,
+                                },
+                            );
+                        }
+                    }
+                }
+                // Partial streaming: treat as Empty for v1 (a
+                // follow-up could splice partial-result chunks
+                // the same way semantic-tokens partials would).
+                _ => {
+                    let _ = tx.send(super::PullDiagnosticsOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+            }
+        });
+    }
+
+    /// 4.4.j: drain the in-flight `textDocument/diagnostic`
+    /// response. Full reports flow into `DiagnosticsLayer` via
+    /// the same `DiagnosticEvent` shape push diagnostics use;
+    /// Unchanged reports refresh just the cache's
+    /// (version, result_id) pair; Empty reports seat the
+    /// version so the pump doesn't re-fire idly.
+    pub fn drain_pending_pull_diagnostics(&mut self) {
+        let Some(mut rx) = self.pending_pull_diagnostics_rx.take() else {
+            return;
+        };
+        let mut latest: Option<super::PullDiagnosticsOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
+        }
+        self.pending_pull_diagnostics_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        match outcome {
+            super::PullDiagnosticsOutcome::Full {
+                buffer_id,
+                server_id,
+                uri,
+                document_version,
+                result_id,
+                diagnostics,
+            } => {
+                self.lsp_pull_diagnostics_cache.insert(
+                    buffer_id,
+                    super::LspPullDiagnosticsCache {
+                        document_version,
+                        result_id,
+                    },
+                );
+                // Cast the doc version into LSP's i32 (the
+                // version that rides on `DiagnosticEvent` is
+                // the *server's* notion of version, but our
+                // pull response doesn't carry one; threading
+                // our own version is the closest analogue and
+                // lets the layer's stale-drop logic stay
+                // honest).
+                let version_i32 = i32::try_from(document_version).ok();
+                self.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
+                    server_id,
+                    uri,
+                    version: version_i32,
+                    diagnostics: std::sync::Arc::from(
+                        diagnostics.into_boxed_slice(),
+                    ),
+                });
+            }
+            super::PullDiagnosticsOutcome::Unchanged {
+                buffer_id,
+                document_version,
+                result_id,
+            } => {
+                self.lsp_pull_diagnostics_cache.insert(
+                    buffer_id,
+                    super::LspPullDiagnosticsCache {
+                        document_version,
+                        result_id: Some(result_id),
+                    },
+                );
+            }
+            super::PullDiagnosticsOutcome::Empty {
+                buffer_id,
+                document_version,
+            } => {
+                self.lsp_pull_diagnostics_cache.insert(
+                    buffer_id,
+                    super::LspPullDiagnosticsCache {
+                        document_version,
+                        result_id: None,
+                    },
+                );
+            }
+        }
+    }
+
+    /// 4.4.j: drain `workspace/diagnostic/refresh` events.
+    /// Each event names a server; evict the per-buffer
+    /// `result_id` cache for every attached buffer so the
+    /// next pump tick re-pulls without a `previous_result_id`
+    /// and the server emits a forced `Full` report.
+    pub fn drain_diagnostic_refresh(&mut self) {
+        let Some(mut rx) = self.pending_diagnostic_refresh_rx.take() else {
+            return;
+        };
+        let mut refreshes: Vec<lattice_lsp::LspDiagnosticRefresh> = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            refreshes.push(event);
+        }
+        self.pending_diagnostic_refresh_rx = Some(rx);
+        if refreshes.is_empty() {
+            return;
+        }
+        let buffer_ids: Vec<BufferId> = self
+            .buffer_uris
+            .iter()
+            .filter_map(|(id, uri)| {
+                let handles = self.lsp.servers_for(uri);
+                let attached = handles.iter().any(|h| {
+                    refreshes
+                        .iter()
+                        .any(|r| r.server_id.as_ref() == h.server_id())
+                });
+                if attached { Some(*id) } else { None }
+            })
+            .collect();
+        for buffer_id in buffer_ids {
+            self.lsp_pull_diagnostics_cache.remove(&buffer_id);
         }
     }
 
@@ -4353,8 +4832,30 @@ impl App {
         }
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
+        // 4.4.g viewport polish: pick the line range to fetch.
+        // Visible viewport ± overscan margin, clamped to the
+        // buffer's last addressable line. Refetch when:
+        //   - document version changed, OR
+        //   - viewport scrolled outside the cached requested
+        //     range (with overscan giving small scrolls room
+        //     before triggering a new request).
+        // Small files where the overscanned range already
+        // covers the whole buffer naturally see the same cache
+        // hit semantics as the prior whole-buffer pump.
+        const OVERSCAN_LINES: u32 = 100;
+        let last_buffer_line = last_addressable_line(&snapshot.buffer);
+        let viewport_first = self.scroll;
+        let viewport_last = self
+            .scroll
+            .saturating_add(self.viewport_height.saturating_sub(1));
+        let requested_first = viewport_first.saturating_sub(OVERSCAN_LINES);
+        let requested_last = viewport_last
+            .saturating_add(OVERSCAN_LINES)
+            .min(last_buffer_line);
         if let Some(cache) = self.lsp_inlay_hints_cache.get(&self.document_buffer_id)
             && cache.document_version == version
+            && viewport_first >= cache.requested_first_line
+            && viewport_last <= cache.requested_last_line
         {
             return;
         }
@@ -4369,17 +4870,17 @@ impl App {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
-        // Whole-buffer range. LSP positions are 0-based;
-        // last_addressable_line returns the highest valid line
-        // index, and we use 0 as the end character (line-end
-        // coordinates work but we'd need to convert utf-8 byte
-        // length to utf-16 column which costs more than just
-        // overshooting via the next line index 0).
-        let last_line = last_addressable_line(&snapshot.buffer);
+        // LSP positions are 0-based; end of range is exclusive
+        // so we set end.line = requested_last + 1 with
+        // character = 0 to cover the entire last line without
+        // utf-16 column conversion.
         let range = lsp_types::Range {
-            start: lsp_types::Position { line: 0, character: 0 },
+            start: lsp_types::Position {
+                line: requested_first,
+                character: 0,
+            },
             end: lsp_types::Position {
-                line: last_line.saturating_add(1),
+                line: requested_last.saturating_add(1),
                 character: 0,
             },
         };
@@ -4399,6 +4900,8 @@ impl App {
                 let _ = tx.send(super::InlayHintOutcome::Empty {
                     buffer_id,
                     document_version: version,
+                    requested_first_line: requested_first,
+                    requested_last_line: requested_last,
                 });
                 return;
             };
@@ -4413,12 +4916,16 @@ impl App {
                         buffer_id,
                         document_version: version,
                         hints,
+                        requested_first_line: requested_first,
+                        requested_last_line: requested_last,
                     });
                 }
                 _ => {
                     let _ = tx.send(super::InlayHintOutcome::Empty {
                         buffer_id,
                         document_version: version,
+                        requested_first_line: requested_first,
+                        requested_last_line: requested_last,
                     });
                 }
             }
@@ -4467,6 +4974,43 @@ impl App {
         }
     }
 
+    /// 4.4.i: drain `workspace/semanticTokens/refresh` events.
+    /// Same shape as the inlay-hint refresh drain: each event
+    /// names a server; drop the semantic-tokens cache for every
+    /// attached buffer so the next render tick's pump re-issues
+    /// `semanticTokens/full` against a fresh baseline (dropping
+    /// the now-stale `result_id` rules out a delta request that
+    /// the server would reject).
+    pub fn drain_semantic_tokens_refresh(&mut self) {
+        let Some(mut rx) = self.pending_semantic_tokens_refresh_rx.take() else {
+            return;
+        };
+        let mut refreshes: Vec<lattice_lsp::LspSemanticTokensRefresh> = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            refreshes.push(event);
+        }
+        self.pending_semantic_tokens_refresh_rx = Some(rx);
+        if refreshes.is_empty() {
+            return;
+        }
+        let buffer_ids: Vec<BufferId> = self
+            .buffer_uris
+            .iter()
+            .filter_map(|(id, uri)| {
+                let handles = self.lsp.servers_for(uri);
+                let attached = handles.iter().any(|h| {
+                    refreshes
+                        .iter()
+                        .any(|r| r.server_id.as_ref() == h.server_id())
+                });
+                if attached { Some(*id) } else { None }
+            })
+            .collect();
+        for buffer_id in buffer_ids {
+            self.lsp_semantic_tokens_cache.remove(&buffer_id);
+        }
+    }
+
     /// 4.4.g: drain the in-flight `inlayHint` response.
     /// Coalesces multiple queued outcomes to the latest.
     pub fn drain_pending_inlay_hint(&mut self) {
@@ -4486,6 +5030,8 @@ impl App {
                 buffer_id,
                 document_version,
                 hints,
+                requested_first_line,
+                requested_last_line,
             } => {
                 if buffer_id != self.document_buffer_id {
                     return;
@@ -4495,23 +5041,30 @@ impl App {
                     super::LspInlayHintCache {
                         document_version,
                         hints,
+                        requested_first_line,
+                        requested_last_line,
                     },
                 );
             }
             super::InlayHintOutcome::Empty {
                 buffer_id,
                 document_version,
+                requested_first_line,
+                requested_last_line,
             } => {
                 if buffer_id != self.document_buffer_id {
                     return;
                 }
                 // Cache empty list so we don't re-issue
-                // immediately; bumped on next edit.
+                // immediately; bumped on next edit / when the
+                // viewport scrolls outside the requested range.
                 self.lsp_inlay_hints_cache.insert(
                     buffer_id,
                     super::LspInlayHintCache {
                         document_version,
                         hints: Vec::new(),
+                        requested_first_line,
+                        requested_last_line,
                     },
                 );
             }
@@ -5783,6 +6336,576 @@ mod tests {
         // Only the in-range token survives.
         assert_eq!(decoded.len(), 1);
         assert_eq!(decoded[0].token_type, "keyword");
+    }
+
+    /// 4.4.i: a delta script that replaces a contiguous slice of
+    /// the prior raw vec splices in place. Verifies both the
+    /// length change and the resulting element identity.
+    #[test]
+    fn apply_semantic_token_edits_replace_middle() {
+        let mut raw = vec![
+            lsp_types::SemanticToken {
+                delta_line: 0,
+                delta_start: 0,
+                length: 2,
+                token_type: 0,
+                token_modifiers_bitset: 0,
+            },
+            lsp_types::SemanticToken {
+                delta_line: 0,
+                delta_start: 3,
+                length: 4,
+                token_type: 1,
+                token_modifiers_bitset: 0,
+            },
+            lsp_types::SemanticToken {
+                delta_line: 1,
+                delta_start: 2,
+                length: 1,
+                token_type: 0,
+                token_modifiers_bitset: 0,
+            },
+        ];
+        // Replace the middle token (index 1) with two new tokens.
+        let edit = lsp_types::SemanticTokensEdit {
+            start: 1,
+            delete_count: 1,
+            data: Some(vec![
+                lsp_types::SemanticToken {
+                    delta_line: 0,
+                    delta_start: 3,
+                    length: 2,
+                    token_type: 2,
+                    token_modifiers_bitset: 0,
+                },
+                lsp_types::SemanticToken {
+                    delta_line: 0,
+                    delta_start: 5,
+                    length: 3,
+                    token_type: 1,
+                    token_modifiers_bitset: 0,
+                },
+            ]),
+        };
+        crate::app::apply_semantic_token_edits(&mut raw, &[edit])
+            .expect("splice succeeds in range");
+        assert_eq!(raw.len(), 4);
+        assert_eq!(raw[1].token_type, 2);
+        assert_eq!(raw[2].token_type, 1);
+        // The trailing token wasn't touched.
+        assert_eq!(raw[3].delta_line, 1);
+    }
+
+    /// 4.4.i: an insert-only edit (delete_count = 0) splices the
+    /// new tokens in without removing anything.
+    #[test]
+    fn apply_semantic_token_edits_insert_only() {
+        let mut raw = vec![lsp_types::SemanticToken {
+            delta_line: 0,
+            delta_start: 0,
+            length: 2,
+            token_type: 0,
+            token_modifiers_bitset: 0,
+        }];
+        let edit = lsp_types::SemanticTokensEdit {
+            start: 1,
+            delete_count: 0,
+            data: Some(vec![lsp_types::SemanticToken {
+                delta_line: 0,
+                delta_start: 3,
+                length: 4,
+                token_type: 1,
+                token_modifiers_bitset: 0,
+            }]),
+        };
+        crate::app::apply_semantic_token_edits(&mut raw, &[edit])
+            .expect("insert at end succeeds");
+        assert_eq!(raw.len(), 2);
+        assert_eq!(raw[1].token_type, 1);
+    }
+
+    /// 4.4.i: a delete-only edit (data = None) removes the named
+    /// range without inserting anything.
+    #[test]
+    fn apply_semantic_token_edits_delete_only() {
+        let mut raw = vec![
+            lsp_types::SemanticToken {
+                delta_line: 0,
+                delta_start: 0,
+                length: 2,
+                token_type: 0,
+                token_modifiers_bitset: 0,
+            },
+            lsp_types::SemanticToken {
+                delta_line: 0,
+                delta_start: 3,
+                length: 4,
+                token_type: 1,
+                token_modifiers_bitset: 0,
+            },
+        ];
+        let edit = lsp_types::SemanticTokensEdit {
+            start: 1,
+            delete_count: 1,
+            data: None,
+        };
+        crate::app::apply_semantic_token_edits(&mut raw, &[edit])
+            .expect("delete in range succeeds");
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].token_type, 0);
+    }
+
+    /// 4.4.i: an out-of-bounds edit returns Err and leaves the
+    /// vec untouched. The host treats this as a server bug and
+    /// drops the cache to force a fresh full request.
+    #[test]
+    fn apply_semantic_token_edits_out_of_bounds_errs() {
+        let mut raw = vec![lsp_types::SemanticToken {
+            delta_line: 0,
+            delta_start: 0,
+            length: 2,
+            token_type: 0,
+            token_modifiers_bitset: 0,
+        }];
+        let edit = lsp_types::SemanticTokensEdit {
+            start: 5,
+            delete_count: 2,
+            data: None,
+        };
+        assert!(
+            crate::app::apply_semantic_token_edits(&mut raw, &[edit]).is_err(),
+            "out-of-bounds edit must err"
+        );
+        // Pre-edit vec was a single token; verify it survived.
+        assert_eq!(raw.len(), 1);
+    }
+
+    /// 4.4.i: the drain's `Delta` arm splices a server-issued
+    /// edit script into the cached raw vec and re-decodes,
+    /// seating the updated decoded list in the cache.
+    #[test]
+    fn drain_semantic_tokens_delta_splices_and_redecodes() {
+        let mut a = app_with("fn main() {}\n", 5);
+        let buffer_id = a.document_buffer_id;
+        // Seed an initial cache entry with one keyword token and
+        // a `result_id` the delta will reference. Use a single
+        // legend entry so the decoder's name resolution is
+        // deterministic.
+        let initial_raw = vec![lsp_types::SemanticToken {
+            delta_line: 0,
+            delta_start: 0,
+            length: 2,
+            token_type: 0,
+            token_modifiers_bitset: 0,
+        }];
+        a.lsp_semantic_tokens_cache.insert(
+            buffer_id,
+            crate::app::LspSemanticTokensCache {
+                document_version: 1,
+                result_id: Some("r1".into()),
+                raw_data: initial_raw,
+                tokens: vec![crate::app::DecodedSemanticToken {
+                    line: 0,
+                    start_char: 0,
+                    length: 2,
+                    token_type: "keyword".into(),
+                    modifiers: Vec::new(),
+                }],
+            },
+        );
+        // Send a Delta outcome that appends a new "function"
+        // token. The drain should splice into raw_data and
+        // re-decode against the carried legend.
+        let token_types = vec![
+            lsp_types::SemanticTokenType::KEYWORD,
+            lsp_types::SemanticTokenType::FUNCTION,
+        ];
+        let token_modifiers: Vec<lsp_types::SemanticTokenModifier> = Vec::new();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            crate::app::SemanticTokensOutcome,
+        >();
+        tx.send(crate::app::SemanticTokensOutcome::Delta {
+            buffer_id,
+            document_version: 2,
+            previous_result_id: "r1".into(),
+            new_result_id: Some("r2".into()),
+            edits: vec![lsp_types::SemanticTokensEdit {
+                start: 1,
+                delete_count: 0,
+                data: Some(vec![lsp_types::SemanticToken {
+                    delta_line: 0,
+                    delta_start: 3,
+                    length: 4,
+                    token_type: 1,
+                    token_modifiers_bitset: 0,
+                }]),
+            }],
+            token_types,
+            token_modifiers,
+        })
+        .expect("send delta");
+        a.pending_semantic_tokens_rx = Some(rx);
+        a.drain_pending_semantic_tokens();
+        let cache = a
+            .lsp_semantic_tokens_cache
+            .get(&buffer_id)
+            .expect("cache seated");
+        assert_eq!(cache.document_version, 2);
+        assert_eq!(cache.result_id.as_deref(), Some("r2"));
+        assert_eq!(cache.raw_data.len(), 2);
+        assert_eq!(cache.tokens.len(), 2);
+        assert_eq!(cache.tokens[1].token_type, "function");
+        assert_eq!(cache.tokens[1].start_char, 3);
+    }
+
+    /// 4.4.i: when the cached `result_id` no longer matches
+    /// the delta's `previous_result_id` (e.g. a concurrent
+    /// refresh dropped the baseline), the drain evicts the
+    /// cache so the next pump issues a fresh full request.
+    #[test]
+    fn drain_semantic_tokens_delta_stale_baseline_evicts_cache() {
+        let mut a = app_with("fn main() {}\n", 5);
+        let buffer_id = a.document_buffer_id;
+        a.lsp_semantic_tokens_cache.insert(
+            buffer_id,
+            crate::app::LspSemanticTokensCache {
+                document_version: 1,
+                result_id: Some("different-id".into()),
+                raw_data: Vec::new(),
+                tokens: Vec::new(),
+            },
+        );
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            crate::app::SemanticTokensOutcome,
+        >();
+        tx.send(crate::app::SemanticTokensOutcome::Delta {
+            buffer_id,
+            document_version: 2,
+            previous_result_id: "r1".into(),
+            new_result_id: Some("r2".into()),
+            edits: Vec::new(),
+            token_types: Vec::new(),
+            token_modifiers: Vec::new(),
+        })
+        .expect("send delta");
+        a.pending_semantic_tokens_rx = Some(rx);
+        a.drain_pending_semantic_tokens();
+        assert!(
+            a.lsp_semantic_tokens_cache.get(&buffer_id).is_none(),
+            "stale-baseline delta should evict the cache",
+        );
+    }
+
+    /// 4.4.i: multiple edits compose in order. The server
+    /// constructs edits against the index space of the *input*
+    /// to each step, so applying [e1, e2] means e2's indices
+    /// refer to the vec after e1 has been applied.
+    #[test]
+    fn apply_semantic_token_edits_sequential() {
+        let mut raw = vec![
+            lsp_types::SemanticToken {
+                delta_line: 0,
+                delta_start: 0,
+                length: 2,
+                token_type: 0,
+                token_modifiers_bitset: 0,
+            },
+            lsp_types::SemanticToken {
+                delta_line: 0,
+                delta_start: 3,
+                length: 4,
+                token_type: 1,
+                token_modifiers_bitset: 0,
+            },
+        ];
+        let edits = vec![
+            // Delete index 0.
+            lsp_types::SemanticTokensEdit {
+                start: 0,
+                delete_count: 1,
+                data: None,
+            },
+            // Then insert a new token at the (now) start.
+            lsp_types::SemanticTokensEdit {
+                start: 0,
+                delete_count: 0,
+                data: Some(vec![lsp_types::SemanticToken {
+                    delta_line: 0,
+                    delta_start: 0,
+                    length: 5,
+                    token_type: 2,
+                    token_modifiers_bitset: 0,
+                }]),
+            },
+        ];
+        crate::app::apply_semantic_token_edits(&mut raw, &edits)
+            .expect("sequential edits succeed");
+        assert_eq!(raw.len(), 2);
+        assert_eq!(raw[0].token_type, 2);
+        assert_eq!(raw[1].token_type, 1);
+    }
+
+    /// 4.4.j: drain seats the cache + applies a `Full` report
+    /// to `DiagnosticsLayer`. Verifies (a) the cache stores
+    /// the new result_id + version, and (b) the layer
+    /// receives the diagnostics for the URI.
+    #[test]
+    fn drain_pending_pull_diagnostics_full_applies_to_layer() {
+        use std::str::FromStr;
+        let mut app = app_with("fn main() {}\n", 5);
+        let buffer_id = app.document_buffer_id;
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris.insert(buffer_id, uri.clone());
+        let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        let diag = lsp_types::Diagnostic {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: 0, character: 0 },
+                end: lsp_types::Position { line: 0, character: 2 },
+            },
+            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+            code: None,
+            code_description: None,
+            source: None,
+            message: "boom".into(),
+            related_information: None,
+            tags: None,
+            data: None,
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            crate::app::PullDiagnosticsOutcome,
+        >();
+        tx.send(crate::app::PullDiagnosticsOutcome::Full {
+            buffer_id,
+            server_id: server_id.clone(),
+            uri: uri.clone(),
+            document_version: 1,
+            result_id: Some("r1".into()),
+            diagnostics: vec![diag.clone()],
+        })
+        .expect("send full");
+        app.pending_pull_diagnostics_rx = Some(rx);
+        app.drain_pending_pull_diagnostics();
+        let cache = app
+            .lsp_pull_diagnostics_cache
+            .get(&buffer_id)
+            .expect("cache seated");
+        assert_eq!(cache.document_version, 1);
+        assert_eq!(cache.result_id.as_deref(), Some("r1"));
+        // Layer should now carry the diagnostic. URI equality
+        // goes via `as_str()` (fluent_uri's Uri doesn't impl
+        // PartialEq across the typed/owning split).
+        let snap = app.lsp_diagnostics.snapshot();
+        let entry = snap
+            .iter()
+            .find(|(u, _)| u.as_str() == uri.as_str())
+            .expect("uri in layer");
+        let msgs: Vec<_> = entry
+            .1
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(msgs.contains(&"boom"));
+    }
+
+    /// 4.4.j: drain handles `Unchanged` reports by refreshing
+    /// the (version, result_id) pair without touching the
+    /// layer. The diagnostic state on the layer must be
+    /// preserved verbatim.
+    #[test]
+    fn drain_pending_pull_diagnostics_unchanged_keeps_layer_state() {
+        let mut app = app_with("fn main() {}\n", 5);
+        let buffer_id = app.document_buffer_id;
+        // Seed initial cache state.
+        app.lsp_pull_diagnostics_cache.insert(
+            buffer_id,
+            crate::app::LspPullDiagnosticsCache {
+                document_version: 1,
+                result_id: Some("r1".into()),
+            },
+        );
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            crate::app::PullDiagnosticsOutcome,
+        >();
+        tx.send(crate::app::PullDiagnosticsOutcome::Unchanged {
+            buffer_id,
+            document_version: 2,
+            result_id: "r2".into(),
+        })
+        .expect("send unchanged");
+        app.pending_pull_diagnostics_rx = Some(rx);
+        app.drain_pending_pull_diagnostics();
+        let cache = app
+            .lsp_pull_diagnostics_cache
+            .get(&buffer_id)
+            .expect("cache seated");
+        assert_eq!(cache.document_version, 2);
+        assert_eq!(cache.result_id.as_deref(), Some("r2"));
+    }
+
+    /// 4.4.j: `workspace/diagnostic/refresh` drain evicts the
+    /// per-buffer result_id cache for every buffer attached
+    /// to the requesting server (here: by URI walk through
+    /// `buffer_uris` + `lsp.servers_for`). For the unit-test
+    /// scaffold there are no real running actors, so the
+    /// attachment check returns no buffers and the cache
+    /// stays -- this test exercises the no-attached-buffers
+    /// path (the integration tests cover the eviction itself
+    /// when actors are present).
+    #[test]
+    fn drain_diagnostic_refresh_handles_no_attached_buffers() {
+        let mut app = app_with("fn main() {}\n", 5);
+        let buffer_id = app.document_buffer_id;
+        app.lsp_pull_diagnostics_cache.insert(
+            buffer_id,
+            crate::app::LspPullDiagnosticsCache {
+                document_version: 1,
+                result_id: Some("r1".into()),
+            },
+        );
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            lattice_lsp::LspDiagnosticRefresh,
+        >();
+        tx.send(lattice_lsp::LspDiagnosticRefresh {
+            server_id: std::sync::Arc::from("rust"),
+        })
+        .expect("send refresh");
+        app.pending_diagnostic_refresh_rx = Some(rx);
+        app.drain_diagnostic_refresh();
+        // No actors attached -> no eviction.
+        assert!(app.lsp_pull_diagnostics_cache.contains_key(&buffer_id));
+    }
+
+    /// 4.4.j: pump short-circuits when the cache's
+    /// document_version matches the current snapshot. No
+    /// request fires.
+    #[test]
+    fn pull_diagnostics_pump_skips_when_version_unchanged() {
+        let mut app = app_with("fn main() {}\n", 5);
+        let buffer_id = app.document_buffer_id;
+        let version = app.document.snapshot().version;
+        app.lsp_pull_diagnostics_cache.insert(
+            buffer_id,
+            crate::app::LspPullDiagnosticsCache {
+                document_version: version,
+                result_id: Some("r1".into()),
+            },
+        );
+        app.maybe_request_pull_diagnostics();
+        assert!(
+            app.pending_pull_diagnostics_rx.is_none(),
+            "pump should short-circuit on unchanged version",
+        );
+    }
+
+    /// 4.4.g viewport: when the cached range covers the
+    /// current viewport (with overscan baked in), the pump
+    /// short-circuits -- no new request fires.
+    #[test]
+    fn inlay_hint_pump_skips_when_viewport_inside_cached_range() {
+        use std::str::FromStr;
+        let mut app = app_with("fn main() {}\n", 5);
+        // Mode must be on; buffer_uris must be populated.
+        if !app.lsp_inlay_hint_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-inlay-hint-mode");
+        }
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris
+            .insert(app.document_buffer_id, uri);
+        // Seed cache with a wide range covering 0..=1000.
+        app.lsp_inlay_hints_cache.insert(
+            app.document_buffer_id,
+            crate::app::LspInlayHintCache {
+                document_version: app.document.snapshot().version,
+                hints: Vec::new(),
+                requested_first_line: 0,
+                requested_last_line: 1000,
+            },
+        );
+        // Viewport at line 0, height 5 (set by app_with) --
+        // comfortably inside the cached range. Avoid calling
+        // `set_viewport_height` here: it triggers
+        // `ensure_cursor_visible` which would clamp scroll
+        // back to the cursor line and mask the viewport state
+        // the test wants to exercise.
+        app.scroll = 0;
+        app.maybe_request_inlay_hint();
+        assert!(
+            app.pending_inlay_hint_rx.is_none(),
+            "pump should short-circuit when viewport is inside cached range",
+        );
+    }
+
+    /// 4.4.g viewport: scrolling outside the cached range
+    /// triggers a fresh request. The pump replaces
+    /// `pending_inlay_hint_rx` with a new receiver before
+    /// spawning the async fetch.
+    #[test]
+    fn inlay_hint_pump_refetches_when_viewport_outside_cached_range() {
+        use std::str::FromStr;
+        let mut app = app_with(&"a\n".repeat(2000), 5);
+        if !app.lsp_inlay_hint_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-inlay-hint-mode");
+        }
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris
+            .insert(app.document_buffer_id, uri);
+        // Cached range: lines 0..=200.
+        app.lsp_inlay_hints_cache.insert(
+            app.document_buffer_id,
+            crate::app::LspInlayHintCache {
+                document_version: app.document.snapshot().version,
+                hints: Vec::new(),
+                requested_first_line: 0,
+                requested_last_line: 200,
+            },
+        );
+        // Viewport now far below the cached range. Skip
+        // `set_viewport_height` -- it calls
+        // `ensure_cursor_visible` which would snap scroll
+        // back to the cursor line.
+        app.scroll = 1500;
+        app.maybe_request_inlay_hint();
+        assert!(
+            app.pending_inlay_hint_rx.is_some(),
+            "pump should issue a new request when viewport leaves cached range",
+        );
+    }
+
+    /// 4.4.g viewport: small scrolls within the overscan
+    /// margin stay cached. Pump checks whether
+    /// `viewport_first >= cache.first` AND
+    /// `viewport_last <= cache.last`; the overscan-bounded
+    /// fetch range gives small scrolls room to move without
+    /// triggering a request.
+    #[test]
+    fn inlay_hint_pump_small_scroll_within_overscan_keeps_cache() {
+        use std::str::FromStr;
+        let mut app = app_with(&"a\n".repeat(2000), 5);
+        if !app.lsp_inlay_hint_mode_enabled_for(app.document_buffer_id) {
+            app.toggle_mode_by_name("lsp-inlay-hint-mode");
+        }
+        let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
+        app.buffer_uris
+            .insert(app.document_buffer_id, uri);
+        // Cache covers lines 100..=400 (the overscan-padded
+        // window the pump would have fetched at scroll=200).
+        app.lsp_inlay_hints_cache.insert(
+            app.document_buffer_id,
+            crate::app::LspInlayHintCache {
+                document_version: app.document.snapshot().version,
+                hints: Vec::new(),
+                requested_first_line: 100,
+                requested_last_line: 400,
+            },
+        );
+        // Scroll a bit -- still well within the cached window.
+        // Same `set_viewport_height` caveat as above.
+        app.scroll = 250;
+        app.maybe_request_inlay_hint();
+        assert!(
+            app.pending_inlay_hint_rx.is_none(),
+            "small scroll inside cached window should not refetch",
+        );
     }
 
     /// matching entries), and a stable identity hash.
@@ -7803,49 +8926,151 @@ mod tests {
         assert!(!outcome.success);
     }
 
-    /// 4.4.b: showMessageRequest drain auto-dismisses (replies
-    /// `None`), surfaces the prompt to the minibuffer with the
-    /// matching severity, and records the request in the LSP
-    /// log so the user can review what the server asked.
-    #[test]
-    fn show_message_request_logs_and_auto_dismisses() {
-        let mut app = app_with("hi\n", 5);
-        let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
+    /// Helper: inject a single inbound showMessageRequest into
+    /// the App's drain receiver and run the drain. Returns the
+    /// response receiver so the test can assert on the reply.
+    fn inject_show_message_request(
+        app: &mut App,
+        req: lattice_lsp::InboundShowMessageRequest,
+    ) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        tx.send(lattice_lsp::InboundShowMessageRequest {
-            server_id: server_id.clone(),
-            level: lsp_types::MessageType::INFO,
-            message: "Reload workspace?".into(),
-            actions: vec![
-                lsp_types::MessageActionItem {
-                    title: "Yes".into(),
-                    properties: Default::default(),
-                },
-                lsp_types::MessageActionItem {
-                    title: "No".into(),
-                    properties: Default::default(),
-                },
-            ],
-            response: response_tx,
-        })
-        .unwrap();
+        tx.send(req).unwrap();
         app.pending_show_message_request_rx = Some(rx);
         app.drain_inbound_show_message_requests();
+    }
+
+    fn make_smr(
+        server_id: &std::sync::Arc<str>,
+        message: &str,
+        actions: Vec<&str>,
+    ) -> (
+        lattice_lsp::InboundShowMessageRequest,
+        tokio::sync::oneshot::Receiver<lattice_lsp::ShowMessageRequestOutcome>,
+    ) {
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let req = lattice_lsp::InboundShowMessageRequest {
+            server_id: server_id.clone(),
+            level: lsp_types::MessageType::INFO,
+            message: message.into(),
+            actions: actions
+                .into_iter()
+                .map(|t| lsp_types::MessageActionItem {
+                    title: t.into(),
+                    properties: Default::default(),
+                })
+                .collect(),
+            response: response_tx,
+        };
+        (req, response_rx)
+    }
+
+    /// 4.4.b: actionless showMessageRequest auto-replies with
+    /// `null` (spec-compliant; no picker, the prompt is purely
+    /// informational), surfaces on the minibuffer, and logs.
+    #[test]
+    fn show_message_request_actionless_auto_dismisses() {
+        let mut app = app_with("hi\n", 5);
+        let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        let (req, mut response_rx) =
+            make_smr(&server_id, "Heads up!", Vec::new());
+        inject_show_message_request(&mut app, req);
         let outcome = response_rx.try_recv().expect("reply landed");
-        assert!(outcome.selected.is_none(), "auto-dismiss = None");
-        // Minibuffer surfaces the prompt + action labels.
+        assert!(
+            outcome.selected.is_none(),
+            "actionless prompt should auto-dismiss",
+        );
+        assert!(app.picker.is_none(), "no picker for actionless prompt");
         let msg = app.last_message.as_ref().expect("minibuffer set");
-        assert!(msg.text.contains("Reload workspace?"));
-        assert!(msg.text.contains("Yes"));
-        assert!(msg.text.contains("No"));
-        // LSP log records the request.
+        assert!(msg.text.contains("Heads up!"));
         let records = app.lsp_logger.snapshot_server(&server_id);
         assert!(
             records
                 .iter()
                 .any(|r| r.message.contains("showMessageRequest"))
         );
+    }
+
+    /// 4.4.b: actionful prompt opens a picker; accepting a row
+    /// replies with the matching `MessageActionItem`.
+    #[test]
+    fn show_message_request_accept_replies_with_selected_action() {
+        let mut app = app_with("hi\n", 5);
+        let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        let (req, mut response_rx) =
+            make_smr(&server_id, "Reload workspace?", vec!["Yes", "No"]);
+        inject_show_message_request(&mut app, req);
+        // Picker opened; pending slot registered.
+        assert!(app.picker.is_some(), "picker should open for actionful prompt");
+        assert_eq!(app.lsp_pending_show_message_requests.len(), 1);
+        // Move the cursor to the second action ("No") and
+        // accept. PickerNext is the canonical down-arrow
+        // action.
+        app.apply(crate::Action::PickerSelectNext);
+        app.apply(crate::Action::PickerAccept);
+        let outcome = response_rx.try_recv().expect("reply landed");
+        let selected = outcome.selected.expect("an action was selected");
+        assert_eq!(selected.title, "No");
+        assert!(app.picker.is_none(), "picker closed after accept");
+        assert!(app.lsp_pending_show_message_requests.is_empty());
+    }
+
+    /// 4.4.b: dismissing the picker replies `null`. The pending
+    /// slot is cleared and no further state lingers.
+    #[test]
+    fn show_message_request_dismiss_replies_null() {
+        let mut app = app_with("hi\n", 5);
+        let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        let (req, mut response_rx) =
+            make_smr(&server_id, "Reload workspace?", vec!["Yes", "No"]);
+        inject_show_message_request(&mut app, req);
+        assert!(app.picker.is_some());
+        app.apply(crate::Action::PickerDismiss);
+        let outcome = response_rx.try_recv().expect("reply landed");
+        assert!(
+            outcome.selected.is_none(),
+            "dismiss should reply null",
+        );
+        assert!(app.picker.is_none());
+        assert!(app.lsp_pending_show_message_requests.is_empty());
+    }
+
+    /// 4.4.b: two requests in one tick -- the picker opens the
+    /// first, the second waits in the queue; after dismiss, the
+    /// queued one opens automatically.
+    #[test]
+    fn show_message_request_queues_when_picker_already_open() {
+        let mut app = app_with("hi\n", 5);
+        let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        let (req1, mut rx1) = make_smr(&server_id, "First?", vec!["A", "B"]);
+        let (req2, mut rx2) = make_smr(&server_id, "Second?", vec!["X", "Y"]);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(req1).unwrap();
+        tx.send(req2).unwrap();
+        app.pending_show_message_request_rx = Some(rx);
+        app.drain_inbound_show_message_requests();
+        // First request: picker open. Second: queued.
+        assert!(app.picker.is_some());
+        assert_eq!(app.lsp_show_message_request_queue.len(), 1);
+        assert_eq!(app.lsp_pending_show_message_requests.len(), 2);
+        // Dismiss the first; the second picker should open
+        // immediately on the same tick. Verify by asserting
+        // the picker title is the second request's prompt.
+        app.apply(crate::Action::PickerDismiss);
+        let outcome1 = rx1.try_recv().expect("first reply landed");
+        assert!(outcome1.selected.is_none());
+        assert!(
+            app.picker.is_some(),
+            "queued picker should auto-open after dismiss",
+        );
+        let title = app.picker.as_ref().unwrap().title.clone();
+        assert!(title.contains("Second?"));
+        // Accept the second.
+        app.apply(crate::Action::PickerAccept);
+        let outcome2 = rx2.try_recv().expect("second reply landed");
+        let selected = outcome2.selected.expect("action picked");
+        assert_eq!(selected.title, "X");
+        assert!(app.lsp_pending_show_message_requests.is_empty());
+        assert!(app.lsp_show_message_request_queue.is_empty());
     }
 
     #[test]

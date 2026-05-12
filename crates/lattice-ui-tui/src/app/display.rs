@@ -85,6 +85,11 @@ impl App {
                 .get_typed::<lattice_config::LspLogDisplay>()
                 .map(|v| *v)
                 .unwrap_or_default(),
+            BufferDisplayCategory::Messages => self
+                .config
+                .get_typed::<lattice_config::MessagesDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
             BufferDisplayCategory::HelpTopic => self
                 .config
                 .get_typed::<lattice_config::HelpTopicDisplay>()

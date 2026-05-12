@@ -12,11 +12,16 @@ lattice-grammar = { path = "../lattice-grammar" }
 tokio = { workspace = true }
 arc-swap = { workspace = true }
 thiserror = { workspace = true }
+# `register_event!` (used by `messages` + tests) expands to a
+# `#[linkme::distributed_slice]` entry, so caller crates must
+# declare linkme as a direct dep -- lattice-protocol
+# re-exports the attribute macro but the path lookup still
+# resolves through the caller's manifest.
+linkme = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time"] }
 criterion = { workspace = true }
-linkme = { workspace = true }
 
 [[bench]]
 name = "actor"

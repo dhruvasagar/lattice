@@ -119,7 +119,7 @@ pub use core_options::{
     CompletionSourcePathPriority, CompletionSourceSnippetPriority,
     CompletionSourceTreeSitterPriority, CursorLine, FoldEnable, FoldMethodOption,
     HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay,
-    HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, Number,
+    HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, MessagesDisplay, Number,
     PickerResultDisplay, ReadOnly, RelativeNumber, Scrolloff, SignatureDisplay,
     Tabstop, Whitespace, WhitespaceEol, WhitespaceLeading, WhitespaceSpace,
     WhitespaceTab, WhitespaceTrailing, Wrap,

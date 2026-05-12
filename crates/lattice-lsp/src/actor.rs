@@ -1145,6 +1145,46 @@ async fn actor_main<R, W>(
                                     server_id: Arc::clone(&server_id_arc),
                                 });
                             }
+                        } else if req.method == "workspace/semanticTokens/refresh" {
+                            // 4.4.i: server-initiated semantic
+                            // tokens cache invalidation. Same
+                            // shape as the inlay-hint refresh:
+                            // reply `null` synchronously, publish
+                            // `LspSemanticTokensRefresh` so the
+                            // App's drain drops cached tokens
+                            // (and any stale `result_id`) for
+                            // attached buffers; the next render
+                            // tick re-issues a `full` request to
+                            // rebuild the baseline.
+                            let _ = out_tx.send(Message::Response(Response::ok(
+                                req.id.clone(),
+                                Value::Null,
+                            )));
+                            if let Some(bus) = event_bus.as_ref() {
+                                bus.publish_typed(crate::events::LspSemanticTokensRefresh {
+                                    server_id: Arc::clone(&server_id_arc),
+                                });
+                            }
+                        } else if req.method == "workspace/diagnostic/refresh" {
+                            // 4.4.j: server-initiated pull-
+                            // diagnostic invalidation. Reply
+                            // `null` inline + publish so the
+                            // App's drain evicts the per-buffer
+                            // `result_id` cache. The next render
+                            // tick re-pulls
+                            // `textDocument/diagnostic` without
+                            // a `previous_result_id`, forcing a
+                            // `Full` report regardless of what
+                            // the server had cached.
+                            let _ = out_tx.send(Message::Response(Response::ok(
+                                req.id.clone(),
+                                Value::Null,
+                            )));
+                            if let Some(bus) = event_bus.as_ref() {
+                                bus.publish_typed(crate::events::LspDiagnosticRefresh {
+                                    server_id: Arc::clone(&server_id_arc),
+                                });
+                            }
                         } else {
                             let resp = handle_server_request(&server_id_arc, &req, &logger);
                             let _ = out_tx.send(Message::Response(resp));

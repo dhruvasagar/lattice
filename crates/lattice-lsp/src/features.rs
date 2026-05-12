@@ -281,6 +281,23 @@ impl ServerHandle {
         self.notify("textDocument/didSave", params)
     }
 
+    /// 4.4.k: `workspace/didChangeConfiguration` (notification).
+    /// Fan-out fires when any `lsp.*` typed option changes
+    /// (via `OptionChanged` cascade). The notification's
+    /// `settings` carries the full `lsp` subtree from the
+    /// merged config TOML; most servers ignore the inline
+    /// payload and pull fresh values via
+    /// `workspace/configuration` (the host's drain serves
+    /// from the same tree), but servers that read inline get
+    /// the values too. Notification-only -- no response, no
+    /// cancellation token.
+    pub fn did_change_configuration(
+        &self,
+        params: lsp_types::DidChangeConfigurationParams,
+    ) -> crate::error::LspResult<()> {
+        self.notify("workspace/didChangeConfiguration", params)
+    }
+
     /// `textDocument/codeAction` (Phase 4.3). Returns the list
     /// of quick fixes / refactors / source actions available
     /// for the supplied range. Each item carries either an
@@ -395,6 +412,25 @@ impl ServerHandle {
         self.request_with_cancel("textDocument/inlayHint", params, token)
     }
 
+    /// 4.4.g follow-up: `inlayHint/resolve`. Lazy-resolves a
+    /// single inlay hint -- the server populates the
+    /// `tooltip` and `text_edits` fields it skipped on the
+    /// initial batched response. Servers gate this behind
+    /// the `InlayHintOptions.resolve_provider` capability;
+    /// callers must check [`crate::Capabilities::supports_inlay_hint_resolve`]
+    /// before issuing. The wrapper ships ahead of the
+    /// interaction UX (no gesture is wired to fire it today
+    /// -- see lsp-features.md for the deferral rationale);
+    /// this lets future work plug a trigger into a stable
+    /// surface.
+    pub fn inlay_hint_resolve(
+        &self,
+        hint: lsp_types::InlayHint,
+        token: CancellationToken,
+    ) -> Pending<lsp_types::InlayHint> {
+        self.request_with_cancel("inlayHint/resolve", hint, token)
+    }
+
     /// 4.4.h: `textDocument/semanticTokens/full`. Returns the
     /// whole-buffer semantic token list in the LSP
     /// relative-position varint encoding (5 u32s per token:
@@ -411,6 +447,78 @@ impl ServerHandle {
         token: CancellationToken,
     ) -> Pending<Option<lsp_types::SemanticTokensResult>> {
         self.request_with_cancel("textDocument/semanticTokens/full", params, token)
+    }
+
+    /// 4.4.i: `textDocument/semanticTokens/full/delta`. Sends
+    /// the previous response's `result_id`; server either
+    /// returns a new full token list (`Tokens` variant) when
+    /// it can't compute a delta cheaply, or a list of edit
+    /// operations (`TokensDelta`) the host applies to the
+    /// cached raw token vec. Edit shape:
+    /// `SemanticTokensEdit { start, delete_count, data }`
+    /// where `start` is the index into the previous flat
+    /// token vec, `delete_count` is how many `SemanticToken`
+    /// entries to remove, and `data` is what to splice in.
+    /// The host re-decodes the spliced vec into absolute
+    /// positions.
+    pub fn semantic_tokens_full_delta(
+        &self,
+        params: lsp_types::SemanticTokensDeltaParams,
+        token: CancellationToken,
+    ) -> Pending<Option<lsp_types::SemanticTokensFullDeltaResult>> {
+        self.request_with_cancel("textDocument/semanticTokens/full/delta", params, token)
+    }
+
+    /// 4.4.i: `textDocument/semanticTokens/range`. Viewport-
+    /// bounded request -- the host can issue this for very
+    /// large files to skip decoding tokens outside the
+    /// visible window. Returns a plain `SemanticTokens`
+    /// (no `Delta` variant for the range flavour).
+    /// Exposed as a typed wrapper today; the v1 pump uses
+    /// full/delta. Viewport-aware fetching can switch over
+    /// in a follow-up without re-touching the wire path.
+    pub fn semantic_tokens_range(
+        &self,
+        params: lsp_types::SemanticTokensRangeParams,
+        token: CancellationToken,
+    ) -> Pending<Option<lsp_types::SemanticTokensRangeResult>> {
+        self.request_with_cancel("textDocument/semanticTokens/range", params, token)
+    }
+
+    /// 4.4.j: `textDocument/diagnostic`. Pull-based
+    /// diagnostics (LSP 3.17). The server returns either a
+    /// `Full` report (entire diagnostics list for the URI,
+    /// plus optional `result_id` for the next delta) or an
+    /// `Unchanged` report ("no diagnostics moved since the
+    /// previous `result_id`"). The host caches the
+    /// `result_id` per buffer-version and threads it back in
+    /// `DocumentDiagnosticParams.previous_result_id` so the
+    /// server can answer `Unchanged` cheaply. Used when a
+    /// server prefers pull over push, or alongside push for
+    /// servers that support both.
+    pub fn document_diagnostic(
+        &self,
+        params: lsp_types::DocumentDiagnosticParams,
+        token: CancellationToken,
+    ) -> Pending<lsp_types::DocumentDiagnosticReportResult> {
+        self.request_with_cancel("textDocument/diagnostic", params, token)
+    }
+
+    /// 4.4.j: `workspace/diagnostic`. Workspace-wide pull --
+    /// returns reports for every URI the server tracks
+    /// diagnostics for, even ones the client hasn't opened.
+    /// Wrapper ships ahead of the host pump (strong-reason
+    /// deferred; the per-document pump already covers every
+    /// open buffer's diagnostics, and the closed-file
+    /// workspace pull is niche -- see lsp-features.md). The
+    /// callable exists so future workspace-view rework has a
+    /// stable surface.
+    pub fn workspace_diagnostic(
+        &self,
+        params: lsp_types::WorkspaceDiagnosticParams,
+        token: CancellationToken,
+    ) -> Pending<lsp_types::WorkspaceDiagnosticReportResult> {
+        self.request_with_cancel("workspace/diagnostic", params, token)
     }
 }
 

@@ -462,7 +462,8 @@ impl App {
                 | lattice_picker::PickerAction::JumpToLspLocation
                 | lattice_picker::PickerAction::AcceptLspCompletion
                 | lattice_picker::PickerAction::AcceptLspCodeAction
-                | lattice_picker::PickerAction::OpenFile => {}
+                | lattice_picker::PickerAction::OpenFile
+                | lattice_picker::PickerAction::AcceptShowMessageAction => {}
             }
             return;
         }
@@ -800,6 +801,20 @@ impl App {
         let Some(picker) = self.picker.take() else {
             return;
         };
+        // 4.4.b: SMR picker dismiss = reply `null` to the
+        // server. Snapshot the request id before any other
+        // mutation; the finalize call removes the slot, the
+        // queue advance opens the next picker (which sets
+        // `self.picker` again so the preview-restore branch
+        // below must not run for SMR).
+        if let lattice_picker::PickerSource::LspShowMessageRequest {
+            request_id, ..
+        } = picker.source
+        {
+            self.finalize_show_message_request(request_id, None);
+            self.open_next_queued_show_message_request();
+            return;
+        }
         // Publish the dismiss event for subscribers tracking
         // open-without-accept sessions. Source id may be
         // absent for legacy imperative pickers (`:b`,
@@ -1052,6 +1067,22 @@ impl App {
                 self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::ExpandSnippet { id },
                 );
+            }
+            // 4.4.b: server-initiated showMessageRequest. Look
+            // up the inbound slot by `request_id`, ferry the
+            // selected `MessageActionItem` back over the
+            // oneshot, then drain the queue so the next pending
+            // SMR opens on the same tick (servers can pile up
+            // refresh / restart prompts after a config change).
+            lattice_picker::RoutingPayload::AcceptShowMessageAction {
+                request_id,
+                action_index,
+            } => {
+                self.finalize_show_message_request(
+                    request_id,
+                    Some(action_index),
+                );
+                self.open_next_queued_show_message_request();
             }
         }
     }

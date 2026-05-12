@@ -262,6 +262,13 @@ crate::options! {
     pub LspLogDisplay: lattice_core::ui::display::BufferDisplayPreference =
         lattice_core::ui::display::BufferDisplayPreference::Default;
 
+    /// Where `:messages` opens. Default `active-pane` (a
+    /// transcript that streams new entries lives best in a
+    /// pane the user can split / scroll independently).
+    #[name("messages.display")]
+    pub MessagesDisplay: lattice_core::ui::display::BufferDisplayPreference =
+        lattice_core::ui::display::BufferDisplayPreference::Default;
+
     /// Where `:help <topic>` opens.
     #[name("help.topic.display")]
     pub HelpTopicDisplay: lattice_core::ui::display::BufferDisplayPreference =

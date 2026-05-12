@@ -275,6 +275,10 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // for matching events.
         app.refresh_lsp_file_watcher();
         app.drain_lsp_fs_events();
+        // 4.5.g: drain pending `:lsp-moniker` response (if any)
+        // and echo the summary line. Cheap when the channel is
+        // empty; no-op when no request is in flight.
+        app.drain_pending_moniker();
         // 4.4.b: server-initiated window/showDocument requests
         // (open URI in buffer / external handler).
         app.drain_inbound_show_documents();

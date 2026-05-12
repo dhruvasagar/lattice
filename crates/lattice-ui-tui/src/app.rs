@@ -1215,6 +1215,12 @@ pub struct App {
     /// the chosen item's text into the buffer at the right
     /// position. Cleared on dismiss / outcome consumption.
     pub pending_completion_items: Option<Vec<CompletionItemRow>>,
+    /// 4.5.g: receiver for in-flight `:lsp-moniker` responses.
+    /// Each request creates a fresh channel; the drain
+    /// (`drain_pending_moniker`) reads at most one summary line
+    /// per tick and surfaces it as a minibuffer echo.
+    pub pending_moniker_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
     /// Receiver for in-flight `:rename` responses (Phase 4.3).
     /// Drained per-frame; the `Edits` arm fans out across every
     /// affected URI applying TextEdits (one undo unit per file

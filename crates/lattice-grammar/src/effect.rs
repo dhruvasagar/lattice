@@ -339,6 +339,13 @@ pub enum Effect {
     /// `:lsp-subtypes` -- 4.5.b. Symmetric peer of
     /// `LspSupertypes`. "What subtypes this type?"
     LspSubtypes,
+    /// `:lsp-moniker` -- 4.5.g. Fires `textDocument/moniker`
+    /// at the cursor; echoes the resulting moniker list
+    /// (scheme + identifier + unique level + optional kind).
+    /// Useful for indexers (SCIP / LSIF) + cross-repo
+    /// navigation; the result surfaces as a one-line
+    /// summary, not a picker.
+    LspMoniker,
     /// `:format` -- run `textDocument/formatting` on the highest-
     /// priority server with `documentFormattingProvider` and
     /// apply the returned edits as one undo unit. Phase 4.3.

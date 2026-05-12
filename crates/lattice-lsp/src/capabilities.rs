@@ -282,6 +282,15 @@ fn text_document_capabilities() -> TextDocumentClientCapabilities {
                 dynamic_registration: Some(false),
             },
         ),
+        // 4.5.g: tell servers we honour
+        // `textDocument/moniker`. Useful for cross-project
+        // navigation (SCIP/LSIF-style indexes); the host
+        // surfaces results via `:lsp-moniker` as a plain echo.
+        moniker: Some(
+            lsp_types::DynamicRegistrationClientCapabilities {
+                dynamic_registration: Some(false),
+            },
+        ),
         ..Default::default()
     }
 }
@@ -855,6 +864,18 @@ impl Capabilities {
     /// to negotiate.
     pub fn supports_type_hierarchy(&self) -> bool {
         self.dynamic.has("textDocument/prepareTypeHierarchy")
+    }
+
+    /// 4.5.g: server's `monikerProvider` presence. The probe
+    /// returns true for either the bool-only or options-shape;
+    /// also consults the dynamic registry (4.4.n).
+    pub fn supports_moniker(&self) -> bool {
+        let static_ok = matches!(
+            self.server.moniker_provider,
+            Some(lsp_types::OneOf::Left(true))
+                | Some(lsp_types::OneOf::Right(_))
+        );
+        static_ok || self.dynamic.has("textDocument/moniker")
     }
 
     /// 4.4.m: server advertises interest in

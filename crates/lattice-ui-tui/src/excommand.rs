@@ -461,6 +461,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     // 4.5.b -- type hierarchy.
     ("lsp-supertypes", "ex:lsp-supertypes"),
     ("lsp-subtypes", "ex:lsp-subtypes"),
+    // 4.5.g -- moniker (cross-project symbol id).
+    ("lsp-moniker", "ex:lsp-moniker"),
     // Phase 4.3 edits.
     ("lsp-format", "ex:lsp-format"),
     ("lsp-format-range", "ex:lsp-format-range"),

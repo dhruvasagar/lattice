@@ -245,6 +245,21 @@ impl ServerHandle {
         self.request_with_cancel("typeHierarchy/subtypes", params, token)
     }
 
+    /// 4.5.g: `textDocument/moniker`. Returns the stable
+    /// cross-project identifier(s) for the symbol at the
+    /// cursor -- e.g. SCIP / LSIF emit monikers so a build
+    /// indexer can join symbols across repos. The response
+    /// is `Option<Vec<Moniker>>`; each moniker has a `scheme`,
+    /// `identifier`, optional `kind`, and `unique` level.
+    /// `:lsp-moniker` ex-command surfaces the list as an echo.
+    pub fn moniker(
+        &self,
+        params: lsp_types::MonikerParams,
+        token: CancellationToken,
+    ) -> Pending<Option<Vec<lsp_types::Moniker>>> {
+        self.request_with_cancel("textDocument/moniker", params, token)
+    }
+
     /// `textDocument/completion` (DESIGN.md §5.4 / Phase 4.2.g).
     /// Returns either an array of items or an `isIncomplete` list
     /// the editor must re-query as the user types more. The

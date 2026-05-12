@@ -745,3 +745,43 @@ async fn type_hierarchy_supertypes_returns_parent_types() {
     assert_eq!(supers.len(), 1);
     assert_eq!(supers[0].name, "ParentTrait");
 }
+
+/// 4.5.g: `moniker` round-trips the wire shape end-to-end.
+/// Single position -> server returns a list of monikers
+/// (scheme + identifier + unique level + optional kind).
+#[tokio::test]
+async fn moniker_round_trips_scheme_identifier_kind() {
+    let mock = MockServer::start().await;
+    mock.mock
+        .on("textDocument/moniker", |_params| {
+            MockResult::Ok(json!([{
+                "scheme": "rust",
+                "identifier": "my_crate::module::foo",
+                "unique": "scheme",
+                "kind": "export"
+            }]))
+        })
+        .await;
+    let monikers = mock
+        .handle
+        .moniker(
+            lsp_types::MonikerParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///tmp/lib.rs").unwrap(),
+                    },
+                    position: LspPosition { line: 0, character: 0 },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            CancellationToken::never(),
+        )
+        .await
+        .expect("response decodes")
+        .expect("server returned monikers");
+    assert_eq!(monikers.len(), 1);
+    assert_eq!(monikers[0].scheme, "rust");
+    assert_eq!(monikers[0].identifier, "my_crate::module::foo");
+    assert_eq!(monikers[0].kind, Some(lsp_types::MonikerKind::Export));
+}

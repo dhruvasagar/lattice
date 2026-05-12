@@ -3721,6 +3721,101 @@ impl App {
         });
     }
 
+    /// 4.5.g: `:lsp-moniker`. Fires `textDocument/moniker` on
+    /// the first server with `monikerProvider`; the response is
+    /// folded into a one-line summary echoed to the minibuffer.
+    /// Fire-and-forget UX -- no picker, no jump. Useful for
+    /// indexing tools / cross-repo navigation, where the
+    /// moniker is metadata about the symbol identity rather
+    /// than a navigation target.
+    pub(super) fn do_lsp_moniker_request(&mut self) {
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no buffer URI -- save the file first".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => {
+                self.set_message(
+                    EchoLevel::Warn,
+                    "cursor outside the document".to_string(),
+                );
+                return;
+            }
+        };
+        let handles = self.lsp.servers_for(&uri);
+        let handle = handles
+            .into_iter()
+            .find(|h| h.capabilities().supports_moniker());
+        let Some(handle) = handle else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server with moniker support".to_string(),
+            );
+            return;
+        };
+        // Echo "querying..." synchronously; the response landing
+        // overwrites the minibuffer when it arrives.
+        self.set_message(EchoLevel::Info, "moniker: …".to_string());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        self.pending_moniker_rx = Some(rx);
+        let token = lattice_protocol::CancellationToken::new();
+        crate::runtime::spawn_on_lsp_runtime(async move {
+            let params = lsp_types::MonikerParams {
+                text_document_position_params: lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri },
+                    position: lsp_position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            let outcome = match handle.moniker(params, token).await {
+                Ok(Some(monikers)) if !monikers.is_empty() => monikers
+                    .iter()
+                    .map(|m| {
+                        format!(
+                            "{}:{}{}",
+                            m.scheme,
+                            m.identifier,
+                            m.kind
+                                .as_ref()
+                                .map(|k| format!(" ({k:?})"))
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                _ => "(none)".to_string(),
+            };
+            let _ = tx.send(outcome);
+        });
+    }
+
+    /// 4.5.g: drain queued moniker responses + echo. Called
+    /// per main-loop tick like the other LSP drains; cheap when
+    /// the channel is empty.
+    pub fn drain_pending_moniker(&mut self) {
+        let Some(mut rx) = self.pending_moniker_rx.take() else {
+            return;
+        };
+        let mut latest: Option<String> = None;
+        while let Ok(s) = rx.try_recv() {
+            latest = Some(s);
+        }
+        self.pending_moniker_rx = Some(rx);
+        if let Some(msg) = latest {
+            self.set_message(EchoLevel::Info, format!("moniker: {msg}"));
+        }
+    }
+
     /// `:lsp-signature-help` (Phase 4.3). Fan-out across attached
     /// servers; first non-empty `SignatureHelp` response wins
     /// (per docs/dev/architecture/lsp-architecture.md §7b "First non-empty wins.

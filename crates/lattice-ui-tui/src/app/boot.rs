@@ -789,6 +789,7 @@ impl App {
             auto_submit_after_chord: false,
             lsp,
             lsp_file_watcher: None,
+            pending_moniker_rx: None,
             lsp_diagnostics,
             lsp_logger,
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),

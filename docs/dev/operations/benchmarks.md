@@ -30,7 +30,7 @@ target rather than just a slower number.
 
 ## Environment
 
-- Date: 2026-05-03 (post §8.2 restructure + bench overhaul: standalone snapshot publish, status segment, dispatch round-trip, frame render, native highlight, large file open)
+- Date: 2026-05-13 (post Phase 4.4 + 4.5 LSP slices — supervisor refactor, file watchers, dynamic capability registration, callHierarchy/typeHierarchy/codeLens/documentLink/documentColor pumps + caches; no perf-targeted commits in the window)
 - Host: WSL2 (Ubuntu) on x86_64
 - Toolchain: Rust 1.94.0 stable
 - Build profile: `bench` (`opt-level = 3`)
@@ -46,22 +46,100 @@ better.
 | §8.2 row                                     | Target (v1) | Today            | Bench                                                 | Status                                               |
 |----------------------------------------------|-------------|------------------|-------------------------------------------------------|------------------------------------------------------|
 | Snapshot load (`load_full`)                  | <20ns       | **16ns**         | `runtime::snapshot_load`                              | ✅ at floor for `load_full` semantics                |
-| Snapshot load (`Cache::load`, steady)        | <500ps      | **305ps**        | `runtime::snapshot_load_cached`                       | ✅ ~50× faster than `load_full`; sub-nanosecond      |
-| Snapshot publish standalone                  | <500ns      | **101ns**        | `runtime::snapshot_publish_standalone`                | ✅ at the floor (~80ns)                              |
+| Snapshot load (`Cache::load`, steady)        | <500ps      | **290ps**        | `runtime::snapshot_load_cached`                       | ✅ ~55× faster than `load_full`; sub-nanosecond      |
+| Snapshot publish standalone                  | <500ns      | **95ns**         | `runtime::snapshot_publish_standalone`                | ✅ at the floor (~80ns)                              |
 | Status segment update                        | <100ns      | **56ns**         | `runtime::status_segment_update`                      | ✅ at the floor                                      |
-| Apply-edit round-trip                        | <100µs      | 85µs             | `runtime::apply_edit_round_trip`                      | ✅ scheduler-bound; sync fast-path is the next lever |
-| Dispatch round-trip (small buffer)           | <100µs      | 78–86µs          | `runtime::dispatch_round_trip`                        | ✅ same envelope as apply-edit                       |
-| Frame render TUI 80×24 (highlight + compose) | <500µs      | ~192µs           | `highlight::rust_viewport` + `render::frame_24_lines` | ✅ under target                                      |
-| Frame render TUI 200×60                      | <800µs      | ~325µs           | `highlight::rust_viewport` + `render::frame_60_lines` | ✅ under target                                      |
-| Open 100MB log (rope construction)           | <100ms      | 76ms             | `buffer::open_large/100mb`                            | ✅ under target                                      |
-| Search literal worst-case 200k               | <2ms        | 659µs            | `search::no_match_with_wrap/200k`                     | ✅ under target                                      |
-| Tree-sitter incremental reparse             | scale-by-size | **325µs (1600 lines), 1.77ms (16k lines)** | `highlight::reparse_incremental_single_char_change` | ✅ landed (B.2); ~8–14× under full reparse. tree.edit is O(num_nodes) — floor scales with tree size. See Slice B.2 calibration below. |
-| Highlight span cache hit (steady-state)     | <50ns       | **20ns**         | `render::refresh_highlights_cache_hit`                | ✅ at floor (B.3); ~8900× faster than the pre-B.3 path. |
-| Reflex motion / operator                     | <2ms        | all under budget | `motion::*`, `operator::*`                            | ✅                                                   |
-| LSP framing parse (Content-Length)           | <500ns      | **77ns**         | `lsp::framing::parse_header_block`                    | ✅ Background-class                                  |
-| LSP encode `didChange`                       | <2µs        | **208ns**        | `lsp::encode::did_change`                             | ✅ per-keystroke debounced outgoing                  |
-| LSP decode `publishDiagnostics`              | <10µs       | **1.58µs**       | `lsp::decode::publish_diagnostics`                    | ✅ per-save inbound                                  |
-| LSP utf-16 column conversion (CJK line)      | <1µs        | **23ns**         | `lsp::position::utf16_cjk_line`                       | ✅ never shows up in flame graphs                    |
+| Apply-edit round-trip                        | <100µs      | **77µs**         | `runtime::apply_edit_round_trip`                      | ✅ scheduler-bound; sync fast-path is the next lever |
+| Dispatch round-trip (small buffer)           | <100µs      | 79–91µs          | `runtime::dispatch_round_trip`                        | ✅ same envelope as apply-edit                       |
+| Frame render TUI 80×24 (highlight + compose) | <500µs      | ~199µs (184 + 15) | `highlight::rust_viewport` + `render::frame_24_lines` | ✅ under target                                      |
+| Frame render TUI 200×60                      | <800µs      | ~307µs (261 + 46) | `highlight::rust_viewport` + `render::frame_60_lines` | ✅ under target                                      |
+| Open 100MB log (rope construction)           | <100ms      | 74ms             | `buffer::open_large/100mb`                            | ✅ under target                                      |
+| Search literal worst-case 200k               | <2ms        | **749µs**        | `search::no_match_with_wrap/200k`                     | ✅ under target; ~14% above prior baseline -- see "Regressions" below |
+| Tree-sitter incremental reparse              | scale-by-size | **293µs (1600 lines), 1.46ms (16k lines)** | `highlight::reparse_incremental_single_char_change` | ✅ landed (B.2); ~8–16× under full reparse. tree.edit is O(num_nodes) — floor scales with tree size. See Slice B.2 calibration below. |
+| Highlight span cache hit (steady-state)      | <50ns       | **21ns**         | `render::refresh_highlights_cache_hit`                | ✅ at floor (B.3); ~8900× faster than the pre-B.3 path. |
+| Reflex motion / operator                     | <2ms        | **mostly under; `d_whole/50000` blew through to 6.66ms (was 1.23ms)** | `motion::*`, `operator::*`                            | ⚠️ regression -- see "Regressions" below       |
+| LSP framing parse (Content-Length)           | <500ns      | **68ns**         | `lsp::framing::parse_header_block`                    | ✅ Background-class                                  |
+| LSP encode `didChange`                       | <2µs        | **183ns**        | `lsp::encode::did_change`                             | ✅ per-keystroke debounced outgoing                  |
+| LSP decode `publishDiagnostics`              | <10µs       | **1.50µs**       | `lsp::decode::publish_diagnostics`                    | ✅ per-save inbound                                  |
+| LSP utf-16 column conversion (CJK line)      | <1µs        | **21ns**         | `lsp::position::utf16_cjk_line`                       | ✅ never shows up in flame graphs                    |
+
+---
+
+## Regressions in this run (2026-05-13)
+
+Captured against the prior numbers in this file (2026-05-03). The
+window between runs landed Phase 4.4.k–4.4.n + Phase 4.5.a–4.5.i
+LSP slices plus the file-watcher service; no perf-oriented work in
+this window. Most rows moved within ±5% (noise floor on WSL2);
+the standouts:
+
+### ⚠️ `operator::d_whole/50000`: 1.23ms → **6.66ms** (5.4× regression)
+
+The single notable regression. "Delete entire 50k-line buffer"
+went from 770µs of headroom under the 2ms Reflex budget to 4.66ms
+*over* it. Likely causes (none investigated yet, in priority
+order):
+
+1. **Span cache eviction overhead** post-B.3: `shift_highlights_for_edit`
+   when N lines = 50000 walks a `Vec::drain(0..50000)` which is
+   O(n). Single-call delete of the whole buffer is the pathological
+   shape this pays for. The bench's earlier 1.23ms baseline pre-
+   dated the C-series span-shift work; if the shift is now firing
+   on a 50k-line delete that's the regression vector.
+2. **`textDocument/didChange` payload construction**: an edit of
+   this size produces a single full-buffer replacement event. The
+   pre-Phase-4.4 baseline didn't have the per-actor edit fan-in
+   that 4.1.i.2 added; `Event::DocumentChanged` now publishes to
+   the LSP fan-in *and* the syntax worker *and* the
+   `*lsp:<server>:trace*` ring. Three subscribers × 50k-line clone
+   of the delete payload could account for most of 5ms.
+3. **Tree-sitter `tree.edit()` on a buffer-wide delete**: the edit
+   delta covers (0, 0)→(50000, 0); ropey + tree-sitter both have to
+   adjust internal indices. The post-Option-B path is heavier than
+   the pre-B baseline.
+
+**Fix path**: bisect between `5a4ce64` (the prior bench commit) and
+HEAD on this one bench to identify which slice introduced it.
+`d_whole` is a synthetic worst case (users don't routinely delete
+50k-line buffers in a tight loop), but the regression rate is
+concerning enough to investigate. Reflex-budget breach makes this
+a P1.
+
+### Minor regressions (~10–15%)
+
+- `search::no_match_with_wrap/200000`: 659µs → 749µs (+14%). Still
+  inside the 2ms budget; the regex window-walk cost grew slightly,
+  possibly from fancy-regex version churn or memmem-windowed scan
+  layout. Not worth chasing yet — investigate alongside other
+  search-path work.
+- `search::forward_last_match/200000`: 469µs → 516µs (+10%). Same
+  cause; same posture.
+- `render::frame_60_lines/200`: 42µs → 46µs (+10%). At a 200-fn
+  buffer the renderer composes 60 visible lines; ~4µs added per
+  frame is within ratatui write-noise but worth a flame-graph if
+  it grows further. Suspect cause: option-cache misses on new
+  lsp-* sub-modes (mode-cascade work landed during the window).
+- `render::frame_120_lines/200`: 78µs → 90µs (+16%). Same cause
+  scaled.
+
+### Improvements worth noting
+
+The same window picked up real wins (mostly from the picker
+single-pass seat refactor in `1b095ae`):
+
+- `picker::open_inline/5000`: 2.80ms → **1.43ms** (−49%)
+- `picker::refilter/n=5000,query=""`: 1.50ms → **644µs** (−57%)
+- `picker::refilter/n=5000,query="f"`: 1.35ms → 1.12ms (−17%)
+- `motion::word_forward/50000`: 700µs → **523µs** (−25%)
+- `motion::first_non_blank/indented-50k`: 268µs → 226µs (−16%)
+- `tree_edit_single_char/2000`: 4.0ms → **2.66ms** (−34%) — tree-
+  sitter version bump or query-cache locality improvement
+- `reparse_incremental_single_char_change/2000`: 1.77ms → **1.46ms** (−18%)
+- `folds::compute_syntax_rust/2000`: 323ms → 286ms (−11%)
+- `highlight::rust_viewport/60_lines`: 289µs → 261µs (−10%)
+- `highlight::rust_viewport/120_lines`: 388µs → 359µs (−7%)
+- `runtime::apply_edit_round_trip`: 83µs → **77µs** (−7%)
+- `runtime::snapshot_publish_standalone`: 101ns → **95ns** (−6%)
 
 ---
 
@@ -71,14 +149,14 @@ The load-bearing async primitives (../architecture/design.md §5.2.1, §5.6.8, �
 
 | Benchmark                                       | 10 lines   | 1k lines   | 50k lines  | Floor / Target         | Improvement target                                                                             |
 |-------------------------------------------------|------------|------------|------------|------------------------|------------------------------------------------------------------------------------------------|
-| **Snapshot publish standalone** (new)           | **~101ns** | **~101ns** | **~97ns**  | ~80ns / <500ns         | ⏹️ at the practical floor (Arc::new + atomic). Constant across sizes -- buffer clone is O(1).   |
-| `apply_edit` round-trip (block_on)              | 83.1µs     | 82.6µs     | 84.0µs     | ~50µs / <100µs         | 🔼 sync edit fast-path drops to ~5µs (../architecture/design.md §8.2 stretch).                                 |
-| **Dispatch round-trip** (motion) (new)          | **~78µs**  | **~86µs**  | **~513µs** | ~50µs / <100µs (small) | ⏹️ scheduler-bound on small bufs; large-buf cost is the motion walk itself.                     |
-| Snapshot publish via apply_edit                 | 85.5µs     | 86.3µs     | 85.6µs     | same as apply_edit     | (envelope, not standalone publish)                                                             |
+| **Snapshot publish standalone**                 | **~95ns**  | **~95ns**  | **~96ns**  | ~80ns / <500ns         | ⏹️ at the practical floor (Arc::new + atomic). Constant across sizes -- buffer clone is O(1).   |
+| `apply_edit` round-trip (block_on)              | 76.5µs     | 78.4µs     | 77.5µs     | ~50µs / <100µs         | 🔼 sync edit fast-path drops to ~5µs (../architecture/design.md §8.2 stretch).                                 |
+| **Dispatch round-trip** (motion)                | **~79µs**  | **~91µs**  | **~575µs** | ~50µs / <100µs (small) | ⏹️ scheduler-bound on small bufs; large-buf cost is the motion walk itself.                     |
+| Snapshot publish via apply_edit                 | 77.6µs     | 79.7µs     | 76.7µs     | same as apply_edit     | (envelope, not standalone publish)                                                             |
 | Snapshot load (`load_full`)                     | **~16ns**  | --         | --         | ~16ns / <20ns          | ⏹️ at the floor (atomic acquire + Arc bump).                                                    |
-| **Snapshot load (`Cache::load`, steady)** (new) | **~305ps** | --         | --         | ~300ps / <500ps        | ⏹️ sub-nanosecond. Per-thread cached; ~50× faster than `load_full`. Renderer's per-frame read.  |
-| Snapshot post-publish read                      | 91.1ns     | 18.8ns     | 20.8ns     | --                     | 🔼 same path                                                                                   |
-| **Status segment update** (new)                 | **~56ns**  | --         | --         | ~50ns / <100ns         | ⏹️ at the floor (snapshot load + small format).                                                 |
+| **Snapshot load (`Cache::load`, steady)**       | **~290ps** | --         | --         | ~280ps / <500ps        | ⏹️ sub-nanosecond. Per-thread cached; ~55× faster than `load_full`. Renderer's per-frame read.  |
+| Snapshot post-publish read                      | 71.4ns     | 17.2ns     | 19.5ns     | --                     | 🔼 same path                                                                                   |
+| **Status segment update**                       | **~56ns**  | --         | --         | ~50ns / <100ns         | ⏹️ at the floor (snapshot load + small format).                                                 |
 
 **Round-trip is constant across buffer sizes** -- mailbox + oneshot
 + Arc clone, not a buffer walk. The ~85µs publish-via-apply-edit is
@@ -111,16 +189,16 @@ memmem-only path by 40-50%.**
 
 | Search                | 10     | 1k         | 50k        | 200k       | Improvement target                                     |
 |-----------------------|--------|------------|------------|------------|--------------------------------------------------------|
-| `forward_first_match` | 2.40µs | 1.19µs     | 2.28µs     | 2.23µs     | ⏹️ near floor (regex setup dominates on tiny scans)     |
-| `forward_last_match`  | 2.33µs | 2.23µs     | **103µs**  | **469µs**  | ⏹️ near floor (literal prefilter at L2 bandwidth)       |
-| `no_match_with_wrap`  | 1.56µs | 2.84µs     | **156µs**  | **659µs**  | ⏹️ near floor                                           |
-| `backward`            | 2.38µs | 1.38µs     | **15.0µs** | --         | ⏹️ near floor                                           |
+| `forward_first_match` | 2.08µs | 1.16µs     | 2.36µs     | 2.24µs     | ⏹️ near floor (regex setup dominates on tiny scans)     |
+| `forward_last_match`  | 2.40µs | 2.33µs     | **103µs**  | **516µs**  | ⏹️ near floor; ~10% above prior baseline (see Regressions) |
+| `no_match_with_wrap`  | 1.56µs | 3.06µs     | **158µs**  | **749µs**  | ⏹️ near floor; ~14% above prior baseline (see Regressions) |
+| `backward`            | 2.52µs | 1.47µs     | **15.2µs** | --         | ⏹️ near floor                                           |
 
 | Regex feature             | 50k        | Improvement target                                                                                       |
 |---------------------------|------------|----------------------------------------------------------------------------------------------------------|
-| `alternation`             | 2.61µs     | ⏹️ regex literal-set extraction handles `(foo\|bar\|baz)`                                                 |
-| `class_quantifier`        | 1.11ms     | ⏹️ general DFA path; under Reflex budget                                                                  |
-| `backref` (pathological)  | **169ms**  | 🔼 fancy-regex backtracking; bounded by 1M-iteration recursion limit. Add per-search timeout for safety. |
+| `alternation`             | 2.69µs     | ⏹️ regex literal-set extraction handles `(foo\|bar\|baz)`                                                 |
+| `class_quantifier`        | 1.16ms     | ⏹️ general DFA path; under Reflex budget                                                                  |
+| `backref` (pathological)  | **176ms**  | 🔼 fancy-regex backtracking; bounded by 1M-iteration recursion limit. Add per-search timeout for safety. |
 
 **Implementation notes.**
 - 128KB scan window amortises fancy-regex's per-call setup
@@ -176,12 +254,12 @@ Reflex-class. All under the <2ms p99 §8.2 budget.
 
 | Motion                                   | 10 lines | 1k lines | 50k lines | Improvement target                                                |
 |------------------------------------------|----------|----------|-----------|-------------------------------------------------------------------|
-| `word_forward`                           | 278ns    | 12.2µs   | 700µs     | 🔼 SIMD whitespace scan via memchr (potential 5-10× on big files) |
-| `word_backward`                          | 1.62µs   | 2.17µs   | 117µs     | ⏹️ near floor                                                      |
-| `word_end`                               | 1.34µs   | 1.80µs   | 121µs     | ⏹️ near floor                                                      |
-| `first_non_blank` (50k indented)         | --       | --       | 268µs     | 🔼 memchr `memchr` on `b' '` / `b'\t'`                            |
-| `word_forward` count=50 in 100x buffer   | 713ns    | --       | --        | ⏹️                                                                 |
-| `find_char_forward` (900-char wide line) | 322ns    | --       | --        | 🔼 memchr (potential 3-5×)                                        |
+| `word_forward`                           | 279ns    | 9.86µs   | **523µs** | 🔼 SIMD whitespace scan via memchr (potential 5-10× on big files); ~25% faster than the 700µs prior baseline -- likely an upstream `ropey` win |
+| `word_backward`                          | 1.25µs   | 1.94µs   | 108µs     | ⏹️ near floor                                                      |
+| `word_end`                               | 1.13µs   | 1.59µs   | 103µs     | ⏹️ near floor                                                      |
+| `first_non_blank` (50k indented)         | --       | --       | 226µs     | 🔼 memchr `memchr` on `b' '` / `b'\t'`                            |
+| `word_forward` count=50 in 100x buffer   | 611ns    | --       | --        | ⏹️                                                                 |
+| `find_char_forward` (900-char wide line) | 279ns    | --       | --        | 🔼 memchr (potential 3-5×)                                        |
 
 **🔼 Three motions could use memchr for the same reason search did:**
 `word_forward`, `first_non_blank`, `find_char_forward` all do
@@ -195,21 +273,28 @@ prefilter would give 5-10× wins on large files. Not a v1 priority
 
 Reflex-class. All under the <2ms p99 §8.2 budget.
 
-| Operator                         | 10 lines | 1k lines | 50k lines  | Improvement target                        |
-|----------------------------------|----------|----------|------------|-------------------------------------------|
-| `dw` (delete word)               | 5.18µs   | 17.2µs   | 876µs      | ⏹️                                         |
-| `dd` (delete line)               | 5.84µs   | 16.3µs   | 869µs      | ⏹️                                         |
-| `d_whole` (delete entire buffer) | 5.57µs   | 23.4µs   | **1.23ms** | 🔼 closest to budget; not a real workload |
-| `yw` (yank word)                 | 2.47µs   | 16.4µs   | 828µs      | ⏹️                                         |
-| `cw` (change word)               | 5.17µs   | 14.2µs   | 711µs      | ⏹️                                         |
-| `diw` (delete inner word)        | 6.13µs   | 3.65µs   | 161µs      | ⏹️                                         |
-| `di_paren` (deep arg list)       | 8.42µs   | --       | --         | ⏹️                                         |
+| Operator                         | 10 lines | 1k lines | 50k lines  | Improvement target                                                                            |
+|----------------------------------|----------|----------|------------|-----------------------------------------------------------------------------------------------|
+| `dw` (delete word)               | 4.97µs   | 17.3µs   | 670µs      | ⏹️                                                                                             |
+| `dd` (delete line)               | 5.43µs   | 15.9µs   | 840µs      | ⏹️                                                                                             |
+| `d_whole` (delete entire buffer) | 5.15µs   | 20.6µs   | **6.66ms** | ⚠️ **P1: 5.4× regression vs prior baseline; pushes through the 2ms Reflex budget.** See "Regressions" §. |
+| `yw` (yank word)                 | 6.16µs   | 13.3µs   | 890µs      | ⏹️                                                                                             |
+| `cw` (change word)               | 4.93µs   | 13.4µs   | 687µs      | ⏹️                                                                                             |
+| `diw` (delete inner word)        | 5.83µs   | 3.84µs   | 227µs      | ⏹️                                                                                             |
+| `di_paren` (deep arg list)       | 8.79µs   | --       | --         | ⏹️                                                                                             |
 
-**🔼 `d_whole/50k` at 1.23ms** is the closest operator to the Reflex
-budget. Realistically nobody runs `d%` (delete entire 50k file) in
-a tight loop, but the 770µs of headroom is the smallest in the
-suite. The cost is dominated by ropey's `remove(0..len)` -- a
-single-call optimisation in ropey would help.
+**⚠️ `d_whole/50k` at 6.66ms** is now the only operator outside the
+2ms Reflex budget. The prior baseline was 1.23ms (within budget).
+The 5.4× regression appeared in the Phase 4.4/4.5 window without
+any deliberate perf-targeting commits; the likely culprit is the
+post-B-series span-shift work (`shift_highlights_for_edit`) firing
+on the 50k-line delete, or the per-actor edit fan-in publishing
+the delete payload to three subscribers (LSP fan-in + syntax
+worker + trace ring). Investigation queued; see the Regressions
+section above for the proposed bisect range.
+
+The other operators stay near floor; their cost is dominated by
+ropey's `remove(...)` work and is sub-millisecond at 50k lines.
 
 ---
 
@@ -222,11 +307,11 @@ the budget is "stay sub-frame on realistic buffers."
 
 | Provider              | small          | medium      | large        | Improvement target                                                                                                              |
 |-----------------------|----------------|-------------|--------------|---------------------------------------------------------------------------------------------------------------------------------|
-| `compute_indent`      | 2.4µs (10 fns) | 33µs (200)  | 326µs (2000) | ⏹️ linear in line count; pure rust, no allocations beyond the result vec                                                         |
-| `compute_markdown`    | 0.96µs (10)    | 6.3µs (100) | 37µs (500)   | ⏹️ linear; ATX-heading scan + nesting walk                                                                                       |
-| `compute_syntax_rust` | 70µs (10)      | 3.9ms (200) | 323ms (2000) | 🔼 `QueryCursor::matches` traversal; sub-linear past 200 fns. Phase 5/9 incremental reparse + per-pattern caching is the lever. |
+| `compute_indent`      | 1.9µs (10 fns) | 30µs (200)  | 310µs (2000) | ⏹️ linear in line count; pure rust, no allocations beyond the result vec                                                         |
+| `compute_markdown`    | 1.0µs (10)     | 6.7µs (100) | 30µs (500)   | ⏹️ linear; ATX-heading scan + nesting walk                                                                                       |
+| `compute_syntax_rust` | 64µs (10)      | 3.7ms (200) | 286ms (2000) | 🔼 `QueryCursor::matches` traversal; sub-linear past 200 fns. Phase 5/9 incremental reparse + per-pattern caching is the lever. |
 
-**The syntax provider's 200-fn time (3.9ms) is the relevant ceiling**
+**The syntax provider's 200-fn time (3.7ms) is the relevant ceiling**
 for real-world Rust files (typical ≤500 LOC). 2000-fn buffers are an
 outlier (~50kloc in one file). The bench pre-parses the source into a
 `Syntax` instance so the timing measures only fold-query work, not the
@@ -249,20 +334,20 @@ realistic call shapes the renderer actually issues.
 | Benchmark                          | size              | time      | Floor / Target  | Improvement target                                                                  |
 |------------------------------------|-------------------|-----------|-----------------|-------------------------------------------------------------------------------------|
 | `highlight::rust/10`               | 81 lines          | **142µs** | ~120µs / —      | ⏹️ small-buffer setup floor (one full QueryCursor traversal).                        |
-| `highlight::rust/200`              | ~1600 lines       | **3.2ms** | ~3ms / <5ms     | 🔼 per-pattern caching + pruning never-folded captures (~1ms achievable).           |
-| `highlight::rust/2000`             | ~16k lines        | 42ms      | --              | 🔼 outlier (single-file 50kloc); the renderer never asks for full-buffer highlight. |
-| **`highlight::rust_viewport/24`**  | 24-line viewport  | **178µs** | ~150µs / <300µs | ⏹️ realistic frame call shape. The renderer's keystroke path lives here.             |
-| **`highlight::rust_viewport/60`**  | 60-line viewport  | **289µs** | ~250µs / <500µs | ⏹️                                                                                   |
-| **`highlight::rust_viewport/120`** | 120-line viewport | **388µs** | ~350µs / <800µs | ⏹️                                                                                   |
-| `tree_edit_single_char/10`         | 80 lines          | **4.4µs** | --              | ⏹️ tree.edit() floor at small size (B.2).                                            |
-| `tree_edit_single_char/200`        | 1600 lines        | **163µs** | --              | ⏹️ scales with tree node count, not constant (B.2).                                  |
-| `tree_edit_single_char/2000`       | 16k lines         | **4.0ms** | --              | ⏹️ pathological size; bounded by 256-edit per-burst cap.                             |
-| `reparse_incremental/10`           | 80 lines          | **594µs** | --              | ⏹️ slower than full at this size; tree-sitter incremental setup overhead.            |
-| `reparse_incremental/200`          | 1600 lines        | **325µs** | --              | ⏹️ **8× faster than full reparse**.                                                  |
-| `reparse_incremental/2000`         | 16k lines         | **1.77ms**| --              | ⏹️ **14× faster than full reparse**, fits 16ms@60Hz frame budget.                    |
-| `reparse_full_baseline/10`         | 80 lines          | **246µs** | --              | ⏹️ falsification anchor at small size.                                               |
-| `reparse_full_baseline/200`        | 1600 lines        | **2.5ms** | --              | ⏹️ falsification anchor at medium size.                                              |
-| `reparse_full_baseline/2000`       | 16k lines         | **25.5ms**| --              | ⏹️ exceeds 16ms@60Hz budget -- why incremental matters at scale.                     |
+| `highlight::rust/200`              | ~1600 lines       | **2.93ms**| ~3ms / <5ms     | 🔼 per-pattern caching + pruning never-folded captures (~1ms achievable).           |
+| `highlight::rust/2000`             | ~16k lines        | 38ms      | --              | 🔼 outlier (single-file 50kloc); the renderer never asks for full-buffer highlight. |
+| **`highlight::rust_viewport/24`**  | 24-line viewport  | **184µs** | ~150µs / <300µs | ⏹️ realistic frame call shape. The renderer's keystroke path lives here.             |
+| **`highlight::rust_viewport/60`**  | 60-line viewport  | **261µs** | ~250µs / <500µs | ⏹️                                                                                   |
+| **`highlight::rust_viewport/120`** | 120-line viewport | **359µs** | ~350µs / <800µs | ⏹️                                                                                   |
+| `tree_edit_single_char/10`         | 80 lines          | **4.6µs** | --              | ⏹️ tree.edit() floor at small size (B.2).                                            |
+| `tree_edit_single_char/200`        | 1600 lines        | **167µs** | --              | ⏹️ scales with tree node count, not constant (B.2).                                  |
+| `tree_edit_single_char/2000`       | 16k lines         | **2.66ms**| --              | ⏹️ −34% vs prior baseline (4.0ms) -- tree-sitter version bump.                       |
+| `reparse_incremental/10`           | 80 lines          | **586µs** | --              | ⏹️ slower than full at this size; tree-sitter incremental setup overhead.            |
+| `reparse_incremental/200`          | 1600 lines        | **293µs** | --              | ⏹️ **8× faster than full reparse**.                                                  |
+| `reparse_incremental/2000`         | 16k lines         | **1.46ms**| --              | ⏹️ **16× faster than full reparse**, fits 16ms@60Hz frame budget.                    |
+| `reparse_full_baseline/10`         | 80 lines          | **199µs** | --              | ⏹️ falsification anchor at small size.                                               |
+| `reparse_full_baseline/200`        | 1600 lines        | **2.47ms**| --              | ⏹️ falsification anchor at medium size.                                              |
+| `reparse_full_baseline/2000`       | 16k lines         | **23.7ms**| --              | ⏹️ exceeds 16ms@60Hz budget -- why incremental matters at scale.                     |
 
 **The viewport-bounded numbers are the meaningful ones.** The
 full-buffer rows characterise worst-case query traversal cost
@@ -344,12 +429,12 @@ work above.
 
 | Benchmark                     | size             | time     | Floor / Target | Improvement target         |
 |-------------------------------|------------------|----------|----------------|----------------------------|
-| `render::frame_24_lines/200`         | 80×24, 200 fns   | **13µs** | ~10µs / <50µs  | ⏹️ at the practical floor.                            |
-| `render::frame_60_lines/200`         | 200×60, 200 fns  | **42µs** | ~30µs / <100µs | ⏹️                                                    |
-| `render::frame_120_lines/200`        | 200×120, 200 fns | **78µs** | ~70µs / <150µs | ⏹️                                                    |
-| `refresh_highlights_cache_hit/10`    | 80 lines         | **20ns** | ~10ns / <50ns  | ⏹️ steady-state cache hit (B.3); independent of size. |
-| `refresh_highlights_cache_hit/200`   | 1600 lines       | **20ns** | ~10ns / <50ns  | ⏹️ same -- key compare short-circuits before any work.|
-| `refresh_highlights_cache_hit/2000`  | 16k lines        | **20ns** | ~10ns / <50ns  | ⏹️ same; ~8900× faster than the pre-B.3 ~178µs path.  |
+| `render::frame_24_lines/200`         | 80×24, 200 fns   | **15µs** | ~10µs / <50µs  | ⏹️ near floor; +13% vs prior (~13µs) -- see Regressions. |
+| `render::frame_60_lines/200`         | 200×60, 200 fns  | **46µs** | ~30µs / <100µs | ⏹️ +10% vs prior (~42µs); option-cache miss on the new lsp-* sub-modes is the prime suspect. |
+| `render::frame_120_lines/200`        | 200×120, 200 fns | **90µs** | ~70µs / <150µs | ⏹️ +16% vs prior (~78µs); same cause, scaled.         |
+| `refresh_highlights_cache_hit/10`    | 80 lines         | **21ns** | ~10ns / <50ns  | ⏹️ steady-state cache hit (B.3); independent of size. |
+| `refresh_highlights_cache_hit/200`   | 1600 lines       | **21ns** | ~10ns / <50ns  | ⏹️ same -- key compare short-circuits before any work.|
+| `refresh_highlights_cache_hit/2000`  | 16k lines        | **21ns** | ~10ns / <50ns  | ⏹️ same; ~8500× faster than the pre-B.3 ~178µs path.  |
 
 The frame_60 / frame_120 rows ticked down ~15% after the renderer
 migrated to `Cache::load` + a single per-frame snapshot
@@ -423,13 +508,13 @@ Direct rope mutations.
 
 | Operation                  | 10 lines | 1k lines | 100k lines | Improvement target                  |
 |----------------------------|----------|----------|------------|-------------------------------------|
-| `insert_at_origin`         | 2.06µs   | 1.38µs   | 80.8µs     | ⏹️ ropey is the floor                |
-| `insert_at_middle`         | 2.34µs   | 1.75µs   | 72.8µs     | ⏹️                                   |
-| `delete_one_byte`          | 2.54µs   | 1.68µs   | 77.3µs     | ⏹️                                   |
-| `position_byte_round_trip` | 1.12µs   | 419ns    | **390ns**  | ⏹️ B-tree is faster on bigger ropes  |
-| `input_edit_construction`  | **1.87ns** | --     | --         | ⏹️ at §8.2's ~2ns floor (B.1)        |
-| `clone_vs_text/clone`      | **7.7ns**  | **7.7ns** | **7.7ns**  | ⏹️ Arc bump on ropey's internal Arc (B.5) |
-| `clone_vs_text/as_string`  | 79ns     | 990ns    | **189µs**  | falsification anchor; pre-B.5 path (full materialization) |
+| `insert_at_origin`         | 1.71µs   | 1.14µs   | 66.0µs     | ⏹️ ropey is the floor                |
+| `insert_at_middle`         | 1.96µs   | 1.96µs   | 66.4µs     | ⏹️                                   |
+| `delete_one_byte`          | 2.14µs   | 1.53µs   | 66.7µs     | ⏹️                                   |
+| `position_byte_round_trip` | 863ns    | 372ns    | **323ns**  | ⏹️ B-tree is faster on bigger ropes  |
+| `input_edit_construction`  | **1.82ns** | --     | --         | ⏹️ at §8.2's ~2ns floor (B.1)        |
+| `clone_vs_text/clone`      | **7.7ns**  | **7.7ns** | **7.8ns**  | ⏹️ Arc bump on ropey's internal Arc (B.5) |
+| `clone_vs_text/as_string`  | 79ns     | 991ns    | **211µs**  | falsification anchor; pre-B.5 path (full materialization) |
 
 `input_edit_construction` is the new tree-sitter-shaped delta
 construction at the tail of `Buffer::apply_edit` -- six u32 writes
@@ -450,8 +535,8 @@ ever matches `clone`, ropey's internal sharing changed.
 
 | Open-large benchmark | size  | time      | throughput | Floor / Target | Improvement target                                             |
 |----------------------|-------|-----------|------------|----------------|----------------------------------------------------------------|
-| `buffer::open_large` | 10MB  | **3.4ms** | 2.9 GiB/s  | ~2ms / <10ms   | ⏹️ near floor (memcpy-ish into ropey's internal buffer).        |
-| `buffer::open_large` | 100MB | **76ms**  | 1.3 GiB/s  | ~50ms / <100ms | ⏹️ B-tree split cost compounds; under §8.2 first-paint target.  |
+| `buffer::open_large` | 10MB  | **3.5ms** | 2.9 GiB/s  | ~2ms / <10ms   | ⏹️ near floor (memcpy-ish into ropey's internal buffer).        |
+| `buffer::open_large` | 100MB | **74ms**  | 1.3 GiB/s  | ~50ms / <100ms | ⏹️ B-tree split cost compounds; under §8.2 first-paint target.  |
 
 `position_byte_round_trip` is *faster* on bigger ropes -- ropey's
 B-tree packs better at scale.
@@ -469,14 +554,14 @@ these benches measure the underlying registry costs.
 
 | Bench                                 | Time      | Floor / Target | Notes                                                                                                    |
 |---------------------------------------|-----------|----------------|----------------------------------------------------------------------------------------------------------|
-| `config::get_bool_via_handle`         | **34ns**  | ~30ns / <50ns  | Mutex acquire + `Arc::clone` + `as_any().downcast_ref` + `ArcSwap::load_full` + `Arc<bool>` deref.       |
+| `config::get_bool_via_handle`         | **33ns**  | ~30ns / <50ns  | Mutex acquire + `Arc::clone` + `as_any().downcast_ref` + `ArcSwap::load_full` + `Arc<bool>` deref.       |
 | `config::with_int_via_handle`         | **26ns**  | ~25ns / <50ns  | Skips one `Arc::clone` vs `get`; the cheaper closure-style read.                                         |
 | `config::lookup_by_name`              | **35ns**  | ~30ns / <100ns | HashMap probe + `Arc::clone`. Cmdline path uses this; not on the per-frame render hot path.              |
 | `config::set_no_publisher`            | **134ns** | ~100ns / <500ns | Validate + `ArcSwap::store`. No event publisher wired -- baseline cost of the typed write.              |
-| `config::set_with_publisher`          | **145ns** | ~120ns / <500ns | Same as above plus the publisher closure -- registry's contribution to the §5.10 `OptionChanged` flow.  |
-| `config::parse_and_set_command_bool`  | **220ns** | ~180ns / <1µs  | Full cmdline path: `parse_set` + lookup + parse_and_set + format echo + publish.                         |
-| `config::resolved_get_typed`          | **13.5ns** | ~12ns / <50ns | M.2.1: type-keyed read against the per-buffer `ResolvedOptions` cache. One `TypeId` HashMap probe + `Arc::clone` + downcast. The hot-path read for mode-aware option access; the `App.option_cache` projection sits on top for sub-ns reads. |
-| `config::resolve_into_10_layers`      | **851ns** | ~800ns / <10µs | M.2.1: full recompute -- bootstrap from registry currents, then layer 10 minor-mode contributions on top. Per `../architecture/mode-architecture.md` §6.3.2 the gate is p99 < 10µs at 10 minors; we hit ~12× headroom because the bootstrap walk dominates and the layer merge is bounded. |
+| `config::set_with_publisher`          | **144ns** | ~120ns / <500ns | Same as above plus the publisher closure -- registry's contribution to the §5.10 `OptionChanged` flow.  |
+| `config::parse_and_set_command_bool`  | **217ns** | ~180ns / <1µs  | Full cmdline path: `parse_set` + lookup + parse_and_set + format echo + publish.                         |
+| `config::resolved_get_typed`          | **13.9ns** | ~12ns / <50ns | M.2.1: type-keyed read against the per-buffer `ResolvedOptions` cache. One `TypeId` HashMap probe + `Arc::clone` + downcast. The hot-path read for mode-aware option access; the `App.option_cache` projection sits on top for sub-ns reads. |
+| `config::resolve_into_10_layers`      | **1.89µs** | ~1.8µs / <10µs | M.2.1: full recompute -- bootstrap from registry currents, then layer 10 minor-mode contributions on top. Per `../architecture/mode-architecture.md` §6.3.2 the gate is p99 < 10µs at 10 minors; we hit ~5× headroom because the bootstrap walk dominates and the layer merge is bounded. **+2.2× vs prior baseline (851ns)** -- new sub-modes (lsp-progress / lsp-document-highlight / lsp-selection-range / lsp-folding / lsp-inlay-hint / lsp-semantic-tokens) registered through Phase 4.4 are layered into the bootstrap; cost is amortised across reads, still well inside the 10µs gate. |
 
 The `App.option_cache` projection turns the per-frame
 renderer reads into ~1ns field accesses; M.2.1's resolved
@@ -501,21 +586,21 @@ write; `bonus_of` is the frecency math kernel.
 
 | Bench                                  | Time         | Floor / Target | Notes                                                                                                                       |
 |----------------------------------------|--------------|----------------|-----------------------------------------------------------------------------------------------------------------------------|
-| `picker::open_inline/100`              | **28.1 µs**  | ~25 µs / <500 µs   | Build candidates + bonus snapshot + single-pass seat. Buffer-switcher scale.                                                |
-| `picker::open_inline/500`              | **132.5 µs** | ~125 µs / <1 ms    | LSP-symbols / outline scale.                                                                                                |
-| `picker::open_inline/5000`             | **2.80 ms**  | ~2.5 ms / <8 ms    | Worst-case file-picker walker output (5000 candidates). One refilter pass over the full candidate set is the dominant cost; matcher graduation (substring → 5-tier fuzzy) is the lever if this needs to tighten further. |
-| `picker::refilter/n=500,query=""`      | **56.8 µs**  | ~50 µs / <500 µs   | Empty-query refilter on 500 candidates. No filtering, just rank+sort.                                                       |
-| `picker::refilter/n=500,query="f"`     | **120.6 µs** | ~110 µs / <500 µs  | Single-char substring filter -- the match-range walk dominates over the trivial empty-query bypass.                          |
-| `picker::refilter/n=500,query="file_"` | **132.9 µs** | ~120 µs / <500 µs  | 5-char query against a substring-matching candidate set.                                                                    |
-| `picker::refilter/n=5000,query=""`     | **1.50 ms**  | ~1.4 ms / <2 ms    | Empty-query rank+sort dominates here; every candidate passes the (no-op) filter.                                            |
-| `picker::refilter/n=5000,query="f"`    | **1.35 ms**  | ~1.3 ms / <2 ms    | Substring filter rejects nothing (every path contains `f`); cost is matcher walk × N.                                       |
-| `picker::refilter/n=5000,query="file_"`| **1.51 ms**  | ~1.4 ms / <2 ms    | Worst-case substring scan + full-match rank at 5000 candidates. Consumes ~18% of the 8.3ms frame budget at 120Hz; tightening levers in "Headroom" below. |
-| `picker::mru_snapshot/100`             | **11.1 µs**  | ~10 µs / <100 µs   | O(N) HashMap-lookup pass. Runs once per picker-open.                                                                        |
-| `picker::mru_snapshot/500`             | **59.3 µs**  | ~55 µs / <500 µs   |                                                                                                                             |
-| `picker::mru_snapshot/5000`            | **529.7 µs** | ~500 µs / <2 ms    | At 5000 candidates the snapshot cost is dominated by HashMap probes; cap-per-namespace bounds the cost in practice (most entries lookup-miss to 0.0). |
-| `picker::mru_record/100`               | **1.01 µs**  | ~1 µs / <10 µs     | Single accept: HashMap insert + cap-check. Steady-state cost; the user feels none of it.                                    |
-| `picker::mru_record/1000`              | **63.6 µs**  | ~60 µs / <500 µs   | At-cap insert: the eviction path runs through `lowest_frecency_in_namespace` (linear scan + frecency compute per entry). Rare in practice (only fires when a namespace hits its 1000-entry ceiling). |
-| `picker::bonus_of`                     | **22.4 ns**  | ~20 ns / <100 ns   | Frecency formula kernel. Called once per candidate during snapshot; this floor is what sets the snapshot's per-entry cost.  |
+| `picker::open_inline/100`              | **26.4 µs**  | ~25 µs / <500 µs   | Build candidates + bonus snapshot + single-pass seat. Buffer-switcher scale.                                                |
+| `picker::open_inline/500`              | **120.0 µs** | ~120 µs / <1 ms    | LSP-symbols / outline scale.                                                                                                |
+| `picker::open_inline/5000`             | **1.43 ms**  | ~1.4 ms / <8 ms    | **−49% vs prior baseline (2.80 ms)** -- the single-pass seat collapsing the prior double-refilter (commit 1b095ae) lit up here. Worst-case file-picker walker output (5000 candidates). |
+| `picker::refilter/n=500,query=""`      | **52.3 µs**  | ~50 µs / <500 µs   | Empty-query refilter on 500 candidates. No filtering, just rank+sort.                                                       |
+| `picker::refilter/n=500,query="f"`     | **99.3 µs**  | ~100 µs / <500 µs  | Single-char substring filter -- the match-range walk dominates over the trivial empty-query bypass.                          |
+| `picker::refilter/n=500,query="file_"` | **122.9 µs** | ~120 µs / <500 µs  | 5-char query against a substring-matching candidate set.                                                                    |
+| `picker::refilter/n=5000,query=""`     | **644 µs**   | ~650 µs / <2 ms    | **−57% vs prior baseline (1.50 ms)** -- same single-pass seat collapse. Empty-query rank+sort dominates here. |
+| `picker::refilter/n=5000,query="f"`    | **1.12 ms**  | ~1.1 ms / <2 ms    | Substring filter rejects nothing (every path contains `f`); cost is matcher walk × N.                                       |
+| `picker::refilter/n=5000,query="file_"`| **1.35 ms**  | ~1.3 ms / <2 ms    | Worst-case substring scan + full-match rank at 5000 candidates. Consumes ~16% of the 8.3ms frame budget at 120Hz; tightening levers in "Headroom" below. |
+| `picker::mru_snapshot/100`             | **11.0 µs**  | ~10 µs / <100 µs   | O(N) HashMap-lookup pass. Runs once per picker-open.                                                                        |
+| `picker::mru_snapshot/500`             | **55.8 µs**  | ~55 µs / <500 µs   |                                                                                                                             |
+| `picker::mru_snapshot/5000`            | **513.6 µs** | ~500 µs / <2 ms    | At 5000 candidates the snapshot cost is dominated by HashMap probes; cap-per-namespace bounds the cost in practice (most entries lookup-miss to 0.0). |
+| `picker::mru_record/100`               | **915 ns**   | ~1 µs / <10 µs     | Single accept: HashMap insert + cap-check. Steady-state cost; the user feels none of it.                                    |
+| `picker::mru_record/1000`              | **61.7 µs**  | ~60 µs / <500 µs   | At-cap insert: the eviction path runs through `lowest_frecency_in_namespace` (linear scan + frecency compute per entry). Rare in practice (only fires when a namespace hits its 1000-entry ceiling). |
+| `picker::bonus_of`                     | **21.8 ns**  | ~20 ns / <100 ns   | Frecency formula kernel. Called once per candidate during snapshot; this floor is what sets the snapshot's per-entry cost.  |
 
 Measured on the workstation listed in [§ Environment](#environment),
 release profile, criterion default sample size = 100.
@@ -585,19 +670,19 @@ itself never appears next to editor work in a flame graph.
 
 | Bench                                 | Time       | Floor / Target | Notes                                                                                              |
 |---------------------------------------|------------|----------------|----------------------------------------------------------------------------------------------------|
-| `lsp::framing::parse_header_block`    | **77ns**   | ~50ns / <500ns | One ASCII header block, ≤200 bytes. Runs once per inbound message.                                 |
-| `lsp::encode::did_change`             | **208ns**  | ~150ns / <2µs  | One `TextDocumentContentChangeEvent` with a small replacement. Runs once per debounced keystroke.  |
-| `lsp::decode::publish_diagnostics`    | **1.58µs** | ~1µs / <10µs   | Diagnostic with code + range + source + message + severity. Inbound on save / idle.                |
-| `lsp::decode::small_response`         | **364ns**  | ~250ns / <2µs  | initialize / hover response shape.                                                                 |
+| `lsp::framing::parse_header_block`    | **68ns**   | ~50ns / <500ns | One ASCII header block, ≤200 bytes. Runs once per inbound message.                                 |
+| `lsp::encode::did_change`             | **183ns**  | ~150ns / <2µs  | One `TextDocumentContentChangeEvent` with a small replacement. Runs once per debounced keystroke.  |
+| `lsp::decode::publish_diagnostics`    | **1.50µs** | ~1µs / <10µs   | Diagnostic with code + range + source + message + severity. Inbound on save / idle.                |
+| `lsp::decode::small_response`         | **383ns**  | ~250ns / <2µs  | initialize / hover response shape.                                                                 |
 | `lsp::encode_decode::hover_request`   | **878ns**  | ~600ns / <5µs  | Encode + decode round-trip (no I/O) for a typical request.                                         |
 | `lsp::position::utf8_passthrough`     | **1.0ns**  | ~1ns / <5ns    | utf-8 negotiated mode short-circuits to a branch + return.                                         |
-| `lsp::position::utf16_cjk_line`       | **23ns**   | ~20ns / <500ns | Worst case: 64-char CJK-only line, mid-line offset. Walks prefix counting utf-16 code units.       |
-| `lsp::position::utf16_to_byte_cjk`    | **43ns**   | ~30ns / <500ns | Reverse direction: utf-16 column → utf-8 byte. Used for ranges arriving FROM the server.           |
-| `lsp::logging::log_info`              | **91ns**   | ~80ns / <500ns | Per-record cost: lock + push + format + tracing fan-out. Background-class.                         |
-| `lsp::logging::log_trace_off`         | **9ns**    | ~5ns / <50ns   | Trace toggle off short-circuit -- a HashSet lookup + return. Hot path when trace stays disabled.  |
-| `lsp::logging::log_trace_on`          | **99ns**   | ~80ns / <500ns | Trace toggle on -- includes the ring push. Negligible at editor pace; perceptible at indexer bursts. |
-| `lsp_edit_publish_three_subs`         | **1.9µs**  | ~1.5µs / <5µs  | UI-thread cost per applied edit: `EventBus::publish` of one `Event::DocumentChanged` with one `AppliedEdit`, three `DocumentChanged` subscribers attached. The *only* LSP work the keystroke thread does after the per-actor fan-in refactor (docs/../architecture/lsp-architecture.md §11). |
-| `lsp_edit_propagation_publish_to_recv`| **227ns**  | ~200ns / <600ns| Bus → mpsc receive hop: time from `EventBus::publish` to the per-actor fan-in's `mpsc::recv().await` returning. Excludes the actor's own `record_edit`. |
+| `lsp::position::utf16_cjk_line`       | **21ns**   | ~20ns / <500ns | Worst case: 64-char CJK-only line, mid-line offset. Walks prefix counting utf-16 code units.       |
+| `lsp::position::utf16_to_byte_cjk`    | **41ns**   | ~30ns / <500ns | Reverse direction: utf-16 column → utf-8 byte. Used for ranges arriving FROM the server.           |
+| `lsp::logging::log_info`              | **116ns**  | ~80ns / <500ns | Per-record cost: lock + push + format + tracing fan-out. Background-class.                         |
+| `lsp::logging::log_trace_off`         | **10ns**   | ~5ns / <50ns   | Trace toggle off short-circuit -- a HashSet lookup + return. Hot path when trace stays disabled.   |
+| `lsp::logging::log_trace_on`          | **116ns**  | ~80ns / <500ns | Trace toggle on -- includes the ring push. Negligible at editor pace; perceptible at indexer bursts. |
+| `lsp_edit_publish_three_subs`         | **2.4µs**  | ~2µs / <5µs    | UI-thread cost per applied edit: `EventBus::publish` of one `Event::DocumentChanged` with one `AppliedEdit`, three `DocumentChanged` subscribers attached. The *only* LSP work the keystroke thread does after the per-actor fan-in refactor (docs/../architecture/lsp-architecture.md §11). +25% vs prior baseline (1.9µs) -- the new `MessagePushed` + `LspCodeLensRefresh` typed-event subscribers landed in Phase 4.4/4.5 add small downcast costs per publish; still ≪ 5µs gate. |
+| `lsp_edit_propagation_publish_to_recv`| **241ns**  | ~200ns / <600ns| Bus → mpsc receive hop: time from `EventBus::publish` to the per-actor fan-in's `mpsc::recv().await` returning. Excludes the actor's own `record_edit`. |
 | `lsp_didchange_flush_16_edits`        | **8.4µs**  | ~6µs / <25µs   | Actor-side debounce-arm cost: 16 `DocSync::record_edit` calls + `take_flush_payload` + serialise to `textDocument/didChange` JSON. Runs off the UI thread (post-debounce). |
 | `lsp_diagnostics_line_severity_wait_free` | **25ns** | ~20ns / <75ns  | Render-thread `DiagnosticsLayer::line_severity(uri, line)` after the audit's C3 fix. Pre-fix path locked an inner `Mutex` + cloned the full diagnostics list per call (microseconds, ~3000 calls/sec on the render thread = milliseconds wasted). New path: one `ArcSwap::load` + a borrowed-slice filter — wait-free, allocation-free. |
 
@@ -646,27 +731,27 @@ startup catalog enumeration).
 
 | Bench                                       | Time       | Floor / Target | Notes                                                                                                                                                                                          |
 |---------------------------------------------|------------|----------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `keychord_from_event_plain_letter`          | **1.7ns**  | ~1.5ns / <5ns  | Hot path: every keystroke. Plain printable char (`j`, `w`, `a`). A few register operations -- the canonicalisation branches all skip. **Dominates the keystroke-path budget by 50×.**          |
-| `keychord_from_event_ctrl_letter`           | **1.9ns**  | ~1.5ns / <5ns  | Hot path: Ctrl-letter normalisation (lowercase fold + redundant-shift strip). Adds one branch + one `to_ascii_lowercase` over the plain-letter path.                                            |
-| `keychord_from_event_back_tab`              | **1.5ns**  | ~1.5ns / <5ns  | Special-key canonicalisation (`KeyCode::BackTab` → `Tab + KeyMods::SHIFT`). Match arm + a single bitfield OR.                                                                                  |
-| `keychord_to_string_plain_letter`           | **16.8ns** | ~15ns / <40ns  | Off the keystroke path. Allocates a 1-char String via `to_string`. Dominated by the alloc, not the formatting logic.                                                                            |
-| `keychord_to_string_ctrl_shift_letter`      | **23.2ns** | ~20ns / <50ns  | Off the keystroke path. Multi-modifier formatting + small-string allocation.                                                                                                                    |
+| `keychord_from_event_plain_letter`          | **1.6ns**  | ~1.5ns / <5ns  | Hot path: every keystroke. Plain printable char (`j`, `w`, `a`). A few register operations -- the canonicalisation branches all skip. **Dominates the keystroke-path budget by 50×.**          |
+| `keychord_from_event_ctrl_letter`           | **1.8ns**  | ~1.5ns / <5ns  | Hot path: Ctrl-letter normalisation (lowercase fold + redundant-shift strip). Adds one branch + one `to_ascii_lowercase` over the plain-letter path.                                            |
+| `keychord_from_event_back_tab`              | **1.4ns**  | ~1.5ns / <5ns  | Special-key canonicalisation (`KeyCode::BackTab` → `Tab + KeyMods::SHIFT`). Match arm + a single bitfield OR.                                                                                  |
+| `keychord_to_string_plain_letter`           | **15.8ns** | ~15ns / <40ns  | Off the keystroke path. Allocates a 1-char String via `to_string`. Dominated by the alloc, not the formatting logic.                                                                            |
+| `keychord_to_string_ctrl_shift_letter`      | **22.1ns** | ~20ns / <50ns  | Off the keystroke path. Multi-modifier formatting + small-string allocation.                                                                                                                    |
 | `keychord_parse_plain_letter`               | **5.1ns**  | ~5ns / <15ns   | One-shot at startup or `:bind`. Single-char fast path -- skip the angle-bracket walk.                                                                                                          |
-| `keychord_parse_modifier_special`           | **14.0ns** | ~12ns / <30ns  | One-shot. `<C-S-Tab>` -- walks two modifier prefixes + `parse_special` for the body.                                                                                                            |
-| `parse_chord_sequence_multi_key`            | **25.1ns** | ~20ns / <60ns  | One-shot at startup per `KeymapEntry`. With ~280 built-in bindings (per the M3 census), startup parse cost across the catalog is ~7µs total -- not measurable against the rest of boot.        |
+| `keychord_parse_modifier_special`           | **13.6ns** | ~12ns / <30ns  | One-shot. `<C-S-Tab>` -- walks two modifier prefixes + `parse_special` for the body.                                                                                                            |
+| `parse_chord_sequence_multi_key`            | **24.8ns** | ~20ns / <60ns  | One-shot at startup per `KeymapEntry`. With ~280 built-in bindings (per the M3 census), startup parse cost across the catalog is ~7µs total -- not measurable against the rest of boot.        |
 | `parse_chord_sequence_two_letters`          | **14.9ns** | ~12ns / <30ns  | One-shot. `gg` / `dw` / `zt` shape -- two bare-char chords per sequence.                                                                                                                       |
-| `keymap_trie_lookup_single`                 | **16.9ns** | ~15ns / <40ns  | Hot path. Single-chord lookup (`j`). One `HashMap::get` + a few branches. Slice 8.b.                                                                                                          |
-| `keymap_trie_lookup_two_chord`              | **28.3ns** | ~25ns / <60ns  | Hot path. Two-chord lookup (`gd`). Two descents. Models `g_` and `z_` family lookups.                                                                                                          |
-| `keymap_trie_lookup_three_chord`            | **42.8ns** | ~40ns / <100ns | Hot path. Three-chord lookup (`diw`). Three descents. Operator + `i` / `a` + text-object -- the deepest trie walks the dispatcher does. **Combined with `keychord_from_event` (~2 ns), end-to-end keystroke path is ~45 ns vs. the architecture's 1 µs commitment.** |
-| `keymap_trie_lookup_partial`                | **12.5ns** | ~12ns / <30ns  | Hot path. Partial-prefix lookup (`g` waiting for the second chord). One descent + check.                                                                                                       |
-| `keymap_trie_lookup_unbound`                | **11.1ns** | ~10ns / <30ns  | Hot path. Unbound lookup (`q` not in trie). HashMap miss at root + return.                                                                                                                     |
-| `keymap_trie_lookup_wildcard`               | **25.6ns** | ~22ns / <60ns  | Hot path. Wildcard fallback (`f x` -> capture `'x'`). One exact miss + one wildcard descent + a one-element `Vec<char>` allocation for the captured char.                                       |
-| `keymap_trie_merge_overlay`                 | **444ns**  | ~400ns / <1µs  | Off the hot path. `merge_over` for a layer-overlay add (~16 base bindings + 2 overlays). Runs at minor-mode push / pop -- mode transitions are rare.                                            |
-| `keymap_handle_lookup_single`               | **33.8ns** | ~30ns / <80ns  | Hot path. End-to-end keystroke lookup through the registry handle: `ArcSwap::load` + per-mode `HashMap::get` + trie walk. Single-chord (`j`). Slice 8.c.                                       |
-| `keymap_handle_lookup_two_chord`            | **47.2ns** | ~45ns / <100ns | Hot path. End-to-end two-chord lookup (`gd`).                                                                                                                                                    |
-| `keymap_handle_lookup_three_chord`          | **60.7ns** | ~55ns / <120ns | Hot path. End-to-end three-chord lookup (`diw`). **Combined with `keychord_from_event` (~2 ns), full keystroke path is ~63 ns vs. the architecture's 1 µs commitment -- ~16× headroom.**         |
-| `dispatch_translate_full_two_chord`         | **102ns**  | ~100ns / <300ns| Hot path. Full `translate()` round-trip for the second key of `gd` -- partial_chord stack of `[g]`, event `d`. Exercises the post-8.i.4 dispatch shape: ArcSwap load + per-mode fan-out + trie lookup with prefix + resolved `Action::Invoke` materialisation. ~3× the bare `keymap_handle_lookup_two_chord` row -- the rest is the dispatcher's mode match + Action construction. Slice 8.i.4.h. |
-| `dispatch_translate_full_operator_motion`   | **105ns**  | ~100ns / <300ns| Hot path. Full `translate()` for `dw` -- partial_chord `[d]`, event `w`. Operator-motion variant of the above; latches op_count via the `AbsorbOperatorPrefix` flow that 8.i.4.c rebuilt, then resolves to a motion `Action::Invoke`. Slice 8.i.4.h.                                                                                                                                              |
+| `keymap_trie_lookup_single`                 | **16.3ns** | ~15ns / <40ns  | Hot path. Single-chord lookup (`j`). One `HashMap::get` + a few branches. Slice 8.b.                                                                                                          |
+| `keymap_trie_lookup_two_chord`              | **27.1ns** | ~25ns / <60ns  | Hot path. Two-chord lookup (`gd`). Two descents. Models `g_` and `z_` family lookups.                                                                                                          |
+| `keymap_trie_lookup_three_chord`            | **40.5ns** | ~40ns / <100ns | Hot path. Three-chord lookup (`diw`). Three descents. Operator + `i` / `a` + text-object -- the deepest trie walks the dispatcher does. **Combined with `keychord_from_event` (~2 ns), end-to-end keystroke path is ~43 ns vs. the architecture's 1 µs commitment.** |
+| `keymap_trie_lookup_partial`                | **11.8ns** | ~12ns / <30ns  | Hot path. Partial-prefix lookup (`g` waiting for the second chord). One descent + check.                                                                                                       |
+| `keymap_trie_lookup_unbound`                | **11.2ns** | ~10ns / <30ns  | Hot path. Unbound lookup (`q` not in trie). HashMap miss at root + return.                                                                                                                     |
+| `keymap_trie_lookup_wildcard`               | **23.5ns** | ~22ns / <60ns  | Hot path. Wildcard fallback (`f x` -> capture `'x'`). One exact miss + one wildcard descent + a one-element `Vec<char>` allocation for the captured char.                                       |
+| `keymap_trie_merge_overlay`                 | **418ns**  | ~400ns / <1µs  | Off the hot path. `merge_over` for a layer-overlay add (~16 base bindings + 2 overlays). Runs at minor-mode push / pop -- mode transitions are rare.                                            |
+| `keymap_handle_lookup_single`               | **32.4ns** | ~30ns / <80ns  | Hot path. End-to-end keystroke lookup through the registry handle: `ArcSwap::load` + per-mode `HashMap::get` + trie walk. Single-chord (`j`). Slice 8.c.                                       |
+| `keymap_handle_lookup_two_chord`            | **45.1ns** | ~45ns / <100ns | Hot path. End-to-end two-chord lookup (`gd`).                                                                                                                                                    |
+| `keymap_handle_lookup_three_chord`          | **61.1ns** | ~55ns / <120ns | Hot path. End-to-end three-chord lookup (`diw`). **Combined with `keychord_from_event` (~2 ns), full keystroke path is ~63 ns vs. the architecture's 1 µs commitment -- ~16× headroom.**         |
+| `dispatch_translate_full_two_chord`         | **97ns**   | ~100ns / <300ns| Hot path. Full `translate()` round-trip for the second key of `gd` -- partial_chord stack of `[g]`, event `d`. Exercises the post-8.i.4 dispatch shape: ArcSwap load + per-mode fan-out + trie lookup with prefix + resolved `Action::Invoke` materialisation. ~3× the bare `keymap_handle_lookup_two_chord` row -- the rest is the dispatcher's mode match + Action construction. Slice 8.i.4.h. |
+| `dispatch_translate_full_operator_motion`   | **101ns**  | ~100ns / <300ns| Hot path. Full `translate()` for `dw` -- partial_chord `[d]`, event `w`. Operator-motion variant of the above; latches op_count via the `AbsorbOperatorPrefix` flow that 8.i.4.c rebuilt, then resolves to a motion `Action::Invoke`. Slice 8.i.4.h.                                                                                                                                              |
 
 ### Why these targets
 

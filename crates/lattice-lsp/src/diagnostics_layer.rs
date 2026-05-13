@@ -97,8 +97,8 @@ struct DiagnosticsSnapshot {
 /// × 60 Hz = 3000/s on the render thread per the audit) no
 /// longer takes a mutex.
 ///
-/// **Writes serialise on a brief mutex.** [`Self::apply`],
-/// [`Self::clear*`] take a small write-side lock just long
+/// **Writes serialise on a brief mutex.** [`Self::apply`] and the
+/// `clear_*` methods take a small write-side lock just long
 /// enough to clone the current snapshot, mutate it, recompute
 /// the affected URI's `by_uri` entry, and `ArcSwap::store` it.
 /// Writers don't block readers (ArcSwap is RCU-flavoured); two

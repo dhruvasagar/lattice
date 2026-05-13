@@ -1340,7 +1340,7 @@ impl App {
     /// 4.4.k: fan out `workspace/didChangeConfiguration` to
     /// every running actor with the given `server_id`. Called
     /// from the typed-option cascade
-    /// ([`Self::apply_option_cascade`]) whenever a key under
+    /// (the private `apply_option_cascade`) whenever a key under
     /// `lsp.<server_id>.*` changes. The notification's
     /// `settings` payload is the full `lsp.<server_id>` JSON
     /// subtree from the merged TOML tree -- matches the shape

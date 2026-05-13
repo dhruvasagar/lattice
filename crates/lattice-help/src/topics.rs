@@ -18,7 +18,7 @@
 //!
 //! Topics also carry an optional list of substring patterns that
 //! match command names; `:describe-command` walks these to emit a
-//! "See also: [topic](help:topic)" cross-link when a primitive
+//! `See also: [topic](help:topic)` cross-link when a primitive
 //! covered by a topic is described.
 
 use std::collections::HashMap;

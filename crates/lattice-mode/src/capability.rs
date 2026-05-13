@@ -1,6 +1,6 @@
 //! `CapabilitySet`: typed bitfield describing what a buffer can
 //! offer. Modes declare what they require via
-//! [`Mode::required_capabilities`]; the registry validates the
+//! [`crate::Mode::required_capabilities`]; the registry validates the
 //! buffer satisfies all required bits before activation.
 //!
 //! New capabilities are added as the mode system grows. Bit

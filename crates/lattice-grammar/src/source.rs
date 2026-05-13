@@ -103,7 +103,7 @@ impl SourceLocation {
     /// Render as a markdown link for inclusion in a help body.
     /// Format: `[label](scheme:value)`. The link's URL portion is
     /// what `parse_help_links` (in `lattice-ui-tui::help`)
-    /// classifies into a typed [`crate::HelpLinkTarget`]; the label
+    /// classifies into a typed `lattice_ui_tui::help::HelpLinkTarget`; the label
     /// is what the user sees.
     pub fn as_link(&self) -> String {
         match &self.kind {

@@ -200,7 +200,7 @@ pub enum RoutingPayload {
 /// variant once the WASM host is online.
 #[derive(Debug, Clone)]
 pub enum PickerSource {
-    /// Walk every entry in [`BufferRegistry`] -- the buffer
+    /// Walk every entry in `BufferRegistry` -- the buffer
     /// switcher (`:b` with no arg, future `<C-x>b`).
     Buffers,
     /// Walk the LSP supervisor's running actor table, one
@@ -236,7 +236,7 @@ pub enum PickerSource {
 }
 
 /// What `<CR>` does to the selected candidate. Variants stay
-/// dumb data; the App's [`crate::app::App::accept_picker`]
+/// dumb data; the App's `App::accept_picker`
 /// dispatcher pattern-matches and calls the right method.
 #[derive(Debug, Clone, Copy)]
 pub enum PickerAction {
@@ -276,7 +276,7 @@ pub enum PickerAction {
     /// `App::do_edit(Some(path), false)`. File picker
     /// (`:files`) and recent-files picker share this action.
     OpenFile,
-    /// Accept one [`MessageActionItem`] from a server-initiated
+    /// Accept one `MessageActionItem` from a server-initiated
     /// `window/showMessageRequest`. Routing payload is
     /// [`RoutingPayload::AcceptShowMessageAction`]; dismiss
     /// (Esc) replies `null` via the SMR-specific arm in

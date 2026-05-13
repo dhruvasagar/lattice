@@ -30,7 +30,7 @@ use crate::help::HelpBuffer;
 use crate::oil::OilBuffer;
 
 /// Per-document registry payload. Each entry carries the actor
-/// handle plus per-document tree-sitter [`Syntax`] state, fold
+/// handle plus per-document tree-sitter `Syntax` state, fold
 /// list, and any other "lives with this buffer until it
 /// closes" state.
 ///

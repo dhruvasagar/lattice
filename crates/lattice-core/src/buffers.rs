@@ -3,7 +3,7 @@
 //!
 //! Phase 1 wiring: every concrete buffer type the App can hold a
 //! cursor in (today: a code [`Document`] and an optional
-//! [`HelpBuffer`]) is tagged with a [`BufferKind`]. The App carries
+//! `HelpBuffer`) is tagged with a [`BufferKind`]. The App carries
 //! one `active_buffer: BufferKind` which decides where keystrokes
 //! land -- a `j` in Normal mode resolves the same `line_down`
 //! motion against the active buffer, regardless of kind.
@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 pub enum BufferKind {
     /// The user's edit-target -- one [`Document`] today.
     ///
-    /// [`Document`]: lattice_core::Document
+    /// [`Document`]: crate::Document
     #[default]
     Document,
     /// A `:describe-*` / `:apropos` / `:keymap` view. Read-only;

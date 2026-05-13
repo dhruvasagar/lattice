@@ -5,7 +5,7 @@
 //! `language`, `syntax`, `diagnostics`, `rendering_profile`, `encoding`,
 //! `line_ending` -- is added when each subsystem comes online. Major /
 //! minor modes (the `mode-architecture.md` mode system) live on `modes`,
-//! starting empty and populated by the [`lattice_mode::ModeRegistry`]
+//! starting empty and populated by the `lattice_mode::ModeRegistry`
 //! when M.3 lands the per-buffer-kind major modes.
 
 use std::path::{Path, PathBuf};

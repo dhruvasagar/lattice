@@ -1,8 +1,8 @@
 //! `LspSupervisor` -- the per-buffer attachment manager
 //! (Phase 4.1.h).
 //!
-//! Glues the wire-side primitives ([`ServerHandle`], [`DocSync`],
-//! [`DiagnosticsBus`], [`DiagnosticsLayer`], [`LspLogger`]) into
+//! Glues the wire-side primitives ([`ServerHandle`], `DocSync`,
+//! `DiagnosticsBus`, [`DiagnosticsLayer`], [`LspLogger`]) into
 //! one editor-facing facade. The App holds exactly one
 //! `LspSupervisor`; everything else flows through it.
 //!
@@ -671,10 +671,10 @@ impl LspSupervisor {
     /// 4.4.d: force-restart every actor with id `server_id`.
     ///
     /// Steps:
-    ///   1. Prune restart history outside [`RESTART_WINDOW`].
+    ///   1. Prune restart history outside the private `RESTART_WINDOW`.
     ///   2. If `history.len() >= MAX_RESTARTS`, refuse (caller
     ///      surfaces the cooldown to the user).
-    ///   3. Sleep [`compute_restart_backoff(history.len())`].
+    ///   3. Sleep `compute_restart_backoff(history.len())`.
     ///   4. For every `(workspace, server_id)` actor pair: shut
     ///      down the existing handle, drop the fan-in
     ///      subscription, spawn a fresh actor with the same
@@ -1011,7 +1011,7 @@ impl std::fmt::Debug for LspSupervisor {
 
 /// Wait-free read view of supervisor state.
 ///
-/// Built by [`LspSupervisor::build_snapshot`] after every cmd
+/// Built by the supervisor's private `build_snapshot` helper after every cmd
 /// that mutates state; held in [`LspSupervisorHandle::snapshot`]
 /// inside an `ArcSwap` cell. Readers `load_full()` and clone
 /// per-field as needed. All fields are public so callers can
@@ -1287,7 +1287,7 @@ impl LspSupervisorHandle {
 
     /// 4.4.d: force-restart every actor with id `server_id`.
     /// Subject to the per-server-id restart-history backoff:
-    /// more than [`MAX_RESTARTS`] inside [`RESTART_WINDOW`]
+    /// more than `MAX_RESTARTS` inside `RESTART_WINDOW`
     /// returns an error; the caller surfaces the cooldown
     /// message via `set_message`.
     pub async fn restart_server(&self, server_id: String) -> LspResult<RestartReport> {

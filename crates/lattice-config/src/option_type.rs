@@ -13,7 +13,7 @@
 //! specific types (`FoldMethod`, `Color`) impl `OptionType` from
 //! their owning crate using the trait re-exported here.
 
-/// Surface contract for any value a typed [`crate::Option`] can
+/// Surface contract for any value a typed [`crate::option::Option`] can
 /// hold. Implementors describe how their type round-trips through
 /// the user-facing `:set foo=value` syntax.
 pub trait OptionType: Sized + Clone + Send + Sync + 'static {

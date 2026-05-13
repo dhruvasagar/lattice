@@ -22,7 +22,7 @@
 //! 3. `<Tab>` -> [`ActiveSnippet::next`] returns the next
 //!    tabstop group; host moves cursor there.
 //! 4. Edit inside one mirror -> host updates the rope, asks
-//!    [`ActiveSnippet::edit_at`] to ripple the change to the
+//!    [`ActiveSnippet::shift_ranges_after`] to ripple the change to the
 //!    other mirrors of the same tabstop group, then re-renders.
 //! 5. Reaching `$0` exits; the host drops the `ActiveSnippet`
 //!    and lets normal Insert-mode resume.

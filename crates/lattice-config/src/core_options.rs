@@ -20,8 +20,8 @@
 //! `register_core_options` body.
 //!
 //! For backwards compatibility during the transitional M.2.0b/c
-//! window, [`register_core_options`] runs `init_from_linkme` and
-//! returns a [`CoreOptions`] struct populated with the typed
+//! window, `register_core_options` runs `init_from_linkme` and
+//! returns a `CoreOptions` struct populated with the typed
 //! handles. Existing callers (`config.get(core.tabstop)`)
 //! continue to work unchanged. M.2.0c migrates the callers to
 //! `config.get_typed::<Tabstop>()` and retires `CoreOptions`.

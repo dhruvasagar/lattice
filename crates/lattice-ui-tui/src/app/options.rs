@@ -53,8 +53,8 @@ impl App {
     /// `:set relativenumber`. Default `false`. When true the
     /// gutter shows distance from the cursor; the cursor's line
     /// shows its absolute number. Implies `number` (vim's
-    /// behaviour) -- the cascade hook in [`Self::apply_option_cascade`]
-    /// mirrors that cascade.
+    /// behaviour) -- the private `apply_option_cascade` cascade
+    /// hook mirrors that cascade.
     pub fn relative_line_numbers(&self) -> bool {
         self.option_cache.relative_line_numbers
     }

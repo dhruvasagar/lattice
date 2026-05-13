@@ -1139,8 +1139,8 @@ pub enum DocumentHighlightOutcome {
 
 pub struct App {
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
-    /// The actor owns the writable [`Document`]; mutations route
-    /// through it; reads load a versioned snapshot.
+    /// The actor owns the writable `Document` (from `lattice-core`);
+    /// mutations route through it; reads load a versioned snapshot.
     /// Denormalized from `documents[active_document_id].handle` for
     /// hot-path access.
     pub document: DocumentHandle,
@@ -1177,7 +1177,7 @@ pub struct App {
     /// Denormalized from `pane_tree.active().buffer` -- updated in
     /// lockstep with the active pane.
     pub active_buffer: BufferKind,
-    /// Pane tree (DESIGN.md §5.9). Holds one [`PaneState`] per
+    /// Pane tree (DESIGN.md §5.9). Holds one `PaneState` per
     /// visible viewport plus the split layout. Always non-empty;
     /// the active pane's cursor / scroll are stored on
     /// [`Self::cursor`] / [`Self::scroll`] for hot-path code, and
@@ -1229,10 +1229,10 @@ pub struct App {
     /// wrapper; the spawned task awaits the actor's response and
     /// pushes a [`HoverOutcome`] onto this channel. The main loop
     /// drains it before each draw via [`Self::drain_pending_hover`]
-    /// and either feeds the body into the existing
-    /// [`Self::hover_popup`] via [`Self::do_open_hover`], or echoes
-    /// the no-result reason so the user knows their `K` press was
-    /// received and processed (versus silently dropped).
+    /// and either feeds the body into the existing hover popup
+    /// via the private `do_open_hover`, or echoes the no-result
+    /// reason so the user knows their `K` press was received and
+    /// processed (versus silently dropped).
     ///
     /// `Option` only because the field needs to be `take`-able so
     /// the drain method can borrow `&mut self` for the popup
@@ -1591,8 +1591,8 @@ pub struct App {
     /// buffer view (post-1.0) reads + writes through the same
     /// surface. Renderer-agnostic options self-register via
     /// the `linkme`-aggregated `OPTION_DECLS` slice; this
-    /// renderer's own options register via
-    /// [`crate::tui_options::register_tui_options`].
+    /// renderer's own options register via the `linkme` slice in
+    /// `crate::tui_options`.
     pub config: std::sync::Arc<lattice_config::ConfigRegistry>,
     /// Hot-path read cache for the option values. Populated at
     /// [`Self::new`] time; refreshed inside the
@@ -1702,7 +1702,7 @@ pub struct App {
     /// [`Self::popup_help_mut`] -- the slot itself is just a
     /// reference into the registry. Display strategy is governed
     /// by [`lattice_core::ui::display::BufferDisplayCategory`];
-    /// callers route through [`Self::display_buffer`].
+    /// callers route through the private `display_buffer` helper.
     pub popup_buffer: Option<crate::buffers::BufferId>,
     /// LIFO stack of snapshots taken every time the popup's content
     /// gets swapped in place by a help → help link follow (e.g.
@@ -1818,7 +1818,7 @@ pub struct App {
     /// drops LSP, rust enables auto-fire, etc.); user TOML in
     /// `[completion.per-language.<lang>]` sections layers on top
     /// via [`Self::apply_per_language_toml_overrides`]. Read by
-    /// [`Self::effective_completion_for`] which walks
+    /// the private `effective_completion_for` which walks
     /// per-language -> global option -> hardcoded fallback for
     /// each effective field.
     pub per_language_completion:
@@ -2802,7 +2802,7 @@ impl App {
     /// 1. Appends a [`MessageRecord`] to the bounded
     ///    [`MessagesRing`] (`self.messages`) so the
     ///    `:messages` buffer can replay history.
-    /// 2. Publishes a [`crate::app::messages::MessagePushed`]
+    /// 2. Publishes a [`lattice_runtime::MessagePushed`]
     ///    typed event on the editor's event bus. The
     ///    `*messages*` buffer's live tail
     ///    ([`Self::drain_message_events`]) subscribes via a

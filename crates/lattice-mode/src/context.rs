@@ -4,8 +4,8 @@
 //! Hooks own their own work. Modes that need to mutate options
 //! (e.g. `lsp-folding-mode` swapping `foldmethod=lsp` on
 //! activate) reach the typed-options registry through
-//! [`Self::config`]. Hooks must still leave OTHER modes' state
-//! alone; `BufferLocals` writes go through [`Self::set_local`]
+//! [`ModeContext::config`]. Hooks must still leave OTHER modes' state
+//! alone; `BufferLocals` writes go through [`ModeContext::set_local`]
 //! which enforces the [`crate::BufferLocal::OWNER_MODE`] rule.
 //!
 //! Why the context owns these handles (rather than the App):

@@ -99,7 +99,7 @@ impl DocumentHandle {
     }
 
     /// Build a per-thread cache for the snapshot read path.
-    /// Each call returns a fresh [`SnapshotCache`]; threads that
+    /// Each call returns a fresh [`crate::snapshot::SnapshotCache`]; threads that
     /// read the snapshot every frame should hold one of these on
     /// the stack of the read loop and call `load()` on it instead
     /// of going through [`Self::snapshot`].

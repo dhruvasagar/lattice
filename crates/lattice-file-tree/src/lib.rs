@@ -3,8 +3,8 @@
 //! v1 status (B.1.d): a flattened, lazily-expanded tree rendered
 //! one entry per line. `<CR>` on a directory toggles its expansion;
 //! on a file opens that file as a new Document buffer through the
-//! standard `:e FILE` path. Standard motions (j/k/0/$/G/gg/<C-d>/...)
-//! navigate via the active-buffer routing in [`crate::pane`] -- the
+//! standard `:e FILE` path. Standard motions (`j`/`k`/`0`/`$`/`G`/`gg`/`<C-d>`/...)
+//! navigate via the active-buffer routing in `lattice_core::ui::pane` -- the
 //! file tree carries no special motion bindings of its own.
 //!
 //! The buffer is read-only (mutations error with the same
@@ -16,7 +16,7 @@
 //! ## Where does "the root", "the entry list", "nerd-fonts" live?
 //!
 //! Not on `FileTreeBuffer`. M.3.2.c.5 retired the struct fields;
-//! the canonical answer for each is a [`BufferLocal`] owned by
+//! the canonical answer for each is a `BufferLocal` owned by
 //! `file-tree-mode`:
 //!
 //! - [`modes::FileTreeRoot`] -- the rooted directory.

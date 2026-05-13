@@ -1,8 +1,8 @@
-//! Type-erased view of [`crate::Option<T>`] for the registry to
+//! Type-erased view of [`crate::option::Option<T>`] for the registry to
 //! store heterogeneous specs in a single `Vec`.
 //!
 //! Consumers that know the type at compile time use
-//! [`crate::OptionHandle<T>`] for direct typed access. Consumers
+//! [`crate::option::OptionHandle<T>`] for direct typed access. Consumers
 //! that only have a runtime name (cmdline `:set foo=bar`, the
 //! customize buffer view, plugin introspection) go through
 //! [`ErasedOption`].
@@ -15,7 +15,7 @@ use crate::option_type::OptionType;
 
 /// Type-erased operations every typed [`Option<T>`] supports. The
 /// registry stores `Arc<dyn ErasedOption>` in a `Vec` indexed by
-/// the [`crate::OptionHandle::idx`] field; `parse_and_set_by_name`
+/// the private `idx` field of [`crate::option::OptionHandle`]; `parse_and_set_by_name`
 /// drives this trait when the user types `:set name=value`.
 ///
 /// `as_any` is the canonical Rust idiom for downcasting back to

@@ -6,9 +6,9 @@
 //!
 //! ## Design (γ — value-on-spec storage)
 //!
-//! Each [`Option<T>`] owns its current value behind an
+//! Each [`crate::option::Option<T>`] owns its current value behind an
 //! [`arc_swap::ArcSwap<T>`]. Reads through a typed
-//! [`OptionHandle<T>`] are wait-free pointer loads. Writes go
+//! [`crate::option::OptionHandle<T>`] are wait-free pointer loads. Writes go
 //! through the registry (typed via `set` / by-name via
 //! `parse_and_set_command`), which validates and stores.
 //!
@@ -19,7 +19,7 @@
 //! ## Crate boundary
 //!
 //! The trait + the four primitive impls (`bool`, `i64`, `String`,
-//! plus this crate's [`Color`] when the foreign-type problem is
+//! plus this crate's `Color` when the foreign-type problem is
 //! sorted) live here. Domain enums (`FoldMethod`, ...) implement
 //! [`OptionType`] from their owning crate, importing the trait
 //! from `lattice-config`.

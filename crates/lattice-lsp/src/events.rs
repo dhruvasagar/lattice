@@ -273,8 +273,7 @@ lattice_protocol::register_event!(
 /// active for that buffer (M.5.5). The per-actor fan-in
 /// (`crate::fan_in`) subscribes via
 /// `EventBus::subscribe_typed::<LspDocumentChanged>` and
-/// forwards each [`AppliedEdit`] as an
-/// [`crate::actor::ActorCmd::RecordEdit`].
+/// forwards each `AppliedEdit` as a `RecordEdit` actor command.
 ///
 /// `path` is `None` for path-less buffers (no URI to map);
 /// fan_in skips those. The event isn't published at all when

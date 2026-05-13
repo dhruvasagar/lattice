@@ -154,7 +154,7 @@ impl App {
     /// `block_on` parks the thread. The plumbing is in place for a
     /// future runtime that reads input on a separate task and flips
     /// the dispatch token on Esc; see `dispatch_with_cancel` on
-    /// [`DocumentHandle`].
+    /// `DocumentHandle`.
     pub fn dispatch_blocking(&self, invocation: CommandInvocation) -> Result<Effect, RuntimeError> {
         block_on(self.document.dispatch_with_cancel(
             invocation,

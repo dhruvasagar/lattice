@@ -20,10 +20,10 @@
 //!
 //! The registry indexes registrations two ways:
 //!
-//! 1. `by_id` (HashMap<String, DynamicRegistration>) -- so
+//! 1. `by_id` (`HashMap<String, DynamicRegistration>`) -- so
 //!    `unregisterCapability` can find an entry by the id the
 //!    server picked at register time and evict it in O(1).
-//! 2. `by_method` (HashMap<String, Vec<String>>) -- so feature
+//! 2. `by_method` (`HashMap<String, Vec<String>>`) -- so feature
 //!    dispatch can ask "is `textDocument/completion` registered
 //!    dynamically?" without scanning the whole table. The vec
 //!    holds registration ids; the registry stays a single source

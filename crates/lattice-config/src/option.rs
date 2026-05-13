@@ -104,7 +104,7 @@ impl<T: OptionType> Option<T> {
         f(&self.cell.load())
     }
 
-    /// Set the current value, running [`Self::validate`] first.
+    /// Set the current value, running the (private) `validate` closure first.
     /// Returns the validator's error verbatim on rejection;
     /// otherwise commits and returns `Ok(())`.
     pub fn set(&self, value: T) -> Result<(), String> {

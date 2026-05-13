@@ -1,7 +1,7 @@
 //! Mode-keyed pane render dispatch (M.4 follow-up).
 //!
-//! Replaces the helper-side `match buffer.kind` in
-//! [`crate::render::draw_pane_content`] /
+//! Replaces the helper-side `match buffer.kind` in the renderer's
+//! `draw_pane_content` /
 //! [`crate::app::App::pane_status_label`] with a [`ModeId`]-keyed
 //! lookup. Each major / minor mode that owns its own render flow
 //! registers a [`PaneRenderProvider`] at boot; the renderer walks
@@ -29,7 +29,7 @@ use crate::app::App;
 use crate::pane::PaneState;
 
 /// Renderer for one pane. Receives the same arguments as the
-/// dispatcher in [`crate::render::draw_pane_content`]: the frame,
+/// dispatcher in `crate::render::draw_pane_content`: the frame,
 /// content rect, app state, the active document snapshot (used by
 /// the document fallback path), the pane state, an `is_active`
 /// flag, and the pane index (for inactive-pane stash lookups).

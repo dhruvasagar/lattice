@@ -8,7 +8,7 @@
 //! ## Where does "the dir this oil buffer represents" live?
 //!
 //! Not on `OilBuffer`. M.3.2.c.5 retired the struct-stored `dir`
-//! field; the canonical answer is the [`OilDir`] [`BufferLocal`]
+//! field; the canonical answer is the [`OilDir`] `BufferLocal`
 //! owned by `oil-mode`. The App reads it from
 //! `buffer_locals[id].get::<OilDir>()` and passes it into the
 //! `OilBuffer` methods that need it ([`OilBuffer::open`],

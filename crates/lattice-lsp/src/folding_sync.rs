@@ -13,7 +13,7 @@
 //! plugin, future API path -- because everything funnels
 //! through the mode trait's lifecycle hooks.
 //!
-//! The prior `foldmethod` is stashed in [`BufferLocals`] via
+//! The prior `foldmethod` is stashed in `BufferLocals` via
 //! the typed local [`PriorFoldmethod`]; the mode owns this
 //! local (`OWNER_MODE = "lsp-folding-mode"`) per
 //! `mode-architecture.md` §9.4.

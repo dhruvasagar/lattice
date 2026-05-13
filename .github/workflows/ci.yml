@@ -21,15 +21,12 @@
 #    intentionally-relaxed gate by injecting `RUSTFLAGS=-D warnings`
 #    workspace-wide. Every `setup-rust-toolchain` step below sets
 #    `rustflags: ""` to disable that injection.
-# 3. **Format.** `cargo fmt --check`. Runs informationally only --
-#    the workspace was written with manual line breaks for
-#    readability that rustfmt's heuristics would collapse, and a
-#    one-shot sweep would touch every file. The job runs but
-#    `continue-on-error: true` so the CI page surfaces the diff
-#    without blocking merges. When the team is ready to commit to
-#    a strict fmt policy, flip the flag.
-# 4. **Docs.** `cargo doc --no-deps -D warnings`. Catches broken
-#    intra-doc links and missing trait references.
+# 3. **Format.** `cargo fmt --check`. Strict gate -- the workspace
+#    conforms to default rustfmt (no `rustfmt.toml` overrides), and
+#    any drift fails CI.
+# 4. **Docs.** `cargo doc --no-deps`. Builds the rustdoc output to
+#    catch obvious breakage; rustdoc warnings stay warnings so a
+#    toolchain bump that adds new lints doesn't fail the build.
 # 5. **Benchmark surface.** `cargo bench --no-run` per crate that
 #    has benches. Fast (compile-only) -- catches bench rot when
 #    refactors break the criterion harness without anyone running
@@ -97,12 +94,6 @@ jobs:
   fmt:
     name: fmt
     runs-on: ubuntu-latest
-    # Informational only -- see the comment at the top of this
-    # file. The existing code has manual line breaks for
-    # readability; a strict gate would require a one-shot sweep
-    # touching every file. Flip `continue-on-error` to `false`
-    # after that sweep.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1

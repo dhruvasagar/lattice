@@ -256,9 +256,9 @@ impl App {
         self.resolved_options.remove(&prev);
     }
 
-    /// M.4 (b): resolve the popup's [`HelpBuffer`] handle through
+    /// M.4 (b): resolve the popup's `HelpBuffer` handle through
     /// the unified registry. The field stores only the
-    /// [`BufferId`]; the actual buffer lives in `app.buffers` with
+    /// `BufferId`; the actual buffer lives in `app.buffers` with
     /// `BufferFlags { listed: false, hidden: true }`. Returns
     /// `None` when no popup is open or the registry entry has been
     /// torn down.

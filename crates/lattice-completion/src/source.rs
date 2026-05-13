@@ -51,7 +51,7 @@ use crate::candidate::RawCandidate;
 use crate::insert::{CompletionTrigger, InsertContext, SourceId};
 
 /// One source's contribution to the active completion set for a
-/// buffer. Returned from [`crate::Mode::completion_sources`] (the
+/// buffer. Returned from `lattice_mode::Mode::completion_sources` (the
 /// new declarative contribution method on `Mode` -- see
 /// `lattice-mode`). The aggregator's per-buffer cache holds a
 /// list of these; the active-source resolver in the host

@@ -363,7 +363,7 @@ impl App {
     }
 
     /// Recompute per-pane highlights for inactive Document panes.
-    /// Each inactive pane's [`DocumentEntry::syntax`] gets reparsed
+    /// Each inactive pane's `DocumentEntry::syntax` gets reparsed
     /// when the document's `text_version` differs from the entry's
     /// cached version (cheap: one parse per inactive pane per
     /// changed document); the visible-window slice lands in

@@ -123,14 +123,15 @@ pub(crate) const CAPTURE_NAMES: &[&str] = &[
 /// Public re-export of the capture-name → Style mapping. The
 /// native highlighter runs each language's compiled
 /// `tree_sitter::Query` and looks up styles by capture *name*
-/// (using the dot-prefix walk implemented in [`name_to_style`]).
+/// (using the dot-prefix walk implemented in the private
+/// `name_to_style`).
 pub fn name_to_style_pub(name: &str) -> Style {
     name_to_style(name)
 }
 
-/// Capture-name priority: position in [`CAPTURE_NAMES`] (lower =
-/// higher precedence on overlap). Walks the dot-prefix hierarchy
-/// the same way [`name_to_style`] does, so a query capture named
+/// Capture-name priority: position in the private `CAPTURE_NAMES`
+/// table (lower = higher precedence on overlap). Walks the dot-prefix
+/// hierarchy the same way the private `name_to_style` does, so a query capture named
 /// `keyword.control.return` resolves through `keyword.control` →
 /// `keyword`, picking the longest matching prefix's index. Names
 /// outside the table return [`u32::MAX`] -- effectively the lowest

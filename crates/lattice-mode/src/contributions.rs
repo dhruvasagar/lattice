@@ -2,7 +2,7 @@
 //! [`crate::Mode`] not yet wired in.
 //!
 //! `OptionOverrideSet` graduated to a real type in
-//! [`crate::overrides`] as of M.2.1. The remaining stubs:
+//! `lattice_config::overrides` as of M.2.1. The remaining stubs:
 //!
 //! - [`Keymap`] -- when the layered keymap registry from
 //!   `keymap-architecture.md` exposes a public mode-contribution

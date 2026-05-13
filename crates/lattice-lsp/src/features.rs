@@ -43,8 +43,8 @@ impl ServerHandle {
     /// `textDocument/hover` (DESIGN.md §5.4 / docs/dev/notes/lsp-features.md).
     /// Returns `None` when the server has nothing to say at the
     /// cursor position. The body's `contents` field is what the
-    /// renderer feeds into the [`crate::HoverPopup`] markdown
-    /// pipeline; the optional `range` highlights the symbol
+    /// renderer feeds into the hover popup markdown pipeline
+    /// (App-side `HoverPopup`); the optional `range` highlights the symbol
     /// hovered (renderer integration is Phase 4.2.b polish).
     pub fn hover(&self, params: HoverParams, token: CancellationToken) -> Pending<Option<Hover>> {
         self.request_with_cancel("textDocument/hover", params, token)

@@ -24,10 +24,10 @@
 //!   source crate). Aggregated process-wide via
 //!   [`EVENT_DESCRIPTORS`] (a `linkme` distributed slice; same
 //!   mechanism `lattice-config` uses for typed options).
-//! - [`register_event!`] macro -- single declaration site that
+//! - `register_event!` macro -- single declaration site that
 //!   pushes the descriptor and wires `Event::TYPE_ID`.
 //!
-//! The runtime's [`lattice_runtime::EventBus`] (M.5.3.a follow-
+//! The runtime's `lattice_runtime::EventBus` (M.5.3.a follow-
 //! up) accepts both shapes: legacy enum publishes via
 //! `publish` / `subscribe`, typed events via
 //! `publish_typed::<T>` / `subscribe_typed::<T>`. Built-in
@@ -46,7 +46,7 @@ pub trait Event: std::any::Any + Debug + Send + Sync + 'static {
     /// The type-id under which this event is registered.
     /// Implementors typically delegate to a `static` to avoid
     /// re-allocating the metadata on every call. The macro
-    /// [`register_event!`] generates this for you.
+    /// `register_event!` generates this for you.
     fn event_type_id(&self) -> EventTypeId;
 }
 

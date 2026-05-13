@@ -26,8 +26,7 @@
 //! initiated edits skip the channel and the actor falls back
 //! to a `MethodNotFound` response. The supervisor builds one
 //! bus at init and clones the sender into every spawned actor;
-//! the App takes the receiver once via
-//! [`crate::supervisor::LspSupervisor::take_apply_edit_rx`].
+//! the App owns the receiver and drains it from its runtime tick.
 
 use std::sync::Arc;
 
@@ -48,9 +47,9 @@ pub struct InboundApplyEdit {
     /// edit (e.g. `"organize imports"`). Spec field; we surface
     /// it in the App's echo and the log entry.
     pub label: Option<String>,
-    /// The edit to apply. The App's
-    /// [`flatten_workspace_edit_for_apply`] (existing path)
-    /// turns this into per-file edit batches.
+    /// The edit to apply. The App's existing
+    /// `flatten_workspace_edit_for_apply` path turns this into
+    /// per-file edit batches.
     pub edit: lsp_types::WorkspaceEdit,
     /// Oneshot the App fills after applying. The actor task
     /// awaits this and converts the outcome into the LSP

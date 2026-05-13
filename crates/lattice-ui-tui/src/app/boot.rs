@@ -953,7 +953,7 @@ impl App {
         self.recompute_active_completion_sources_for(buffer_id);
     }
 
-    /// Re-derive `App.theme`'s renderer-specific [`Style`] values
+    /// Re-derive `App.theme`'s renderer-specific `Style` values
     /// from the current `ui.*` option values in the config. Called
     /// at App-init time (after registration) and on every `:set
     /// ui.*` so the cached theme stays in lockstep with the

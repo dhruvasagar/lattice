@@ -2,7 +2,7 @@
 //! `mode-architecture.md` §9.4 (M.3.2.a).
 //!
 //! A typed analogue of emacs's `buffer-local-variables`. Each
-//! piece of mode-internal data declares an [`OptionDecl`]-style
+//! piece of mode-internal data declares an `OptionDecl`-style
 //! type identity via the [`BufferLocal`] trait; the typed-map
 //! [`BufferLocals`] stores them keyed by `TypeId` for O(1)
 //! type-keyed reads. Each entry carries metadata (display name,

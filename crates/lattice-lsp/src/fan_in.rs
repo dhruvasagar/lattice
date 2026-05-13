@@ -3,8 +3,8 @@
 //! Subscribes one typed channel per actor to the editor's event
 //! bus (M.5.5: `EventBus::subscribe_typed::<LspDocumentChanged>`).
 //! On every event whose `path` resolves to a URI the actor cares
-//! about, it forwards one [`crate::actor::ActorCmd::RecordEdit`]
-//! per [`AppliedEdit`].
+//! about, it forwards one `RecordEdit` actor command per applied
+//! edit.
 //!
 //! The publisher (App's `publish_document_changed`) only fires
 //! `LspDocumentChanged` when `lsp-mode` is active for the edited
@@ -57,8 +57,8 @@ use crate::logging::{LogLevel, LogSource};
 
 /// Subscribe `handle` to every `LspDocumentChanged` event on
 /// `bus` (M.5.5; previously `Event::DocumentChanged`) and spawn
-/// a tokio task that forwards them as
-/// [`crate::actor::ActorCmd::RecordEdit`] commands. Returns the
+/// a tokio task that forwards them as `RecordEdit` actor
+/// commands. Returns the
 /// subscription id; the supervisor must hand this to
 /// [`EventBus::unsubscribe`] when the actor is dropped to keep
 /// the bus's bucket from accumulating dead entries.

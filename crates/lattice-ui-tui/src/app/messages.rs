@@ -32,7 +32,7 @@ impl App {
         self.display_buffer(content, BufferDisplayCategory::Messages);
     }
 
-    /// Drain queued [`MessagePushed`] events; rebuild the
+    /// Drain queued [`lattice_runtime::MessagePushed`] events; rebuild the
     /// `*messages*` buffer once per tick if any landed. Called
     /// from the runtime's per-frame tick. Coalescing matters
     /// during bursts (LSP `$/progress` floods, batch echo):

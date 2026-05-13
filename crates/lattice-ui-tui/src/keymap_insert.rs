@@ -31,10 +31,10 @@
 //! Registered directly into [`KeymapLayer::Builtin`] +
 //! `BindingMode::Insert` by [`register_insert_bindings`]:
 //!
-//! - `<Esc>` -> [`Action::EnterMode(Normal)`]
+//! - `<Esc>` -> `Action::EnterMode(Normal)`
 //! - `<BS>` -> [`Action::DeleteCharBackward`]
-//! - `<CR>` -> [`Action::Insert("\n")`]
-//! - `<Tab>` -> [`Action::Insert("\t")`]
+//! - `<CR>` -> `Action::Insert("\n")`
+//! - `<Tab>` -> `Action::Insert("\t")`
 //! - `<C-Space>` -> [`Action::CompletionTrigger`]
 //! - `[<C-x>, <C-o>]` -> [`Action::CompletionTrigger`] (omni-completion)
 //! - `[<C-x>, <C-s>]` -> [`Action::SnippetExpand`]
@@ -42,7 +42,7 @@
 //! `<C-x>` itself is a *partial* trie node (no terminal binding;
 //! children only). Lookup at `[<C-x>]` returns
 //! [`LookupResult::Partial`]; [`dispatch_insert`] translates that
-//! into [`Action::SetPending(Pending::AfterCtrlX)`]. The next
+//! into `Action::SetPending(Pending::AfterCtrlX)`. The next
 //! keystroke arrives with `pending = AfterCtrlX` and the
 //! dispatcher reconstructs the two-chord sequence
 //! `[<C-x>, current_chord]` for the lookup.
@@ -53,7 +53,7 @@
 //! printable char that has no binding" stays a dispatcher default
 //! rather than a registered char wildcard. Lookup at an
 //! unmodified `Char(c)` returns [`LookupResult::Unbound`] in base
-//! Insert; the dispatcher's [`literal_text_fallback`] returns
+//! Insert; the dispatcher's private `literal_text_fallback` returns
 //! `Action::Insert(c.to_string())` (suppressing `CONTROL`-bearing
 //! chars to match legacy semantics). When the popup layer is
 //! pushed, its char-wildcard wins, so literal typing routes
@@ -390,7 +390,7 @@ pub fn active_snippet_layer_bindings(actions: &ActionIds) -> HashMap<BindingMode
 ///      specific chord. Any other partial path is defensive
 ///      `Action::None` (no caller can produce one with the
 ///      current catalog).
-///    - `Unbound` -> [`literal_text_fallback`] for printable
+///    - `Unbound` -> private `literal_text_fallback` for printable
 ///      chars without CONTROL; otherwise `Action::None`.
 pub fn dispatch_insert(
     handle: &KeymapHandle,

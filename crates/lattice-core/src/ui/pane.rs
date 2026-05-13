@@ -3,7 +3,7 @@
 //! v1 status (B.1.b): a recursive binary-split tree of leaf panes;
 //! each leaf stashes per-pane viewport state (cursor + scroll) for
 //! its content buffer. The *active* pane's cursor / scroll live on
-//! [`App`] directly so motion code keeps working unchanged --
+//! `App` directly so motion code keeps working unchanged --
 //! switching the active pane snapshots the App's fields back to the
 //! source pane's stash and loads the destination pane's stash into
 //! the App.
@@ -20,7 +20,9 @@
 //! are stable across the App's lifetime (never reused, even after
 //! close), so a stale pane index is detectable.
 //!
-//! [`App`]: crate::app::App
+//! `App` lives in `lattice-ui-tui` (the host crate); intra-doc
+//! links cross the crate boundary and aren't resolvable from
+//! `lattice-core` -- references stay as plain code-spans.
 
 use lattice_protocol::position::Position;
 
@@ -42,11 +44,8 @@ impl PaneId {
 
 /// One leaf in the pane tree. Carries the per-pane viewport state
 /// for its content buffer; switching the active pane swaps these
-/// fields with [`App::cursor`] / [`App::scroll`] so motion code
+/// fields with `App::cursor` / `App::scroll` so motion code
 /// stays unchanged.
-///
-/// [`App::cursor`]: crate::app::App::cursor
-/// [`App::scroll`]: crate::app::App::scroll
 #[derive(Debug, Clone, Copy)]
 pub struct PaneState {
     pub id: PaneId,
@@ -192,12 +191,11 @@ pub enum PaneDirection {
     Right,
 }
 
-/// The pane tree owned by [`App`] (DESIGN.md §5.9). v1 supports
+/// The pane tree owned by `App` (DESIGN.md §5.9, lives in
+/// `lattice-ui-tui`). v1 supports
 /// arbitrary recursive splits; the sole constraint is that the
 /// active pane must always exist (closing the last pane is a
 /// no-op so the App is never "paneless").
-///
-/// [`App`]: crate::app::App
 #[derive(Debug, Clone)]
 pub struct PaneTree {
     /// All leaves currently in the tree, indexed by position. Note:

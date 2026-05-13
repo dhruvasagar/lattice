@@ -66,7 +66,7 @@ impl App {
     /// Resolve a [`BufferDisplayCategory`] to a concrete
     /// [`BufferDisplay`]. Reads the per-category typed option
     /// (`:set <category>.display = ...`) and falls back to
-    /// [`default_display`] when the option resolves to
+    /// `default_display` when the option resolves to
     /// `BufferDisplayPreference::Default` (the implicit value
     /// when the user hasn't set it explicitly).
     ///

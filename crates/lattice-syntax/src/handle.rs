@@ -48,7 +48,7 @@
 //!   latest `buffer` and `text_version`, keeps the earliest
 //!   `from_version`. Preserves edit ordering across the burst;
 //!   the burst maps to a single `Parser::parse`. Coalesced edit
-//!   count is capped at [`MAX_INCREMENTAL_EDITS_PER_REQUEST`]
+//!   count is capped at `MAX_INCREMENTAL_EDITS_PER_REQUEST`
 //!   (256) to bound worst-case `tree.edit()` overhead;
 //!   pathological bursts fall through to full reparse.
 //! - **Wait-free reads.** The App / renderer / fold provider

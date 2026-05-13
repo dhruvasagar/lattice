@@ -223,7 +223,7 @@ impl LangRegistry {
     }
 
     /// Resolve the `tree_sitter::Language` for `name` (with the same
-    /// alias mapping as [`Self::config`]). Returned by value because
+    /// alias mapping as the other per-query lookups). Returned by value because
     /// `Language` is a cheap `Arc`-equivalent handle in tree-sitter
     /// 0.24+.
     pub fn tree_sitter_language(&self, name: &str) -> Option<Language> {

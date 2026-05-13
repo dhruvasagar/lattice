@@ -2238,16 +2238,47 @@ fn active_lsp_segment(app: &App) -> String {
     format!("{base} [{detail}]")
 }
 
+/// Resolve the active buffer's modeline label.
+/// Path -> registry `name` -> "[no name]". Mirrors
+/// `pane_status_label`'s fallback so the global modeline and
+/// per-pane status line agree on synthetic-buffer labels.
+pub(crate) fn modeline_label(app: &App, snap: &DocumentSnapshot) -> String {
+    snap.path()
+        .map(|p| p.display().to_string())
+        .or_else(|| {
+            app.buffers
+                .get(app.document_buffer_id)
+                .and_then(|e| e.name.clone())
+        })
+        .unwrap_or_else(|| "[no name]".to_string())
+}
+
+/// Whether the active buffer is a synthetic owner-streamed
+/// Document (`*lsp*`, `*messages*`, ...). Such buffers suppress
+/// the modified marker because the user can't "save" their
+/// streaming state.
+pub(crate) fn modeline_is_synthetic(app: &App) -> bool {
+    app.buffers
+        .get(app.document_buffer_id)
+        .map(|e| e.name.is_some())
+        .unwrap_or(false)
+}
+
 fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {
     // §5.6.8: the renderer reads through a single arc-swap
     // `Cache::load` per frame (loaded by the runtime) and reuses
     // that snapshot for the entire frame -- never round-trips the
     // actor.
-    let path = snap
-        .path()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "[no name]".to_string());
-    let dirty = if snap.dirty { "[+]" } else { "   " };
+    let path = modeline_label(app, snap);
+    // Suppress the `[+]` marker for synthetic buffers (owner-
+    // streamed, no user-actionable save semantic) -- mirrors the
+    // dirty-flag-suppression slice for pane_status_label / :ls /
+    // picker.
+    let dirty = if !modeline_is_synthetic(app) && snap.dirty {
+        "[+]"
+    } else {
+        "   "
+    };
     let pos = format!("{}:{}", app.cursor.line + 1, app.cursor.byte);
     let lang = Lang::detect_from_path(snap.path()).label();
     let mode_label = app.modal_label();
@@ -5409,6 +5440,36 @@ mod tests {
             <lattice_lsp::Uri as std::str::FromStr>::from_str("file:///tmp/x.rs").unwrap();
         app.buffer_uris.insert(app.document_buffer_id, fake_uri);
         assert_eq!(active_lsp_segment(&app), "");
+    }
+
+    #[test]
+    fn modeline_label_uses_synthetic_name_when_path_absent() {
+        // The bottom global modeline (`draw_mode_line`) must
+        // surface the buffer's synthetic name (`*lsp*`, etc.)
+        // when there is no path. Mirrors `pane_status_label`'s
+        // fallback so both modeline surfaces show the same label.
+        let mut app = App::new(Document::from_text(""));
+        // Activate *lsp* (created at boot via slice B).
+        let lsp_id = app.buffers.by_name("*lsp*").expect("*lsp* present");
+        app.activate_buffer(lsp_id);
+        let snap = app.document.snapshot();
+        let label = modeline_label(&app, &snap);
+        assert!(
+            label.contains("*lsp*"),
+            "modeline must surface synthetic name; got `{label}`"
+        );
+        // Synthetic buffers suppress the dirty marker.
+        assert!(modeline_is_synthetic(&app), "*lsp* is synthetic");
+    }
+
+    #[test]
+    fn modeline_label_falls_back_to_no_name_when_path_and_name_absent() {
+        let app = App::new(Document::from_text("hi"));
+        let snap = app.document.snapshot();
+        // Initial buffer has no path and no synthetic name.
+        let label = modeline_label(&app, &snap);
+        assert_eq!(label, "[no name]");
+        assert!(!modeline_is_synthetic(&app));
     }
 
     #[test]

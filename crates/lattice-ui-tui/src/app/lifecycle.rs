@@ -182,6 +182,16 @@ impl App {
                 return;
             }
         };
+        // Push the pre-jump cursor onto position history when
+        // switching to a *different* buffer, so `<C-o>` walks back
+        // automatically without every call site having to remember.
+        // Skip on no-op activations (already on this buffer), on
+        // picker previews (the user hasn't committed yet), and on
+        // duplicate entries (`push_position_history` coalesces).
+        if !self.previewing && id != self.active_pane_buffer_id() {
+            let cur = self.active_cursor();
+            self.push_position_history(cur, PositionSource::AutoJump);
+        }
         match kind {
             BufferKind::Document => self.activate_document(id),
             BufferKind::FileTree => self.activate_file_tree(id),
@@ -3141,6 +3151,31 @@ mod tests {
             label.contains("*lsp*"),
             "expected modeline to surface synthetic name, got `{label}`"
         );
+    }
+
+    #[test]
+    fn activate_buffer_pushes_position_history_so_ctrl_o_walks_back() {
+        // Switching to any buffer should push the pre-jump cursor
+        // onto position history automatically -- the user shouldn't
+        // have to remember to do this at every call site.
+        // `<C-o>` from the new buffer must walk back to the
+        // previous one's cursor.
+        let mut a = app_with("alpha\nbeta\ngamma\n", 10);
+        let initial = a.active_pane_buffer_id();
+        // Position cursor somewhere distinctive.
+        a.cursor = Position::new(1, 2);
+        // Boot creates *lsp* and *messages*; activate *lsp*.
+        let lsp_id = a.buffers.by_name("*lsp*").unwrap();
+        assert_ne!(initial, lsp_id);
+        a.activate_buffer(lsp_id);
+        // Position history should contain the pre-jump entry.
+        let last = a.position_history.last().expect("history entry");
+        assert_eq!(last.position, Position::new(1, 2));
+        assert_eq!(last.buffer_id, initial);
+        // `<C-o>` walks back to the original buffer.
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.active_pane_buffer_id(), initial);
+        assert_eq!(a.cursor, Position::new(1, 2));
     }
 
     #[test]

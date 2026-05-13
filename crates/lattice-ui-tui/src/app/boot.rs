@@ -579,6 +579,7 @@ impl App {
                 id: document_buffer_id,
                 handle: document.clone(),
             }),
+            name: None,
         });
         // M.3.2.c.4: seed the initial document's buffer-locals so
         // reader-side flips can route through the locals map for

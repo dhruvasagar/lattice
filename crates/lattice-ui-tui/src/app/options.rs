@@ -1286,6 +1286,7 @@ mod tests {
             id: other,
             flags: BufferFlags::default(),
             data: BufferData::Document(DocumentEntry { id: other, handle }),
+            name: None,
         });
         // Buffer-local: Number = false on `other`.
         let mut local = lattice_config::OptionOverrideSet::new();

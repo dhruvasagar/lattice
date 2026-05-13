@@ -111,6 +111,7 @@ pub(super) fn install_help(a: &mut App, h: HelpContent) {
             hidden: true,
         },
         data: crate::buffer_registry::BufferData::Help(buffer),
+        name: None,
     });
     a.popup_buffer = Some(id);
     a.active_buffer = BufferKind::Help;

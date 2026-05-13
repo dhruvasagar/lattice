@@ -1235,14 +1235,19 @@ pub(super) fn raw_buffer_candidates(
         let active_marker = if id == active { " (current)" } else { "" };
         let (body, kind_label) = match &entry.data {
             BufferData::Document(d) => {
-                let path = d
+                // Picker label: path -> registry name -> "[no name]".
+                // The registry's `name` slot lets synthetic buffers
+                // (`*lsp*`, `*messages*`) surface their label so users
+                // can type `*lsp*` to filter to them.
+                let label = d
                     .handle
                     .path()
                     .map(|p| p.display().to_string())
+                    .or_else(|| entry.name.clone())
                     .unwrap_or_else(|| "[no name]".to_string());
                 let dirty = if d.handle.dirty() { " [+]" } else { "" };
                 (
-                    format!("#{:<3} {path}{dirty}", id.0),
+                    format!("#{:<3} {label}{dirty}", id.0),
                     format!("doc{active_marker}"),
                 )
             }

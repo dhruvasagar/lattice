@@ -194,6 +194,7 @@ impl App {
             id: new_id,
             flags: BufferFlags::default(),
             data: BufferData::FileTree(tree),
+            name: None,
         });
         self.set_file_tree_entries(new_id, entries);
         self.activate_major_for_buffer_kind(new_id, BufferKind::FileTree);

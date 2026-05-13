@@ -152,6 +152,7 @@ impl App {
                 hidden: true,
             },
             data: crate::buffer_registry::BufferData::Help(buffer),
+            name: None,
         });
         self.popup_buffer = Some(buffer_id);
         self.popup_placement = placement;
@@ -199,6 +200,7 @@ impl App {
                 hidden: true,
             },
             data: crate::buffer_registry::BufferData::Help(buffer),
+            name: None,
         });
         self.popup_buffer = Some(buffer_id);
         self.popup_placement = placement;

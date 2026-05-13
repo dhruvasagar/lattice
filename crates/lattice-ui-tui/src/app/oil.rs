@@ -134,6 +134,7 @@ impl App {
             id: new_id,
             flags: BufferFlags::default(),
             data: BufferData::Oil(oil),
+            name: None,
         });
         self.activate_major_for_buffer_kind(new_id, BufferKind::Oil);
         self.snapshot_active_pane();

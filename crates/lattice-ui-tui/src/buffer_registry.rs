@@ -63,12 +63,23 @@ pub struct DocumentEntry {
 }
 
 /// One slot in the registry. The kind-specific data lives in
-/// [`BufferData`]; flags + id + label apply uniformly.
+/// [`BufferData`]; flags + id + name apply uniformly.
+///
+/// `name` is the buffer's synthetic display label when there is
+/// no physical file backing it. For path-backed Documents it
+/// stays `None` and the status line / picker fall back to the
+/// path. For synthetic buffers like `*lsp*`, `*messages*`, or
+/// `*lsp:rust-analyzer:lattice*`, the owning subsystem sets the
+/// name at construction time; the status line + `:ls` + buffer
+/// picker all surface that label uniformly. Help buffers carry
+/// their own `title` field (used by help-mode link / anchor
+/// machinery) and don't use `name`.
 #[derive(Debug)]
 pub struct BufferEntry {
     pub id: BufferId,
     pub flags: BufferFlags,
     pub data: BufferData,
+    pub name: Option<String>,
 }
 
 impl BufferEntry {
@@ -264,6 +275,20 @@ impl BufferRegistry {
         ids
     }
 
+    /// First buffer whose `name` matches exactly. Used by
+    /// subsystem-owned synthetic buffers (`*lsp*`, `*messages*`,
+    /// per-instance LSP log buffers) so re-running the
+    /// owner's create-or-activate path surfaces the existing
+    /// entry rather than allocating a duplicate.
+    pub fn by_name(&self, name: &str) -> Option<BufferId> {
+        for entry in self.by_id.values() {
+            if entry.name.as_deref() == Some(name) {
+                return Some(entry.id);
+            }
+        }
+        None
+    }
+
     /// First help buffer with the given title, if any. Used by the
     /// `:lsp-log` / `:lsp-trace-log` openers so re-running the
     /// command surfaces the existing buffer rather than allocating
@@ -396,6 +421,7 @@ mod tests {
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
             }),
+            name: None,
         });
         r.insert(BufferEntry {
             id: id_a,
@@ -406,6 +432,7 @@ mod tests {
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
             }),
+            name: None,
         });
         r.insert(BufferEntry {
             id: id_b,
@@ -416,6 +443,7 @@ mod tests {
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
             }),
+            name: None,
         });
         let sorted = r.sorted_ids();
         assert_eq!(sorted, vec![id_a, id_b, id_c]);
@@ -438,6 +466,7 @@ mod tests {
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
             }),
+            name: None,
         });
         r.insert(BufferEntry {
             id: id_b,
@@ -451,11 +480,43 @@ mod tests {
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
             }),
+            name: None,
         });
         let listed = r.listed_ids_sorted();
         assert_eq!(listed, vec![id_a]);
         let all = r.sorted_ids();
         assert_eq!(all, vec![id_a, id_b]);
+    }
+
+    #[test]
+    fn by_name_finds_entry_with_matching_synthetic_name() {
+        let mut r = BufferRegistry::new();
+        let id_lsp = BufferId::next();
+        let id_other = BufferId::next();
+        r.insert(BufferEntry {
+            id: id_lsp,
+            flags: BufferFlags::default(),
+            data: BufferData::FileTree(FileTreeBuffer {
+                id: id_lsp,
+                content: lattice_core::Buffer::empty(),
+                cursor: lattice_protocol::position::Position::ZERO,
+                scroll: 0,
+            }),
+            name: Some("*lsp*".to_string()),
+        });
+        r.insert(BufferEntry {
+            id: id_other,
+            flags: BufferFlags::default(),
+            data: BufferData::FileTree(FileTreeBuffer {
+                id: id_other,
+                content: lattice_core::Buffer::empty(),
+                cursor: lattice_protocol::position::Position::ZERO,
+                scroll: 0,
+            }),
+            name: None,
+        });
+        assert_eq!(r.by_name("*lsp*"), Some(id_lsp));
+        assert_eq!(r.by_name("nope"), None);
     }
 
     #[test]
@@ -475,6 +536,7 @@ mod tests {
                 cursor: lattice_protocol::position::Position::ZERO,
                 scroll: 0,
             }),
+            name: None,
         });
         assert_eq!(r.file_tree_ids(), vec![id]);
     }

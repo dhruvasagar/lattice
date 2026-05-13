@@ -522,6 +522,7 @@ impl App {
                 id: new_id,
                 handle: new_handle.clone(),
             }),
+            name: None,
         });
         // M.3.2.c.5: seed empty mode-state into the new buffer's
         // locals so reader accessors resolve uniformly.
@@ -775,14 +776,19 @@ impl App {
             let listed_marker = if entry.flags.listed { " " } else { "u" };
             match &entry.data {
                 BufferData::Document(d) => {
-                    let path = d
+                    // Path -> registry name -> "(no file)". Synthetic
+                    // Document buffers (`*lsp*`, `*messages*`, ...)
+                    // surface their name; path-backed ones surface
+                    // the path.
+                    let label = d
                         .handle
                         .path()
                         .map(|p| p.display().to_string())
+                        .or_else(|| entry.name.clone())
                         .unwrap_or_else(|| "(no file)".to_string());
                     let dirty = if d.handle.dirty() { "[+]" } else { "   " };
                     lines.push(format!(
-                        "  {active_marker}{listed_marker} #{:<3} doc  {dirty} {path}",
+                        "  {active_marker}{listed_marker} #{:<3} doc  {dirty} {label}",
                         id.0
                     ));
                 }
@@ -1136,19 +1142,26 @@ impl App {
         if let Some(provider) = self.pane_render_provider(pane.buffer_id) {
             return (provider.status)(self, pane);
         }
-        // Default path: document buffer.
-        self.buffers
-            .document(pane.buffer_id)
-            .map(|e| {
-                let path = e
-                    .handle
-                    .path()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "[no name]".to_string());
-                let dirty = if e.handle.dirty() { " [+]" } else { "" };
-                format!("{path}{dirty}")
-            })
-            .unwrap_or_else(|| "[no buffer]".to_string())
+        // Default path: document buffer. Label resolution is
+        // `path -> registry name -> "[no name]"`. The registry's
+        // `name` slot carries synthetic labels for buffers without
+        // a physical file (`*lsp*`, `*messages*`, ...); for
+        // path-backed Documents it stays None and the path wins.
+        let entry = self.buffers.get(pane.buffer_id);
+        let Some(entry) = entry else {
+            return "[no buffer]".to_string();
+        };
+        let Some(doc) = entry.document() else {
+            return "[no buffer]".to_string();
+        };
+        let label = doc
+            .handle
+            .path()
+            .map(|p| p.display().to_string())
+            .or_else(|| entry.name.clone())
+            .unwrap_or_else(|| "[no name]".to_string());
+        let dirty = if doc.handle.dirty() { " [+]" } else { "" };
+        format!("{label}{dirty}")
     }
 
     /// Jump to `path:line:col` (LSP 0-based line, utf-8 byte
@@ -1236,6 +1249,7 @@ impl App {
             id,
             flags: BufferFlags::default(),
             data: BufferData::Help(buffer),
+            name: None,
         });
         // M.3.1: activate help-mode for this buffer so its
         // ReadOnly = true contribution lands in the resolved
@@ -2571,6 +2585,7 @@ mod tests {
                 id: inactive_id,
                 handle: doc_handle,
             }),
+            name: None,
         });
         a.seed_empty_document_locals(inactive_id);
         // Read for the inactive buffer flows through locals; syntax
@@ -3048,5 +3063,32 @@ mod tests {
         assert_eq!(oil_descriptors[0].name, "oil-mode.dir");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn pane_status_label_falls_back_to_registry_name_for_synthetic_document() {
+        // Slice A: a Document with no path but a synthetic name
+        // (the shape `*lsp*`/`*messages*` will use once they migrate
+        // out of HelpContent) shows the name in the modeline.
+        let mut a = app_with("hi", 5);
+        let active = a.active_pane_buffer_id();
+        // Drop the existing entry; replace it with a no-path Document
+        // carrying a synthetic name. Reuse the same DocumentHandle
+        // because the test fixture's `app_with` already produces an
+        // unsaved buffer (`handle.path()` is None).
+        let handle = a.document.clone();
+        a.buffers.remove(active);
+        a.buffers.insert(BufferEntry {
+            id: active,
+            flags: BufferFlags::default(),
+            data: BufferData::Document(DocumentEntry { id: active, handle }),
+            name: Some("*lsp*".to_string()),
+        });
+        let pane = a.pane_tree.active().clone();
+        let label = a.pane_status_label(&pane);
+        assert!(
+            label.contains("*lsp*"),
+            "expected modeline to surface synthetic name, got `{label}`"
+        );
     }
 }

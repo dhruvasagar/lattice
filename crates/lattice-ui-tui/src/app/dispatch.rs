@@ -2219,6 +2219,7 @@ mod tests {
                 hidden: true,
             },
             data: crate::buffer_registry::BufferData::Help(buffer),
+            name: None,
         });
         a.popup_buffer = Some(id);
         a.apply(Action::EnterCommandLine);

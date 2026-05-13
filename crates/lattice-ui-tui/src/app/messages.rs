@@ -7,82 +7,115 @@
 //! `lattice-runtime` so any host-side crate (this TUI
 //! renderer, a future GPU renderer, plugins via the WIT
 //! bridge, telemetry hooks) can subscribe without taking a
-//! dep on `lattice-ui-tui`. This module owns only the
-//! renderer-side concerns: the `:messages` ex-command opens
-//! a help-style buffer rendered from the ring snapshot
-//! (display preference [`BufferDisplayCategory::Messages`],
-//! defaulting to `ActivePane`); the per-tick drain
-//! ([`App::drain_message_events`]) rebuilds the buffer view
-//! when at least one event landed.
+//! dep on `lattice-ui-tui`.
+//!
+//! ## Buffer model (Slice E)
+//!
+//! `*messages*` is a subsystem-owned Document buffer in the
+//! unified registry — the same shape as `*lsp*` and friends.
+//! Created eagerly at App boot so `:b *messages*` works the
+//! moment the editor starts; appended to via the per-tick drain
+//! that consumes [`lattice_runtime::MessagePushed`] events.
+//!
+//! - `name = Some("*messages*")` — surfaces in modeline, `:ls`,
+//!   `:b` picker.
+//! - `flags.listed = false` — `:bn`/`:bp` skip it (vim's
+//!   `nobuflisted` semantic) but `:b *messages*` and the picker
+//!   still reach it.
+//! - Major: `text-mode` + minor `read-only-mode` so user
+//!   keystrokes can't mutate the buffer; subsystem writes go
+//!   through `apply_edit_batch_blocking` which bypasses the
+//!   modal dispatcher's read-only gate.
+//! - `:w <path>` saves a snapshot to disk; the streaming buffer
+//!   continues to receive records.
 
 use crate::app::App;
-use crate::help::HelpContent;
-use lattice_core::ui::display::BufferDisplayCategory;
-use lattice_runtime::MessagesRing;
+use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
+use crate::buffers::{BufferFlags, BufferId};
 
-const MESSAGES_TITLE: &str = "messages";
+/// Synthetic name for the messages buffer in the registry.
+pub const MESSAGES_BUFFER_NAME: &str = "*messages*";
 
 impl App {
-    /// `:messages` -- open the `*messages*` buffer. If it's
-    /// already registered (a prior `:messages` left it in the
-    /// registry), refreshes its content from the current ring
-    /// and switches focus to it. Otherwise creates and opens.
+    /// `:messages` -- activate the `*messages*` Document buffer.
+    /// Drains any queued events first so the view is up to date.
     pub fn do_open_messages(&mut self) {
-        let content = build_messages_help(&self.messages);
-        self.display_buffer(content, BufferDisplayCategory::Messages);
+        self.drain_message_events();
+        let id = self.ensure_messages_buffer();
+        self.activate_buffer(id);
     }
 
-    /// Drain queued [`lattice_runtime::MessagePushed`] events; rebuild the
-    /// `*messages*` buffer once per tick if any landed. Called
-    /// from the runtime's per-frame tick. Coalescing matters
-    /// during bursts (LSP `$/progress` floods, batch echo):
-    /// the buffer rebuild is O(records) so doing it once per
-    /// tick keeps the cost bounded regardless of event rate.
+    /// Find-or-create the `*messages*` Document buffer.
+    /// Idempotent; first creation seeds the buffer with the
+    /// in-memory ring contents (so `:messages` after some
+    /// records have already accumulated shows the backlog).
+    /// Activates `text-mode` major + `read-only-mode` minor.
+    pub(crate) fn ensure_messages_buffer(&mut self) -> BufferId {
+        if let Some(id) = self.buffers.by_name(MESSAGES_BUFFER_NAME) {
+            return id;
+        }
+        let id = BufferId::next();
+        let document = lattice_core::Document::empty();
+        let handle = lattice_runtime::spawn_document(document, self.registry.clone());
+        self.buffers.insert(BufferEntry {
+            id,
+            // Synthetic buffer: same shape as `*lsp*` family
+            // (unlisted; reachable by name).
+            flags: BufferFlags {
+                listed: false,
+                hidden: false,
+            },
+            data: BufferData::Document(DocumentEntry { id, handle }),
+            name: Some(MESSAGES_BUFFER_NAME.to_string()),
+        });
+        self.seed_empty_document_locals(id);
+        // text-mode is the catch-all major; read-only-mode minor
+        // contributes ReadOnly = true so user-driven Insert /
+        // operator paths echo "buffer is read-only".
+        self.activate_major_by_id(id, lattice_mode::TextMode::mode_id());
+        self.activate_mode_by_id(id, lattice_mode::modes::ReadOnlyMode::mode_id());
+        // Seed with current ring contents so `:messages` after
+        // boot-time accumulation shows the backlog.
+        let backlog: String = self
+            .messages
+            .records()
+            .iter()
+            .map(format_message_record)
+            .map(|line| {
+                let mut s = line;
+                s.push('\n');
+                s
+            })
+            .collect();
+        if !backlog.is_empty() {
+            self.append_to_owned_buffer(id, &backlog);
+        }
+        id
+    }
+
+    /// Drain queued [`lattice_runtime::MessagePushed`] events;
+    /// append each formatted record to the `*messages*` buffer.
+    /// Called from the runtime's per-frame tick. Coalescing
+    /// matters during bursts (LSP `$/progress` floods, batch
+    /// echo): all records in a tick land in one
+    /// `apply_edit_batch` so the actor sees one edit per drain
+    /// regardless of event rate.
     pub fn drain_message_events(&mut self) {
         let Some(mut rx) = self.pending_message_event_rx.take() else {
             return;
         };
-        let mut received = false;
-        while rx.try_recv().is_ok() {
-            received = true;
+        let mut text = String::new();
+        while let Ok(ev) = rx.try_recv() {
+            text.push_str(&format_message_record(&ev.record));
+            text.push('\n');
         }
         self.pending_message_event_rx = Some(rx);
-        if !received {
+        if text.is_empty() {
             return;
         }
-        let Some(id) = self.buffers.help_with_title(MESSAGES_TITLE) else {
-            return;
-        };
-        let new_buf = build_messages_help(&self.messages);
-        self.replace_help_buffer_preserving_cursor(id, new_buf);
+        let id = self.ensure_messages_buffer();
+        self.append_to_owned_buffer(id, &text);
     }
-}
-
-/// Build a help-style view of the messages ring. Latest at
-/// the bottom (emacs's `*Messages*` convention -- new lines
-/// append, the cursor naturally trails); a one-line header
-/// names the buffer + records-vs-capacity bookkeeping. Empty
-/// rings show a hint instead of just whitespace.
-pub(crate) fn build_messages_help(ring: &MessagesRing) -> HelpContent {
-    let mut lines: Vec<String> = Vec::new();
-    lines.push(format!(
-        "# *messages* ({} of {} records)",
-        ring.len(),
-        ring.capacity(),
-    ));
-    lines.push(String::new());
-    if ring.is_empty() {
-        lines.push(
-            "(no messages yet -- every `:echo` / minibuffer notification \
-             lands here)"
-                .to_string(),
-        );
-    } else {
-        for r in ring.records().iter() {
-            lines.push(format_message_record(r));
-        }
-    }
-    HelpContent::from_lines(MESSAGES_TITLE, lines)
 }
 
 /// Render one record as `HH:MM:SS.mmm <level> <text>`. The
@@ -136,37 +169,6 @@ mod tests {
     use lattice_grammar::EchoLevel as WireLevel;
     use lattice_runtime::MessageRecord;
 
-    #[test]
-    fn build_messages_help_empty_renders_hint() {
-        let ring = MessagesRing::with_capacity(10);
-        let content = build_messages_help(&ring);
-        assert_eq!(content.buffer.title, MESSAGES_TITLE);
-        let body = content.buffer.content.as_string();
-        assert!(body.contains("(no messages yet"));
-    }
-
-    #[test]
-    fn build_messages_help_renders_records_in_order() {
-        let mut ring = MessagesRing::with_capacity(10);
-        ring.push(MessageRecord {
-            timestamp: std::time::SystemTime::UNIX_EPOCH,
-            level: WireLevel::Info,
-            text: "hello".into(),
-        });
-        ring.push(MessageRecord {
-            timestamp: std::time::SystemTime::UNIX_EPOCH,
-            level: WireLevel::Warn,
-            text: "watch out".into(),
-        });
-        let content = build_messages_help(&ring);
-        let body = content.buffer.content.as_string();
-        let hello_at = body.find("hello").expect("hello in body");
-        let warn_at = body.find("watch out").expect("warn in body");
-        assert!(hello_at < warn_at, "records render in arrival order");
-        assert!(body.contains(" INFO "));
-        assert!(body.contains(" WARN "));
-    }
-
     /// End-to-end check that `set_message` streams every echo
     /// over the event bus. Mirrors how a plugin (or any other
     /// renderer-agnostic subscriber) taps in: subscribe a
@@ -199,30 +201,74 @@ mod tests {
         );
     }
 
-    /// Live-tail: when the `*messages*` buffer is open, the
-    /// drain rebuilds its content from the ring on each
-    /// tick. Three echoes + one drain produce a buffer body
-    /// containing every record.
+    /// Live-tail: when the `*messages*` buffer exists, the drain
+    /// appends each event's record. Three echoes + one drain
+    /// produce a buffer body containing every record in order.
     #[test]
-    fn drain_message_events_refreshes_open_messages_buffer() {
+    fn drain_message_events_appends_to_messages_buffer() {
         use crate::app::test_helpers::app_with;
         let mut app = app_with("hi\n", 5);
-        app.do_open_messages();
-        let buffer_id = app
-            .buffers
-            .help_with_title(MESSAGES_TITLE)
-            .expect("messages buffer registered");
+        let buffer_id = app.ensure_messages_buffer();
         app.set_message(EchoLevel::Info, "alpha");
         app.set_message(EchoLevel::Warn, "bravo");
         app.drain_message_events();
         let body = app
             .buffers
-            .help(buffer_id)
-            .expect("messages help buffer")
-            .content
-            .as_string();
-        assert!(body.contains("alpha"));
-        assert!(body.contains("bravo"));
+            .document(buffer_id)
+            .expect("*messages* is a Document")
+            .handle
+            .text();
+        assert!(body.contains("alpha"), "got `{body}`");
+        assert!(body.contains("bravo"), "got `{body}`");
+    }
+
+    #[test]
+    fn messages_buffer_appears_in_buffer_registry_with_synthetic_name() {
+        // Slice E: `*messages*` is a Document in the unified
+        // registry; `:b *messages*` reaches it via name lookup.
+        use crate::app::test_helpers::app_with;
+        let mut app = app_with("hi\n", 5);
+        let id = app.ensure_messages_buffer();
+        assert_eq!(app.buffers.by_name(MESSAGES_BUFFER_NAME), Some(id));
+        let entry = app.buffers.get(id).expect("*messages* entry");
+        assert!(matches!(entry.data, BufferData::Document(_)));
+        assert_eq!(entry.name.as_deref(), Some(MESSAGES_BUFFER_NAME));
+        // Unlisted: `:bn`/`:bp` skip it.
+        assert!(!entry.flags.listed);
+    }
+
+    #[test]
+    fn do_open_messages_activates_messages_buffer() {
+        // Slice E: `:messages` switches the active pane to the
+        // `*messages*` buffer. Modeline shows the synthetic name.
+        use crate::app::test_helpers::app_with;
+        let mut app = app_with("hi\n", 5);
+        let initial = app.active_pane_buffer_id();
+        app.do_open_messages();
+        let msgs_id = app
+            .buffers
+            .by_name(MESSAGES_BUFFER_NAME)
+            .expect("*messages* present");
+        assert_ne!(initial, msgs_id);
+        assert_eq!(app.active_pane_buffer_id(), msgs_id);
+        let pane = app.pane_tree.active().clone();
+        let label = app.pane_status_label(&pane);
+        assert!(
+            label.contains("*messages*"),
+            "modeline must surface *messages*; got `{label}`"
+        );
+    }
+
+    #[test]
+    fn messages_buffer_is_read_only() {
+        use crate::app::test_helpers::app_with;
+        let mut app = app_with("hi\n", 5);
+        let id = app.ensure_messages_buffer();
+        let ro = *app.resolved_option::<lattice_config::ReadOnly>(id);
+        assert!(
+            ro,
+            "*messages* buffer must resolve ReadOnly = true via read-only-mode"
+        );
     }
 
     #[test]

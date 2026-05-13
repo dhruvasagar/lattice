@@ -1962,14 +1962,15 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("buffers help");
         let body = h.content.as_string();
-        // Three buffers total: the initial document, the file we
-        // opened, and the synthetic `*lsp*` log. `:ls` lists every
-        // entry regardless of `listed`; the unlisted marker `u`
-        // signals the user-toggleable cycle filter without
-        // suppressing the row.
-        assert!(body.contains("3 open buffer"));
-        assert!(body.contains("3 document"));
+        // Four buffers total: the initial document, the file we
+        // opened, and the synthetic `*lsp*` + `*messages*` log
+        // buffers. `:ls` lists every entry regardless of `listed`;
+        // the unlisted marker `u` signals the user-toggleable
+        // cycle filter without suppressing the row.
+        assert!(body.contains("4 open buffer"));
+        assert!(body.contains("4 document"));
         assert!(body.contains("*lsp*"));
+        assert!(body.contains("*messages*"));
         let _ = std::fs::remove_file(path);
     }
 

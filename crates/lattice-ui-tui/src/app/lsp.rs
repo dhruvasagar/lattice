@@ -1253,46 +1253,6 @@ impl App {
         self.lsp_progress_event_rx = Some(rx);
     }
 
-    /// Atomically replace a registry-tracked help buffer's body
-    /// with `new_content`, preserving the existing buffer id +
-    /// cursor + scroll so the user's view stays put across the
-    /// rebuild. Clamps cursor to the new content's line bounds.
-    /// Re-seeds the parsed metadata into `buffer_locals[id]` so
-    /// live-tail readers (links / anchors / highlights) reflect
-    /// the updated parse. Also syncs `App.popup_buffer` (the popup
-    /// hot-path mirror) when it points at the same id.
-    pub(crate) fn replace_help_buffer_preserving_cursor(
-        &mut self,
-        id: BufferId,
-        new_content: crate::help::HelpContent,
-    ) {
-        let crate::help::HelpContent {
-            buffer: mut new_buf,
-            metadata,
-        } = new_content;
-        let (cur, scr) = match self.buffers.help(id) {
-            Some(h) => (h.cursor, h.scroll),
-            None => return,
-        };
-        new_buf.id = id;
-        new_buf.cursor = cur;
-        new_buf.scroll = scr;
-        let line_count = new_buf.line_count();
-        if line_count > 0 && new_buf.cursor.line >= line_count {
-            new_buf.cursor.line = line_count - 1;
-        }
-        if let Some(slot) = self.buffers.help_mut(id) {
-            *slot = new_buf;
-        }
-        // M.3.2.c.5: refresh the locals so the renderer + link/
-        // anchor lookups see the updated parse.
-        self.seed_help_metadata_locals(id, metadata);
-        // M.4 (b): the popup hot-path slot is just the id; the
-        // registry copy was updated in place by `*slot = new_buf`
-        // above, so there's nothing further to sync.
-        let _ = id;
-    }
-
     /// Drain server-initiated `workspace/configuration` requests.
     /// Each request lands as a `lattice_lsp::InboundConfigurationRequest`
     /// carrying section paths + a oneshot for the response.

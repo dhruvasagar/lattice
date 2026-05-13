@@ -849,6 +849,11 @@ impl App {
         // pre-allocate slots for servers the user never opens a
         // matching file type for.
         app.ensure_lsp_subsystem_log_buffer();
+        // Slice E: `*messages*` follows the same pattern -- a
+        // Document buffer in the registry, read-only, owner-
+        // streamed via the MessagePushed event drain. Eager at
+        // boot so `:b *messages*` works from t=0.
+        app.ensure_messages_buffer();
         app
     }
 

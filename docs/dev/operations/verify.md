@@ -515,18 +515,26 @@ Open a `.rs` file (or any language with a configured server).
 User doc: [`user/lsp-mode.md`](../../user/lsp-mode.md) §
 "Sub-modes".
 
-With `lsp-mode` ON (cascade activates all 9 sub-modes):
+With `lsp-mode` ON (cascade activates all 15 sub-modes):
 
-- [ ] `:list-modes<CR>` shows all of `lsp-completion-mode`,
-      `lsp-diagnostics-mode`, `lsp-hover-mode`, `lsp-signature-mode`,
-      `lsp-format-mode`, `lsp-rename-mode`, `lsp-symbols-mode`,
-      `lsp-code-action-mode`, `lsp-nav-mode` as active
+- [ ] `:list-modes<CR>` shows every sub-mode active:
+      `lsp-completion-mode`, `lsp-diagnostics-mode`,
+      `lsp-hover-mode`, `lsp-signature-mode`, `lsp-format-mode`,
+      `lsp-rename-mode`, `lsp-symbols-mode`, `lsp-code-action-mode`,
+      `lsp-nav-mode`, `lsp-progress-mode`, `lsp-document-highlight-mode`,
+      `lsp-selection-range-mode`, `lsp-folding-mode`,
+      `lsp-inlay-hint-mode`, `lsp-semantic-tokens-mode`
 - [ ] `:lsp-hover-mode<CR>` toggles only hover off; `K` echoes
       "lsp-hover-mode disabled"
 - [ ] `:lsp-diagnostics-mode<CR>` off: diagnostics disappear from gutter,
       but other features still work
 - [ ] `:lsp-format-mode<CR>` off: `:lsp-format` echoes "lsp-format-mode disabled"
 - [ ] `:lsp-nav-mode<CR>` off: `gd` echoes "lsp-nav-mode disabled"
+- [ ] `:lsp-inlay-hint-mode<CR>` off: virtual-text inlay hints disappear
+- [ ] `:lsp-semantic-tokens-mode<CR>` off: server-driven highlight reverts to
+      tree-sitter colours
+- [ ] `:lsp-document-highlight-mode<CR>` off: the soft bg tint on uses of the
+      symbol under cursor disappears
 - [ ] Cycling `:lsp-mode<CR>` twice (off→on) resets every sub-mode to active
 
 ### Per-feature checks (with all sub-modes on)
@@ -545,8 +553,10 @@ With `lsp-mode` ON (cascade activates all 9 sub-modes):
 - [ ] `:lsp-code-action<CR>` opens the code-action picker
 - [ ] Typing `(` in a function call opens signature help
 - [ ] `:complete<CR>` (or insert-mode auto-trigger) opens completion popup
+- [ ] Typing inside a function on a server-advertised trigger character
+      (e.g. `}` in Rust) fires on-type formatting
 
-### Diagnostics
+### Diagnostics (push + pull)
 
 - [ ] Errors render with `■` glyph (red) in the gutter
 - [ ] Warnings with `▲` (yellow)
@@ -556,6 +566,108 @@ With `lsp-mode` ON (cascade activates all 9 sub-modes):
 - [ ] `]d` jumps to the next diagnostic
 - [ ] `[d` jumps to the previous
 - [ ] `:diagnostics<CR>` opens the diagnostics picker
+- [ ] `:cnext` / `:cprev` walk the quickfix-style cursor through diagnostics
+- [ ] On a server advertising pull (`textDocument/diagnostic`), edits trigger
+      a refresh without push notifications (verify in `:lsp-trace`:
+      `→ textDocument/diagnostic` after a doc-version change)
+
+### Advanced navigation (Phase 4.5)
+
+- [ ] `:lsp-incoming-calls<CR>` opens a picker of callers of the
+      function under the cursor (call hierarchy)
+- [ ] `:lsp-outgoing-calls<CR>` opens a picker of callees
+- [ ] `<C-t>` after either pops the tag stack back to the original site
+- [ ] `:lsp-supertypes<CR>` opens supertypes of the type under cursor
+- [ ] `:lsp-subtypes<CR>` opens subtypes
+- [ ] `:lsp-code-lens<CR>` opens a picker of code lenses (rust-analyzer
+      typically surfaces `Run`/`Debug`/`References` actions); accept fires
+      the lens command
+- [ ] `:lsp-moniker<CR>` echoes the cross-repo moniker(s) at the cursor
+      (scheme:identifier (kind) form)
+- [ ] `:lsp-color-presentation<CR>` on a color literal in CSS/SCSS opens a
+      picker of alternative representations; accept splices the chosen form
+- [ ] `gx` on a URL inside a doc-comment / markdown link follows the link
+      (file:// opens via `:e`; http:// goes through the OS handler)
+
+### Selection ranges (smart-expand)
+
+- [ ] `:lsp-expand-region<CR>` (or chord, if bound) widens Visual selection
+      to the next semantic range (token → expr → statement → block → fn)
+- [ ] `:lsp-shrink-region<CR>` walks back inward
+- [ ] Moving the cursor out of the chain invalidates it; next expand starts
+      fresh
+
+### Inline overlays
+
+- [ ] **Inlay hints**: type / parameter hints appear as italic dim virtual
+      text inside the line (e.g. `let x: i32 = ...` shows the `: i32`)
+- [ ] Scrolling far outside the cached window triggers a re-fetch (verify
+      via `:lsp-trace`: a fresh `inlayHint` round-trip on big jumps, none
+      on small scrolls)
+- [ ] **Semantic tokens**: server-driven highlight repaints the foreground
+      over tree-sitter; e.g. rust-analyzer marks unsafe / mutable / unused
+      tokens with distinct colours
+- [ ] After several edits, a `→ semanticTokens/full/delta` request appears
+      in the trace (proves delta path works; full + delta is in use)
+- [ ] **Document highlight**: parking the cursor on an identifier paints a
+      soft bg tint on every occurrence in the buffer (read = green-ish,
+      write = red-ish, text = blue-ish)
+- [ ] **LSP folding**: `:set foldmethod=lsp<CR>` switches to server-driven
+      folds; `zc` / `zo` work on server-provided fold regions (function
+      bodies, imports, etc.). Falls back to tree-sitter / indent when no
+      server advertises foldingRange.
+
+### Server-initiated UX
+
+- [ ] `:lsp-restart rust-analyzer<CR>` echoes "queued" then later reports
+      `restarted N actors, replayed N didOpens` in `:lsp-log`
+- [ ] An in-flight `cargo check` shows a `[rust-analyzer: <task>]` segment
+      in the modeline (progress accumulator)
+- [ ] `:lsp-progress-mode<CR>` off hides the modeline segment
+- [ ] `:lsp-progress-cancel rust-analyzer<CR>` sends a cancel notification
+      (verify via `:lsp-trace`: `→ window/workDoneProgress/cancel`)
+- [ ] A server `window/showMessage` lands as an `:echo` with severity
+      colour (rust-analyzer rarely fires one — easier to verify against
+      a misconfigured server)
+- [ ] `window/showMessageRequest` opens an action picker; accepting replies
+      with the chosen item; cancelling replies `null`
+- [ ] Server `window/showDocument` for a `file://` URI opens it via `:e`;
+      `external: true` delegates to `xdg-open` / `open` / `explorer`
+
+### Workspace events
+
+- [ ] Editing `~/.config/lattice/lattice.toml` to set
+      `lsp.rust-analyzer.checkOnSave.enable = false` then restarting fans
+      out a `workspace/didChangeConfiguration` notification to every
+      attached `rust-analyzer` actor (verify in `:lsp-trace`)
+- [ ] `:set lsp.rust-analyzer.checkOnSave.enable=true<CR>` cascades the
+      same notification at runtime
+- [ ] On a server that registers `workspace/didChangeWatchedFiles`
+      patterns (rust-analyzer registers `**/Cargo.toml`,
+      `**/*.rs`, etc.), externally touching a matched file (e.g.
+      `touch Cargo.toml` from a shell) fires a `→
+      workspace/didChangeWatchedFiles` notification in the trace
+- [ ] `:w` on a buffer at a path that didn't previously exist on disk
+      fires `→ workspace/didCreateFiles`
+- [ ] Dynamic capabilities: a server that registers e.g.
+      `textDocument/formatting` post-init via `client/registerCapability`
+      lights up `:lsp-format` even if static caps didn't advertise it
+      (verify via `:lsp-trace`: `← client/registerCapability` followed
+      by `:lsp-format` succeeding)
+
+### Logging & debugging
+
+- [ ] `:lsp-log<CR>` shows the aggregate subsystem log
+- [ ] `:lsp-log rust-analyzer<CR>` shows the per-server log
+- [ ] `:lsp-trace rust-analyzer<CR>` toggles JSON-RPC trace recording on;
+      a `$/setTrace` with `verbose` lands on the wire
+- [ ] `:lsp-trace-log rust-analyzer<CR>` opens the trace buffer; `←` /
+      `→` markers distinguish inbound vs. outbound
+- [ ] `:lsp-server-log rust-analyzer<CR>` opens the stderr-tail buffer
+- [ ] `:lsp-log-level rust-analyzer debug<CR>` flips the per-server level
+- [ ] `:lsp-log-clear<CR>` empties the log ring
+- [ ] `lsp.log_level = "debug"` in TOML applies at boot (verify with
+      `:lsp-log-level`)
 
 ---
 

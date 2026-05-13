@@ -68,7 +68,7 @@ Reasons this ordering wins:
 | 1     | Modal Editing                         | ✅ done                  | Modal engine, full chord routing, motions / operators / text objects / counts / registers / marks / macros / dot-repeat (incl. insert-replay) / search (incl. hlsearch + substitute live preview) / folds / ex-commands (every command -- including `:s` / `:g` / `:v` via `Args::List` -- registered as `ExCommandSpec` peers, dispatched through unified `grammar::execute()` per §5.2.1, §B.2). Blockwise visual: per-row dispatch for `d` / `y` / `c` plus blockwise paste; `>` / `<` indent each line in the block; `I` / `A` enter Insert at the block's left/right column with the typed prefix replicated to every row on Esc. Every operator lands as a single undo unit -- counts on linewise ops (`2dd`, `2>>`), block-visual rectangle ops, and I/A replications all collapse to one `u`. |
 | 2     | Terminal UI Bootstrap                 | ✅ done                  | crossterm + ratatui; modal cursor; mode line; gutter                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | 3     | Tree-Sitter                           | ✅ done (Rust/Python/JS/Markdown) + Option B incremental reparse | Highlights wired through a shared `LangRegistry` (process-wide `Arc`); injection callback resolves fenced ` ```rust ``` ` blocks in markdown to the rust config (and any registered language to its config) without per-document copies. Markdown is the dual-grammar split (block + inline). Grammar extension API used by builtins, not yet by plugins. New `Style` variants (`Heading1..6`, `Bold`, `Italic`, `Link`, `Url`, `MarkupRaw`, `Markup`) for precise theme targeting. **Option B (B.1–B.5) lit up incremental reparse + frame-level span cache** — see "Option B: incremental reparse + span cache" below. |
-| 4     | LSP                                   | 🚧 in progress (4.2)      | `lattice-lsp` crate: wire layer + per-server actor + document sync + diagnostics broadcast + supervisor + App-side wiring + edit-dispatch + open-on-`:e` (Phase 4.1 complete). Phase 4.2 navigation **9/12 + 1 partial**: hover, definition family (`gd`/`gD`/`gy`/`gI`), references (`gr`), symbols (`:lsp-symbols` / `:lsp-workspace-symbol`), completion picker bridge (`:complete`). Phase 4.3 edits **9/9 shipped**: formatting + rangeFormatting + onTypeFormatting; signatureHelp + Insert-mode autopilot; rename + prepareRename; codeAction + resolve + executeCommand; willSave + willSaveWaitUntil (format-on-save) + didSave. Tag stack `<C-t>` pops `gd`-family drill-downs (distinct from `<C-o>`/`<C-i>` jump list). All multi-result LSP lookups + `:diagnostics` route through one vertico picker. Cancellation tokens plumbed through every wrapper. Remaining 4.2: Insert-mode completion shell + completionItem/resolve + workspaceSymbol/resolve. Remaining 4.3 polish: workspace/applyEdit (server-initiated channel). Then 4.4 polish, 4.5 expansion. |
+| 4     | LSP                                   | 🚧 in progress (4.5 — wire complete; 3 trigger-UX rows deferred) | `lattice-lsp` crate plus full App-side wiring across five phases. **4.1** foundation: wire + actor + handshake + utf-8/16/32 doc sync + diagnostics broadcast + supervisor + edit-dispatch + open-on-`:e`. **4.2** navigation: hover (`K`), definition family (`gd`/`gD`/`gy`/`gI`), references (`gr`), symbols (`:lsp-symbols` / `:lsp-workspace-symbol` w/ resolve), completion (Insert-mode shell + LSP source + docs popup + `completionItem/resolve` + snippets + ranking + per-language overrides + tree-sitter symbols + path source + commit chars + ghost text + cross-source dedup). **4.3** edits: formatting + rangeFormatting + onTypeFormatting; signatureHelp + Insert autopilot; rename + prepareRename; codeAction + resolve + executeCommand; willSave + willSaveWaitUntil (format-on-save) + didSave; `workspace/applyEdit` inbound channel. **4.4** polish: `window/showMessage` + `showMessageRequest` + `showDocument`, `$/progress` + modeline + cancel, `:lsp-restart`, `documentHighlight` overlay, `selectionRange` + `:lsp-expand/shrink-region`, `foldingRange` + `FoldMethod::Lsp` + `lsp-folding-mode`, `inlayHint` virtual-text overlay, `semanticTokens/full` + `/full/delta` overlay, `textDocument/diagnostic` pull, `workspace/didChangeConfiguration` fan-out from typed-option cascade, `workspace/didChangeWatchedFiles` (notify watcher + globset matcher), `workspace/didCreateFiles`, dynamic `registerCapability` / `unregisterCapability` two-way index, `lsp.log_level` / `lsp.log_capacity` TOML. **4.5** expansion (wire + host complete): call hierarchy (`:lsp-incoming-calls` / `:lsp-outgoing-calls`), type hierarchy (`:lsp-supertypes` / `:lsp-subtypes`), `documentLink` + resolve (`gx`), `codeLens` + resolve (`:lsp-code-lens`), `documentColor` + `colorPresentation` (`:lsp-color-presentation`), `moniker` (`:lsp-moniker`). **Strong-reason deferred at the trigger UX layer**: `linkedEditingRange` (needs shadow-edit machinery), `inlineValue` (needs DAP), `inlineCompletion` (lsp-types `proposed` flag); `willRenameFiles` / `willDeleteFiles` / `inlayHint/resolve` (need editor-driven rename/delete + inlay-interaction UX). All multi-result LSP lookups + `:diagnostics` route through one vertico picker. Cancellation tokens plumbed through every wrapper. M.6 sub-mode cascade: 15 sub-modes (completion, diagnostics, hover, signature, format, rename, symbols, code-action, nav, progress, document-highlight, selection-range, folding, inlay-hint, semantic-tokens) toggle individually or via the `lsp-mode` umbrella. Per-feature matrix in [`../notes/lsp-features.md`](../notes/lsp-features.md). |
 | 5     | GPU Rendering Foundation              | ⛔ not started           | TUI is the live renderer for v1; GPU is a separate paint surface                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | 6     | Document Renderer + UI Components     | ⛔ not started           | Popups, pickers, panels-as-buffers all live in §5.9                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 7     | Plugin Host                           | ⛔ not started           | wasmtime + Component Model + WIT scaffolding                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -77,30 +77,38 @@ Reasons this ordering wins:
 | 9     | Rich Buffer Rendering                 | ⛔ not started           | Per-line shaped path, Fenwick height index                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 10    | Polish + v1.0                         | ⛔ not started           | `*scratch:rust*` live-eval workflow (§10), accessibility, packaging, themes                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
-Active focus: **Phase 4 (LSP) -- foundation 4 commits in.** The
-§5.2.1 async-dispatcher refactor (`Pending<T>`) and the §5.6.8
-render-snapshot model live in `lattice-runtime`; the actor +
-arc-swap publish/load contract is in place. `lattice-lsp` ships
-the wire layer, per-server actor with capability handshake,
-document sync (utf-8/utf-16/utf-32 column conversion), and a
-diagnostics broadcast bus -- everything needed for the editor
-to attach servers and receive diagnostics.
+Active focus: **Phase 4 (LSP) wind-down → Phase 7 (Plugin Host)
+on deck.** Phases 4.1–4.5 are wire-and-host complete; the
+remaining LSP rows are all "strong-reason defer at the trigger
+UX layer" (linkedEditingRange, inlineValue, inlineCompletion,
+willRename/willDelete, inlayHint/resolve) -- each blocked on
+host UX design that doesn't belong inside Phase 4.
 
-LSP docs are now comprehensive across audiences: design-doc
-readers (`../architecture/design.md` §5.4), implementers / contributors
-([`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md)), users
-([`../../user/lsp.md`](../../user/lsp.md)), and per-feature trackers
-([`../notes/lsp-features.md`](../notes/lsp-features.md) -- every LSP 3.17
-capability with status).
+The natural next architectural step is **Phase 7 (Plugin
+Host)**: paramount goal #2 (extensibility) is the most-deferred
+goal today, and Phase 8 (modes-as-plugins), Phase 8b (bundled
+plugins), and the user `init.rs` → WASM config path all gate on
+it. The rustfmt + rustdoc cleanup just landed gives the WIT
+surface a clean baseline to grow against.
 
-Roadmap: 4.1.a wire (done) → 4.1.b actor + handshake (done) →
-4.1.c document sync (done) → 4.1.d.i diagnostics routing (done)
-→ 4.1.d.ii decoration layer → 4.1.d.iii renderer integration
-(gutter glyphs + underlines) → 4.1.d.iv `:diagnostics` buffer
-view → 4.1.e final doc polish → 4.2 navigation → 4.3 edits →
-4.4 polish (semantic tokens, inlay hints, folding, document
-highlight) → 4.5 expansion (call/type hierarchy, code lens,
-inline completion).
+LSP docs are comprehensive across audiences: design-doc readers
+(`../architecture/design.md` §5.4), implementers
+([`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md)),
+users ([`../../user/lsp.md`](../../user/lsp.md) +
+[`../../user/lsp-mode.md`](../../user/lsp-mode.md)), per-feature
+trackers ([`../notes/lsp-features.md`](../notes/lsp-features.md) --
+every LSP 3.17 capability with status), and a manual verification
+checklist ([`verify.md`](verify.md) §17–18 covering all 15
+sub-modes + 4.4/4.5 features).
+
+Phase 4 roadmap (history): 4.1 wire + actor + sync + diagnostics →
+4.2 navigation + completion → 4.3 edits (rename / format / code
+action / will-save) → 4.4 polish (semantic tokens delta, inlay
+hints, folding, document highlight, selection range, pull
+diagnostics, dynamic registration, file watcher, configuration
+fan-out, progress, server-initiated UX) → 4.5 expansion (call /
+type hierarchy, code lens, document link, document color,
+moniker).
 
 ---
 

@@ -37,20 +37,29 @@ asynchronicity.
 
 | Feature               | What it does                                                                                                                                                                                       |
 |-----------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Diagnostics**       | Errors, warnings, hints rendered as gutter glyphs + inline underlines, plus a `:diagnostics` buffer for the full list.                                                                             |
-| **Hover**             | Press `K` on a symbol to see its type signature, doc comment, or runtime info in a popup.                                                                                                          |
-| **Go-to-definition**  | `gd` jumps to where a symbol is defined; `gD` for declaration; `gy` for type definition; `gI` for implementations. The position-history ring (§5.1.1) records each jump so `<C-o>` walks back.     |
-| **Find references**   | `gr` opens a buffer-backed list of every reference; navigate it with `j` / `k` and `<CR>` to jump.                                                                                                 |
-| **Outline**           | `:outline` opens the document's symbol tree as a buffer pane. Standard motions (`j` / `k` / `gg` / `G` / search) all work.                                                                         |
-| **Workspace symbols** | `<Space>s` (or `:wsym`) opens a fuzzy picker over every symbol in the workspace.                                                                                                                   |
-| **Completion**        | Triggered automatically in Insert mode; lattice's completion pipeline merges LSP suggestions with grammar-driven completions. Snippet expansion, label details, and lazy resolution all supported. |
-| **Signature help**    | Function-call popup with parameter highlighting. Triggers automatically after `(` or `,` in supported languages.                                                                                   |
-| **Code actions**      | `<Space>a` opens a picker of available quick fixes / refactors. Multi-file edits apply atomically.                                                                                                 |
-| **Rename**            | `<F2>` renames the symbol under cursor across every file in the workspace.                                                                                                                         |
-| **Format**            | `=G` formats the buffer; `=` operator formats motions / objects; `:format` formats the active selection.                                                                                           |
-| **Inlay hints**       | Type annotations, parameter names, and lifetime hints rendered as ghost text inside the buffer. Toggle with `:set inlayhints` or `<Space>tih`.                                                     |
-| **Semantic tokens**   | LSP-aware syntax highlighting that augments tree-sitter (e.g. distinguishes mutable vs immutable bindings, type vs value namespaces).                                                              |
-| **Folding**           | LSP-provided fold ranges merge into the fold engine — see [`folding.md`](folding.md).                                                                                                              |
+| **Diagnostics**             | Errors, warnings, hints rendered as gutter glyphs + inline underlines, plus a `:diagnostics` buffer for the full list. Pull-mode (`textDocument/diagnostic`) is used when the server advertises it; push is used otherwise.                                       |
+| **Hover**                   | Press `K` on a symbol to see its type signature, doc comment, or runtime info in a popup.                                                                                                                                                                          |
+| **Go-to-definition**        | `gd` jumps to where a symbol is defined; `gD` for declaration; `gy` for type definition; `gI` for implementations. The position-history ring (§5.1.1) records each jump so `<C-o>` walks back; `<C-t>` pops the tag stack distinct from the jump list.            |
+| **Find references**         | `gr` opens a vertico picker of every reference; navigate with `j` / `k` and `<CR>` to jump.                                                                                                                                                                       |
+| **Document symbols**        | `:lsp-symbols` opens the document's symbol picker (Flat and Nested response shapes both supported).                                                                                                                                                               |
+| **Workspace symbols**       | `:lsp-workspace-symbol [query]` opens a fuzzy picker over workspace symbols across every attached server.                                                                                                                                                          |
+| **Completion**              | Triggered automatically in Insert mode; merges LSP suggestions with buffer-words, snippets, tree-sitter symbols, and path completion. Snippet expansion, lazy `completionItem/resolve`, ghost text, and commit chars all supported.                              |
+| **Signature help**          | Function-call popup with parameter highlighting. Triggers automatically after `(` or `,` in supported languages.                                                                                                                                                  |
+| **Code actions**            | `:lsp-code-action` (alias `:ca`) opens a picker of available quick fixes / refactors. Lazy `codeAction/resolve` runs when needed; `Command` payloads route through `workspace/executeCommand`; multi-file edits apply per-file as one undo unit each.             |
+| **Rename**                  | `:lsp-rename <new-name>` (alias `:rn`) renames across the workspace; `prepareRename` pre-populates the new name when applicable.                                                                                                                                  |
+| **Format**                  | `:lsp-format` formats the whole buffer; `:lsp-format-range` formats the active Visual selection; on-type formatting fires automatically after server-advertised trigger characters in Insert mode. Format-on-save flows through `willSaveWaitUntil`.              |
+| **Document highlight**      | Parking the cursor on an identifier paints a soft bg tint on every occurrence (read / write / text variants). Gated by `lsp-document-highlight-mode`.                                                                                                              |
+| **Inlay hints**             | Type annotations, parameter names, lifetime hints rendered as italic dim virtual text. Gated by `lsp-inlay-hint-mode` (toggle with `:lsp-inlay-hint-mode`).                                                                                                       |
+| **Semantic tokens**         | LSP-aware syntax highlighting that augments tree-sitter (e.g. distinguishes mutable vs immutable bindings, type vs value namespaces). `full` + `full/delta` paths both used. Gated by `lsp-semantic-tokens-mode`.                                                |
+| **Folding**                 | `:set foldmethod=lsp` uses server-driven folds via `textDocument/foldingRange`; gated by `lsp-folding-mode`. See [`folding.md`](folding.md).                                                                                                                       |
+| **Selection range**         | `:lsp-expand-region` widens Visual selection to the next semantic range (token → expr → block → fn); `:lsp-shrink-region` walks back. Gated by `lsp-selection-range-mode`.                                                                                       |
+| **Call hierarchy**          | `:lsp-incoming-calls` / `:lsp-outgoing-calls` open pickers of callers / callees at the cursor.                                                                                                                                                                    |
+| **Type hierarchy**          | `:lsp-supertypes` / `:lsp-subtypes` open pickers of super / sub types at the cursor.                                                                                                                                                                              |
+| **Code lens**               | `:lsp-code-lens` opens a picker of code lenses (rust-analyzer surfaces `Run` / `Debug` / `References`); accept fires the lens command.                                                                                                                            |
+| **Document links**          | `gx` on a URL inside a doc-comment / markdown link follows it (`file://` via `:e`; external URIs via the OS handler).                                                                                                                                             |
+| **Document color**          | `:lsp-color-presentation` on a color literal opens a picker of alternative representations; accept splices the chosen form.                                                                                                                                       |
+| **Moniker**                 | `:lsp-moniker` echoes the cross-repo moniker(s) at the cursor (scheme:identifier (kind) form) — niche feature aimed at code-indexer / cross-repo workflows.                                                                                                       |
+| **Progress**                | Server `$/progress` notifications accumulate per `(server_id, token)`; the most-recent active entry surfaces in the modeline `[<server>: <task>]` segment. `:lsp-progress-cancel <server>` cancels cancellable entries. Gated by `lsp-progress-mode`.            |
 
 The full feature matrix (every LSP 3.17 capability + status)
 lives in [`../dev/notes/lsp-features.md`](../dev/notes/lsp-features.md).
@@ -155,7 +164,7 @@ references-picker rows, diagnostics jumps, etc.).
 | `:lsp-symbols`               | `textDocument/documentSymbol` -- the active document's outline; nested DocumentSymbol responses keep their hierarchy as picker indent. |
 | `:lsp-workspace-symbol [q]`  | `workspace/symbol` -- workspace-scoped symbols matching `q` (server-side substring filter). Empty `q` returns the server's idea of "every workspace symbol". Fans out across **every running server**, not just the active buffer's. |
 | `:diagnostics`               | Every workspace diagnostic across attached servers; severity in marginalia.   |
-| `:complete`                  | LSP completion items at the cursor (`textDocument/completion`). Plain-text insert; snippet expansion + lazy `completionItem/resolve` queued behind buffer-level Insert-mode completion. |
+| `:complete`                  | LSP completion items at the cursor (`textDocument/completion`) — the cmdline-driven peer of the Insert-mode auto-trigger. Full surface: snippet expansion, lazy `completionItem/resolve`, ranking, ghost text, commit chars, cross-source dedup. |
 
 ### Edits
 
@@ -517,10 +526,19 @@ not yet supported (multi-root workspace folders are post-1.0).
 
 ### Toggling features off
 
-`:set nodiagnostics`, `:set noinlayhints`, `:set nosemtokens`
-disable specific feature renderers without detaching the
-server (so go-to-definition still works). Useful for visual
-decluttering on screens.
+Every LSP feature has a sub-mode (M.6 cascade). The full list
+lives in [`lsp-mode.md`](lsp-mode.md); common ones:
+
+- `:lsp-diagnostics-mode` — hides gutter glyphs + inline underlines
+- `:lsp-inlay-hint-mode` — hides inlay-hint virtual text
+- `:lsp-semantic-tokens-mode` — reverts to tree-sitter highlighting
+- `:lsp-document-highlight-mode` — hides the cursor-symbol tint
+- `:lsp-hover-mode` — disables `K`
+
+Toggling a sub-mode off leaves the server attached -- other
+features keep working. To detach entirely, use `:lsp-mode` (the
+umbrella). Re-toggling `:lsp-mode` twice (off→on) resets every
+sub-mode to active.
 
 ---
 

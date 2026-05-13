@@ -28,6 +28,13 @@ lattice-completion = { path = "../lattice-completion" }
 # typed events via `ctx.events()`. The event bus type lives in
 # `lattice-runtime`.
 lattice-runtime = { path = "../lattice-runtime" }
+# B'.1 mode-owns-its-buffers: modes synthesize buffers (e.g.
+# LspLogMode creates `*lsp*`) via a `BufferStore` service. The
+# host-facing trait lives here so any mode crate can pull it;
+# the concrete impl is owned by the renderer crate
+# (lattice-ui-tui) and registered into `ServiceRegistry` at boot.
+# Direct dep on lattice-core for BufferId / BufferFlags.
+lattice-core = { path = "../lattice-core" }
 
 [lints]
 workspace = true

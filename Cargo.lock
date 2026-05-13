@@ -971,6 +971,7 @@ dependencies = [
  "internment",
  "lattice-completion",
  "lattice-config",
+ "lattice-core",
  "lattice-protocol",
  "lattice-runtime",
  "smallvec",

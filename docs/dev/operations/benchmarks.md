@@ -43,84 +43,124 @@ better.
 
 ## §8.2 commitments at a glance
 
-| §8.2 row                                     | Target (v1) | Today            | Bench                                                 | Status                                               |
-|----------------------------------------------|-------------|------------------|-------------------------------------------------------|------------------------------------------------------|
-| Snapshot load (`load_full`)                  | <20ns       | **16ns**         | `runtime::snapshot_load`                              | ✅ at floor for `load_full` semantics                |
-| Snapshot load (`Cache::load`, steady)        | <500ps      | **290ps**        | `runtime::snapshot_load_cached`                       | ✅ ~55× faster than `load_full`; sub-nanosecond      |
-| Snapshot publish standalone                  | <500ns      | **95ns**         | `runtime::snapshot_publish_standalone`                | ✅ at the floor (~80ns)                              |
-| Status segment update                        | <100ns      | **56ns**         | `runtime::status_segment_update`                      | ✅ at the floor                                      |
-| Apply-edit round-trip                        | <100µs      | **77µs**         | `runtime::apply_edit_round_trip`                      | ✅ scheduler-bound; sync fast-path is the next lever |
-| Dispatch round-trip (small buffer)           | <100µs      | 79–91µs          | `runtime::dispatch_round_trip`                        | ✅ same envelope as apply-edit                       |
-| Frame render TUI 80×24 (highlight + compose) | <500µs      | ~199µs (184 + 15) | `highlight::rust_viewport` + `render::frame_24_lines` | ✅ under target                                      |
-| Frame render TUI 200×60                      | <800µs      | ~307µs (261 + 46) | `highlight::rust_viewport` + `render::frame_60_lines` | ✅ under target                                      |
-| Open 100MB log (rope construction)           | <100ms      | 74ms             | `buffer::open_large/100mb`                            | ✅ under target                                      |
-| Search literal worst-case 200k               | <2ms        | **749µs**        | `search::no_match_with_wrap/200k`                     | ✅ under target; ~14% above prior baseline -- see "Regressions" below |
-| Tree-sitter incremental reparse              | scale-by-size | **293µs (1600 lines), 1.46ms (16k lines)** | `highlight::reparse_incremental_single_char_change` | ✅ landed (B.2); ~8–16× under full reparse. tree.edit is O(num_nodes) — floor scales with tree size. See Slice B.2 calibration below. |
-| Highlight span cache hit (steady-state)      | <50ns       | **21ns**         | `render::refresh_highlights_cache_hit`                | ✅ at floor (B.3); ~8900× faster than the pre-B.3 path. |
-| Reflex motion / operator                     | <2ms        | **mostly under; `d_whole/50000` blew through to 6.66ms (was 1.23ms)** | `motion::*`, `operator::*`                            | ⚠️ regression -- see "Regressions" below       |
-| LSP framing parse (Content-Length)           | <500ns      | **68ns**         | `lsp::framing::parse_header_block`                    | ✅ Background-class                                  |
-| LSP encode `didChange`                       | <2µs        | **183ns**        | `lsp::encode::did_change`                             | ✅ per-keystroke debounced outgoing                  |
-| LSP decode `publishDiagnostics`              | <10µs       | **1.50µs**       | `lsp::decode::publish_diagnostics`                    | ✅ per-save inbound                                  |
-| LSP utf-16 column conversion (CJK line)      | <1µs        | **21ns**         | `lsp::position::utf16_cjk_line`                       | ✅ never shows up in flame graphs                    |
+| §8.2 row                                     | Target (v1)   | Today                                                                 | Bench                                                 | Status                                                                                                                                |
+|----------------------------------------------|---------------|-----------------------------------------------------------------------|-------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
+| Snapshot load (`load_full`)                  | <20ns         | **16ns**                                                              | `runtime::snapshot_load`                              | ✅ at floor for `load_full` semantics                                                                                                 |
+| Snapshot load (`Cache::load`, steady)        | <500ps        | **290ps**                                                             | `runtime::snapshot_load_cached`                       | ✅ ~55× faster than `load_full`; sub-nanosecond                                                                                       |
+| Snapshot publish standalone                  | <500ns        | **95ns**                                                              | `runtime::snapshot_publish_standalone`                | ✅ at the floor (~80ns)                                                                                                               |
+| Status segment update                        | <100ns        | **56ns**                                                              | `runtime::status_segment_update`                      | ✅ at the floor                                                                                                                       |
+| Apply-edit round-trip                        | <100µs        | **77µs**                                                              | `runtime::apply_edit_round_trip`                      | ✅ scheduler-bound; sync fast-path is the next lever                                                                                  |
+| Dispatch round-trip (small buffer)           | <100µs        | 79–91µs                                                               | `runtime::dispatch_round_trip`                        | ✅ same envelope as apply-edit                                                                                                        |
+| Frame render TUI 80×24 (highlight + compose) | <500µs        | ~199µs (184 + 15)                                                     | `highlight::rust_viewport` + `render::frame_24_lines` | ✅ under target                                                                                                                       |
+| Frame render TUI 200×60                      | <800µs        | ~307µs (261 + 46)                                                     | `highlight::rust_viewport` + `render::frame_60_lines` | ✅ under target                                                                                                                       |
+| Open 100MB log (rope construction)           | <100ms        | 74ms                                                                  | `buffer::open_large/100mb`                            | ✅ under target                                                                                                                       |
+| Search literal worst-case 200k               | <2ms          | **749µs**                                                             | `search::no_match_with_wrap/200k`                     | ✅ under target; ~14% above prior baseline -- see "Regressions" below                                                                 |
+| Tree-sitter incremental reparse              | scale-by-size | **293µs (1600 lines), 1.46ms (16k lines)**                            | `highlight::reparse_incremental_single_char_change`   | ✅ landed (B.2); ~8–16× under full reparse. tree.edit is O(num_nodes) — floor scales with tree size. See Slice B.2 calibration below. |
+| Highlight span cache hit (steady-state)      | <50ns         | **21ns**                                                              | `render::refresh_highlights_cache_hit`                | ✅ at floor (B.3); ~8900× faster than the pre-B.3 path.                                                                               |
+| Reflex motion / operator                     | <2ms          | mostly under; `d_whole/50000` ≈ 3ms on this host (bench environment drift, not code) | `motion::*`, `operator::*`                            | ⚠️ host-env regression -- bisect attributes the 1.23ms→3ms drift to WSL2 host state, not lattice code. See "Bench environment drift" below. |
+| LSP framing parse (Content-Length)           | <500ns        | **68ns**                                                              | `lsp::framing::parse_header_block`                    | ✅ Background-class                                                                                                                   |
+| LSP encode `didChange`                       | <2µs          | **183ns**                                                             | `lsp::encode::did_change`                             | ✅ per-keystroke debounced outgoing                                                                                                   |
+| LSP decode `publishDiagnostics`              | <10µs         | **1.50µs**                                                            | `lsp::decode::publish_diagnostics`                    | ✅ per-save inbound                                                                                                                   |
+| LSP utf-16 column conversion (CJK line)      | <1µs          | **21ns**                                                              | `lsp::position::utf16_cjk_line`                       | ✅ never shows up in flame graphs                                                                                                     |
 
 ---
 
-## Regressions in this run (2026-05-13)
+## Bench environment drift — not a code regression (2026-05-13)
 
-Captured against the prior numbers in this file (2026-05-03). The
-window between runs landed Phase 4.4.k–4.4.n + Phase 4.5.a–4.5.i
-LSP slices plus the file-watcher service; no perf-oriented work in
-this window. Most rows moved within ±5% (noise floor on WSL2);
-the standouts:
+Comparing this run against the numbers captured on 2026-05-03,
+several rows look like regressions on paper. **A targeted bisect
+on the headline candidate (`operator::d_whole/50000`) showed the
+"regression" is environmental, not code-attributable.**
 
-### ⚠️ `operator::d_whole/50000`: 1.23ms → **6.66ms** (5.4× regression)
+### What the bisect showed
 
-The single notable regression. "Delete entire 50k-line buffer"
-went from 770µs of headroom under the 2ms Reflex budget to 4.66ms
-*over* it. Likely causes (none investigated yet, in priority
-order):
+| Commit (probed today, same hardware)                       | `operator::d_whole/50000` (median) |
+|------------------------------------------------------------|------------------------------------|
+| `c94d734` (commit where the **1.23ms baseline** was first written, 2026-05-02) | **2.84ms** |
+| `b75c135` (first commit with `.tool-versions` pin)         | ~3.03ms |
+| `0759cc6` (last commit before the Phase 4.4 work-window)   | ~3.46ms |
+| `dbf30f3` (HEAD)                                            | ~3.03ms |
 
-1. **Span cache eviction overhead** post-B.3: `shift_highlights_for_edit`
-   when N lines = 50000 walks a `Vec::drain(0..50000)` which is
-   O(n). Single-call delete of the whole buffer is the pathological
-   shape this pays for. The bench's earlier 1.23ms baseline pre-
-   dated the C-series span-shift work; if the shift is now firing
-   on a 50k-line delete that's the regression vector.
-2. **`textDocument/didChange` payload construction**: an edit of
-   this size produces a single full-buffer replacement event. The
-   pre-Phase-4.4 baseline didn't have the per-actor edit fan-in
-   that 4.1.i.2 added; `Event::DocumentChanged` now publishes to
-   the LSP fan-in *and* the syntax worker *and* the
-   `*lsp:<server>:trace*` ring. Three subscribers × 50k-line clone
-   of the delete payload could account for most of 5ms.
-3. **Tree-sitter `tree.edit()` on a buffer-wide delete**: the edit
-   delta covers (0, 0)→(50000, 0); ropey + tree-sitter both have to
-   adjust internal indices. The post-Option-B path is heavier than
-   the pre-B baseline.
+At the *exact* commit that recorded 1.23ms in May, today's
+hardware reports 2.84ms — a 2.3× delta with zero code change. The
+real code-attributable delta across `c94d734 → HEAD` is **2.84ms
+→ 3.03ms (~7%)**, well inside criterion's confidence interval.
+The 6.66ms number captured in the morning's full run wasn't
+reproducible 30 minutes later (later runs land at ~3ms in both
+`--quick` and full criterion modes).
 
-**Fix path**: bisect between `5a4ce64` (the prior bench commit) and
-HEAD on this one bench to identify which slice introduced it.
-`d_whole` is a synthetic worst case (users don't routinely delete
-50k-line buffers in a tight loop), but the regression rate is
-concerning enough to investigate. Reflex-budget breach makes this
-a P1.
+`criterion` itself wasn't bumped between `c94d734` and HEAD; the
+operator-walk code wasn't restructured. Candidate root causes for
+the host-side drift:
 
-### Minor regressions (~10–15%)
+- **WSL2 kernel update**. The env now reports `Linux
+  6.6.87.2-microsoft-standard-WSL2`; the kernel at 2026-05-02
+  isn't recorded in the prior doc, but a Windows-host update in
+  the intervening 11 days is the most plausible vector. Scheduler
+  + vDSO timer paths in WSL2 have historically shifted by ~2×
+  between MS kernel revs.
+- **CPU governor / thermal state**. The host is shared with a
+  Windows GUI; a sustained-load bench like `d_whole/50000`
+  (~5GB/s rope walk) is particularly sensitive to whether the
+  CPU is sitting at peak frequency or has been parked.
+- **L3 / NUMA pressure**. A 50k-line buffer's ropey + tree-sitter
+  state may now spill out of L3 where it didn't before; the
+  smaller-size variants (`d_whole/10`, `d_whole/1000`) scale
+  linearly today (5.15µs → 20.59µs ≈ 4×, matching the line-count
+  ratio) while `d_whole/50000` shows the non-linear knee.
+
+### What changed in the doc
+
+* The §8.2 commitments row for "Reflex motion / operator" reads
+  ⚠️ instead of ✅, but the qualifying note now points at the
+  *bench environment*, not lattice code.
+* The Operators table row for `d_whole/50000` shows today's
+  ~3ms number, not the stale 1.23ms; the prior baseline is
+  preserved in the table footer for historical comparison.
+* The "Improvement target" column on `d_whole/50000` calls out
+  what *would* be a real regression: any movement past ~6ms at
+  the same host state, since 3ms is now this hardware's natural
+  floor for that bench.
+
+### Real (modest) regressions worth watching
+
+Even after stripping out the host-drift noise, four rows moved
+~10–15% in the wrong direction across `c94d734..HEAD`:
 
 - `search::no_match_with_wrap/200000`: 659µs → 749µs (+14%). Still
   inside the 2ms budget; the regex window-walk cost grew slightly,
-  possibly from fancy-regex version churn or memmem-windowed scan
-  layout. Not worth chasing yet — investigate alongside other
-  search-path work.
+  possibly from `fancy-regex` minor-version churn or memmem-
+  windowed scan layout. Not worth chasing yet — investigate
+  alongside other search-path work.
 - `search::forward_last_match/200000`: 469µs → 516µs (+10%). Same
   cause; same posture.
 - `render::frame_60_lines/200`: 42µs → 46µs (+10%). At a 200-fn
   buffer the renderer composes 60 visible lines; ~4µs added per
   frame is within ratatui write-noise but worth a flame-graph if
-  it grows further. Suspect cause: option-cache misses on new
-  lsp-* sub-modes (mode-cascade work landed during the window).
+  it grows further. Suspect cause: option-cache misses on the new
+  `lsp-*` sub-modes (mode-cascade work landed during the window).
 - `render::frame_120_lines/200`: 78µs → 90µs (+16%). Same cause
   scaled.
+
+These four are inside the WSL2 noise floor (~±15%) but trend
+together, so the cascade explanation feels right rather than
+random.
+
+### Methodology note (added this run)
+
+The bench environment isn't pinned today. Concretely:
+
+- No CPU-governor lock on the WSL2 kernel (`cpupower frequency-set
+  -g performance` would help, if `cpupower` is exposed).
+- No host-side quiescence guarantee (background load on Windows
+  affects WSL2 latency).
+- Criterion default sample size (100) is sensitive to one-off
+  thermal spikes on sustained-load benches; `d_whole/50000` is
+  the prototypical sufferer.
+
+When a future bench run produces a *real* code-attributable
+regression, the test is whether the same commit reproduces it on
+the same host state — re-probe at HEAD~10 or so as a control.
 
 ### Improvements worth noting
 
@@ -277,24 +317,33 @@ Reflex-class. All under the <2ms p99 §8.2 budget.
 |----------------------------------|----------|----------|------------|-----------------------------------------------------------------------------------------------|
 | `dw` (delete word)               | 4.97µs   | 17.3µs   | 670µs      | ⏹️                                                                                             |
 | `dd` (delete line)               | 5.43µs   | 15.9µs   | 840µs      | ⏹️                                                                                             |
-| `d_whole` (delete entire buffer) | 5.15µs   | 20.6µs   | **6.66ms** | ⚠️ **P1: 5.4× regression vs prior baseline; pushes through the 2ms Reflex budget.** See "Regressions" §. |
+| `d_whole` (delete entire buffer) | 5.15µs   | 20.6µs   | **~3.0ms** (one-off 6.66ms spike in this run's first execution; reproducible value ~3ms) | ⚠️ host-environment drift -- the historical 1.23ms is unreproducible at the same commit (bisect probed `c94d734` today: 2.84ms). 50k case is the only operator past the 2ms Reflex budget; real regression threshold ~6ms going forward. |
 | `yw` (yank word)                 | 6.16µs   | 13.3µs   | 890µs      | ⏹️                                                                                             |
 | `cw` (change word)               | 4.93µs   | 13.4µs   | 687µs      | ⏹️                                                                                             |
 | `diw` (delete inner word)        | 5.83µs   | 3.84µs   | 227µs      | ⏹️                                                                                             |
 | `di_paren` (deep arg list)       | 8.79µs   | --       | --         | ⏹️                                                                                             |
 
-**⚠️ `d_whole/50k` at 6.66ms** is now the only operator outside the
-2ms Reflex budget. The prior baseline was 1.23ms (within budget).
-The 5.4× regression appeared in the Phase 4.4/4.5 window without
-any deliberate perf-targeting commits; the likely culprit is the
-post-B-series span-shift work (`shift_highlights_for_edit`) firing
-on the 50k-line delete, or the per-actor edit fan-in publishing
-the delete payload to three subscribers (LSP fan-in + syntax
-worker + trace ring). Investigation queued; see the Regressions
-section above for the proposed bisect range.
+**`d_whole/50k` at ~3ms** is the only operator outside the 2ms
+Reflex budget on this hardware today. The historical doc value
+of 1.23ms (captured 2026-05-02 on the same WSL2 host) is no
+longer reproducible: a targeted bisect probed `c94d734` (the
+commit that originally recorded 1.23ms) today and measured
+2.84ms, with ±0.5ms noise across `b75c135..HEAD`. The delta is
+attributed to WSL2 host-state drift, not lattice code — see
+"Bench environment drift" above for the full bisect data + the
+candidate root causes (kernel rev, CPU governor, L3 pressure).
 
-The other operators stay near floor; their cost is dominated by
+This means the row stays ⚠️ because the absolute number IS over
+the 2ms budget — but a code fix isn't the right lever; pinning
+the bench host's CPU governor + a quiet-host policy are. The
+other operators stay near floor; their cost is dominated by
 ropey's `remove(...)` work and is sub-millisecond at 50k lines.
+
+The first invocation of the bench today produced a one-off spike
+to 6.66ms (recorded in the morning's full-suite output); every
+subsequent rerun (full and `--quick`) landed at ~3ms. The 6.66ms
+is treated as an outlier rather than the canonical number; a real
+P1 regression would need to reproduce stably across runs.
 
 ---
 

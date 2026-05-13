@@ -709,6 +709,18 @@ impl App {
 
     pub(super) fn open_buffer_picker(&mut self) {
         let active = self.active_pane_buffer_id();
+        // Push the pre-picker cursor onto position history *before*
+        // any preview activations fire. The activate_buffer push
+        // skips during `previewing = true`, and the accept path
+        // typically short-circuits (the preview already activated
+        // the target). Recording the origin here gives `<C-o>` a
+        // target to walk back to regardless of whether the user
+        // accepts a different candidate or dismisses.
+        // `push_position_history` coalesces if the same entry
+        // appears twice, so this is safe even when the user
+        // opens picker → dismiss → open picker again.
+        let cur = self.active_cursor();
+        self.push_position_history(cur, super::PositionSource::AutoJump);
         let mut p = lattice_picker::Picker::new(
             "buffers",
             lattice_picker::PickerSource::Buffers,

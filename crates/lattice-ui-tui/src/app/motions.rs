@@ -254,10 +254,19 @@ impl App {
         // cursor onto the right buffer's tracking field.
         match entry.buffer {
             BufferKind::Document => {
-                self.active_buffer = BufferKind::Document;
-                self.cursor = entry.position;
-                self.clamp_cursor_to_buffer();
-                self.auto_open_folds_at_cursor();
+                // Pane + document state must follow the entry. Cross-buffer
+                // walks (Help/FileTree/Oil -> Document) need `pane.buffer_id`
+                // updated so the renderer + modeline read the right buffer;
+                // cross-document walks need the document handle swapped via
+                // `activate_document` so motion / search / save target the
+                // recorded buffer. The reachable check above already verified
+                // the registry entry; activate_document re-checks for safety.
+                if self.buffers.document(entry.buffer_id).is_some() {
+                    self.activate_document(entry.buffer_id);
+                    self.cursor = entry.position;
+                    self.clamp_cursor_to_buffer();
+                    self.auto_open_folds_at_cursor();
+                }
             }
             BufferKind::Help => {
                 self.active_buffer = BufferKind::Help;
@@ -1261,6 +1270,41 @@ mod tests {
         a.apply(Action::TagStackPop);
         let msg = a.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("tag stack empty"));
+    }
+
+    #[test]
+    fn ctrl_o_from_help_buffer_swaps_pane_back_to_document() {
+        // Regression: do_walk_history's Document arm previously only
+        // updated `active_buffer` + `self.cursor` and forgot to update
+        // `pane.buffer` / `pane.buffer_id`. The renderer + modeline read
+        // pane.buffer_id, so <C-o> from a help-in-pane buffer back to a
+        // document position left the renderer painting the help buffer.
+        let mut a = app_with("alpha\nbeta\ngamma\n", 10);
+        let doc_id = a.document_buffer_id;
+        a.cursor = Position::new(1, 2);
+        // Open a help buffer in-pane; activate_help_in_pane pushes an
+        // AutoJump entry recording the pre-activation Document cursor.
+        let help =
+            crate::help::HelpContent::from_lines("regression", vec!["help body".to_string()]);
+        a.open_help_in_pane(help);
+        assert_eq!(a.active_buffer, BufferKind::Help);
+        let active_pane = a.pane_tree.active();
+        assert_eq!(active_pane.buffer, BufferKind::Help);
+        assert_ne!(active_pane.buffer_id, doc_id);
+        // <C-o> walks back to the AutoJump entry pointing at the doc.
+        a.apply(Action::JumpHistoryBack);
+        assert_eq!(a.active_buffer, BufferKind::Document);
+        let active_pane = a.pane_tree.active();
+        assert_eq!(
+            active_pane.buffer,
+            BufferKind::Document,
+            "pane.buffer must follow active_buffer back to Document"
+        );
+        assert_eq!(
+            active_pane.buffer_id, doc_id,
+            "pane.buffer_id must point at the original document so the renderer paints it"
+        );
+        assert_eq!(a.cursor, Position::new(1, 2));
     }
 
     #[test]
